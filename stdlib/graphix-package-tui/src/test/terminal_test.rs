@@ -19,10 +19,13 @@ fn display_modes_enable_focus() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Run `run` alone in a child process of this test binary. With
+/// `terminal`, the child's stdin is a fresh PTY, and the bytes given are
+/// typed on it once the child has put it in raw mode.
 #[cfg(unix)]
 async fn in_child(
     name: &str,
-    terminal: bool,
+    terminal: Option<&[u8]>,
     run: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<std::process::Output>> {
     use compact_str::format_compact;
@@ -41,7 +44,7 @@ async fn in_child(
         .env("GRAPHIX_TUI_TEST_CHILD", name)
         .env("RUST_BACKTRACE", "0")
         .kill_on_drop(true);
-    let _master = if terminal {
+    let master = if terminal.is_some() {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         let (mut master, mut slave) = (-1, -1);
         let size = libc::winsize { ws_row: 10, ws_col: 40, ws_xpixel: 0, ws_ypixel: 0 };
@@ -79,10 +82,36 @@ async fn in_child(
     } else {
         None
     };
-    let output =
-        tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
-            .await??;
-    Ok(Some(output))
+    let typed = async {
+        let (Some(master), Some(input)) = (&master, terminal) else { return Ok(()) };
+        if input.is_empty() {
+            return Ok(());
+        }
+        use std::os::fd::AsRawFd;
+        loop {
+            // tcgetattr fills the struct on success, which is checked.
+            let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+            if unsafe { libc::tcgetattr(master.as_raw_fd(), &mut modes) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if modes.c_lflag & libc::ICANON == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await
+        }
+        // The buffer outlives the call and its length is passed with it.
+        let n = unsafe {
+            libc::write(master.as_raw_fd(), input.as_ptr().cast(), input.len())
+        };
+        if n < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+    };
+    let (output, typed) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        futures::future::join(command.output(), typed),
+    )
+    .await?;
+    typed?;
+    Ok(Some(output?))
 }
 
 #[cfg(unix)]
@@ -90,7 +119,7 @@ async fn in_child(
 async fn held_stderr_keeps_a_bounded_head_and_tail() -> anyhow::Result<()> {
     use std::io::Write;
     if let Some(output) =
-        in_child("held_stderr_keeps_a_bounded_head_and_tail", false, || {
+        in_child("held_stderr_keeps_a_bounded_head_and_tail", None, || {
             let held = crate::StderrHeld::hold()?;
             // fd 2 remains owned by this process while it is duplicated.
             let writer =
@@ -119,9 +148,35 @@ async fn held_stderr_keeps_a_bounded_head_and_tail() -> anyhow::Result<()> {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn stderr_inherited_while_held_outlives_the_hold() -> anyhow::Result<()> {
+    use std::io::Write;
+    if let Some(output) =
+        in_child("stderr_inherited_while_held_outlives_the_hold", None, || {
+            let held = crate::StderrHeld::hold()?;
+            // what a child spawned now inherits as its stderr
+            let inherited =
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(2) }.try_clone_to_owned()?;
+            std::io::stderr().write_all(b"HELD\n")?;
+            drop(held);
+            std::fs::File::from(inherited).write_all(b"LATE\n")?;
+            let held = crate::StderrHeld::hold()?;
+            std::io::stderr().write_all(b"AGAIN\n")?;
+            drop(held);
+            Ok(())
+        })
+        .await?
+    {
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.ends_with(b"HELD\nLATE\nAGAIN\n"), "{output:?}");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn caught_panics_do_not_leave_the_display_cooked() -> anyhow::Result<()> {
     if let Some(output) =
-        in_child("caught_panics_do_not_leave_the_display_cooked", true, || {
+        in_child("caught_panics_do_not_leave_the_display_cooked", Some(b""), || {
             let mut live = crate::Live::take(false)?;
             let _ = std::panic::catch_unwind(|| panic!("caught while displaying"));
             assert!(live.recover(false)?);
@@ -148,7 +203,7 @@ async fn aborting_panics_replay_stderr_and_the_diagnostic() -> anyhow::Result<()
         panic!("TUI_ABORT_DIAGNOSTIC");
     }
     if let Some(output) =
-        in_child("aborting_panics_replay_stderr_and_the_diagnostic", true, || {
+        in_child("aborting_panics_replay_stderr_and_the_diagnostic", Some(b""), || {
             use std::io::Write;
             let _live = crate::Live::take(false)?;
             std::io::stderr().write_all(b"TUI_BEFORE_PANIC\n")?;
@@ -162,6 +217,44 @@ async fn aborting_panics_replay_stderr_and_the_diagnostic() -> anyhow::Result<()
         assert!(stderr.contains("TUI_BEFORE_PANIC"), "{stderr}");
         assert!(stderr.contains("TUI_ABORT_DIAGNOSTIC"), "{stderr}");
         assert!(std::str::from_utf8(&output.stdout)?.contains("\x1b[?1049l"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ctrl_c_is_read_while_work_waits() -> anyhow::Result<()> {
+    if let Some(output) =
+        in_child("ctrl_c_is_read_while_work_waits", Some(b"x\x03"), || {
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    rt.block_on(async {
+                        let mut term = crate::Term::Live(crate::Live::take(false)?);
+                        let mut liveness =
+                            tokio::time::interval(std::time::Duration::from_secs(1));
+                        let mut pending = std::collections::VecDeque::new();
+                        let done = term
+                            .reading(
+                                std::future::pending::<()>(),
+                                &mut liveness,
+                                &mut pending,
+                            )
+                            .await?;
+                        assert!(done.is_none());
+                        assert_eq!(pending.len(), 1, "{pending:?}");
+                        Ok(())
+                    })
+                })
+                .join()
+                .unwrap()
+            })
+        })
+        .await?
+    {
+        assert!(output.status.success(), "{output:?}");
     }
     Ok(())
 }

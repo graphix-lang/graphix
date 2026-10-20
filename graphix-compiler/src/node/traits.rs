@@ -325,17 +325,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         TagValue::phantom_ref()
     }
 
-    // CR claude for claude: [bug/low] A trait's method signatures never have their type
-    // names checked. `trait Q { val q: fn(self) -> Nope }` passes --check and runs
-    // until an impl or a call expands the signature. Every other written type (typedef
-    // bodies, annotations, casts, type tests) is deferred through
-    // defer_unresolved_names and refused at the check's end. Defer each method's
-    // signature here, as lambda.rs does for a definition's. probe:
-    // design/review-2026-10-19/repro/x-typecheck-patterns-trait-sig-undefined-type.gx
-    // (x-typecheck-patterns-09)
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
+        // every written name in a method's signature must name something by
+        // the check's end
+        for m in record.methods.iter() {
+            crate::defer_unresolved_names(ctx, &Type::Fn(m.typ.clone()), &self.spec);
+        }
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };
@@ -716,7 +713,12 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             pos: spec.pos,
             ori: spec.ori.clone(),
         });
-        let fulfils = ctx.env.register_impl(def.clone()).at(&spec)?;
+        let fulfils = match ctx.env.register_impl(def.clone()).at(&spec)? {
+            Some(declared) if CoreTrait::representation_default(trait_id) => {
+                Some(narrow_to_representation(ctx, declared, &def).at(&spec)?)
+            }
+            fulfils => fulfils,
+        };
         Ok(Node::new(Self {
             spec,
             def,
@@ -748,6 +750,68 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         }
         Ok(())
     }
+}
+
+/// A declared impl of a trait whose methods default to the
+/// representation (`Cast`) keeps only the methods its implementation
+/// writes: one it leaves out is the representation. Registered here,
+/// where the implementation registers, never in a module's check, which
+/// runs beside its siblings'.
+// XCR claude for claude: [bug/high] This re-registration runs in
+// check_sig, inside Module::typecheck0, so for a run of sibling
+// modules it runs in parallel compile tasks. Env::impls is
+// keyed by TraitId with the whole list as the value, so two
+// siblings that both leave Cast's to_value out write the same
+// key. The join then panics in debug (TrackedMap::join's
+// debug_assert), and in release one module's re-registration is
+// lost: its Cast impl keeps a to_value that nothing proxies.
+// design/parallel_compile.md says impls are registered before
+// any body runs. Move this unregister/register into
+// Module::compile_inner for a static body, after the body
+// compiles, and add a fixture with two sibling modules that
+// each declare `impl Cast for T;` and omit to_value. probe:
+// design/review-2026-10-19/repro/t-env-cast-repr-race.sh
+// (t-env-01)
+// 2026-10-19 claude: The narrowing moved out of check_sig into Impl::compile
+// (narrow_to_representation), which registers serially when register_impl
+// returns the declaration an implementation fulfils; check_sig only builds the
+// proxies. Pin: lang::cast_trait::sibling_cast_declarations_narrow_apart (three
+// sibling modules, two leaving to_value out, one leaving both out).
+
+// XCR claude for claude: [bug/high] This narrowing rewrites
+// the global `impls` entry for the Cast trait during a
+// module's check, and sibling modules check in parallel
+// compile tasks. Two modules that each narrow a declared
+// `impl Cast for T;` write the same key, and
+// TrackedMap::join panics in debug ("a fork's write to
+// TraitId(..) would replace a write made since the fork").
+// In release the later join wins and puts back the other
+// module's unnarrowed declaration. Narrow the declaration
+// where the implementation registers, which is serial: in
+// Impl::compile, when register_impl returns the fulfilled
+// declaration. The check should only verify. probe:
+// design/review-2026-10-19/repro/c-module-traits-sibling-cast-narrowing.sh
+// (c-module-traits-01)
+// 2026-10-19 claude: Fixed with t-env-01: narrow_to_representation in
+// Impl::compile. Pin: lang::cast_trait::sibling_cast_declarations_narrow_apart.
+fn narrow_to_representation<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    declared: Arc<ImplDef>,
+    implementation: &ImplDef,
+) -> Result<Arc<ImplDef>> {
+    let mut methods = declared.methods.clone();
+    for (name, _) in declared.methods.into_iter() {
+        if !implementation.methods.contains_key(name) {
+            methods.remove_cow(name);
+        }
+    }
+    if methods.len() == declared.methods.len() {
+        return Ok(declared);
+    }
+    let narrowed = Arc::new(ImplDef { methods, ..(*declared).clone() });
+    ctx.env.unregister_impl(&declared);
+    ctx.env.register_impl(narrowed.clone())?;
+    Ok(narrowed)
 }
 
 impl<R: Rt, E: UserEvent> Impl<R, E> {

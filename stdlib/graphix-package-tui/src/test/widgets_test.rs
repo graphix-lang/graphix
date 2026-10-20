@@ -4,12 +4,19 @@
 //! surfaces here, and each pins what it draws. Forms, the line editor
 //! and the browser are in input_test.
 
+use super::ch;
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use netidx::publisher::Value;
 use ratatui::{
     buffer::Cell,
     style::{Color, Modifier, Style},
 };
+
+fn keyed(code: KeyCode, kind: KeyEventKind) -> Event {
+    Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind))
+}
 
 #[tokio::test]
 async fn text_compiles_and_renders() -> Result<()> {
@@ -293,6 +300,30 @@ async fn calendar_compiles_and_renders() -> Result<()> {
 }
 
 #[tokio::test]
+async fn a_short_calendar_stays_in_its_area() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::{style, layout::{child, layout}, text::text, calendar::{calendar, date}};
+let cal = calendar(#show_month: &style(), &date(2026, 8, 15));
+let result = layout(#direction: &`Vertical, &[
+  child(#constraint: `Length(3), cal),
+  child(#constraint: `Fill(1), text(&"below"))
+])
+"#,
+        24,
+        8,
+    )
+    .await?;
+    h.assert_lines(&[
+        "      August 2026",
+        "                    1",
+        "  2  3  4  5  6  7  8",
+        "below",
+    ])?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn canvas_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
         r#"
@@ -319,6 +350,26 @@ let result = canvas(
         "       ⢀⣀⡠⠤⠔⠒⠒⠉⠉",
         "⣀⡠⠤⠔⠒⠊⠉⠁",
     ])?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn canvas_bounds_too_wide_to_scale_draw_nothing() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::canvas::canvas;
+let p = `Points({color: `Red, coords: [(1e308, 1.0)]});
+let l = `Label({line: tui::line("L"), x: 1e308, y: 1.0});
+let result = canvas(
+    #marker: &`HalfBlock,
+    #x_bounds: &{min: 0.0, max: 1e308},
+    #y_bounds: &{min: 0.0, max: 2.0},
+    &[&p, &l]
+)
+"#,
+    )
+    .await?;
+    h.assert_lines(&[""])?;
     Ok(())
 }
 
@@ -357,8 +408,6 @@ let result = overlay(#layers: &layers, paragraph(&"JUST BASE"))
 
 #[tokio::test]
 async fn overlay_top_layer_captures_input() -> Result<()> {
-    use crossterm::event::{Event, KeyCode, KeyEvent};
-    use netidx::publisher::Value;
     let mut h = TuiTestHarness::new(
         r#"
 use tui::*;
@@ -384,7 +433,7 @@ let result = overlay(#layers: &[modal], base)
     h.watch("test::base_hit").await?;
     h.watch("test::layer_hit").await?;
     h.render()?;
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char('x')))).await?;
+    h.dispatch_event(ch('x')).await?;
     h.drain().await?;
     assert_eq!(
         h.get_watched("test::layer_hit"),
@@ -401,8 +450,6 @@ let result = overlay(#layers: &[modal], base)
 
 #[tokio::test]
 async fn overlay_no_layer_routes_to_base() -> Result<()> {
-    use crossterm::event::{Event, KeyCode, KeyEvent};
-    use netidx::publisher::Value;
     let mut h = TuiTestHarness::new(
         r#"
 use tui::*;
@@ -422,7 +469,7 @@ let result = overlay(#layers: &layers, base)
     .await?;
     h.watch("test::base_hit").await?;
     h.render()?;
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char('x')))).await?;
+    h.dispatch_event(ch('x')).await?;
     h.drain().await?;
     assert_eq!(
         h.get_watched("test::base_hit"),
@@ -434,8 +481,6 @@ let result = overlay(#layers: &layers, base)
 
 #[tokio::test]
 async fn on_press_runs_the_callback_on_presses_only() -> Result<()> {
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use netidx::publisher::Value;
     let mut h = TuiTestHarness::new(
         r#"
 use tui::*;
@@ -457,16 +502,14 @@ let result = input_handler(#handle: &handle, &paragraph(&"base"))
     h.watch("test::downs").await?;
     h.watch("test::calls").await?;
     h.render()?;
-    let key =
-        |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
     for e in [
-        key(KeyCode::Down, KeyEventKind::Press),
-        key(KeyCode::Down, KeyEventKind::Release),
-        key(KeyCode::Down, KeyEventKind::Repeat),
-        key(KeyCode::Down, KeyEventKind::Press),
+        keyed(KeyCode::Down, KeyEventKind::Press),
+        keyed(KeyCode::Down, KeyEventKind::Release),
+        keyed(KeyCode::Down, KeyEventKind::Repeat),
+        keyed(KeyCode::Down, KeyEventKind::Press),
         Event::Resize(80, 24),
         Event::Paste("x".into()),
-        key(KeyCode::Char('x'), KeyEventKind::Press),
+        keyed(KeyCode::Char('x'), KeyEventKind::Press),
     ] {
         h.dispatch_event(e).await?;
         h.drain().await?;
@@ -478,8 +521,6 @@ let result = input_handler(#handle: &handle, &paragraph(&"base"))
 
 #[tokio::test]
 async fn a_modal_handler_over_on_press_lets_nothing_through() -> Result<()> {
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use netidx::publisher::Value;
     let mut h = TuiTestHarness::new(
         r#"
 use tui::*;
@@ -502,16 +543,14 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
     h.watch("test::leaked").await?;
     h.watch("test::closed").await?;
     h.render()?;
-    let key =
-        |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
     for e in [
-        key(KeyCode::Esc, KeyEventKind::Press),
-        key(KeyCode::Esc, KeyEventKind::Release),
-        key(KeyCode::Esc, KeyEventKind::Release),
+        keyed(KeyCode::Esc, KeyEventKind::Press),
+        keyed(KeyCode::Esc, KeyEventKind::Release),
+        keyed(KeyCode::Esc, KeyEventKind::Release),
         Event::Resize(80, 24),
         Event::Resize(81, 24),
-        key(KeyCode::Char('x'), KeyEventKind::Press),
-        key(KeyCode::Esc, KeyEventKind::Press),
+        keyed(KeyCode::Char('x'), KeyEventKind::Press),
+        keyed(KeyCode::Esc, KeyEventKind::Press),
     ] {
         h.dispatch_event(e).await?;
         h.drain().await?;

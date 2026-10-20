@@ -26,7 +26,10 @@ use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    collections::hash_map::Entry,
+};
 use triomphe::Arc;
 
 pub use kernel_abi::PrimType;
@@ -115,6 +118,34 @@ pub struct BuiltinCallSiteInfo {
 #[derive(Debug, Default, Clone)]
 pub struct BuiltinCallDiscovery {
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
+}
+
+impl BuiltinCallDiscovery {
+    /// Two instances of one callback in a region share their sites'
+    /// ids, and emission finds a site by id, so a site that two
+    /// instances type apart refuses the region.
+    fn insert(
+        &mut self,
+        spec: &Expr,
+        info: BuiltinCallSiteInfo,
+    ) -> Result<(), FusionBlocker> {
+        match self.apply_sites.entry(spec.id) {
+            Entry::Vacant(e) => {
+                e.insert(info);
+                Ok(())
+            }
+            Entry::Occupied(e)
+                if e.get().arg_types == info.arg_types
+                    && e.get().return_type == info.return_type =>
+            {
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(FusionBlocker {
+                spec: spec.clone(),
+                reason: "two instances in one region type this call apart".into(),
+            }),
+        }
+    }
 }
 
 /// Discover the fusable call sites in a subtree: every `CallSite` on a
@@ -408,8 +439,8 @@ fn try_register_cast<R: Rt, E: UserEvent>(
     }
     let arg_frozen = frozen_or_blocked(source, &tc.spec, "the cast source's")?;
     let ret_frozen = frozen_or_blocked(&tc.typ, &tc.spec, "the cast result's")?;
-    out.apply_sites.insert(
-        tc.spec.id,
+    out.insert(
+        &tc.spec,
         BuiltinCallSiteInfo {
             marshal_args: vec![MarshalArg::Call(0)],
             arg_types: vec![arg_frozen],
@@ -419,8 +450,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
                 source: source.clone(),
             },
         },
-    );
-    Ok(())
+    )
 }
 
 /// Register one CallSite as a fastcall site, if it qualifies. Types
@@ -464,7 +494,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(ft) => ft.resolve_tvars(),
         None => (*info.typ).clone(),
     };
-    let apply_id = apply_expr.id;
     let mut call_positional: SmallVec<[usize; 8]> = SmallVec::new();
     let mut call_labeled: LPooled<ahash::AHashMap<&str, usize>> = LPooled::take();
     for (call_idx, (label, _)) in a.args.iter().enumerate() {
@@ -585,11 +614,11 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             SiteDispatch::Typed { name, f, typ: Arc::new(fn_type.clone()) }
         }
     };
-    out.apply_sites.insert(
-        apply_id,
+    out.insert(
+        apply_expr,
         BuiltinCallSiteInfo { marshal_args, arg_types, return_type, dispatch },
-    );
-    None
+    )
+    .err()
 }
 
 /// The bare identifier of a single-level path; a kernel reads a `Ref`
@@ -631,10 +660,7 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
             let fields = st.names.iter().cloned().zip(vals.drain(..));
             Some(crate::rep::structure(fields))
         }
-        NodeView::Map(m) => {
-            let (keys, values) = m.entries();
-            const_map(keys, values)
-        }
+        NodeView::Map(m) => const_map(&m.n),
         _ => None,
     }
 }
@@ -657,15 +683,12 @@ fn const_values<R: Rt, E: UserEvent>(
     Some(vals)
 }
 
-/// Fold parallel key/value node slices into a constant `Value::Map`,
-/// or `None` if any entry isn't constant.
-pub(crate) fn const_map<R: Rt, E: UserEvent>(
-    keys: &[Node<R, E>],
-    values: &[Node<R, E>],
-) -> Option<Value> {
+/// Fold a map literal's entries (each key, then its value) into a
+/// constant `Value::Map`, or `None` if any entry isn't constant.
+pub(crate) fn const_map<R: Rt, E: UserEvent>(entries: &[Node<R, E>]) -> Option<Value> {
     let mut map = netidx_value::Map::new();
-    for (k, v) in keys.iter().zip(values.iter()) {
-        map.insert_cow(node_const_value(k)?, node_const_value(v)?);
+    for kv in entries.chunks_exact(2) {
+        map.insert_cow(node_const_value(&kv[0])?, node_const_value(&kv[1])?);
     }
     Some(Value::Map(map))
 }

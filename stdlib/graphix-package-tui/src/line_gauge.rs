@@ -23,7 +23,7 @@ pub(super) struct LineGaugeW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> LineGaugeW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        Ok(Box::new(Self(Props::compile(&gx, &v).await.context("line_gauge")?)))
+        Ok(TuiW::new(Self(Props::compile(&gx, &v).await.context("line_gauge")?)))
     }
 }
 

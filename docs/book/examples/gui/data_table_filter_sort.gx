@@ -7,25 +7,26 @@ use gui::{
   text::text,
   text_input::text_input
 };
+use sys::net;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
 // let the user pick a row filter mode. Sorting is driven entirely
 // from the table itself — click a header to cycle its sort order.
-sys::net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
-sys::net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
-sys::net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
-sys::net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
-sys::net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
-sys::net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
-sys::net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
-sys::net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
-sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
+net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
+net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
+net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
+net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
+net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
+net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
+net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
+net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
+net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_filter")$;
 
 // Filter controls: a regex pattern and whether it includes or excludes.
 // The caller reshapes the Table in graphix before passing it in.

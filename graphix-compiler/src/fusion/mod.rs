@@ -43,7 +43,11 @@ use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::{cell::RefCell, collections::BTreeMap, sync::LazyLock};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, hash_map::Entry},
+    sync::LazyLock,
+};
 use triomphe::Arc;
 
 /// A type in a refusal's reason: its first [`Brief::BYTES`] as printed,
@@ -187,8 +191,12 @@ impl FusionStats {
         self.fused += 1;
     }
 
-    pub(crate) fn failure_for_source(&self, spec: &Expr) -> Option<&FusionFailure> {
-        self.failed.iter().rev().find(|failure| failure.matches(spec))
+    /// Every failure recorded for `spec`'s source, each attempt's.
+    pub(crate) fn failures_for_source<'a, 'b>(
+        &'a self,
+        spec: &'b Expr,
+    ) -> impl Iterator<Item = &'a FusionFailure> + use<'a, 'b> {
+        self.failed.iter().filter(move |failure| failure.matches(spec))
     }
 }
 
@@ -887,6 +895,10 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
     pub(crate) decorated: LPooled<Vec<&'n Node<R, E>>>,
     /// Call sites whose lambda has no kernel, with the reason.
     pub(crate) refused: LPooled<Vec<(&'n Expr, CompactString)>>,
+    /// A site two instances of one callback in the region call with
+    /// different kernels: emission finds a site by id, so the region
+    /// refuses.
+    pub(crate) collided: Option<&'n Expr>,
 }
 
 /// Walk the region collecting every statically-resolved lambda call
@@ -907,6 +919,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
         bodies: BTreeMap::new(),
         decorated: LPooled::take(),
         refused: LPooled::take(),
+        collided: None,
     };
     // The second field says where a body's discovered sites land:
     // `None` = the root, `Some(ptr)` = that callee's `CalleeBody.sites`.
@@ -975,7 +988,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                 );
                 enqueue.push((g.body(), ptr));
             }
-            // CR claude for claude: [bug/critical] Sites are keyed by ExprId, but
+            // XCR claude for claude: [bug/critical] Sites are keyed by ExprId, but
             // for_each_emitted_node descends into inline callback bodies, and two
             // instances of one callback (e.g. `array::map(xs_i64, g)` and
             // `array::map(ys_u64, g)` in one region) share every ExprId. The second
@@ -989,7 +1002,23 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             // design/review-2026-10-19/repro/f-mod-lowering-site-id-collision-wrong.gx,
             // design/review-2026-10-19/repro/f-mod-lowering-site-id-collision-panic.gx
             // (f-mod-lowering-01)
-            local_sites.insert(n.spec().id, cached);
+            // 2026-10-19 claude: The region now refuses instead of fusing wrong:
+            // discover_lambda_calls records a site whose id two instances map to
+            // different kernels (Discovery::collided) and try_fuse refuses it;
+            // BuiltinCallDiscovery::insert refuses a builtin site two instances type
+            // apart. Fusion of such a region is lost; keying sites by call-node
+            // identity would recover it (perf, not done). Pins:
+            // lang::fusion::callback_instances_call_their_own_kernels,
+            // callback_instances_at_float_and_int (both FuseExpect::Jit).
+            match local_sites.entry(n.spec().id) {
+                Entry::Vacant(e) => {
+                    e.insert(cached);
+                }
+                Entry::Occupied(e) if kernel_abi::kernel_key(&e.get().kernel) == ptr => {}
+                Entry::Occupied(_) => {
+                    d.collided.get_or_insert(n.spec());
+                }
+            }
         });
         match target {
             None => d.sites = local_sites,
@@ -1430,6 +1459,14 @@ fn build_region<R: Rt, E: UserEvent>(
     ctx.fusion.emission()?.attempt();
     let lambdas = discover_lambda_calls(node, ctx);
     drop(phase);
+    if let Some(spec) = lambdas.collided {
+        ctx.fusion.emission()?.forget_attempt();
+        return refuse(
+            ctx,
+            spec,
+            "two instances in one region call this site's lambda apart",
+        );
+    }
     let source_id = node.spec().id;
     let kernel = Arc::new(sig_from_params(
         ArcStr::from(format_compact!("region_{:?}", source_id).as_str()),

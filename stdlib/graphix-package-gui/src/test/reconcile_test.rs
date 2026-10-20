@@ -74,83 +74,31 @@ async fn a_single_child_survives_a_failed_recompile_and_retry() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn reconciliation_preserves_old_entries_until_success() -> Result<()> {
-    use crate::widgets::reconcile;
-    let mut old = vec![(Value::I64(1), "first"), (Value::I64(2), "second")];
-    let items = || [2, 3, 1].map(Value::I64).into_iter().collect();
-    assert!(
-        reconcile(&mut old, items(), |_| async { anyhow::bail!("bad item") })
-            .await
-            .is_err()
-    );
-    assert_eq!(old, [(Value::I64(1), "first"), (Value::I64(2), "second")]);
-    reconcile(&mut old, items(), |v| async move {
-        assert_eq!(v, Value::I64(3), "retained entries must not compile again");
-        Ok("fresh")
-    })
-    .await?;
-    assert_eq!(
-        old,
-        [(Value::I64(2), "second"), (Value::I64(3), "fresh"), (Value::I64(1), "first")]
-    );
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn reconciliation_compiles_fresh_entries_concurrently() -> Result<()> {
-    use crate::widgets::reconcile;
-    use std::time::Duration;
-    use tokio::sync::Barrier;
-    use triomphe::Arc;
-
-    let barrier = Arc::new(Barrier::new(3));
-    let mut old = Vec::new();
-    let items = [1, 2, 3].map(Value::I64).into_iter().collect();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        reconcile(&mut old, items, |v| {
-            let barrier = barrier.clone();
-            async move {
-                barrier.wait().await;
-                Ok(v)
-            }
-        }),
+/// A result that changes rebuilds the harness's root, as a window's
+/// content is rebuilt.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_result_rebuilds_the_root() -> Result<()> {
+    use crate::widgets::canvas::CanvasW;
+    let mut h = GuiTestHarness::new(
+        r#"
+        use gui::{color, canvas::canvas};
+        let n = 0;
+        let line = `Line({from: {x: 0.0, y: 0.0}, to: {x: 1.0, y: 1.0}, color: color(#r: 1.0)$, width: 1.0});
+        let result = select n { 0 => canvas(&[]), _ => canvas(&[line]) }
+    "#,
     )
-    .await??;
-    assert_eq!(old.len(), 3);
-    Ok(())
-}
-
-#[test]
-fn reordered_children_match_in_linear_comparisons() {
-    use crate::widgets::keep_equal;
-    use std::{
-        cell::Cell,
-        hash::{Hash, Hasher},
+    .await?;
+    let shapes = |h: &GuiTestHarness| {
+        h.root
+            .w
+            .as_any()
+            .downcast_ref::<CanvasW<NoExt>>()
+            .expect("a canvas")
+            .shape_count()
     };
-    struct Key<'a>(usize, &'a Cell<usize>);
-    impl PartialEq for Key<'_> {
-        fn eq(&self, other: &Self) -> bool {
-            self.1.set(self.1.get() + 1);
-            self.0 == other.0
-        }
-    }
-    impl Eq for Key<'_> {}
-    impl Hash for Key<'_> {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state)
-        }
-    }
-    let comparisons = Cell::new(0);
-    let n = 1000;
-    let new: poolshark::local::LPooled<Vec<_>> =
-        (0..n).rev().map(|i| Key(i, &comparisons)).collect();
-    let kept = keep_equal((0..n).map(|i| (Key(i, &comparisons), i)), &new);
-    assert!(kept.iter().copied().eq((0..n).rev().map(Some)));
-    assert!(comparisons.get() < 8 * n, "{} comparisons", comparisons.get());
-    let kept = keep_equal([(1, 'a'), (1, 'b'), (2, 'c')], &[1, 2, 1, 1]);
-    assert_eq!(&**kept, &[Some('a'), Some('c'), Some('b'), None]);
-    let kept = keep_equal([(1, 'a'), (1, 'b'), (2, 'c')], &[2, 1, 1]);
-    assert_eq!(&**kept, &[Some('c'), Some('b'), Some('a')]);
+    assert_eq!(shapes(&h), Some(0));
+    named_ref(&h, "test::n").await?.set(Value::I64(1))?;
+    h.drain().await?;
+    assert_eq!(shapes(&h), Some(1));
+    Ok(())
 }

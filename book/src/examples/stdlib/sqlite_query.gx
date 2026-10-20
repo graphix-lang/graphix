@@ -1,20 +1,18 @@
-// CR claude for claude: [style/low] This example raises with `?` under no handler, so
-// every check and run prints 'error raised by ? will not be caught'. The book page
-// teaches a pattern the compiler warns about, and on a failure the program prints
-// nothing and never exits. Wrap the body in `try { .. (users, raw) } with(e) {
-// println("sqlite failed: [e]"); ([], []) }`: the branches share one type, and it
-// checks and runs clean with the same output. probe: graphix --check on this file
-// prints the warning; the try/with version does not. (examples-rest-05)
 let (users, raw) = seq {
-    let conn = sqlite::open(":memory:")?;
-    sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
-    sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
-    // typed struct results
-    let users: Array<{id: i64, name: string, age: i64}> =
-        sqlite::query(conn, "SELECT * FROM users", [])?;
-    // raw map results
-    let raw: Array<Map<string, sqlite::SqlVal>> =
-        sqlite::query(conn, "SELECT * FROM users", [])?;
-    (users, raw)
+    try {
+        let conn = sqlite::open(":memory:")?;
+        sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
+        sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
+        // typed struct results
+        let users: Array<{id: i64, name: string, age: i64}> =
+            sqlite::query(conn, "SELECT * FROM users", [])?;
+        // raw map results
+        let raw: Array<Map<string, sqlite::SqlVal>> =
+            sqlite::query(conn, "SELECT * FROM users", [])?;
+        (users, raw)
+    } with(e) {
+        println("sqlite failed: [e]");
+        ([], [])
+    }
 };
 println("[users] [raw]")

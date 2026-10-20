@@ -214,13 +214,6 @@ $ test.gx
 "baz2"
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] This example no longer works. The `_`
-arm's `clock <- null` and `sum <- 0` are constants, which fire only at the arm's first
-entry (a wake resumes). The queue is never clocked again and `once(sum)` keeps its
-state, so the program prints 5, 5, not 5, 3, 2, and the check warns on both writes.
-Rewrite it under the resume rule: sample the event that selects the arm, or use a `seqq`
-over `a`. Or drop the section in favour of `array::fold`. probe:
-design/review-2026-10-19/repro/book-core-fixed-len.gx (book-core-03) -->
 ### Fixing Our Contrived Len
 
 Advice about not using <- in iteration aside, if you understand cycles
@@ -235,17 +228,24 @@ let len = |a: Array<'a>| {
   let sum = 0;
   select q {
     [x, tl..] => {
-      sum <- sum + 1;
+      sum <- x ~ sum + 1;
       q <- tl
     },
-    _ => {
-      clock <- null;
-      sum <- 0;
-      once(sum)
+    e@ [] => {
+      clock <- e ~ null;
+      sum <- e ~ 0;
+      e ~ sum
     }
   }
 }
 ```
+
+The queue holds each new array until the previous one is counted. Every
+write samples the event that selected its arm (`x ~`, `e ~`): an arm
+that is left and later selected again resumes, so a constant such as
+`clock <- null` would write only at the arm's first entry, and `sum + 1`
+read on its own would not fire when the arm comes back to a `sum` that
+has not changed.
 
 Now we can see our very verbose and inefficient `len` is now correct
 

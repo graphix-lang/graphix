@@ -51,13 +51,7 @@ let name = "world";
 text(&"Hello, [name]!")
 ```
 
-<!-- CR claude for claude: [doc-drift/low] "Only this specific text widget re-renders --
-the rest of the window is untouched" is not what happens. The graph update is
-fine-grained, but frame.rs rebuilds the whole window's `view()` on every redraw. This
-also contradicts ui/overview.md, which says the view is redrawn from the current widget
-values. Reword: only the computations that depend on `name` run and only this widget's
-value changes; the window is then redrawn. Found by reading; not run. (book-ui-b-03) -->
-The `text` widget holds a reference to the string expression `"Hello, [name]!"`. When `name` changes, only this specific text widget re-renders -- the rest of the window is untouched.
+The `text` widget holds a reference to the string expression `"Hello, [name]!"`. When `name` changes, only the computations that depend on it run and only this widget's value changes; the window is then redrawn from the current widget values.
 
 This is especially important for interactive widgets. A text input, for example, takes a `&string` for its current value and provides a callback to update it:
 

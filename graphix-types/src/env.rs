@@ -388,20 +388,15 @@ pub(crate) enum TypeName {
     Trait(TraitId),
 }
 
-/// True if scope `s` is `prefix` itself or a path descendant of it.
 /// Where a scope is, for a message: the root is the top level.
-// CR claude for claude: [readability/low] The doc line "True if scope `s` is `prefix`
-// itself or a path descendant of it" above this function belongs to scope_is_under
-// below, which is left undocumented. Move it there. This function also spells out
-// compact_str::CompactString and compact_str::format_compact!, which the file already
-// imports. Found by reading; not run. (t-env-03)
-fn in_scope(scope: &ModPath) -> compact_str::CompactString {
+fn in_scope(scope: &ModPath) -> CompactString {
     match &*scope.0 {
-        "/" | "" => compact_str::CompactString::const_new("at the top level"),
-        _ => compact_str::format_compact!("in scope {scope}"),
+        "/" | "" => CompactString::const_new("at the top level"),
+        _ => format_compact!("in scope {scope}"),
     }
 }
 
+/// True if scope `s` is `prefix` itself or a path descendant of it.
 pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
     if prefix == "/" || s == prefix {
         return true;
@@ -1562,7 +1557,7 @@ impl Env {
                     }
                     Visit::Import(..) => (),
                 });
-                for p in self.package_roots.into_iter() {
+                for p in self.package_roots.iter() {
                     if p.starts_with(part) {
                         res.push(ModPath(Path::root().append(p.as_str())));
                     }
@@ -2055,6 +2050,33 @@ impl Env {
     pub fn mark_facet(&mut self, id: BindId, rep: BindId) {
         if let Some(b) = self.by_id.get_mut(&id) {
             Arc::make_mut(b).facet = Some(Facet::Let(rep));
+        }
+    }
+
+    /// Take a destructuring `let`'s sibling that something writes out of
+    /// its group, its own facet: a write fires it alone. A representative
+    /// leaving passes the group to another sibling.
+    pub fn split_facet(&mut self, id: BindId) {
+        let Some(Facet::Let(rep)) = self.by_id.get(&id).and_then(|b| b.facet.clone())
+        else {
+            return;
+        };
+        self.mark_facet(id, id);
+        if rep != id {
+            return;
+        }
+        let mut rest: LPooled<Vec<BindId>> = self
+            .by_id
+            .iter()
+            .filter(|(o, b)| {
+                **o != id && matches!(b.facet, Some(Facet::Let(r)) if r == id)
+            })
+            .map(|(o, _)| *o)
+            .collect();
+        if let Some(&next) = rest.first() {
+            for o in rest.drain(..) {
+                self.mark_facet(o, next)
+            }
         }
     }
 

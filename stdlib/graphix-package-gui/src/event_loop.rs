@@ -6,7 +6,7 @@ use crate::{
     ToGui, convert,
     frame::{apply_messages, frame},
     render::{GpuState, WindowSurface},
-    types::SizeV,
+    types::WindowSizeV,
     widgets::{Message, MessageShell},
     window::{ResolvedWindow, TrackedWindow},
 };
@@ -121,7 +121,7 @@ struct GuiHandler<X: GXExt> {
     /// Proxy for the resize-burst render timer tasks.
     resize_proxy: EventLoopProxy<ToGui>,
     /// Channel into `resize_end_debounce`; carries every `Resized` size.
-    resize_end_tx: mpsc::UnboundedSender<(WindowId, SizeV)>,
+    resize_end_tx: mpsc::UnboundedSender<(WindowId, WindowSizeV)>,
     /// Scratch buffer for `iced`-emitted messages, drained each `about_to_wait`.
     messages: LPooled<Vec<Message>>,
     modifiers: ModifiersState,
@@ -329,7 +329,7 @@ impl<X: GXExt> GuiHandler<X> {
         }
         let theme = tw.iced_theme();
         let state = frame(
-            &mut tw.content.w,
+            &mut tw.props.content.w,
             tw.surface.logical_size(),
             &mut tw.cache,
             &mut tw.surface.renderer,
@@ -425,7 +425,7 @@ impl<X: GXExt> GuiHandler<X> {
             let mut handled = false;
             for tw in windows.values_mut() {
                 let mut shell = MessageShell::default();
-                if tw.content.w.on_message(msg, &mut shell) {
+                if tw.props.content.w.on_message(msg, &mut shell) {
                     tw.needs_redraw = true;
                 }
                 pending.extend(shell.out.drain(..));
@@ -476,8 +476,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     });
                 }
                 let logical = size.to_logical::<f32>(scale);
-                let _ = end_tx
-                    .send((window_id, SizeV(Size::new(logical.width, logical.height))));
+                let _ = end_tx.send((
+                    window_id,
+                    WindowSizeV(Size::new(logical.width, logical.height)),
+                ));
             }
             WindowEvent::RedrawRequested => {
                 if !tw.resize_render_timer_armed {
@@ -511,10 +513,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
             }
             ToGui::ResizeSettled(window_id, sz) => {
                 if let Some(tw) = self.window_mut(window_id) {
-                    if tw.size.t.as_ref() != Some(&sz) {
+                    if tw.props.size.t.as_ref() != Some(&sz) {
                         tw.last_set_size = Some(sz);
                         // through the reference, to what it names
-                        if let Err(e) = tw.size.set_deref(sz) {
+                        if let Err(e) = tw.props.size.set_deref(sz) {
                             error!(target: FAILURE_TARGET, "failed to set window size: {e:?}");
                         }
                     }
@@ -645,14 +647,14 @@ pub(crate) fn run<X: GXExt>(
 /// Debounces `Resized` events per window: fires one `ToGui::ResizeSettled`
 /// with the last size after `RESIZE_END_DEBOUNCE` of quiet.
 async fn resize_end_debounce(
-    mut rx: mpsc::UnboundedReceiver<(WindowId, SizeV)>,
+    mut rx: mpsc::UnboundedReceiver<(WindowId, WindowSizeV)>,
     proxy: EventLoopProxy<ToGui>,
 ) {
     use tokio::time::{Duration, Instant, sleep_until};
     let far = || Instant::now() + Duration::from_secs(86400);
     let timer = sleep_until(far());
     tokio::pin!(timer);
-    let mut pending: LPooled<AHashMap<WindowId, SizeV>> = LPooled::take();
+    let mut pending: LPooled<AHashMap<WindowId, WindowSizeV>> = LPooled::take();
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {

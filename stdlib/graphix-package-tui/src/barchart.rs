@@ -1,5 +1,5 @@
 use super::{
-    DirectionV, LineV, StyleV, TuiW, TuiWidget, compile_each, into_borrowed_line,
+    DirectionV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line, reconcile,
     validate::{Dim, Index},
 };
 use anyhow::{Context, Result};
@@ -27,7 +27,9 @@ graphix_rt::props! {
 }
 
 impl<X: GXExt> BarProps<X> {
-    fn build(&self) -> Bar<'_> {
+    /// The bar, its text value cut to `value_room` bytes: ratatui places
+    /// what does not fit inside the bar by byte length.
+    fn build(&self, value_room: u16) -> Bar<'_> {
         let mut bar = Bar::default().value(self.value.t.map_or(0, |v| v.0 as u64));
         if let Some(Some(LineV(l))) = &self.label.t {
             bar = bar.label(into_borrowed_line(l));
@@ -39,18 +41,7 @@ impl<X: GXExt> BarProps<X> {
             bar = bar.value_style(s.0);
         }
         if let Some(Some(tv)) = &self.text_value.t {
-            // CR claude for claude: [bug/medium] A horizontal chart whose full-length
-            // bar carries a non-ASCII text_value longer than the bar area crashes debug
-            // builds. ratatui's Bar::render_value_with_different_styles splits the text
-            // at a byte boundary past bar_length and computes `area.width as usize -
-            // first.len()`, which underflows. Release builds wrap and misplace the
-            // overflow part instead. For Direction::Horizontal, cut text_value at the
-            // last char boundary at or below the bar area's width in bytes: rect.width
-            // minus the widest bar label minus one margin column, as render_horizontal
-            // computes it. probe:
-            // design/review-2026-10-19/repro/tui-widgets-hbar-text-value.gx
-            // (tui-widgets-03)
-            bar = bar.text_value(tv.to_string());
+            bar = bar.text_value(&tv[..tv.floor_char_boundary(value_room as usize)]);
         }
         bar
     }
@@ -58,7 +49,7 @@ impl<X: GXExt> BarProps<X> {
 
 struct BarGroupW<X: GXExt> {
     label: Option<LineV>,
-    bars: Vec<BarProps<X>>,
+    bars: Vec<(Value, BarProps<X>)>,
 }
 
 impl<X: GXExt> BarGroupW<X> {
@@ -69,9 +60,12 @@ impl<X: GXExt> BarGroupW<X> {
             bars: Value,
             label: Option<LineV>,
         }
-        let Fields { bars, label } = v.cast_to().context("bargroup fields")?;
-        let bars = compile_each(bars, |b| async move { BarProps::compile(gx, &b).await })
-            .await?;
+        let Fields { bars: bars_v, label } = v.cast_to().context("bargroup fields")?;
+        let mut bars = Vec::new();
+        reconcile(&mut bars, bars_v.cast_to()?, |b| async move {
+            BarProps::compile(gx, &b).await
+        })
+        .await?;
         Ok(Self { label, bars })
     }
 }
@@ -94,7 +88,7 @@ pub(super) struct BarChartW<X: GXExt> {
     gx: GXHandle<X>,
     p: Props<X>,
     data_ref: Ref<X>,
-    data: Vec<BarGroupW<X>>,
+    data: Vec<(Value, BarGroupW<X>)>,
 }
 
 impl<X: GXExt> BarChartW<X> {
@@ -105,12 +99,11 @@ impl<X: GXExt> BarChartW<X> {
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(v).await?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     async fn set_data(&mut self, v: Value) -> Result<()> {
-        self.data = compile_each(v, |g| BarGroupW::compile(&self.gx, g)).await?;
-        Ok(())
+        reconcile(&mut self.data, v.cast_to()?, |g| BarGroupW::compile(&self.gx, g)).await
     }
 }
 
@@ -125,8 +118,8 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
         if self.data_ref.id == id {
             return Ok(Some(Box::pin(self.set_data(v.clone()))));
         }
-        for g in self.data.iter_mut() {
-            for b in &mut g.bars {
+        for (_, g) in self.data.iter_mut() {
+            for (_, b) in &mut g.bars {
                 b.update(id, v).context("bar")?;
             }
         }
@@ -166,10 +159,22 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
             Direction::Vertical => rect.width,
             Direction::Horizontal => rect.height,
         } as u32;
+        let value_room = match direction {
+            Direction::Vertical => u16::MAX,
+            Direction::Horizontal => {
+                let label = (self.data.iter().flat_map(|(_, g)| &g.bars))
+                    .filter_map(|(_, b)| {
+                        b.label.t.as_ref()?.as_ref().map(|l| l.0.width())
+                    })
+                    .max()
+                    .unwrap_or(0) as u16;
+                rect.width.saturating_sub(label).saturating_sub((label != 0) as u16)
+            }
+        };
         let mut used = 0u32;
-        'groups: for group in &self.data {
+        'groups: for (_, group) in &self.data {
             let mut bars: SmallVec<[Bar; 8]> = SmallVec::new();
-            for bar in &group.bars {
+            for (_, bar) in &group.bars {
                 let gap = if !bars.is_empty() {
                     bar_gap
                 } else if used > 0 {
@@ -185,7 +190,7 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
                     break 'groups;
                 }
                 used += need;
-                bars.push(bar.build());
+                bars.push(bar.build(value_room));
             }
             chart = chart.data(Self::group(group, &bars));
         }

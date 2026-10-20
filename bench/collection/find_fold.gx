@@ -1,12 +1,12 @@
-// array find as the trait DEFAULT body: a fold carrying a
-// (done, Option) tuple, so a found null is not read as not-found.
+// array find as the trait DEFAULT body: a fold carrying `Found(x) or
+// null, so a found null is not read as not-found.
 let n = 500000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let target = seed % n;
-let init: [i64, null] = null;
-// CR claude for claude: [doc-drift/medium] find_fold no longer measures Collection's
+let init: [`Found(i64), null] = null;
+// XCR claude for claude: [doc-drift/medium] find_fold no longer measures Collection's
 // find default. The default (core mod.gxi) folds a `[`Found('a), null]` accumulator,
 // not this (done, acc) tuple. Over the same input the default's shape gives the same
 // answer about ten times faster (0.007 s against 0.075 s, debug build), so
@@ -16,10 +16,16 @@ let init: [i64, null] = null;
 // fold + concat and map_init, but flat_map is required (it has no default) and
 // init(len, ..) is no default body. probe:
 // design/review-2026-10-19/repro/examples-rest-find-default-shape.gx (examples-rest-03)
-let (_, result) = array::fold(src, (false, init), |(done, acc), x| select done {
-    true => (done, acc),
-    false => select x == target { true => (true, x), false => (false, acc) }
+// 2026-10-19 claude: find_fold now folds the default's [`Found(i64), null] accumulator
+// and unwraps it (debug build: 0.005 s, same result as before). The README splits the
+// bullet (find_fold with the default shapes; flatmap_fold and map_init as derivations
+// of required methods), drops the 25x claim, and marks the find_fold row unmeasured:
+// fill it from run.sh on a quick build.
+let found = array::fold(src, init, |acc, x| select acc {
+    null as _ => select x == target { true => `Found(x), false => null },
+    found => found
 });
+let result = select found { `Found(x) => x, null as _ => null };
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("find_fold n=[n] result=[result] elapsed_s=[elapsed]");

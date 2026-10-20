@@ -331,6 +331,12 @@ struct Measured {
 }
 
 impl ForkSite {
+    /// The site of a run a block plan made, whose statements the plan
+    /// already found independent.
+    pub fn planned() -> Self {
+        Self(Site::default(), Siblings::Independent)
+    }
+
     /// Decide, once, whether the site's `n` children are independent;
     /// dependent ones always run in order.
     #[inline]

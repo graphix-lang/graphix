@@ -1269,7 +1269,7 @@ impl TVar {
     }
 
     /// Bind the open cell to ⊥ as a requirement; see
-    /// [`TCell::bottom_required`].
+    /// [`CellFact::BottomRequired`].
     pub(super) fn bind_bottom_required(&self) {
         self.bind(Type::Bottom);
         let cell = self.cell();
@@ -1286,16 +1286,7 @@ impl TVar {
         self.cell().read().facts.contains(CellFact::BottomFed)
     }
 
-    /// Record a ⊥ produced into the open cell; see [`TCell::bottom_fed`].
-    // CR claude for claude: [doc-drift/low] The doc links here, on mark_cycle_refused
-    // and bind_bottom_required, and on settle.rs TVar::settle point at
-    // TCell::bottom_fed, TCell::cycle_refused and TCell::bottom_required. Those fields
-    // are gone: they are now CellFact flags in TCell::facts. Point the links at
-    // CellFact::BottomFed, CellFact::CycleRefused and CellFact::BottomRequired.
-    // design/tvar_constraints.md has the same drift: TCell `typ` (now `binding`),
-    // `TCell::bottom_fed`, and `UnionParts::rigid_pair` (now rigid_apart, which also
-    // refuses a rigid cell beside a known member). Found by reading; not run.
-    // (t-tvar-03)
+    /// Record a ⊥ produced into the open cell; see [`CellFact::BottomFed`].
     pub(super) fn mark_bottom_fed(&self) {
         if graphix_dbg_bind() {
             eprintln!("BOTTOM-FED '{}({:x})", self.name, self.cell_addr());
@@ -1308,7 +1299,7 @@ impl TVar {
         c.facts |= CellFact::BottomFed;
     }
 
-    /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
+    /// Record an occurs-check refusal; see [`CellFact::CycleRefused`].
     pub(super) fn mark_cycle_refused(&self) {
         if graphix_dbg_bind() {
             eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
@@ -1423,7 +1414,7 @@ impl Type {
     pub(crate) fn singleton_holds(&self, env: &Env, commit: bool) -> Result<bool> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, commit)), &mut parts)?;
-        Ok(parts.known <= 1 && !parts.rigid_apart())
+        Ok(parts.known <= 1 && parts.rigid_apart().is_none())
     }
 
     /// Whether `OneNumber ⊇ self` holds as the type stands: at most one
@@ -1596,18 +1587,18 @@ impl Type {
     pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, false)), &mut parts)?;
-        // CR claude for claude: [readability/low] rigid_apart also holds for one
-        // declared variable beside a known member, so `'a: Number |x: 'a, b: bool| {
-        // let v = select b { true => x, false => 1 }; v * v }` is refused with "[i64,
-        // 'a] must be one type, but its type variables may differ", although only one
-        // type variable is involved. Have rigid_apart say which case it found, and word
-        // that case as "declared variable 'a may differ from the union's other
-        // members". probe: --check of that one-line program (not saved). (t-tvar-05)
-        if parts.rigid_apart() {
-            bail!(
+        match parts.rigid_apart() {
+            None => (),
+            Some(Apart::TwoRigid) => bail!(
                 "{} must be one type, but its type variables may differ",
                 self.resolve_tvars()
-            )
+            ),
+            Some(Apart::BesideKnown(tv)) => bail!(
+                "{} must be one type, but the declared variable '{} may differ from \
+                 its other members",
+                self.resolve_tvars(),
+                ShortName(&tv.name)
+            ),
         }
         parts.merge_open();
         match parts.narrowing() {
@@ -1919,7 +1910,7 @@ impl Type {
     /// each alternative of self that matches it, where containment against
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
-    // CR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
+    // XCR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
     // cell under an abstract type's parameters, which are invariant and compared
     // exactly by the run-time nominal test. An inferred `T(x)` arm over [T<i64>,
     // T<string>] narrows its predicate to T<[i64, string]>, a type no value carries, so
@@ -1930,6 +1921,11 @@ impl Type {
     // of unioning the cells, or make the inferred abstract predicate test the tag
     // alone. probe: design/review-2026-10-19/repro/c-pattern-abstract-union-params.gx
     // (c-pattern-02)
+    // 2026-10-19 claude: Fixed by its second option: an inferred abstract predicate
+    // tests the tag alone at run time (IsAFlags::MatchAbstract), and Reach covers each
+    // scrutinee member the atom's payload covers. Pin:
+    // lang::select::abstract_pattern_over_two_instantiations (T(x) over [T<i64>,
+    // T<string>] matches both and is exhaustive).
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
@@ -1993,6 +1989,12 @@ impl Type {
                 // the same way. probe:
                 // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-bind-two-insts.gx
                 // (x-typecheck-patterns-02)
+                // 2026-10-19 claude: c-pattern-02's fix resolves the reported behaviour: the
+                // inferred Box(b) arm tests the tag at run time, so it matches Box(true) and
+                // Box(3) (the probe prints ["box true", "box 3", "other"]), and b is [bool,
+                // i64]. The predicate still reads Box<[bool, i64]>; the remaining question is
+                // only whether to spell it as the Set of instantiations instead. Pin:
+                // lang::select::abstract_pattern_over_two_instantiations.
                 Type::union_exact(env, &p)?.contains(env, &Type::TVar(c.clone()))?;
             }
         }
@@ -2370,6 +2372,12 @@ enum Measure {
     Numbers,
 }
 
+/// Why a union's rigid member keeps it from being one type.
+enum Apart<'a> {
+    BesideKnown(&'a TVar),
+    TwoRigid,
+}
+
 /// A type read as a union ([`Type::union_parts`]): how many known members
 /// it has by its measure, the first of them, and its open cells.
 struct UnionParts {
@@ -2384,14 +2392,16 @@ impl UnionParts {
         Self { measure, known: 0, first: None, open: SmallVec::new() }
     }
 
-    /// Whether a rigid open member cannot be made one type with the
-    /// rest: beside a known member, or beside another rigid cell.
-    fn rigid_apart(&self) -> bool {
+    /// A rigid open member that cannot be made one type with the rest:
+    /// beside a known member, or beside another rigid cell.
+    fn rigid_apart(&self) -> Option<Apart<'_>> {
         let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
-        match rigid.next() {
-            None => false,
-            Some(_) if self.known > 0 => true,
-            Some(a) => rigid.any(|b| b.cell_addr() != a.cell_addr()),
+        let a = rigid.next()?;
+        match self.known > 0 {
+            true => Some(Apart::BesideKnown(a)),
+            false => {
+                rigid.any(|b| b.cell_addr() != a.cell_addr()).then_some(Apart::TwoRigid)
+            }
         }
     }
 

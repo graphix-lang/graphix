@@ -879,19 +879,8 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
-    /// Do two refs of one scope and name mean one definition, as far as
-    /// their cells prove? Filled cells by the definition's identity, two
-    /// empty ones alike; one of each may differ (a def's thrown types keep
-    /// their cells when they move into its scope), and a disagreement
-    /// only sends the pair to the expansion arm.
     /// Whether two references name one definition: two filled cells by
     /// the definition, two open ones by the written scope and name.
-    // CR claude for claude: [readability/low] The first of the two doc paragraphs above
-    // this function belongs to cells_agree, which has none: same_definition compares
-    // two open cells by scope and name, not "alike". It also says a filled/open pair
-    // "may differ", where both functions answer false. Move that paragraph to
-    // cells_agree and state the false; the two matches differ only in the (None, None)
-    // arm. Found by reading; not run. (t-typ-mod-05)
     pub(crate) fn same_definition(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
@@ -900,6 +889,10 @@ impl TypeRef {
         }
     }
 
+    /// Do two refs of one scope and name mean one definition, as far as
+    /// their cells prove? Filled cells by the definition's identity, two
+    /// open ones agree, and a filled cell beside an open one does not; a
+    /// disagreement only sends the pair to the expansion arm.
     pub(crate) fn cells_agree(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
@@ -2692,19 +2685,11 @@ impl Type {
     }
 
     /// Core's `ErrChain<payload>`.
-    // CR claude for claude: [bug/high] The synthetic `ErrChain` ref is an Open cell in
-    // the root scope, resolved later by name. A script-level `type ErrChain<'a> = ..`
-    // (or a `use` of another ErrChain) shadows core's, so every `?` raise and catch
-    // binder is typed with the user's type while the runtime builds core's struct.
-    // `e.0.ori + 1` is accepted and computes garbage. chain_error_type's Struct arm
-    // judges chain-ness through this ref too. Fix: pre-fill the cell with core's
-    // definition (take the env), or scope the ref at `/core`, and pin the shadowing
-    // case. probe: design/review-2026-10-19/repro/t-typ-mod-errchain-shadowed.gx
-    // (t-typ-mod-01)
     pub fn err_chain(payload: Type) -> Type {
+        static CORE: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["core"]));
         static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
         Type::Ref(Arc::new(TypeRef::synthetic(
-            ModPath::root(),
+            CORE.clone(),
             NAME.clone(),
             Arc::from_iter([payload]),
         )))
@@ -2811,20 +2796,6 @@ impl Type {
 
     pub fn boolean() -> Self {
         Self::Primitive(Typ::Bool.into())
-    }
-
-    /// `Bottom`, or a union whose every member (through bound tvars)
-    /// is. An unbound tvar is not provably bottom.
-    // CR claude for claude: [dead/low] Nothing calls all_bottom but itself, here or in
-    // ../netidx. Delete it. Found by reading; not run. (t-typ-mod-06)
-    pub fn all_bottom(&self) -> bool {
-        ensure_sufficient(|| {
-            self.with_deref(|t| match t {
-                Some(Type::Bottom) => true,
-                Some(Type::Set(s)) => s.iter().all(|t| t.all_bottom()),
-                _ => false,
-            })
-        })
     }
 
     /// A `Bottom` anywhere in the type's own structure (fn signatures

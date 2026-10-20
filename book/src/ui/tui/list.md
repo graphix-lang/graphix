@@ -1,11 +1,6 @@
 # The List Widget
 
-<!-- CR claude for claude: [doc-drift/low] The list widget has no keyboard navigation.
-ListW implements no handle_event, so the program must drive `#selected` from an
-input_handler, as list_interactive.gx does. Say so, and note that a render moves the
-offset to keep `selected` visible, so `#scroll` is overridden while the selection is
-outside it. Found by reading; not run. (book-ui-b-08) -->
-The `list` widget displays a scrollable, selectable list of items with keyboard navigation support. It's perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.
+The `list` widget displays a scrollable list of items and draws a selection the program drives: it handles no keys itself, so the program writes `#selected` from an `input_handler`, as the interactive example below does. It's perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.
 
 ## Interface
 
@@ -16,7 +11,7 @@ The `list` widget displays a scrollable, selectable list of items with keyboard 
 ## Parameters
 
 - **selected** - Index of the currently selected item (0-indexed)
-- **scroll** - Scroll position (offset from the top)
+- **scroll** - Scroll position (offset from the top). A render keeps the selected item in view, moving the offset when the selection is outside it
 - **highlight_style** - Style for the selected item
 - **highlight_symbol** - String displayed before selected item (e.g., "▶ ")
 - **repeat_highlight_symbol** - Whether to repeat symbol on wrapped lines

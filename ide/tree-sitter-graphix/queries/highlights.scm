@@ -126,6 +126,9 @@
 
 ; -- Variables ------------------------------------------------------
 (pattern_bind name: (identifier) @variable)
+(let_binding
+  pattern: (structure_pattern (pattern_bind name: (identifier) @function))
+  value: (lambda))
 (catch_stmt binding: (identifier) @variable)
 (reference (module_path (identifier) @variable))
 

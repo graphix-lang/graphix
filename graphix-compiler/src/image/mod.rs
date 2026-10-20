@@ -8,14 +8,6 @@ pub mod nodes;
 mod registration;
 
 pub use graphix_types::image::*;
-// named, not only globbed: a match pattern reads a name the glob does
-// not bring in as a catch-all binding
-// CR claude for claude: [dead/low] This explicit re-export is dead. The glob above
-// already re-exports the pub consts REF and DEF, and nothing in this repo or ../netidx
-// names image::REF or image::DEF, or matches on them. The comment above claims a glob
-// does not bring these names into a match pattern, which is not how Rust globs work.
-// Delete both. Found by reading; not run. (c-image-02)
-pub use graphix_types::image::{DEF, REF};
 pub use nodes::{NOT_IMAGED, decode_node, decode_nodes, encode_nodes};
 pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
 

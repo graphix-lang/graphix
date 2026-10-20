@@ -1514,6 +1514,16 @@ const NESTED_QUANTIFIER_ENV_CELL: &str = r#"{
     a * 2
 }"#;
 
+/// The same, through a lambda nested in the callback: the variable is
+/// reached through a binding the callback reaches, not its own type.
+const NESTED_QUANTIFIER_ENV_CELL_NESTED: &str = r#"{
+    let st = never();
+    let g = |x| { let k = |y| { st <- y; y }; k(x) };
+    let h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let (a, b) = h(g);
+    a * 2
+}"#;
+
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
   type G = F;
@@ -1586,6 +1596,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),
+        (NESTED_QUANTIFIER_ENV_CELL_NESTED, "not polymorphic"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -3290,3 +3301,19 @@ run!(instance_expands_caller_recursive_typedef, r#"{
     let a: T = [null];
     any(array::map([a], never<fn(x: T) -> i64>()), [7])
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(7)]); FuseExpect::Jit);
+
+// A declared variable beside a known member is named as the one that may
+// differ.
+run!(singleton_names_the_declared_variable, r#"{
+  let f = 'a: Number |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
+  f(1, true)
+}"#, refused("the declared variable 'a may differ from its other members"); FuseExpect::None);
+
+// A reference test under Any is refused at every place it meets one, the
+// second pair of one definition included.
+run!(ref_test_over_any_in_a_second_pair, r#"{
+  type Box<'a> = {v: 'a};
+  let s = "hi";
+  let x: (Box<Any>, Box<Any>) = ({v: 1}, {v: &s});
+  select x { (Box<i64>, Box<&i64>) as y => *(y.1.v) + 1, _ => 0 }
+}"#, refused("can't tell what the reference"); FuseExpect::None);

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -251,7 +251,7 @@ input_handler(
 <p><img src="./media/paragraph_scrollable.gif" alt="Scrollable Paragraph"></p>
 <h3 id="live-log-viewer"><a class="header" href="#live-log-viewer">Live Log Viewer</a></h3>
 <p>Display real-time updating content:</p>
-<pre><code class="language-graphix">use tui::{line, paragraph::paragraph};
+<pre><code class="language-graphix">use tui::{Size, line, block::block, paragraph::paragraph};
 use sys::time;
 
 // Self-contained: publish a simulated log entry every second, then
@@ -266,35 +266,30 @@ let messages = [
     "background job complete",
     "config reloaded",
 ];
-let log_source = "";
+let log_source: string = never();
 log_source &lt;- tick ~ "[n] [rand::pick(tick ~ messages)]";
 sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
 let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")$;
 
-// CR claude for claude: [bug/medium] `array::window` appends the newest entry at the
-// end, and the paragraph below keeps its default scroll of {x: 0, y: 0}. So a view H
-// lines tall shows entries 0..H forever, and once the log is taller than the terminal
-// (about 22 s at 24 lines) every new entry is out of sight. The page sells this as a
-// live log viewer. Fix: follow the tail, e.g. a `block` with `#size: &amp;mut size` and
-// `#scroll: &amp;{x: 0, y: max(0, array::len(log_entries) - size.height)}`, or keep the
-// newest entry first. probe:
-// design/review-2026-10-19/repro/book-ui-a-log-viewer-newest-hidden.gx (book-ui-a-03)
 log_entries &lt;- array::window(
     #n: 100,
     new_entry ~ log_entries,
     line(new_entry)
 );
 
-// CR claude for claude: [bug/medium] The paragraph draws from the top and new entries
-// are appended at the end, so once the screen is full the newest entries are never
-// visible. The initial `log_source = ""` is published too, which makes the first line
-// blank. Fix: `let log_source: string = never();`, and follow the tail with a block's
-// `#size` output: `#scroll: &amp;{x: 0, y: max(0, array::len(log_entries) - size.height)}`
-// and `#wrap: &amp;false`. probe:
-// design/review-2026-10-19/repro/examples-tui-log-viewer-tail.sh (examples-tui-03)
-paragraph(&amp;log_entries)
+// follow the tail: scroll so the newest entry is on the bottom line
+let size: Size = never();
+block(
+    #border: &amp;`None,
+    #size: &amp;mut size,
+    &amp;paragraph(
+        #wrap: &amp;false,
+        #scroll: &amp;{x: 0, y: max(0, array::len(log_entries) - size.height)},
+        &amp;log_entries
+    )
+)
 </code></pre>
 <p><img src="./media/paragraph_log_viewer.gif" alt="Log Viewer"></p>
 <h3 id="centered-message"><a class="header" href="#centered-message">Centered Message</a></h3>

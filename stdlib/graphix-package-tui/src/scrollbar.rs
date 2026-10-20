@@ -57,7 +57,7 @@ impl<X: GXExt> ScrollbarW<X> {
         let p = Props::compile(&gx, &v).await.context("scrollbar")?;
         let child = ChildW::compile(&gx, &v, "child").await.context("scrollbar")?;
         let size = SizeReport::compile(&gx, &v).await?;
-        Ok(Box::new(Self { gx, p, child, size }))
+        Ok(TuiW::new(Self { gx, p, child, size }))
     }
 }
 

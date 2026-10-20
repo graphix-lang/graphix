@@ -311,6 +311,8 @@ trace	recursive-activation-blocks-aug2026/02_tail_position_ride.gx
 trace	recursive-activation-blocks-aug2026/03_per_depth_builtin_state.gx
 trace	recursive-activation-blocks-aug2026/04_sibling_activation_trees.gx
 trace	recursive-activation-blocks-aug2026/05_forward_edge_callee_block.gx
+trace	ref-by-value-oct2026/00_ref_in_an_abstract.gx
+trace	ref-by-value-oct2026/01_ref_through_any.gx
 reject	ref-cast-sep2026/00_cast_of_a_reference.gx
 trace	ref-print-id-oct2026/00_interpolated_ref.gx
 reject	refparam-occurs-aug2026/00_flatmap_typedef_wedge.gx
@@ -369,6 +371,7 @@ trace	select-strict-rule-aug2026/01_starved_fold_arm.gx
 trace	select-strict-rule-aug2026/02_live_fold_two_cycle.gx
 trace	select-strict-rule-aug2026/03_filter_select_qop.gx
 trace	select-wake-rematch-sep2026/00_arm_local_counter.gx
+reject	seq-refusal-names-oct2026/00_refusal_in_a_seq_step.gx
 reject	set-eq-drops-cell-link-aug2026/00_list_fold_map_fn.gx
 trace	settle-order-jul2026/01_firstclass_hof_occurs_flap.gx
 trace	skipped-fn-arg-effect-aug2026/00_connect_in_discarded_fn_arg.gx

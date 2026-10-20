@@ -1,10 +1,15 @@
-use tui::browser::browser;
+use tui::{Size, block::block, browser::browser};
 
 let selected_path: [string, null] = never();
+let size: Size = never();
 
-browser(
-    #size: {width: 40, height: 10},
-    #selected_path: &mut selected_path,
-    // Start browsing from root
-    "/"
+block(
+    #border: &`None,
+    #size: &mut size,
+    &browser(
+        #size,
+        #selected_path: &mut selected_path,
+        // Start browsing from root
+        "/"
+    )
 )

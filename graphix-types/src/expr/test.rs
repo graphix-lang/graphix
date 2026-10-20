@@ -1468,16 +1468,10 @@ fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
     if needs { paren(child) } else { child }
 }
 
-/// Add the ExplicitParens a generated tree needs to reparse with the same
-/// shape.
 /// `e` with the written parens around operator expressions taken out, the
 /// trees the compiler builds without them (error messages, --expand,
 /// hover); a declaration or a lambda as an operand is written only in
 /// parens, so those stay.
-// CR claude for claude: [readability/low] The doc above starts with add_parens'
-// sentence ("Add the ExplicitParens a generated tree needs.."), so strip_parens reads
-// as if it adds parens, and add_parens has no doc. Move those two lines down to fn
-// add_parens. Found by reading; not run. (tests-expr-05)
 fn strip_parens(e: &Expr) -> Expr {
     use ExprKind::*;
     match &e.kind {
@@ -1501,6 +1495,8 @@ fn strip_parens(e: &Expr) -> Expr {
     }
 }
 
+/// Add the ExplicitParens a generated tree needs to reparse with the same
+/// shape.
 fn add_parens(mut e: Expr) -> Expr {
     if let ExprKind::BinOp { op, lhs, rhs } = &e.kind {
         let (op, prec) = (*op, op.precedence());

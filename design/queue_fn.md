@@ -1,6 +1,6 @@
 # `queuefn` — queued function invocation
 
-Status: built 2026-04-27 (per-cycle delta semantics 2026-04-29)
+Status: built; the sleep rule is open (core-aux-01).
 Pins: `stdlib/graphix-tests/src/lib_tests/core.rs` `queuefn_delta_per_cycle`, `queuefn_trigger_arg`,
 `queuefn_trigger_before_fn`
 
@@ -107,13 +107,17 @@ user asked for.
   `triomphe::Arc<Mutex<QueueState>>` shared with the `QueueFn` node.
 - The node owns a shared `fid` bind holding the current `f`, updated
   whenever `f` re-emits, so every live wrapper calls the latest `f`.
-- Per call site of the wrapper, `WrapperApply` allocates fresh arg
-  `BindId`s and builds `pred = genn::apply(reference(fid), arg_bids)`.
-  A push writes `#count` directly (the node's update is not re-entered
-  by a push); a pop calls `ctx.rt.set_var(arg_bid, v)` for each
-  recorded bind, so the call-site `pred` fires next cycle.
-- `#count` resolves the outer ByRef through `byref_chain` to its target
-  bind and writes through that.
+- Per call site of the wrapper, `WrapperApply` holds a
+  `genn::Callback::through` the `fid` binding: a call of `f` over one
+  fresh binding per argument of the site. An invocation with credit
+  delivers its fired arguments to those bindings this cycle
+  (`ExecCtx::deliver`), unless a release already delivered to them this
+  cycle: then it writes them with `set_var`, so the release runs first
+  and this call lands next cycle. A push writes `#count` directly (the
+  node's update is not re-entered by a push); a pop writes each recorded
+  bind with `ctx.rt.set_var`, so the site's call fires next cycle.
+- `#count` is written through `ExecCtx::write_target`: a place patches
+  its root (`patch_level`), a binding is set (`set_level`).
 <!-- CR claude for claude: [doc-drift/low] Stale. The wrapper holds a
 genn::Callback::through, not `pred` over an `Arc<[BindId]>`. `#count` is written through
 ExecCtx::write_target, not byref_chain. The same-cycle release rule (set_var when a
@@ -121,15 +125,19 @@ release delivers to the site's bindings) is missing. This bullet states as inten
 sleep reset that the wake-is-a-resume rule forbids. Rewrite the Implementation section
 from queuefn.rs once the sleep/reborn rule is settled, and drop the Status dates. Found
 by reading; not run. (core-aux-04) -->
-- `sleep` clears the queue and resets `pop_count` to 1 (the arm-rewake
-  restart). The wrapper's `sleep` and `delete` forward to its `pred`
-  and drop the site's queued entries, writing `#count` (a release to a
-  sleeping site would run nothing); the node's `delete` unrefs `fid`.
+<!-- 2026-10-19 claude: Implementation rewritten from queuefn.rs (Callback::through,
+write_target, the same-cycle release rule, ORDERED) and the Status dates dropped. The
+sleep bullet now describes the reset as built and names it open; rewrite it once
+core-aux-01/core-aux-02 are ruled, then delete this CR. -->
+- Sleep, as built: the node's `sleep` clears the queue and resets
+  `pop_count` to 1, and a wrapper site's `sleep` and `delete` drop the
+  site's queued entries, writing `#count`; the node's `delete` releases
+  `fid`. Whether a sleep should pause the queue instead, as `queue` and
+  `iterq` do, is open (core-aux-01, core-aux-02).
 - A bottom argument at a wrapper site bottoms that invocation: it is
   neither queued nor dispatched.
 - Containers: `QueueEntry.updates` and the per-cycle delta are
-  `LPooled<Vec<(BindId, Value)>>`; `arg_bids` is `Arc<[BindId]>`, set
-  once at wrapper construction. `std::sync::Arc` remains only where the
-  `InitFn` trait alias demands it.
+  `LPooled<Vec<(BindId, Value)>>`. `std::sync::Arc` remains only where
+  the `InitFn` trait alias demands it.
 - The builtin is `Effect::Async` (a pop lands on a later cycle), so it
-  never fuses.
+  never fuses, and `ORDERED`: two forked branches never both reach it.

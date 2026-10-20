@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-09628de6.js";
+            window.path_to_searchindex_js = "searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -193,14 +193,8 @@ const(2) ──&gt; + &lt;── const(2)
 <p>The semantics of simple examples like this aren’t noticibly different
 from a normal programming language. However a more complex example
 such as,</p>
-<!-- CR claude for claude: [doc-drift/low] This program prints `100null`, not `100`.
-`print` adds no newline, and the shell prints the program's value (print's null) after
-it. The `?` also prints "error raised by ? will not be caught" on the reader's first
-program. Make the last expression `x * 10` and use `$`. connect.md's `print(x)` examples
-have the same `null` suffix. probe:
-design/review-2026-10-19/repro/book-core-intro-print.gx (book-core-11) -->
-<pre><code class="language-graphix">let x: i64 = sys::net::subscribe("/foo")?;
-print(x * 10)
+<pre><code class="language-graphix">let x: i64 = sys::net::subscribe("/foo")$;
+x * 10
 </code></pre>
 <p>compiles to a graph like</p>
 <pre><code>                                  const(10)
@@ -208,13 +202,14 @@ print(x * 10)
                                       │
                                       ▼
                                          
-const("/foo") ──&gt; sys::net::subscribe ──&gt; * ──&gt; print
+const("/foo") ──&gt; sys::net::subscribe ──&gt; * ──&gt; output
                                          
 </code></pre>
 <p>Unlike the first example, the value of <code>sys::net::subscribe</code> isn’t a
 constant, it can change if the value published in netidx changes. If
 that happens the new value will flow through the graph and will be
-printed again. If the published value of “/foo” is initially 10, and
+printed again (the shell prints a program’s value each time it
+changes). If the published value of “/foo” is initially 10, and
 then the value of “/foo” changes to 5 then the program will print.</p>
 <pre><code>100
 50

@@ -55,7 +55,14 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    as under any written type, so `Box(`A(x))` and `Box(`B(y))` are
    two refutable arms that together cover `Box` (the literal pool
    reads the payload's heads). In `let` the payload must cover the
-   representation.
+   representation. A constructor pattern with no type test tests the
+   tag alone at run time: its payload compiles at parameters of its
+   own, so a literal in it never decides the arm's parameters, which
+   come from the scrutinee, and after the select narrows the arm the
+   payload's representation is narrowed against the scrutinee
+   member's (`StructPatternNode::narrow_payloads`), typing its binds.
+   Over `[Box<bool>, Box<i64>]`, `Box(b)` matches both with
+   `b: [bool, i64]` and covers both.
 3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
    → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
    `T({x.0 with a: 1})`.

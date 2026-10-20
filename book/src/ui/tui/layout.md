@@ -11,15 +11,7 @@ The `layout` widget arranges child widgets in horizontal or vertical layouts wit
 ## Parameters
 
 - **direction** - `Horizontal` or `Vertical` (default: `Vertical`)
-<!-- CR claude for claude: [doc-drift/medium] This bullet does not say what focus does.
-`LayoutW::handle_event` sends every event, keys and mouse alike, only to the focused
-child, which defaults to 0. An `input_handler` in any other child hears nothing, and a
-click over pane 2 goes to the focused pane. A new user who puts a handler in child 1
-without setting `#focused` gets silence. Fix: say so here (layout_nested_focus works
-only because it sets `#focused: &2` on the inner layout). Routing mouse events by
-position instead would be a separate design call. Found by reading; not run.
-(book-ui-a-02) -->
-- **focused** - Index of the currently focused child (0-indexed)
+- **focused** - Index of the currently focused child (0-indexed, the first when not set). Every event, keys and mouse alike, goes only to the focused child: an `input_handler` in another child hears nothing, and a click over another pane goes to the focused one
 - **flex** - How leftover space is distributed when children don't fill it: `Legacy`, `Start`, `End`, `Center`, `SpaceBetween`, `SpaceEvenly`, `SpaceAround`
 
 ## Constraint Types

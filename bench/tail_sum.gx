@@ -10,7 +10,7 @@ let rec sum_to = |n: i64, acc: i64| -> i64
 let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;
-let result = sum_to(n, seed);
+let result = #[native] sum_to(n, seed);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("tail_sum n=[n] result=[result] elapsed_s=[elapsed]");

@@ -4,7 +4,7 @@ use crate::expr::ExprId;
 use std::{
     fmt,
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed},
+    sync::atomic::{AtomicU64, Ordering::Relaxed},
 };
 use triomphe::Arc;
 
@@ -16,20 +16,8 @@ pub struct Boundary {
     parent: Option<BoundaryRef>,
     /// The last cycle the boundary was marked in.
     stamp: AtomicU64,
-    /// Holds the boundary dirty in every cycle while above zero: a node
-    /// inside it that must run again although nothing it reads arrives.
-    // CR claude for claude: [dead/low] Nothing calls BoundaryRef::hold or release in
-    // graphix or netidx, so `sticky` is always 0, yet `marked` loads it on every
-    // boundary check. Delete the field and both methods, and have `marked` compare the
-    // stamp only. Add the mechanism back with its first user and a pin if a retrying
-    // node ever needs it. Found by reading; not run. (x-prune-04)
-    // CR claude for claude: [dead/low] Nothing calls `hold`, `release` or
-    // `BoundaryRef::parent`, here or in ../netidx, and walk_pruning.md's As-built
-    // section says nothing needed sticky. `marked` still loads this counter on every
-    // check of an unstamped boundary, the skip path. Delete sticky, hold, release and
-    // parent, and let `marked` compare the stamp alone. Found by reading; not run.
-    // (c-prune-wake-04)
-    sticky: AtomicU32,
+    /// The last cycle a walk reached the boundary, skipped or not.
+    visited: AtomicU64,
 }
 
 /// A chain of parents is as long as a recursion is deep, so the last owner
@@ -55,12 +43,8 @@ impl BoundaryRef {
         Self(Arc::new(Boundary {
             parent,
             stamp: AtomicU64::new(u64::MAX),
-            sticky: AtomicU32::new(0),
+            visited: AtomicU64::new(u64::MAX),
         }))
-    }
-
-    pub fn parent(&self) -> Option<&BoundaryRef> {
-        self.0.parent.as_ref()
     }
 
     /// Mark this boundary and its ancestors in `cycle`, up to the first one
@@ -79,18 +63,19 @@ impl BoundaryRef {
         }
     }
 
-    /// Whether the boundary was marked in `cycle` or is held sticky.
+    /// Whether the boundary was marked in `cycle`.
     pub fn marked(&self, cycle: u64) -> bool {
-        self.0.stamp.load(Relaxed) == cycle || self.0.sticky.load(Relaxed) > 0
+        self.0.stamp.load(Relaxed) == cycle
     }
 
-    /// Hold the boundary dirty until a matching [`Self::release`].
-    pub fn hold(&self) {
-        self.0.sticky.fetch_add(1, Relaxed);
+    /// Record that a walk reached the boundary in `cycle`.
+    pub fn visit(&self, cycle: u64) {
+        self.0.visited.store(cycle, Relaxed)
     }
 
-    pub fn release(&self) {
-        self.0.sticky.fetch_sub(1, Relaxed);
+    /// Whether a walk reached the boundary in `cycle`.
+    pub fn visited(&self, cycle: u64) -> bool {
+        self.0.visited.load(Relaxed) == cycle
     }
 }
 

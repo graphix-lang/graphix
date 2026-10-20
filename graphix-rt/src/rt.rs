@@ -1,4 +1,5 @@
 use crate::GXExt;
+use ahash::AHashMap;
 use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
 use graphix_compiler::{
@@ -49,11 +50,56 @@ pub(super) enum Via {
 /// FIFO.
 #[derive(Debug)]
 pub(super) struct Waiting<T> {
-    /// Each variable's writes, oldest first; nearly always one, inline.
-    by_id: IntMap<BindId, SmallVec<[(T, Via); 1]>>,
+    by_id: IntMap<BindId, Fifo<T>>,
     /// The variables with writes waiting, in the order they began to.
     ids: VecDeque<BindId>,
     taken: IntSet<BindId>,
+}
+
+/// One variable's writes, oldest first; nearly always one, inline.
+#[derive(Debug)]
+struct Fifo<T> {
+    /// The waiting writes are `q[head..]`, every one `Some`; the taken
+    /// ones before them are `None` until they are half of `q`.
+    q: SmallVec<[Option<(T, Via)>; 1]>,
+    head: usize,
+}
+
+impl<T> Default for Fifo<T> {
+    fn default() -> Self {
+        Self { q: SmallVec::new(), head: 0 }
+    }
+}
+
+impl<T> Fifo<T> {
+    fn is_empty(&self) -> bool {
+        self.head == self.q.len()
+    }
+
+    fn push(&mut self, w: (T, Via)) {
+        self.q.push(Some(w))
+    }
+
+    fn front(&self) -> Option<&(T, Via)> {
+        self.q.get(self.head).and_then(Option::as_ref)
+    }
+
+    fn back_mut(&mut self) -> Option<&mut (T, Via)> {
+        match self.is_empty() {
+            true => None,
+            false => self.q.last_mut().and_then(Option::as_mut),
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<(T, Via)> {
+        let w = self.q.get_mut(self.head)?.take();
+        self.head += 1;
+        if self.head * 2 >= self.q.len() {
+            self.q.drain(..self.head);
+            self.head = 0;
+        }
+        w
+    }
 }
 
 impl<T> Default for Waiting<T> {
@@ -79,7 +125,7 @@ impl<T> Waiting<T> {
         t: T,
         replaces: impl FnOnce(&T) -> bool,
     ) {
-        match self.by_id.get_mut(&id).and_then(|q| q.last_mut()) {
+        match self.by_id.get_mut(&id).and_then(|q| q.back_mut()) {
             Some((last, Via::Level)) if replaces(last) => *last = t,
             _ => self.push(id, t, Via::Level),
         }
@@ -101,13 +147,19 @@ impl<T> Waiting<T> {
 
     fn pop(&mut self, id: &BindId) -> (T, Via) {
         let q = self.by_id.get_mut(id).expect("a waiting variable");
-        // CR claude for claude: [perf/medium] `remove(0)` shifts the whole FIFO, and a
+        // XCR claude for claude: [perf/medium] `remove(0)` shifts the whole FIFO, and a
         // variable drains one write per cycle, so n writes queued on one variable cost
         // O(n^2). range(0, n) queues n at once: 40000 takes 2.2 s, 80000 7.8 s, 160000
         // 32 s. Fix: hold each variable's writes in a VecDeque (take only reads the
         // front), or in a SmallVec with a head index. probe:
         // design/review-2026-10-19/repro/rt-waiting-fifo-quadratic.sh (rt-04)
-        // CR claude for claude: [perf/high] remove(0) shifts the whole queue, so
+        // 2026-10-19 claude: Each variable's waiting writes are a Fifo (rt.rs): an
+        // inline SmallVec of Option slots with a head index, compacted once the taken
+        // half; pop is O(1) amortized. Measured with the dev binary over this repro
+        // shape: range(0, n) 20000/40000/80000 takes 0.40/0.72/1.22 s (was 2.2 s at
+        // 40000, 7.8 s at 80000). No timing test: a perf pin would be a flaky
+        // wall-clock bound.
+        // XCR claude for claude: [perf/high] remove(0) shifts the whole queue, so
         // draining a variable with n waiting writes costs O(n^2). array::iter and
         // map::iter queue every element on one variable (core Iter::update calls
         // set_var per element), so iterating 80000 elements takes 9.5 s, against 1.3 s
@@ -116,7 +168,12 @@ impl<T> Waiting<T> {
         // VecDeque once a second write queues, or keep a head index and compact past
         // half. probe: design/review-2026-10-19/repro/x-perf-runtime-iter-quadratic.sh
         // (x-perf-runtime-01)
-        let r = q.remove(0);
+        // 2026-10-19 claude: Each variable's waiting writes are a Fifo (rt.rs): an
+        // inline SmallVec of Option slots with a head index, compacted once the taken
+        // half; pop is O(1) amortized. Measured with the dev binary: range(0, n)
+        // 20000/40000/80000 takes 0.40/0.72/1.22 s (was 2.2 s at 40000, 7.8 s at
+        // 80000). No timing test: a perf pin would be a flaky wall-clock bound.
+        let r = q.pop_front().expect("a waiting write");
         if q.is_empty() {
             self.by_id.remove(id);
         }
@@ -128,7 +185,7 @@ impl<T> Waiting<T> {
     pub(super) fn take(&mut self, out: &mut Vec<(BindId, T, Via)>) {
         for _ in 0..self.ids.len() {
             let id = self.ids.pop_front().expect("a waiting variable");
-            let Some((_, via)) = self.by_id.get(&id).and_then(|q| q.first()) else {
+            let Some((_, via)) = self.by_id.get(&id).and_then(|q| q.front()) else {
                 continue;
             };
             if !self.taken.contains(&id) {
@@ -138,7 +195,7 @@ impl<T> Waiting<T> {
                         // a member whose writes were forgotten is not waited for
                         let first = |m: &BindId| {
                             !self.taken.contains(m)
-                                && self.by_id.get(m).and_then(|q| q.first()).is_none_or(
+                                && self.by_id.get(m).and_then(|q| q.front()).is_none_or(
                                     |(_, v)| matches!(v, Via::Set(s) if Arc::ptr_eq(s, &members)),
                                 )
                         };
@@ -168,6 +225,77 @@ impl<T> Waiting<T> {
     }
 }
 
+/// The most readers a variable keeps in a list before it hashes them.
+const FEW_READERS: usize = 8;
+
+/// A variable's readers and how many times each reads it: a list while
+/// few, hashed past that, so a variable every slot of a collection reads
+/// registers each in O(1).
+#[derive(Debug)]
+pub(super) enum Readers {
+    Few(SmallVec<[(Reader, u32); 1]>),
+    Many(AHashMap<Reader, u32>),
+}
+
+impl Default for Readers {
+    fn default() -> Self {
+        Self::Few(SmallVec::new())
+    }
+}
+
+impl Readers {
+    fn add(&mut self, r: Reader) {
+        match self {
+            Self::Few(few) => match few.iter().position(|(e, _)| *e == r) {
+                Some(i) => few[i].1 += 1,
+                None if few.len() < FEW_READERS => few.push((r, 1)),
+                None => {
+                    let mut many: AHashMap<Reader, u32> = few.drain(..).collect();
+                    many.insert(r, 1);
+                    *self = Self::Many(many)
+                }
+            },
+            Self::Many(many) => *many.entry(r).or_insert(0) += 1,
+        }
+    }
+
+    /// Drop one read by `r`; false when `r` reads nothing here.
+    fn remove(&mut self, r: &Reader) -> bool {
+        match self {
+            Self::Few(few) => {
+                let Some(i) = few.iter().position(|(e, _)| e == r) else { return false };
+                few[i].1 -= 1;
+                if few[i].1 == 0 {
+                    few.swap_remove(i);
+                }
+            }
+            Self::Many(many) => {
+                let Some(n) = many.get_mut(r) else { return false };
+                *n -= 1;
+                if *n == 0 {
+                    many.remove(r);
+                }
+            }
+        }
+        true
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Few(few) => few.is_empty(),
+            Self::Many(many) => many.is_empty(),
+        }
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&Reader, u32)> {
+        let (few, many) = match self {
+            Self::Few(few) => (Some(few.iter().map(|(r, n)| (r, *n))), None),
+            Self::Many(many) => (None, Some(many.iter().map(|(r, n)| (r, *n)))),
+        };
+        few.into_iter().flatten().chain(many.into_iter().flatten())
+    }
+}
+
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
     /// The (production, cycle-stamp) of every bound variable's last
@@ -178,7 +306,7 @@ pub struct GXRt<X: GXExt> {
     pub(super) cycle: u64,
     /// Each variable's readers (the root expression and the boundary
     /// around the read) and how many times each reads it.
-    pub(super) by_ref: IntMap<BindId, SmallVec<[(Reader, u32); 1]>>,
+    pub(super) by_ref: IntMap<BindId, Readers>,
     pub(super) var_updates: Waiting<VarUpdate>,
     /// The place each place-reference cell stands for (`Rt::set_ref_path`).
     pub(super) ref_paths: IntMap<BindId, (BindId, Path)>,
@@ -303,7 +431,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         }
     }
 
-    // CR claude for claude: [perf/medium] ref_var and unref_var search the id's reader
+    // XCR claude for claude: [perf/medium] ref_var and unref_var search the id's reader
     // Vec linearly. With pruning a Reader includes the boundary, so the N slots of a
     // map whose callback reads one outer variable are N distinct entries. Building or
     // deleting those slots is then O(N^2): `array::map(xs, |x| x + y)` over
@@ -311,7 +439,13 @@ impl<X: GXExt> Rt for GXRt<X> {
     // s for `x + 1`. Fix: hold each id's readers in a map keyed by Reader (an IndexMap
     // if mark order matters) so registration is O(1). probe:
     // design/review-2026-10-19/repro/x-prune-reader-scan-quadratic.sh (x-prune-02)
-    // CR claude for claude: [perf/medium] A variable's readers are a SmallVec that
+    // 2026-10-19 claude: A variable's readers are rt::Readers: a list while at most
+    // FEW_READERS (8), an AHashMap<Reader, u32> past that, so ref_var/unref_var are
+    // O(1) for the many-slot case. Measured with the dev binary, --no-fusion, a map
+    // over n slots reading an outer t vs reading only x: n=32000 1.47 vs 1.49 s, 64000
+    // 3.90 vs 2.94 s, 128000 8.59 vs 9.07 s (was 18.0 vs 3.5 s at 128000). No timing
+    // test: a wall-clock bound would be flaky.
+    // XCR claude for claude: [perf/medium] A variable's readers are a SmallVec that
     // ref_var and unref_var scan linearly. Each slot instance of a collection callback
     // is a boundary of its own, so a variable every slot reads has N distinct readers,
     // and registering them through ExecCtx::apply_deferred costs O(N^2), as does
@@ -323,11 +457,17 @@ impl<X: GXExt> Rt for GXRt<X> {
     // apply_deferred's count in one call. probe:
     // design/review-2026-10-19/repro/c-lib-readers-quadratic.sh Also reported as
     // (rt-05). (c-lib-01)
+    // 2026-10-19 claude: Fixed with x-prune-02: readers are rt::Readers, a list up to
+    // 8 then an AHashMap<Reader, u32>; registering N slot readers is O(N) (128000
+    // slots reading an outer t: 8.59 s vs 9.07 s reading only x, was 18.0 vs 3.5 s).
+    // Passing apply_deferred's count in one call needs the Rt trait in
+    // graphix-compiler and is not done. No timing test: a wall-clock bound would be
+    // flaky.
     fn ref_var(&mut self, id: BindId, ref_by: Reader) {
         if dbg_vars() {
             eprintln!("REF_VAR {id:?} by {ref_by:?}");
         }
-        // CR claude for claude: [perf/medium] Since walk pruning, a Reader names its
+        // XCR claude for claude: [perf/medium] Since walk pruning, a Reader names its
         // boundary, so every collection slot, activation or statement reading one
         // variable is a reader of its own. This list grows with them, and both this
         // `find` and unref_var's `position` are linear. Registering (or deleting) N
@@ -339,8 +479,13 @@ impl<X: GXExt> Rt for GXRt<X> {
         // each distinct root once rather than once per reader. probe:
         // design/review-2026-10-19/repro/c-prune-wake-shared-reader-quadratic.sh
         // (c-prune-wake-01)
+        // 2026-10-19 claude: Fixed with x-prune-02: readers are rt::Readers, a list up
+        // to 8 then an AHashMap<Reader, u32>; 128000 slots reading t start in 8.59 s vs
+        // 9.07 s for x alone (was 18.0 vs 3.5 s). Scheduling each distinct root once in
+        // wake_readers/notify_set is not done: that is x-perf-runtime-04's open
+        // question (for eric). No timing test: a wall-clock bound would be flaky.
         let readers = self.by_ref.entry(id).or_default();
-        // CR claude for claude: [perf/medium] This linear search, and unref_var's
+        // XCR claude for claude: [perf/medium] This linear search, and unref_var's
         // position search, made registration quadratic once a Reader carried its
         // boundary. Every collection slot and activation is a boundary, so a variable
         // read inside n slots has n entries, and each slot's registration scans them
@@ -352,10 +497,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         // stops calling it once per counted reference. probe:
         // design/review-2026-10-19/repro/x-perf-runtime-ref-var-quadratic.sh
         // (x-perf-runtime-03)
-        match readers.iter_mut().find(|(e, _)| *e == ref_by) {
-            Some((_, n)) => *n += 1,
-            None => readers.push((ref_by, 1)),
-        }
+        // 2026-10-19 claude: Fixed with x-prune-02: readers are rt::Readers, a list up
+        // to 8 then an AHashMap<Reader, u32>, so registration is O(1) per reader. A
+        // counted ref_var needs the Rt trait in graphix-compiler and is not done. No
+        // timing test: a wall-clock bound would be flaky.
+        readers.add(ref_by)
     }
 
     fn readers(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
@@ -368,25 +514,17 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
         }
-        let readers = self.by_ref.get_mut(&id);
-        let i = readers.as_ref().and_then(|r| r.iter().position(|(e, _)| *e == ref_by));
+        let Some(readers) = self.by_ref.get_mut(&id) else {
+            debug_assert!(false, "unref_var of an unregistered {id:?} by {ref_by:?}");
+            return;
+        };
+        let removed = readers.remove(&ref_by);
         debug_assert!(
-            i.is_some(),
-            "unref_var of an unregistered {id:?} by {ref_by:?}, registered by {:?}",
-            readers
-                .as_ref()
-                .map(|r| r.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>())
+            removed,
+            "unref_var of an unregistered {id:?} by {ref_by:?}, registered by {readers:?}"
         );
-        if let Some(readers) = readers {
-            if let Some(i) = i {
-                readers[i].1 -= 1;
-                if readers[i].1 == 0 {
-                    readers.swap_remove(i);
-                }
-            }
-            if readers.is_empty() {
-                self.by_ref.remove(&id);
-            }
+        if readers.is_empty() {
+            self.by_ref.remove(&id);
         }
     }
 
@@ -438,7 +576,7 @@ impl<X: GXExt> Rt for GXRt<X> {
             eprintln!("NOTIFY_SET {id:?} -> {:?}", self.by_ref.get(&id));
         }
         if let Some(refed) = self.by_ref.get(&id) {
-            for (r, _) in refed {
+            for (r, _) in refed.iter() {
                 self.updated.entry(r.root).or_default();
             }
         }

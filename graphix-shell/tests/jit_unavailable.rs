@@ -3,30 +3,25 @@
 //! position. The arena size is process-wide, so each program runs in a
 //! child.
 
-use std::{env, fs, process::Command};
+mod common;
+use common::{Ran, graphix};
 
-fn run(program: &str, i: usize) -> (String, String) {
-    let path =
-        env::temp_dir().join(format!("jit_unavailable_{}_{i}.gx", std::process::id()));
-    fs::write(&path, program).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
-        .arg("--no-cache")
-        .arg(&path)
-        .env("GRAPHIX_JIT_ARENA", "1000000000000000")
-        .output()
-        .unwrap();
-    let _ = fs::remove_file(&path);
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    (stdout, String::from_utf8_lossy(&out.stderr).into_owned())
+fn run(program: &str) -> Ran {
+    let dir = tempfile::tempdir().expect("tempdir");
+    graphix(
+        dir.path(),
+        program,
+        &["--no-cache"],
+        &[("GRAPHIX_JIT_ARENA", "1000000000000000")],
+    )
 }
 
 #[test]
 fn native_names_the_missing_jit() {
     let exit = "sys::exit(sys::time::after_idle(duration:100.ms, 0));\n";
-    let (stdout, _) = run(&format!("{exit}let f = |x: i64| x * 2 + 1;\nf(20)\n"), 0);
-    assert_eq!(stdout.lines().last(), Some("41"));
-    let (_, stderr) =
-        run(&format!("{exit}let f = |x: i64| x * 2 + 1;\n#[native] f(20)\n"), 1);
-    assert!(stderr.contains("#[native] cannot hold"), "{stderr}");
-    assert!(stderr.contains("fusion is unavailable"), "{stderr}");
+    let ran = run(&format!("{exit}let f = |x: i64| x * 2 + 1;\nf(20)\n"));
+    assert_eq!(ran.stdout.lines().last(), Some("41"));
+    let ran = run(&format!("{exit}let f = |x: i64| x * 2 + 1;\n#[native] f(20)\n"));
+    assert!(ran.stderr.contains("#[native] cannot hold"), "{}", ran.stderr);
+    assert!(ran.stderr.contains("fusion is unavailable"), "{}", ran.stderr);
 }

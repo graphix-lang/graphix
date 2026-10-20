@@ -267,7 +267,8 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
             scope,
             typ,
             names,
-            Function::Own(BindId::new()),
+            BindId::new(),
+            Function::Own,
             top_id,
         )
     }
@@ -282,7 +283,7 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         fid: BindId,
         top_id: ExprId,
     ) -> Result<Self> {
-        Self::through_binding(ctx, scope, typ, names, Function::Shared(fid), top_id)
+        Self::through_binding(ctx, scope, typ, names, fid, Function::Shared, top_id)
     }
 
     /// [`Self::new`] of the function value `f`.
@@ -304,21 +305,14 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         scope: &Scope,
         typ: &Arc<FnType>,
         names: &[&str],
-        function: Function,
+        fid: BindId,
+        holding: fn(BindId) -> Function,
         top_id: ExprId,
     ) -> Result<Self> {
         let (args, nodes) = Self::bind_args(ctx, scope, typ, names, top_id)?;
-        // CR claude for claude: [structure/low] through_binding accepts any Function
-        // and panics on Function::Value, so the signature allows the one state it
-        // cannot handle. Take `fid: BindId` here and let new/through wrap it in
-        // Own/Shared, which removes the unreachable!. Found by reading; not run.
-        // (c-pattern-08)
-        let (Function::Own(fid) | Function::Shared(fid)) = function else {
-            unreachable!("a binding")
-        };
         let fnode = reference(ctx, fid, Type::Fn(typ.clone()), top_id);
         let call = apply(fnode, scope.clone(), nodes, typ, top_id)?;
-        Ok(Self { call, function, args })
+        Ok(Self { call, function: holding(fid), args })
     }
 
     fn bind_args(

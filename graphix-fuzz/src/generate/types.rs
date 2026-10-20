@@ -237,6 +237,14 @@ impl Label {
 // member, and let Results sometimes reach a let or typed param before being consumed.
 // probe: design/review-2026-10-19/repro/fuzz-gen-a-composite-union.gx (a valid such
 // program; 0 Result-typed lets in 1000 generated programs) (fuzz-gen-a-02)
+// 2026-10-19 claude: Partly addressed: funcs.rs gen_shape_template now binds a union of
+// runtime forms (composite kinds, string beside a bare variant, i64 beside f64) at
+// annotated lets and reads it with one type-test arm per member (kind_union, with
+// fuzz-gen-b-01), and binds Results to a let and passes an annotated Result to a typed
+// parameter (result_lets); audit_bug_shapes_reachable pins both. Still open: a Union
+// member of GenType that flows through the vocabulary (stored, passed between generated
+// functions, read far from where it was built), so the opaque two-word kernel ABI meets
+// a union that is not consumed in place.
 pub enum GenType {
     Num(NumTy),
     Bool,
@@ -387,13 +395,7 @@ impl GenType {
     }
 
     /// A value of this type prints the same in every engine and session:
-    /// no function and no reference (a reference prints its session id).
-    // CR claude for claude: [doc-drift/low] The doc says a reference prints its session
-    // id. It prints `&ref`, the same in every engine and session. So observe()
-    // needlessly skips the `(r, other)` and `[r, r]` bindings that gen_ref_stmts makes,
-    // and the data beside the reference is never printed. Treat Ref as printable when
-    // its inner type is, and leave functions as the only exclusion. probe:
-    // design/review-2026-10-19/repro/fuzz-gen-b-ref-prints.gx (fuzz-gen-b-08)
+    /// no function (a reference prints `&ref`).
     pub(super) fn printable(&self) -> bool {
         match self {
             GenType::Num(_)
@@ -411,8 +413,9 @@ impl GenType {
             GenType::Array(e)
             | GenType::List(e)
             | GenType::Map { val: e, .. }
-            | GenType::Nullable(e) => e.printable(),
-            GenType::Ref { .. } | GenType::Fn { .. } => false,
+            | GenType::Nullable(e)
+            | GenType::Ref { inner: e, .. } => e.printable(),
+            GenType::Fn { .. } => false,
         }
     }
 
@@ -560,7 +563,7 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Variant(tags)
 }
 
-// CR claude for claude: [test-gap/medium] No generator draws a union of different
+// XCR claude for claude: [test-gap/medium] No generator draws a union of different
 // composite kinds (array, tuple, List, struct, variant, string beside a bare variant)
 // or a type-test arm over one. The only unions are Nullable(scalar), tag unions and the
 // two shape templates, so the kind-marker runtime forms (rep.rs, Type::rep_collision)
@@ -569,6 +572,12 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
 // arm per member, as in the probe. probe:
 // design/review-2026-10-19/repro/fuzz-gen-b-kind-union-gap.sh (0 composite type tests
 // in 6000 programs); fuzz-gen-b-kind-union-probe.gx agrees and fuses. (fuzz-gen-b-01)
+// 2026-10-19 claude: funcs.rs gen_shape_template now draws kind_union: a union of two
+// to nine members of distinct runtime forms (Array, tuple, List, struct, payload and
+// bare variants, string, i64, f64) annotated at two lets, read by one type-test arm per
+// member, compared with == and used as map keys. Pinned by the
+// audit_bug_shapes_reachable stat (union of runtime forms); generated samples agree
+// under check.
 pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);

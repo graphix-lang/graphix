@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 const SNAP_THRESHOLD: f32 = 20.0;
 /// Zoom factor per scroll line.
 const ZOOM_FACTOR: f64 = 1.1;
+/// The narrowest view, in units of f64's resolution at the view's
+/// magnitude: room for its ticks to differ.
+const ZOOM_ULPS: f64 = 4096.0 * f64::EPSILON;
 /// Two clicks this close in time and place are a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// A press released within this many pixels of where it went down is a
@@ -57,7 +60,9 @@ pub struct ChartState {
     pub yaw_offset: f64,
     pub pitch_offset: f64,
     pub scale_factor: f64,
-    pub snap_point: Option<SnapPoint>,
+    /// The point under the cursor at its last move, as (dataset, index):
+    /// the tooltip is redrawn when it changes.
+    hover: Option<(usize, usize)>,
     drag: Option<Drag>,
     press: Option<Point>,
     last_click: Option<(Point, Instant)>,
@@ -72,7 +77,7 @@ impl Default for ChartState {
             yaw_offset: 0.0,
             pitch_offset: 0.0,
             scale_factor: 1.0,
-            snap_point: None,
+            hover: None,
             drag: None,
             press: None,
             last_click: None,
@@ -134,7 +139,7 @@ impl ChartState {
         if self.owner != Some((chart.id, mode)) {
             self.owner = Some((chart.id, mode));
             self.reset_view();
-            self.snap_point = None;
+            self.hover = None;
             self.drag = None;
             self.press = None;
             self.last_click = None;
@@ -142,7 +147,7 @@ impl ChartState {
         match event {
             Event::Mouse(ME::CursorMoved { .. }) => {
                 let Some(local) = cursor.land().position_from(bounds.position()) else {
-                    return self.snap_point.take().map(|_| Action::request_redraw());
+                    return self.hover.take().map(|_| Action::request_redraw());
                 };
                 if let Some(d) = &mut self.drag {
                     if local == d.position {
@@ -159,15 +164,9 @@ impl ChartState {
                         Action::capture()
                     });
                 }
-                let snap = chart.plot_info.get().and_then(|info| {
-                    if mode == ChartMode::ThreeD {
-                        None
-                    } else {
-                        find_nearest_point(chart, &info, local)
-                    }
-                });
-                if snap != self.snap_point {
-                    self.snap_point = snap;
+                let hover = nearest(chart, local).map(|h| (h.ds, h.at));
+                if hover != self.hover {
+                    self.hover = hover;
                     Some(Action::request_redraw())
                 } else {
                     None
@@ -235,10 +234,26 @@ impl ChartState {
                 dragged.then(|| Action::request_redraw().and_capture())
             }
             Event::Mouse(ME::CursorLeft) => {
-                self.snap_point.take().map(|_| Action::request_redraw())
+                self.hover.take().map(|_| Action::request_redraw())
             }
             _ => None,
         }
+    }
+
+    /// The tooltip to draw over `chart` for the cursor where it is now,
+    /// against the plot as last drawn: none until this state has taken
+    /// an event on the chart.
+    pub(crate) fn tooltip<X: GXExt>(
+        &self,
+        chart: &ChartW<X>,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<SnapPoint> {
+        if !self.owns(chart) {
+            return None;
+        }
+        let local = cursor.land().position_from(bounds.position())?;
+        describe(chart, nearest(chart, local)?)
     }
 
     /// Pan by the cursor's travel `(dx, dy)` since the drag began; a bar
@@ -281,27 +296,23 @@ impl ChartState {
         if info.rect.width <= 0.0 || info.rect.height <= 0.0 {
             return;
         }
-        let zoom = |r: (f64, f64), t: f64| {
+        let zoom = |r: (f64, f64), t: f64, least: f64| {
             let at = r.0 + t * (r.1 - r.0);
             let span = (r.1 - r.0) * factor;
             checked_range((at - t * span, at + (1.0 - t) * span))
-                // CR claude for claude: [bug/medium] This floor is relative to the
-                // axis' magnitude and is seven orders above f64's resolution. A time
-                // series' x is ms since the epoch (~1.8e12), so no view can be narrower
-                // than about 3.8 s: a 1.1 s view of one second of data refuses its
-                // first wheel-in. An x in Unix seconds gets the same floor. Fix: floor
-                // a time axis at the microsecond grid ms_datetime keeps (e.g. 1 ms),
-                // and a numeric one at a few thousand ulps of max(|z0|, |z1|). probe:
-                // design/review-2026-10-19/repro/gui-chart-time-zoom-floor.rs
-                // (gui-chart-04)
-                .filter(|z| z.1 - z.0 > 1e-9 * (z.0.abs() + z.1.abs()))
+                .filter(|z| z.1 - z.0 >= least.max(ZOOM_ULPS * z.0.abs().max(z.1.abs())))
         };
         if mode != ChartMode::Bar {
+            // a time axis is in ms and draws to the microsecond, but a
+            // millisecond is the least a view is worth narrowing to
+            let least = if mode == ChartMode::TimeSeries { 1.0 } else { 0.0 };
             let t = ((cursor.x - info.rect.x) / info.rect.width).clamp(0.0, 1.0) as f64;
-            self.x_view = zoom(self.x_view.unwrap_or(info.x_range), t).or(self.x_view);
+            self.x_view =
+                zoom(self.x_view.unwrap_or(info.x_range), t, least).or(self.x_view);
         }
         let t = ((cursor.y - info.rect.y) / info.rect.height).clamp(0.0, 1.0) as f64;
-        self.y_view = zoom(self.y_view.unwrap_or(info.y_range), 1.0 - t).or(self.y_view);
+        self.y_view =
+            zoom(self.y_view.unwrap_or(info.y_range), 1.0 - t, 0.0).or(self.y_view);
     }
 
     /// Return the appropriate mouse cursor for the current state.
@@ -359,14 +370,11 @@ struct Hit {
     at: usize,
 }
 
-/// Find the nearest data point to the cursor across the datasets the
-/// chart draws, formatting only the one found.
-fn find_nearest_point<X: GXExt>(
-    chart: &ChartW<X>,
-    info: &PlotInfo,
-    cursor: Point,
-) -> Option<SnapPoint> {
-    if !info.rect.contains(cursor) {
+/// The data point nearest the cursor across the datasets the chart
+/// draws, in the plot as last drawn; none in a 3D chart.
+fn nearest<X: GXExt>(chart: &ChartW<X>, cursor: Point) -> Option<Hit> {
+    let info = &chart.plot_info.get()?;
+    if chart.mode == ChartMode::ThreeD || !info.rect.contains(cursor) {
         return None;
     }
     let mode = chart.mode;
@@ -393,7 +401,6 @@ fn find_nearest_point<X: GXExt>(
             .map(|(x, _)| x.floor() as usize),
         _ => None,
     };
-    let categories = chart.bar_categories();
     let mut bar: Option<Hit> = None;
     let mut pie: Option<Hit> = None;
     let pie_index = first_pie(&chart.datasets).map(|(i, _, _)| i);
@@ -471,8 +478,13 @@ fn find_nearest_point<X: GXExt>(
             | DatasetEntry::Surface { .. } => {}
         }
     }
-    let hit = best.or(bar).or(pie)?;
-    let ds = &chart.datasets[hit.ds];
+    best.or(bar).or(pie)
+}
+
+/// The tooltip of the point `hit`.
+fn describe<X: GXExt>(chart: &ChartW<X>, hit: Hit) -> Option<SnapPoint> {
+    let ds = chart.datasets.get(hit.ds)?;
+    let categories = chart.bar_categories();
     let series = || match ds.label() {
         Some(l) => CompactString::from(l),
         None => format_compact!("Series {}", hit.ds + 1),
@@ -481,7 +493,7 @@ fn find_nearest_point<X: GXExt>(
     let (label, value) = match ds {
         DatasetEntry::XY { data, .. } => {
             let d = data.t.as_ref()?;
-            let (x, y) = d.pts[hit.at];
+            let (x, y) = *d.pts.get(hit.at)?;
             let v = match d.time {
                 true => format_compact!("({}, {y:.4})", time(x)),
                 false => format_compact!("({x:.4}, {y:.4})"),
@@ -490,7 +502,7 @@ fn find_nearest_point<X: GXExt>(
         }
         DatasetEntry::Candlestick { data, .. } => {
             let d = data.t.as_ref()?;
-            let p = d.pts[hit.at];
+            let p = *d.pts.get(hit.at)?;
             let ohlc = format_compact!(
                 "O:{:.2} H:{:.2} L:{:.2} C:{:.2}",
                 p.open,
@@ -506,7 +518,7 @@ fn find_nearest_point<X: GXExt>(
         }
         DatasetEntry::ErrorBar { data, .. } => {
             let d = data.t.as_ref()?;
-            let p = d.pts[hit.at];
+            let p = *d.pts.get(hit.at)?;
             let eb = format_compact!("avg:{:.2} [{:.2}, {:.2}]", p.avg, p.min, p.max);
             let v = match d.time {
                 true => format_compact!("{}: {eb}", time(p.x)),

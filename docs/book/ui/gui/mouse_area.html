@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -232,12 +232,12 @@ let position = "---";
             text(&amp;status),
             text(&amp;"Position: [position]"),
             mouse_area(
-                #on_press: |btn| status &lt;- btn ~ select btn {
+                #on_press: |btn| status &lt;- select btn {
                     `Left =&gt; "Left pressed",
                     `Right =&gt; "Right pressed",
                     `Middle =&gt; "Middle pressed"
                 },
-                #on_release: |btn| status &lt;- btn ~ select btn {
+                #on_release: |btn| status &lt;- select btn {
                     `Left =&gt; "Left released",
                     `Right =&gt; "Right released",
                     `Middle =&gt; "Middle released"

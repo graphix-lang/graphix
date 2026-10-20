@@ -533,8 +533,8 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
     assert!(
         e.contains(
             "err1 is Error<ErrChain<`ArithError(string)>> and cannot hold \
-             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`B>>, \
-             Error<ErrChain<`ArithError(string)>>] where it is bound"
+             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`ArithError(string)>>, \
+             Error<ErrChain<`B>>] where it is bound"
         ),
         "{e}"
     );
@@ -1000,3 +1000,12 @@ run!(
         let result = out
     "#
 ; FuseExpect::Jit);
+
+// A raise is typed with core's ErrChain whatever a program names
+// ErrChain: `r.ori` is core's origin struct.
+run!(err_chain_is_cores_under_a_shadowing_type, r#"{
+  type ErrChain<'a> = {cause: i64, error: 'a, ori: i64, pos: string};
+  let r = never();
+  { catch(e) r <- e.0; error(`A(1))? };
+  r.ori + 1
+}"#, refused("cannot compute { parent: [null, Ori], source: Source, text: string } + i64"); FuseExpect::None);

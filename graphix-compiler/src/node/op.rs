@@ -190,7 +190,11 @@ macro_rules! gated_operands {
         let woke = $self.slept.take();
         let (lhs, rhs) = (&mut $self.lhs, &mut $self.rhs);
         $self.fork.decide_siblings($ctx, 2, || {
-            $crate::analysis::independent([&*lhs, &*rhs].into_iter(), $ctx)
+            $crate::analysis::independent(
+                [&*lhs, &*rhs].into_iter(),
+                $ctx,
+                $crate::analysis::Sites::Statements,
+            )
         });
         let (l, r) = $crate::branch::join2(
             &mut $self.fork,
@@ -277,17 +281,20 @@ macro_rules! compare_op {
     ($name:ident, $op:tt, $ordered:literal) => {
         binary_node!($name, Type::boolean(), state: Equality, {
             fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-                if !$ordered && matches!(self.state, Equality::Undecided) {
+                if matches!(self.state, Equality::Undecided) {
                     self.state = Equality::of(&ctx.env, self.lhs.typ(), self.rhs.typ());
                 }
                 let (l, r, _, tag) = gated_operands!(self, ctx);
                 let v = match &self.state {
-                    Equality::Targets(t) => {
+                    Equality::Targets(t) if !$ordered => {
                         let lv = l.with_value(|v| ctx.ref_targets(t, v));
                         let rv = r.with_value(|v| ctx.ref_targets(t, v));
                         coretraits::with_hooks(ctx, || (lv $op rv).into())
                     }
-                    Equality::Undecided | Equality::Values => coretraits::with_hooks(ctx, || {
+                    Equality::Values { hooks: false } => {
+                        l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
+                    }
+                    _ => coretraits::with_hooks(ctx, || {
                         l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
                     }),
                 };
@@ -339,14 +346,18 @@ compare_op!(Gt, >, true);
 compare_op!(Lte, <=, true);
 compare_op!(Gte, >=, true);
 
-/// How `==` and `!=` compare, decided at the first update from the
-/// operand type: by value, or with each reference replaced by what it
-/// names (a reference's value is its own cell).
+/// How a comparison compares, decided at the first update from the
+/// operand type: by value, through the core-trait hooks only where an
+/// operand can hold an abstract value, or (`==` and `!=`) with each
+/// reference replaced by what it names (a reference's value is its own
+/// cell).
 #[derive(Debug, Default)]
 enum Equality {
     #[default]
     Undecided,
-    Values,
+    Values {
+        hooks: bool,
+    },
     Targets(Type),
 }
 
@@ -354,7 +365,11 @@ impl Equality {
     fn of(env: &Env, lhs: &Type, rhs: &Type) -> Self {
         match [lhs, rhs].into_iter().find(|t| t.compares_refs(env)) {
             Some(t) => Self::Targets(t.clone()),
-            None => Self::Values,
+            None => Self::Values {
+                hooks: [lhs, rhs]
+                    .into_iter()
+                    .any(|t| t.has_unbound() || t.holds_abstract(env)),
+            },
         }
     }
 }
@@ -395,20 +410,16 @@ macro_rules! bool_op {
 bool_op!(And, &&);
 bool_op!(Or, ||);
 
+/// A prefix operator: `!` over a bool or `-` over a signed number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,
+    Neg,
+}
+
 #[derive(Debug)]
-// CR claude for claude: [structure/low] [structure] Not and Neg below are the same node
-// twice: same fields, same image codec, child walk, sleep, fuse and dense_gate update.
-// They differ only in the value fn, the type rule and the emit fn. Make one Unary node
-// with an `op: UnaryOp { Not, Neg }` that picks those three, and keep NodeView::Not/Neg
-// by matching on op in view(). Found by reading; not run. (x-dup-06)
-// CR claude for claude: [structure/low] Not and Neg hand-write the struct, compile,
-// image codec, children, sleep, fuse and view that binary_node! already generates for
-// the binary operators. That is about 200 lines kept in step by hand, and they have
-// already drifted: Not has no typecheck0_instance, while Neg writes its own settle.
-// Give binary_node! a one-child form (or a unary_node! sibling written the same way)
-// and keep only update, emit_clif and typecheck_own here, with Neg passing `settles:
-// true`. Found by reading; not run. (c-error-op-03)
-pub struct Not<R: Rt, E: UserEvent> {
+pub struct Unary<R: Rt, E: UserEvent> {
+    pub op: UnaryOp,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Node<R, E>,
@@ -417,7 +428,7 @@ pub struct Not<R: Rt, E: UserEvent> {
     slept: WakeBit,
 }
 
-impl<R: Rt, E: UserEvent> Not<R, E> {
+impl<R: Rt, E: UserEvent> Unary<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -425,127 +436,30 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
         scope: &Scope,
         top_id: ExprId,
         n: &Expr,
+        op: UnaryOp,
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, n.clone(), scope, top_id)?;
-        Ok(Self::node(spec, Type::boolean(), n))
+        let typ = match op {
+            UnaryOp::Not => Type::boolean(),
+            UnaryOp::Neg => Type::empty_tvar(),
+        };
+        Ok(Self::node(op, spec, typ, n))
     }
 
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
+        op: UnaryOp,
     ) -> Result<Node<R, E>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
-        Ok(Self::node(spec, typ, n))
+        Ok(Self::node(op, spec, typ, n))
     }
 
-    fn node(spec: Arc<Expr>, typ: Type, n: Node<R, E>) -> Node<R, E> {
+    fn node(op: UnaryOp, spec: Arc<Expr>, typ: Type, n: Node<R, E>) -> Node<R, E> {
         Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        })
-    }
-}
-
-impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
-        f(&self.n)
-    }
-
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
-        f(&mut self.n)
-    }
-
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        put_tag(NodeTag::Not, buf);
-        self.spec.encode(buf)?;
-        self.typ.encode(buf)?;
-        self.n.image_encode(buf)
-    }
-
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let tv = self.n.update(ctx);
-        let tag = tv.tag();
-        dense_gate!(self, tag, tag.is_bottom());
-        match tv.with_value(|v| match v {
-            Value::Bool(b) => Some(!*b),
-            _ => None,
-        }) {
-            Some(b) => self.resident.set(TagValue::tagged(Value::Bool(b), tag)),
-            None => self.resident.ride(),
-        }
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept.set();
-        self.n.sleep(ctx);
-    }
-
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        fusion::fuse_parts([&mut self.n], ctx)
-    }
-
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0(ctx))?;
-        wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Not(self)
-    }
-
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_not_node(cx, &self.n)
-    }
-}
-
-#[derive(Debug)]
-pub struct Neg<R: Rt, E: UserEvent> {
-    pub(crate) spec: Arc<Expr>,
-    pub typ: Type,
-    pub n: Node<R, E>,
-    resident: TagValue,
-    /// wake catch-up: set by `sleep()`, taken by the next update
-    slept: WakeBit,
-}
-
-impl<R: Rt, E: UserEvent> Neg<R, E> {
-    pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        spec: Arc<Expr>,
-        scope: &Scope,
-        top_id: ExprId,
-        n: &Expr,
-    ) -> Result<Node<R, E>> {
-        let n = compile(ctx, flags, n.clone(), scope, top_id)?;
-        Ok(Self::node(spec, Type::empty_tvar(), n))
-    }
-
-    pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
-        let spec = Arc::new(Expr::decode(buf)?);
-        let typ = Type::decode(buf)?;
-        let n = decode_node(ctx, buf)?;
-        Ok(Self::node(spec, typ, n))
-    }
-
-    fn node(spec: Arc<Expr>, typ: Type, n: Node<R, E>) -> Node<R, E> {
-        Node::new(Self {
+            op,
             spec,
             typ,
             n,
@@ -557,9 +471,32 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
     fn negatable() -> Type {
         Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal)
     }
+
+    /// The operand is a bool, or negatable once the check settles its cell.
+    fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        match self.op {
+            UnaryOp::Not => {
+                wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
+            }
+            UnaryOp::Neg => {
+                wrap!(
+                    self.n,
+                    constrain_operand(&ctx.env, &Self::negatable(), self.n.typ())
+                )?;
+                wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
+                defer_operand(ctx, &self.n);
+                super::defer_settle(ctx, || crate::PendingSettle::Contains {
+                    outer: Self::negatable(),
+                    inner: self.n.typ().clone(),
+                    spec: Arc::new(self.n.spec().clone()),
+                });
+                Ok(())
+            }
+        }
+    }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
+impl<R: Rt, E: UserEvent> Update<R, E> for Unary<R, E> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         f(&self.n)
     }
@@ -569,19 +506,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        put_tag(NodeTag::Neg, buf);
+        put_tag(
+            match self.op {
+                UnaryOp::Not => NodeTag::Not,
+                UnaryOp::Neg => NodeTag::Neg,
+            },
+            buf,
+        );
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         self.n.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        // Integers wrap, matching the JIT's `ineg`.
         let tv = self.n.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
-        let neg = tv.with_value(neg);
-        match neg {
+        // integers wrap, matching the JIT's `ineg`
+        let v = tv.with_value(|v| match (self.op, v) {
+            (UnaryOp::Not, Value::Bool(b)) => Some(Value::Bool(!*b)),
+            (UnaryOp::Not, _) => None,
+            (UnaryOp::Neg, v) => neg(v),
+        });
+        match v {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
             None => self.resident.ride(),
         }
@@ -604,7 +551,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    /// The operand is negatable once the check settles its cell.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         self.typecheck_own(ctx)
@@ -616,18 +562,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
-        match types.settle(self.spec.id, &self.typ) {
+        match self.op == UnaryOp::Not || types.settle(self.spec.id, &self.typ) {
             true => Ok(()),
             false => self.typecheck_own(ctx),
         }
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Neg(self)
+        match self.op {
+            UnaryOp::Not => NodeView::Not(self),
+            UnaryOp::Neg => NodeView::Neg(self),
+        }
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_neg_node(cx, &self.n, &self.typ)
+        match self.op {
+            UnaryOp::Not => emit_not_node(cx, &self.n),
+            UnaryOp::Neg => emit_neg_node(cx, &self.n, &self.typ),
+        }
     }
 }
 
@@ -908,17 +860,3 @@ arith_op!(CheckedSub, true, Sub);
 arith_op!(CheckedMul, true, Mul);
 arith_op!(CheckedDiv, true, Div);
 arith_op!(CheckedMod, true, Mod);
-
-impl<R: Rt, E: UserEvent> Neg<R, E> {
-    fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, constrain_operand(&ctx.env, &Self::negatable(), self.n.typ()))?;
-        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
-        defer_operand(ctx, &self.n);
-        super::defer_settle(ctx, || crate::PendingSettle::Contains {
-            outer: Self::negatable(),
-            inner: self.n.typ().clone(),
-            spec: Arc::new(self.n.spec().clone()),
-        });
-        Ok(())
-    }
-}

@@ -103,20 +103,18 @@ pub(crate) fn emit_const_node(
 /// buf that `graphix_map_finalize` turns into the map.
 pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    keys: &[Node<R, E>],
-    values: &[Node<R, E>],
+    entries: &[Node<R, E>],
     typ: &Type,
 ) -> Result<CompiledExpr> {
-    if let Some(v) = lowering::const_map(keys, values) {
+    if let Some(v) = lowering::const_map(entries) {
         let typ = kernel_abi::freeze_for_abi(typ).unwrap_or_else(kernel_abi::map_type);
         return emit_const_node(cx, &v, &typ);
     }
-    let cap = cx.b.ins().iconst(types::I64, 2 * keys.len() as i64);
+    let cap = cx.b.ins().iconst(types::I64, entries.len() as i64);
     let buf = open_value_buf(cx, cap)?;
     let mut discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
-    for (k, v) in keys.iter().zip(values.iter()) {
-        discs.push(emit_push_field_node(cx, buf, k)?);
-        discs.push(emit_push_field_node(cx, buf, v)?);
+    for e in entries {
+        discs.push(emit_push_field_node(cx, buf, e)?);
     }
     close_buf(cx);
     let call = cx.call_helper("graphix_map_finalize", &[buf])?;

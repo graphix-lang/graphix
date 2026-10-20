@@ -19,34 +19,29 @@ let form = |
   let vals: Array<line_edit::State> = array::map(fields, |f: Field| line_edit::state(f.value));
   let focus = 0;
   focus <- fields ~ 0;
-  // CR claude for claude: [bug/medium] Every event goes through `on_press`, which
-  // answers `Continue to a `Paste without calling the callback, so a paste never
-  // reaches the focused line editor, although line_edit::step handles `Paste. The TUI
-  // enables bracketed paste, so a terminal paste is lost: the field stays empty and
-  // Enter submits [""]. netidx-admin's forms (tui/local.gx, tui/services.gx) are
-  // affected. Route `Paste to the focused editor before the key dispatch: lift the `_`
-  // arm's body (`let i = .. ~ focus; select vals[i] { .. }`) into one local function
-  // and call it from both places. probe:
-  // design/review-2026-10-19/repro/gx-ui-form-drops-paste.gx (gx-ui-03)
-  let handle = |e: input_handler::Event| input_handler::on_press(e, |k| select k.code {
-    `Tab | `Down if n > 0 => { focus <- k ~ (focus + 1) % n; `Stop },
-    `BackTab | `Up if n > 0 => { focus <- k ~ (focus + n - 1) % n; `Stop },
-    kk@ `Enter => {
-      on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
-      `Stop
-    },
-    kk@ `Esc => select kk ~ on_cancel {
-      null as _ => `Continue,
-      f => { f(kk); `Stop }
-    },
-    _ => {
-      let i = k ~ focus;
-      select vals[i] {
-        error as _ => `Continue,
-        _ => line_edit::handle(&mut vals[i], e)
-      }
+  let edit = |e: input_handler::Event| {
+    let i = e ~ focus;
+    select vals[i] {
+      error as _ => `Continue,
+      _ => line_edit::handle(&mut vals[i], e)
     }
-  });
+  };
+  let handle = |e: input_handler::Event| select e {
+    `Paste(_) => edit(e),
+    _ => input_handler::on_press(e, |k| select k.code {
+      `Tab | `Down if n > 0 => { focus <- k ~ (focus + 1) % n; `Stop },
+      `BackTab | `Up if n > 0 => { focus <- k ~ (focus + n - 1) % n; `Stop },
+      kk@ `Enter => {
+        on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
+        `Stop
+      },
+      kk@ `Esc => select kk ~ on_cancel {
+        null as _ => `Continue,
+        f => { f(kk); `Stop }
+      },
+      _ => edit(e)
+    })
+  };
   let width = array::fold(fields, 0, |w: i64, f: Field| max(w, str::char_len(f.label))) + 2;
   let rows = array::map(array::enumerate(vals), |(j, st): (i64, line_edit::State)| {
     let label = (fields[j]$).label;

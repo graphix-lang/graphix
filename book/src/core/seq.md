@@ -153,19 +153,13 @@ earlier statement wrote starts the next cycle and reads the new value:
 in between reads land together: `a <- x; b <- y; let s = a + b` writes
 `a` and `b` in one cycle and binds `s` the next.
 
-<!-- CR claude for claude: [doc-drift/low] The `put(5); let s = b` example below works
-only if `put` returns a value; the pin seq_steps::closure_write_is_seen defines `|v| { b
-<- v; v }`. Written the natural way, `let put = |v| b <- v`, `put(5)` is a step whose
-value is a connect's. A connect never produces, so the run stalls forever and --check
-says nothing. Show put's definition in the text. Also consider a check warning for a seq
-step whose type settles to ⊥ (a connect-valued call, never()), next to select.rs's
-warn_birth_only. probe:
-design/review-2026-10-19/repro/x-engine-firing-seq-connect-step.gx (x-engine-firing-05)
--->
 The compiler decides this after it has resolved every call, following
 each call into the function it reaches. A write a function makes counts
-like one the statement makes itself: `put(5); let s = b`, where `put`
-writes the `b` it captured, reads the new `b`. A call to a function
+like one the statement makes itself: `put(5); let s = b`, where `let put
+= |v| { b <- v; v }` writes the `b` it captured, reads the new `b`. (A
+step must produce a value to complete: written `|v| b <- v`, `put`'s
+value would be a connect's, which never produces, and the run would
+stall.) A call to a function
 that does not read `a` does not wait for `a <- ..` to land. Two things
 count as touching every variable, because the compiler cannot name what
 they touch: a read or write through a reference (`*r`), and a call
@@ -372,22 +366,19 @@ seqq request; abort(skip); flush(cancel_all) { ... }
 `flush` follows `abort` when both are present, and only `seqq` accepts
 it. A request that arrives with the flush or after it is kept.
 
-<!-- CR claude for claude: [doc-drift/medium] Two claims in this section contradict the
-code and CLAUDE.md. A triggerless seq does not start a fresh run when its arm wakes: it
-runs only at the arm's first entry, and the check warns of it. Sleeping does not discard
-a seqq's queued requests: they are kept and served after the wake (select.md also says
-queues keep their state). Rewrite the section to say this. probe:
-design/review-2026-10-19/repro/book-core-seq-triggerless-wake.gx and
-design/review-2026-10-19/repro/book-core-seqq-queue-survives-sleep.gx (book-core-04) -->
 ## Sleeping
 
 A sequence inside a `select` arm, or inside a function called from one,
 sleeps with the arm. A run in progress does not survive that: the
-sequence is idle when the arm wakes, and a `seq` without a trigger
-starts a fresh run there. The same holds for a `seq` nested in a step of
-an outer run that was aborted.
+sequence is idle when the arm wakes, since a wake resumes the arm and
+starts nothing. A `seq` without a trigger in an arm runs only at the
+arm's first entry, and the check warns of it: to run at every entry,
+trigger it on the event that selects the arm. A `seq` nested in a step
+of an outer run that was aborted is idle too; a triggerless one starts
+again when a later run enters its step.
 
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
-Sleeping the enclosing expression discards pending queued work, following
-the ordinary `queue` sleep behavior.
+Sleeping the enclosing expression keeps the queued requests, as `queue`
+keeps its contents: they are served after the wake, and the credit of
+the run the sleep aborted is returned then.

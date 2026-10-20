@@ -2014,3 +2014,70 @@ async fn hooks_on_late_input(mode: Mode) -> Result<()> {
 }
 
 modes!(hooks_on_late_input);
+
+// A core trait a dynamic module implements follows its reloads: a
+// hook site built before a reload is rebuilt after it.
+run!(
+    core_trait_dynamic_impl_reload,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "two1"),
+    "/test.gx" => r#"
+        let one = """
+            type Counter = Abstract<i64>;
+            impl Display for Counter { let fmt = |c| "one[c.0]" };
+            let make = |x| Counter(x)
+        """;
+        let two = """
+            type Counter = Abstract<i64>;
+            impl Display for Counter { let fmt = |c| "two[c.0]" };
+            let make = |x| Counter(x)
+        """;
+        let source = one;
+        sys::net::publish("/local/dimpl_core_reload", source)?;
+        let status = mod foo dynamic {
+            sandbox whitelist [core];
+            sig {
+                type Counter;
+                impl Display for Counter;
+                val make: fn(x: i64) -> Counter
+            };
+            source sys::net::subscribe("/local/dimpl_core_reload")?
+        };
+        let shown = select status {
+            error as e => never(dbg(e)),
+            null as _ => "[foo::make(1)]"
+        };
+        source <- select shown { "one1" => two, _ => never() };
+        let result = select shown { "two1" => shown, _ => never() }
+    "#; FuseExpect::Jit
+);
+
+// A call into a dynamic module compiled at run time (a collection slot)
+// dispatches dynamically, so it follows a reload as a top-level call does.
+run!(
+    dynamic_module_slot_calls_follow_reloads,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:200, i64:201, i64:202]"),
+    "/test.gx" => r#"
+        let one = "let f = |x: i64| x + 100";
+        let two = "let f = |x: i64| x + 200";
+        let source = one;
+        let status = mod foo dynamic {
+            sandbox whitelist [core];
+            sig { val f: fn(x: i64) -> i64 };
+            source source
+        };
+        let n = 1;
+        let xs = select status {
+            error as e => never(dbg(e)),
+            null as _ => array::map(array::init(n, |i| i), |i| foo::f(i))
+        };
+        n <- select xs { [100] => 3, _ => never() };
+        source <- select xs { [100, 101, 102] => two, _ => never() };
+        let result = select xs { [200, ..] => xs, _ => never() }
+    "#; FuseExpect::Jit
+);
+
+// Every name a trait method's signature writes must name a type.
+run!(trait_signature_undefined_type_refused, r#"{
+  trait Q { val q: fn(self) -> Nope };
+  0
+}"#, refused("undefined type Nope"); FuseExpect::None);

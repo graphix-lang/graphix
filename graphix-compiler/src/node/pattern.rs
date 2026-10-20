@@ -29,6 +29,50 @@ pub enum SliceKind {
     List,
 }
 
+/// How many fields a struct a struct pattern matches has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructWidth {
+    /// The field count of the struct type the pattern was compiled or
+    /// realigned against.
+    Exact(usize),
+    /// A partial pattern over a predicate inferred from the fields it
+    /// names, which nothing completed.
+    AtLeast(usize),
+}
+
+impl StructWidth {
+    pub fn admits(self, len: usize) -> bool {
+        match self {
+            Self::Exact(n) => len == n,
+            Self::AtLeast(n) => len >= n,
+        }
+    }
+
+    fn parts(self) -> (bool, usize) {
+        match self {
+            Self::Exact(n) => (false, n),
+            Self::AtLeast(n) => (true, n),
+        }
+    }
+}
+
+impl Pack for StructWidth {
+    fn encoded_len(&self) -> usize {
+        self.parts().encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl bytes::BufMut) -> Result<(), PackError> {
+        self.parts().encode(buf)
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> Result<Self, PackError> {
+        Ok(match <(bool, usize)>::decode(buf)? {
+            (false, n) => Self::Exact(n),
+            (true, n) => Self::AtLeast(n),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum StructPatternNode {
     Ignore,
@@ -54,6 +98,7 @@ pub enum StructPatternNode {
     },
     Struct {
         all: Option<BindId>,
+        width: StructWidth,
         binds: Box<[(ArcStr, usize, StructPatternNode)]>,
     },
     Variant {
@@ -294,7 +339,16 @@ impl StructPatternNode {
                         .collect(),
                 )
             }
-            Self::Abstract { rep, .. } => Some(smallvec![Some((rep.clone(), 0))]),
+            Self::Abstract { id, rep, .. } => {
+                let rep = match typ.deref_cloned() {
+                    Some(Type::Abstract { id: t, ref params }) if t == *id => env
+                        .abstract_reps
+                        .get(id)
+                        .map_or_else(|| rep.clone(), |r| r.instantiate_with(params)),
+                    _ => rep.clone(),
+                };
+                Some(smallvec![Some((rep, 0))])
+            }
         }
     }
 
@@ -320,6 +374,28 @@ impl StructPatternNode {
             | Self::Abstract { all, .. } => (*all, None),
         };
         all.into_iter().chain(rest)
+    }
+
+    /// Narrow each abstract payload's own representation, which its binds
+    /// and captures are typed by, against the representation of the
+    /// scrutinee's part `typ`: an inferred abstract predicate takes its
+    /// parameters from the scrutinee, never from its payload.
+    fn narrow_payloads(&self, env: &Env, typ: &Type) -> Result<()> {
+        crate::stack::ensure_sufficient(|| {
+            let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
+            if let Self::Abstract { rep, .. } = self {
+                if let Some(Some((member_rep, _))) = ts.first() {
+                    member_rep.narrow_pattern(env, rep)?;
+                }
+                return Ok(());
+            }
+            for (c, t) in self.children().into_iter().zip(ts) {
+                if let Some((t, _)) = t {
+                    c.narrow_payloads(env, &t)?
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Every leaf name with the part of `typ` it stands over, `typ`
@@ -368,7 +444,8 @@ impl StructPatternNode {
         for id in self.whole_binds() {
             out.push(Leaf { id, typ: typ.normalize(), fresh: true })
         }
-        // an abstract's payload took its types from its written rep
+        // an abstract's payload took its types from its own rep
+        // (`narrow_payloads`)
         if let Self::Abstract { .. } = self {
             return Ok(());
         }
@@ -505,7 +582,10 @@ impl StructPatternNode {
             let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
             let sub = self.children_inferred(inferred);
             match self {
-                Self::Struct { binds, all: _ } => {
+                Self::Struct { binds, width, all: _ } => {
+                    if let Some(fields) = struct_fields(env, typ) {
+                        *width = StructWidth::Exact(fields.len())
+                    }
                     for ((name, index, p), t) in binds.iter_mut().zip(ts) {
                         let Some((t, i)) = t else {
                             bail!("no such struct field {name} in {typ}")
@@ -640,7 +720,7 @@ impl StructPatternNode {
         // under a written type, a constructor pattern at a union narrows to
         // the members it can match, as an arm narrows over its scrutinee;
         // its own test then decides them (`covers`)
-        // CR claude for claude: [bug/low] Slice and list patterns are missing from this
+        // XCR claude for claude: [bug/low] Slice and list patterns are missing from this
         // list, so under a written union they never narrow to their member.
         // compile_slice then refuses them: `T([x, ..])` over `type T =
         // Abstract<[Array<i64>, null]>` fails with "slice patterns can't match [null,
@@ -649,11 +729,18 @@ impl StructPatternNode {
         // StructurePattern::Slice, SlicePrefix and SliceSuffix here. probe:
         // design/review-2026-10-19/repro/c-pattern-slice-under-written-union.gx
         // (c-pattern-05)
+        // 2026-10-19 claude: Slice, SlicePrefix and SliceSuffix narrow under a written
+        // union with the constructor patterns. Pin:
+        // lang::select::slice_pattern_under_written_union (T([x, ..]) over
+        // Abstract<[Array<i64>, null]>, and [Array<i64>, null] as [x, ..]).
         let constructor = matches!(
             spec,
             StructurePattern::Tuple { .. }
                 | StructurePattern::Variant { .. }
                 | StructurePattern::Struct { .. }
+                | StructurePattern::Slice { .. }
+                | StructurePattern::SlicePrefix { .. }
+                | StructurePattern::SliceSuffix { .. }
         );
         if constructor
             && !cx.inferred
@@ -881,7 +968,7 @@ impl StructPatternNode {
                          cannot be destructured"
                     )
                 };
-                // CR claude for claude: [bug/high] An inferred abstract pattern takes
+                // XCR claude for claude: [bug/high] An inferred abstract pattern takes
                 // its type parameters from its payload. For `type Box<'a> =
                 // Abstract<'a>` the payload compiles against the parameter cell itself,
                 // so `Box(null)` gets the predicate Box<null> and `Box(`A)` gets
@@ -897,7 +984,19 @@ impl StructPatternNode {
                 // variant is the CR in TVar::narrow_per_member. probe:
                 // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-payload-params.gx
                 // (x-typecheck-patterns-01)
+                // 2026-10-19 claude: An inferred abstract pattern compiles its payload at
+                // parameters of its own (AbstractRep::instantiate), so the payload never binds
+                // the predicate's; bind_narrowed narrows each payload's own rep against the
+                // scrutinee member's (StructPatternNode::narrow_payloads), typing its binds and
+                // captures; the run-time test of an inferred abstract predicate is the tag
+                // (IsAFlags::MatchAbstract), the payload pattern testing the rest; Reach covers
+                // per scrutinee member for an inferred abstract atom; child_types reads the
+                // payload type from the type judged. Pins:
+                // lang::select::abstract_pattern_params_from_the_scrutinee,
+                // abstract_capture_typed_from_the_scrutinee,
+                // abstract_pattern_over_two_instantiations.
                 let (atyp, rep) = r.instantiate(id);
+                let own = cx.inferred.then(|| r.instantiate(id).1);
                 type_predicate.check_contains(&ctx.env, &atyp)?;
                 // the predicate is this abstract type, as a variant pattern's is
                 // its variant: a union around it would make the arm refutable by
@@ -911,7 +1010,10 @@ impl StructPatternNode {
                     });
                 }
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
-                // the payload checks against the declared representation
+                // the payload checks against the declared representation; under
+                // an inferred predicate, at parameters of its own, the
+                // predicate's being the scrutinee's (`leaves` types its binds)
+                let rep = own.unwrap_or(rep);
                 let rep_cx = PatCx { inferred: false, ..cx };
                 let bind = Box::new(Self::compile_int(ctx, rep_cx, &rep, bind, mode)?);
                 Self::Abstract { id, all, rep, bind }
@@ -946,6 +1048,11 @@ impl StructPatternNode {
                 if *exhaustive && fields.len() < elts.len() {
                     bail!("missing bindings for struct fields")
                 }
+                let width = if !*exhaustive && cx.inferred {
+                    StructWidth::AtLeast(elts.len())
+                } else {
+                    StructWidth::Exact(elts.len())
+                };
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
                 let binds = fields
                     .into_iter()
@@ -955,7 +1062,7 @@ impl StructPatternNode {
                         Ok((name.clone(), i, p))
                     })
                     .collect::<Result<Box<[(ArcStr, usize, Self)]>>>()?;
-                Self::Struct { all, binds }
+                Self::Struct { all, width, binds }
             }
         };
         Ok(t)
@@ -994,67 +1101,14 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.ids_inner(f))
     }
 
-    // CR claude for claude: [structure/low] This repeats, arm by arm, the walk that
-    // whole_binds() and children() already give (fresh_ids is written over them), so a
-    // new pattern shape has to be taught to three walks that must agree. Write it as
-    // `Bind(id) => f(id)`, `Or { alts } => alts[0].ids(f)`, else whole_binds() then
-    // each child's ids. aux_types and typecheck0_rows both use this order, so changing
-    // it is safe. Found by reading; not run. (c-pattern-07)
     fn ids_inner<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
-        match &self {
-            Self::Abstract { all, bind, .. } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                bind.ids(f)
-            }
-            Self::Or { alts } => alts[0].ids(f),
-            Self::Ignore | Self::Literal(_) => (),
+        match self {
             Self::Bind(id) => f(*id),
-            Self::Slice { kind: _, all, binds } => {
-                if let Some(id) = all {
-                    f(*id);
-                }
-                for n in binds.iter() {
-                    n.ids(f)
-                }
-            }
-            Self::Variant { tag: _, all, binds } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for n in binds.iter() {
-                    n.ids(f)
-                }
-            }
-            Self::SlicePrefix { list: _, all, prefix, tail } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for n in prefix.iter() {
-                    n.ids(f)
-                }
-                if let Some(id) = tail {
-                    f(*id)
-                }
-            }
-            Self::SliceSuffix { all, head, suffix } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                if let Some(id) = head {
-                    f(*id)
-                }
-                for n in suffix.iter() {
-                    n.ids(f)
-                }
-            }
-            Self::Struct { all, binds } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for (_, _, n) in binds.iter() {
-                    n.ids(f)
+            Self::Or { alts } => alts[0].ids(f),
+            _ => {
+                self.whole_binds().for_each(&mut *f);
+                for c in self.children() {
+                    c.ids(f)
                 }
             }
         }
@@ -1171,8 +1225,8 @@ impl StructPatternNode {
                 }
                 _ => (),
             },
-            Self::Struct { all, binds } => match rep::struct_fields(v) {
-                Some(a) if a.len() >= binds.len() => {
+            Self::Struct { all, width, binds } => match rep::struct_fields(v) {
+                Some(a) if width.admits(a.len()) => {
                     if let Some(id) = all {
                         f(*id, v.clone())
                     }
@@ -1249,7 +1303,7 @@ impl StructPatternNode {
             },
             // a field is the pair at its index naming it: a struct of
             // another shape that has the index fails
-            // CR claude for claude: [bug/critical] The struct test ignores whether the
+            // XCR claude for claude: [bug/critical] The struct test ignores whether the
             // pattern is exhaustive. `{x, y}` matches here, and covers in covers_inner,
             // a struct with more fields: `a.len() >= binds.len()`. Under a written
             // union `[{x: i64, y: string}, {x: i64, y: i64, z: string}] as {x, y}`, the
@@ -1265,9 +1319,17 @@ impl StructPatternNode {
             // design/review-2026-10-19/repro/c-pattern-struct-exhaustive-ignored.gx,
             // design/review-2026-10-19/repro/c-pattern-or-struct-field-count.gx
             // (c-pattern-01)
-            Self::Struct { all: _, binds } => match rep::struct_fields(v) {
+            // 2026-10-19 claude: StructPatternNode::Struct carries a StructWidth:
+            // Exact(field count of the struct type it was compiled or realigned
+            // against), or AtLeast for a partial pattern over a predicate inferred from
+            // its own fields that nothing completed (the x-typecheck-patterns-05 case,
+            // left as it was for Eric). is_match, bind, covers, the coverage pool
+            // (select.rs) and the JIT's composite cond (IntCC::Equal for Exact) all
+            // test it. REGISTRATION_FORMAT 69 -> 70. Pins:
+            // lang::select::struct_pattern_width_{uncovered,exact,or}.
+            Self::Struct { all: _, width, binds } => match rep::struct_fields(v) {
                 Some(a) => {
-                    a.len() >= binds.len()
+                    width.admits(a.len())
                         && binds.iter().all(|(name, i, p)| match rep::field_at(a, *i) {
                             Some((field, v)) if field == name => p.is_match(v),
                             _ => false,
@@ -1324,7 +1386,9 @@ impl StructPatternNode {
             (Self::Variant { tag, binds, .. }, Some(Type::Variant(t, ts, _))) => {
                 t == tag && ts.len() == binds.len()
             }
-            (Self::Struct { .. }, Some(Type::Struct(_))) => true,
+            (Self::Struct { width, .. }, Some(Type::Struct(fs))) => {
+                width.admits(fs.len())
+            }
             (Self::Abstract { id, .. }, Some(Type::Abstract { id: t, .. })) => id == t,
             _ => false,
         };
@@ -1420,7 +1484,7 @@ impl StructPatternNode {
             Self::Slice { kind: SliceKind::Tuple, all: _, binds } => {
                 binds.iter().all(|p| p.matches_anything())
             }
-            Self::Struct { all: _, binds } => {
+            Self::Struct { all: _, width: _, binds } => {
                 binds.iter().all(|(_, _, p)| p.matches_anything())
             }
             Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
@@ -1557,6 +1621,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         let tests_error = self.explicit_type_predicate && self.tests_error();
         if self.explicit_type_predicate && !tests_error {
             return Ok(());
+        }
+        if !self.explicit_type_predicate {
+            self.structure_predicate.narrow_payloads(env, narrowed)?;
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
@@ -1872,8 +1939,9 @@ impl StructPatternNode {
             Self::SliceSuffix { all, head, suffix } => {
                 all.encoded_len() + head.encoded_len() + boxed_len(suffix)
             }
-            Self::Struct { all, binds } => {
+            Self::Struct { all, width, binds } => {
                 all.encoded_len()
+                    + width.encoded_len()
                     + varint_len(binds.len() as u64)
                     + binds
                         .iter()
@@ -1925,9 +1993,10 @@ impl StructPatternNode {
                 head.encode(buf)?;
                 boxed_encode(suffix, buf)?
             }
-            Self::Struct { all, binds } => {
+            Self::Struct { all, width, binds } => {
                 buf.put_u8(6);
                 all.encode(buf)?;
+                width.encode(buf)?;
                 encode_varint(binds.len() as u64, buf);
                 for (n, i, p) in binds.iter() {
                     n.encode(buf)?;
@@ -1982,13 +2051,14 @@ impl StructPatternNode {
             },
             6 => {
                 let all = Pack::decode(buf)?;
+                let width = Pack::decode(buf)?;
                 let n = crate::image::count_decode(buf)?;
                 let binds = (0..n)
                     .map(|_| {
                         Ok((Pack::decode(buf)?, Pack::decode(buf)?, Pack::decode(buf)?))
                     })
                     .collect::<Result<_, PackError>>()?;
-                Self::Struct { all, binds }
+                Self::Struct { all, width, binds }
             }
             7 => Self::Variant {
                 tag: Pack::decode(buf)?,

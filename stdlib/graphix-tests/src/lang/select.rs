@@ -4053,3 +4053,131 @@ run!(native_guard_prologue_follows_the_chain, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"["zero", "small", "small", "pure", "pure", "other", "other", "impure", "impure"]"#)
 }; FuseExpect::Jit);
+
+// An exhaustive struct pattern matches only a struct of exactly its
+// fields: `{x, y}` names every field of the first member alone, so the
+// second member reaches past it.
+run!(struct_pattern_width_uncovered, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let f = |w: U| select w { U as {x, y} => "[y]!" };
+  f({x: 1, y: "s"})
+}"#, refused("missing match cases"); FuseExpect::None);
+
+run!(struct_pattern_width_exact, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let f = |w: U| select w { U as {x, y} => "[y]!", _ => "other" };
+  array::map([{x: 1, y: "s"}, {x: 1, y: 42, z: "z"}], f)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["s!", "other"]"#)
+}; FuseExpect::Jit);
+
+// Each alternative takes the member of its own width, so the second
+// alternative binds `y` to the string field `z`.
+run!(struct_pattern_width_or, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let vs: Array<U> = [{x: 1, y: "s"}, {x: 1, y: 42, z: "zz"}];
+  array::map(vs, |v| select v { {x, y} | {x, y: _, z: y} => "[y]!" })
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["s!", "zz!"]"#)
+}; FuseExpect::Jit);
+
+// A slice pattern's element cells are the arm's own to narrow: over an
+// unannotated parameter the open-member rule does not read them as types
+// the arm must tell apart.
+run!(generic_slice_arms_check, r#"{
+  let is_empty = |a| select a { [] => true, [_, ..] => false };
+  let first = |a| select a { [h, ..] => h, [] => never() };
+  let head = |l| select l { [<h, t..>] => h, [<>] => 0 };
+  (is_empty([1, 2]), first([1, 2]), head([<1>]))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[false, i64:1, i64:1]")
+}; FuseExpect::None);
+
+// Under a written union a slice pattern narrows to the member it can
+// match, as a tuple or variant pattern does.
+run!(slice_pattern_under_written_union, r#"{
+  type T = Abstract<[Array<i64>, null]>;
+  let f = |t: T| select t { T([x, ..]) => x, _ => 0 };
+  let g = |a: [Array<i64>, null]| select a { [Array<i64>, null] as [x, ..] => x, _ => 0 };
+  (f(T([1])), g([2]), g(null))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2, i64:0]")
+}; FuseExpect::Jit);
+
+// A guard the chain passed by when the scrutinee fired is given the
+// value fired when a guard flip above it lets the chain reach it: `x > 5`
+// recomputes over 0 rather than riding its answer for 10.
+run!(passed_guard_recomputes_over_the_value_it_missed, r#"{
+  let in0 = 10;
+  let in1 = true;
+  let step = 0;
+  step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
+  in0 <- select step { 1 => step ~ 0, _ => never() };
+  in1 <- select step { 2 => step ~ false, _ => never() };
+  let r = select in0 { 0 if in1 => "zero-g", x if x > 5 => "big", _ => "other" };
+  select step { 3 => r, _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other"); FuseExpect::Jit);
+
+// The literal pool pools an arm against the member of its shape it can
+// match: over two same-arity tuple members, the `A/`B arms cover the
+// second, not the first.
+run!(pool_takes_the_member_an_arm_matches, r#"{
+  let f = |x: [(bool, i64), ([`A, `B], string)]| select x {
+    (`A, s) => "a",
+    (`B, s) => "b",
+    (true, n) => "t",
+    (false, n) => "f"
+  };
+  [f((true, 1)), f((false, 1)), f((`A, "s")), f((`B, "s"))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["t", "f", "a", "b"]"#); FuseExpect::None);
+
+// An abstract payload's heads are the scrutinee member's, not the
+// pattern's own: `Box(`A)` alone leaves `B uncovered.
+run!(pool_reads_the_abstract_payload_of_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let f = |x: Box<[`A, `B]>| select x { Box(`A) => 1 };
+  f(Box(`A))
+}"#, refused("missing match cases: no arm covers Box<[`A, `B]>"); FuseExpect::None);
+
+// Bool heads under Box<bool> cover Box<bool>, never Box<i64>.
+run!(pool_covers_only_its_own_abstract_instantiation, r#"{
+  type Box<'a> = Abstract<'a>;
+  let g = |x: [Box<bool>, Box<i64>]| select x {
+    Box(true) => 1,
+    Box(false) => 2,
+    Box<bool> as b => 3
+  };
+  g(Box(true))
+}"#, refused("missing match cases: no arm covers Box<i64>"); FuseExpect::None);
+
+// An inferred abstract constructor pattern tests the tag at run time and
+// takes its parameters from the scrutinee, never from its payload.
+run!(abstract_pattern_params_from_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let f = |x: Box<[i64, null]>| select x { Box(null) => 0, Box(n) => 1 };
+  let g = |x: Box<[`A, `B]>| select x { Box(`A) => 1, Box(`B) => 2 };
+  [f(Box(null)), f(Box(5)), g(Box(`A)), g(Box(`B))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:1, i64:2]"); FuseExpect::None);
+
+run!(abstract_capture_typed_from_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let g = |b: Box<[i64, null]>| select b { Box(v) => v };
+  let f = |x: Box<[i64, null]>| select x { all@ Box(null) => g(all), Box(n) => n };
+  [f(Box(null)), f(Box(4))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[null, i64:4]"); FuseExpect::None);
+
+// Over two instantiations an irrefutable payload matches and covers both.
+run!(abstract_pattern_over_two_instantiations, r#"{
+  type T<'a> = Abstract<'a>;
+  let f = |v: [T<i64>, T<string>]| select v { T(x) => "T [x]" };
+  let g = |x: [T<bool>, T<i64>]| select x { T(true) => 1, T(false) => 2, T(n) => cast<i64>(n)$ };
+  (f(T(1)), f(T("s")), g(T(3)), g(T(true)), g(T(false)))
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["T 1", "T s", i64:3, i64:1, i64:2]"#); FuseExpect::Jit);
+
+// A null literal is a head the literal pool reads, beside variants and
+// bools: option payload arms cover their position.
+run!(null_literal_pools_beside_variants, r#"{
+  let f = |x: `P([`A, null])| select x { `P(`A) => 1, `P(null) => 0 };
+  let g = |x: ([`A, null], i64)| select x { (`A, n) => n, (null, n) => 0 };
+  [f(`P(`A)), f(`P(null)), g((`A, 5)), g((null, 2))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0, i64:5, i64:0]"); FuseExpect::Jit);

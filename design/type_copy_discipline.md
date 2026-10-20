@@ -33,7 +33,7 @@ to answer `Ok(true)` WITHOUT linking the cells. `frozen` means "this
 var already joined a name-alias group" (`TVar::alias` self-marks and
 refuses re-entry) — it was never a statement about unification. Two
 settled groups whose types are equated must share one cell from that
-moment on, or they fork. The arm now takes `Act::CellMerge` →
+moment on, or they fork. The arm now takes `OpenPair::Merge` →
 `TVar::alias_cells` (`typ/contains.rs`, `typ/tvar.rs`): a cell merge
 that bypasses the frozen gate while keeping `alias`'s occurs checks,
 committed under `Commit` like every other aliasing act. This is

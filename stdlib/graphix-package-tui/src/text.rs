@@ -28,7 +28,7 @@ impl<X: GXExt> TextW<X> {
             style: p.style.t.map_or(Style::new(), |s| s.0),
             lines: p.lines.t.take().map(|l| l.0).unwrap_or_default(),
         };
-        Ok(Box::new(Self { p, text }))
+        Ok(TuiW::new(Self { p, text }))
     }
 }
 

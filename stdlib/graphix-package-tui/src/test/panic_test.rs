@@ -148,6 +148,22 @@ let result = bar_chart(&[bar_group(#label: line("G"), [b])])
 }
 
 #[tokio::test]
+async fn barchart_horizontal_wide_text_value_does_not_panic() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::barchart::{bar, bar_chart, bar_group};
+let b = bar(#text_value: &"éé", &10);
+let result = bar_chart(#direction: &`Horizontal, &[bar_group([b])])
+"#,
+        3,
+        1,
+    )
+    .await?;
+    h.assert_lines(&["é██"])?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn sparkline_max_zero_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
         r#"
@@ -626,5 +642,20 @@ let result = chart(#y_axis: &axis(#labels: labels, {min: 0.0, max: 1.0}), &[])
         assert!(lines.first().unwrap().starts_with("1999"));
         assert!(lines.last().unwrap().starts_with("0"), "{:?}", lines.last());
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_deep_widget_tree_compiles_and_draws() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::{block::block, paragraph::paragraph};
+let result = array::fold(array::init(1000, |i| i), paragraph(&"x"), |acc, i| block(&acc))
+"#,
+        4,
+        2,
+    )
+    .await?;
+    h.assert_lines(&["x"])?;
     Ok(())
 }

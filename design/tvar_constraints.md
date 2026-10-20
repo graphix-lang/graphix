@@ -31,7 +31,7 @@ problems:
 ## The design
 
 The cell carries the constraint. `TCell` (`typ/tvar.rs`) holds
-`typ: Option<Type>` and `constraints: SmallVec<[Type; 1]>` — a
+`binding: Option<Type>` and `constraints: SmallVec<[Type; 1]>` — a
 CONJUNCTION every future binding must satisfy. There is one
 enforcement point: the bind sites in the `contains` walk
 (`cell_constraints_ok`, `typ/contains.rs`). Binding an unbound cell to
@@ -207,7 +207,7 @@ An image carries each cell's level and each definition's depth.
   union (`[i64, 'x]`), and checks only the known parts
   (`op::constrain_operand`); it never binds the cell to the bound, which
   would claim every type the bound admits at once.
-- A cell remembers that ⊥ reached it while open (`TCell::bottom_fed`,
+- A cell remembers that ⊥ reached it while open (`CellFact::BottomFed`,
   set by that `contains` arm, merged by aliasing, copied at
   instantiation like the conjuncts). Every other production binds a
   cell, so a ⊥-fed cell still open at a settle after its writers binds
@@ -322,7 +322,7 @@ instance's own re-check refused it, at elaboration.
   within it, so `[i64, 'x]` cannot become `[i64, f64]`; with none, they
   merge into one cell, which takes the conjunct (`UnionParts::
   merge_open`). Two rigid cells can't merge, so a union of two declared
-  variables is not a `Singleton` (`UnionParts::rigid_pair`).
+  variables is not a `Singleton` (`UnionParts::rigid_apart`).
 - Like `Concrete`, it is never a witness and travels as a conjunct. It
   refuses no open or ⊥ cell at the terminal settle: an operand cell
   left open there has `Number` for its only witness, which the

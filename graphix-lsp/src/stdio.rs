@@ -5,7 +5,7 @@
 use crossbeam_channel::unbounded;
 use lsp_server::{Connection, Message};
 use std::{
-    io::{self, stdin, stdout},
+    io::{self, BufRead, ErrorKind, stdin, stdout},
     thread::{self, JoinHandle},
 };
 
@@ -28,13 +28,48 @@ impl IoThreads {
     }
 }
 
+/// Read the next frame's body into `body`: false at the end of input,
+/// an error for one that is not framed (a header without a
+/// `Content-Length`, the input ending inside a frame).
+fn read_frame(
+    r: &mut impl BufRead,
+    header: &mut String,
+    body: &mut Vec<u8>,
+) -> io::Result<bool> {
+    let invalid =
+        |e: &dyn std::fmt::Display| io::Error::new(ErrorKind::InvalidData, e.to_string());
+    let mut len = None;
+    loop {
+        header.clear();
+        if r.read_line(header)? == 0 {
+            return match len {
+                None => Ok(false),
+                Some(_) => Err(invalid(&"the input ended inside a frame's header")),
+            };
+        }
+        let line = header.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            len = Some(value.trim().parse::<usize>().map_err(|e| invalid(&e))?);
+        }
+    }
+    let len = len.ok_or_else(|| invalid(&"a frame without a Content-Length"))?;
+    body.resize(len, 0);
+    r.read_exact(body)?;
+    Ok(true)
+}
+
 /// A connection over stdin and stdout.
 pub fn stdio() -> io::Result<(Connection, IoThreads)> {
     let (to_server, receiver) = unbounded();
     let (sender, from_server) = unbounded::<Message>();
     let reader = thread::Builder::new().name("lsp reader".into()).spawn(move || {
         let mut stdin = stdin().lock();
-        // CR claude for claude: [bug/low] A frame whose body is not a JSON-RPC message
+        // XCR claude for claude: [bug/low] A frame whose body is not a JSON-RPC message
         // (`not json at all`, `[1,2,3]`) makes Message::read return InvalidData. The
         // `?` ends the reader, and with it the server, which exits 1. The frame was
         // already consumed, so the reader could answer with a -32700 parse error and go
@@ -42,7 +77,22 @@ pub fn stdio() -> io::Result<(Connection, IoThreads)> {
         // an I/O or framing error. probe:
         // design/review-2026-10-19/repro/x-lsp-probe-malformed-json-exits.py
         // (x-lsp-probe-05)
-        while let Some(msg) = Message::read(&mut stdin)? {
+        // 2026-10-19 claude: The stdio reader frames messages itself (read_frame:
+        // headers to a blank line, Content-Length, the body) and parses the body with
+        // serde_json: a body that is no JSON-RPC message is logged at warn and skipped,
+        // and only an I/O or framing error ends the reader. No -32700 answer:
+        // lsp_server's RequestId cannot be null, which a parse error's id must be.
+        // Fails if undone: graphix-shell/tests/lsp_stdio.rs
+        // a_malformed_message_is_skipped.
+        let (mut header, mut body) = (String::new(), Vec::new());
+        while read_frame(&mut stdin, &mut header, &mut body)? {
+            let msg = match serde_json::from_slice::<Message>(&body) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    log::warn!("ignored a frame that is no JSON-RPC message: {e}");
+                    continue;
+                }
+            };
             let exit = matches!(&msg, Message::Notification(n) if n.method == "exit");
             if to_server.send(msg).is_err() || exit {
                 break;

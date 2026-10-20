@@ -3,7 +3,7 @@ use crate::{
     abstract_value::{self, CastHook},
     env::Env,
     errf,
-    expr::{ModPath, WrittenAt},
+    expr::ModPath,
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
@@ -30,8 +30,9 @@ use triomphe::Arc;
 pub enum IsAFlags {
     /// A `Type::Abstract` test also accepts a Rust-backed abstract
     /// value whose wrapper UUID is not the type's path-derived one
-    /// (packages registering ad-hoc UUIDs). A Graphix-minted box
-    /// always answers by its tag. An explicit `T as t` is strict.
+    /// (packages registering ad-hoc UUIDs), and a Graphix-minted box
+    /// answers by its tag alone, its payload pattern testing the rest.
+    /// An explicit `T as t` is strict.
     MatchAbstract,
     /// The type-blind leaves (`Any`, `⊥`, an unbound tvar) match
     /// nothing instead of everything: "does this type describe v"
@@ -363,7 +364,7 @@ impl Type {
     pub fn ref_over_any(&self, env: &Env, reaching: &Type) -> bool {
         fn go(
             env: &Env,
-            seen: &mut LPooled<Vec<(usize, usize)>>,
+            seen: &mut LPooled<Vec<(Type, Type)>>,
             p: &Type,
             r: &Type,
         ) -> bool {
@@ -371,56 +372,85 @@ impl Type {
                 let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
                     return false;
                 };
-                if let (Type::Ref(pt), Type::Ref(rt)) = (&p, &r) {
-                    // CR claude for claude: [bug/high] `seen` keys on the two
-                    // definitions alone, ignores their params, and is never popped. So
-                    // the second meeting of a (definition, definition) pair answers
-                    // false, whether it comes in a sibling branch or at other params.
-                    // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
-                    // is accepted (the first Box pair consumed the key), and it then
-                    // reads a &string as &i64. The same arm with the components swapped
-                    // is refused. Fix: make `seen` a path (pop after the recursive
-                    // call) keyed on each side's full RefKey (definition plus params).
-                    // probe:
-                    // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
-                    // (t-cast-setops-01)
-                    let key = (pt.def_key().unwrap_or(0), rt.def_key().unwrap_or(0));
-                    if seen.contains(&key) {
-                        return false;
-                    }
-                    seen.push(key);
+                // XCR claude for claude: [bug/high] `seen` keys on the two
+                // definitions alone, ignores their params, and is never popped. So
+                // the second meeting of a (definition, definition) pair answers
+                // false, whether it comes in a sibling branch or at other params.
+                // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
+                // is accepted (the first Box pair consumed the key), and it then
+                // reads a &string as &i64. The same arm with the components swapped
+                // is refused. Fix: make `seen` a path (pop after the recursive
+                // call) keyed on each side's full RefKey (definition plus params).
+                // probe:
+                // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
+                // (t-cast-setops-01)
+                // a pair of references met again on the path is a cycle;
+                // met in a sibling branch, or at other params, it is not
+                // 2026-10-19 claude: ref_over_any's seen is a path (popped after
+                // the recursive call) of the whole reference types, params
+                // included; a definition pair met a third time at growing params
+                // answers true (may hold the reference), so a growing typedef still
+                // terminates. Pin: lang::types::ref_test_over_any_in_a_second_pair.
+                if !matches!((&p, &r), (Type::Ref(_), Type::Ref(_))) {
+                    return step(env, seen, p, r);
                 }
-                let expand = |t: &Type| match t {
-                    Type::Ref(_) => t.lookup_ref(env).ok(),
-                    t => Some(t.clone()),
+                if seen.iter().any(|(sp, sr)| *sp == p && *sr == r) {
+                    return false;
+                }
+                // the pair of definitions met again at growing params: what it
+                // may hold cannot be told, so it may hold the reference
+                let defs = |t: &Type| match t {
+                    Type::Ref(r) => r.def_key(),
+                    _ => None,
                 };
-                let (Some(p), Some(r)) = (expand(&p), expand(&r)) else { return false };
-                match (&p, &r) {
-                    (_, Type::Any) => p.holds_ref(env),
-                    (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
-                    (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
-                    (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
-                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                    }
-                    (Type::Array(p), Type::Array(r))
-                    | (Type::List(p), Type::List(r))
-                    | (Type::Error(p), Type::Error(r))
-                    | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
-                    (Type::Struct(ps), Type::Struct(rs)) => ps.iter().any(|(n, p, _)| {
-                        rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
-                    }),
-                    (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
-                        if pt == rt && ps.len() == rs.len() =>
-                    {
-                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                    }
-                    (
-                        Type::Map { key: pk, value: pv },
-                        Type::Map { key: rk, value: rv },
-                    ) => go(env, seen, pk, rk) || go(env, seen, pv, rv),
-                    _ => false,
+                let again = seen
+                    .iter()
+                    .filter(|(sp, sr)| defs(sp) == defs(&p) && defs(sr) == defs(&r))
+                    .count();
+                if again >= 2 {
+                    return true;
                 }
+                seen.push((p.clone(), r.clone()));
+                let found = step(env, seen, p, r);
+                seen.pop();
+                found
             })
+        }
+        fn step(
+            env: &Env,
+            seen: &mut LPooled<Vec<(Type, Type)>>,
+            p: Type,
+            r: Type,
+        ) -> bool {
+            let expand = |t: &Type| match t {
+                Type::Ref(_) => t.lookup_ref(env).ok(),
+                t => Some(t.clone()),
+            };
+            let (Some(p), Some(r)) = (expand(&p), expand(&r)) else { return false };
+            match (&p, &r) {
+                (_, Type::Any) => p.holds_ref(env),
+                (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
+                (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
+                (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
+                    ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                }
+                (Type::Array(p), Type::Array(r))
+                | (Type::List(p), Type::List(r))
+                | (Type::Error(p), Type::Error(r))
+                | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
+                (Type::Struct(ps), Type::Struct(rs)) => ps.iter().any(|(n, p, _)| {
+                    rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
+                }),
+                (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
+                    if pt == rt && ps.len() == rs.len() =>
+                {
+                    ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                }
+                (Type::Map { key: pk, value: pv }, Type::Map { key: rk, value: rv }) => {
+                    go(env, seen, pk, rk) || go(env, seen, pv, rv)
+                }
+                _ => false,
+            }
         }
         self.holds_ref(env) && go(env, &mut LPooled::take(), self, reaching)
     }
@@ -1174,15 +1204,16 @@ impl Type {
                     match a.downcast_ref::<crate::abstract_value::GxAbstract>() {
                         Some(g) => {
                             g.id == *id
-                                && g.params.len() == params.len()
-                                // parameters are invariant: each one equal
-                                && params.iter().zip(g.params.iter()).all(|(p, gp)| {
+                                && (flags.contains(IsAFlags::MatchAbstract)
+                                    || g.params.len() == params.len()
+                                    // parameters are invariant: each one equal
+                                    && params.iter().zip(g.params.iter()).all(|(p, gp)| {
                                     let holds = |a: &Type, b: &Type| {
                                         a.contains_with_flags(BitFlags::empty(), env, b)
                                             .unwrap_or(false)
                                     };
                                     holds(p, gp) && holds(gp, p)
-                                })
+                                }))
                         }
                         None => {
                             a.id().as_u64_pair().1 == id.inner()
@@ -1654,28 +1685,6 @@ fn rep_prims(t: &Type) -> BitFlags<Typ> {
     }
 }
 
-/// The array a value of `t` is, when it is one, by its kind.
-enum ArrView<'a> {
-    Array,
-    List,
-    Tuple(&'a [Type]),
-    Struct(&'a [(ArcStr, Type, WrittenAt)]),
-    Variant(&'a ArcStr, &'a [Type]),
-}
-
-impl<'a> ArrView<'a> {
-    fn of(t: &'a Type) -> Option<Self> {
-        Some(match t {
-            Type::Tuple(ts) => ArrView::Tuple(ts),
-            Type::Struct(fs) => ArrView::Struct(fs),
-            Type::Variant(tag, args, _) => ArrView::Variant(tag, args),
-            Type::Array(_) => ArrView::Array,
-            Type::List(_) => ArrView::List,
-            _ => return None,
-        })
-    }
-}
-
 /// The applications a walk has expanded, each once, and the path of
 /// applications it is inside, each with its parameters' size.
 struct Expanded<K: std::hash::Hash + Eq + 'static> {
@@ -1752,79 +1761,13 @@ fn ref_at(t: &Type) -> Option<At<Type>> {
     matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
 }
 
-// CR claude for claude: [dead/low] Only rep_collision's fallback calls this, with two
-// non-Ref heads its own arms did not take. So the walk never keys anything, the Set and
-// Error/Error branches are unreachable, and every ArrView pair that gets here fails its
-// length, name or tag test before `parts` recurses. What it decides is a primitive
-// against a head, two references, and two functions. Fix: make it a leaf match on those
-// three cases, delete arr_overlaps and ArrView, and drop the RepSeen argument. Found by
-// reading; not run. (t-cast-setops-10)
-fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
-    ensure_sufficient(|| {
-        walk(
-            seen,
-            pair_at(a, b),
-            false,
-            || true,
-            |seen| {
-                let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
-                    return true;
-                };
-                let (a, b) = (&*a, &*b);
-                match (a, b) {
-                    (Type::Bottom, _) | (_, Type::Bottom) => false,
-                    (Type::Set(ts), _) => {
-                        ts.iter().any(|t| rep_overlaps(env, seen, t, &b))
-                    }
-                    (_, Type::Set(ts)) => {
-                        ts.iter().any(|t| rep_overlaps(env, seen, &a, t))
-                    }
-                    (Type::Primitive(p), Type::Primitive(q)) => p.intersects(*q),
-                    (Type::Primitive(p), t) | (t, Type::Primitive(p)) => {
-                        p.intersects(rep_prims(t))
-                    }
-                    (Type::ByRef(..), Type::ByRef(..))
-                    | (Type::Fn(_), Type::Fn(_))
-                    | (Type::Map { .. }, Type::Map { .. }) => true,
-                    (Type::Error(x), Type::Error(y)) => rep_overlaps(env, seen, x, y),
-                    (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) => {
-                        x == y
-                    }
-                    (a, b) => match (ArrView::of(a), ArrView::of(b)) {
-                        (Some(x), Some(y)) => arr_overlaps(env, seen, x, y),
-                        _ => false,
-                    },
-                }
-            },
-        )
-    })
-}
-
-/// Whether values of the two array kinds can be one value: the same kind,
-/// and for a tuple, struct or variant the same arity (and names, and tag)
-/// with every part overlapping. Two arrays, or two lists, share the empty
-/// one.
-fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
-    use ArrView::*;
-    let mut parts = |x: &mut dyn Iterator<Item = (&Type, &Type)>| {
-        for (x, y) in x {
-            if !rep_overlaps(env, seen, x, y) {
-                return false;
-            }
-        }
-        true
-    };
+/// Whether two heads [`rep_collision`]'s own arms did not decide share a
+/// runtime form: a primitive and a head whose form holds it, two
+/// references, or two function types.
+fn rep_overlaps(a: &Type, b: &Type) -> bool {
     match (a, b) {
-        (Array, Array) | (List, List) => true,
-        (Tuple(x), Tuple(y)) => x.len() == y.len() && parts(&mut x.iter().zip(y.iter())),
-        (Struct(x), Struct(y)) => {
-            x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0)
-                && parts(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
-        }
-        (Variant(t, x), Variant(u, y)) => {
-            t == u && x.len() == y.len() && parts(&mut x.iter().zip(y.iter()))
-        }
+        (Type::Primitive(p), t) | (t, Type::Primitive(p)) => p.intersects(rep_prims(t)),
+        (Type::ByRef(..), Type::ByRef(..)) | (Type::Fn(_), Type::Fn(_)) => true,
         _ => false,
     }
 }
@@ -1925,8 +1868,7 @@ fn rep_collision(
                         None
                     }
                     (Type::Fn(x), Type::Fn(y)) if x == y => None,
-                    (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
-                        .then(|| (a.clone(), b.clone())),
+                    (a, b) => rep_overlaps(a, b).then(|| (a.clone(), b.clone())),
                 }
             },
         )

@@ -26,12 +26,14 @@ use graphix_compiler::{
     FusionStats, ParMode, Scope,
     env::Env,
     expr::{Expr, Origin, VfsEntry, VfsResolver, parser},
+    typ::Naked,
 };
 use graphix_package::Package;
 use graphix_package_core::testing::{TestCtx, config};
 use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{collections::BTreeMap, fmt, future, str::FromStr, time::Duration};
 use tokio::sync::{mpsc, oneshot};
@@ -139,15 +141,7 @@ impl fmt::Display for Rendered<'_> {
                         if j > 0 {
                             f.write_str(" ")?;
                         }
-                        // CR claude for claude: [readability/low] netidx's Display
-                        // prints each composite's kind marker as abstract:<base64>, so
-                        // a DIVERGENCE report shows abstract:EnwukQtE2EoTn2Uo4FoXw40A
-                        // where (1, 2) or `A(1) belongs and reaches the 2048-byte clip
-                        // sooner. Print the value with
-                        // graphix_compiler::typ::NakedPrefix, which renders marked
-                        // values in Graphix syntax. probe: graphix-fuzz run on any
-                        // program whose value is a tuple. (x-kind-markers-08)
-                        write!(f, "{o}:{v}")?;
+                        write!(f, "{o}:{}", Naked(v))?;
                     }
                     f.write_str(if e.capped { " …capped]" } else { "]" })?;
                 }
@@ -191,60 +185,42 @@ pub enum Containment {
     ActivationBudget,
 }
 
-/// Strip tvar numbers (`'_6070` -> `'_N`), abstract-type ids
-/// (`<abstract#12>` -> `<abstract#N>`) and generated scope ids
-/// (`#do123` -> `#doN`) so fresh-counter drift between
-/// two independent compiles neither hides nor fakes a diagnostic difference.
-// CR claude for claude: [test-gap/low] A refusal inside a seq step prints the
-// lowering's generated names (`seqv<ExprId>_..`), and their ids differ between the
-// reference and its rerun. Nothing here strips them, so every refused seq program is
-// dropped as NONDETERMINISTIC/UNSURE instead of verdict 'reject', including typemorph's
-// must-reject mutants of seq bodies. Normalize the `seq<word><digits>` names from
-// expr/seq.rs here, or settle tests-seq-08 with a `#` prefix that the `#name<digits>`
-// rule below already strips. probe:
-// design/review-2026-10-19/repro/x-engine-seq-errors-seq-refusal-nondeterministic.gx
-// (x-engine-seq-errors-05)
+/// Strip the counters fresh names carry, so drift between two independent
+/// compiles neither hides nor fakes a diagnostic difference: tvar numbers
+/// (`'_6070` -> `'_N`), ids after a `#` (`<abstract#12>`, the block scopes
+/// `#do123`, `#fn45`) and the seq lowering's names (`seqv4611_1` ->
+/// `seqvN_1`, `seqpc12` -> `seqpcN`).
 fn normalize_diag(s: &str) -> String {
-    let s = {
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s;
-        while let Some(i) = rest.find("<abstract#") {
-            out.push_str(&rest[..i]);
-            out.push_str("<abstract#N");
-            let tail = &rest[i + "<abstract#".len()..];
-            let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
-            rest = &tail[end..];
-        }
-        out.push_str(rest);
-        out
-    };
-    let s = s.as_str();
+    let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        out.push(c);
-        // a generated block scope component (`#do123`, `#fn45`): its id
-        // is a counter
-        if c == '#' {
-            while chars.peek().is_some_and(|c| c.is_ascii_lowercase()) {
-                out.push(chars.next().unwrap());
+    let (mut i, mut flushed) = (0, 0);
+    while i < b.len() {
+        let word_start =
+            i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        let head = match b[i] {
+            b'#' => 1,
+            b'\'' if b.get(i + 1) == Some(&b'_') => 2,
+            b's' if word_start && s[i..].starts_with("seq") => 3,
+            _ => 0,
+        };
+        if head > 0 {
+            let mut j = i + head;
+            while b.get(j).is_some_and(u8::is_ascii_lowercase) {
+                j += 1;
             }
-            if chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-                while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    chars.next();
+            if b.get(j).is_some_and(u8::is_ascii_digit) {
+                out.push_str(&s[flushed..j]);
+                while b.get(j).is_some_and(u8::is_ascii_digit) {
+                    j += 1;
                 }
                 out.push('N');
+                (flushed, i) = (j, j);
+                continue;
             }
-            continue;
         }
-        if c == '\'' && chars.peek() == Some(&'_') {
-            out.push(chars.next().unwrap());
-            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-                chars.next();
-            }
-            out.push('N');
-        }
+        i += 1;
     }
+    out.push_str(&s[flushed..]);
     out
 }
 
@@ -890,8 +866,6 @@ async fn drive_inner(
         }
     }
     let mut trace = trace::Trace::from_segments(&segs, eid);
-    let typ = &compiled.exprs.last().expect("compile returned no exprs").typ;
-    trace.canonicalize_refs(&compiled.env, typ);
     // Exact tier only. The runtime runs on past a capped trace, so the
     // capture stops at the last segment's cycle.
     // CR claude for eric: [test-gap/low] Prints are captured only at the Exact tier, so
@@ -1844,7 +1818,8 @@ impl Pair {
 
 /// Every comparison a subject owes, in the order they are judged: the
 /// engines, then (a callable) the dispatch route's engines and the route
-/// pair, then each engine's image sessions, then the forked runs. A
+/// pair, then each engine's image sessions (the forked JIT's included),
+/// then the forked runs. A
 /// program whose values are not comparable owes them all at kind
 /// strength.
 fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
@@ -1854,8 +1829,11 @@ fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
         out.extend([Pair::EngineDispatch, Pair::Route]);
     }
     if sessions {
+        // the forked JIT too: a warm start under forked evaluation is the
+        // shell's default, and its Par pair ties it to the serial runs
+        let forked = par_enabled().then_some(Mode::JitPar);
         for &route in session_routes(code) {
-            // CR claude for claude: [test-gap/low] Image sessions are compared only at
+            // XCR claude for claude: [test-gap/low] Image sessions are compared only at
             // Interp and Jit, which run ParMode::Off, and the forked pairs run with no
             // cache. So no lane fuzzes a warm start under forked evaluation, which is
             // the shell's default: GRAPHIX_PAR=auto with a restored program. There
@@ -1866,7 +1844,12 @@ fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
             // divergence. Fix: add Pair::Warm at a forked mode (Par or JitPar) against
             // the serial cold run, sampled like the other sessions. Found by reading;
             // not run. (x-image-04)
-            for mode in [Mode::Interp, Mode::Jit] {
+            // 2026-10-19 claude: comparisons adds Cold and Warm at Mode::JitPar per
+            // session route when forking is on, so a warm start runs under forked
+            // evaluation and the Par pair ties it to the serial runs. Pin:
+            // sessions_include_the_forked_jit. A regress run with it (552 pins, every
+            // one sessioned) found 0 regressions and 0 manifest mismatches.
+            for mode in [Mode::Interp, Mode::Jit].into_iter().chain(forked) {
                 out.extend([Pair::Cold(mode, route), Pair::Warm(mode, route)]);
             }
         }
@@ -2598,6 +2581,23 @@ async fn typemorph_work_order(
     let _ = out.flush();
 }
 
+/// A program a work order hands back for the individual path.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Suspect {
+    /// The child could not resolve it (a `P` line).
+    Flagged(String),
+    /// The child died before its verdict.
+    Unjudged(String),
+}
+
+impl Suspect {
+    fn prog(&self) -> &str {
+        match self {
+            Suspect::Flagged(p) | Suspect::Unjudged(p) => p,
+        }
+    }
+}
+
 /// What one work order came back with. Everything here is per-BATCH or
 /// per-FINDING; nothing scales with the number of agreeing subjects.
 pub(crate) struct OrderResult {
@@ -2607,7 +2607,7 @@ pub(crate) struct OrderResult {
     /// every subject it left without a verdict; the parent re-derives
     /// them through the individual path, which records the one that
     /// killed it.
-    pub suspect: Vec<String>,
+    pub suspect: Vec<Suspect>,
     /// (signature, program) the child judged ring-worthy.
     pub novel: Vec<(u64, String)>,
     pub cpu: Duration,
@@ -2675,7 +2675,7 @@ fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult
                     if let Some(r) = resolved.get_mut(id as usize) {
                         *r = true;
                     }
-                    res.suspect.push(prog);
+                    res.suspect.push(Suspect::Flagged(prog));
                 }
             }
             Some("CPU") => {
@@ -2695,7 +2695,7 @@ fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult
         for done in resolved {
             let p = next();
             if !done {
-                res.suspect.push(p);
+                res.suspect.push(Suspect::Unjudged(p));
             }
         }
     }
@@ -2813,16 +2813,36 @@ impl Judge {
 
 const CRASH_CLASS: &str = "CRASH ";
 
-/// A crash's key: the child's status and last words with every number
-/// collapsed, so one panic site reached with other values is one class.
+/// The part of a crash status naming a panic's site, kept verbatim in
+/// its class.
+const PANIC_SITE: &str = "panicked at ";
+
+/// A crash's key: the child's status, its panic site and last words, with
+/// every number outside the site collapsed, so one panic site reached
+/// with other values is one class.
 fn crash_class(status: &str) -> String {
     let words = status
         .replace(" (core dumped)", "")
         .split(" | ")
         .filter(|w| !w.starts_with("note: "))
+        .map(|w| match w.starts_with(PANIC_SITE) {
+            true => w.to_string(),
+            false => collapse_numbers(w),
+        })
         .collect::<Vec<_>>()
         .join(" | ");
-    format!("{CRASH_CLASS}{}", collapse_numbers(&words))
+    format!("{CRASH_CLASS}{words}")
+}
+
+/// The key a crash of `prog` claims a minimization under: its class, or,
+/// for a status with no words to tell causes apart (a hang, a silent
+/// signal), its class and its program's [`crash_key`].
+fn crash_claim(status: &str, prog: &str) -> String {
+    let class = crash_class(status);
+    match status.contains(" | ") {
+        true => class,
+        false => format!("{class} | {}", crash_key(prog)),
+    }
 }
 
 /// Minimize a diverging or crashing wrapper: schedule reductions first
@@ -2859,7 +2879,7 @@ pub async fn minimize(
     let Ok((body, mut files)) = files::split(&body_owned) else {
         return (code.to_string(), 1);
     };
-    let mut current = match mutate::parse(body) {
+    let mut current = match mutate::parse_body(body) {
         Some(e) => e,
         None => return (code.to_string(), 1),
     };
@@ -2867,6 +2887,13 @@ pub async fn minimize(
     let reattach = |text: String| match &cspec {
         Some(c) => c.render(&text),
         None => text,
+    };
+    // the result is a text a check judged: a reprint from the ASTs may
+    // differ from every candidate (comments dropped)
+    let last_hit = Mutex::new(code.to_string());
+    let progress = &|text: &str| {
+        *last_hit.lock() = text.to_string();
+        progress(text)
     };
     let mut calls = 1;
     'sched: while calls < budget {
@@ -2963,14 +2990,17 @@ pub async fn minimize(
             break; // every subject is at a fixpoint
         }
     }
-    // CR claude for claude: [risk/low] This text may never have been judged. The body
+    // XCR claude for claude: [risk/low] This text may never have been judged. The body
     // and each section are reprinted from their ASTs, and a section's shrink stores
     // render_items(&reduced) even when nothing hit. When the last lap lands nothing,
     // the result is a canonical reprint (comments dropped) that no check saw, and the
     // campaign records it as the minimized reproducer. Fix: keep the last text that hit
     // (initially `code`), updated wherever `progress` is called, and return it. Found
     // by reading; not run. (fuzz-lib-b-06)
-    (reattach(sched.render(&files::render(&current.to_string(), &files))), calls)
+    // 2026-10-19 claude: minimize wraps progress to record each text a check judged
+    // (initially the input) and returns that, never a reprint. Not reached by a test
+    // (no in-process divergence to minimize).
+    (last_hit.into_inner(), calls)
 }
 
 /// One reduction of an AST: either replace a node, or drop a statement
@@ -3385,7 +3415,9 @@ pub async fn typemorph_subject(
             }
         }
         if results.iter().all(|r| r.verdict != TmVerdict::Hung) {
-            rejects = must_reject(&ctx, body, &compose, per_check, cap).await;
+            let modules: Vec<&str> =
+                files.iter().filter_map(|(n, _)| n.strip_suffix(".gx")).collect();
+            rejects = must_reject(&ctx, body, &modules, &compose, per_check, cap).await;
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
@@ -3399,6 +3431,7 @@ pub async fn typemorph_subject(
 async fn must_reject(
     ctx: &TestCtx,
     body: &str,
+    modules: &[&str],
     compose: &impl Fn(&str) -> String,
     per_check: Duration,
     cap: usize,
@@ -3410,7 +3443,7 @@ async fn must_reject(
         return out;
     };
     let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test");
-    for p in mustreject::probes(body, &types, cap) {
+    for p in mustreject::probes(body, &types, modules, cap) {
         let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
             TmCheck::Unparsed(_) => continue,
             TmCheck::Hung => break,
@@ -4080,14 +4113,15 @@ impl Corpus {
         true
     }
 
-    /// Record a process-killing program, dedup'd by its minimized form
-    /// when it has one, else by its normalized text. Crash findings must
-    /// not be promoted to `findings/` until fixed: regress runs
-    /// in-process.
+    /// Record a process-killing program under its claim key (its
+    /// [`crash_claim`]), dedup'd by its minimized form when it has one,
+    /// else by its normalized text. Crash findings must not be promoted to
+    /// `findings/` until fixed: regress runs in-process.
     pub fn record_crash(
         &self,
         prog: &str,
         status: &str,
+        claim: &str,
         minimized: Option<&str>,
     ) -> bool {
         let key = minimized.map_or_else(|| crash_key(prog), |m| m.trim().to_string());
@@ -4104,17 +4138,11 @@ impl Corpus {
             }
             None => format!("// mutant:\n{prog}"),
         };
-        // CR claude for claude: [bug/low] A crash file has no `// key:` line, so
-        // Corpus::load never counts its class. After a restart on the same corpus dir,
-        // every crash class gets three fresh minimizations, and possibly three more
-        // files, contrary to the `keys` doc and design/graphix_fuzz.md ("keys of
-        // findings on disk count"). Fix: take the class as a parameter and write
-        // `{KEY_LINE}{escape_line(class)}` here, as Corpus::record does. Found by
-        // reading; not run. (fuzz-lib-b-04)
         let body = format!(
-            "// CRASH: child {status}\n\
+            "// CRASH: child {status}\n{KEY_LINE}{}\n\
              // do not promote to findings/ until fixed (regress runs in-process)\n\
              {program}\n",
+            escape_line(claim),
         );
         if let Err(e) = std::fs::write(self.dir.join(format!("crash_{n:06}.gx")), body) {
             eprintln!("FATAL fuzz harness: cannot write finding: {e}");
@@ -4885,14 +4913,19 @@ async fn check_child(
     if serial {
         env.push(("GRAPHIX_FUZZ_SERIAL_RUNS", "1"));
     }
-    // CR claude for claude: [bug/low] `timeout` sizes only this deadline. The check-one
+    // XCR claude for claude: [bug/low] `timeout` sizes only this deadline. The check-one
     // child checks at campaign_timeout() whatever it is given, and so does run-one in
     // died(). `graphix-fuzz minimize` therefore judges every candidate at 3 s although
     // it builds Judge::Isolated(timeout()) (10 s), so a finding that `check` reports at
     // 10 s can minimize to AGREE. Fix: pass the budget in argv (milliseconds, as
     // typemorph-one does) and use it in both children. Found by reading; not run.
     // (fuzz-lib-b-07)
-    let c = run_child("check-one", &[], &env, prog, true, deadline).await;
+    // 2026-10-19 claude: check-one and run-one take the parent budget in milliseconds
+    // at argv 3 (main.rs parent_budget, shared with typemorph-one), and check_child and
+    // run_isolated pass it, so minimize judges at the budget it built. Not reached by a
+    // test.
+    let ms = timeout.as_millis().to_string();
+    let c = run_child("check-one", &[&ms], &env, prog, true, deadline).await;
     let res = match (c.status, c.verdict) {
         (None, _) => PoolResult::Crash("HANG (outer deadline)".into()),
         (_, Some(v)) => match v.split_once('\n') {
@@ -4944,6 +4977,12 @@ async fn died(
         || stderr.lines().filter(|l| !l.starts_with("RUN ") && !l.starts_with("DONE "));
     let crash = |what: &str| {
         let mut status = format!("{what}{status}");
+        let site = output().find_map(|l| l.split_once(PANIC_SITE)).map(|(_, at)| at);
+        if let Some(at) = site {
+            status.push_str(" | ");
+            status.push_str(PANIC_SITE);
+            status.push_str(at.trim_end_matches(':'));
+        }
         for l in output().collect::<Vec<_>>().into_iter().rev().take(2).rev() {
             status.push_str(" | ");
             status.push_str(l);
@@ -5012,8 +5051,8 @@ async fn died(
 /// trace, `None` when the child died.
 async fn run_isolated(prog: &str, run: Run, timeout: Duration) -> Option<bool> {
     let deadline = Deadline::Fixed(slow_budget(timeout) * 2 + Duration::from_secs(30));
-    let token = run.token();
-    let args: Vec<&str> = token.split(' ').collect();
+    let (ms, token) = (timeout.as_millis().to_string(), run.token());
+    let args: Vec<&str> = [ms.as_str()].into_iter().chain(token.split(' ')).collect();
     let c = run_child("run-one", &args, &[], prog, false, deadline).await;
     c.verdict.map(|v| v.trim() == "trace")
 }
@@ -5031,9 +5070,11 @@ async fn minimize_isolated(
     key: &str,
     timeout: Duration,
 ) -> (Option<String>, Duration) {
-    // worst case the whole budget is bottom programs sleeping the
-    // per-mode timeout
-    // CR claude for claude: [perf/low] The comment above undercounts the worst case. A
+    // A time cap, not a count: a killed child answers its best so far.
+    // The budget's checks at twice the per-mode timeout, or the first
+    // check and one candidate at this program's worst case (a one-sided
+    // timeout's slow remakes, a wedged child), whichever is longer.
+    // XCR claude for claude: [perf/low] The comment above undercounts the worst case. A
     // candidate with a one-sided Timeout pays settle's slow_budget remake (at least 60
     // s) plus a slow-budget rerun of the reference, so a timeout-kind finding gets
     // about 8 of its 80 checks in 540 s. Under Judge::Isolated, one candidate that
@@ -5041,8 +5082,13 @@ async fn minimize_isolated(
     // whole deadline. Fix: size this from the finding's per-check worst case, or have
     // the minimizer treat a candidate that times out at the plain budget as a miss.
     // Found by reading; not run. (fuzz-lib-b-05)
+    // 2026-10-19 claude: The comment above now calls the deadline what it is, a time
+    // cap (the child answers its best so far), and the cap is at least two of this
+    // program's check_deadline, so a slow finding still gets its first check and one
+    // candidate. Not reached by a test.
     let deadline = Deadline::Fixed(
-        timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60),
+        (timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60))
+            .max(check_deadline(prog, timeout) * 2),
     );
     let c = run_child("minimize-one", &[key], &[], prog, false, deadline).await;
     let min = c.verdict.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
@@ -5111,7 +5157,7 @@ pub async fn run_aggregator(
     // subjects a batch child could not resolve, re-derived one process
     // each; batching everything is only right while this stays small
     let mut suspect = [0usize; SOURCES];
-    let mut to_derive: std::collections::VecDeque<(usize, String)> =
+    let mut to_derive: std::collections::VecDeque<(usize, Suspect)> =
         std::collections::VecDeque::new();
     let mut seed_ctr = [0u64; SOURCES];
     // the regression corpus goes through typemorph once, first
@@ -5132,13 +5178,14 @@ pub async fn run_aggregator(
         // suspects first: a finding waiting on a slot is worth more than
         // a fresh order
         while orders.len() + derive.len() < par
-            && let Some((si, prog)) = to_derive.pop_front()
+            && let Some((si, suspect)) = to_derive.pop_front()
         {
             let corpus = corpus.clone();
             let found = found.clone();
             derive.spawn(async move {
                 let (finding, cpu) =
-                    derive_suspect(KINDS[si], &prog, &corpus, &found[si], timeout).await;
+                    derive_suspect(KINDS[si], &suspect, &corpus, &found[si], timeout)
+                        .await;
                 (si, finding, cpu)
             });
         }
@@ -5310,14 +5357,15 @@ struct Tally {
 /// children burned.
 async fn derive_suspect(
     kind: SourceKind,
-    prog: &str,
+    suspect: &Suspect,
     corpus: &Corpus,
     tally: &Tally,
     timeout: Duration,
 ) -> (bool, Duration) {
     use std::sync::atomic::Ordering::Relaxed;
+    let prog = suspect.prog();
     if kind == SourceKind::Typemorph {
-        let (confirmed, cpu) = confirm_typeflip(corpus, tally, prog, timeout).await;
+        let (confirmed, cpu) = confirm_typeflip(corpus, tally, suspect, timeout).await;
         if confirmed {
             tally.divergences.fetch_add(1, Relaxed);
         }
@@ -5342,19 +5390,9 @@ async fn derive_suspect(
         }
         PoolResult::Crash(status) => {
             tally.crashes.fetch_add(1, Relaxed);
-            // CR claude for claude: [bug/medium] This class cannot tell crashes apart.
-            // crash_class keeps the wait status and the last two stderr lines, which
-            // for a Rust panic are the message and the `note:` line. The `panicked at
-            // file:line` line is dropped. A hang is always "HANG (outer deadline)", and
-            // a silent SIGSEGV is the bare signal. With MINIMIZE_PER_KEY = 3, every
-            // unwrap-on-None panic from any site, every hang and every silent JIT
-            // SIGSEGV each get three files per campaign, and every later one, whatever
-            // its cause, is counted as known and dropped. Fix: put the panic location
-            // in the key (collapse digits in the message only). For a status with no
-            // words, key on the program's crash_key. Found by reading; not run.
-            // (fuzz-lib-b-02)
             let class = crash_class(&status);
-            if !corpus.claim(&class) {
+            let claim = crash_claim(&status, prog);
+            if !corpus.claim(&claim) {
                 tally.known.fetch_add(1, Relaxed);
                 return (true, cpu);
             }
@@ -5364,7 +5402,7 @@ async fn derive_suspect(
             } else {
                 minimize_isolated(prog, &class, timeout).await
             };
-            if corpus.record_crash(prog, &status, min.as_deref()) {
+            if corpus.record_crash(prog, &status, &claim, min.as_deref()) {
                 println!("CRASH — child {status}");
                 println!(
                     "    program: {}",
@@ -5393,21 +5431,22 @@ async fn derive_suspect(
     (finding, cpu)
 }
 
-/// Re-probe a subject that flipped in a batch child in a fresh process
-/// and record each flip class it shows there; a flip the fresh process
-/// does not reproduce is an acceptance flap, its own class. A fresh
-/// process that died or wedged is a crash, recorded per program. True
-/// when the fresh process flipped too.
+/// Re-probe a subject a batch child flipped, or died before judging, in
+/// a fresh process and record each flip class it shows there; a flip
+/// the fresh process does not reproduce is an acceptance flap, its own
+/// class. A fresh process that died or wedged is a crash, recorded per
+/// program. True when the fresh process flipped.
 async fn confirm_typeflip(
     corpus: &Corpus,
     tally: &Tally,
-    prog: &str,
+    suspect: &Suspect,
     timeout: Duration,
 ) -> (bool, Duration) {
+    let prog = suspect.prog();
     let (r, cpu) = typemorph_child(prog, timeout).await;
     let (flips, confirmed) = match r {
         Ok(rep) => match tm_flips(&rep) {
-            // CR claude for claude: [bug/medium] Not every suspect reaching this arm
+            // XCR claude for claude: [bug/medium] Not every suspect reaching this arm
             // flipped in its batch child. When a typemorph gen-batch child dies,
             // order_result also hands back every subject left without a verdict. Those
             // that do not flip here get recorded as an "unconfirmed: fresh-process
@@ -5416,16 +5455,24 @@ async fn confirm_typeflip(
             // after it. Fix: have OrderResult mark which suspects came from a P line,
             // and record the flap only for those. An unresolved subject with no flips
             // is no finding. Found by reading; not run. (fuzz-lib-b-03)
-            f if f.is_empty() => (
-                vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
-                false,
-            ),
+            // 2026-10-19 claude: OrderResult hands back Suspect::Flagged (a P line) or
+            // Suspect::Unjudged (left by a dead child); confirm_typeflip records the
+            // fresh-process flap only for a Flagged one, and an Unjudged one with no
+            // flips is no finding. order_test pins the marking; the confirm path is
+            // not reached by a test.
+            f if f.is_empty() => match suspect {
+                Suspect::Flagged(_) => (
+                    vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
+                    false,
+                ),
+                Suspect::Unjudged(_) => (f, false),
+            },
             f => (f, true),
         },
         // a confirm that measured nothing confirms nothing
         Err(e) => {
             tally.crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if corpus.record_crash(prog, &e, None) {
+            if corpus.record_crash(prog, &e, &crash_claim(&e, prog), None) {
                 println!("CRASH — typemorph child {e}");
                 println!("    program: {}", prog.replace('\n', "\\n"));
             }
@@ -5444,6 +5491,41 @@ async fn confirm_typeflip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_prints_composites_in_graphix_syntax() {
+        let pair =
+            graphix_compiler::rep::tuple([Value::I64(1), Value::I64(2)].into_iter());
+        assert_eq!(render(&Outcome::single(pair)), "Trace([0:(1, 2)])");
+    }
+
+    /// With forking on, a subject's sessions include a warm start under
+    /// the forked JIT, which its Par pair ties to the serial runs.
+    #[test]
+    fn sessions_include_the_forked_jit() {
+        if !par_enabled() {
+            return;
+        }
+        let pairs = comparisons("1", true);
+        for p in [
+            Pair::Cold(Mode::JitPar, Route::InLanguage),
+            Pair::Warm(Mode::JitPar, Route::InLanguage),
+            Pair::Par(Mode::JitPar),
+        ] {
+            assert!(pairs.contains(&p), "{p:?} missing from {pairs:?}");
+        }
+    }
+
+    #[test]
+    fn normalize_diag_strips_fresh_counters() {
+        let n = normalize_diag;
+        assert_eq!(
+            n("`let [h, ..] = seqv4611686018427390_1` in seqpc12"),
+            "`let [h, ..] = seqvN_1` in seqpcN"
+        );
+        assert_eq!(n("'_6070 <abstract#12> #do123 #fn45"), "'_N <abstract#N> #doN #fnN");
+        assert_eq!(n("myseqv12 seq x2 'a1 s3"), "myseqv12 seq x2 'a1 s3");
+    }
 
     #[test]
     fn breakage_window_trips_only_on_sustained_majority() {
@@ -5553,7 +5635,7 @@ mod tests {
             // a call's return is no cell its uses decide
             ("{ let f = |x: i64| -> i64 x; let v = f(1); let w = v + 1; w }", "retype#"),
             // the hop: the widened `a` reaches `+` through `w`'s let
-            ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-consumer#"),
+            ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-hop#"),
             ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
             ("{ let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }", "shared-var#"),
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-unknown#"),
@@ -5573,6 +5655,12 @@ mod tests {
                 "retype#",
             ),
             ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-write#"),
+            // a use before the write that needs `r` writable refuses first
+            (
+                "{ let x = 1; let f = |p: &mut i64| -> i64 *p; let r = &mut x; \
+                 let y = f(r); *r <- 5; x + y }",
+                "ref-write#",
+            ),
             ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-widen#"),
             (
                 "{ let s: [string, null] = \"a\"; select s { null as _ => 0, string as v => 1 } }",
@@ -5685,6 +5773,11 @@ mod tests {
                 "widen-consumer#",
             ),
             ("{ let z = never(); let r = (|y| z <- y)(1); (r, z) }", "widen-consumer#"),
+            // nor through the subject's own module
+            (
+                "{ let r = m0::f(1); r }\n// file-v1: m0.gx\nlet z = never();\nlet f = |y| z <- y;\n",
+                "widen-consumer#",
+            ),
             (
                 "{ let z = never(); let f = |y| z <- y; let g = f; let r = g(1); (r, z) }",
                 "widen-consumer#",
@@ -5695,6 +5788,11 @@ mod tests {
             ),
             // the annotation would decide the open referent
             ("{ let x = never(); let r = &mut x; *r <- 2; x }", "ref-widen#"),
+            // the call decides the open first argument's type
+            (
+                "{ let g = |x: 'a, y: 'a| -> 'a x; let z = never(); let r = g(z, 1); [r, z] }",
+                "shared-var#",
+            ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");
@@ -6779,6 +6877,37 @@ mod trace_probes {
         assert!(matches!(Judge::for_key(Some("Engine (..)"), t), Judge::InProcess(_)));
     }
 
+    /// Two panic sites with one message are two classes; a crash with no
+    /// words claims per program, and a recorded crash's claim counts on
+    /// reload.
+    #[test]
+    fn crash_claims_tell_causes_apart() {
+        let at = |site: &str| {
+            format!(
+                "signal: 6 (SIGABRT) | panicked at {site} | called `Option::unwrap()` on a \
+                 `None` value | note: run with `RUST_BACKTRACE=1` environment variable"
+            )
+        };
+        let (a, b) = (at("src/a.rs:12:5"), at("src/a.rs:40:5"));
+        assert_ne!(crash_class(&a), crash_class(&b));
+        assert!(
+            crash_class(&a).contains("panicked at src/a.rs:12:5 | "),
+            "{}",
+            crash_class(&a)
+        );
+        assert_eq!(crash_claim(&a, "1"), crash_class(&a));
+        let hang = "HANG (outer deadline)";
+        assert_eq!(crash_claim(hang, "f(1)"), crash_claim(hang, "f(2)"));
+        assert_ne!(crash_claim(hang, "f(1)"), crash_claim(hang, "g(1)"));
+        let dir = tempfile::tempdir().unwrap();
+        let corpus = Corpus::load(dir.path());
+        let claim = crash_claim(hang, "f(1)");
+        assert!(corpus.claim(&claim));
+        assert!(corpus.record_crash("f(1)", hang, &claim, None));
+        let reloaded = Corpus::load(dir.path());
+        assert_eq!(reloaded.keys.lock().unwrap().get(&claim), Some(&1));
+    }
+
     /// A marker names a builtin, not the tail of a longer name, a string's
     /// text or a binding's name; what a string interpolates is code.
     #[test]
@@ -7054,14 +7183,18 @@ mod order_test {
         let r = order_result(&order, &head, false);
         assert!(!r.clean);
         assert_eq!(r.agreed, 2);
-        assert_eq!(r.suspect, [1, 3, 4, 5].map(|i| progs[i].clone()));
+        let unjudged = |i: usize| Suspect::Unjudged(progs[i].clone());
+        assert_eq!(
+            r.suspect,
+            [Suspect::Flagged(p1.clone()), unjudged(3), unjudged(4), unjudged(5)]
+        );
         // a subject's `sys::exit(0)` is not a clean order
         assert!(!order_result(&order, &head, true).clean);
         let tail: String = (3..6).map(|i| format!("V {i} A\n")).collect();
         let r = order_result(&order, &format!("{head}{tail}CPU 7\n"), true);
         assert!(r.clean);
         assert_eq!(r.agreed, 5);
-        assert_eq!(r.suspect, [progs[1].clone()]);
+        assert_eq!(r.suspect, [Suspect::Flagged(p1.clone())]);
     }
 
     #[test]

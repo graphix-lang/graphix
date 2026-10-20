@@ -86,7 +86,7 @@ pub(super) struct SparklineW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> SparklineW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        Ok(Box::new(Self(Props::compile(&gx, &v).await.context("sparkline")?)))
+        Ok(TuiW::new(Self(Props::compile(&gx, &v).await.context("sparkline")?)))
     }
 }
 

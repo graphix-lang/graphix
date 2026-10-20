@@ -593,43 +593,17 @@ impl Generation {
     }
 
     /// Install a record's function, its thunk, its chunks and its
-    /// callees (once per record) and return their ids. The record tree
-    /// is as deep as the program's static call chain.
-    // XCR claude for claude: [bug/high] load recurses through every callee record, and
-    // each chunk's callees, with no stack::ensure_sufficient. Its depth is therefore
-    // the program's static call-chain depth. A chain of 4800 lambdas, each calling the
-    // one before, fuses and then aborts the whole process here at link ("stack
-    // overflow, aborting", rc 134). --no-fusion prints the value, and 3200 lambdas link
-    // fine. Guard the recursion with stack::ensure_sufficient, or install the records
-    // in an explicit post-order walk. record_encode and record_decode in
-    // fusion/emit/record.rs recurse through callees the same way and need the same
-    // guard; that part was found by reading, because the compile aborts before an image
-    // is written. probe: design/review-2026-10-19/repro/x-rerun-6-jit-load-overflow.sh
-    // (x-rerun-6-01)
-    // 2026-10-19 claude: Generation::load recurses through load_all, which runs under
-    // crate::stack::ensure_sufficient. record_encode/record_decode needed nothing:
-    // image::object_encode and image::decode_at already run each object's contents
-    // under ensure_sufficient. Pin: graphix-shell/tests/deep_nesting.rs shape fnchain
-    // (FLAT_SHAPES, 3000 deep; its run mode aborted at link on the 512K stack without
-    // the guard; image mode covers the record codec).
+    /// callees (once per record) and return their ids.
     fn load(&mut self, rec: &Arc<BodyRecord>) -> Result<Installed> {
+        // a record's depth is the region's static call-chain length
+        crate::stack::ensure_sufficient(|| self.load_record(rec))
+    }
+
+    fn load_record(&mut self, rec: &Arc<BodyRecord>) -> Result<Installed> {
         let key = Arc::as_ptr(rec) as usize;
         if let Some((installed, _)) = self.loaded.get(&key) {
             return Ok(*installed);
         }
-        // XCR claude for claude: [bug/medium] load recurses once per level of the record
-        // tree: callees, and chunks' callees. That depth is the program's static
-        // call-chain length inside one region, and nothing guards it. The link runs on
-        // a 2 MiB tokio worker, so a chain of 6000 lambda definitions (f_i calls
-        // f_{i-1}) aborts the process with a stack overflow; the node-walk runs the
-        // same program. Make the install a postorder walk with an explicit stack, as
-        // def_order does, or wrap the recursion in crate::stack::ensure_sufficient.
-        // record_encode and record_decode in record.rs recurse over callees the same
-        // way. Add a deep-callee-chain case to graphix-shell/tests/deep_nesting.rs.
-        // probe: design/review-2026-10-19/repro/f-jit-load-stack-overflow.sh (f-jit-01)
-        // 2026-10-19 claude: Same fix as x-rerun-6-01: load_all runs the callee
-        // recursion under ensure_sufficient; the deep-callee-chain case is
-        // deep_nesting.rs shape fnchain (aborted without the guard, checked by hand).
         let callees = self.load_all(&rec.callees)?;
         let id = self.declare_record(rec)?;
         let thunk = match rec.thunk() {
@@ -654,7 +628,7 @@ impl Generation {
     }
 
     fn load_all(&mut self, recs: &[Arc<BodyRecord>]) -> Result<SmallVec<[Installed; 8]>> {
-        crate::stack::ensure_sufficient(|| recs.iter().map(|c| self.load(c)).collect())
+        recs.iter().map(|c| self.load(c)).collect()
     }
 
     fn declare_record(&mut self, rec: &BodyRecord) -> Result<FuncId> {

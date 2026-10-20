@@ -97,9 +97,15 @@
   ;; parser::KEYWORDS plus val with as throws for abort flush, so the lists are gated
   ;; like the queries. probe:
   ;; design/review-2026-10-19/repro/ide-tooling-regex-keyword-drift.sh (ide-tooling-05)
+  ;; 2026-10-19 claude: The three lists now name every word the repro checks (it prints
+  ;; nothing) and drop where; ok stays pending tests-parser-08. Still owed: the
+  ;; tree_sitter_compat test that include_str!s the three files and asserts the words, a
+  ;; Rust change outside the docs pass.
   (let ((keywords '("let" "rec" "mod" "use" "type" "fn" "select" "if" "try"
-                     "catch" "cast" "any" "with" "throws" "as"
-                     "seq" "seqq" "until" "abort"))
+                     "catch" "cast" "never" "any" "with" "throws" "as"
+                     "pub" "trait" "impl" "mut" "val" "for"
+                     "seq" "seqq" "until" "abort" "flush"
+                     "self" "super" "package"))
         (builtins '("true" "false" "null"))
         (types '("bool" "string" "bytes" "i8" "u8" "i16" "u16"
                  "i32" "u32" "v32" "z32" "i64" "u64" "v64" "z64"

@@ -166,7 +166,7 @@ async fn a_mistyped_call_is_refused() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
     outputs(&mut rx);
     let bad = ValArray::from_iter_exact([Value::String(literal!("no"))].into_iter());
-    c.call_unchecked(bad.clone()).await?;
+    c.call_unchecked(bad.clone())?;
     gx.call(c.id(), bad)?;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(outputs(&mut rx), Vec::<Value>::new());

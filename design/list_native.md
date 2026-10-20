@@ -17,23 +17,20 @@ both special-cased it, so the tag bought nothing.
 The rep is PRIVATE to `graphix-types/src/list.rs` (`nil`/`cons`/`split`/
 `is_nil`), the single seam that knows the layout:
 
-<!-- CR claude for claude: [doc-drift/low] Stale since kind markers: a list cell is now
-a marked array (list.rs reads it through `rep::marked(v, Kind::List)`), not [head,
-tail], and nil is not the bare empty array. The "Printing and the wire" section is stale
-too: writers strip a list to a flat array, so json::write_str([<1, 2>]) is "[1,2]", not
-nested 2-arrays. Rewrite both sections to match list.rs and
-design/distinct_composite_forms.md. Checked by running json::write_str. Also reported as
-(collections-str-07). (c-pattern-06) -->
-- **cons** = `Value::Array([head, tail])` — two slots, 32 bytes.
-- **nil** = a refcount clone of the static EMPTY `ValArray` — free to
-  construct, free to test.
-- Discriminant: array length 0 vs 2. O(1), no string compare; in
-  kernels an inline length test.
+- **cons** = `Value::Array([LMARK, head, tail])`, the list kind's
+  marker in element 0 (`rep::build(Kind::List, ..)`,
+  `design/distinct_composite_forms.md`), read back through
+  `rep::marked(v, Kind::List)`.
+- **nil** = `[LMARK]`, the marker alone: one static value, a refcount
+  clone to construct.
+- Discriminant: the marker, then the payload length 0 vs 2. O(1), no
+  string compare.
 
 **Why nil is not `Value::Null`:** `[List<'a>, null]` would collapse —
 an empty list becomes indistinguishable from "absent", degenerating
-Option-of-List, and lists are returned optionally all the time. The
-empty array costs the same and keeps the union honest.
+Option-of-List, and lists are returned optionally all the time. Nor is
+it the empty array: an empty list is no array, so `[]` and `[<>]`
+differ.
 
 Because the rep is private, users touch lists only through syntax and
 the API, and the rep can change again (chunked cells, memoized length)
@@ -103,9 +100,11 @@ select l {
 
 ## Printing and the wire
 
-`TVal` renders the literal form (`[<1, 2>]`). The wire and the REPL's
-structural echo carry the raw rep (nested 2-arrays, empty array);
-json/toml/pack serializations of list values have the same shape.
+`TVal` and the naked printer render the literal form (`[<1, 2>]`).
+Data carries no markers: a writer (json, toml, pack, netidx) strips a
+list to a flat array (`rep::strip` under `abstract_value::to_data`), so
+`json::write_str([<1, 2>])` is `"[1,2]"`, and a read rebuilds the cells
+through its cast. Only a session image carries the marked cells.
 
 ## Fusion
 
@@ -116,13 +115,10 @@ json/toml/pack serializations of list values have the same shape.
 - Tail loops carrying a List use the Value-pair rebind; the flatten
   boundary (`graphix_list_to_valarray`/`graphix_valarray_into_list`)
   and the ListMap/ListFold scaffolds carry no tag writes or tests.
-<!-- CR claude for claude: [doc-drift/low] @-binds on list arms fuse:
-emit_list_pattern_cond binds `all` as a Value clone. What de-fuses is a nested element
-pattern (a literal or destructured head such as `[<0, rest..>]`) and a list pattern at a
-tuple/struct/array leaf. Reword the bullet to say that. probe:
-design/review-2026-10-19/repro/f-select-list-at-bind-fuses.gx (f-select-09) -->
-- Nested element patterns and `@`-binds on list arms de-fuse
-  (coverage residue).
+- `@`-binds on list arms fuse (`emit_list_pattern_cond` binds `all` as
+  a Value clone). Nested element patterns (a literal or destructured
+  head, `[<0, rest..>]`) and a list pattern at a tuple, struct or array
+  leaf de-fuse (coverage residue).
 
 ## Open
 

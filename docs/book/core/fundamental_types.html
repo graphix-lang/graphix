@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -204,7 +204,7 @@ without a cast.</p>
 </div>
 <p>Unchecked integer <code>+</code>, <code>-</code> and <code>*</code> wrap on overflow (`i64:9223372036854775807</p>
 <ul>
-<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>log an error and return bottom (no value) on a zero divisor, and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
+<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>return bottom (no value) on a zero divisor (the interpreter also logs it; compiled code does not, so run with</code>–no-fusion<code>to see the log), and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
 -1<code>is</code>0`. A bottomed expression simply stops updating until its inputs
 change to values that produce a valid result.</li>
 </ul>
@@ -220,22 +220,15 @@ Caused by:
 -: f64
 2
 </code></pre>
-<p>With unchecked operators, a division by zero logs an error and returns bottom – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
+<p>With unchecked operators, a division by zero returns bottom (logged by the interpreter only) – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
 -: i64
 </code></pre>
 <p>No value is printed because the division by zero produces bottom. If the divisor later changes to a non-zero value, the expression will resume producing values.</p>
 <p>With checked operators, you get an explicit error value you can handle:</p>
-<!-- CR claude for claude: [doc-drift/low] These transcripts print errors in the
-pre-kind-marker array form. The REPL now prints `error:`ArithError("attempt to divide by
-zero")`, `error:`ArithError("attempt to subtract with overflow")` and
-`error:`MapKeyError(..)`. Re-capture them. The "Numbers" text also says unchecked `/`
-and `%` log on a zero divisor. Only the node-walk logs (see reading_types.md), so say
-so. probe: design/review-2026-10-19/repro/book-core-fundamental-printed-forms.sh
-(book-core-09) -->
 <pre><code class="language-graphix">〉0 /? 0
 -: [i64, Error&lt;`ArithError(string)&gt;]
-error:["ArithError", "attempt to divide by zero"]
+error:`ArithError("attempt to divide by zero")
 </code></pre>
 <p>You can use <code>?</code> to propagate, <code>$</code> to swallow, or <code>select</code> to match on the result:</p>
 <pre><code class="language-graphix">〉(0 /? 0)?
@@ -248,7 +241,7 @@ error:["ArithError", "attempt to divide by zero"]
 
 〉u32:0 -? u32:1
 -: [u32, Error&lt;`ArithError(string)&gt;]
-error:["ArithError", "attempt to subtract with overflow"]
+error:`ArithError("attempt to subtract with overflow")
 </code></pre>
 <h4 id="v32-z32-v64-z64"><a class="header" href="#v32-z32-v64-z64">v32, z32, v64, z64</a></h4>
 <p>These number types are the same as the normal types except when they
@@ -512,29 +505,17 @@ shared — this is what makes lists cheap to build incrementally. The
 cells are pooled like arrays, so building a list does not usually
 allocate. Indexed access (<code>list::nth</code>) walks the spine and is O(n);
 if you need random access, convert to an array.</p>
-<!-- CR claude for claude: [doc-drift/low] This section predates kind markers. Data
-carries no markers now: pack writes `[<1, 2, 3>]` as the same bytes as `[1, 2, 3]`, not
-as a chain of cells. A cast into `List<T>` builds the list from any array, so
-`cast<List<Array<i64>>>` of an `Any` holding `[[1, 2], [3, 4]]` reads `[<[1, 2], [3,
-4]>]` directly and the two-step cast below is unnecessary. Rewrite the section to say
-every writer flattens a list and a typed read rebuilds it. probe:
-design/review-2026-10-19/repro/book-core-list-data-flat.sh (book-core-06) -->
 <h3 id="lists-as-data"><a class="header" href="#lists-as-data">Lists as Data</a></h3>
-<p>At run time a list is its chain of cells, each a pair of the head and
-the rest. <code>pack</code> and netidx carry that chain, and it reads back into a
-<code>List</code> as itself. <code>json</code> and <code>toml</code> write a list as a flat array, and
-their typed reads take every array as an array, so a <code>List</code> read from
-them is built from the flat array again: what they write reads back
-into its type.</p>
-<p>A cast whose source type is unknown, such as <code>cast&lt;List&lt;T&gt;&gt;</code> of an
-<code>Any</code>, has only the value’s shape to go on, and takes an array that is
-a well-formed chain for one. When the value is really an array, say so
-first, then convert:</p>
-<pre><code class="language-graphix">let rows: Array&lt;Array&lt;i64&gt;&gt; = cast&lt;Array&lt;Array&lt;i64&gt;&gt;&gt;(v)?;
-let l = cast&lt;List&lt;Array&lt;i64&gt;&gt;&gt;(rows)?
+<p>Data carries no list cells: every writer (<code>json</code>, <code>toml</code>, <code>pack</code>, netidx)
+writes a list as a flat array, so <code>pack::write_bytes([&lt;1, 2, 3&gt;])</code> is the
+same bytes as <code>pack::write_bytes([1, 2, 3])</code>. A typed read or a cast to a
+<code>List</code> builds the list from the array again, so what a writer emits reads
+back into its type, and a cast of an <code>Any</code> holding an array of rows reads
+the list directly:</p>
+<pre><code class="language-graphix">let v: Any = [[1, 2], [3, 4]];
+cast&lt;List&lt;Array&lt;i64&gt;&gt;&gt;(v)
 </code></pre>
-<p>The second cast’s source type, <code>Array&lt;Array&lt;i64&gt;&gt;</code>, decides that the
-value is an array of rows.</p>
+<p>is <code>[&lt;[1, 2], [3, 4]&gt;]</code>.</p>
 <h2 id="tuples"><a class="header" href="#tuples">Tuples</a></h2>
 <p>Tuples are written <code>(x, y)</code>, they can be of arbitrary length, and each element
 may have a different type. Tuples may be indexed using numeric field indexes.
@@ -571,7 +552,7 @@ is a <code>Map&lt;string, i64&gt;</code>.</p>
 <p>If a key is not present in the map, indexing returns a <code>MapKeyError</code>:</p>
 <pre><code class="language-graphix">〉m{"missing"}
 -: ['_1907: i64, Error&lt;`MapKeyError(string)&gt;]
-error:["MapKeyError", "map key \"missing\" not found"]
+error:`MapKeyError("map key \"missing\" not found")
 </code></pre>
 <h3 id="mutability-and-implementation-2"><a class="header" href="#mutability-and-implementation-2">Mutability and Implementation</a></h3>
 <p>Like all Graphix values, maps are immutable. All operations that “change” a map

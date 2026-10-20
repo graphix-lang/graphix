@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -277,24 +277,24 @@ layout(
 <li>Application modes (normal, edit, command)</li>
 </ul>
 <p>State changes automatically trigger UI updates:</p>
-<pre><code class="language-graphix">use tui::{line, list::list};
+<pre><code class="language-graphix">use tui::{line, input_handler::{Event, input_handler, on_press}, list::list};
 
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
-// CR claude for claude: [doc-drift/low] Nothing writes `arrow_pressed`. The
-// input_handler the comment mentions does not exist, so this program, which the
-// overview presents as showing that 'state changes automatically trigger UI updates',
-// can never change. Make it a whole program: an `on_press` handler whose Down arm
-// writes `selected_item &lt;- d ~ (selected_item + 1) % array::len(items)`, and delete
-// `arrow_pressed`. Found by reading; not run. (examples-tui-09)
-let arrow_pressed = never();
 
-// an input_handler (see the Input Handling page) sets arrow_pressed
-// when the user presses the down arrow
-selected_item &lt;- arrow_pressed ~ ((selected_item + 1) % array::len(items));
+let handle = |e: Event| on_press(e, |k| select k.code {
+    d@ `Down =&gt; {
+        selected_item &lt;- d ~ (selected_item + 1) % array::len(items);
+        `Stop
+    },
+    _ =&gt; `Continue
+});
 
 // UI automatically reflects the change
-list(#selected: &amp;selected_item, &amp;items)
+input_handler(
+    #handle: &amp;handle,
+    &amp;list(#highlight_symbol: &amp;"&gt; ", #selected: &amp;selected_item, &amp;items)
+)
 </code></pre>
 <h2 id="real-time-data-integration"><a class="header" href="#real-time-data-integration">Real-time Data Integration</a></h2>
 <p>Graphix TUIs excel at displaying real-time data. Connect to data sources via netidx and the UI updates automatically:</p>

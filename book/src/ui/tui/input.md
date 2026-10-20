@@ -218,22 +218,13 @@ callback throws.
 {{#include ../../examples/tui/input_basic.gx}}
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] This paragraph says a constant write such
-as `mode <- `Insert` "fires once when the arm becomes selected" and that both forms are
-useful. The rule as built is that a constant right-hand side fires only at the arm's
-FIRST entry, because a later entry resumes the arm. The check warns about it, and
-select.md's "Writing From an Arm" says so. Rewrite it to match: sample the event that
-selects the arm (`` k@ `Char("i") => mode <- k ~ `Insert ``), and drop "Both are
-useful". The code span `mode <- \`Insert` also renders broken, because CommonMark has no
-backslash escapes inside code spans; use ``` `` mode <- `Insert `` ```. probe:
-design/review-2026-10-19/repro/book-ui-b-const-arm-write.gx,
-design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-01) -->
 The `Up` and `Down` arms sample the key (`u ~ count + 1`). A write
 inside a select arm fires when its right-hand side fires: `count <-
 count + 1` would fire again on its own update and loop, and a constant
-such as `mode <- \`Insert` fires once when the arm becomes selected
-rather than on every key. Both are useful, and the select chapter's
-"Writing From an Arm" spells out when.
+such as `` mode <- `Insert `` fires only at the arm's first entry, since a
+later entry resumes the arm (the check warns of it). Sample the event
+that selects the arm instead, `` k@ `Char("i") => mode <- k ~ `Insert ``;
+the select chapter's "Writing From an Arm" spells out why.
 
 ### Conditional Handling
 
@@ -248,14 +239,6 @@ must sit outside it:
 
 ## Event Propagation
 
-<!-- CR claude for claude: [doc-drift/medium] This section describes propagation only
-through handlers. It leaves out that containers route each event to one child.
-LayoutW::handle_event sends it only to the `#focused` child (0 when unset),
-TabsW::handle_event only to the selected tab, and OverlayW only to the top layer. So an
-input_handler in a non-focused layout pane or an unselected tab never sees a key, with
-no warning. Say this here, and in one line under layout.md's `focused` and tabs.md's
-`selected`. Also reword tabs.md's "Keyboard Navigation" list as patterns the program
-implements itself. Found by reading; not run. (book-ui-b-02) -->
 Input handlers form a stack. Events flow from the outermost handler inward:
 
 ```graphix
@@ -264,6 +247,12 @@ Input handlers form a stack. Events flow from the outermost handler inward:
 
 If the outer handler returns `Continue`, the event reaches the inner one. If
 either returns `Stop`, propagation stops.
+
+Containers route an event to one child: a block passes it to its child,
+a layout only to its `#focused` child (the first when `#focused` is not
+set), tabs only to the selected tab, and an overlay only to its top
+layer. A handler in a pane that is not focused, or in a tab that is not
+selected, sees no event at all.
 
 ## The Raw Event Stream
 

@@ -340,8 +340,8 @@ region it replaces is discarded) and `BuiltIn::init` take a
 compiling would ask of the runtime it defers: a reference is recorded
 (`CompileCtx::record_ref`), an abandoned node, application or stored
 value is discarded (`discard`, `discard_apply`, `discard_stored`), and
-`ExecCtx::apply_deferred` deletes the discards and then registers the
-references: at the end of `check_and_fuse`, a registration read, a
+`ExecCtx::apply_deferred` registers the references and then deletes the
+discards: at the end of `check_and_fuse`, a registration read, a
 runtime bind, a lazily decoded body, a dynamic module's recompile and a
 core-trait hook site's build (`drop_deferred` on a failed compile);
 every cycle asserts (debug) that nothing is left. `ExecCtx::unref_var`
@@ -371,7 +371,8 @@ root and the boundary around the reader (`prune::Reader`), taken from the
 traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
 copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a
 pending reference keep theirs). Every this-cycle write marks its readers'
-boundaries and their ancestors: a stamped `store_insert`, `notify_set`,
+boundaries and their ancestors: a stamped `store_insert` or a standing
+`store_insert_standing`, `notify_set`,
 `ExecCtx::publish`/`try_publish` (never `event.variables.insert` from a
 node), the cycle's deliveries; state a node polls without a variable
 marks its pollers (error handlers: `ErrorHandler::polled_by`). `Prune`
@@ -1099,7 +1100,9 @@ cycle, across workers; the compiler never pins threads.
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere. Its
   parameters, and an unknown constructor's (`'c<a>`), are invariant; a
-  `let` annotation decides a constructed value's.
+  `let` annotation decides a constructed value's. A pattern `T(p)` with no
+  type test tests the tag and takes its parameters from the scrutinee,
+  never from `p` (`StructPatternNode::narrow_payloads`).
 - **Traits v1** (`design/traits.md`): static dispatch on the self
   argument's type; a union self lowers to a select; impls are global
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,

@@ -29,15 +29,10 @@ constant argument to `exit` runs at init — always gate it).
 
 ## The rules that bite (read these first)
 
-<!-- CR claude for claude: [doc-drift/medium] The reason is wrong. Without `~`, the body
-`n <- n + 1` does not depend on `c`: the callable is a lambda instance born when it is
-compiled, so the body is the self-loop of the next bullet. It counts at 100% CPU from
-the widget's creation with no click at all; it does not 'capture the initial value'. Say
-that instead. probe:
-design/review-2026-10-19/repro/lang-skill-callback-without-sample.gx (a lambda instance
-whose argument never fires, counting anyway) (lang-skill-03) -->
 - **Sample state you read in a handler**: `#on_press: |c| n <- c ~ n + 1`.
-  Without `~` the callback captures the initial value.
+  Without `~` the body does not depend on the call: `|c| n <- n + 1`
+  reads and writes `n`, so it is the self-loop below, counting at 100%
+  CPU from the moment the widget is built, with no click at all.
 - **An arm that connects to a binding it also reads unsampled is a
   self-loop**: `` `Enter => known <- upsert(known, x) `` re-fires itself
   every cycle (the accidental counter, 100% CPU). Write
@@ -65,20 +60,16 @@ whose argument never fires, counting anyway) (lang-skill-03) -->
 - **`~` banks, `~!` does not**: `e ~ v` is `v` at each fire of `e`, and a
   fire that finds `v` absent is paid when `v` first arrives; `e ~! v` is
   bottom then. Use `~!` when a late payment would be a phantom event.
-<!-- CR claude for claude: [doc-drift/low] '`let snap = known` does not help' is wrong
-for a let that is a step of the seq. A passed step sleeps and keeps its value, as the
-Sequencing section says ('a `let` keeps the value its step produced'), so `let snap =
-known; let states = map(snap, ..); zip(snap, states)` is aligned while `known` moves on.
-Only a let outside the seq tracks. Fix the bullet to say so. probe:
-design/review-2026-10-19/repro/lang-skill-seq-let-snapshot.gx (lang-skill-06) -->
 - **`seqq` reads the world once per run, `seq` once per step**: `seqq`
   captures every outer variable the body only reads along with the
   queued request, so two steps see the same `known`. Under `seq` a later
-  step reads it as it stands then, and `let snap = known` does not help
-  (a `let` is a name for the node, it tracks). `array::zip(known, states)`
-  after a slow `let states = array::map(known, ..)` is misaligned under
-  `seq`. Steps that must agree use `seqq`, or take the value from the
-  trigger: `seq let snap = trig { .. }`.
+  step reads it as it stands then: `array::zip(known, states)` after a
+  slow `let states = array::map(known, ..)` is misaligned under `seq`.
+  Steps that must agree use `seqq`, take the value from the trigger
+  (`seq let snap = trig { .. }`), or snapshot it as a step and read only
+  the snapshot: `let snap = known; let states = array::map(snap, ..);
+  array::zip(snap, states)` (a passed step sleeps, so its `let` keeps its
+  value; a `let` outside the seq tracks).
 - **A seq's value is bottom until its first run completes**, and so is
   every tuple, select or call over it: `select (polling, array::len(rows))`
   shows nothing during the first run, the one the "loading…" arm was
@@ -162,19 +153,16 @@ type List2<'a> = [`Cons('a, List2<'a>), `Nil]   // recursive
 'a: Number  'a: Int  'a: Float   // constraints; sets Number Int Sint Uint Float Real
 ```
 
-<!-- CR claude for claude: [doc-drift/low] Missing rule: an abstract type crosses data
-(json/toml/pack reads and writers, casts, net) only through a core `Cast` impl in its
-defining module. Without `impl Cast for T {};`, a struct holding one is refused as a
-written value or read target. Add that sentence here. While at it: the operator list
-omits unary `-x`, and the stdlib section omits the `list` package and
-db/sqlite/hbs/args. probe:
-design/review-2026-10-19/repro/lang-skill-abstract-needs-cast.gx (lang-skill-08) -->
 Abstract (nominal) types: `type Counter = Abstract<i64>` as a whole
 typedef body; `Counter(x)` constructs, `c.0` reads the payload, pattern
 `Counter(p)` destructures — only where the definition is visible (the
 defining module, or a public `Abstract<..>` in the gxi). `T as t` is a
 nominal tag test anywhere, including over a union of abstracts. One
-allocation per construction: handles and newtypes, not hot data.
+allocation per construction: handles and newtypes, not hot data. It
+crosses data (json/toml/pack reads and writers, casts, `sys::net`) only
+through `impl Cast for T {};` in its defining module (a method the impl
+leaves out uses the representation); without one, a value holding it is
+refused as a written value or a read target.
 
 ## Literals
 
@@ -212,18 +200,13 @@ the call (`x$ + 1`, not `x + 1`, on a nullable; `|a: Number, b: Number|
 a + b` is refused, write `'a: Number |a: 'a, b: 'a|`). A `.gxi` declares
 a generic arithmetic function's `'a: Number + Singleton`: an interface
 must declare every bound its implementation needs. `'a: [Number, null] +
-OneNumber` is a nullable number of one numeric type. Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
+OneNumber` is a nullable number of one numeric type. Unary `-x`, `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
 `x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
-<!-- CR claude for claude: [doc-drift/low] `?` and `$` do not 'read as the error form'
-on an untyped parameter: the check refuses any operand whose type is unknown there ('the
-operand of $ has type '_N: unbound, not known here: annotate it ...'). That applies to a
-Result argument too. Say that the operand's type must be known, and annotate the
-parameter in either case. probe:
-design/review-2026-10-19/repro/lang-skill-untyped-param-dollar.gx (lang-skill-05) -->
-chain (`(k ~ sel)$.name`). On an untyped parameter they read as the
-error form, so a nullable one is annotated: `|t, scope: [Scope, null]|
-.. (t ~ scope)$`.
+chain (`(k ~ sel)$.name`). Their operand's type must be known where they
+are written: an untyped parameter is refused, so annotate it, a nullable
+(`|t, scope: [Scope, null]| .. (t ~ scope)$`) and a Result
+(`|r: Result<T, `E>| r?`) alike.
 `datetime - datetime` is refused: use `sys::time::diff(later, earlier)
 -> duration`, `add`/`sub` for datetime ± duration. A duration prints in
 its largest whole-ish unit (`duration:1800.s` prints `30.m`).
@@ -320,11 +303,6 @@ across a bottom cycle).
 - References and functions cannot be ordered, sorted or used as map
   keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 
-<!-- CR claude for claude: [doc-drift/low] In the example below, the slice ladder ends
-`[h, rest..] => h, [a, ..] => a`. The last arm is dead (`[h, rest..]` covers every
-non-empty array), and the checker refuses it, while the paragraph above says a select
-has no dead arms. Drop `[a, ..] => a`. probe:
-design/review-2026-10-19/repro/lang-skill-select-example-dead-arm.gx (lang-skill-09) -->
 ```graphix
 select x {
   i64 as n => n + 1,              // type test
@@ -339,7 +317,7 @@ select x {
   error as e => recover(e),  v => v,     // splits a Result; v is the bare success type
   (0, y) => y,
   {x: 0, y} => y,  {x, ..} => x,  // partial struct; several union members: `S as {x, ..}`
-  [] => 0,  [a, b] => a + b,  [h, rest..] => h,  [a, ..] => a,  // length ladders count as coverage
+  [] => 0,  [a, b] => a + b,  [h, rest..] => h,  // length ladders count as coverage
   [<>] => 0,  [<h, t..>] => h,   // list patterns; suffix form refused
   v@ `Some(inner) => use_both(v, inner),
   _ => default
@@ -411,32 +389,22 @@ let edit = never();  book <- edit;        // this: writers do `edit <- upsert(bo
 seqq let b = edit { write(path, b)? }
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] `seqq let (dir, b) = (d$, edit)` runs on
-every change of `d` as well as on `edit`, because a tuple fires when either part does. A
-move of `d` re-saves the last edit into the new directory (edit1, then dirA, then dirB
-gives 'save edit1 to dirA', 'save edit1 to dirB'). That breaks the skill's own 'samples
-the WHOLE input on the trigger' rule. Recommend `seqq let (dir, b) = edit ~ (d$, edit)`:
-one run per edit, and an edit made while d is null is banked until d arrives. probe:
-design/review-2026-10-19/repro/lang-skill-seqq-tuple-trigger-rerun.gx (lang-skill-02)
--->
-To gate a seq on a nullable, put it in the trigger: `seqq let (dir, b) =
-(d$, edit) { .. }` never runs while `d` is null. A `d$` in a step stalls
-the run instead, and a stalled `seqq` queues every later trigger forever.
+To gate a seq on a nullable, put it in the trigger, sampled by the
+event: `seqq let (dir, b) = edit ~ (d$, edit) { .. }` runs once per
+edit, and an edit made while `d` is null is banked and paid when `d`
+arrives. The bare tuple `(d$, edit)` also runs at every change of `d`,
+re-saving the last edit (a tuple fires when either part does). A `d$`
+in a step stalls the run instead, and a stalled `seqq` queues every
+later trigger forever.
 
-<!-- CR claude for claude: [doc-drift/medium] The `put(5); let s = b` example stalls if
-`put` is what the sentence describes, a function that writes `b` (`|v| b <- v`). A
-connect produces no value, so the call step never completes, and --check says nothing.
-The pins use `|v| { b <- v; v }`. Show that definition, and widen the stall rule below
-('a select whose arms are connects') to any step whose value never fires, a call to a
-connect-bodied function included. probe:
-design/review-2026-10-19/repro/lang-skill-seq-connect-call-stalls.gx (lang-skill-04) -->
 A statement starts in the first cycle its predecessor's effect can be
 seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
 `n <- n + 1; publish(n)` publishes the NEW `n` (a cycle later);
 `a <- x; b <- y; let s = a + b` lands both writes in one cycle. The
 compiler follows calls into the functions they reach: a call waits for
 an earlier write only when its function reads it, and `put(5); let s =
-b`, where `put` writes the `b` it captured, reads the new `b`. A read
+b`, where `let put = |v| { b <- v; v }` writes the `b` it captured,
+reads the new `b`. A read
 or write through a reference (`*r`), or a call through a function value
 the compiler cannot resolve, counts as touching everything and costs a
 cycle; a block is the override. `until` and `try` follow the same rule.
@@ -448,9 +416,11 @@ request) and waits for it if absent. A `let`'s fire reaches the first
 later step that reads it, not the ones after (a second `t ~ x` on it
 does not write). A run whose last write targets its own trigger ends
 before the write lands, so the write starts the next run.
-`never()` in a step stalls the run. So does a step that is a select
-whose arms are connects (`select err { `Admin(m) => note <- m }`): put
-the connect outside, `note <- select err { `Admin(m) => m }`. The two
+A step whose value never fires stalls the run: `never()`, a select
+whose arms are connects (`select err { `Admin(m) => note <- m }`), a
+call to a function whose body ends in a connect (`|v| b <- v`). Put the
+connect outside, `note <- select err { `Admin(m) => m }`, or end the
+function with a value, `|v| { b <- v; v }`. The two
 branches of a `try .. with` must have one type; end both with `null`
 when they are only effects. A seq inside a step is a step: with
 no trigger it runs at every entry of its statement and the outer step
@@ -486,23 +456,16 @@ tag to its catch. Errors come off first: on `[T, null, Error<E>]` one
 raise on success) and `get(t, k)?$` takes both. `opt::ok_or(x, `E)?`
 when the catch should hear more than `NullError`.
 
-<!-- CR claude for claude: [doc-drift/medium] This paragraph is wrong in two places. `k
-~ sel$` is not silent: it banks a key pressed before the first selection, exactly as the
-`let v = sel$; k ~ v` 'exception' does (the let is only a name). And a call taking `x$`
-does fire when `x` returns: `f(k ~ t, sel$)` re-delivers the stale key sample at every
-arrival of `sel`, because a call fires when any argument fires. Only `(k ~ sel)$`
-(sample the nullable, then unwrap) drops a key pressed while `sel` is null. Rewrite the
-rule around that, and drop `k ~ sel$` from the silent list. probe:
-design/review-2026-10-19/repro/lang-skill-dollar-gate-fires.gx (lang-skill-01) -->
-`$` gates: while `x` is null or an error, a call or struct taking `x$`
-does not fire and owes nothing when `x` returns. `f(k ~ t, sel$)` is
-silent while `sel` is null, and so are `k ~ sel$` and `(k ~ sel)$`:
-there is no stale last-good value to read. One exception, from `~`
-banking: a `sel$` that has NEVER had a value is absent, so `let v = sel$;
-k ~ v` banks a key pressed before the first selection and pays it when
-the selection arrives (a phantom confirm dialog when the rows load). A
-nullable that an event samples is unwrapped at the use site, `(k ~
-sel)$`, which samples the null and drops it.
+`$` gates only while `x` is null or an error: a call or struct taking
+`x$` does not fire then, but it fires when `x` returns, since a call
+fires when any argument fires. `f(k ~ t, sel$)` re-delivers its last
+key sample at every arrival of `sel`. Unwrapping and then sampling
+banks: `k ~ sel$` (or `let v = sel$; k ~ v`, the let is only a name)
+pays a key pressed before the first selection when the selection
+arrives (a phantom confirm dialog when the rows load). A nullable that
+an event samples is sampled first and unwrapped after, `(k ~ sel)$`,
+which samples the null and drops it; a call takes that value, not the
+key and `sel$` apart.
 
 ## References and places
 
@@ -569,18 +532,13 @@ whose TYPE is their kind (`sys::fs::File`, `sys::tcp::TcpStream`, …).
 
 ## Standard library, briefly
 
-<!-- CR claude for claude: [doc-drift/low] Two things in this paragraph are inaccurate.
-A `let` over `never()` takes its type from its first use, a reader or a writer, not
-'from its writers': a read through `str::len` before `go <- 1` makes go a string and
-refuses the write. And `is_err` does not gate a stream: it is `fn(e: Any) -> bool` and
-fires false on every value. Fix both sentences. probe:
-design/review-2026-10-19/repro/lang-skill-never-let-first-use.gx (lang-skill-11) -->
 Core (always in scope): `print println dbg log cast<T>(x) error is_err
 filter filter_err count once uniq sum product min max mean and or all
-queue hold take skip throttle range`. `is_err`, `filter` and `filter_err`
-gate a stream; to branch on a Result, select on it. `never()` / `never<T>()` is
-SYNTAX: typed bottom, args stay live; an unannotated `let` over
-`never()` takes its type from its writers.
+queue hold take skip throttle range`. `filter` and `filter_err` gate a
+stream; `is_err` tests (`false` on every non-error value); to branch on a
+Result, select on it. `never()` / `never<T>()` is SYNTAX: typed bottom,
+args stay live; an unannotated `let` over `never()` takes its type from
+its first use, a reader or a writer, and a later writer must fit it.
 
 `opt` (over `['a, null]`): `is_some is_none or_default or and map
 flat_map filter ok_or zip`. Unwrapping is the `$` operator, above. The
@@ -588,23 +546,22 @@ ladder it replaces also hides in two steps: `let p = select d { null as
 _ => null, v => f(v) }; let q = p$` is `let q = f(d$)`. A null carried
 forward only to be dropped is unwrapped at the source, once: `let dir =
 d$`, and every reader (a later seq step included) takes `dir` (unless
-an event samples it: see the banking exception under `$` gates).
+an event samples it: see the banking under `$` gates).
 
 `array`: map filter filter_map fold flatten find find_map concat push
 window(#n, arr, @v) len iter iterq sort enumerate zip (`window`'s second
 argument is the array windowed, usually `t ~ data`, and its values
-after it are variadic). `map`, `str`
-(`contains split trim replace join len parse ..`), `re`, `rand`.
+after it are variadic). `list` (the same over `List<'a>`, plus `cons
+head tail uncons nth take drop to_array from_array ..`), `map`, `str`
+(`contains split trim replace join len parse ..`), `re`, `rand`, `db`
+(an embedded key-value store: `open`, `tree`, `get`, `insert`, cursors,
+transactions, subscriptions), `sqlite` (`open`, `exec`, `query`, `begin`
+/`commit`), `hbs` (`render`, handlebars templates), `args` (command-line
+parsing: `positional`, `option`, `flag`, `command`, `parse`), `xls`
+(`sheets`, `read`).
 
-<!-- CR claude for claude: [doc-drift/low] 'or the arm sleeping, stops it' contradicts
-the Select section of this skill and CLAUDE.md: an arm's sleep pauses a timer, and the
-timer resumes at the wake (ticks hold while asleep, then continue). Write '(a finite
-repeat count ends it; an arm's sleep pauses it)'. The check's warn_birth_only also warns
-on this timer that it 'acts only at this arm's first entry', the same misfire as for
-subscribe. probe: design/review-2026-10-19/repro/lang-skill-arm-timer-warning.gx
-(lang-skill-07) -->
 `sys::time`: `timer(timeout: [duration, Number], repeat)` (a finite
-repeat count, or the arm sleeping, stops it), `after_idle(timeout, v)`,
+repeat count ends it; an arm's sleep pauses it), `after_idle(timeout, v)`,
 `now(trigger)`, and the pure arithmetic `add`, `sub`, `add_dur`,
 `sub_dur`, `diff`, `scale`. `sys::net`: `subscribe(path)`,
 `publish(path, v)`, `rpc`, `list`, `write`, every path a `string`; an
@@ -643,19 +600,18 @@ e ~ `Stop }`. The `e ~` is not optional: a handler whose result is a
 constant answers the first event and then never again (the `|v| k` rule),
 and the keys after it are lost.
 
-<!-- CR claude for claude: [doc-drift/low] The tui module is `barchart` (its function is
-`bar_chart`): the import pattern taught just above, `use tui::bar_chart::bar_chart`, is
-refused. The lists also miss tui scrollbar/text/layout/line_edit/form and gui
-vertical_slider/combo_box/grid/markdown/menu/qr_code/table/data_table. Regenerate both
-lists from the packages' mod.gxi. probe:
-design/review-2026-10-19/repro/lang-skill-widget-module-names.gx (lang-skill-10) -->
-Widgets: gui — window text button text_input checkbox toggler radio
-slider progress_bar pick_list column row container scrollable stack
-space rule tooltip canvas chart image mouse_area keyboard_area
-text_editor clipboard; tui — block paragraph list table tabs gauge
-line_gauge sparkline bar_chart canvas chart calendar browser
-input_handler overlay(#layers, base) + layer, `tui::suspend(level)`
-(release the terminal to a child process while true), `tui::exit`.
+Widget modules (each module's function has its name unless noted): gui —
+`window` (a function in `gui`) text button text_input checkbox toggler
+radio slider vertical_slider progress_bar pick_list combo_box column row
+container scrollable stack grid space rule (`horizontal_rule`,
+`vertical_rule`) tooltip canvas chart image markdown menu qr_code table
+data_table mouse_area keyboard_area text_editor clipboard (`read_text`,
+`write_text`, ..); tui — block paragraph text list table tabs gauge
+line_gauge sparkline barchart (`bar_chart`) canvas chart calendar
+browser scrollbar layout line_edit (`state`, `step`, `handle`, `view`)
+form style input_handler overlay(#layers, base) + layer, `line` and
+`span` (in `tui`), `tui::suspend(level)` (release the terminal to a
+child process while true), `tui::exit`.
 Layout: `` `Fill `Shrink `Fixed(f64) ``; padding `` `All(f) `Axis({x,
 y}) `Each({top, right, bottom, left}) ``; colors `` `Red .. `Rgb(r, g,
 b) ``.

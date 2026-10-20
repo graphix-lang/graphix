@@ -315,13 +315,8 @@ pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
 /// The diagnostic of a collection init count past the element limit,
 /// from both engines.
 pub(crate) fn log_init_oversize(n: i64) {
-    // CR claude for claude: [bug/low] This diagnostic goes to the default log target,
-    // which the shell filters out unless --log-dir is given. An oversize array::init /
-    // list::init therefore just bottoms without a word, although the doc above says it
-    // is logged. Log it under crate::FAILURE_TARGET like the other hot-operator
-    // failures (buffer::encode's Pad does). probe:
-    // design/review-2026-10-19/repro/x-panics-init-oversize-silent.gx (x-panics-08)
     log::error!(
+        target: crate::FAILURE_TARGET,
         "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
     );
 }
@@ -482,6 +477,12 @@ impl Callback {
         // parameter binding that Callback::spec already looks up. probe:
         // design/review-2026-10-19/repro/x-rerun-6-builtin-callback-position.gx
         // (x-rerun-6-03)
+        // 2026-10-19 claude: Tried positioning the slot argument at the callback
+        // formal's binding (env.by_id(self.id)): for array::map that is the stdlib
+        // formal, which has no position either (it printed line 0, column 0). The
+        // user's argument spec at the call is what is needed, and Callback does not
+        // reach it; threading the call site's argument spec into the instance (or into
+        // Callback at its build) is the remaining work.
         let spec =
             genn::name_spec(name, SourcePosition::default(), genn::SYNTHETIC.clone());
         (id, Ref::new(ctx, id, typ.clone(), self.top_id, spec))
@@ -963,7 +964,11 @@ fn update_slots<R: Rt, E: UserEvent>(
         return update_slots_in_order(ctx, slots, 0, views);
     }
     site.decide_siblings(ctx, slots.len(), || {
-        crate::analysis::independent(slots.iter().take(2).map(|s| &s.call), ctx)
+        crate::analysis::independent(
+            slots.iter().take(2).map(|s| &s.call),
+            ctx,
+            crate::analysis::Sites::Slots,
+        )
     });
     if site.in_order() {
         return update_slots_in_order(ctx, slots, 0, views);
@@ -1249,13 +1254,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         base.source.delete(ctx);
         base.prototype.delete(ctx);
         ctx.rt.store_release(&base.prototype_id);
-        // CR claude for claude: [dead/low] The prototype's argument ids come from
-        // Callback::slot_arg, which mints bare BindIds with no environment binding, so
-        // this unbind_variable finds nothing. The same dead call sits in
-        // FoldQ::delete's prototype loop. Delete both and keep only
-        // ctx.rt.store_release, as Slot::delete and FoldSlot::delete do. Found by
-        // reading; not run. (c-collection-01)
-        ctx.env.unbind_variable(base.prototype_id);
         for slot in slots.iter_mut() {
             slot.delete(ctx);
         }
@@ -1495,11 +1493,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
     }
 }
 
-/// Deliver `tv` to a callback argument this cycle and stand it in the
-/// store, a bottom as a stale bottom.
-// CR claude for claude: [readability/low] The two doc lines above this impl describe
-// ExecCtx::deliver, the helper they were moved into, not FoldQ's Update impl. Delete
-// them. Found by reading; not run. (c-collection-02)
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         f(&self.base.source);
@@ -1661,7 +1654,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         base.prototype.delete(ctx);
         for id in base.prototype_ids {
             ctx.rt.store_release(&id);
-            ctx.env.unbind_variable(id);
         }
         for slot in slots.iter_mut() {
             slot.delete(ctx);

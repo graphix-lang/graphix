@@ -223,7 +223,7 @@ struct Skel {
 
 static SKEL: Skel = Skel {
     cargo_toml: include_str!("skel/Cargo.toml.hbs"),
-    // CR claude for claude: [bug/medium] The skeleton's ExampleBuiltin (skel/lib.rs)
+    // XCR claude for claude: [bug/medium] The skeleton's ExampleBuiltin (skel/lib.rs)
     // answers `TagView::Stale(_) => self.out.ride()` over a phantom default, so every
     // package made by `graphix package create` gets a builtin that produces bottom
     // where its argument first arrives stale. That happens at an arm's first entry when
@@ -234,6 +234,16 @@ static SKEL: Skel = Skel {
     // Also list `Io` in the skeleton's Effect comment. probe:
     // design/review-2026-10-19/repro/package-skel-stale-entry.gx (is_err in the same
     // position, Tag(32) stale; the skeleton has no such path) (package-01)
+    // 2026-10-19 claude: The skeleton's ExampleBuiltin computes from a Stale arg too,
+    // tagged stale (it is stateless), never riding its result; the Effect comment lists
+    // Io. Pinned by the slow test build_standalone_produces_working_binary, whose
+    // main.gx now counts a select's two entries over the builtin (the second reads its
+    // arg stale) before printing the sentinel.
+    // 2026-10-19 claude: Checked by hand in a scratch package built from the skeleton
+    // (not committed): run! over a select whose second arm's first entry reads its arg
+    // stale, counting two entries, passes in all four modes with this skeleton and
+    // times out in all four with the old one. The committed pin,
+    // build_standalone_produces_working_binary, is a slow test and was not run here.
     lib_rs: include_str!("skel/lib.rs"),
     build_rs: include_str!("skel/build.rs"),
     mod_gx: include_str!("skel/mod.gx"),
@@ -581,13 +591,17 @@ fn stdlib_packages_in_cargo_toml(content: &str) -> Result<BTreeSet<CompactString
         .collect())
 }
 
+/// The manifest of an unpacked graphix-shell source tree.
+async fn source_manifest(source_dir: &Path) -> Result<String> {
+    let cargo_toml = source_dir.join("Cargo.toml");
+    fs::read_to_string(&cargo_toml)
+        .await
+        .with_context(|| format!("reading {}", cargo_toml.display()))
+}
+
 /// The stdlib set shipped by an unpacked graphix-shell source tree.
 async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<CompactString>> {
-    let cargo_toml = source_dir.join("Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml)
-        .await
-        .with_context(|| format!("reading {}", cargo_toml.display()))?;
-    stdlib_packages_in_cargo_toml(&content)
+    stdlib_packages_in_cargo_toml(&source_manifest(source_dir).await?)
 }
 
 /// Parse the shell `[features]` table into forward edges: each feature
@@ -700,10 +714,12 @@ async fn rewrite_manifest(
 
 /// Bring the record in line with the source about to be built: a recorded
 /// stdlib package the source no longer ships is dropped, as is an external
-/// package named like one it ships, and one it ships that the record never
-/// named is announced.
+/// package named like one it ships, one it ships that the record never
+/// named is announced, and a removed one an installed one depends on is
+/// installed again.
 async fn reconcile(source_dir: &Path, packages: &mut Packages) -> Result<()> {
-    let shipped = stdlib_packages_in_source(source_dir).await?;
+    let content = source_manifest(source_dir).await?;
+    let shipped = stdlib_packages_in_cargo_toml(&content)?;
     let gone: Vec<CompactString> = packages
         .stdlib_installed
         .iter()
@@ -732,7 +748,30 @@ async fn reconcile(source_dir: &Path, packages: &mut Packages) -> Result<()> {
             "note: stdlib package {name} is not installed; `graphix package add {name}` adds it"
         );
     }
+    for name in reinstall_dependencies(packages, &feature_edges(&content)?) {
+        println!("note: {name} is installed again: an installed package depends on it");
+    }
     Ok(())
+}
+
+/// Move every removed stdlib package an installed one depends on back to
+/// the installed set, which is what the build compiles: the add-side twin
+/// of the removal cascade. The names moved.
+fn reinstall_dependencies(
+    packages: &mut Packages,
+    edges: &BTreeMap<CompactString, BTreeSet<CompactString>>,
+) -> Vec<CompactString> {
+    let Packages { stdlib_installed, stdlib_removed, external: _ } = packages;
+    let needed: Vec<CompactString> = stdlib_removed
+        .iter()
+        .filter(|r| stdlib_installed.iter().any(|p| feature_depends_on(p, r, edges)))
+        .cloned()
+        .collect();
+    for name in &needed {
+        stdlib_removed.remove(name);
+        stdlib_installed.insert(name.clone());
+    }
+    needed
 }
 
 /// A source tree's manifest and lockfile as they were, to put back.
@@ -1440,7 +1479,7 @@ impl GraphixPM {
         packages: &mut Packages,
     ) -> Result<()> {
         let root = self.install_root()?;
-        // CR claude for claude: [bug/medium] Nothing keeps the record's `removed` set
+        // XCR claude for claude: [bug/medium] Nothing keeps the record's `removed` set
         // disjoint from what the build compiles. add_packages and apply_selection move
         // only the named package into `installed`, and Cargo features pull its closure
         // in. After `remove str --yes` (which cascades gui), a later `add gui` compiles
@@ -1451,6 +1490,13 @@ impl GraphixPM {
         // removed name an installed package's feature depends on into `installed`, with
         // a note. That is the add-side twin of the removal cascade. Found by reading;
         // not run. (package-02)
+        // 2026-10-19 claude: reconcile reads the source manifest once and
+        // reinstall_dependencies moves every removed stdlib package an installed one's
+        // feature depends on back to installed, with a note. External packages' own
+        // graphix-package-* dependencies are not handled: that needs their manifests.
+        // Fails if undone: graphix-package
+        // test::pure::an_added_package_reinstalls_what_it_depends_on (the decision;
+        // reconcile's call is not tested).
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
         let plan = packages.build_plan();
@@ -1485,7 +1531,8 @@ impl GraphixPM {
             .arg("--path")
             .arg(source_dir)
             .arg("--force")
-            .arg("--no-default-features");
+            .arg("--no-default-features")
+            .kill_on_drop(true);
         if !plan.features.is_empty() {
             cmd.arg("--features").arg(plan.features.join(" "));
         }
@@ -1827,7 +1874,7 @@ impl GraphixPM {
             Some(_) => Some(Saved::take(&source_dir).await?),
             None => None,
         };
-        // CR claude for claude: [risk/low] When ctrl_c wins this select, the build
+        // XCR claude for claude: [risk/low] When ctrl_c wins this select, the build
         // future is dropped, but build_embedding's cargo Command lacks kill_on_drop, so
         // tokio leaves the child running. A SIGINT sent to graphix alone (kill -INT, a
         // supervisor) restores the override's manifest and lockfile while cargo keeps
@@ -1835,6 +1882,9 @@ impl GraphixPM {
         // through the process group. Fix: `.kill_on_drop(true)` on the cargo Command in
         // build_embedding (and in install_from_source). Found by reading; not run.
         // (package-05)
+        // 2026-10-19 claude: kill_on_drop(true) on the cargo Commands of
+        // build_embedding and install_from_source. No test: it needs a cargo child
+        // interrupted mid-build.
         let built = tokio::select! {
             built = self.build_embedding(&source_dir, &external, &features, crate_name) => built,
             _ = tokio::signal::ctrl_c() => Err(anyhow!("interrupted")),
@@ -1878,6 +1928,7 @@ impl GraphixPM {
             .arg("--features")
             .arg(f.join(" "))
             .current_dir(source_dir)
+            .kill_on_drop(true)
             .status()
             .await
             .context("running cargo build")?;
@@ -1915,12 +1966,25 @@ impl GraphixPM {
         // New stdlib packages only ship with a shell bump, so only unpack the
         // latest source to enumerate them when a bump is available.
         let shell_bump = version_gt(&latest, &current);
-        // CR claude for claude: [perf/low] With a shell bump the plan is never empty,
+        // XCR claude for claude: [perf/low] With a shell bump the plan is never empty,
         // so without --yes on a non-TTY the bail below is certain. Yet update first
         // wipes the build dir, unpacks or downloads the whole latest source, and
         // queries crates.io for every external package. Refuse here when `shell_bump &&
         // !assume_yes && !stdin.is_terminal()`, and keep the later check for an
         // externals-only plan. Found by reading; not run. (package-06)
+        // 2026-10-19 claude: update refuses before unpacking or querying anything when
+        // a shell bump is available, no --yes is given and stdin is not a terminal; the
+        // later refusal (an externals-only plan) shares the answerable test and
+        // message. No test: update needs crates.io.
+        let answerable = assume_yes || std::io::stdin().is_terminal();
+        let unanswerable = || {
+            anyhow!(
+                "stdin is not a terminal; re-run with --yes to apply all available changes"
+            )
+        };
+        if shell_bump && !answerable {
+            return Err(unanswerable());
+        }
         let (latest_src, stdlib_latest) = if shell_bump {
             let s = self.prepare_source(&latest).await?;
             let set = stdlib_packages_in_source(&s).await?;
@@ -1959,10 +2023,8 @@ impl GraphixPM {
         let outcome = if assume_yes {
             println!("applying all changes (--yes)");
             Outcome::Apply(Selection::all(&plan))
-        } else if !std::io::stdin().is_terminal() {
-            bail!(
-                "stdin is not a terminal; re-run with --yes to apply all available changes"
-            )
+        } else if !answerable {
+            return Err(unanswerable());
         } else {
             prompt_y_e_n(&items).await?
         };

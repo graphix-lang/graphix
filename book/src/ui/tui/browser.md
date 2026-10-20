@@ -1,6 +1,6 @@
 # The Browser Widget
 
-The `browser` widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.
+The `browser` widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays a table of one level's children, one column per published column when the children are rows of a table, with selection and cursor movement support.
 
 ## Interface
 
@@ -10,20 +10,14 @@ The `browser` widget provides a specialized interface for browsing and interacti
 
 ## Parameters
 
-<!-- CR claude for claude: [doc-drift/medium] This contradicts the code and browser.gxi.
-The browser lists through `net::list_table(path)`, whose `#update` defaults to
-`sys::time::timer(1, true)`, so the listing refreshes about once a second as well as on
-a path change. A row published later appears within a second with no change of path.
-Fix: say what browser.gxi says. While here, line 3's "tree structure" should be "a table
-of one level's children", and `#rate` (the subscription throttle), `#flex` and the three
-style parameters need bullets. probe:
-design/review-2026-10-19/repro/book-ui-a-browser-listing-refresh.gx Also reported as
-(gx-ui-04). (book-ui-a-01) -->
-- **path** - The netidx path whose children are listed. The listing is fetched once each time `path` changes, so rows published later appear when the path next changes
+- **path** - The netidx path whose children are listed. The listing refreshes when `path` changes and about once a second, so rows published later appear on the next refresh
 - **cursor** - Programmatic cursor movement: `Left(n)`, `Right(n)`, `Up(n)`, `Down(n)`
 - **selected_row** (output) - Full path of the selected row (e.g. `/t/r1`), null while the listing is empty
 - **selected_path** (output) - Full path of the selected cell: the row in a list, the row and column in a table; null while the listing is empty
 - **size** (input) - The area the browser is drawn in, which sizes its viewport; pass the enclosing block's `#size` output
+- **rate** - The most often a cell's subscription updates the display (default `duration:0.5s`)
+- **flex** - How the columns share leftover width (default `` `SpaceBetween ``)
+- **style**, **header_style**, **selected_style** - Styles for the table, its header row and the selected cell
 
 ## Examples
 

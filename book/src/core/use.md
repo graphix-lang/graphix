@@ -95,13 +95,8 @@ They can be shadowed by explicit declarations and imports.
 
 ## Scoping
 
-<!-- CR claude for claude: [doc-drift/low] `use` is a statement, not an expression. The
-compiler refuses it outside a block or module body ("a use declaration is not an
-expression"), as CLAUDE.md says of every declaration. Say "valid as a statement in any
-block or module body". probe:
-design/review-2026-10-19/repro/book-core-use-statement-only.sh (book-core-12) -->
-`use` is valid anywhere expressions are valid, and imports into the
-enclosing lexical scope only:
+`use` is a statement, valid in any block or module body (not in
+expression position), and imports into the enclosing lexical scope only:
 
 ```graphix
 let list = {
@@ -113,7 +108,7 @@ list
 
 will print `[2, 4, 6, 8, 10]`
 
-```graphix
+```graphix,refused
 let list = {
   use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)

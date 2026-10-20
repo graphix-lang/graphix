@@ -10,7 +10,7 @@ The `tabs` widget creates a tabbed interface for organizing content into multipl
 
 ## Parameters
 
-- **selected** - Index of the currently selected tab (0-indexed)
+- **selected** - Index of the currently selected tab (0-indexed). Events go only to the selected tab's content
 - **highlight_style** - Style for the selected tab title
 - **style** - Base style for unselected tab titles
 - **divider** - A `Span` separating tab titles
@@ -51,7 +51,8 @@ The `tabs` widget creates a tabbed interface for organizing content into multipl
 
 ## Keyboard Navigation
 
-Common patterns:
+The widget handles no keys itself: the program writes `#selected` from
+an `input_handler` around the tabs. Common patterns:
 - `Left`/`Right` - Switch to previous/next tab
 - `Tab` - Cycle forward through tabs
 - Number keys - Jump directly to tab
