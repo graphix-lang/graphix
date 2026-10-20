@@ -25,7 +25,7 @@ async fn heard(code: &'static str) -> Result<Vec<&'static str>> {
     let h = gx.compile_callable(h.last.clone().context("h has no value")?).await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
     while rx.try_recv().is_ok() {}
-    h.call_answered(ValArray::from_iter([Value::from("a")])).await?;
+    h.call_answered(ValArray::from_iter([Value::from("a")]))?;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let mut order = vec![];
     while let Ok(mut b) = rx.try_recv() {

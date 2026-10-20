@@ -33,44 +33,74 @@ pub enum FuseExpect {
     None,
 }
 
-/// Assert the observed fusion counters match `expect`. Called after a
-/// fixture runs, in `jit` mode only; the runtime's counters (its
-/// `Control`, debug builds only) are reset after init so they reflect
-/// only the fixture's own program. `Jit` holds when any region ran fused:
-/// a fixture whose point is that one expression fuses says `#[native]`
-/// on it.
+/// What a fixture's jit run observed of fusion: the regions its build
+/// fused, `None` when the build was refused (a refusal asserts nothing
+/// about fusion), and the kernel and JIT-wrapper runs counted while it ran.
+#[derive(Debug, Clone, Copy)]
+pub struct FuseObserved {
+    pub regions: Option<usize>,
+    pub runs: (u64, u64),
+}
+
+/// Assert what a fixture's build fused matches `expect`: `Jit` when it
+/// fused a region (a fixture whose point is that one expression fuses
+/// says `#[native]` on it), `None` when it fused none. A region may first
+/// run after the value the fixture judges, so runs decide nothing; a
+/// region that ran must have entered its JIT wrapper.
+// XCR claude for claude: [test-gap/medium] This judges kernel RUNS counted up to
+// the moment run_mode reads `Control::invocations()` after the first value, not
+// whether anything fused. A fixture whose fused region first runs after its
+// first value passes `FuseExpect::None` and fails `FuseExpect::Jit`, and the
+// count also depends on how many cycles ran during the `observed()` await.
+// Judge both annotations by `FusionStats::fused` read after compile_result,
+// which counts only the fixture since the root compiles with fusion off, and
+// keep `jit > 0` as a secondary check. Found by reading; graphix-fuzz run on
+// design/review-2026-10-19/repro/core-aux-fuseexpect-counts-runs.gx shows
+// fused=1 with a first value from before the region runs. (core-aux-03)
+// 2026-10-19 claude: Tried as written (None iff FusionStats::fused == 0, Jit
+// iff fused > 0 and jit > 0, fused read after the first value) over
+// graphix-tests: 8 jit fixtures flip, in two kinds. (1) A build the check
+// accepts but a #[native] refuses still counts the regions it fused before the
+// refusal (labeled_callback_map/fold_node_walks,
+// select_tuple_union_member_node_walks,
+// native_names_the_blocker_over_a_fused_argument): fused must be judged only
+// for a build that succeeded. (2) Regions that fuse but whose kernel first runs
+// after the first value (dynamic_module2/3/6/8, cps_wrapper_recursion): the
+// CR's own case, but the jit > 0 secondary check then fails them too. Reverted;
+// the fix needs both decided: skip the fused count on a refused build, and
+// either read jit at the end of the run or drop the jit > 0 check for regions
+// that run late.
+// 2026-10-20 claude: Decided and done: run! judges FuseExpect by the regions
+// the build fused (FusionStats::fused after compile_result; the root compiles
+// with fusion off), a refused build asserts nothing about fusion, and the run
+// counters only check that a region which ran entered its JIT wrapper
+// (testing::FuseObserved). run_delta_fused judges the same way. Five fixtures
+// whose regions run after their first value were annotated None and are now Jit
+// (cps_wrapper_recursion, dynamic_module2, a_blacklist_keeps_the_rest,
+// a_whitelisted_function_loads, whitelisted_core_loads).
 #[cfg(debug_assertions)]
-pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
+pub fn check_fuse_expectation(observed: FuseObserved, expect: FuseExpect) {
+    let Some(regions) = observed.regions else { return };
+    let (fusion, jit) = observed.runs;
     match expect {
         FuseExpect::Jit => {
             assert!(
-                fusion > 0,
-                "fuse: Jit — expected a fused kernel to run but \
-                 FUSION_INVOCATIONS=0 (no kernel built/ran — the JIT \
-                 couldn't compile it, so it node-walked). Downgrade to \
+                regions > 0,
+                "fuse: Jit — expected the build to fuse a region but it fused none \
+                 (the JIT couldn't compile it, so it node-walks). Downgrade to \
                  `fuse: None`, or fix the cliff.",
             );
             assert!(
-                jit > 0,
+                fusion == 0 || jit > 0,
                 "fuse: Jit — FUSION>0 but JIT_INVOCATIONS=0: a fused \
                  region ran without entering its JIT wrapper; investigate.",
             );
         }
-        // CR claude for claude: [test-gap/medium] This judges kernel RUNS counted up to
-        // the moment run_mode reads `Control::invocations()` after the first value, not
-        // whether anything fused. A fixture whose fused region first runs after its
-        // first value passes `FuseExpect::None` and fails `FuseExpect::Jit`, and the
-        // count also depends on how many cycles ran during the `observed()` await.
-        // Judge both annotations by `FusionStats::fused` read after compile_result,
-        // which counts only the fixture since the root compiles with fusion off, and
-        // keep `jit > 0` as a secondary check. Found by reading; graphix-fuzz run on
-        // design/review-2026-10-19/repro/core-aux-fuseexpect-counts-runs.gx shows
-        // fused=1 with a first value from before the region runs. (core-aux-03)
         FuseExpect::None => {
             assert!(
-                fusion == 0,
-                "fuse: None — expected NO fusion but FUSION_INVOCATIONS>0; \
-                 this program now fuses. Upgrade the annotation to \
+                regions == 0,
+                "fuse: None — expected NO fusion but the build fused {regions} \
+                 region(s); this program now fuses. Upgrade the annotation to \
                  `fuse: Jit`.",
             );
         }
@@ -180,8 +210,8 @@ impl Mode {
         matches!(self, Mode::Interp | Mode::Par | Mode::Unpruned)
     }
 
-    /// Whether the runtime skips clean boundaries.
-    // CR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
+    /// Whether the runtime skips clean boundaries, and audits the skips.
+    // XCR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
     // audit off, and Mode::Unpruned is not in Mode::ALL. So the gate never checks that
     // pruning changes nothing; only lang::prune's walk count touches it. A missed mark
     // that alters an intermediate cycle passes every fixture: the standing-write hole
@@ -190,10 +220,16 @@ impl Mode {
     // GRAPHIX_PRUNE is unset (it walks everything, so it costs what Off does), and
     // correct design/walk_pruning.md "Verifying it", which says the gate already
     // audits. Found by reading; not run. (x-prune-03)
+    // 2026-10-19 claude: Mode::prune now gives Interp and Par PruneMode::Audit when
+    // GRAPHIX_PRUNE is unset (Jit modes stay On, Unpruned Off). Measured first:
+    // graphix-tests under GRAPHIX_PRUNE=audit passed whole (9348, 188 s against 211 s
+    // pruned), so the gate turns no fixture red. A missed mark now fails any node-walk
+    // fixture whose skip it would change. design/walk_pruning.md's 'Verifying it' is
+    // left to Eric's x-doc-drift-02, which covers the section's other unbuilt names.
     pub fn prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
-            // CR claude for claude: [test-gap/low] No run! fixture ever runs the prune
+            // XCR claude for claude: [test-gap/low] No run! fixture ever runs the prune
             // audit. design/walk_pruning.md says the plain gate runs it for the lang
             // and lib_tests fixtures, but this returns On unless GRAPHIX_PRUNE is set.
             // The only pruning pin is a walk count,
@@ -203,6 +239,13 @@ impl Mode {
             // for Mode::Interp when GRAPHIX_PRUNE is unset, so every node-walk fixture
             // checks marks, or correct the design doc. Found by reading; not run.
             // (c-prune-wake-03)
+            // the node-walk modes audit every skip they would make: a missed
+            // mark fails the fixture
+            // 2026-10-19 claude: Fixed with x-prune-03: Interp (and Par) audit by
+            // default.
+            Mode::Interp | Mode::Par if std::env::var_os("GRAPHIX_PRUNE").is_none() => {
+                PruneMode::Audit
+            }
             _ => PruneMode::from_env(),
         }
     }
@@ -284,12 +327,8 @@ pub fn verdicts_agree(
     }
 }
 
-/// The next update of `id`, failing at `deadline`.
 /// `v` as a test reads it: written as data ([`rep::strip`]), so a
 /// tuple, struct or variant is the array a writer writes.
-// CR claude for claude: [readability/low] The first line of this doc ('The next update
-// of `id`, failing at `deadline`.') is left over from next_update and describes nothing
-// here; delete it. Found by reading; not run. (core-aux-05)
 pub fn data(v: Value) -> Value {
     rep::strip(&v).unwrap_or(v)
 }
@@ -344,7 +383,8 @@ pub async fn next_update_raw(
 /// Every update of `id` until the runtime settles (idle with nothing
 /// outstanding, [`GXHandle::wait_settled`]), or, for a program with a
 /// standing source that never settles, until no batch arrives for
-/// `quiet`; failing at `deadline` (a program that never quiesces).
+/// `quiet` after the first; failing at `deadline` (a program that never
+/// quiesces).
 pub async fn updates_until_quiet(
     rt: &GXHandle<NoExt>,
     rx: &mut Events,
@@ -380,6 +420,9 @@ pub async fn updates_until_quiet(
                 return Ok(values);
             }
             r = tokio::time::timeout(quiet, rx.recv()) => match r {
+                // a first value may be slow to come under load: quiet only
+                // counts once one has
+                Err(_) if values.is_empty() => continue,
                 Err(_) => return Ok(values),
                 Ok(None) => bail!("the runtime died"),
                 Ok(Some(mut batch)) => take(&mut batch, id, &mut values),
@@ -406,6 +449,16 @@ pub fn refused(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
     move |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains(phrase))
 }
 
+/// A [`run!`] predicate for a program whose value is `expected`.
+pub fn is(expected: Value) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| matches!(v, Ok(v) if *v == expected)
+}
+
+/// A [`run!`] predicate for a program whose value prints as `expected`.
+pub fn prints(expected: &'static str) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == expected)
+}
+
 /// The compile error `let result = {code}` gets, in full; an error if it
 /// compiles, or if the runtime died compiling it.
 pub async fn refusal(code: &str, register: &[PackageRef]) -> Result<String> {
@@ -421,6 +474,25 @@ pub async fn refusal(code: &str, register: &[PackageRef]) -> Result<String> {
         Ok(_) => bail!("compiled: {code}"),
         Err(e) => Ok(format!("{e:#}")),
     }
+}
+
+/// The error compiling `text` gets, with `files` served by the resolver;
+/// an error if it compiles.
+pub async fn compile_error(
+    files: &[(&str, &str)],
+    text: &str,
+    register: &[PackageRef],
+) -> Result<anyhow::Error> {
+    let tbl =
+        ahash::AHashMap::from_iter(files.iter().map(|(p, t)| {
+            (Path::from(ArcStr::from(*p)), VfsEntry::from(ArcStr::from(*t)))
+        }));
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = TestCtx::start(config(tx, register, vec![VfsResolver::new(tbl)], |_| {})?)
+        .await?;
+    let e = ctx.rt.compile(ArcStr::from(text)).await.err();
+    ctx.shutdown().await;
+    e.ok_or_else(|| anyhow::anyhow!("{text} compiled"))
 }
 
 /// The `BindId` of a module-qualified name like `"test::clicks"`. Scope
@@ -836,7 +908,7 @@ macro_rules! run {
                 reset_counters_after_init: bool,
                 check_shape: bool,
                 check: bool,
-            ) -> ::anyhow::Result<(u64, u64)> {
+            ) -> ::anyhow::Result<$crate::testing::FuseObserved> {
                 let pred = $pred;
                 let (ctx, mut rx) = $crate::testing::fixture_runtime(
                     [$(($path, ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from($code)))),+],
@@ -860,6 +932,10 @@ macro_rules! run {
                 if let ::std::option::Option::Some(checked) = checked {
                     $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?;
                 }
+                let regions = match &built {
+                    Ok(_) => ctx.fusion_stats().await.ok().map(|s| s.fused),
+                    Err(_) => ::std::option::Option::None,
+                };
                 match built {
                     Err(e) => {
                         if let ::std::result::Result::Err(dead) = ctx.rt.get_env().await {
@@ -911,7 +987,7 @@ macro_rules! run {
                     eprintln!("PARAUDIT-NOFORK\t{}\t{mode:?}", module_path!());
                 }
                 ctx.shutdown().await;
-                Ok(invocations)
+                Ok($crate::testing::FuseObserved { regions, runs: invocations })
             }
 
             #[$interp]
@@ -932,12 +1008,13 @@ macro_rules! run {
                 // print the observed level (`FUSEMAP <path> <level>`).
                 #[cfg(debug_assertions)]
                 if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
-                    let (fusion, jit) =
+                    let observed =
                         run_mode($crate::testing::Mode::Jit, true, false, false).await?;
+                    let (_, jit) = observed.runs;
                     eprintln!(
                         "FUSEMAPF\t{}\t{}",
                         module_path!(),
-                        if fusion > 0 { "Fuses" } else { "None" },
+                        if observed.regions.unwrap_or(0) > 0 { "Fuses" } else { "None" },
                     );
                     eprintln!(
                         "FUSEMAPJ\t{}\t{}",
@@ -951,10 +1028,12 @@ macro_rules! run {
                 // of asserting it.
                 #[cfg(debug_assertions)]
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
-                    let (fusion, _) =
-                        run_mode($crate::testing::Mode::Jit, true, false, false).await?;
+                    let regions = run_mode($crate::testing::Mode::Jit, true, false, false)
+                        .await?
+                        .regions
+                        .unwrap_or(0);
                     let expected = $fexpect;
-                    let observed = if fusion > 0 {
+                    let observed = if regions > 0 {
                         $crate::testing::FuseExpect::Jit
                     } else {
                         $crate::testing::FuseExpect::None

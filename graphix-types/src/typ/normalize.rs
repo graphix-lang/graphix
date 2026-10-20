@@ -500,6 +500,21 @@ impl Type {
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
                 if union_identical(self, t) { Some(self.clone()) } else { None }
             }
+            // XCR claude for eric: [bug/low] Two function types merge only when
+            // identical, so `[|x: i64| x * 2, |x| x]` has element type `[fn(x: i64) ->
+            // i64, fn(x: '_) -> '_]` and calling an element is refused ('expected fn
+            // not [..]'), while the same two lambdas as select arms are accepted and
+            // called. The two joins disagree on one program shape, and a union of two
+            // function types is never callable (one runtime form). Decide the rule:
+            // either an array literal joins function elements as select arms do (one
+            // cell, unified), or merge unifies two function types whose only
+            // differences are open cells. probe:
+            // design/review-2026-10-12/repro/t-fntyp-10.gx. (t-fntyp-10)
+            // 2026-10-19 claude: No longer reproduces: array, list and map literals
+            // and any() join their elements as select arms do (d99f80510).
+            // design/review-2026-10-12/repro/t-fntyp-10.gx prints [10, 5] and
+            // design/review-2026-10-19/repro/x-rerun-4-fntyp10-fixed.gx [5, 10]. Pin:
+            // lang::functions::gathered_functions_meet. Reported as x-rerun-4-04.
             (Type::Fn(_), Type::Fn(_)) => {
                 if union_identical(self, t) {
                     Some(self.clone())

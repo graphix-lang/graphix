@@ -86,6 +86,27 @@ fn write_count<R: Rt, E: UserEvent>(
 
 type StateRef = Arc<Mutex<QueueState>>;
 
+// CR claude for eric: [bug/medium] A callback that accumulates into an outer
+// variable, `|x| { got <- x ~ array::push(got, x); x }`, loses its first write when
+// the wrapper releases one call per tick: `got` reads [1], then [2], then [2, 3],
+// where each release should see the write the previous one made. Found while pinning
+// c-data-map-02; it reproduces at 9445a1d21, pruned or not, so it is no regression of
+// the 10-19 fixes. Find whether the second release's `~` samples `got` before the
+// first write lands or the instance reads it stale, and pin it in lang::queuefn.
+// probe: design/review-2026-10-19/repro/queuefn-stale-accumulator.gx
+// (queuefn-stale-read-01)
+// 2026-10-19 claude: Neither: no read is stale. The trigger clk fires at birth (its
+// initial 0), and the queuefn node updates before any wrapper site (the sites need
+// its lambda), so that fire finds the queue empty and banks a second credit
+// (pop_count 2) beside the initial one. q(1) and q(2) then both dispatch in cycle 0,
+// each samples got = [], and their two writes land in turn: [1], then [2]; q(3),
+// released at the next tick, reads [2]. With #trigger: skip(#n: 1, clk) the probe
+// gives [1], [1, 2], [1, 2, 3] (/home/eric/tmp/cr-fix3/wt-stdlib/qacc2.gx). So the
+// question is a rule: may a credit a trigger banks in a cycle release a call made in
+// that same cycle (statement order puts the node first), and is a trigger's birth
+// fire a credit at all? queuefn_trigger_before_fn relies on same-cycle banking (trigs
+// and xs both deliver one a cycle). Two credits mean two calls in flight, which an
+// accumulator into an outer variable cannot survive. Needs a ruling before a pin.
 /// Per-call-site Apply impl for the wrapper lambda. Each invocation of the
 /// wrapper at a user call site goes through this. Push/pop coordination is
 /// done via `state` shared with the owning `QueueFn` node.
@@ -135,14 +156,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 if s.pop_count > 0 {
                     s.pop_count -= 1;
                     drop(s);
-                    // a released call delivering to these binds this cycle runs
-                    // first, and this one the next
-                    // a released entry delivers this cycle to the site's binds
-                    // CR claude for claude: [readability/low] The two comment lines
-                    // above say the same thing twice in different words. Keep one, e.g.
-                    // 'a release delivering to these bindings this cycle goes first;
-                    // this call lands next cycle'. Found by reading; not run.
-                    // (core-aux-06)
+                    // a release delivering to these binds this cycle goes first;
+                    // this call lands next cycle
                     let released = self
                         .call
                         .args()
@@ -503,7 +518,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     // async_sleep_outputs.md. probe:
     // design/review-2026-10-19/repro/x-node-contract-queuefn-sleep-reset.gx
     // (x-node-contract-02)
-    // CR claude for claude: [bug/medium] This sleep is a rebirth: it clears the queue
+    // 2026-10-19 claude: The node half is done under core-aux-01 (for claude, now XCR):
+    // QueueFn::sleep is a pause and QueueFn::reborn resets queue, credit and #count,
+    // design/queue_fn.md and the async_sleep_outputs.md table follow. What remains here
+    // is WrapperApply::sleep dropping its site's calls, which is core-aux-02.
+    // XCR claude for claude: [bug/medium] This sleep is a rebirth: it clears the queue
     // and sets pop_count back to 1. When the arm wakes, the next call runs at once with
     // no #trigger. In the probe, #trigger never fires, yet q(7) runs at the wake (r =
     // 70 at 150 ms). CLAUDE.md says sleep is pause, not reset (a queue's contents and
@@ -512,19 +531,32 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     // pause, as Queue and IterQ now do. probe:
     // design/review-2026-10-19/repro/x-builtin-effects-queuefn-sleep-reset.gx
     // (x-builtin-effects-03)
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    // 2026-10-19 claude: Fixed with core-aux-01: sleep keeps queue and credit,
+    // QueueFn::reborn resets them. Pin: lib_tests::core::queuefn_sleep_is_a_pause; the
+    // probe now gives (0, ..) then the re-entry's stale (0, ..), never 70.
+    // XCR claude for claude: [bug/high] A sleep here is a rebirth: it drops the
+    // queued calls and restores the initial credit, so after the arm wakes the
+    // next wrapper call runs with no `#trigger`. This contradicts the rule that
+    // a wake resumes and never rebirths, which `queue`/`iterq` follow: they
+    // keep contents and credits at sleep and reset only in `Apply::reborn`.
+    // Fix: keep `queue` and `pop_count` in `sleep` and move this reset (plus
+    // the `#count` write) into a new `reborn`. Also add queuefn to
+    // design/async_sleep_outputs.md's audit table and pin it. probe:
+    // design/review-2026-10-19/repro/core-aux-queuefn-sleep-resets.gx Also
+    // reported as (tests-lib-a-01), (x-doc-drift-01). (core-aux-01)
+    // 2026-10-19 claude: QueueFn::sleep is a pause (queue and pop_count kept);
+    // the new QueueFn::reborn clears the queue, resets pop_count to 1 and
+    // writes #count. design/queue_fn.md and the async_sleep_outputs.md audit
+    // table (a queuefn row) say so. Pin:
+    // lib_tests::core::queuefn_sleep_is_a_pause (before: [100, 500], after:
+    // [100]). WrapperApply::sleep still drops its own site's calls: that is
+    // core-aux-02, Eric's.
+    /// A pause: the queued calls and the credit stay.
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+
+    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let w = {
             let mut s = self.state.lock();
-            // CR claude for claude: [bug/high] A sleep here is a rebirth: it drops the
-            // queued calls and restores the initial credit, so after the arm wakes the
-            // next wrapper call runs with no `#trigger`. This contradicts the rule that
-            // a wake resumes and never rebirths, which `queue`/`iterq` follow: they
-            // keep contents and credits at sleep and reset only in `Apply::reborn`.
-            // Fix: keep `queue` and `pop_count` in `sleep` and move this reset (plus
-            // the `#count` write) into a new `reborn`. Also add queuefn to
-            // design/async_sleep_outputs.md's audit table and pin it. probe:
-            // design/review-2026-10-19/repro/core-aux-queuefn-sleep-resets.gx Also
-            // reported as (tests-lib-a-01), (x-doc-drift-01). (core-aux-01)
             s.queue.clear();
             s.pop_count = 1;
             s.count_write()

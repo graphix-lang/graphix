@@ -85,7 +85,7 @@ impl InputReader {
     ) -> Result<Signal> {
         match output {
             Output::Custom(cdc) => match (&mut cdc.stop).await {
-                // CR claude for claude: [bug/medium] A display that ended normally
+                // CR claude for eric: [bug/medium] A display that ended normally
                 // (tui::exit, or the user closing a GUI's last window) is reported as
                 // Ctrl-C, and since the Ctrl-C exit-code fix a script then exits 130,
                 // the SIGINT status. In the REPL it also interrupts the runtime. Give
@@ -93,6 +93,12 @@ impl InputReader {
                 // 0); in the REPL, clear the output without interrupting. probe:
                 // design/review-2026-10-19/repro/gui-core-display-stop-exits-130.gx
                 // (exits 130). (gui-core-02)
+                // 2026-10-19 claude: Readdressed: this is tui-core-01's question (for
+                // eric, the CR below). The TUI sends the same Ok(()) for a Ctrl-C
+                // keypress (Screen::event) and for tui::exit, so mapping this arm to
+                // exit 0 here would make a TUI Ctrl-C exit 0 too; it waits on the
+                // ruling for what status a program-requested stop has, and then Stop
+                // carrying its reason.
                 // CR claude for eric: [bug/high] A display's `Ok(())` stop is read as
                 // Ctrl-C, so a script whose TUI quits through `tui::exit` exits 130,
                 // the SIGINT status, as if it had been interrupted. Every TUI app's

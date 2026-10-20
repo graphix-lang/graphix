@@ -2,8 +2,7 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::CFlag;
-use graphix_package_core::testing::{Mode, as_i64s};
-use graphix_package_core::testing::{TestCtx, config};
+use graphix_package_core::testing::{Mode, TestCtx, as_i64s, config};
 use netidx_value::{ValArray, Value};
 use tokio::sync::mpsc;
 

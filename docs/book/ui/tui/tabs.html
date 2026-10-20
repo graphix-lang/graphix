@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -202,7 +202,7 @@ val tabs: fn(
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
-<li><strong>selected</strong> - Index of the currently selected tab (0-indexed)</li>
+<li><strong>selected</strong> - Index of the currently selected tab (0-indexed). Events go only to the selected tab’s content</li>
 <li><strong>highlight_style</strong> - Style for the selected tab title</li>
 <li><strong>style</strong> - Base style for unselected tab titles</li>
 <li><strong>divider</strong> - A <code>Span</code> separating tab titles</li>
@@ -323,7 +323,8 @@ tabs(&amp;[
 </code></pre>
 <p><img src="./media/tabs_badge.png" alt="Tabs With Badges"></p>
 <h2 id="keyboard-navigation"><a class="header" href="#keyboard-navigation">Keyboard Navigation</a></h2>
-<p>Common patterns:</p>
+<p>The widget handles no keys itself: the program writes <code>#selected</code> from
+an <code>input_handler</code> around the tabs. Common patterns:</p>
 <ul>
 <li><code>Left</code>/<code>Right</code> - Switch to previous/next tab</li>
 <li><code>Tab</code> - Cycle forward through tabs</li>

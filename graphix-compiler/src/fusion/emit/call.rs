@@ -29,11 +29,11 @@ use super::{
         CompiledExpr, FIRE_TEST, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
         emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc, value_disc,
     },
-    body::{BodyCx, node_composite_source, node_is_bottom},
-    lower::{CtxWord, LowerCtx, SiteLayout, TruncLeaf, TruncRec},
+    body::{BodyCx, emit_into_slot, node_composite_source, node_is_bottom},
+    lower::{CtxWord, KernelFns, LowerCtx, SiteLayout, TruncLeaf, TruncRec},
     nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
     record::KernelConst,
-    scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
+    scalar::{cast_u64_to_prim, prim_to_clif},
 };
 
 /// Emit a fusable call ([`SiteDispatch`]): marshal `args` as (disc,
@@ -47,6 +47,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     info: &BuiltinCallSiteInfo,
     args: &[&Node<R, E>],
+    order: &[usize],
 ) -> Result<CompiledExpr> {
     let ret_abi = kernel_abi::abi_kind(&info.return_type);
     if ret_abi.is_none() {
@@ -68,10 +69,12 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         3,
     ));
     let mut drops: SmallVec<[OwnedDrop; 8]> = SmallVec::new();
-    let mut arg_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
-    // an owned arg is held while the later args emit (an emission error
-    // abandons the body, its holds with it)
-    for (i, (arg_node, t)) in args.iter().zip(info.arg_types.iter()).enumerate() {
+    let mut arg_discs: SmallVec<[Option<ClifValue>; 8]> =
+        smallvec::smallvec![None; args.len()];
+    // in the call's update order; an owned arg is held while the later
+    // args emit (an emission error abandons the body, its holds with it)
+    for &i in order {
+        let (arg_node, t) = (args[i], &info.arg_types[i]);
         // The buffer is laid out by `info.arg_types`, so only the
         // `AbiKind` needs to agree, not the exact `Type`.
         let Some(frozen) = kernel_abi::freeze_for_abi_normalized(arg_node.typ()) else {
@@ -88,7 +91,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             ));
         }
         let cv = arg_node.emit_clif(cx)?;
-        arg_discs.push(cv.disc);
+        arg_discs[i] = Some(cv.disc);
         // The stored disc must be clean or the fn sees a corrupt Value;
         // the arg's own disc carries its taint to the masks. The fn
         // borrows the buffer, so owned args are released after the call.
@@ -122,6 +125,10 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
     }
     release_owned(cx, drops.len());
+    let arg_discs =
+        arg_discs.into_iter().collect::<Option<SmallVec<[ClifValue; 8]>>>().ok_or_else(
+            || anyhow!("emit_clif: a call's update order misses an argument"),
+        )?;
     // A tainted arg is a mask bit, not a reason to skip emission; the
     // trampoline bottoms the call.
     let mut taint_mask = cx.b.ins().iconst(types::I64, 0);
@@ -135,7 +142,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     // Suppressed under genuine init only (init minus wake): at init
     // every input is born; a wake delivers standing inputs stale.
     let genuine = {
-        let (init, wake) = (cx.init_flag(), cx.ctx.wake_flag);
+        let (init, wake) = (cx.born_flag(), cx.ctx.wake_flag);
         let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
         let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
         cx.b.ins().band(init_b, no_wake)
@@ -314,11 +321,9 @@ pub enum CompositeSource {
     Borrowed,
 }
 
-/// One owned cross-kernel-call arg to drop after the call returns: args
-/// pass borrowed (the callee clones every composite/value param on
-/// entry), so an owned-source arg's original would otherwise leak.
 /// An owned value the emitter drops after its consumer: its kind and
-/// its words.
+/// its words. A call's argument is one: args pass borrowed (the callee
+/// clones every composite/value param on entry).
 pub(super) type OwnedDrop = (LocalKind, CompiledExpr);
 
 /// Record an owned argument for the drop after its call, and hold it
@@ -357,7 +362,7 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
     }
 }
 
-/// The callee's context word: our init view, forced on this site's
+/// The callee's context word: born as we are, and on this site's
 /// first call ever (the node-walk primes an instance's first dispatch
 /// the same way). In a loop each slot is an instance with a first call
 /// of its own.
@@ -366,8 +371,8 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
         0 => Some(cx.claim_word()),
         _ => cx.slot_word(site),
     };
-    let init = cx.first_use(word);
-    CtxWord { init, wake: cx.ctx.wake_flag }.encode(cx.b)
+    let born = cx.first_use(word);
+    CtxWord { born, wake: cx.ctx.wake_flag }.encode(cx.b)
 }
 
 /// Claim a contiguous run from this body's channel and rebase the callee's
@@ -620,15 +625,6 @@ fn call_slots<'a, R: Rt, E: UserEvent>(
     }
     let mut slots: LPooled<Vec<LambdaCallSlot<R, E>>> = LPooled::take();
     let mut sig_idx = 0usize;
-    // CR claude for claude: [bug/medium] The slots, and so the emission of the argument
-    // nodes, follow formal order, while the node-walk updates arguments in written
-    // order. Labeled arguments can be written out of formal order, so `f(#b: e1?, #a:
-    // e2?, x)` raises e1 before e2 in the node-walk and e2 before e1 in a kernel, and
-    // the handler sees the errors in a different order. CallSite::emit_clif's builtin
-    // path emits in marshal (formal) order too. Emit the argument nodes in written
-    // order (ArgKey::of_written) into temporaries and pass them in formal order. probe:
-    // design/review-2026-10-19/repro/f-mod-lowering-labeled-arg-order.gx
-    // (f-mod-lowering-02)
     for i in 0..ftype.args.len() {
         let node = formal_arg(cs, &ftype, i).ok_or_else(|| {
             anyhow!("lambda call `{fn_name}`: missing call-site arg node")
@@ -676,27 +672,47 @@ fn call_slots<'a, R: Rt, E: UserEvent>(
     Ok(slots)
 }
 
-/// Emit each slot as the pair the callee's param expects: a scalar fed
-/// to a value-shaped slot widens its payload word to the Value encoding
-/// (a composite/string pair already is one). Args pass borrowed, so the
-/// owned ones are returned to drop after the call.
+/// Emit each slot as the pair the callee's param expects
+/// ([`emit_into_slot`]). Args pass borrowed, so the owned ones are
+/// returned to drop after the call.
 fn marshal_args<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
+    cs: &CallSite<R, E>,
     slots: &[LambdaCallSlot<R, E>],
     fn_name: &str,
 ) -> Result<(SmallVec<[CompiledExpr; 12]>, SmallVec<[OwnedDrop; 8]>)> {
-    let mut cvs: SmallVec<[CompiledExpr; 12]> = SmallVec::new();
+    let mut cvs: SmallVec<[Option<CompiledExpr>; 12]> =
+        smallvec::smallvec![None; slots.len()];
     let mut drops: SmallVec<[OwnedDrop; 8]> = SmallVec::new();
-    for s in slots.iter() {
-        let slot_kind = kernel_abi::abi_kind(s.typ());
-        let value_slot = matches!(
-            slot_kind,
-            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
-        );
-        let cv = match s {
-            LambdaCallSlot::Arg(n, _) => {
-                let cv = n.emit_clif(cx)?;
-                // CR claude for claude: [bug/high] A value-shaped argument passed into
+    let nodes: SmallVec<[Option<&Node<R, E>>; 12]> = slots
+        .iter()
+        .map(|s| match s {
+            LambdaCallSlot::Arg(n, _) => Some(*n),
+            LambdaCallSlot::Cap(_) => None,
+        })
+        .collect();
+    // XCR claude for claude: [bug/medium] The slots, and so the emission of the argument
+    // nodes, follow formal order, while the node-walk updates arguments in written
+    // order. Labeled arguments can be written out of formal order, so `f(#b: e1?, #a:
+    // e2?, x)` raises e1 before e2 in the node-walk and e2 before e1 in a kernel, and
+    // the handler sees the errors in a different order. CallSite::emit_clif's builtin
+    // path emits in marshal (formal) order too. Emit the argument nodes in written
+    // order (ArgKey::of_written) into temporaries and pass them in formal order. probe:
+    // design/review-2026-10-19/repro/f-mod-lowering-labeled-arg-order.gx
+    // (f-mod-lowering-02)
+    // 2026-10-19 claude: CallSite::update_order gives the node-walk's update order
+    // (written arguments, then the defaults a bind added) of a call's argument nodes;
+    // marshal_args emits a lambda call's slots in it and emit_builtin_call_node a
+    // builtin's, each into its formal position. Pin: graphix-tests --test fusion_review
+    // labeled_args_raise_in_written_order (the review binary logs [a, b] fused, [b, a]
+    // node-walked).
+    for i in cs.update_order(&nodes) {
+        let cv = match &slots[i] {
+            LambdaCallSlot::Arg(n, t) => {
+                let slot = kernel_abi::abi_kind(t).and_then(LocalKind::of).ok_or_else(|| {
+                    anyhow!("lambda call `{fn_name}`: an arg slot of type {t} has no local")
+                })?;
+                // XCR claude for claude: [bug/high] A value-shaped argument passed into
                 // a composite slot is marshalled as-is. Example: a select whose arms
                 // are arrays of different element types, typed [Array<i64>,
                 // Array<string>], passed to an Array<[i64, string]> formal. When it is
@@ -716,22 +732,22 @@ fn marshal_args<R: Rt, E: UserEvent>(
                 // also f-call-flow-value-arg-tail-rebind.gx,
                 // f-call-flow-value-body-composite-return.gx,
                 // f-call-flow-value-body-composite-fold-acc.gx (f-call-flow-01)
-                match kernel_abi::abi_kind(n.typ()) {
-                    Some(AbiKind::Scalar(p)) if value_slot => CompiledExpr::new(
-                        cv.disc,
-                        scalar_to_payload_i64(cx.b, p, cv.payload),
-                    ),
-                    // a scalar-widened arg owns nothing
-                    _ => {
-                        let source = node_composite_source(n);
-                        if let Some(k) =
-                            slot_kind.and_then(|k| owned_drop_kind(k, source))
-                        {
-                            hold_owned(cx, &mut drops, (k, cv));
-                        }
-                        cv
-                    }
+                // 2026-10-19 claude: body::emit_into_slot (with slot_source, its static
+                // twin) is the one way a node enters a slot of a LocalKind: a scalar into
+                // a value slot widens, a value-shaped production into a composite slot is
+                // owned then narrowed (narrow_value_to_composite), else the production
+                // with its source and what it leaves to drop. marshal_args,
+                // emit_self_tail_call, emit_let_node, emit_return_from_node (composite
+                // returns) and emit_fold_kind (a composite acc's init and body) use it.
+                // Pin: graphix-tests --test fusion_review value_into_composite_slot (an
+                // argument, a composite return, a tail rebind and a fold acc fed a bottom
+                // select of [Array<i64>, Array<string>]; the review binary aborts on its
+                // program at graphix_valarray_clone).
+                let s = emit_into_slot(cx, n, slot)?;
+                if let Some(k) = s.owns {
+                    hold_owned(cx, &mut drops, (k, s.cv));
                 }
+                s.cv
             }
             // Capture reads are borrowed.
             LambdaCallSlot::Cap(c) => {
@@ -749,24 +765,26 @@ fn marshal_args<R: Rt, E: UserEvent>(
                 CompiledExpr::new(cx.read_disc(index), cx.b.use_var(payload))
             }
         };
-        cvs.push(cv);
+        cvs[i] = Some(cv);
     }
     release_owned(cx, drops.len());
+    let cvs = cvs.into_iter().collect::<Option<_>>().ok_or_else(|| {
+        anyhow!("lambda call `{fn_name}`: the update order misses a slot")
+    })?;
     Ok((cvs, drops))
 }
 
-/// A self-call inside the stack red zone re-enters on a fresh segment
-/// through the spill thunk; the same check carries the cooperative
-/// interrupt and the stack budget, which abort the run. The call's
-/// result pair goes to `rmerge`. Only self-calls need it: cross-kernel
-/// edges are acyclic.
-fn emit_self_dispatch(
+/// A checked call of another kernel or of itself: inside the stack red
+/// zone it enters the callee on a fresh segment through the callee's
+/// spill thunk, since a chain of calls is as deep as the program is long;
+/// the same check carries the cooperative interrupt and the stack budget,
+/// which abort the run. The call's result pair goes to `rmerge`.
+fn emit_kernel_dispatch(
     cx: &mut BodyCx,
-    func_ref: FuncRef,
+    callee: KernelFns<FuncRef>,
     clif_args: &[ClifValue],
     rmerge: Block,
     fn_name: &str,
-    thunk: FuncRef,
 ) -> Result<()> {
     let abort_bl = cx.b.create_block();
     let direct_bl = cx.b.create_block();
@@ -790,7 +808,7 @@ fn emit_self_dispatch(
     cx.b.ins().jump(rmerge, &[BlockArg::Value(zero), BlockArg::Value(zero)]);
     cx.b.switch_to_block(call_bl);
     cx.b.seal_block(call_bl);
-    let inst = cx.b.ins().call(func_ref, clif_args);
+    let inst = cx.b.ins().call(callee.body, clif_args);
     let (r0, r1) = callee_results(cx, inst, fn_name)?;
     cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
     cx.b.switch_to_block(grow_bl);
@@ -806,7 +824,7 @@ fn emit_self_dispatch(
         cx.b.ins().store(MemFlags::trusted(), *v, base, (8 * i) as i32);
     }
     let out = cx.b.ins().iadd_imm(base, (8 * n) as i64);
-    let thunk = cx.b.ins().func_addr(types::I64, thunk);
+    let thunk = cx.b.ins().func_addr(types::I64, callee.thunk);
     cx.call_helper("graphix_grow_stack", &[thunk, base, out])?;
     let r0 = cx.b.ins().load(types::I64, MemFlags::trusted(), out, 0);
     let r1 = cx.b.ins().load(types::I64, MemFlags::trusted(), out, 8);
@@ -834,16 +852,10 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let fn_name = &info.kernel.fn_name;
     let slots = call_slots(cs, info)?;
     let ret = &info.kernel.return_type;
-    // The callsite node's type may promise a 2-word Value where the
-    // callee ABI returns a narrower shape; both merge edges must carry
-    // the widened pairing.
-    let node_typ = cs.typ();
-    let widen = call_result_needs_value_widening(cx, node_typ, ret)?;
-    let ret_pay_ty = match kernel_abi::abi_kind(ret) {
-        Some(AbiKind::Scalar(p)) if !widen => prim_to_clif(p),
-        _ => types::I64,
-    };
-    let (slot_cvs, drops) = marshal_args(cx, &slots, fn_name)?;
+    // the callsite node's type may promise a 2-word Value where the
+    // callee ABI returns a narrower shape
+    let widen = call_result_needs_value_widening(cx, cs.typ(), ret)?;
+    let (slot_cvs, drops) = marshal_args(cx, cs, &slots, fn_name)?;
     let mut clif_args: SmallVec<[ClifValue; 24]> =
         SmallVec::with_capacity(slot_cvs.len() * 2 + 3);
     let context = emit_callee_context_word(cx, cs.spec().id);
@@ -860,37 +872,49 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         clif_args.push(cv.disc);
         clif_args.push(cv.payload);
     }
-    let func_ref =
+    let callee =
         *cx.ctx.callee_refs.get(&kernel_abi::kernel_key(&info.kernel)).ok_or_else(|| {
             anyhow!("lambda call `{fn_name}`: callee_refs has no entry — discovery/declare drift")
         })?;
-    // CR claude for claude: [readability/low] `dmerge` has one predecessor, the jump
-    // right before its switch, so the block and its two params do nothing. The comment
-    // at `widen` ("both merge edges must carry the widened pairing") describes an edge
-    // that no longer exists. Return `result` directly, drop `dmerge`, and cut the
-    // comment to what `widen` decides. Found by reading; not run. (f-call-flow-04)
-    let dmerge = cx.b.create_block();
-    cx.b.append_block_param(dmerge, types::I64);
-    cx.b.append_block_param(dmerge, ret_pay_ty);
     let rmerge = cx.b.create_block();
     cx.b.append_block_param(rmerge, types::I64);
     cx.b.append_block_param(rmerge, types::I64);
-    if let Some(own) = own {
-        emit_self_dispatch(cx, func_ref, &clif_args, rmerge, fn_name, own.thunk)?;
+    // XCR claude for claude: [bug/high] A call to another kernel is a plain native
+    // call with no stack check. emit_self_dispatch assumes cross-kernel edges are
+    // acyclic, but acyclic is not shallow: a chain of distinct functions nests
+    // kernel frames as deep as the program is long, and JIT frames cannot grow
+    // through stacker. With fusion on, 400 chained functions `fi(x) = f(i+1)(x) +
+    // vi` abort the process with a native stack overflow (exit 134). --no-fusion
+    // prints the value, even at N=2000. Fix: route Called::Other through the same
+    // graphix_stack_check and spill-thunk dispatch as a self-call, which needs a
+    // spill thunk for every kernel. That also lets the interrupt and the stack
+    // budget reach deep chains. probe:
+    // design/review-2026-10-19/repro/c-callsite-cross-kernel-chain-overflow.sh
+    // (c-callsite-01)
+    // 2026-10-19 claude: Every lambda kernel now has a spill thunk, declared with
+    // its body in compile_region_inner's phase 1 (Declared, CachedBody::thunk_id)
+    // so callers import it; a caller's record names it as
+    // RelocTarget::CalleeThunk and Generation::load installs it with the callee
+    // (Installed). emit_kernel_dispatch (was emit_self_dispatch) runs
+    // graphix_stack_check and the grow path at every kernel call, self or not;
+    // design/recursive_activations.md updated. Pin: graphix-tests --test
+    // fusion_review cross_kernel_chain_stack_space (500 chained fns with
+    // captures; jit_par overflowed the test thread's stack with the cross-kernel
+    // check removed). The repro at N=400 and N=3000 runs; N=3000 now takes ~80 s
+    // to fuse in debug, the pre-existing O(N^2) of transitive captures as kernel
+    // params.
+    // 2026-10-19 claude: A per-call graphix_stack_check doubled a call-heavy
+    // kernel (a fold calling h, which calls g twice: 80 ms against 40 ms over 3M
+    // elements). A call into another kernel now checks only where the caller's and
+    // callee's heights (longest chain of distinct kernels below, itself included)
+    // fall in different blocks of jit::CHECK_EVERY (8): a chain descends in
+    // height, so it checks at least once every 8 frames; that fold is back to 40
+    // ms. Self-calls always check. The 500-chain pin still passes; with no
+    // cross-kernel check it overflowed.
+    if callee.checked {
+        emit_kernel_dispatch(cx, callee, &clif_args, rmerge, fn_name)?;
     } else {
-        // CR claude for claude: [bug/high] A call to another kernel is a plain native
-        // call with no stack check. emit_self_dispatch assumes cross-kernel edges are
-        // acyclic, but acyclic is not shallow: a chain of distinct functions nests
-        // kernel frames as deep as the program is long, and JIT frames cannot grow
-        // through stacker. With fusion on, 400 chained functions `fi(x) = f(i+1)(x) +
-        // vi` abort the process with a native stack overflow (exit 134). --no-fusion
-        // prints the value, even at N=2000. Fix: route Called::Other through the same
-        // graphix_stack_check and spill-thunk dispatch as a self-call, which needs a
-        // spill thunk for every kernel. That also lets the interrupt and the stack
-        // budget reach deep chains. probe:
-        // design/review-2026-10-19/repro/c-callsite-cross-kernel-chain-overflow.sh
-        // (c-callsite-01)
-        let inst = cx.b.ins().call(func_ref, &clif_args);
+        let inst = cx.b.ins().call(callee.body, &clif_args);
         let (r0, r1) = callee_results(cx, inst, fn_name)?;
         cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
     }
@@ -936,19 +960,13 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         }
     };
     emit_owned_drops(cx.b, cx.ctx, &drops)?;
-    cx.b.ins()
-        .jump(dmerge, &[BlockArg::Value(result.disc), BlockArg::Value(result.payload)]);
-    cx.b.switch_to_block(dmerge);
-    cx.b.seal_block(dmerge);
-    let disc = cx.b.block_params(dmerge)[0];
-    let payload = cx.b.block_params(dmerge)[1];
     #[cfg(debug_assertions)]
     if crate::dbgenv::gxdbg_callret() {
         use crate::fusion::emit_helpers::CallRetTag;
         let t = cx.b.ins().iconst(types::I64, CallRetTag::CallResult as i64);
-        cx.call_helper("graphix_dbg_disc", &[t, disc])?;
+        cx.call_helper("graphix_dbg_disc", &[t, result.disc])?;
     }
-    Ok(CompiledExpr::new(disc, payload))
+    Ok(result)
 }
 
 /// What a production of `kind` from a node of `source` leaves its

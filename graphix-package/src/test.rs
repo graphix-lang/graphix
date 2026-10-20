@@ -219,14 +219,9 @@ fn reduced_feature_build_drops_packages() {
     // present packages check; dropped packages fail to resolve their module
     assert!(check("use str;\nstr::len(\"hi\")\n"), "use str should check");
     assert!(check("use re;\nre::is_match(#pat:\"x\", \"x\")\n"), "use re should check");
-    // CR claude for claude: [test-gap/medium] Both negative checks are vacuous. A
-    // program that is only `use http` is refused by every build, the full one included
-    // ('a use declaration is not an expression'), so these asserts pass even if the
-    // feature drop did nothing. Write `use http;\n1\n` and `use sqlite;\n1\n`: the full
-    // binary accepts them (exit 0), so a refusal here means the package is gone. probe:
-    // design/review-2026-10-19/repro/package-vacuous-feature-drop-test.sh (package-04)
-    assert!(!check("use http\n"), "use http should fail (feature dropped)");
-    assert!(!check("use sqlite\n"), "use sqlite should fail (feature dropped)");
+    // a full build accepts both
+    assert!(!check("use http;\n1\n"), "use http should fail (feature dropped)");
+    assert!(!check("use sqlite;\n1\n"), "use sqlite should fail (feature dropped)");
 }
 
 fn vendor(ws: &Path) {
@@ -302,12 +297,16 @@ async fn build_standalone_produces_working_binary() {
     let gx_dir = pkg_dir.join("src").join("graphix");
     // main.gx imports the package's own graphix module; reaching
     // `testpkg::var` and `testpkg::example` proves the packed AST decoded
-    // and the module resolved at runtime.
+    // and the module resolved at runtime. The `true` arm's first entry
+    // reads `v` stale, and the skeleton's builtin still answers it.
     let main_gx = "\
 let v = testpkg::var;
 let ex = testpkg::example(v);
 let a = sys::args();
-println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex] args=[a]\")
+let go = false;
+go <- sys::time::after_idle(duration:50.ms, true);
+let entries = count(select go { true => testpkg::example(v), false => testpkg::example(v) });
+println(select entries { 2 => \"GRAPHIX_STANDALONE_OK var=[v] ex=[ex] args=[a]\", _ => never() })
 ";
     tokio::fs::write(gx_dir.join("main.gx"), main_gx).await.unwrap();
     // the program reads its arguments through sys
@@ -408,7 +407,7 @@ mod pure {
         DEFAULT_PACKAGES, PackageEntry, Packages, Selection, ShellBump, UpdatePlan,
         apply_selection, compute_update_plan, feature_depends_on, feature_edges,
         installed_dependents, normalize_selection, parse_packages, parse_toggles,
-        plan_items, selection_from_indices, standalone_features,
+        plan_items, reinstall_dependencies, selection_from_indices, standalone_features,
         stdlib_packages_in_cargo_toml, to_toml_string, version_gt,
     };
     use compact_str::{CompactString, ToCompactString};
@@ -797,6 +796,24 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         let mut deps = installed_dependents("sys", &installed, &edges);
         deps.sort();
         assert_eq!(deps, ["hbs", "json", "tui"].map(String::from).to_vec());
+    }
+
+    /// `add tui` after `remove sys` (which cascaded json and hbs): the
+    /// build compiles sys for tui, so the record installs it again.
+    #[test]
+    fn an_added_package_reinstalls_what_it_depends_on() {
+        let edges = feature_edges(FEATURES_TOML).unwrap();
+        let mut pkgs = Packages {
+            stdlib_installed: sset(&["core", "str", "tui", "array"]),
+            stdlib_removed: sset(&["sys", "json", "hbs"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            reinstall_dependencies(&mut pkgs, &edges),
+            vec![CompactString::from("sys")]
+        );
+        assert_eq!(pkgs.stdlib_installed, sset(&["core", "str", "tui", "array", "sys"]));
+        assert_eq!(pkgs.stdlib_removed, sset(&["json", "hbs"]));
     }
 
     fn shell_cargo_toml() -> String {

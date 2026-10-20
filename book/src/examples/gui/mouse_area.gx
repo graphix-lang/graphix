@@ -22,12 +22,12 @@ let position = "---";
             text(&status),
             text(&"Position: [position]"),
             mouse_area(
-                #on_press: |btn| status <- btn ~ select btn {
+                #on_press: |btn| status <- select btn {
                     `Left => "Left pressed",
                     `Right => "Right pressed",
                     `Middle => "Middle pressed"
                 },
-                #on_release: |btn| status <- btn ~ select btn {
+                #on_release: |btn| status <- select btn {
                     `Left => "Left released",
                     `Right => "Right released",
                     `Middle => "Middle released"

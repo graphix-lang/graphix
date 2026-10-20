@@ -58,7 +58,7 @@ macro_rules! same_by_eq {
     )*};
 }
 
-same_by_eq!(crate::BindId, crate::LambdaId, netidx_value::Value);
+same_by_eq!((), crate::BindId, crate::LambdaId, netidx_value::Value);
 
 #[cfg(test)]
 same_by_eq!(u32);
@@ -233,12 +233,17 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             // release (one comparison per written key) or key Env::impls by
             // implementation so that independent registrations never share a key. Found
             // by reading; not run. (t-env-02)
+            let same = |a: Option<&V>, b: Option<&V>| match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.same_value(b),
+                _ => false,
+            };
+            // a write since the fork is replaced only by a different one
             debug_assert!(
-                base.as_ref().is_none_or(|base| match (self.map.get(&k), base.get(&k)) {
-                    (None, None) => true,
-                    (Some(now), Some(then)) => now.same_value(then),
-                    _ => false,
-                }),
+                same(map.get(&k), self.map.get(&k))
+                    || base
+                        .as_ref()
+                        .is_none_or(|base| same(self.map.get(&k), base.get(&k))),
                 "a fork's write to {k:?} would replace a write made since the fork"
             );
             match map.get(&k) {
@@ -253,141 +258,90 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
     }
 }
 
-/// A [`Set`] with fork and join.
+/// A set with fork and join: a [`TrackedMap`] to `()`, so a join checks a
+/// fork's writes as the map's does.
 #[derive(Clone, Debug)]
-// XCR claude for claude: [structure/medium] [structure] TrackedSet copies all of
-// TrackedMap (touch, insert, remove, retain, clear, fork, join), but its join lacks the
-// map's debug_assert against replacing a write made since the fork. A fork's removal of
-// a key the parent inserted after the fork (connect_targets, poly_binds and
-// package_roots all see removals) is dropped silently, even in debug. imhm::Set is a
-// Map<K, ()>. Make this a wrapper over TrackedMap<K, ()> (same_by_eq!(())) so the set
-// inherits the check, and add a set twin of join_reports_a_conflicting_write. Found by
-// reading; not run. (x-dup-02)
-// 2026-10-20 claude: TrackedSet::join now carries the fork's base and asserts (debug)
-// when a fork leaves a key's presence other than a write made since the fork left it;
-// two forks that leave a key alike agree, which a set needs (two statements connecting
-// one target). Not merged into TrackedMap<K, ()>: imhm::Set has no conversion to or
-// from its Map<K, ()>, and the image encodes the sets as Set. Pin:
-// tracked::tests::set_join_reports_a_conflicting_write.
-pub struct TrackedSet<K: Hash + Eq + Clone + Debug> {
-    set: Set<K>,
-    touched: Option<LPooled<Vec<K>>>,
-    /// See [`TrackedMap`].
-    generation: u64,
-    forked_at: u64,
-    base: Option<Set<K>>,
-}
+pub struct TrackedSet<K: Hash + Eq + Clone + Debug>(TrackedMap<K, ()>);
 
 impl<K: Hash + Eq + Clone + Debug> Default for TrackedSet<K> {
     fn default() -> Self {
-        Self::from(Set::default())
+        Self(TrackedMap::default())
     }
 }
 
 impl<K: Hash + Eq + Clone + Debug> From<Set<K>> for TrackedSet<K> {
     fn from(set: Set<K>) -> Self {
-        Self { set, touched: None, generation: 0, forked_at: 0, base: None }
-    }
-}
-
-impl<K: Hash + Eq + Clone + Debug> Deref for TrackedSet<K> {
-    type Target = Set<K>;
-
-    fn deref(&self) -> &Set<K> {
-        &self.set
+        Self(TrackedMap::from(
+            set.into_iter().map(|k| (k.clone(), ())).collect::<Map<K, ()>>(),
+        ))
     }
 }
 
 impl<K: Hash + Eq + Clone + Debug> TrackedSet<K> {
-    fn touch(&mut self, k: &K) {
-        self.generation += 1;
-        if let Some(t) = &mut self.touched {
-            t.push(k.clone())
-        }
+    /// The members as a plain set.
+    pub fn to_set(&self) -> Set<K> {
+        self.iter().cloned().collect()
     }
 
+    /// The member equal to `k`, as the set holds it.
+    pub fn get(&self, k: &K) -> Option<&K> {
+        self.0.map.get_key(k)
+    }
+
+    pub fn contains<Q: ?Sized + Hash + Eq>(&self, k: &Q) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+    {
+        self.0.map.get(k).is_some()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether `k` was not a member.
     pub fn insert(&mut self, k: K) -> bool {
-        self.touch(&k);
-        self.set.insert_cow(k)
+        self.0.insert(k, ()).is_none()
     }
 
+    /// Whether `k` was a member.
     pub fn remove(&mut self, k: &K) -> bool {
-        self.touch(k);
-        self.set.remove_cow(k)
+        self.0.remove(k).is_some()
     }
 
-    pub fn iter(&self) -> <&Set<K> as IntoIterator>::IntoIter {
-        (&self.set).into_iter()
+    pub fn iter(&self) -> impl Iterator<Item = &K> {
+        self.0.iter().map(|(k, ())| k)
     }
 
     pub fn extend(&mut self, ks: impl IntoIterator<Item = K>) {
-        for k in ks {
-            self.insert(k);
-        }
+        self.0.extend(ks.into_iter().map(|k| (k, ())))
     }
 
     pub fn remove_many(&mut self, ks: impl IntoIterator<Item = K>) {
-        let mut ks: LPooled<Vec<K>> = ks.into_iter().collect();
-        for k in ks.iter() {
-            self.touch(k);
-        }
-        self.set = self.set.remove_many(ks.drain(..));
+        self.0.remove_many(ks)
     }
 
     /// Keep only the members `keep` accepts.
     pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
-        let mut gone: LPooled<Vec<K>> =
-            self.set.into_iter().filter(|k| !keep(k)).cloned().collect();
-        if !gone.is_empty() {
-            self.remove_many(gone.drain(..))
-        }
+        self.0.retain(|k, ()| keep(k))
     }
 
     pub fn clear(&mut self) {
-        let mut all: LPooled<Vec<K>> = self.set.into_iter().cloned().collect();
-        self.remove_many(all.drain(..))
+        self.0.clear()
     }
 
+    /// A copy that records what it writes.
     pub fn fork(&self) -> Self {
-        Self {
-            set: self.set.clone(),
-            touched: Some(LPooled::take()),
-            generation: self.generation,
-            forked_at: self.generation,
-            base: Some(self.set.clone()),
-        }
+        Self(self.0.fork())
     }
 
+    /// Write back what `fork` wrote; see [`TrackedMap::join`].
     pub fn join(&mut self, fork: Self) {
-        let Self { set, touched, generation, forked_at, base } = fork;
-        if self.generation == forked_at {
-            self.set = set;
-            self.generation = generation;
-            if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
-                absorb(mine, &mut theirs)
-            }
-            return;
-        }
-        let Some(mut touched) =
-            merged_keys(&mut self.generation, &mut self.touched, touched)
-        else {
-            return;
-        };
-        for k in touched.drain(..) {
-            // a member is its presence: a fork that leaves a key as a write
-            // made since the fork left it loses nothing
-            debug_assert!(
-                base.as_ref().is_none_or(|base| {
-                    let now = self.set.contains(&k);
-                    now == base.contains(&k) || now == set.contains(&k)
-                }),
-                "a fork's write to {k:?} would replace a write made since the fork"
-            );
-            match set.contains(&k) {
-                true => self.set.insert_cow(k),
-                false => self.set.remove_cow(&k),
-            };
-        }
+        self.0.join(fork.0)
     }
 }
 
@@ -399,15 +353,6 @@ impl<'a, K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> IntoIterato
 
     fn into_iter(self) -> Self::IntoIter {
         (&self.map).into_iter()
-    }
-}
-
-impl<'a, K: Hash + Eq + Clone + Debug> IntoIterator for &'a TrackedSet<K> {
-    type Item = <&'a Set<K> as IntoIterator>::Item;
-    type IntoIter = <&'a Set<K> as IntoIterator>::IntoIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        (&self.set).into_iter()
     }
 }
 
@@ -468,26 +413,20 @@ mod tests {
         parent.join(b);
     }
 
-    /// A sibling's removal of a member another sibling added is reported,
-    /// never lost unseen; two that leave a member alike agree.
+    /// A set's join checks a fork's writes as a map's does: here one
+    /// sibling removes a key the other inserted since the fork.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "would replace a write made since the fork")]
     fn set_join_reports_a_conflicting_write() {
-        let mut parent: TrackedSet<u32> = TrackedSet::default();
-        parent.insert(1);
+        let mut parent = TrackedSet::default();
+        parent.insert(1u32);
         let mut a = parent.fork();
         let mut b = parent.fork();
-        let mut c = parent.fork();
         a.insert(2);
-        c.insert(2);
-        b.remove(&2);
-        b.insert(3);
-        b.remove(&3);
         b.insert(2);
         b.remove(&2);
         parent.join(a);
-        parent.join(c);
         parent.join(b);
     }
 

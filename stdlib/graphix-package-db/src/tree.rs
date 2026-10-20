@@ -45,9 +45,9 @@ pub(crate) use graphix_package_core::Reaped;
 
 pub(crate) struct Database {
     db: sled::Db,
-    /// Held while a tree is created with its types or dropped, so a
-    /// transaction's commit that created a tree and failed drops only one
-    /// nothing else has claimed.
+    /// Held while a tree is created with its types or dropped, and by
+    /// every commit and import, so a transaction's commit that created a
+    /// tree and failed drops only one nothing else has claimed.
     pub(crate) creating: Mutex<()>,
     /// The watches on each tree, by its name, while anything holds them.
     watches: Mutex<AHashMap<sled::IVec, Weak<Watches>>>,
@@ -863,6 +863,7 @@ fn import_data(db: &Database, data: ExportData) -> Result<()> {
             bail!("duplicate import key")
         }
     }
+    let _creating = db.creating.lock();
     let existing: LPooled<Vec<_>> = db.tree_names().into_iter().collect();
     for tree in &*data {
         if existing.iter().any(|name| name.as_ref() == tree.name) {

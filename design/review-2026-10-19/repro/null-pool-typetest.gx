@@ -1,0 +1,6 @@
+// Title: a null literal beside a type-tested struct arm covers nothing
+// Command: graphix --no-cache null-pool-typetest.gx
+// Expected: [0, 3]
+// Observed: refused, missing match cases: no arm covers { a: [i64, null] }
+let h = |x: {a: [i64, null]}| select x { {a: null} => 0, {a: i64} as s => s.a };
+[h({a: null}), h({a: 3})]

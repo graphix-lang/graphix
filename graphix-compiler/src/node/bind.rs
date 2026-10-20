@@ -45,8 +45,8 @@ use triomphe::Arc;
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
     slept: WakeBit,
-    /// The cycle of the last sleep: a write landing after it is a fire no
-    /// reader saw, re-raised at the wake.
+    /// The last cycle its readers were walked before it slept: a write
+    /// landing after it is a fire no reader saw, re-raised at the wake.
     slept_at: u64,
     pub(crate) spec: Arc<Expr>,
     pub(crate) typ: Type,
@@ -163,7 +163,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         self.pattern.ids(&mut |id| {
             if !ctx.event.variables.contains_key(&id)
                 && let Some((tv, stamp)) = ctx.rt.store_get(&id)
-                // CR claude for claude: [bug/high] A write queued in the arm's last
+                // XCR claude for claude: [bug/high] A write queued in the arm's last
                 // awake cycle lands in the cycle the arm is deselected, so its stamp
                 // equals `slept_at` (both are `rt.cycle()` then) and it is never
                 // re-raised. That is the case this function's doc names. The value
@@ -178,6 +178,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 // design/review-2026-10-19/repro/tests-select-reraise-last-awake-write.gx
                 // Also reported as (c-node-mod-01), (c-prune-wake-02).
                 // (tests-select-01)
+                // 2026-10-19 claude: Fixed with c-bind-01 (same mechanism); pin
+                // lang::prune::write_landing_at_the_deselect_is_reraised reads the
+                // re-raised write through count, a fire-sensitive reader.
                 && *stamp > slept_at
                 && !tv.tag().is_bottom()
             {
@@ -223,6 +226,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 .at(&spec)
         };
         let mut partial = None;
+        let mut narrowed = None;
         let (node, pattern, typ) = if *rec {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
@@ -274,7 +278,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         }
                     };
                     // a `_` matches what the value holds, deciding none of it
-                    // CR claude for claude: [bug/medium] A let's shape check still uses
+                    // XCR claude for claude: [bug/medium] A let's shape check still uses
                     // ptyp.any_as_tvar().contains(typ), which binds the pattern's cells
                     // to the union's first member. So `let (x, y) = v` over [(i64,
                     // string), (string, i64)] is refused with "refutable patterns are
@@ -288,6 +292,21 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // refutable. probe:
                     // design/review-2026-10-19/repro/x-rerun-6-let-union-destructure.gx
                     // (x-rerun-6-02)
+                    // 2026-10-19 claude: Bind's shape check holds the predicate against
+                    // each member of a union value on its own (fits_every_member); over
+                    // several members the pattern compiles against the predicate
+                    // narrowed per member (narrow_per_member, as a select arm's) and
+                    // the whole-type covers check is skipped. A refusal still names the
+                    // first member. Pins:
+                    // lang::tuples_structs::let_destructures_a_union_of_one_shape,
+                    // let_over_a_union_refuses_a_member_it_misses.
+                    // 2026-10-19 claude: Follow-up: the first version compiled every let
+                    // over a union against the shape check's predicate, whose cells are
+                    // generic, so netidx-admin's `let q = never<Question>(); .. &mut q`
+                    // was refused as made generic by an earlier compile. A bare name now
+                    // keeps the value's type, and the narrowed predicate is inferred
+                    // afresh at the binds' level. Pin:
+                    // lang::tuples_structs::let_over_a_union_takes_a_writable_reference.
                     if !completed && pat.has_partial_struct() {
                         partial = Some(ptyp);
                     // CR claude for claude: [perf/low] For a single-name pattern `ptyp`
@@ -303,7 +322,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // arrays only. probe:
                     // design/review-2026-10-19/repro/x-stack-flat-chain-quadratic.sh
                     // (x-stack-02)
-                    } else if !ptyp.any_as_tvar().contains(&ctx.env, &typ).at(&spec)? {
+                    } else if !fits_every_member(ctx, &ptyp, &typ, &mut narrowed, || {
+                        pat.infer_type_predicate(&ctx.env, &scope.lexical)
+                    })
+                    .at(&spec)?
+                    {
                         let part = ptyp.could_match(&ctx.env, &typ)?;
                         format_with_flags(PrintFlag::DerefTVars, || match part {
                             true => bailat!(
@@ -322,10 +345,16 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     typ
                 }
             };
-            let pattern = compile_pattern(ctx, partial.as_ref().unwrap_or(&typ))?;
+            let pattern = compile_pattern(
+                ctx,
+                partial.as_ref().or(narrowed.as_ref()).unwrap_or(&typ),
+            )?;
             (node, pattern, typ)
         };
-        if partial.is_none() && !pattern.covers(&ctx.env, &typ, false) {
+        if partial.is_none()
+            && narrowed.is_none()
+            && !pattern.covers(&ctx.env, &typ, false)
+        {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
         // Registered after the value compiled so a `let rec` body's
@@ -353,7 +382,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // but for one something writes, which fires alone, its own facet
         let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
         pattern.ids(&mut |id| siblings.push(id));
-        // CR claude for claude: [bug/high] The facet grouping is decided here from the
+        // XCR claude for claude: [bug/high] The facet grouping is decided here from the
         // targets known when the let compiles. A sibling first written from another
         // module (`m::a <- ..` or `&mut m::a`: the module compiles before the
         // importer's writers) or by a later REPL input stays grouped with its siblings.
@@ -364,6 +393,12 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // needed (record the group's members with the facet). Deciding the facets in
         // typecheck0 instead covers modules but not the REPL. probe:
         // design/review-2026-10-19/repro/c-bind-facet-module/main.gx (c-bind-03)
+        // 2026-10-19 claude: CompileCtx::mark_connect_target calls Env::split_facet: a
+        // sibling written after its let compiled (from another module, a later REPL
+        // input) leaves its Facet::Let group, and a representative leaving passes the
+        // group to the next sibling. The repro prints count(m::b) = 1 throughout. Pin:
+        // lang::modules::sibling_written_from_outside_its_module_fires_alone. Needs a
+        // soak (wake catch-up).
         if siblings.len() > 1 {
             let rep = siblings.iter().find(|id| !ctx.connect_targets.contains(*id));
             let rep = rep.copied();
@@ -642,8 +677,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept.set();
-        // CR claude for claude: [bug/high] slept_at is the wrong reference point for
+        // XCR claude for claude: [bug/high] slept_at is the wrong reference point for
         // the re-raise. (a) A `<-` write queued in the arm's last awake cycle lands in
         // the cycle the select deselects the arm. The select does not walk the arm in
         // that cycle, but the write's stamp equals slept_at, so `stamp > slept_at`
@@ -656,7 +690,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // for a seq step that ran), and set it only on the first sleep (when `slept` is
         // clear). probe: design/review-2026-10-19/repro/c-bind-reraise-same-cycle.gx
         // and design/review-2026-10-19/repro/c-bind-reraise-resleep.gx (c-bind-01)
-        self.slept_at = ctx.rt.cycle();
+        // 2026-10-19 claude: Bind::sleep takes slept_at only at its first sleep (a
+        // re-sleep keeps it), and takes the cycle its readers were last walked: the
+        // sleep cycle when the let's innermost boundary was visited in it (a seq step
+        // that ran), else the cycle before (a deselect). prune::Boundary records each
+        // visit (BoundaryRef::visit, set by every Prune::update, skipped or not). Pins:
+        // lang::prune::write_landing_at_the_deselect_is_reraised,
+        // second_sleep_keeps_the_first_sleeps_cycle (both fail on the review binary).
+        if !self.slept.is_set() {
+            let cycle = ctx.rt.cycle();
+            let walked = ctx.boundary.as_ref().is_some_and(|b| b.visited(cycle));
+            self.slept_at = if walked { cycle } else { cycle.saturating_sub(1) };
+        }
+        self.slept.set();
         self.node.sleep(ctx);
     }
 
@@ -882,10 +928,9 @@ impl Ref {
                     )
                 }
                 if let Some(flags) = value
-                    && let Some(eta) =
-                        super::compiler::lowering(ctx, &spec, &scope.lexical, |ctx| {
-                            super::compiler::eta_dispatcher(ctx, &spec, name, bind)
-                        })?
+                    && let Some(eta) = super::compiler::lowering(ctx, &spec, |ctx| {
+                        super::compiler::eta_dispatcher(ctx, &spec, name, bind)
+                    })?
                 {
                     return compile(ctx, flags, eta, scope, top_id);
                 }
@@ -908,6 +953,36 @@ impl Ref {
     }
 }
 
+/// A let's pattern predicate `ptyp` holds every member of the value type
+/// `typ`, each on its own; over several members `narrowed` takes the
+/// predicate with each cell the union of its parts, as a select arm's is:
+/// `binds` infers it afresh, at the binds' level (`ptyp`'s cells are the
+/// shape check's). A bare name takes the value's type.
+fn fits_every_member<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    ptyp: &Type,
+    typ: &Type,
+    narrowed: &mut Option<Type>,
+    binds: impl FnOnce() -> Result<Type>,
+) -> Result<bool> {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    expr::union_members(&ctx.env, typ, &mut members)?;
+    if members.len() < 2 || matches!(ptyp, Type::TVar(_)) {
+        return ptyp.any_as_tvar().contains(&ctx.env, typ);
+    }
+    for m in members.iter() {
+        if !ptyp.any_as_tvar().reset_tvars().contains(&ctx.env, m)? {
+            // the whole check, which fails too, binds the cells the refusal
+            // names
+            return ptyp.any_as_tvar().contains(&ctx.env, typ);
+        }
+    }
+    let pred = binds()?.any_as_tvar();
+    pred.narrow_per_member(&ctx.env, &members)?;
+    *narrowed = Some(pred);
+    Ok(true)
+}
+
 impl Ref {
     /// The signature a reference to the generalized `ft` holds: the
     /// definition's own cells in a rec knot or a gate parameter, the
@@ -920,7 +995,7 @@ impl Ref {
     ) -> Arc<FnType> {
         let rec_knot = !ctx.rec_defs.is_empty()
             && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-        if rec_knot || ctx.def_gate_params.contains(&self.id) {
+        if rec_knot || ctx.def_gate_params.contains_key(&self.id) {
             return ft;
         }
         match ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id)) {

@@ -224,7 +224,8 @@ impl<E: UserEvent> Event<E> {
         }
     }
 
-    /// Whether standing values read as delivered: a birth or a wake.
+    /// Anything but an ordinary cycle: standing values are re-read,
+    /// as delivered at a birth and stale at a wake or a step.
     pub fn init(&self) -> bool {
         self.view.init()
     }
@@ -690,8 +691,8 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Gte(&'a node::op::Gte<R, E>),
     And(&'a node::op::And<R, E>),
     Or(&'a node::op::Or<R, E>),
-    Not(&'a node::op::Not<R, E>),
-    Neg(&'a node::op::Neg<R, E>),
+    Not(&'a node::op::Unary<R, E>),
+    Neg(&'a node::op::Unary<R, E>),
     Constant(&'a node::Constant),
     TypeDef(&'a node::TypeDef),
     Impl(&'a node::traits::Impl<R, E>),
@@ -1060,7 +1061,7 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
     // parts fused is residue for its own reason.
     let before = report.len();
     fusion::for_each_node(node, &mut |n| {
-        // CR claude for claude: [bug/medium] failure_for_source returns the last
+        // XCR claude for claude: [bug/medium] failure_for_source returns the last
         // failure recorded for a source, which need not come from this node's attempt.
         // For a handler-ful `?` under a select arm, the select records the arm-raise
         // blocker and then "a region of type _ has no kernel return" from a second
@@ -1070,9 +1071,24 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
         // arm_input_raise_node_walks match the blocker's text. probe:
         // design/review-2026-10-19/repro/x-rerun-4-native-misreports-arm-raise.gx
         // (x-rerun-4-02)
-        let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
+        // 2026-10-19 claude: native_residue now reports every distinct failure
+        // recorded for a source (FusionStats::failures_for_source), so the repro's
+        // #[native] names the arm-raise blocker and the open-type failure both. Still
+        // open: why the select is tried a second time at an open type, and why
+        // lang::errors::arm_input_raise_node_walks records only the open-type failure
+        // (its region's type is an unbound cell there, so the blocker attempt never
+        // runs); its refusal text stays generic until that is understood.
+        // 2026-10-20 claude: The second attempt is the instance: the definition body
+        // is tried at its open type (no kernel return for _) and the instance at i64,
+        // where the arm-raise blocker applies; native_residue reports every distinct
+        // failure of the source, so the probe names the real blocker beside the
+        // open-type one. lang::errors::arm_input_raise_node_walks keeps its generic
+        // refusal text: there the region type is an unbound cell in the only attempt,
+        // so only that failure is recorded.
+        let mut failures = ctx.fusion.stats.failures_for_source(n.spec()).peekable();
+        if failures.peek().is_none() {
             return;
-        };
+        }
         let mut has_failed_desc = false;
         let mut root = true;
         fusion::for_each_node(n, &mut |desc| {
@@ -1080,10 +1096,16 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
                 root = false;
                 return;
             }
-            has_failed_desc |= ctx.fusion.stats.failure_for_source(desc.spec()).is_some();
+            has_failed_desc |=
+                ctx.fusion.stats.failures_for_source(desc.spec()).next().is_some();
         });
-        if !has_failed_desc && !report.iter().any(|prior| prior.id == failure.id) {
-            report.push(failure);
+        if has_failed_desc {
+            return;
+        }
+        for failure in failures {
+            if !report.iter().any(|p| p.id == failure.id && p.reason == failure.reason) {
+                report.push(failure);
+            }
         }
     });
     *walked |= report.len() == before;
@@ -1288,6 +1310,48 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         stack.iter().find(|f| f.def == def).map(|f| f.r.clone())
     }
 
+    // XCR claude for claude: [bug/high] DEFAULTS_IN_CHECK is thread state, but
+    // resolve_static holds its guards across bind_instance, whose statement elaboration
+    // blocks in a rayon join (check_in_tasks). A job stolen there, often a sibling
+    // statement calling the same definition with the same omitted label, sees the pair 'in
+    // progress' and leaves its site dynamic. So `#[native] f(i)` over a multi-statement `f`
+    // with a defaulted label fails at random (about 5 builds in 12), and without
+    // `#[native]` fusion and fork plans vary from run to run. a8b168951 set the other
+    // compile thread-locals aside for stolen jobs, but not this one. Keep the stack in the
+    // CompileCtx beside resolving_lambdas (forked with it), or set it aside wherever
+    // TaskContext is entered. probe:
+    // design/review-2026-10-19/repro/x-parallel-default-in-check-tls.gx (x-parallel-02)
+    // 2026-10-19 claude: The stack is CompileCtx::defaults_in_check
+    // (enter_default/leave_default), cloned by fork beside resolving_lambdas, so a stolen
+    // job checks under its own compile's stack; the thread-local is gone. resolve_static
+    // enters its omitted labels and leaves them around resolve_static_entered. The repro's
+    // --expand built 16/16 (old binary 12/16). Pin (probabilistic, as the race was):
+    // lang::functions::omitted_defaults_resolve_under_stolen_jobs, 60 #[native] calls
+    // omitting #k. c-callsite-02 (the guards' extent) is untouched.
+    /// Enter the check of `id`'s default for `label`; false when it is
+    /// already in progress.
+    pub(crate) fn enter_default(&mut self, id: LambdaId, label: &ArcStr) -> bool {
+        if self.defaults_in_check.iter().any(|(i, l)| *i == id && l == label) {
+            return false;
+        }
+        self.defaults_in_check.push((id, label.clone()));
+        true
+    }
+
+    /// Whether the check of `id`'s default for `label` is in progress.
+    pub(crate) fn default_in_check(&self, id: LambdaId, label: &ArcStr) -> bool {
+        self.defaults_in_check.iter().any(|(i, l)| *i == id && l == label)
+    }
+
+    /// Leave the check [`Self::enter_default`] entered.
+    pub(crate) fn leave_default(&mut self, id: LambdaId, label: &ArcStr) {
+        if let Some(i) =
+            self.defaults_in_check.iter().rposition(|(i, l)| *i == id && l == label)
+        {
+            self.defaults_in_check.remove(i);
+        }
+    }
+
     pub(crate) fn push_resolving(&self, def: LambdaId, r: ResolvingLambda) {
         self.resolving_lambdas.lock().push(def, r)
     }
@@ -1378,14 +1442,25 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// self-call inside such a body unifies against the def's own
     /// ftype cells (monomorphic recursion), not a freshening.
     pub(crate) rec_defs: nohash::IntSet<LambdaId>,
-    /// The fn-typed parameter BindIds of the defs being body-checked: a
-    /// call through one unifies against the param's own declared cells,
-    /// so `f(v)` types as the def's rigid 'b.
-    pub(crate) def_gate_params: nohash::IntSet<BindId>,
+    /// The fn-typed parameter BindIds of the defs being body-checked, with
+    /// their definition and position: a call through one unifies against
+    /// the param's own declared cells, so `f(v)` types as the def's rigid 'b.
+    pub(crate) def_gate_params: nohash::IntMap<BindId, (LambdaId, u32)>,
+    /// The fn-typed formals of the instances whose bodies are being
+    /// checked, by definition and position: what an instance-defined
+    /// literal's recorded parameter calls name (`DefTable`).
+    pub(crate) instance_fn_params: AHashMap<(LambdaId, u32), BindId>,
+    /// The argument each of those formals was bound to at its call, by
+    /// formal: where a collection callback's slots say they are.
+    pub(crate) fn_param_args: nohash::IntMap<BindId, triomphe::Arc<Expr>>,
     /// Def-gate nesting depth; a nested gate's cells are still
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
     pub(crate) resolving_lambdas: Mutex<Resolving>,
+    /// The (definition, label) defaults being checked or elaborated,
+    /// innermost last: a site its own omitted default's elaboration
+    /// reaches stays dynamic.
+    pub(crate) defaults_in_check: SmallVec<[(LambdaId, ArcStr); 4]>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
@@ -1425,13 +1500,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     discarded: Vec<(Discarded<R, E>, Option<prune::BoundaryRef>)>,
     /// The boundary the compile is inside (`design/walk_pruning.md`).
     pub(crate) boundary: Option<prune::BoundaryRef>,
-    /// The id of the concurrent compile task this one runs in
-    /// ([`typ::tvar::InTask`]); 0 at the root.
     /// This task's share of the compile's profile ([`profile::Task`]).
-    // CR claude for claude: [readability/low] The first two doc lines above ("The id of
-    // the concurrent compile task this one runs in ...; 0 at the root") describe a
-    // field that is gone, not this profile share. Delete them. Found by reading; not
-    // run. (c-lib-05)
     profile: profile::Task,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
@@ -1570,8 +1639,11 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             builtin_bindings: self.builtin_bindings.fork(),
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
+            instance_fn_params: self.instance_fn_params.clone(),
+            fn_param_args: self.fn_param_args.clone(),
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
+            defaults_in_check: self.defaults_in_check.clone(),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
             pending_settles: vec![Vec::new()],
@@ -1614,8 +1686,11 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,
+            instance_fn_params: _,
+            fn_param_args: _,
             def_gate_depth: _,
             resolving_lambdas: _,
+            defaults_in_check: _,
             fn_forward_resolutions,
             body: _,
             pending_settles,
@@ -1682,10 +1757,10 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// `f` compiling inside `boundary`.
     pub fn in_boundary<T>(
         &mut self,
-        boundary: &Option<prune::BoundaryRef>,
+        boundary: Option<&prune::BoundaryRef>,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let outer = mem::replace(&mut self.boundary, boundary.clone());
+        let outer = mem::replace(&mut self.boundary, boundary.cloned());
         let r = f(self);
         self.boundary = outer;
         r
@@ -1718,6 +1793,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
+        self.env.split_facet(id);
         if !self.generalized_earlier(id) {
             self.env.poly_binds.remove(&id);
         }
@@ -1725,7 +1801,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Whether `id` is a binding an earlier compile generalized: its
     /// check already made variables of a function it holds generic.
-    // CR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
+    // XCR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
     // cells too, so this answers true for a rank-2 parameter, for a binding annotated
     // with `type F = fn<'b: ..>(..)`, for a struct holding one, and for a lambda
     // literal's parameter checked against one. The `&mut` check in Bind then refuses
@@ -1738,11 +1814,32 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     // the same wrong message. probe:
     // design/review-2026-10-19/repro/x-typecheck-generics-generalized-earlier-quantifier.gx
     // (x-typecheck-generics-05)
+    // 2026-10-19 claude: generalized_earlier skips the quantifier cells of function types
+    // the binding's type holds (callsite::bound_quantifiers). The probe runs and prints 1.
+    // Pin: lang::byref::mut_ref_to_a_rank2_parameter.
+    // 2026-10-19 claude: generalized_earlier walks the binding's type for quantifiers only
+    // when a generic cell is reached, and bound_quantifiers visits each shared node once
+    // (Type::shared_identity): walking it as a tree made deep_nesting's
+    // shared_type_dags_check_in_linear_time run past 15 s.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| {
             let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
             b.typ.reached_cells(&mut cells);
-            cells.values().any(|tv| tv.level() == typ::tvar::Level::GENERIC)
+            let mut generic = cells
+                .iter()
+                .filter(|(_, tv)| tv.level() == typ::tvar::Level::GENERIC)
+                .peekable();
+            if generic.peek().is_none() {
+                return false;
+            }
+            // a function type's own quantifiers are generic whatever compiled it
+            let mut quantified = AHashSet::new();
+            node::callsite::bound_quantifiers(
+                &b.typ,
+                &mut quantified,
+                &mut AHashSet::new(),
+            );
+            generic.any(|(addr, _)| !quantified.contains(addr))
         })
     }
 
@@ -1901,9 +1998,12 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 written_lets: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
-                def_gate_params: nohash::IntSet::default(),
+                def_gate_params: nohash::IntMap::default(),
+                instance_fn_params: AHashMap::default(),
+                fn_param_args: nohash::IntMap::default(),
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(Resolving::default()),
+                defaults_in_check: SmallVec::new(),
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
                 pending_settles: vec![Vec::new()],
@@ -1954,15 +2054,9 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
 }
 
 impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
-    /// `f` under `view`, or under the stronger view already in force: a
-    /// birth inside a wake stays a wake.
+    /// `f` under `view` joined with the view already in force
+    /// ([`View::join`]): a birth inside a wake is a step.
     #[inline]
-    // CR claude for claude: [doc-drift/low] The doc says a birth inside a wake "stays a
-    // wake". View::join makes it a Step, in which constants fire, as View::Step's own
-    // doc says. Event::init's doc ("standing values read as delivered: a birth or a
-    // wake") likewise contradicts View::Wake, where standing values read stale. Callers
-    // rely on `init() && !wake()`. Fix both docs to describe the join and the init/wake
-    // split. Found by reading; not run. (c-lib-04)
     pub fn under<T>(&mut self, view: View, f: impl FnOnce(&mut Self) -> T) -> T {
         let prev = self.event.view;
         self.event.view = prev.join(view);
@@ -1988,7 +2082,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     }
 
     /// `v`, a value of `t`, with each reference a comparison meets
-    /// replaced by what it names, `[root, step..]` (a reference's value
+    /// replaced by what it names, `[&root, step..]` (a reference's value
     /// is its own cell): equal results mean equal values, references
     /// equal when they name one place.
     pub fn ref_targets(&self, t: &Type, v: &Value) -> Value {
@@ -2001,8 +2095,10 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                     Step::Field(f) => Value::String(f.clone()),
                     Step::Key(k) => k.clone(),
                 });
-                let target = std::iter::once(Value::U64(root.inner())).chain(steps);
-                // CR claude for claude: [bug/low] The comparison form of a reference is
+                // the root as a reference, which no data carries: the form
+                // equals no array of numbers
+                let target = std::iter::once(reference::reference(root)).chain(steps);
+                // XCR claude for claude: [bug/low] The comparison form of a reference is
                 // an unmarked array [U64(root), steps..], the runtime form of
                 // Array<u64>. Under a union [&i64, Array<u64>], which kind markers made
                 // legal, `&x == [root id]` is true. A reference must never equal an
@@ -2011,6 +2107,11 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                 // path), as rep's markers do for kinds. probe:
                 // design/review-2026-10-19/repro/t-rep-ref-eq-array-collision.gx
                 // (t-rep-04)
+                // 2026-10-19 claude: ref_targets writes the root as a reference
+                // (reference::reference(root)), a Rust-registered abstract no data
+                // carries, so a reference's comparison form equals no array of numbers.
+                // The probe prints []. Pin:
+                // lang::byref::reference_never_equals_an_array.
                 Value::Array(ValArray::from_iter(target))
             }
             None => r.clone(),
@@ -2114,10 +2215,10 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// `f` walking inside `boundary`.
     pub fn in_boundary<T>(
         &mut self,
-        boundary: &Option<prune::BoundaryRef>,
+        boundary: Option<&prune::BoundaryRef>,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let outer = mem::replace(&mut self.boundary, boundary.clone());
+        let outer = mem::replace(&mut self.boundary, boundary.cloned());
         let r = f(self);
         self.boundary = outer;
         r
@@ -2138,14 +2239,9 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         Ok(())
     }
 
-    /// Apply to the runtime what compiling deferred: delete what it
-    /// discarded, whose unreplayed references cancel, then register
-    /// every reference it recorded.
-    // CR claude for claude: [doc-drift/low] The doc above says this deletes the
-    // discards first, "whose unreplayed references cancel", and registers afterwards.
-    // The body registers every pending reference first and then deletes the discards,
-    // so their unrefs reach the runtime. Reword the doc to state the order the code
-    // relies on. Found by reading; not run. (c-lib-03)
+    /// Apply to the runtime what compiling deferred: register every
+    /// reference it recorded, then delete what it discarded, so each
+    /// discard's unrefs reach the runtime.
     pub fn apply_deferred(&mut self) {
         // through `Deref`: a branch view forks no compile for nothing
         if !self.deferred_pending() {
@@ -2225,7 +2321,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 
     fn delete_discarded(&mut self) {
         for (d, boundary) in mem::take(&mut self.cx.discarded) {
-            self.in_boundary(&boundary, |ctx| match d {
+            self.in_boundary(boundary.as_ref(), |ctx| match d {
                 Discarded::Node(mut n) => n.delete(ctx),
                 Discarded::Apply(mut a) => a.delete(ctx),
                 Discarded::Stored(id) => ctx.rt.store_release(&id),
@@ -2409,6 +2505,28 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     let Some(why) = test.rep_collision_open(env, rest) else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+    // a cell the arm's own predicate holds (a slice pattern's element) is
+    // the arm's to narrow, not a type it must tell apart
+    fn cells(t: &Type, own: &mut AHashSet<usize>) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if own.insert(tv.cell_addr())
+                    && let Some(b) = tv.binding()
+                {
+                    cells(&b, own)
+                }
+            }
+            t => t.for_each_child(&mut |c| cells(c, own)),
+        })
+    }
+    let mut own: LPooled<AHashSet<usize>> = LPooled::take();
+    cells(test, &mut own);
+    let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
+    if let Indiscernible::Pair(a, b) = &why
+        && ((open(a) && owned(a)) || (open(b) && owned(b)))
+    {
+        return Ok(());
+    }
     format_with_flags(PrintFlag::DerefTVars, || {
         if let Indiscernible::Pair(a, b) = &why
             && (open(a) || open(b))
@@ -3091,8 +3209,11 @@ impl Saved {
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,
+            instance_fn_params: _,
+            fn_param_args: _,
             def_gate_depth: _,
             resolving_lambdas: _,
+            defaults_in_check: _,
             fn_forward_resolutions,
             body: _,
             pending_settles: _,

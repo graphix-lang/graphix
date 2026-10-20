@@ -9,9 +9,9 @@
 //! consumes one argument snapshot per entry.
 
 use super::{
-    ApplyExpr, Arg, ArgKind, BinOp, BindExpr, CatchExpr, CatchRole, Decorations, Expr,
-    ExprId, ExprKind, LambdaBody, LambdaExpr, ModPath, ModuleKind, Pattern, SelectExpr,
-    SeqCaptureExpr, SeqExpr, SeqKind, SeqMachineExpr, SeqStep, SeqTrigger,
+    ApplyExpr, Arg, ArgKind, Attr, BinOp, BindExpr, CatchExpr, CatchRole, Decorations,
+    Expr, ExprId, ExprKind, LambdaBody, LambdaExpr, ModPath, ModuleKind, Pattern,
+    SelectExpr, SeqCaptureExpr, SeqExpr, SeqKind, SeqMachineExpr, SeqStep, SeqTrigger,
     StructurePattern, TryWithExpr, WrittenAt,
 };
 use crate::{
@@ -134,7 +134,8 @@ pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         (SeqKind::Queued { .. }, Some(SeqTrigger::Bind(b))) => desugar_let(&seq, b),
         (SeqKind::Queued { .. }, _) => desugar_queued(&seq, env, scope),
         (SeqKind::Plain, _) => {
-            desugar_plain(&seq, None, &fn_names(body, seq.trigger, env, scope))
+            let aliases = trigger_aliases(&seq, env, scope);
+            desugar_plain(&seq, None, &fn_names(body, seq.trigger, env, scope), &aliases)
         }
     }
 }
@@ -186,6 +187,30 @@ fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
     Ok(block(pos, [let_bind(pos, &name, typ.clone(), value.clone()), queued]))
 }
 
+/// The other spellings the body and abort clause read the trigger's
+/// variable by (`use m::t; seq t { .. m::t .. }`), keyed as reads are.
+fn trigger_aliases(seq: &Parts, env: &Env, scope: &ModPath) -> SmallVec<[ArcStr; 2]> {
+    let mut out: SmallVec<[ArcStr; 2]> = SmallVec::new();
+    let Some(SeqTrigger::Expr(e)) = seq.trigger else { return out };
+    let ExprKind::Ref { name } = &e.kind else { return out };
+    let Ok(Some((_, b))) = env.lookup_bind(scope, name) else { return out };
+    let (id, key) = (b.id, ref_key(name));
+    let stmts = seq.body.iter().chain(seq.abort);
+    for s in stmts {
+        s.fold((), &mut |(), e| {
+            if let ExprKind::Ref { name: n } = &e.kind
+                && ref_key(n) != key
+                && !out.iter().any(|o| o.as_str() == ref_key(n))
+                && let Ok(Some((_, other))) = env.lookup_bind(scope, n)
+                && other.id == id
+            {
+                out.push(ArcStr::from(ref_key(n)))
+            }
+        })
+    }
+    out
+}
+
 /// The trigger a machine filters, and the run's snapshot of it: the cell
 /// declarations, the writes the start event makes into them, and the
 /// body's names for them. A bare variable's reads see the value the run
@@ -196,6 +221,7 @@ fn trigger_snapshot(
     decls: &mut SmallVec<[Expr; 2]>,
     writes: &mut SmallVec<[Expr; 2]>,
     visible: &mut Names,
+    aliases: &[ArcStr],
 ) -> Result<Expr> {
     let Parts { spec, trigger, body, .. } = *seq;
     let (pos, id) = (spec.pos, spec.id.inner());
@@ -213,13 +239,34 @@ fn trigger_snapshot(
             // env.lookup_bind and redirect every Ref that resolves to the same BindId,
             // keying the snapshot by the binding rather than the spelling. probe:
             // design/review-2026-10-19/repro/t-seq-qualified-trigger/main.gx (t-seq-02)
-            if let Some(n) = simple_ref_name(e)
-                && (reads_name(body, &n)
-                    || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), &n)))
+            // 2026-10-19 claude: Partly fixed: a trigger spelled as a module path is
+            // snapshotted, and reads with that spelling redirected (seq::ref_key keys
+            // the Names map by the path a qualified read spells; redirect already
+            // looked paths up). The probe's qualified seq now starts at 0. Pin:
+            // lang::seq::qualified_trigger_is_snapshotted. Left: a read spelled
+            // differently from the trigger (use m::t; seq t { .. m::t .. }) and
+            // desugar_queued's trigger_name still key by spelling; both need the
+            // binding the trigger resolves to, which the lowering does not have.
+            // 2026-10-20 claude: Plain seq done: trigger_aliases resolves every
+            // spelling the body and abort clause read the trigger binding by (use m::t;
+            // seq t { .. m::t .. }), and the snapshot redirects them all to its one
+            // cell. Pin: lang::seq::trigger_read_by_another_spelling_is_snapshotted.
+            // Left: desugar_queued trigger_name (seqq until and its abort/flush
+            // clauses) still keys by spelling.
+            let reads = |n: &str| {
+                reads_name(body, n)
+                    || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), n))
+            };
+            if let ExprKind::Ref { name } = &e.kind
+                && let n = ArcStr::from(ref_key(name))
+                && (reads(&n) || aliases.iter().any(|a| reads(a)))
             {
-                let c = cell(n.as_str());
+                let c = cell(&n.replace('/', "_"));
                 decls.push(let_bind(e.pos, &c, None, never(e.pos)));
                 writes.push(connect(pos, &c, r#ref(pos, go)));
+                for a in aliases {
+                    visible.insert(a.clone(), Redirect::Snapshot(c.clone()));
+                }
                 visible.insert(n, Redirect::Snapshot(c));
             }
             Ok((**e).clone())
@@ -261,6 +308,7 @@ fn desugar_plain(
     seq: &Parts,
     queue: Option<Queue>,
     fns: &AHashSet<ArcStr>,
+    aliases: &[ArcStr],
 ) -> Result<Expr> {
     let Parts { spec, abort, flush, body, .. } = *seq;
     let manual = abort.is_some() || flush.is_some();
@@ -291,6 +339,7 @@ fn desugar_plain(
         &mut snapshot_decls,
         &mut snapshot_writes,
         &mut visible,
+        aliases,
     )?;
     let err_bind = literal!("e");
     let catch_node = {
@@ -441,11 +490,15 @@ fn run_events(
     }
 }
 
-/// An `abort(..)` or `flush(..)` event: `e` is an initial step, woken
+/// The attribute the lowering puts on a run event's select
+/// ([`crate::CFlag::RunEvent`]); no source can spell it.
+pub const RUN_EVENT: ArcStr = literal!("seq-run");
+
+/// An `abort(..)` or `flush(..)` event: `e` is an initial step, born
 /// when a run starts and asleep between runs, and only its fires after
 /// the entry cycle count. What stands at entry, and the fires it missed
 /// asleep, belong to no run.
-// CR claude for claude: [bug/high] The abort and flush event lowers to a select arm on
+// XCR claude for claude: [bug/high] The abort and flush event lowers to a select arm on
 // `seqedge`. Since a wake is a resume, every run after the first wakes that arm instead
 // of giving it a birth. A `sys::time::timer(d, false)` in `abort(..)` is therefore
 // never started again. Once it has fired, Timer's `left` is 0 and the paused run never
@@ -458,9 +511,15 @@ fn run_events(
 // It passes today only because its run 1 ends before its timer fires. probe:
 // design/review-2026-10-19/repro/x-engine-seq-errors-abort-timer-budget-first-run-only.gx
 // (x-engine-seq-errors-01)
+// 2026-10-19 claude: run_event's select carries the lowering-only attribute seq-run,
+// which compiles it with CFlag::RunEvent (its arms without): every entry of its arm is a
+// Step, so the builtins in the clause are reborn at each run and a timer budgets every
+// run; the birth-only warning is not given for it; the flag rides the select's image
+// (REGISTRATION_FORMAT 75). Pin: lang::seq_abort::abort_timer_budgets_every_run (the
+// review binary answers [8, 22], this [22]). Needs a soak (seq semantics).
 fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
     let pos = e.pos;
-    let live = select(
+    let mut live = select(
         pos,
         r#ref(pos, edge),
         [
@@ -468,6 +527,10 @@ fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
             (pat_lit(Value::Bool(false)), e.clone()),
         ],
     );
+    live.dec = Some(Arc::new(Decorations {
+        comments: Arc::from_iter([]),
+        attrs: Arc::from_iter([Attr { name: RUN_EVENT, args: Arc::from_iter([]) }]),
+    }));
     apply_filter(pos, live, lambda_sampling(pos, armed))
 }
 
@@ -499,7 +562,28 @@ fn fn_names(
                 }),
             },
             ExprKind::Apply(a) => {
-                args.extend(a.args.iter().filter_map(|(_, a)| simple_ref_name(a)))
+                args.extend(a.args.iter().filter_map(|(_, a)| simple_ref_name(a)));
+                // an argument at a parameter the callee declares a function is
+                // one, whatever the check will make of its own binding
+                if let ExprKind::Ref { name } = &a.function.kind
+                    && let Ok(Some((_, b))) = env.lookup_bind(scope, name)
+                    && let Some(Type::Fn(ref ft)) = b.typ.deref_cloned()
+                {
+                    let mut positional = ft.args.iter().filter(|f| f.is_positional());
+                    for (label, arg) in a.args.iter() {
+                        let formal = match label {
+                            Some(l) => ft.args.iter().find(|f| f.label() == Some(l)),
+                            None => positional.next(),
+                        };
+                        if let Some(n) = simple_ref_name(arg)
+                            && formal.is_some_and(|f| {
+                                f.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
+                            })
+                        {
+                            lambdas.insert(n);
+                        }
+                    }
+                }
             }
             ExprKind::Select(se) => se.arms.iter().for_each(|(p, _)| {
                 p.structure_predicate.with_names(&mut |n| {
@@ -533,7 +617,7 @@ fn fn_names(
 }
 
 /// Whether a binding is a function: a trait method, or of a function type.
-// CR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
+// XCR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
 // false for an unannotated function parameter. fn_names then moves such a parameter
 // into the issue tuple, and desugar_queued captures it into the request, so
 // `array::map(xs, f)` in a seq inside `|f, t| ..` cannot resolve its callback and
@@ -542,6 +626,11 @@ fn fn_names(
 // position is a function (known at lowering for builtins and lambda lets), as an inline
 // lambda is kept. probe: design/review-2026-10-19/repro/t-seq-fn-param-defuses.sh
 // (t-seq-05)
+// 2026-10-19 claude: fn_names keeps an argument bare when the callee, resolved at
+// lowering, declares a function at its position (positional by order, labeled by
+// label), whatever its own binding's type. Both of the probe's programs fuse 4 regions.
+// Pin: lang::seq_calls::unannotated_fn_param_issued_bare (#[native]; the review binary
+// refuses it).
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -551,8 +640,7 @@ fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
 fn reads_name(stmts: &[Expr], n: &str) -> bool {
     stmts.iter().any(|s| {
         s.fold(false, &mut |found, e| {
-            found
-                || matches!(&e.kind, ExprKind::Ref { name } if simple_name(name) == Some(n))
+            found || matches!(&e.kind, ExprKind::Ref { name } if ref_key(name) == n)
         })
     })
 }
@@ -674,9 +762,16 @@ fn try_of(e: &Expr) -> Option<(&Expr, &TryWithExpr)> {
 /// join cell, publish the block's result.
 #[derive(Clone)]
 enum Write {
-    Let { pattern: StructurePattern, typ: Option<Type> },
-    Connect { name: ModPath, deref: bool },
-    Join(ArcStr),
+    Let {
+        pattern: StructurePattern,
+        typ: Option<Type>,
+    },
+    Connect {
+        name: ModPath,
+        deref: bool,
+    },
+    /// A try's join cell, typed as the write it stands for.
+    Join(ArcStr, Option<Type>),
     Result,
 }
 
@@ -856,7 +951,7 @@ impl Machine<'_> {
                     }
                 }
             }
-            ExprKind::Connect { name, value, deref } => {
+            ExprKind::Connect { name, value, deref, .. } => {
                 let value = self.stmt_value(&decorated(value, &stmt.dec), visible)?;
                 let target = rewrite_target(name, *deref, visible);
                 let result = self.result;
@@ -899,9 +994,13 @@ impl Machine<'_> {
         }
         let e_cell = ArcStr::from(format_compact!("seqe{}", spec.id.inner()).as_str());
         self.decls.push(let_bind(pos, &e_cell, None, never(pos)));
-        let join = (!sink.is_empty()).then(|| {
+        // a try whose value only writes variables has each body write them,
+        // typed as they are
+        let direct =
+            !sink.is_empty() && sink.iter().all(|w| matches!(w, Write::Connect { .. }));
+        let join = (!sink.is_empty() && !direct).then(|| {
             let cell = ArcStr::from(format_compact!("seqj{}", spec.id.inner()).as_str());
-            // CR claude for claude: [bug/medium] Only a Write::Let sink gives the join
+            // XCR claude for claude: [bug/medium] Only a Write::Let sink gives the join
             // cell a type. A try nested as the last statement of an annotated `let v:
             // [i64, string] = try { .. }` body gets an untyped join cell, so does `x <-
             // try { .. }` with `x: [i64, string]`. The first writer then fixes the
@@ -911,15 +1010,24 @@ impl Machine<'_> {
             // directly. probe:
             // design/review-2026-10-19/repro/t-seq-nested-try-join-type.gx and
             // design/review-2026-10-19/repro/t-seq-connect-try-join-type.gx (t-seq-04)
+            // 2026-10-19 claude: Write::Join carries the join cell's type, so a try
+            // nested as a typed let's value types its own join cell; a try whose value
+            // only writes variables has both bodies write them directly (no join cell).
+            // Pins: lang::seq_try::nested_try_join_takes_the_let_type,
+            // connected_try_writes_the_target_type (both refused by the review binary).
             let typ = match sink.first() {
-                Some(Write::Let { typ, .. }) => typ.clone(),
+                Some(Write::Let { typ, .. } | Write::Join(_, typ)) => typ.clone(),
                 _ => None,
             };
-            self.decls.push(let_bind(pos, &cell, typ, never(pos)));
-            cell
+            self.decls.push(let_bind(pos, &cell, typ.clone(), never(pos)));
+            (cell, typ)
         });
         let mut branch = Sink::new();
-        branch.extend(join.iter().map(|c| Write::Join(c.clone())));
+        match &join {
+            Some((c, typ)) => branch.push(Write::Join(c.clone(), typ.clone())),
+            None if direct => branch.extend(sink.iter().cloned()),
+            None => (),
+        }
         let mark = self.steps.len();
         let mut tails = self.lower_scoped(&body, &branch, visible)?;
         let with_entry = label(self.steps.len());
@@ -952,7 +1060,7 @@ impl Machine<'_> {
         tails.extend(self.lower_scoped(&handler, &branch, &wvis)?);
         match join {
             None => Ok(tails),
-            Some(cell) => {
+            Some((cell, _)) => {
                 let value = guard(entry_fire(r#ref(pos, &cell), self.issue.pc));
                 let result = self.result;
                 let j =
@@ -994,6 +1102,12 @@ impl Machine<'_> {
     /// the block, connects clocked to the entry, and the value the last
     /// statement's once every statement has produced.
     fn lower_block(&self, spec: &Expr, exprs: &[Expr], visible: &Names) -> Result<Expr> {
+        if spec.dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
+            return Err(anyhow!(
+                "a `{{ .. }}` statement takes no attribute: annotate a statement in it"
+            )
+            .at(spec));
+        }
         let pos = spec.pos;
         let mut vis = scope(visible);
         let mut body: LPooled<Vec<Expr>> = LPooled::take();
@@ -1053,7 +1167,7 @@ impl Machine<'_> {
                     }
                     shadow_step(s, &mut vis);
                 }
-                ExprKind::Connect { name, value, deref } => {
+                ExprKind::Connect { name, value, deref, .. } => {
                     let value = self.stmt_value(&decorated(value, &s.dec), &vis)?;
                     body.push(let_bind(s.pos, &v, None, value));
                     body.push(connect_path(
@@ -1087,12 +1201,6 @@ impl Machine<'_> {
             }
         };
         body.push(value);
-        // CR claude for claude: [bug/medium] The lowered block drops the block's
-        // decorations. `let x = #[native] { .. }` or `#[sync] { .. }` in a seq is
-        // accepted unchecked, while the same code outside a seq is refused. Refuse a
-        // block that carries attributes, as lower_try does, or put spec.dec on the
-        // lowered block so the compiler judges it. probe:
-        // design/review-2026-10-19/repro/t-seq-block-attr-dropped.gx (t-seq-03)
         Ok(block(pos, body.drain(..)))
     }
 }
@@ -1125,7 +1233,7 @@ fn writes(
                 *deref,
                 r#ref(pos, v),
             ),
-            Write::Join(cell) => connect(pos, cell, r#ref(pos, v)),
+            Write::Join(cell, _) => connect(pos, cell, r#ref(pos, v)),
             Write::Result => connect(pos, result, r#ref(pos, v)),
         })
     }
@@ -1373,7 +1481,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         pos,
         &result,
         None,
-        desugar_plain(&machine, Some(queue), &fns)?,
+        desugar_plain(&machine, Some(queue), &fns, &[])?,
     ));
     prelude.push(connect(
         pos,
@@ -1455,8 +1563,14 @@ fn simple_name(p: &ModPath) -> Option<&str> {
     if Path::levels(&p.0) == 1 { Path::parts(&p.0).next() } else { None }
 }
 
+/// What a read of `p` is keyed by in a [`Names`] map: its name, or the
+/// path a qualified read spells.
+fn ref_key(p: &ModPath) -> &str {
+    simple_name(p).unwrap_or(p.0.as_ref())
+}
+
 fn redirect<'a>(p: &ModPath, map: &'a Names) -> Option<&'a Redirect> {
-    map.get(simple_name(p).unwrap_or(p.0.as_ref()))
+    map.get(ref_key(p))
 }
 
 /// A read of `p`.
@@ -1494,7 +1608,10 @@ fn scope(names: &Names) -> LPooled<Names> {
 fn issue_expr(e: &Expr, map: &Names, issue: Issue) -> Expr {
     let issued = has_call(e);
     let e = rewrite_with(e, map, Rewrite::Issue(issue));
-    guard(if issued { e } else { entry_fire(e, issue.pc) })
+    match &e.kind {
+        ExprKind::SeqGuard(_) => e,
+        _ => guard(if issued { e } else { entry_fire(e, issue.pc) }),
+    }
 }
 
 /// `e` fired at entry with its standing value, then tracked: `any(pc
@@ -1574,13 +1691,20 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let issued = format_compact!("seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
-    // CR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
+    // CR claude for eric: [perf/low] Every issue tuple, and `any(pc, once(args))`,
     // carries pc, whose type is the set of all step labels. Each call site therefore
     // costs the check O(steps): 250/500/1000 call steps check in 0.25/1.07/7.1 s
     // (debug), against 0.07/0.10/0.13 s for constant writes. The tuple only needs an
     // entry clock: `pc ~! true` (still a free read of pc, typed bool) in place of pc
     // keeps the type constant-size. probe:
     // design/review-2026-10-19/repro/t-seq-issue-tuple-check-cost.sh (t-seq-06)
+    // 2026-10-19 claude: Tried and reverted. With `pc ~! true` in the tuple and the
+    // snapshot's any(..), 1000 call steps check in 0.2 s (was 8.8 s, debug), but `~`
+    // node-walks, so every issue site loses its fused region (the t-seq-05 probe's
+    // annotated program goes from 4 regions to 3). `select pc { _ => true }` keeps the
+    // fusion but checks in 36 s at 1000 steps. Plain pc is kept: the choice is
+    // check time on long seqs against fusion at every call step, or a cheaper check
+    // of pc's union.
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a
@@ -1702,8 +1826,9 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             },
             _ => return e.clone(),
         },
-        ExprKind::Connect { name, value, deref } => ExprKind::Connect {
+        ExprKind::Connect { name, at, value, deref } => ExprKind::Connect {
             name: rewrite_target(name, *deref, map),
+            at: *at,
             value: Arc::new(rewrite(value, map)),
             deref: *deref,
         },
@@ -1722,7 +1847,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         // the trigger is the outer step's, issued with it; the clauses
         // and the body belong to the inner machine's own runs
-        // CR claude for claude: [bug/high] Under Rewrite::Issue a nested seq is rebuilt
+        // XCR claude for claude: [bug/high] Under Rewrite::Issue a nested seq is rebuilt
         // here with no completion guard, unlike issue_call's guarded call. Inside a
         // select arm, an operand, a call argument or a tuple, the step fires at entry
         // with the nested seq's standing result from the previous run and completes on
@@ -1735,6 +1860,12 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         // when the mode is Issue, and pin the arm and call-argument forms. probe:
         // design/review-2026-10-19/repro/tests-seq-nested-seq-in-expr-stale.gx
         // (tests-seq-01)
+        // 2026-10-19 claude: Under Rewrite::Issue a nested seq is rebuilt inside a
+        // SeqGuard, so its step completes only on this run's production; issue_expr
+        // adds no second guard around one. The probe prints inner 0 / 0 / inner 100 /
+        // 100. Pin: lang::seq::seq_nested_reentry_in_expr (arm, operand and call
+        // argument; the review binary answers 12, this 144). Needs a soak (seq
+        // semantics).
         ExprKind::Seq(s) => {
             let SeqExpr { kind, trigger, abort, body } = &**s;
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));
@@ -1754,7 +1885,12 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 }
             };
             let body = rewrite_stmts(body, &inner, mode.deferred());
-            ExprKind::Seq(Arc::new(SeqExpr { kind, trigger, abort, body }))
+            let seq = ExprKind::Seq(Arc::new(SeqExpr { kind, trigger, abort, body }));
+            // issued with its step, it answers only once this run's fires
+            match mode {
+                Rewrite::Issue(_) => ExprKind::SeqGuard(Arc::new(seq.to_expr(e.pos))),
+                _ => seq,
+            }
         }
         ExprKind::Qop { arg: x, written } => {
             let original = written.clone().unwrap_or_else(|| x.clone());
@@ -1895,7 +2031,8 @@ fn connect(pos: SourcePosition, name: &str, value: Expr) -> Expr {
 }
 
 fn connect_path(pos: SourcePosition, name: ModPath, deref: bool, value: Expr) -> Expr {
-    ExprKind::Connect { name, value: Arc::new(value), deref }.to_expr(pos)
+    ExprKind::Connect { name, at: WrittenAt::NOWHERE, value: Arc::new(value), deref }
+        .to_expr(pos)
 }
 
 fn r#ref(pos: SourcePosition, name: &str) -> Expr {

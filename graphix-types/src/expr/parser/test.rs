@@ -960,6 +960,7 @@ fn pattern0() {
 fn connect() {
     let exp = ExprKind::Connect {
         name: ModPath::from(["m", "foo"]),
+        at: WrittenAt::NOWHERE,
         value: Arc::new(
             ExprKind::BinOp {
                 op: BinOp::Add,
@@ -2029,6 +2030,16 @@ fn separator_notes_only_where_an_item_follows() {
     assert!(note("[`A, `B;").is_some_and(|n| n.ends_with(open)));
     assert!(note("let y = (x + 1;\ny").is_some_and(|n| n.ends_with(open)));
     assert_eq!(note("let m = {\"a\": 1};\nm"), None);
+    for (src, col, why) in [
+        ("let r = { a: 2, b c };\nr", 19, sep),
+        ("let r = { a: 2, type };\nr", 17, "a reserved word field needs the explicit"),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(&format!("line: 1, column: {col}\n")), "{src}: {msg}");
+        assert!(note(src).is_some_and(|n| n.contains(why)), "{src}: {msg}");
+    }
+    let msg = parse_program("let r = { let x = 1 +; x };\nr");
+    assert!(!msg.contains("reserved word"), "{msg}");
     assert_eq!(note("let f = |x: i64 -> i64 x;\nf"), None);
 }
 
@@ -2422,6 +2433,143 @@ fn a_comment_stands_on_a_line_of_its_own() {
     }
 }
 
+#[test]
+fn whitespace_before_a_use_tree_or_sandbox_kind_is_any() {
+    for src in
+        ["use  array::map", "use\n    array::map", "use array::{\n  map,\n  len\n}"]
+    {
+        parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
+    }
+    parse_one(
+        "mod m dynamic {\n  sandbox  whitelist  [core];\n  sig { val y: i64 };\n  source \"let y = 1\"\n}",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_one_element_tuple_is_refused() {
+    for src in ["(1,)", "let t: (i64,) = (1, 2)", "let (x,) = t"] {
+        let msg = format!("{:#}", parse_one(src).unwrap_err());
+        assert!(msg.contains("tuples must have at least 2 elements"), "{src}: {msg}");
+    }
+    assert!(matches!(parse_one("(1)").unwrap().kind, ExprKind::ExplicitParens(_)));
+    assert!(matches!(parse_one("(1, 2,)").unwrap().kind, ExprKind::Tuple { .. }));
+    parse_one("let t: (i64) = 1").unwrap();
+}
+
+#[test]
+fn a_fn_type_names_each_argument_once() {
+    for src in [
+        "let f = |g: fn(#a: i64, #a: string) -> string| 1",
+        "let f = |g: fn(a: i64, #a: string) -> string| 1",
+    ] {
+        let msg = format!("{:#}", parse_one(src).unwrap_err());
+        assert!(msg.contains("arguments must have unique names"), "{src}: {msg}");
+    }
+    parse_one("let f = |g: fn(#a: i64, b: string) -> string| 1").unwrap();
+}
+
+#[test]
+fn an_impl_records_where_each_trait_segment_was_written() {
+    let e = parse_one("impl super::m::Show for i64").unwrap();
+    let ExprKind::Impl(i) = &e.kind else { panic!("{e:?}") };
+    let cols: Vec<i32> = i.trait_at.0.iter().map(|p| p.column).collect();
+    assert_eq!(cols, [6, 13, 16]);
+}
+
+#[test]
+fn a_literal_word_is_noted_only_where_used_as_a_name() {
+    let msg = parse_program("let a = (1, false];\na");
+    assert!(!msg.contains("reserved word"), "{msg}");
+    let msg = parse_program("let a = 1;\nfalse <- 2;\na");
+    assert!(msg.contains("`false` is a reserved word"), "{msg}");
+}
+
+#[test]
+fn whitespace_may_close_an_index() {
+    assert!(matches!(parse_one("a[\n  1\n]").unwrap().kind, ExprKind::ArrayRef { .. }));
+    assert!(matches!(
+        parse_one("a[1 ..\n 2\n]").unwrap().kind,
+        ExprKind::ArraySlice { .. }
+    ));
+    assert!(matches!(
+        parse_one("a[\n  1..\n]").unwrap().kind,
+        ExprKind::ArraySlice { .. }
+    ));
+    assert!(matches!(parse_one("m{\n  k\n}").unwrap().kind, ExprKind::MapRef { .. }));
+}
+
+#[test]
+fn a_byte_order_mark_is_skipped() {
+    let exprs = parse(Origin::unspecified("\u{feff}let x = 1;\nx")).unwrap();
+    assert_eq!(exprs.len(), 2);
+    assert_eq!((exprs[0].pos.line, exprs[0].pos.column), (1, 1));
+    parse_sig(Origin::unspecified("\u{feff}val x: i64")).unwrap();
+    let text = ArcStr::from("\u{feff}#!/usr/bin/env graphix\nx");
+    parse(Origin::unspecified(&without_shebang(&text))).unwrap();
+}
+
+#[test]
+fn a_try_with_binder_may_be_underscore() {
+    for src in [
+        "try { a? } with(_ : `E) { b }",
+        "try { a? } with( _ ) { b }",
+        "try { a? } with(_: `E) { b }",
+    ] {
+        let e = parse_one(src).unwrap();
+        let ExprKind::TryWith(t) = &e.kind else { panic!("{src}: {e:?}") };
+        assert_eq!(t.bind.name.as_str(), "_", "{src}");
+    }
+}
+
+#[test]
+fn an_integer_out_of_range_names_its_type() {
+    for (src, note) in [
+        (
+            "let a = u8:256;\na",
+            "note: at line: 1, column: 9: `256` is out of the range of u8",
+        ),
+        (
+            "let a = 99999999999999999999;\na",
+            "`99999999999999999999` is out of the range of i64",
+        ),
+        ("f(i8:-129)", "`-129` is out of the range of i8"),
+        ("[v32:4294967296]", "`4294967296` is out of the range of v32"),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(note), "{src}: {msg}");
+    }
+    for src in ["u8:255", "i8:-128", "-9223372036854775808", "1e3"] {
+        parse_one(src).unwrap();
+    }
+}
+
+#[test]
+fn a_doc_comment_stands_on_a_line_of_its_own() {
+    for (src, col) in [
+        ("val x: i64; /// d\nval y: i64", 13),
+        ("trait T {\n val m: fn(self) -> i64; /// d\n val n: fn(self) -> i64\n}", 26),
+    ] {
+        let msg = format!("{:#}", parse_sig(Origin::unspecified(src)).unwrap_err());
+        assert!(
+            msg.contains("a doc comment stands on a line of its own"),
+            "{src}: {msg}"
+        );
+        assert!(msg.contains(&format!("column: {col}")), "{src}: {msg}");
+    }
+    let sig = parse_sig(Origin::unspecified("val x: i64;\n  /// d\nval y: i64")).unwrap();
+    assert_eq!(sig.items[1].doc.0.as_deref(), Some(" d"));
+}
+
+// one level of `(1 + …)` costs four of the limit
+#[test]
+fn a_parenthesized_sum_costs_four_levels() {
+    let nest = |n: usize| format!("{}1{}", "(1 + ".repeat(n), ")".repeat(n));
+    let n = max_nesting() / 4 - 1;
+    parse_one(&nest(n)).unwrap();
+    assert!(parse_one(&nest(n + 1)).is_err());
+}
+
 /// The nesting limit is reported where it was hit, with the line and a
 /// caret, not at the outermost bracket.
 #[test]
@@ -2444,4 +2592,51 @@ fn a_suffix_reports_its_own_failure() {
     assert!(msg.contains("line: 2, column: 13"), "{msg}");
     let msg = parse_program("let a = [1];\nlet y = a[#x];\ny");
     assert!(msg.contains("line: 2, column: 11"), "{msg}");
+}
+
+/// The regex highlighters keep their own keyword lists: each names every
+/// construct keyword and the contextual ones the grammar reads as keywords.
+#[test]
+fn editor_keyword_lists_name_every_keyword() {
+    fn between<'a>(src: &'a str, open: &str, close: &str) -> &'a str {
+        let start = src.find(open).unwrap_or_else(|| panic!("no {open:?}")) + open.len();
+        &src[start..start + src[start..].find(close).unwrap()]
+    }
+    let emacs = include_str!("../../../../ide/editors/emacs/graphix-mode.el");
+    let vim = include_str!("../../../../ide/editors/vim/syntax/graphix.vim");
+    let vscode =
+        include_str!("../../../../ide/editors/vscode/syntaxes/graphix.tmLanguage.json");
+    let vscode_words: Vec<&str> = between(vscode, "\"keywords\": {", "\"constants\"")
+        .split("\\\\b(")
+        .skip(1)
+        .flat_map(|g| g[..g.find(")\\\\b").unwrap()].split('|'))
+        .collect();
+    let lists: [(&str, Vec<&str>); 3] = [
+        (
+            "graphix-mode.el",
+            between(emacs, "(let ((keywords '(", ")")
+                .split_whitespace()
+                .map(|w| w.trim_matches('"'))
+                .collect(),
+        ),
+        (
+            "graphix.vim",
+            between(vim, "syntax keyword graphixKeyword ", "\n")
+                .split_whitespace()
+                .collect(),
+        ),
+        ("graphix.tmLanguage.json", vscode_words),
+    ];
+    let contextual = ["val", "with", "as", "throws", "for", "abort", "flush"];
+    let construct = KEYWORDS
+        .iter()
+        .filter_map(|(w, k)| matches!(k, Keyword::Construct).then_some(*w));
+    for w in construct.chain(contextual) {
+        for (file, words) in &lists {
+            assert!(
+                words.contains(&w),
+                "{file} does not name the keyword {w}: {words:?}"
+            );
+        }
+    }
 }

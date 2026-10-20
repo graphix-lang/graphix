@@ -16,18 +16,16 @@ trait Show {
 };
 ```
 
-<!-- CR claude for claude: [doc-drift/low] This paragraph says every method has a
-positional `self` parameter. A method that names `self` only in its result is accepted,
-as is its impl (core's `Cast::from_value` is one), but every call to it is refused with
-"called without its self argument". Fix: state that rule (`self` only in the result is
-legal, and no call dispatches such a method) so the error has an explanation. probe:
-design/review-2026-10-19/repro/book-modules-udt-trait-no-self.gx (book-modules-udt-08)
--->
 Each item is a `val` with a function type. The type `self` is the
-receiver — the type implementing the trait — and every method has a
-positional `self` parameter, written bare: `fn(self, n: u64) -> bytes`
+receiver — the type implementing the trait — and a method takes it as
+a positional `self` parameter, written bare: `fn(self, n: u64) -> bytes`
 is `self` followed by an ordinary named parameter. A method may use
-`self` anywhere in its signature (`fn(self) -> self`).
+`self` anywhere in its signature (`fn(self) -> self`). A method that
+names `self` only in its result (`fn(x: i64) -> self`) is accepted, as
+is its implementation, but a call dispatches on its `self` argument, so
+no call can reach it: calling one is refused ("called without its self
+argument"). Core's `Cast::from_value` is one; the compiler calls it,
+never a program.
 
 A method with a `= default` body is inherited by implementors that
 do not override it. Inside a default body the trait's other methods
@@ -77,15 +75,6 @@ The head's type variables are declared in `impl<..>` with their
 bounds; every one must occur in the target. `Array<i64>` then
 implements `Show` exactly when `i64` does.
 
-<!-- CR claude for claude: [doc-drift/low] These rules say an alias or variant may be
-implemented only in the trait's own package and that unions are never targets.
-`node::traits::check_target` exempts a constructor trait's named head: the name's
-package (or the trait's) suffices, even for a union alias. That is why `impl Collection
-for L<'_>`, shown in implementing Collection and examples/collection/cons_list.gx,
-compiles in a script, while `impl Display for L<i64>` is refused. Fix: state the
-constructor-trait rule here. probe:
-design/review-2026-10-19/repro/book-modules-udt-ctor-trait-orphan.gx
-(book-modules-udt-07) -->
 ### Where an impl may be written
 
 Implementations are global facts: once the module holding one loads,
@@ -95,14 +84,20 @@ an `impl` is restricted to where its author answers for it:
 - an **abstract type** (`Abstract<..>` or Rust-backed) may be
   implemented in the type's package or the trait's package;
 - **any other type** — a primitive, `Array<..>`, a struct, a tuple, a
-  variant, an alias — only inside the **trait's own package**.
+  variant, an alias — only inside the **trait's own package**, except
+  under a **constructor trait** (one over `self<'a>`, such as
+  `Collection`): there a named type (`L<'_>`, even a union alias) may be
+  implemented in the package that defines the name or the trait's
+  package, which is how a script implements `Collection` for its own
+  `L` ([Collection](./collection.md)).
 
 A structural type is its shape, so `impl Show for {x: i64, y: i64}`
 would apply to every `{x: i64, y: i64}` in the program; only the
 trait's author may decide that. A type that should carry behaviour
 gets a name: `type Point = Abstract<{x: i64, y: i64}>`. Unions are
-never targets (each member is implemented separately), and one
-implementation per (trait, type) is enforced.
+never targets (each member is implemented separately) outside a
+constructor trait's named head, and one implementation per (trait, type)
+is enforced.
 
 ## Calling Trait Methods
 

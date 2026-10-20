@@ -36,7 +36,7 @@ pub(super) struct ListW<X: GXExt> {
 impl<X: GXExt> ListW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
         let p = Props::compile(&gx, &v).await.context("list")?;
-        Ok(Box::new(Self { p, state: ListState::default() }))
+        Ok(TuiW::new(Self { p, state: ListState::default() }))
     }
 }
 

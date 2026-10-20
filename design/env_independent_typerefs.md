@@ -118,22 +118,28 @@ expands it.
 
 ## Same definition
 
-Name equality no longer implies same meaning (REPL redefinition,
-cross-env views), so the Ref×Ref name fast paths in `contains`/`union`/
-`diff`/`could_match` are gated by `TypeRef::cells_agree`, which compares
-the resolutions' `ResolvedRef::def_key` (the params allocation every
-<!-- CR claude for claude: [doc-drift/low] This section drifted. sig_matches_int's
-Ref×Ref fast path is gated by cells_agree ("one name over two definitions .. compared by
-what each means"). union and union_identical gate on same_definition. And def_key
-follows ResolvedRef::same_as, which a module's signature check sets with link_same so an
-interface's typedef and its implementation's are one key, which is documented nowhere in
-design/. Update it to the code. Found by reading; not run. (t-typ-mod-07) -->
-cell filled from one `TypeDef` shares). Disagreement
-falls through to the expansion arms. `sig_matches_int`'s fast path is
-deliberately NOT gated: sig-vs-impl matching intends to relate two
-views of one name. A DIFFERENT definition found in a stale env is a
-horizon artifact; the cell, filled post-registration, is the name's
-true meaning and wins.
+Name equality does not imply same meaning (REPL redefinition,
+cross-env views), so the Ref×Ref name fast paths ask whether two refs
+of one written name mean one definition, through one of two gates;
+disagreement falls through to the expansion arms.
+
+- `TypeRef::cells_agree`: two filled cells by their definition's
+  identity (`ResolvedRef::def_key`), two empty cells alike, a filled and
+  an empty one never. It gates the fast paths of `contains` (identical
+  params), `could_match` and `sig_matches` (one name over two
+  definitions, a reload's, is compared by what each means).
+- `TypeRef::same_definition`: filled cells the same way, two empty
+  cells by written scope and name. It gates `union` and
+  `union_identical` (`setops.rs`: refs to one definition merge or
+  compare by their params) and `contains`' arm for two instances of one
+  definition whose params contain each other (one type, no expansion).
+
+`ResolvedRef::def_key` is the params allocation every cell filled from
+one `TypeDef` shares, unless the definition is linked to another
+(`ResolvedRef::same_as`, set by `link_same`, which `def_key` follows).
+A module's signature check links an interface's typedef to its
+implementation's (`node/module.rs`, `TypeDef::link_same`), so a
+reference to either is one definition wherever identity decides.
 
 `RefHist::ref_id` fills the cell first and derives a ref's identity
 from the resolution's definition (`ResolvedRef::def_key`, the params

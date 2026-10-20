@@ -5,6 +5,7 @@
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
+use compact_str::format_compact;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, ExecCtx, Node,
@@ -13,6 +14,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
+    node::WakeBit,
     rep,
     typ::FnType,
 };
@@ -76,6 +78,29 @@ graphix_package_core::impl_abstract_arc!(
 
 fn http_err(e: impl fmt::Display) -> Value {
     errf!("HTTPError", "{e}")
+}
+
+/// `e` with its whole source chain, which reqwest's and hyper's Display
+/// leave out: a refused connection and an unknown host read alike
+/// without it.
+// XCR claude for claude: [bug/medium] reqwest::Error's Display
+// leaves out its source chain, so this HTTPError never names the
+// cause. A refused connection and an unknown host both read "error
+// sending request for url (..)", and a malformed URL reads only
+// "builder error". The body-read error below, "failed to build
+// client" in HttpClientEv and serve_connection's log have the same
+// problem. Print the chain (anyhow::Error::from(e) with {:#}) from
+// one helper next to http_err, and use it at every reqwest/hyper
+// error site. probe:
+// design/review-2026-10-19/repro/http-sqlite-db1-http-error-cause.gx
+// (http-sqlite-db1-03)
+// 2026-10-19 claude: chain() prints an error with its source chain ({:#} of
+// anyhow::Error::from), used for request failed, failed to read body, failed to
+// build client and serve_connection's log. Pin:
+// lib_tests::http::http_error_names_its_cause (refused connection names
+// 'refused', a bad URL 'relative URL without a base').
+fn chain(e: impl std::error::Error + Send + Sync + 'static) -> impl fmt::Display {
+    format_compact!("{:#}", anyhow::Error::from(e))
 }
 
 /// Headers from `[(name, value)]`; one that cannot be sent is an error.
@@ -201,9 +226,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
                 // (x-security-08)
                 builder = builder.add_root_certificate(cert);
             }
-            let client = builder
-                .build()
-                .map_err(|e| http_err(format_args!("failed to build client: {e}")))?;
+            let client = builder.build().map_err(|e| {
+                http_err(format_args!("failed to build client: {}", chain(e)))
+            })?;
             Ok(CLIENT_WRAPPER.wrap(ClientValue { inner: Arc::new(client) }))
         };
         Some(build().unwrap_or_else(|e: Value| e))
@@ -388,27 +413,15 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
                 if let Some(timeout) = args.timeout {
                     req = req.timeout(timeout);
                 }
-                let resp = req
-                    .send()
-                    .await
-                    // CR claude for claude: [bug/medium] reqwest::Error's Display
-                    // leaves out its source chain, so this HTTPError never names the
-                    // cause. A refused connection and an unknown host both read "error
-                    // sending request for url (..)", and a malformed URL reads only
-                    // "builder error". The body-read error below, "failed to build
-                    // client" in HttpClientEv and serve_connection's log have the same
-                    // problem. Print the chain (anyhow::Error::from(e) with {:#}) from
-                    // one helper next to http_err, and use it at every reqwest/hyper
-                    // error site. probe:
-                    // design/review-2026-10-19/repro/http-sqlite-db1-http-error-cause.gx
-                    // (http-sqlite-db1-03)
-                    .map_err(|e| http_err(format_args!("request failed: {e}")))?;
+                let resp = req.send().await.map_err(|e| {
+                    http_err(format_args!("request failed: {}", chain(e)))
+                })?;
                 let status = resp.status().as_u16();
                 let url = ArcStr::from(resp.url().as_str());
                 let headers = headers_to_value(resp.headers().iter());
-                let body = B::read(resp)
-                    .await
-                    .map_err(|e| http_err(format_args!("failed to read body: {e}")))?;
+                let body = B::read(resp).await.map_err(|e| {
+                    http_err(format_args!("failed to read body: {}", chain(e)))
+                })?;
                 Ok(Response { body: body.into(), headers, status, url }.into())
             };
             send.await.unwrap_or_else(|e: Value| e)
@@ -488,7 +501,7 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     // request got which answer. probe:
     // design/review-2026-10-12/repro/http-sqlite-db1-03.gx Also reported as
     // (x-security-04). (http-sqlite-db1-03)
-    // CR claude for claude: [bug/low] This is a new aspect of http-sqlite-db1-03.
+    // XCR claude for claude: [bug/low] This is a new aspect of http-sqlite-db1-03.
     // text_response formats the raised value with netidx's Value Display, so since kind
     // markers the 500 body carries the marker abstracts raw:
     // `[abstract:EnwukQtE2EoTn2Uo4FoXw40B, ["cause", null], ["error",
@@ -498,8 +511,19 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     // through abstract_value::to_data before formatting, and pin the body's text.
     // probe: design/review-2026-10-19/repro/x-rerun-2-http-500-markers.gx
     // (x-rerun-2-02)
+    // the raised value as data: a composite in its written form, never
+    // its kind marker
+    // 2026-10-19 claude: The 500 body is the raised value through rep::strip, so a
+    // composite prints in its data form, never its marker (rep::strip, not to_data:
+    // build_hyper_response runs without the hooks a Cast impl needs). Pin:
+    // lib_tests::http::http_500_body_carries_no_markers. Falls away if Eric's
+    // http-sqlite-db1-03 ruling gives a generic body.
     if let Value::Error(e) = v {
-        return text_response(StatusCode::INTERNAL_SERVER_ERROR, e);
+        let data = rep::strip(e);
+        return text_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            data.as_ref().unwrap_or(e),
+        );
     }
     #[derive(FromValue)]
     #[value(shape = "graphix_compiler::rep::GraphixShape")]
@@ -732,7 +756,7 @@ async fn serve_connection(
         .serve_connection(hyper_util::rt::TokioIo::new(io), service)
         .await
     {
-        log::error!("HTTP connection error: {e}");
+        log::error!("HTTP connection error: {}", chain(e));
     }
 }
 
@@ -740,6 +764,9 @@ async fn serve_connection(
 /// socket and end with it.
 #[derive(Debug, Clone, Default)]
 struct Conns(Arc<Mutex<JoinSet<()>>>);
+
+/// How long the server waits after a failed accept before the next.
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 /// Accept connections until aborted.
 async fn serve_loop(
@@ -756,7 +783,7 @@ async fn serve_loop(
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
             Err(e) => {
-                // CR claude for claude: [bug/medium] An accept error goes straight back
+                // XCR claude for claude: [bug/medium] An accept error goes straight back
                 // into accept. A persistent error, such as EMFILE when the process is
                 // out of descriptors while clients wait in the backlog, then spins this
                 // loop at a full core and logs one error per iteration. Measured: with
@@ -766,7 +793,16 @@ async fn serve_loop(
                 // permit. probe:
                 // design/review-2026-10-19/repro/http-sqlite-db1-accept-spin.py
                 // (http-sqlite-db1-02)
+                // a persistent error (out of descriptors) would spin: wait,
+                // the permit given back, before accepting again
+                // 2026-10-19 claude: serve_loop gives the permit back and sleeps
+                // ACCEPT_RETRY (100 ms) after an accept error before accepting again.
+                // No pin: reaching EMFILE needs an RLIMIT_NOFILE the test process
+                // shares; the probe is
+                // design/review-2026-10-19/repro/http-sqlite-db1-accept-spin.py.
                 log::error!("HTTP accept error: {e}");
+                drop(permit);
+                tokio::time::sleep(ACCEPT_RETRY).await;
                 continue;
             }
         };
@@ -858,7 +894,7 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
     listening: Option<Listening>,
     abort: Option<tokio::task::AbortHandle>,
     /// Set by `sleep`, taken by the next update as a restart.
-    slept: bool,
+    slept: WakeBit,
     out: TagValue,
 }
 
@@ -883,7 +919,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
             inbox: Arc::default(),
             listening: None,
             abort: None,
-            slept: false,
+            slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
     }
@@ -901,7 +937,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
             inbox: Arc::default(),
             listening: None,
             abort: None,
-            slept: false,
+            slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
     }
@@ -972,7 +1008,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let (addr, addr_fired) = seam_arg(ctx, &mut from[0]);
         let (cert, cert_fired) = seam_arg(ctx, &mut from[1]);
         let (key, key_fired) = seam_arg(ctx, &mut from[2]);
@@ -1046,7 +1082,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if let Some(l) = &self.listening {
             l.conns.0.lock().abort_all();
         }
-        self.slept = true;
+        self.slept.set();
         self.out = TagValue::phantom();
         self.inbox = Arc::default();
         self.handler.sleep(ctx);

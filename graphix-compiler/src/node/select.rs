@@ -79,6 +79,9 @@ struct LazyArmFacts {
     logged_no_match: bool,
     /// The arms with a guard, in order.
     guarded: SmallVec<[usize; 4]>,
+    /// Per arm: a scrutinee fire the chain passed its guard by; the guard
+    /// is given the value fired when the chain next reaches it.
+    missed: Vec<bool>,
 }
 
 impl LazyArmFacts {
@@ -129,6 +132,7 @@ impl LazyArmFacts {
                 .filter(|(_, (pat, _))| pat.guard.is_some())
                 .map(|(i, _)| i)
                 .collect(),
+            missed: vec![false; arms.len()],
         }
     }
 }
@@ -254,7 +258,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         }
         let typ = Type::decode(buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
-        Ok(Self::new(arg, arms, typ, spec, BitFlags::empty()))
+        let flags = match bool::decode(buf)? {
+            true => CFlag::RunEvent.into(),
+            false => BitFlags::empty(),
+        };
+        Ok(Self::new(arg, arms, typ, spec, flags))
     }
 
     pub(crate) fn compile(
@@ -266,6 +274,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         arg: &Expr,
         arms: &[(Pattern, Expr)],
     ) -> Result<Node<R, E>> {
+        let own = flags & CFlag::RunEvent;
+        let flags = flags & !CFlag::RunEvent;
         let arg = Held::new(compile(ctx, flags, arg.clone(), scope, top_id)?);
         let inputs = scrutinee_inputs(&ctx.env, &arg.node);
         let arms = arms
@@ -291,7 +301,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             })
             .collect::<Result<Vec<_>>>()
             .at(&spec)?;
-        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, flags))
+        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, flags | own))
     }
 }
 
@@ -341,23 +351,8 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         // does not carry it. probe:
         // design/review-2026-10-19/repro/sys-net-birth-only-warning-subscribe.gx
         // (sys-net-04)
-        // CR claude for claude: [bug/medium] Only a static builtin is classified here.
-        // A call to a user function that wraps an effect, with constant arguments, acts
-        // only at the arm's first entry exactly as `println("x")` does, but the check
-        // says nothing. CLAUDE.md promises a warning for an effect call reading no
-        // variable. Fix: when ctx.bind_to_lambda resolves the site's function to a
-        // non-builtin LambdaDef, warn when its definition's facts (LambdaDef::facts)
-        // are io or async. Add a warning pin. probe:
-        // design/review-2026-10-19/repro/c-select-seq-birth-warn-misses-lambda.gx
-        // (c-select-seq-02)
         NodeView::CallSite(cs)
-            if cs.arg_nodes().all(|a| reads_nothing(a))
-                && super::callsite::static_builtin(ctx, cs).is_some_and(|b| {
-                    matches!(
-                        ctx.builtin_effect(b),
-                        crate::Effect::Async | crate::Effect::Io(_)
-                    )
-                }) =>
+            if cs.arg_nodes().all(|a| reads_nothing(a)) && acts_on_the_world(ctx, cs) =>
         {
             warn(n.spec(), "this call")
         }
@@ -371,6 +366,39 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
             r
         }
     })
+}
+
+// XCR claude for claude: [bug/medium] Only a static builtin is classified here.
+// A call to a user function that wraps an effect, with constant arguments, acts
+// only at the arm's first entry exactly as `println("x")` does, but the check
+// says nothing. CLAUDE.md promises a warning for an effect call reading no
+// variable. Fix: when ctx.bind_to_lambda resolves the site's function to a
+// non-builtin LambdaDef, warn when its definition's facts (LambdaDef::facts)
+// are io or async. Add a warning pin. probe:
+// design/review-2026-10-19/repro/c-select-seq-birth-warn-misses-lambda.gx
+// (c-select-seq-02)
+// 2026-10-19 claude: warn_birth_only asks acts_on_the_world: an Async or Io
+// builtin as before, or a statically bound user function whose definition's
+// facts are io. Async user functions are left out while Eric rules on
+// sys-net-04 (resuming async calls warn falsely). Pin: graphix-shell/tests/lsp
+// birth_only_io_through_a_function_is_a_warning.
+/// Whether the call acts on the world: an async or Io builtin, or a
+/// function whose body performs Io.
+fn acts_on_the_world<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    cs: &super::callsite::CallSite<R, E>,
+) -> bool {
+    if let Some(b) = super::callsite::static_builtin(ctx, cs) {
+        return matches!(
+            ctx.builtin_effect(b),
+            crate::Effect::Async | crate::Effect::Io(_)
+        );
+    }
+    let NodeView::Ref(r) = cs.fnode().view() else { return false };
+    ctx.bind_to_lambda
+        .get(&r.id)
+        .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
+        .is_some_and(|d| d.facts.lock().io)
 }
 
 /// Warn where an arm holds a `seq` or `seqq` with no trigger: it runs at
@@ -524,7 +552,7 @@ impl Reach {
         };
         let informative = itype != Type::Primitive(BitFlags::empty());
         if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
-            // CR claude for claude: [bug/high] This settle copies a slice pattern's
+            // XCR claude for claude: [bug/high] This settle copies a slice pattern's
             // per-element Set of open cells into the scrutinee (Array<['a, 'b, 'b,
             // ..]>), and PendingSettle::Told then reads those cells as foreign open
             // members and refuses: "may share '_a's runtime form: annotate it". So `let
@@ -536,6 +564,12 @@ impl Reach {
             // narrowing only), or have `told` skip cells the arm's own predicate holds.
             // probe: design/review-2026-10-19/repro/c-pattern-generic-slice-refused.gx
             // (c-pattern-03)
+            // 2026-10-19 claude: told (lib.rs, PendingSettle::Told) skips a collision
+            // whose open cell the arm's own predicate holds: a slice pattern's element
+            // cells are the arm's to narrow, not a type it tests (the colliding pair
+            // was a cell against its own copy). Pin:
+            // lang::select::generic_slice_arms_check (the three functions of the
+            // repro). Check typemorph's one-runtime-form family at the next fuzz run.
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();
@@ -581,6 +615,13 @@ impl Reach {
         // settle's refusal is the one reported. probe:
         // design/review-2026-10-19/repro/x-rerun-6-unreachable-arm-open-member.gx
         // (x-rerun-6-04)
+        // 2026-10-20 claude: Tried twice (2026-10-20): matches_every refusing wildcard
+        // status while a member is undecided, and Reach::cover keeping undecided
+        // members out of the diff. Neither changes the probe: by the time coverage
+        // runs, the first arm narrowing has bound the open member to its tuple, so the
+        // union is one member and the arm covers it. The fix belongs where the arm
+        // narrows (it must leave an open member open for the settle to judge), which
+        // is typing work.
         if checking && (self.wildcard || self.atype == empty) {
             bailat!(
                 site,
@@ -698,12 +739,30 @@ impl Reach {
                 Claim::Completes(m) => self.cover(env, m)?,
                 Claim::Dead | Claim::Open | Claim::Unpooled => (),
             }
-            if sp.covers(env, at, !pat.explicit_type_predicate) {
+            if let StructPatternNode::Abstract { .. } = sp
+                && !pat.explicit_type_predicate
+            {
+                // an inferred abstract predicate tests the tag at run time: the
+                // atom covers each member its payload covers
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                union_members(env, scrut, &mut members)?;
+                for m in members {
+                    if sp.covers(env, &m, false) {
+                        self.cover(env, m)?
+                    }
+                }
+            } else if sp.covers(env, at, !pat.explicit_type_predicate) {
                 match wild {
                     true => self.atype = self.atype.diff(env, at)?,
                     false => self.cover(env, at.clone())?,
                 }
             } else {
+                // a null literal covers its position's null
+                if !pat.explicit_type_predicate
+                    && let Some(t) = sp.null_narrowed(env, at)
+                {
+                    self.cover(env, t)?
+                }
                 // under a written union, each member the atom covers
                 if pat.explicit_type_predicate {
                     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
@@ -894,6 +953,7 @@ fn bound_by<R: Rt, E: UserEvent>(pat: &PatternNode<R, E>, r: &mut Refs) {
 #[derive(Clone, PartialEq, Eq)]
 enum Head {
     Bool(bool),
+    Null,
     /// A variant's tag and arity; its payload matches anything.
     Tag(ArcStr, usize),
 }
@@ -908,9 +968,19 @@ struct Leaf {
     domain: Option<SmallVec<[Head; 4]>>,
 }
 
-/// The heads `t` admits when it is a finite set of them: `bool`, or a
-/// union of variants.
-// CR claude for claude: [bug/medium] The pool has no null head. heads gives no domain
+impl Leaf {
+    /// The arm admits a head the member admits here.
+    fn reachable(&self) -> bool {
+        match (&self.heads, &self.domain) {
+            (Some(hs), Some(d)) => hs.iter().any(|h| d.contains(h)),
+            _ => true,
+        }
+    }
+}
+
+/// The heads `t` admits when it is a finite set of them: a union of
+/// `bool`, `null` and variants.
+// XCR claude for claude: [bug/medium] The pool has no null head. heads gives no domain
 // for a position whose type holds null, and head_of ignores a `null` literal. So `P(`A)
 // => 1, `P(null) => 0` over `P([`A, null]) is refused as non-exhaustive, and so are
 // (`A, n) / (null, n) over ([`A, null], i64) and {a: null} beside {a: i64} as s. A
@@ -919,18 +989,33 @@ struct Leaf {
 // admits null members next to bools or variants. probe:
 // design/review-2026-10-19/repro/x-typecheck-patterns-null-head-pool.gx
 // (x-typecheck-patterns-07)
+// 2026-10-19 claude: Head::Null: head_of reads a null literal and heads admits null
+// members beside bools and variants. The `P and tuple cases now pass; the struct case
+// with a type-tested arm is not a pool case and has its own CR (null-pool-typetest-01).
+// Pin: lang::select::null_literal_pools_beside_variants.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;
-    let is_bool = |m: &Type| matches!(m, Type::Primitive(p) if *p == Typ::Bool);
-    if !members.is_empty() && members.iter().all(is_bool) {
-        return Ok(Some(SmallVec::from_iter([Head::Bool(true), Head::Bool(false)])));
+    if members.is_empty() {
+        return Ok(None);
     }
-    let tag = |m: &Type| match m {
-        Type::Variant(tag, ts, _) => Some(Head::Tag(tag.clone(), ts.len())),
-        _ => None,
-    };
-    Ok(if members.is_empty() { None } else { members.iter().map(tag).collect() })
+    let mut out: SmallVec<[Head; 4]> = SmallVec::new();
+    for m in members.iter() {
+        match m {
+            Type::Variant(tag, ts, _) => out.push(Head::Tag(tag.clone(), ts.len())),
+            Type::Primitive(p) => {
+                for typ in p.iter() {
+                    match typ {
+                        Typ::Bool => out.extend([Head::Bool(true), Head::Bool(false)]),
+                        Typ::Null => out.push(Head::Null),
+                        _ => return Ok(None),
+                    }
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(out))
 }
 
 /// The head a pattern tests at one position, when it tests only a head:
@@ -938,6 +1023,7 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
 fn head_of(sp: &StructPatternNode) -> Option<Head> {
     match sp {
         StructPatternNode::Literal(Value::Bool(b)) => Some(Head::Bool(*b)),
+        StructPatternNode::Literal(Value::Null) => Some(Head::Null),
         StructPatternNode::Variant { tag, all: _, binds }
             if binds.iter().all(|p| p.matches_anything()) =>
         {
@@ -1018,10 +1104,16 @@ fn pooled_leaves(
                 Ok(true)
             }
             (
-                StructPatternNode::Abstract { id, bind, rep, .. },
-                Type::Abstract { id: t, .. },
-            ) if id == t => at(0, bind, rep),
-            (StructPatternNode::Struct { all: _, binds }, Type::Struct(fs)) => {
+                StructPatternNode::Abstract { id, bind, .. },
+                Type::Abstract { id: t, params },
+            ) if id == t => match env.abstract_reps.get(id) {
+                Some(r) => at(0, bind, &r.instantiate_with(params)),
+                None => Ok(false),
+            },
+            (StructPatternNode::Struct { all: _, width, binds }, Type::Struct(fs)) => {
+                if !width.admits(fs.len()) {
+                    return Ok(false);
+                }
                 for (i, (name, t, _)) in fs.iter().enumerate() {
                     let p = binds.iter().find(|(n, _, _)| n == name);
                     let p = p.map_or(&StructPatternNode::Ignore, |(_, _, p)| p);
@@ -1059,7 +1151,7 @@ impl Shape {
             StructPatternNode::Variant { tag, all: _, binds } => {
                 Some(Shape::Variant(tag.clone(), binds.len()))
             }
-            StructPatternNode::Struct { all: _, binds } => {
+            StructPatternNode::Struct { all: _, width: _, binds } => {
                 let mut names: SmallVec<[ArcStr; 8]> =
                     binds.iter().map(|(n, _, _)| n.clone()).collect();
                 names.sort();
@@ -1084,10 +1176,9 @@ impl Shape {
         }
     }
 
-    /// The scrutinee's member of this shape: the type a complete pool
-    /// group covers. A struct pattern names some of its fields, so it pools
-    /// only where one member has them all.
-    // CR claude for claude: [bug/high] member returns the FIRST union member of the
+    /// The scrutinee's members of this shape: the types a complete pool
+    /// group may cover.
+    // XCR claude for claude: [bug/high] member returns the FIRST union member of the
     // shape for Tuple, Variant and Abstract, whichever member the atom actually tests.
     // LiteralPool::claim then pools the arm against that member and covers it when the
     // group completes. Over [Box<bool>, Box<i64>], `Box(true) => 1, Box(false) => 2,
@@ -1101,15 +1192,18 @@ impl Shape {
     // several can, as Struct already does. probe:
     // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-pool-member.gx
     // (x-typecheck-patterns-03)
-    fn member(&self, env: &Env, scrut: &Type) -> Result<Option<Type>> {
+    // 2026-10-19 claude: LiteralPool::claim pools an atom against the one scrutinee
+    // member of its shape it can match (under its type test, every position admitting a
+    // head the member admits: Leaf::reachable), unpooled when several can; groups key
+    // by shape and member; an abstract's payload heads come from the member's
+    // parameters (AbstractRep::instantiate_with), not the pattern's rep. Pins:
+    // lang::select::pool_takes_the_member_an_arm_matches,
+    // pool_reads_the_abstract_payload_of_the_scrutinee,
+    // pool_covers_only_its_own_abstract_instantiation.
+    fn members(&self, env: &Env, scrut: &Type) -> Result<SmallVec<[Type; 4]>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, scrut, &mut members)?;
-        let mut fits = members.into_iter().filter(|m| self.fits(m));
-        let m = fits.next();
-        Ok(match self {
-            Shape::Struct(_) if fits.next().is_some() => None,
-            _ => m,
-        })
+        Ok(members.into_iter().filter(|m| self.fits(m)).collect())
     }
 
     /// The shape that keys `m`'s pool group: a struct's by all of its
@@ -1140,6 +1234,7 @@ struct LiteralPool {
 
 struct PoolGroup {
     shape: Shape,
+    member: Type,
     arms: Vec<SmallVec<[Leaf; 8]>>,
     done: bool,
 }
@@ -1156,6 +1251,20 @@ enum Claim {
     Dead,
 }
 
+// XCR claude for claude: [bug/low] A type-tested arm never pools, so a null
+// literal at a position beside it covers nothing: `{a: null} => 0, {a: i64} as s
+// => s.a` over {a: [i64, null]} is refused as non-exhaustive although the two
+// arms cover the struct. Reach could cover the arm's narrowed type ({a: null})
+// for an atom whose only refutable parts are null literals and let set coverage
+// distribute over the product. probe:
+// design/review-2026-10-19/repro/null-pool-typetest.gx, refused "missing
+// match cases: no arm covers { a: [i64, null] }" (null-pool-typetest-01)
+// 2026-10-20 claude: StructPatternNode::null_narrowed gives the type an atom
+// covers when its only refutable parts are null literals (null at those
+// positions of tuples and structs); Reach covers it, and set coverage then
+// distributes with a type-tested arm. The probe prints [0, 3]. Pins:
+// lang::select::null_literal_covers_beside_a_type_test,
+// null_literal_alone_leaves_the_rest_open.
 impl LiteralPool {
     /// Pool the unguarded atom `sp`; `explicit`, its arm's written type
     /// test.
@@ -1167,22 +1276,38 @@ impl LiteralPool {
         explicit: Option<&Type>,
     ) -> Result<Claim> {
         let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
-        let Some(m) = shape.member(env, scrut)? else { return Ok(Claim::Unpooled) };
-        let shape = shape.of_member(&m);
-        // under a type test that does not hold the member, the atom covers
-        // none of it
-        if let Some(t) = explicit
-            && !t.contains_with_flags(BitFlags::empty(), env, &m)?
-        {
-            return Ok(Claim::Unpooled);
+        // the atom pools against the one member of its shape it can match:
+        // under its type test, with a head each position admits
+        let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
+        for m in shape.members(env, scrut)? {
+            if let Some(t) = explicit
+                && !t.contains_with_flags(BitFlags::empty(), env, &m)?
+            {
+                continue;
+            }
+            let Some(leaves) = pooled_leaves(env, sp, &m)? else {
+                return Ok(Claim::Unpooled);
+            };
+            if !leaves.iter().all(Leaf::reachable) {
+                continue;
+            }
+            if reached.is_some() {
+                return Ok(Claim::Unpooled);
+            }
+            reached = Some((m, leaves));
         }
-        let Some(leaves) = pooled_leaves(env, sp, &m)? else {
-            return Ok(Claim::Unpooled);
-        };
-        let i = match self.groups.iter().position(|g| g.shape == shape) {
+        let Some((m, leaves)) = reached else { return Ok(Claim::Unpooled) };
+        let shape = shape.of_member(&m);
+        let i = match self.groups.iter().position(|g| g.shape == shape && g.member == m) {
             Some(i) => i,
             None => {
-                self.groups.push(PoolGroup { shape, arms: Vec::new(), done: false });
+                let member = m.clone();
+                self.groups.push(PoolGroup {
+                    shape,
+                    member,
+                    arms: Vec::new(),
+                    done: false,
+                });
                 self.groups.len() - 1
             }
         };
@@ -1305,7 +1430,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             n.image_encode(buf)?;
         }
         self.typ.encode(buf)?;
-        self.spec.encode(buf)
+        self.spec.encode(buf)?;
+        self.flags.contains(CFlag::RunEvent).encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -1323,7 +1449,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident,
             slept,
             arm_facts,
-            flags: _,
+            flags,
         } = self;
         let LazyArmFacts {
             tracked,
@@ -1332,6 +1458,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             shallow,
             logged_no_match,
             guarded,
+            missed,
         } = arm_facts.as_mut().expect("arm facts built above");
         let woke = slept.take();
         // The guarded arms' production tags. Only guards the chain
@@ -1365,7 +1492,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 open &= reach.is_none();
                 continue;
             }
-            // CR claude for claude: [bug/high] The tentative bind takes the scrutinee's
+            // XCR claude for claude: [bug/high] The tentative bind takes the scrutinee's
             // tag. In a re-match driven by an earlier arm's guard flip that tag is
             // STALE. A guard the chain passed over when the scrutinee last fired then
             // sees a new value with no fire, and dense_gate makes it ride the verdict
@@ -1377,7 +1504,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // over the value it is given. Pin it in lang::select. probe:
             // design/review-2026-10-19/repro/c-select-seq-stale-guard-rebind.gx
             // (c-select-seq-01)
-            let saved = reach.map(|v| pat.bind_tentative(ctx, v, arg_prod));
+            // a guard the chain passed by when the scrutinee fired has not
+            // seen its value: it is given the value fired
+            // 2026-10-19 claude: LazyArmFacts::missed holds a bit per arm, set when the
+            // scrutinee fires and the guard chain passes the arm by and cleared when
+            // the chain reaches it; while set the tentative bind is delivered fired, so
+            // the guard recomputes over the value it missed. The repro now AGREEs
+            // (graphix-fuzz check). Pin:
+            // lang::select::passed_guard_recomputes_over_the_value_it_missed (the old
+            // binary's node-walk says big). Needs a fleet soak (select semantics).
+            let tag = if missed[i] { arg_prod.fresh() } else { arg_prod };
+            match reach {
+                Some(_) => missed[i] = false,
+                None => missed[i] |= arg_prod.triggers(),
+            }
+            let saved = reach.map(|v| pat.bind_tentative(ctx, v, tag));
             if let Some(t) = pat.update(ctx) {
                 guard_tags.push((i, t));
             }
@@ -1386,6 +1527,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 open &= matches!(pat.arm_match(true), ArmMatch::GuardFalse);
             }
         }
+        // CR claude for eric: [bug/medium] A guard flip moves the select to another arm,
+        // and that arm's pattern bind fires though the scrutinee did not: in the probe
+        // `out` goes 1 then 100 when only `limit` changes, on both engines. CLAUDE.md's
+        // wake catch-up calls a pattern bind a facet of its scrutinee's delivery, which
+        // suggests the bind should read stale here, but the arm is newly selected (its
+        // first entry is a Step) and the guard was consulted, so the rule is yours: does
+        // a re-selection by a guard deliver the bind fired, or stale? tui::browser hit
+        // it (a window shrink re-ran the last Down key) and now samples the limit with
+        // the key. Found by the 10-19 GUI/TUI CR-fix agent. probe:
+        // design/review-2026-10-19/repro/select-guard-flip-fires-bind.gx
+        // (guard-flip-bind-01)
         // Any guard fire drives a re-match; whether it affects the
         // emission is decided by the consulted set below.
         let pat_up = guard_tags.iter().any(|(_, t)| t.triggers());
@@ -1508,7 +1660,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         if !sleep_on_deselect[i] {
                             arms[i].1.sleep(ctx);
                         }
-                        View::Wake
+                        match flags.contains(CFlag::RunEvent) {
+                            true => View::Step,
+                            false => View::Wake,
+                        }
                     }
                     false => View::Step,
                 };
@@ -1626,7 +1781,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?;
-        if self.flags.contains(CFlag::SeqStep) {
+        if self.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) {
             return Ok(());
         }
         for (_, n) in &self.arms {

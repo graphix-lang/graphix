@@ -26,7 +26,7 @@ modes!(same_arm_refire_emits);
 const GUARD_FIRE: &str = r#"{
   let x = array::iter([i64:1, i64:2, i64:3]);
   let g = x % i64:2;
-  count(select i64:5 {n if g >= i64:0 => n, _ => i64:0})
+  count(#[native] select i64:5 {n if g >= i64:0 => n, _ => i64:0})
 }"#;
 
 async fn guard_fire_emits(mode: Mode) -> Result<()> {
@@ -94,7 +94,7 @@ const TAIL_SAME_ARGS: &str = r#"{
     i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2},
     _ => f(n - i64:1)
   };
-  count(f(m))
+  count(#[native] f(m))
 }"#;
 
 async fn tail_same_args_fires(mode: Mode) -> Result<()> {

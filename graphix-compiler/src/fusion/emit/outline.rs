@@ -3,22 +3,21 @@
 //! `graphix_par_loop` runs in order or forked (`fusion::par_loop`,
 //! `design/parallel_eval.md` §10).
 
-use super::lower::OwnCall;
 use super::{
-    abi::{JitEnv, STALE, ValueVar, local_payload_ty},
+    abi::{JitEnv, Local, STALE, ValueVar, local_payload_ty},
     body::{BodyCx, emit_kernel_abort},
     call::{BufKind, close_buf, open_buf},
     jit::{ChunkFn, chunk_signature},
     lower::{
-        Channel, ClosedFrame, CtxWord, HelperRefs, LowerCtx, SlotTable, SlotTableFrame,
-        StateChannel, TailCtx, TruncRec,
+        Channel, ClosedFrame, CtxWord, HelperRefs, KernelFns, LowerCtx, SlotTable,
+        SlotTableFrame, StateChannel, TailCtx, TruncRec,
     },
     record::KernelConst,
+    scaffold::LoopBody,
     scaffold::{Accs, Iteration, LoopFrame, Sink, SinkKind, Slots, Sunk, open_sink},
 };
 use crate::{
     cost::LoopSite,
-    expr::ExprId,
     fusion::{
         kernel_abi::KernelKey,
         par_loop::{FIND, OUT_WORDS, ROOT},
@@ -47,13 +46,13 @@ pub(super) struct Loop<'s> {
     pub(super) len: ClifValue,
     /// The slots the loop instance entered before this run.
     pub(super) entered: ClifValue,
-    pub(super) state_sites: &'s [ExprId],
+    pub(super) facts: &'s LoopBody,
 }
 
 /// The frame a chunk reads: the context word, the state and site
 /// pointers, the source, its disc, the slot count and the slots entered
 /// before, then the loop's slot-table bases, then a `(disc, payload)`
-/// pair per local in scope.
+/// pair per local in scope that the iteration reads ([`handed`]).
 const CTX: usize = 0;
 const STATE: usize = 1;
 const SITE: usize = 2;
@@ -76,7 +75,7 @@ pub(super) fn emit_outlined(
     iteration: impl Iteration,
 ) -> Result<Sunk> {
     // The loop's slot tables are made here, where every chunk finds them.
-    let (tables, pending) = cx.claim_slot_tables(lp.state_sites, lp.len, lp.src_disc)?;
+    let (tables, pending) = cx.claim_slot_tables(&lp.facts.sites, lp.len, lp.src_disc)?;
     let site = cx.const_ptr(KernelConst::LoopSite(Arc::new(LoopSite::default())))?;
     let (id, pending) = emit_chunk(cx, &lp, &tables, pending, iteration)?;
     // The chain levels at the loop's own depth are sized before any
@@ -84,25 +83,11 @@ pub(super) fn emit_outlined(
     *cx.ctx.closed_frame.borrow_mut() =
         Some(ClosedFrame { depth: 1, len: lp.len, src_disc: lp.src_disc, pending });
     cx.emit_slot_truncates()?;
-    // CR claude for claude: [perf/medium] [perf/medium] Every outlined loop stores
-    // every local in scope into its frame record, and its chunk loads and binds all of
-    // them back, though an iteration reads only its callback's free locals. A kernel
-    // with M loops and L locals therefore emits M x L stores, executed at every kernel
-    // run, and L loads per chunk. Separately, `call::emit_pending_abort`'s rungs
-    // `use_var` every owned local, so the SSA builder passes all of them as block
-    // arguments from every abort exit (M x L again). For a chain of n `array::map`
-    // lets: 10900 stores at n=100, 41800 at 200, 163600 at 400, and first value at 0.64
-    // s / 2.09 s / 8.09 s for n=400 / 800 / 1600 (debug, mostly phase Link). Fix: store
-    // and bind only the locals the iteration reads (the outer reads
-    // `lowering::ReadsMemo` already computes for captures). Spill each owned local once
-    // where it is bound and have the rungs load it. probe:
-    // design/review-2026-10-19/repro/x-perf-compile-outline-frame-stores.sh
-    // (x-perf-compile-01)
     let locals: SmallVec<[ValueVar; 16]> =
-        cx.env.locals.iter().map(|l| l.words).collect();
+        handed(cx.env, lp.facts).map(|l| l.words).collect();
     let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
     let ctx_word =
-        CtxWord { init: cx.ctx.init_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
+        CtxWord { born: cx.ctx.born_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
     let header = [
         ctx_word,
         cx.state_ptr(),
@@ -117,15 +102,6 @@ pub(super) fn emit_outlined(
         cx.b.ins().store(MemFlags::trusted(), v, fbase, word(i));
     }
     let base = HEADER + tables.len();
-    // CR claude for claude: [perf/low] Every outlined loop stores every local in scope
-    // into the frame, and emit_chunk loads every one back, whether the loop's body
-    // reads it or not. A chain of n array::map lets in one function emits about n^2/2
-    // store pairs: 6478 stores at n=80 and 25758 at n=160, while calls and slot bytes
-    // grow linearly. A fused build takes 2.1 s at n=800 against 0.36 s node-walked. Lay
-    // the frame out over the locals the iteration reads (its free local names), or
-    // store each local once when it is bound. probe:
-    // design/review-2026-10-19/repro/x-rerun-6-outline-stores-quadratic.sh
-    // (x-rerun-6-05)
     for (i, vv) in locals.iter().enumerate() {
         let disc = cx.b.use_var(vv.disc);
         let payload = cx.b.use_var(vv.payload);
@@ -169,6 +145,54 @@ pub(super) fn emit_outlined(
         SinkKind::Buf => Sunk::Buf(out(cx, 2)),
         SinkKind::Find => Sunk::Find(out(cx, 3), out(cx, 4)),
     })
+}
+
+// CR claude for claude: [perf/medium] [perf/medium] Every outlined loop stores
+// every local in scope into its frame record, and its chunk loads and binds all of
+// them back, though an iteration reads only its callback's free locals. A kernel
+// with M loops and L locals therefore emits M x L stores, executed at every kernel
+// run, and L loads per chunk. Separately, `call::emit_pending_abort`'s rungs
+// `use_var` every owned local, so the SSA builder passes all of them as block
+// arguments from every abort exit (M x L again). For a chain of n `array::map`
+// lets: 10900 stores at n=100, 41800 at 200, 163600 at 400, and first value at 0.64
+// s / 2.09 s / 8.09 s for n=400 / 800 / 1600 (debug, mostly phase Link). Fix: store
+// and bind only the locals the iteration reads (the outer reads
+// `lowering::ReadsMemo` already computes for captures). Spill each owned local once
+// where it is bound and have the rungs load it. probe:
+// design/review-2026-10-19/repro/x-perf-compile-outline-frame-stores.sh
+// (x-perf-compile-01)
+// 2026-10-20 claude: The frame half is done (see x-rerun-6-05 beside this: only the
+// locals the iteration reads are stored and bound). Still open:
+// call::emit_pending_abort rungs use_var every owned local, so every abort exit
+// passes all of them as block arguments.
+// 2026-10-20 claude: Measured the abort-rung half after the frame fix: in the chain
+// probe block params grow as n^2 (41k/162k/645k at n=200/400/800) while
+// instructions grow linearly (82 per loop), and the Cranelift backend on the one
+// large kernel takes 0.41/1.96/7.0 s at n=800/1600/3200 (1.25/4.7 s at 1600/3200
+// with the verifier off; opt_level none does not help), the end-to-end run
+// 1.0/3.5/11.2 s. The fix stands as written, with one hazard: a tail loop redefines
+// its formals variables every iteration (body.rs, the staged def_vars before the
+// jump to the head), so a spill slot must be written at every def_var of an owned
+// local, not only at bind_local, or a rung drops a stale value.
+// XCR claude for claude: [perf/low] Every outlined loop stores every local in scope
+// into the frame, and emit_chunk loads every one back, whether the loop's body
+// reads it or not. A chain of n array::map lets in one function emits about n^2/2
+// store pairs: 6478 stores at n=80 and 25758 at n=160, while calls and slot bytes
+// grow linearly. A fused build takes 2.1 s at n=800 against 0.36 s node-walked. Lay
+// the frame out over the locals the iteration reads (its free local names), or
+// store each local once when it is bound. probe:
+// design/review-2026-10-19/repro/x-rerun-6-outline-stores-quadratic.sh
+// (x-rerun-6-05)
+// 2026-10-20 claude: An outlined loop hands its chunk only the locals the iteration
+// reads (its body and callees, Refs external reads: scaffold::loop_body) plus every
+// id-less synthetic local; the probe x-rerun-6-outline-stores-quadratic.sh now
+// prints 78/158/318 stores at n=40/80/160 (was 6478 at 80), and a chain of 800 maps
+// runs in 0.77 s (was 2.1 s). A read the filter missed would refuse the region,
+// which regress fusion manifest catches (552, 0 mismatches).
+/// The locals a chunk is handed: those the iteration reads, and every
+/// synthetic one, which no read names by id.
+fn handed<'e>(env: &'e JitEnv, facts: &'e LoopBody) -> impl Iterator<Item = &'e Local> {
+    env.locals.iter().filter(|l| l.bind_id.is_none_or(|id| facts.reads.contains(&id)))
 }
 
 fn stack_record(cx: &mut BodyCx, words: usize) -> (ClifValue, ClifValue) {
@@ -256,7 +280,7 @@ fn emit_chunk(
     // The body's locals, borrowed: the body drops them.
     let mut env = JitEnv::new();
     let base = HEADER + tables.len();
-    for (i, l) in cx.env.locals.iter().enumerate() {
+    for (i, l) in handed(cx.env, lp.facts).enumerate() {
         let disc = load(&mut b, types::I64, base + 2 * i);
         let payload = load(&mut b, local_payload_ty(l.kind), base + 2 * i + 1);
         let words = ValueVar {
@@ -267,19 +291,20 @@ fn emit_chunk(
         b.def_var(words.payload, payload);
         env.bind(l.name.clone(), words, l.kind, l.bind_id);
     }
-    let CtxWord { init: init_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
+    let CtxWord { born: born_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
     let tail_scrut_stale_acc = b.declare_var(types::I64);
     let stale = b.ins().iconst(types::I64, STALE);
     b.def_var(tail_scrut_stale_acc, stale);
-    let callee_refs: BTreeMap<KernelKey, FuncRef> = p
+    let callee_refs: BTreeMap<KernelKey, KernelFns<FuncRef>> = p
         .callee_ids
         .iter()
-        .map(|(k, fid)| (*k, names.borrow().import_func(*fid, b.func)))
+        .map(|(k, ids)| {
+            let names = names.borrow();
+            let body = names.import_func(ids.body, b.func);
+            let thunk = names.import_func(ids.thunk, b.func);
+            (*k, KernelFns { body, thunk, checked: ids.checked })
+        })
         .collect();
-    let self_call = p.self_call.map(|own| OwnCall {
-        thunk: names.borrow().import_func(own.thunk_id, b.func),
-        ..own
-    });
     let consts = RefCell::new(Vec::new());
     let ctx = LowerCtx {
         tail: TailCtx {
@@ -289,7 +314,7 @@ fn emit_chunk(
             params: &[],
             tail_scrut_stale_acc,
         },
-        init_flag,
+        born_flag,
         wake_flag,
         claims: p.claims,
         state: continued(&p.state, state),
@@ -316,7 +341,7 @@ fn emit_chunk(
         ladder: RefCell::default(),
         builtin_apply_sites: p.builtin_apply_sites,
         lambda_call_sites: p.lambda_call_sites,
-        self_call,
+        self_call: p.self_call,
         type_env: p.type_env,
     };
     let mut ccx = BodyCx { b: &mut b, env: &mut env, ctx: &ctx };

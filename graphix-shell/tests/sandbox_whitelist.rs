@@ -2,10 +2,9 @@
 //! so a nested module, a value two levels down and a granted trait below
 //! the root are reachable by their qualified paths.
 
-use std::{
-    fs,
-    process::{Command, Stdio},
-};
+mod common;
+use common::graphix;
+use std::fs;
 
 const MAIN: &str = r#"mod a;
 let nested = mod foo dynamic {
@@ -35,28 +34,20 @@ select nested {
 
 #[test]
 fn whitelist_keeps_enclosing_modules() {
-    let dir =
-        std::env::temp_dir().join(format!("gx-sandbox-whitelist-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(dir.join("a")).expect("tempdir");
-    fs::write(dir.join("main.gx"), MAIN).expect("write program");
-    fs::write(dir.join("a/mod.gx"), "mod b").expect("write a");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let a = dir.path().join("a");
+    fs::create_dir_all(&a).expect("tempdir");
+    fs::write(a.join("mod.gx"), "mod b").expect("write a");
     fs::write(
-        dir.join("a/b.gx"),
+        a.join("b.gx"),
         "trait Show { val show: fn(self) -> string };\nlet f = |x: i64| x\n",
     )
     .expect("write b");
-    let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
-        .args(["--no-netidx", "--no-cache"])
-        .arg(dir.join("main.gx"))
-        .stdin(Stdio::null())
-        .output()
-        .expect("run graphix");
-    let _ = fs::remove_dir_all(&dir);
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let ran = graphix(dir.path(), MAIN, &["--no-cache"], &[]);
     assert!(
-        stdout.contains("1 Counter(7)"),
-        "stdout {stdout} stderr {}",
-        String::from_utf8_lossy(&out.stderr)
+        ran.stdout.contains("1 Counter(7)"),
+        "stdout {} stderr {}",
+        ran.stdout,
+        ran.stderr
     );
 }

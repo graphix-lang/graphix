@@ -197,8 +197,8 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
             })?
         }
         Some(t) if handler.sealed() && !etyp.has_unbound() => bail!(
-            "this error reaches a catch whose handler was checked to take {t}, \
-             which does not contain {etyp}"
+            "this error reaches a catch whose handler was checked to take {t}: \
+             {t} does not contain {etyp}"
         ),
         Some(t) => Type::union(env, &[&t, etyp])?,
     };
@@ -286,11 +286,13 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         c: &Arc<expr::CatchExpr>,
     ) -> Result<(Node<R, E>, Scope)> {
         let catch_scope = scope.append_block("ca", spec.id.inner());
+        // an ascribed catch takes its type now, so a raise it covers writes
+        // nothing, from whatever task checks the raise
         let typ = Type::empty_tvar();
         match &typ {
             Type::TVar(tv) => {
                 tv.freeze();
-                tv.bind(Type::Bottom)
+                tv.bind(c.constraint.clone().unwrap_or(Type::Bottom))
             }
             _ => unreachable!(),
         }
@@ -342,6 +344,9 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         };
         ctx.record_ref(bind_id, top_id);
         let own_handler = covered.dynamic.handler().unwrap();
+        if c.constraint.is_some() {
+            own_handler.seal();
+        }
         let polled = ctx.boundary.clone();
         own_handler.polled_by(&polled);
         let node = Node::new(Self {
@@ -422,7 +427,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             }
         }
         if let Some(abort) = &mut self.action {
-            // CR claude for claude: [bug/medium] A seqq nested in an outer seq's step
+            // XCR claude for claude: [bug/medium] A seqq nested in an outer seq's step
             // gets two credits when the outer re-enters the step for a new run. The
             // sleep set `owed` because the inner run was in flight. At the Step entry
             // the queue is reborn and the lowering's constant `seqqactivation` fires a
@@ -433,8 +438,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             // only at a Wake. probe:
             // design/review-2026-10-19/repro/t-seq-nested-seqq-double-credit.gx
             // (t-seq-01)
+            // a queue born again here is owed nothing: its birth credits it
+            // 2026-10-19 claude: Catch::update drops the owed credit when it runs under
+            // a born view (the queue was reborn and its birth credits it) and pays it
+            // only at a wake. The repro prints consecutive inner values (18, 19; the
+            // old binary 18, 20). Pin: graphix-shell/tests/seqq_nested_credit.rs. Needs
+            // a soak (seq semantics).
             if let AbortRole::Machine { clock: Some((clock, owed)), .. } = &mut abort.role
                 && std::mem::take(owed)
+                && !ctx.event.born()
             {
                 ctx.rt.set_var(*clock, Value::Bool(true));
             }
@@ -1403,7 +1415,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 let contents = tv.binding().unwrap_or(Type::Bottom);
                 self.thrown = Some(contents);
             }
-            // CR claude for claude: [bug/medium] The ascription T reaches the error
+            // XCR claude for claude: [bug/medium] The ascription T reaches the error
             // bind only here, in the catch's own typecheck, which a block runs after
             // its other statements. A module with an interface checks before that in
             // its own task. So a `?` or a throwing call at the module's top level finds
@@ -1416,6 +1428,15 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             // the catch's binding in the module refusal. probe:
             // design/review-2026-10-19/repro/c-error-op-module-raise-to-outer-catch.sh
             // (c-error-op-02)
+            // 2026-10-19 claude: Catch::compile binds the ascription T into the catch's
+            // bind and seals the handler, so a raise T covers writes nothing from
+            // whatever task checks it (a module with an interface included) and one it
+            // does not cover is refused at the raise ('..checked to take T: T does not
+            // contain E'). The probe's --check now accepts with and without m.gxi. Pin:
+            // lang::modules::module_raises_to_an_ascribed_outer_catch;
+            // lang::errors::catch_ascription_too_narrow_is_an_error and
+            // lang::seq_try::refusals_interp keep the narrow refusal. The module
+            // refusal still does not name the binding it decides.
             tv.bind(t.clone());
             // `T` must cover every error the region throws, judged with
             // the check's settle
@@ -1588,6 +1609,7 @@ impl Receipts {
     ) -> Option<Value> {
         let (bind_id, _) = handler.id();
         let cycle = ctx.rt.cycle();
+        // a catch updated twice in one cycle would read its delivery twice
         let v = match read_var(ctx, &bind_id) {
             Some(VarRead::Delivered(tv))
                 if self.last_cycle != Some(cycle)

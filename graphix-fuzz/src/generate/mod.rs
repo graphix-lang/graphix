@@ -44,13 +44,9 @@ pub struct GenCfg {
     /// A lambda is poly (explicit `'a: Number` constraint form) rather
     /// than fully typed.
     pub p_poly: f64,
-    /// A statement slot emits the bare-unannotated-lambda template (wide
-    /// shared tvar, two unannotated call sites).
-    // CR claude for claude: [readability/low] The doc above says this template is a
-    // "wide shared tvar". gen_bare_lambda's own doc and the checker say the opposite:
-    // the unwritten lambda is generalized and each of its two sites, at distinct
-    // numeric types, takes its own instance. Reword it to say that. Found by reading;
-    // not run. (fuzz-gen-a-07)
+    /// A statement slot emits the bare-unannotated-lambda template: the
+    /// lambda is generalized, and each of its two call sites, at distinct
+    /// numeric types, takes its own instance.
     pub p_bare: f64,
     /// A poly lambda is immediately called at two distinct numeric types.
     pub p_mono_pair: f64,
@@ -93,6 +89,9 @@ pub struct GenCfg {
     /// A statement slot builds and consumes a value of a shape
     /// `random_type` never draws (see [`funcs::gen_shape_template`]).
     pub p_shape: f64,
+    /// A statement slot builds a union of runtime forms and passes it
+    /// through generated functions (see [`funcs::gen_union_flow`]).
+    pub p_union: f64,
     /// A statement slot emits sibling calls of one `queuefn` wrapper, the
     /// ORDERED builtin: they never fork.
     pub p_queuefn: f64,
@@ -140,6 +139,7 @@ impl Default for GenCfg {
             p_dynmod: 0.08,
             p_ref: 0.1,
             p_shape: 0.08,
+            p_union: 0.03,
             p_queuefn: 0.03,
             p_serial: 0.1,
             max_lets: 6,
@@ -201,6 +201,16 @@ pub struct GenStats {
     pub trait_union: bool,
     /// A trait-bounded HOF over `Array<'a: Tr>`.
     pub bounded_hof: bool,
+    /// A union of runtime forms read by type tests (a shape template).
+    pub kind_union: bool,
+    /// Results bound to a let and a typed parameter (a shape template).
+    pub result_let: bool,
+    /// A union of runtime forms passed to and returned from generated
+    /// functions, stored, and read by a type-test select.
+    pub union_flow: bool,
+    /// The module trait implemented for a primitive and generically over
+    /// `Array<'a>`, dispatched at nested arrays.
+    pub generic_impl: bool,
     /// A Collection-generic fn (`|c: Collection|`) registered at
     /// several constructor types.
     pub collection_generic: bool,
@@ -525,6 +535,8 @@ fn gen_slots(
             stmts.extend(funcs::gen_ref_stmts(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_queuefn) {
             stmts.extend(funcs::gen_queuefn_siblings(ctx, rng));
+        } else if chance(rng, cfg.p_union) {
+            stmts.extend(funcs::gen_union_flow(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_shape) {
             stmts.extend(funcs::gen_shape_template(ctx, rng, stats));
         } else if chance(rng, cfg.p_rec) {
@@ -587,7 +599,8 @@ fn gen_slots(
             let val = patterns::maybe_select(ctx, rng, &ty, 3)
                 .unwrap_or_else(|| exprs::gen_typed(ctx, rng, &ty, 3));
             let name = ctx.name_for_bind(rng, cfg);
-            let must = variant || ty.contains_nullable();
+            let must =
+                variant || ty.contains_nullable() || matches!(ty, GenType::Union(_));
             let stmt = if must || chance(rng, cfg.p_annotate) {
                 format!("let {name}: {} = {val}", ty.render())
             } else {
@@ -602,6 +615,14 @@ fn gen_slots(
             {
                 let sel =
                     patterns::full_coverage_select(ctx, rng, &name, &ty, tags, &I64, 2);
+                let s = ctx.fresh();
+                stmts.push(format!("let {s} = {sel}"));
+                ctx.push(s, I64);
+            }
+            if let GenType::Union(members) = &ty
+                && chance(rng, 0.5)
+            {
+                let sel = patterns::union_select(ctx, rng, &name, members, &I64, 2);
                 let s = ctx.fresh();
                 stmts.push(format!("let {s} = {sel}"));
                 ctx.push(s, I64);
@@ -783,6 +804,8 @@ mod test {
         let mut core_trait = 0;
         let mut trait_union = 0;
         let mut bounded_hof = 0;
+        let mut generic_impl = 0;
+        let (mut kind_union, mut result_let, mut union_flow) = (0, 0, 0);
         let mut collection_generic = 0;
         let (mut konst, mut unret, mut refop, mut abst_param) = (0, 0, 0, 0);
         let (mut shape, mut use_vocab) = (0, 0);
@@ -804,6 +827,10 @@ mod test {
             core_trait += s.core_trait as usize;
             trait_union += s.trait_union as usize;
             bounded_hof += s.bounded_hof as usize;
+            generic_impl += s.generic_impl as usize;
+            kind_union += s.kind_union as usize;
+            result_let += s.result_let as usize;
+            union_flow += s.union_flow as usize;
             collection_generic += s.collection_generic as usize;
             konst += s.iface_const as usize;
             unret += s.unannotated_ret as usize;
@@ -827,6 +854,10 @@ mod test {
             ("core Eq/Display implemented+used", core_trait),
             ("trait union dispatch exported", trait_union),
             ("trait-bounded HOF exported", bounded_hof),
+            ("generic trait impl dispatched", generic_impl),
+            ("union of runtime forms", kind_union),
+            ("Result bound before consumed", result_let),
+            ("union of runtime forms through functions", union_flow),
             ("Collection-generic fn exported", collection_generic),
             ("exported constant", konst),
             ("unannotated-return impl", unret),

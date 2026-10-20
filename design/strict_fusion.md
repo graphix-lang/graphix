@@ -35,8 +35,8 @@ each do and performs only on its own formals, recursively
 (`analysis::io_follows`), and no arm has a guard
 (`lowering::arm_io_blocker`). Elsewhere a fire the
 arm missed asleep, which the node-walk re-delivers at entry, or a
-constant, which fires at the arm's wake, would print on one engine
-only. A tail recursion that prints by its formals is one native loop.
+constant, which fires at the arm's first entry only, would print on one
+engine only. A tail recursion that prints by its formals is one native loop.
 
 Eric's ruling: "Complexity needs to pay rent, and this whack of
 complexity can't afford to live in our compiler." The machinery that
@@ -70,33 +70,23 @@ argument.
 ## The admission predicate
 
 A builtin's one classification is `const EFFECT: Effect` with
-<!-- CR claude for claude: [doc-drift/low] `Effect` has four variants;
-`Io(Option<IoCall>)` is missing here. The paragraph's reason why an effect is never
-Stateless ("re-entered as a birth, where a standing message reads fired") predates "a
-wake is a resume": a sleep-free arm is slept at re-entry and reads standing values
-stale. Restate it as built (an `Io` call's wake recompute goes through
-`EvalCached::quiet` and performs nothing). Found by reading; not run. (x-doc-drift-05)
--->
-`Effect::{Async, Sync, Stateless(Option<FastCall>)}` (`effects.rs`).
-The five knobs it replaced (`EFFECT`/`STATELESS`/`SLEEP_RESTARTS`/
-`FASTCALL`/`FASTCALL_TYPED`) had to be set together and a fast fn was
-easy to forget after declaring Sync + stateless; now the invalid
-combinations are unrepresentable and declaring a builtin stateless puts
-the fast-fn question in the author's face. The `Option` keeps the
-stateless fact (the JIT's native tail loop, a sleep-free arm) for the
-pure builtins that can never be fast fns, the partial-delivery
+`Effect::{Async, Sync, Stateless(Option<FastCall>), Io(Option<IoCall>)}`
+(`effects.rs`). The five knobs it replaced (`EFFECT`/`STATELESS`/
+`SLEEP_RESTARTS`/`FASTCALL`/`FASTCALL_TYPED`) had to be set together and
+a fast fn was easy to forget after declaring Sync + stateless; now the
+invalid combinations are unrepresentable and declaring a builtin
+stateless puts the fast-fn question in the author's face. The `Option`
+keeps the stateless fact (the JIT's native tail loop, a sleep-free arm)
+for the pure builtins that can never be fast fns, the partial-delivery
 producers (opt's short-circuits, `divide`, `filter_err`), whose result
 depends on which args arrived while a fast fn sees every arg present.
 An effect is never `Stateless`: an arm holding only stateless calls
-<!-- CR claude for claude: [doc-drift/low] Stale: no arm is re-entered as a birth. A
-wake is a resume (CLAUDE.md, design/wake_catchup.md): a skipped arm is slept at its
-re-entry and reads standing values stale. Give the reason an effect is never Stateless
-in those terms, which is that an Io arm sleeps and its wake does not run it again. Found
-by reading; not run. (core-lib-05) -->
-skips sleep and is re-entered as a birth, where a standing message
-reads fired and would print again. Effects are `Effect::Io` (above;
-`exit` has no `IoCall`), and `now`, which keeps its last reading, is
-`Sync`.
+skips sleep and is slept at its re-entry, where a `Stateless` call
+recomputes its value by running `eval` again, which for an effect would
+act again on a fire no one made. Effects are `Effect::Io`: an arm
+holding one sleeps, and its wake recomputes the value through
+`EvalCached::quiet`, which performs nothing (`exit` has no `IoCall`).
+`now`, which keeps its last reading, is `Sync`.
 
 `FastCall::Plain(fn(&[Value]) -> Option<Value>)` is called through
 `graphix_fastcall`: the site stores the args' (disc, payload) pairs in
@@ -157,9 +147,10 @@ placeholder that continues.
 
 The delivery's TRIGGER must be computable by a memoryless kernel. A
 handler-ful `?` under a select arm raises on an edge the arm may owe
-to the select: a constant fires at the arm's wake, so a raise whose
-error derives from one (`error(`E)?`, `cast<i64>("x")?`) fires when
-the arm is ENTERED, and an input fire no selected arm saw is
+to the select: a constant fires at the arm's first entry only (a wake
+is a resume), so a raise whose error derives from one (`error(`E)?`,
+`cast<i64>("x")?`) fires when the arm is first ENTERED, and an input
+fire no selected arm saw is
 re-delivered FIRED to the arm that reads it at its wake
 (design/wake_catchup.md). A kernel derives its selection fresh every
 run and keeps neither memory, so `lowering::arm_raise_blocker` refuses

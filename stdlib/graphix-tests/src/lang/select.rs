@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, as_i64s, eval, refused},
+    testing::{FuseExpect, Mode, as_i64s, eval, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -20,10 +20,7 @@ const SELECT0: &str = r#"
 }
 "#;
 
-run!(select0, SELECT0, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "first 1",
-    _ => false,
-}; FuseExpect::Jit);
+run!(select0, SELECT0, prints(r#""first 1""#); FuseExpect::Jit);
 
 const LOOPING_SELECT: &str = r#"
 {
@@ -37,26 +34,20 @@ const LOOPING_SELECT: &str = r#"
 }
 "#;
 
-run!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(looping_select, LOOPING_SELECT, is(Value::I64(2)); FuseExpect::Jit);
 
 const SELECTSTRUCT: &str = r#"
 {
   type T = { foo: string, bar: f64, baz: f64 };
   let x = { foo: "bar", bar: 42.0, baz: 84.0 };
-  select x {
+  #[native] select x {
     T as { foo: "foo", bar: 8.0, baz } => baz,
     T as { bar, baz, .. } => bar + baz
   }
 }
 "#;
 
-run!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
-    Ok(Value::F64(126.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(selectstruct, SELECTSTRUCT, is(Value::F64(126.0)); FuseExpect::Jit);
 
 const MATCH_EXHAUST0: &str = r#"
 select 42 {
@@ -91,10 +82,7 @@ const MATCH_EXHAUST1: &str = r#"
 }
 "#;
 
-run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(match_exhaust1, MATCH_EXHAUST1, is(Value::I64(42)); FuseExpect::Jit);
 
 const NESTEDMATCH0: &str = r#"
 {
@@ -105,10 +93,7 @@ const NESTEDMATCH0: &str = r#"
 }
 "#;
 
-run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
-    Ok(Value::F64(47.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(nestedmatch0, NESTEDMATCH0, is(Value::F64(47.0)); FuseExpect::Jit);
 
 // A partial pattern annotated through an alias of an alias expands the
 // whole chain to the struct.
@@ -122,25 +107,19 @@ const NESTEDMATCH0_ALIAS: &str = r#"
 }
 "#;
 
-run!(nestedmatch0_alias, NESTEDMATCH0_ALIAS, |v: Result<&Value>| match v {
-    Ok(Value::F64(47.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(nestedmatch0_alias, NESTEDMATCH0_ALIAS, is(Value::F64(47.0)); FuseExpect::Jit);
 
 const NESTEDMATCH1: &str = r#"
 {
   type T = { foo: {x: string, y: f64, z: f64}, bar: i64, baz: f64 };
   let x = { foo: { x: "bar", y: 42.0, z: 5.0 }, bar: 42, baz: 84.0 };
-  select x {
+  #[native] select x {
     T as { foo: { y, z, .. }, .. } => y + z
   }
 }
 "#;
 
-run!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
-    Ok(Value::F64(47.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(nestedmatch1, NESTEDMATCH1, is(Value::F64(47.0)); FuseExpect::Jit);
 
 const NESTEDMATCH2: &str = r#"
 {
@@ -164,10 +143,7 @@ const NESTEDMATCH3: &str = r#"
 }
 "#;
 
-run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
-    Ok(Value::F64(3.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(nestedmatch3, NESTEDMATCH3, is(Value::F64(3.0)); FuseExpect::Jit);
 
 // A missing region input consumed only on an untaken arm yields a real
 // value, not bottom.
@@ -436,7 +412,7 @@ run!(select_slice_cover_ladder, SELECT_SLICE_COVER_LADDER, |v: Result<&Value>| {
 // The pool covers the array member; the null member needs its own arm.
 const SELECT_SLICE_COVER_UNION: &str = r#"
 {
-  let f = |xs: [Array<i64>, null]| -> i64 select xs {
+  let f = |xs: [Array<i64>, null]| -> i64 #[native] select xs {
     null as _ => -1,
     [] => 0,
     [init.., last] => last
@@ -447,7 +423,7 @@ const SELECT_SLICE_COVER_UNION: &str = r#"
 
 run!(select_slice_cover_union, SELECT_SLICE_COVER_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A hole in the length ladder refuses and the message names it.
 const SELECT_SLICE_HOLE: &str = r#"
@@ -760,10 +736,7 @@ const GATED_WINDOW_FOLD: &str = r#"
 }
 "#;
 
-run!(gated_window_fold, GATED_WINDOW_FOLD, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::F64(9.0))
-); FuseExpect::Jit);
+run!(gated_window_fold, GATED_WINDOW_FOLD, is(Value::F64(9.0)); FuseExpect::Jit);
 
 // A builtin call whose arg is a never()-gated string local fuses.
 const GATED_STRING_BUILTIN: &str = r#"
@@ -783,10 +756,7 @@ const GATED_STRING_BUILTIN: &str = r#"
 }
 "#;
 
-run!(gated_string_builtin, GATED_STRING_BUILTIN, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(8))
-); FuseExpect::Jit);
+run!(gated_string_builtin, GATED_STRING_BUILTIN, is(Value::I64(8)); FuseExpect::Jit);
 
 const GATED_SCALAR_UNANNOTATED: &str = r#"
 {
@@ -803,10 +773,7 @@ const GATED_SCALAR_UNANNOTATED: &str = r#"
 }
 "#;
 
-run!(gated_scalar_unannotated, GATED_SCALAR_UNANNOTATED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(9))
-); FuseExpect::Jit);
+run!(gated_scalar_unannotated, GATED_SCALAR_UNANNOTATED, is(Value::I64(9)); FuseExpect::Jit);
 
 // A guarded arm before a bind-all final arm is exhaustive.
 const GUARDED_ARM_THEN_BINDALL: &str = r#"
@@ -816,10 +783,7 @@ const GUARDED_ARM_THEN_BINDALL: &str = r#"
 }
 "#;
 
-run!(guarded_arm_then_bindall, GUARDED_ARM_THEN_BINDALL, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::Jit);
+run!(guarded_arm_then_bindall, GUARDED_ARM_THEN_BINDALL, is(Value::I64(1)); FuseExpect::Jit);
 
 // A guard must be `bool`.
 const GUARD_STRING: &str = r#"
@@ -860,10 +824,7 @@ const GUARD_INFERS_BOOL: &str = r#"
 }
 "#;
 
-run!(guard_infers_bool, GUARD_INFERS_BOOL, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(0))
-); FuseExpect::Jit);
+run!(guard_infers_bool, GUARD_INFERS_BOOL, is(Value::I64(0)); FuseExpect::Jit);
 
 // The dual shape: the guarded arm names a different tag than the value.
 const GUARDED_OTHER_TAG_THEN_BINDALL: &str = r#"
@@ -876,7 +837,7 @@ const GUARDED_OTHER_TAG_THEN_BINDALL: &str = r#"
 run!(
     guarded_other_tag_then_bindall,
     GUARDED_OTHER_TAG_THEN_BINDALL,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
+    is(Value::I64(2));
     FuseExpect::Jit
 );
 
@@ -892,10 +853,7 @@ const ARM_UNION_TVAR_COLLAPSE: &str = r#"
 }
 "#;
 
-run!(arm_union_tvar_collapse, ARM_UNION_TVAR_COLLAPSE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(42))
-); FuseExpect::Jit);
+run!(arm_union_tvar_collapse, ARM_UNION_TVAR_COLLAPSE, is(Value::I64(42)); FuseExpect::Jit);
 
 // Bind-all arm types narrow by position: `s` after an unguarded
 // irrefutable arm cannot be null, so it is `string`.
@@ -907,10 +865,7 @@ const BINDALL_NARROWS_BY_POSITION: &str = r#"
 }
 "#;
 
-run!(bindall_narrows_by_position, BINDALL_NARROWS_BY_POSITION, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::Jit);
+run!(bindall_narrows_by_position, BINDALL_NARROWS_BY_POSITION, is(Value::I64(1)); FuseExpect::Jit);
 
 // A variant arm with a payload bind narrows the arms after it: the
 // residual reaching `n` cannot be `` `Bad ``.
@@ -924,10 +879,7 @@ const VARIANT_PAYLOAD_ARM_NARROWS: &str = r#"
 }
 "#;
 
-run!(variant_payload_arm_narrows, VARIANT_PAYLOAD_ARM_NARROWS, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(45))
-); FuseExpect::Jit);
+run!(variant_payload_arm_narrows, VARIANT_PAYLOAD_ARM_NARROWS, is(Value::I64(45)); FuseExpect::Jit);
 
 // The same through a named member and an ignored payload.
 const VARIANT_IGNORED_PAYLOAD_ARM_NARROWS: &str = r#"
@@ -950,10 +902,7 @@ const VARIANT_IGNORED_PAYLOAD_ARM_NARROWS: &str = r#"
 }
 "#;
 
-run!(variant_ignored_payload_arm_narrows, VARIANT_IGNORED_PAYLOAD_ARM_NARROWS, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::Jit);
+run!(variant_ignored_payload_arm_narrows, VARIANT_IGNORED_PAYLOAD_ARM_NARROWS, is(Value::I64(1)); FuseExpect::Jit);
 
 // A guarded select fires only when an input feeding it fired: count 1
 // on both engines despite an unrelated reactive input in the region.
@@ -1302,7 +1251,7 @@ run!(
     };
     (select g(0) { error as e => handle(e), v => v }, two(error(`B("b"))))
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:-1, "b"]"#
+    prints(r#"[i64:-1, "b"]"#)
 );
 
 // A struct pattern's field is the pair at its index that names it: an
@@ -1320,7 +1269,7 @@ run!(
     };
     (g({x: 0, z: "q"}), h({x: 1, y: "s"}))
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:0, "s"]"#;
+    prints(r#"[i64:0, "s"]"#);
     FuseExpect::None
 );
 
@@ -1349,7 +1298,7 @@ run!(
       T(`B(_)) => 0
     }
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)));
+    is(Value::I64(3));
     FuseExpect::Jit
 );
 
@@ -1398,7 +1347,7 @@ run!(banked_sample_payment_is_a_real_fire, r#"{
     false => -1
   };
   select k { 6 => r, _ => never() }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))); FuseExpect::Jit);
+}"#, is(Value::I64(42)); FuseExpect::Jit);
 
 // A fire the taken arm reads, through a reference or directly, is spent:
 // the other arm's wake does not catch it up again. The reference's target
@@ -1429,33 +1378,21 @@ run!(wake_spent_directly, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "b"), 
 // An arm-local `<-` target persists across the arm's sleep: a wake
 // resumes the arm, so the written 11 survives.
 // findings/arm-local-bind-aug2026/
-// CR claude for claude: [test-gap/low] This pin reads `s` only as the arm's value, and
-// the select emits that on its scrutinee delivery at the wake anyway. So it passes
-// whether or not the write that landed while the arm slept is re-raised: deleting
-// Bind::reraise_writes_while_asleep leaves it green, and it is green today while that
-// re-raise is lost. Return `(s, count(s))` (or `out <- s`) so the fire itself is
-// pinned: count 1, 2, 3 at the three entries. probe:
-// design/review-2026-10-19/repro/tests-select-reraise-last-awake-write.gx
-// (tests-select-04)
 const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x % 2;
   let sel = select m {
-    0 => 0,
-    _ => { let s = 10; s <- (x ~ s) + 1; s }
+    0 => (0, 0),
+    _ => { let s = 10; s <- (x ~ s) + 1; (s, count(s)) }
   };
   array::group(sel, |n, _| n == 4)
 }
 "#;
 
 run!(select_arm_local_persists, SELECT_ARM_LOCAL_PERSISTS, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            as_i64s(a) == [10, 0, 11, 0]
-        }
-        _ => false,
-    }
+    matches!(v, Ok(v) if v.to_string()
+        == "[[i64:10, i64:1], [i64:0, i64:0], [i64:11, i64:2], [i64:0, i64:0]]")
 }; FuseExpect::Jit);
 
 // Same shape with the connect RHS computed by a fold: re-entry sees 6.
@@ -1555,7 +1492,7 @@ const SELECT_GUARD_AFTER_TAINTED_INIT: &str = r#"
 run!(
     select_guard_after_tainted_init,
     SELECT_GUARD_AFTER_TAINTED_INIT,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(200)));
+    is(Value::I64(200));
     FuseExpect::Jit
 );
 
@@ -1629,7 +1566,7 @@ const SELECT_PARTIAL_STRUCT: &str = r#"
 run!(
     select_partial_struct,
     SELECT_PARTIAL_STRUCT,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    is(Value::I64(1));
     FuseExpect::Jit
 );
 
@@ -1664,7 +1601,7 @@ const SELECT_PARTIAL_UNION_MEMBER: &str = r#"
 run!(
     select_partial_union_member,
     SELECT_PARTIAL_UNION_MEMBER,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    is(Value::I64(1));
     FuseExpect::Jit
 );
 
@@ -1719,7 +1656,7 @@ const SELECT_UNION_RETURN_NEVER_ARM: &str = r#"
 run!(
     select_union_return_never_arm,
     SELECT_UNION_RETURN_NEVER_ARM,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42)));
+    is(Value::I64(42));
     FuseExpect::None
 );
 
@@ -1760,10 +1697,7 @@ async fn free_union_arm_is_not_inferred_from_sibling() {
 
 // The annotation types the union: `i64 ⊇ ['b, i64]` binds `'b`.
 const UNION_ARM_ANNOTATED: &str = r#"{let y = i64:0; let v: i64 = select i64:1 {i64:1 => str::parse("42")?, _ => y}; v}"#;
-run!(union_arm_annotated, UNION_ARM_ANNOTATED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(42))
-));
+run!(union_arm_annotated, UNION_ARM_ANNOTATED, is(Value::I64(42)));
 
 // Shallow arm discriminators: an ambiguous union (same tag, same arity)
 // stays on the deep walk; a mixed union dispatches the same shallow.
@@ -1771,7 +1705,7 @@ run!(union_arm_annotated, UNION_ARM_ANNOTATED, |v: Result<&Value>| matches!(
 
 run!(
     shallow_ambiguous_same_tag_union,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    is(Value::I64(21)),
     "/test.gx" => r#"
         type E = [`A(i64), `A(string)];
         let pick = |v: E| -> i64 select v {
@@ -1785,7 +1719,7 @@ run!(
 
 run!(
     shallow_mixed_union_dispatch,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3241))),
+    is(Value::I64(3241)),
     "/test.gx" => r#"
         type V = [`Pair(i64, i64), `One(i64), `Nil, f64, Array<i64>];
         let score = |v: V| -> i64 select v {
@@ -1847,7 +1781,7 @@ run!(or_first_match, OR_FIRST_MATCH, |v: Result<&Value>| {
 });
 
 const OR_NESTED: &str = r#"
-select `A(2) { `A(1 | 2) => "y", _ => "n" }
+#[native] select `A(2) { `A(1 | 2) => "y", _ => "n" }
 "#;
 
 run!(or_nested, OR_NESTED, |v: Result<&Value>| {
@@ -2050,8 +1984,8 @@ const SELECT_TUPLE_UNION_MEMBER_NATIVE: &str = r#"
 }
 "#;
 
-run!(select_tuple_union_member_node_walks, SELECT_TUPLE_UNION_MEMBER_NATIVE,
-    refused("did not fully fuse to native code"); FuseExpect::None; jit_only);
+run!(select_tuple_union_member_native, SELECT_TUPLE_UNION_MEMBER_NATIVE,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(9))); FuseExpect::Jit);
 
 // An @-capture in an or-arm types as the union of its per-alternative
 // narrowed types.
@@ -2156,10 +2090,7 @@ const BOOL_PAIR_LADDER: &str = r#"
 }
 "#;
 
-run!(bool_pair_ladder_covers, BOOL_PAIR_LADDER, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(321))
-); FuseExpect::Jit);
+run!(bool_pair_ladder_covers, BOOL_PAIR_LADDER, is(Value::I64(321)); FuseExpect::Jit);
 
 const VARIANT_BOOL_LADDER: &str = r#"
 {
@@ -2172,10 +2103,7 @@ const VARIANT_BOOL_LADDER: &str = r#"
 }
 "#;
 
-run!(variant_bool_ladder_covers, VARIANT_BOOL_LADDER, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(99))
-); FuseExpect::Jit);
+run!(variant_bool_ladder_covers, VARIANT_BOOL_LADDER, is(Value::I64(99)); FuseExpect::Jit);
 
 // A wildcard behind a complete bool ladder is dead.
 const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
@@ -2265,14 +2193,11 @@ const NEVER_ARMS_ABSORB: &str = r#"
     1 => select m { null as _ => never(), at => at },
     _ => never()
   };
-  select u { string as s => str::len(s) }
+  #[native] select u { string as s => str::len(s) }
 }
 "#;
 
-run!(never_arms_absorb, NEVER_ARMS_ABSORB, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::Jit);
+run!(never_arms_absorb, NEVER_ARMS_ABSORB, is(Value::I64(1)); FuseExpect::Jit);
 
 // `never<T>()` carries `T` where nothing else fixes the type.
 const NEVER_TYPED: &str = r#"
@@ -2283,10 +2208,7 @@ const NEVER_TYPED: &str = r#"
 }
 "#;
 
-run!(never_typed, NEVER_TYPED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(6))
-); FuseExpect::Jit);
+run!(never_typed, NEVER_TYPED, is(Value::I64(6)); FuseExpect::Jit);
 
 // never's arguments stay live: a connect inside them keeps writing.
 const NEVER_ARGS_LIVE: &str = r#"
@@ -2299,10 +2221,7 @@ const NEVER_ARGS_LIVE: &str = r#"
 }
 "#;
 
-run!(never_args_live, NEVER_ARGS_LIVE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(3))
-); FuseExpect::Jit);
+run!(never_args_live, NEVER_ARGS_LIVE, is(Value::I64(3)); FuseExpect::Jit);
 
 // A sampled write in an arm keeps the sample as its trigger: `x` is 30
 // at step 6.
@@ -2318,10 +2237,7 @@ const ARM_SAMPLED_WRITE_KEEPS_TRIGGER: &str = r#"
 }
 "#;
 
-run!(arm_sampled_write_keeps_trigger, ARM_SAMPLED_WRITE_KEEPS_TRIGGER, |v: Result<&Value>| match v {
-    Ok(Value::I64(30)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(arm_sampled_write_keeps_trigger, ARM_SAMPLED_WRITE_KEEPS_TRIGGER, is(Value::I64(30)); FuseExpect::Jit);
 
 // An ungated write is not sampled on the scrutinee: three `Go`
 // deliveries write the sampled counter three times, the constant once.
@@ -2344,10 +2260,7 @@ const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
 "#;
 
 // `once` is written at init and at the one entry: two writes.
-run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(1), Value::I64(2)]),
-    _ => false,
-}; FuseExpect::Jit);
+run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, prints("[i64:3, i64:1, i64:2]"); FuseExpect::Jit);
 
 // A constant write fires at the arm's birth, its first entry, and not at
 // a later one, which resumes the arm: init and the first entry.
@@ -2381,10 +2294,7 @@ const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
 "#;
 
 // The history: `Bad arrives with the error at step 3 and at no other step.
-run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == r#"[[i64:0, "None"], [i64:1, "None"], [i64:2, "None"], [i64:3, "Bad"]]"#
-}; FuseExpect::Jit);
+run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, prints(r#"[[i64:0, "None"], [i64:1, "None"], [i64:2, "None"], [i64:3, "Bad"]]"#); FuseExpect::Jit);
 
 // `~` banks triggers that find `v` absent (three banked writes and the
 // live one, four); `~!` drops them (one write).
@@ -2403,10 +2313,7 @@ const STRICT_SAMPLE_NO_BANK: &str = r#"
 }
 "#;
 
-run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(4), Value::I64(1)]),
-    _ => false,
-}; FuseExpect::Jit);
+run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, prints("[i64:4, i64:1]"); FuseExpect::Jit);
 
 // A write arm under a scrutinee that starts as `never()` wakes on the
 // first delivery and the nested write fires.
@@ -2435,10 +2342,7 @@ const ARM_WRITE_FROM_NEVER: &str = r#"
 }
 "#;
 
-run!(arm_write_from_never, ARM_WRITE_FROM_NEVER, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "Remove this install?",
-    _ => false,
-}; FuseExpect::Jit);
+run!(arm_write_from_never, ARM_WRITE_FROM_NEVER, prints(r#""Remove this install?""#); FuseExpect::Jit);
 
 // A pure (skip-sleep) arm over a delayed scrutinee computes on first
 // take.
@@ -2456,10 +2360,7 @@ const SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE: &str = r#"
 }
 "#;
 
-run!(skip_sleep_arm_computes_on_first_take, SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "CA (tls)",
-    _ => false,
-}; FuseExpect::Jit);
+run!(skip_sleep_arm_computes_on_first_take, SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE, prints(r#""CA (tls)""#); FuseExpect::Jit);
 
 // A scrutinee that went bottom while its select slept is bottom at the
 // wake: x=4 reselects the arm and emits nothing.
@@ -2748,11 +2649,11 @@ const SELECT_ARM_STALE_BOTTOM_AT_WAKE: &str = r#"
 }
 "#;
 
-run!(select_arm_stale_bottom_at_wake, SELECT_ARM_STALE_BOTTOM_AT_WAKE, |v: Result<
-    &Value,
->| {
-    format!("{}", v.unwrap()) == "[i64:7, i64:0, i64:0, i64:0]"
-});
+run!(
+    select_arm_stale_bottom_at_wake,
+    SELECT_ARM_STALE_BOTTOM_AT_WAKE,
+    prints("[i64:7, i64:0, i64:0, i64:0]")
+);
 
 // At a wake a connect target's initializer republishes when one of its
 // inputs fired, as it would had the arm never slept; the arm's constants
@@ -2769,12 +2670,11 @@ const WAKE_INPUT_FIRE_REACHES_TARGET: &str = r#"
 }
 "#;
 
-run!(wake_input_fire_reaches_target, WAKE_INPUT_FIRE_REACHES_TARGET, |v: Result<
-    &Value,
->| {
-    format!("{}", v.unwrap())
-        == "[i64:0, i64:-1, i64:200, i64:-1, i64:400, i64:-1, i64:600]"
-});
+run!(
+    wake_input_fire_reaches_target,
+    WAKE_INPUT_FIRE_REACHES_TARGET,
+    prints("[i64:0, i64:-1, i64:200, i64:-1, i64:400, i64:-1, i64:600]")
+);
 
 const WAKE_CONSTANT_KEEPS_TARGET: &str = r#"
 {
@@ -2791,11 +2691,14 @@ const WAKE_CONSTANT_KEEPS_TARGET: &str = r#"
 }
 "#;
 
-run!(wake_constant_keeps_target, WAKE_CONSTANT_KEEPS_TARGET, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == "[[i64:10, i64:10], [i64:-1, i64:-1], [i64:11, i64:11], [i64:-1, i64:-1], \
+run!(
+    wake_constant_keeps_target,
+    WAKE_CONSTANT_KEEPS_TARGET,
+    prints(
+        "[[i64:10, i64:10], [i64:-1, i64:-1], [i64:11, i64:11], [i64:-1, i64:-1], \
             [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
-});
+    )
+);
 
 // A target that holds a value is held at its arm's wake even when its
 // initializer never published: a bottom initializer whose value arrived
@@ -2866,10 +2769,9 @@ const WAKE_RESTART_BUILTINS_KEEP_TARGET: &str = r#"
 run!(
     wake_restart_builtins_keep_target,
     WAKE_RESTART_BUILTINS_KEEP_TARGET,
-    |v: Result<&Value>| {
-        format!("{}", v.unwrap())
-            == "[i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106]"
-    }
+    prints(
+        "[i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106]"
+    )
 );
 
 // While a consulted guard stands bottom the selection is undecidable on
@@ -2887,9 +2789,11 @@ const SELECT_UNDECIDABLE_QUIET: &str = r#"
 }
 "#;
 
-run!(select_undecidable_quiet, SELECT_UNDECIDABLE_QUIET, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:0, i64:1, i64:2, i64:6, i64:7]"
-});
+run!(
+    select_undecidable_quiet,
+    SELECT_UNDECIDABLE_QUIET,
+    prints("[i64:0, i64:1, i64:2, i64:6, i64:7]")
+);
 
 // `&&` and `||` are strict: `false && ⊥` and `true || ⊥` are bottom, in a
 // consulted guard (the selection is undecidable) and as values.
@@ -2904,9 +2808,11 @@ const STRICT_LOGIC_OVER_BOTTOM: &str = r#"
 }
 "#;
 
-run!(strict_logic_over_bottom, STRICT_LOGIC_OVER_BOTTOM, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:-1, i64:-1, true, false]"
-});
+run!(
+    strict_logic_over_bottom,
+    STRICT_LOGIC_OVER_BOTTOM,
+    prints("[i64:-1, i64:-1, true, false]")
+);
 
 // A `null` literal arm covers `null`, its type's one value, beside a
 // type test or a pool of partial struct patterns.
@@ -3233,7 +3139,7 @@ run!(
   let f = |e: Ev<'r>| -> Result<'r, `E> select e { `Done(r) => r, _ => never() };
   f(`Done(1))$
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+    is(Value::I64(1))
 );
 
 // `"A"` and `` `A `` are two values: unequal, and two map keys.
@@ -3368,10 +3274,7 @@ const PRODUCT_OF_UNIONS_COVERED: &str = r#"
 }
 "#;
 
-run!(product_of_unions_covered, PRODUCT_OF_UNIONS_COVERED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(33))
-));
+run!(product_of_unions_covered, PRODUCT_OF_UNIONS_COVERED, is(Value::I64(33)));
 
 // A name the alternatives share is the union of what each can match:
 // `A(x) gives i64, `B(x) [i64, string].
@@ -3422,10 +3325,9 @@ const WAKE_RECOMPUTES_A_TARGETS_SIBLINGS: &str = r#"
 run!(
     wake_recomputes_a_targets_siblings,
     WAKE_RECOMPUTES_A_TARGETS_SIBLINGS,
-    |v: Result<&Value>| {
-        format!("{}", v.unwrap())
-            == "[[i64:0, i64:100], [i64:-1, i64:5], [i64:1, i64:105], [i64:-1, i64:5], [i64:2, i64:105]]"
-    }
+    prints(
+        "[[i64:0, i64:100], [i64:-1, i64:5], [i64:1, i64:105], [i64:-1, i64:5], [i64:2, i64:105]]"
+    )
 );
 
 // One walk decides what reaches each arm: binds narrow to it, an arm that
@@ -3516,7 +3418,7 @@ run!(partial_struct_ambiguous_at_its_arm, r#"{
 run!(coverage_partial_struct_pool, r#"{
     let f = |s: {a: bool, b: i64}| select s { {a: true, ..} => 1, {a: false, ..} => 2 };
     f({a: false, b: 3})
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+}"#, is(Value::I64(2)); FuseExpect::Jit);
 
 run!(coverage_partial_struct_subsets, r#"{
     let f = |v: {a: bool, b: [`X, `Y]}| select v {
@@ -3529,7 +3431,7 @@ run!(coverage_partial_struct_narrows, r#"{
     type S = {c: string, d: [`A, `B]};
     let s: [i64, S] = 3;
     select s { {d: `A, ..} => 10, {d: `B, ..} => 20, n => n + 1 }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::Jit);
+}"#, is(Value::I64(4)); FuseExpect::Jit);
 
 run!(coverage_partial_struct_dead, r#"{
     type S = {c: string, d: [`A, `B]};
@@ -3546,7 +3448,7 @@ run!(coverage_partial_struct_open, r#"{
 run!(coverage_mixed_pool, r#"{
     let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A) => 1, (b, `B) => 2, (false, `A) => 3 };
     f((false, `B))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+}"#, is(Value::I64(2)); FuseExpect::Jit);
 
 // The full grid of heads covers its product.
 run!(coverage_head_grid, r#"{
@@ -3554,13 +3456,13 @@ run!(coverage_head_grid, r#"{
         (`X, `A) => 1, (`X, `B) => 2, (`Y, `A) => 3, (`Y, `B) => 4
     };
     f((`Y, `B))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::Jit);
+}"#, is(Value::I64(4)); FuseExpect::Jit);
 
 // A nested or-pattern names a set of heads at its position.
 run!(coverage_nested_or, r#"{
     let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A | `B) => 1, (false, _) => 2 };
-    f((true, `B))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+    #[native] f((true, `B))
+}"#, is(Value::I64(1)); FuseExpect::Jit);
 
 // A later bind does not hold what an earlier `null` arm took.
 run!(
@@ -3569,7 +3471,7 @@ run!(
     let x: [i64, null] = 3;
     select x { null => 0, v => v + 1 }
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4)))
+    is(Value::I64(4))
 );
 
 // a covered product leaves the catch-all nothing
@@ -3605,7 +3507,7 @@ run!(
     let v0: [`C([string, null]), `Some] = `C(null);
     select v0 { `C(x) if false => 0, `C(v1) => select v1 { null => 2, s => 3 }, `Some => 5 }
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+    is(Value::I64(2))
 );
 
 // Each slice element, each or-alternative and a slice's rest is typed over
@@ -3615,11 +3517,11 @@ run!(
     r#"{
     let a: Array<[i64, null]> = [null, 2];
     let b: Array<[`A, `B]> = [`B];
-    let x = select a { [x, 1 | 2] => select x { null => 10, i64 as n => n }, _ => 9 };
-    let y = select b { [`B | `A] => 1, _ => 0 };
+    let x = #[native] select a { [x, 1 | 2] => select x { null => 10, i64 as n => n }, _ => 9 };
+    let y = #[native] select b { [`B | `A] => 1, _ => 0 };
     x + y
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(11)))
+    is(Value::I64(11))
 );
 
 run!(
@@ -3669,7 +3571,7 @@ run!(
     let f = |t: U| select t { (x, _) | (x, _, _) => x };
     f((5, 6)) + f((7, 8, 9))
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(12)));
+    is(Value::I64(12));
     FuseExpect::None
 );
 
@@ -3727,7 +3629,7 @@ run!(or_arm_wildcard_only_through_bare_name, "{ let f = |t: [(i64, i64), (i64, i
 
 // a tuple alternative and a struct alternative are told apart
 run!(alternative_taken_by_structure, "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+    is(Value::I64(1)); FuseExpect::None);
 
 // A woken arm's constants stand (through any operator, call, builtin,
 // select, formal or collection loop), so they never rewrite a `<-`
@@ -3799,7 +3701,7 @@ const WAKE_UNREACHED_INPUT_KEEPS_TARGET: &str = r#"
 run!(
     wake_unreached_input_keeps_target,
     WAKE_UNREACHED_INPUT_KEEPS_TARGET,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:50, i64:50, i64:50]"
+    prints("[i64:50, i64:50, i64:50]")
 );
 
 // An inner arm that wakes a cycle after its enclosing arm still finds the
@@ -3828,9 +3730,7 @@ const WAKE_FIRE_CAUGHT_UP_LATE: &str = r#"
 }
 "#;
 
-run!(wake_fire_caught_up_late, WAKE_FIRE_CAUGHT_UP_LATE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:55, i64:55]"
-});
+run!(wake_fire_caught_up_late, WAKE_FIRE_CAUGHT_UP_LATE, prints("[i64:55, i64:55]"));
 
 // A woken arm's inner select catches up a fire its new arm never saw even
 // when the input's `let` republished quietly at the wake.
@@ -3903,7 +3803,7 @@ run!(written_slice_of_tuples_covers_no_union_length, "{ type U = [(i64, i64), (i
 
 // a variant's structure test fails a tuple of its shape
 run!(variant_test_fails_a_tuple_of_its_shape, "{ let v: [`A(i64), (string, i64)] = (\"A\", 5); select v { [`A(i64), (string, i64)] as `A(x) => x, _ => 0 } }",
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
+    is(Value::I64(0)); FuseExpect::Jit);
 
 // An abstract's parameters are invariant: a value built as one
 // instantiation passes a type test only for that instantiation.
@@ -4065,3 +3965,158 @@ run!(native_guard_prologue_follows_the_chain, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"["zero", "small", "small", "pure", "pure", "other", "other", "impure", "impure"]"#)
 }; FuseExpect::Jit);
+
+// An exhaustive struct pattern matches only a struct of exactly its
+// fields: `{x, y}` names every field of the first member alone, so the
+// second member reaches past it.
+run!(struct_pattern_width_uncovered, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let f = |w: U| select w { U as {x, y} => "[y]!" };
+  f({x: 1, y: "s"})
+}"#, refused("missing match cases"); FuseExpect::None);
+
+run!(struct_pattern_width_exact, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let f = |w: U| select w { U as {x, y} => "[y]!", _ => "other" };
+  array::map([{x: 1, y: "s"}, {x: 1, y: 42, z: "z"}], f)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["s!", "other"]"#)
+}; FuseExpect::Jit);
+
+// Each alternative takes the member of its own width, so the second
+// alternative binds `y` to the string field `z`.
+run!(struct_pattern_width_or, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let vs: Array<U> = [{x: 1, y: "s"}, {x: 1, y: 42, z: "zz"}];
+  array::map(vs, |v| select v { {x, y} | {x, y: _, z: y} => "[y]!" })
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["s!", "zz!"]"#)
+}; FuseExpect::Jit);
+
+// A slice pattern's element cells are the arm's own to narrow: over an
+// unannotated parameter the open-member rule does not read them as types
+// the arm must tell apart.
+run!(generic_slice_arms_check, r#"{
+  let is_empty = |a| select a { [] => true, [_, ..] => false };
+  let first = |a| select a { [h, ..] => h, [] => never() };
+  let head = |l| select l { [<h, t..>] => h, [<>] => 0 };
+  (is_empty([1, 2]), first([1, 2]), head([<1>]))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[false, i64:1, i64:1]")
+}; FuseExpect::None);
+
+// Under a written union a slice pattern narrows to the member it can
+// match, as a tuple or variant pattern does.
+run!(slice_pattern_under_written_union, r#"{
+  type T = Abstract<[Array<i64>, null]>;
+  let f = |t: T| select t { T([x, ..]) => x, _ => 0 };
+  let g = |a: [Array<i64>, null]| select a { [Array<i64>, null] as [x, ..] => x, _ => 0 };
+  (f(T([1])), g([2]), g(null))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2, i64:0]")
+}; FuseExpect::Jit);
+
+// A guard the chain passed by when the scrutinee fired is given the
+// value fired when a guard flip above it lets the chain reach it: `x > 5`
+// recomputes over 0 rather than riding its answer for 10.
+run!(passed_guard_recomputes_over_the_value_it_missed, r#"{
+  let in0 = 10;
+  let in1 = true;
+  let step = 0;
+  step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
+  in0 <- select step { 1 => step ~ 0, _ => never() };
+  in1 <- select step { 2 => step ~ false, _ => never() };
+  let r = select in0 { 0 if in1 => "zero-g", x if x > 5 => "big", _ => "other" };
+  select step { 3 => r, _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other"); FuseExpect::Jit);
+
+// The literal pool pools an arm against the member of its shape it can
+// match: over two same-arity tuple members, the `A/`B arms cover the
+// second, not the first.
+run!(pool_takes_the_member_an_arm_matches, r#"{
+  let f = |x: [(bool, i64), ([`A, `B], string)]| select x {
+    (`A, s) => "a",
+    (`B, s) => "b",
+    (true, n) => "t",
+    (false, n) => "f"
+  };
+  [f((true, 1)), f((false, 1)), f((`A, "s")), f((`B, "s"))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["t", "f", "a", "b"]"#); FuseExpect::None);
+
+// An abstract payload's heads are the scrutinee member's, not the
+// pattern's own: `Box(`A)` alone leaves `B uncovered.
+run!(pool_reads_the_abstract_payload_of_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let f = |x: Box<[`A, `B]>| select x { Box(`A) => 1 };
+  f(Box(`A))
+}"#, refused("missing match cases: no arm covers Box<[`A, `B]>"); FuseExpect::None);
+
+// Bool heads under Box<bool> cover Box<bool>, never Box<i64>.
+run!(pool_covers_only_its_own_abstract_instantiation, r#"{
+  type Box<'a> = Abstract<'a>;
+  let g = |x: [Box<bool>, Box<i64>]| select x {
+    Box(true) => 1,
+    Box(false) => 2,
+    Box<bool> as b => 3
+  };
+  g(Box(true))
+}"#, refused("missing match cases: no arm covers Box<i64>"); FuseExpect::None);
+
+// An inferred abstract constructor pattern tests the tag at run time and
+// takes its parameters from the scrutinee, never from its payload.
+run!(abstract_pattern_params_from_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let f = |x: Box<[i64, null]>| select x { Box(null) => 0, Box(n) => 1 };
+  let g = |x: Box<[`A, `B]>| select x { Box(`A) => 1, Box(`B) => 2 };
+  [f(Box(null)), f(Box(5)), g(Box(`A)), g(Box(`B))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:1, i64:2]"); FuseExpect::None);
+
+run!(abstract_capture_typed_from_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let g = |b: Box<[i64, null]>| select b { Box(v) => v };
+  let f = |x: Box<[i64, null]>| select x { all@ Box(null) => g(all), Box(n) => n };
+  [f(Box(null)), f(Box(4))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[null, i64:4]"); FuseExpect::None);
+
+// Over two instantiations an irrefutable payload matches and covers both.
+run!(abstract_pattern_over_two_instantiations, r#"{
+  type T<'a> = Abstract<'a>;
+  let f = |v: [T<i64>, T<string>]| select v { T(x) => "T [x]" };
+  let g = |x: [T<bool>, T<i64>]| select x { T(true) => 1, T(false) => 2, T(n) => cast<i64>(n)$ };
+  (f(T(1)), f(T("s")), g(T(3)), g(T(true)), g(T(false)))
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["T 1", "T s", i64:3, i64:1, i64:2]"#); FuseExpect::Jit);
+
+// A null literal is a head the literal pool reads, beside variants and
+// bools: option payload arms cover their position.
+run!(null_literal_pools_beside_variants, r#"{
+  let f = |x: `P([`A, null])| select x { `P(`A) => 1, `P(null) => 0 };
+  let g = |x: ([`A, null], i64)| select x { (`A, n) => n, (null, n) => 0 };
+  [f(`P(`A)), f(`P(null)), g((`A, 5)), g((null, 2))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0, i64:5, i64:0]"); FuseExpect::Jit);
+
+// A literal pattern is typed as the same literal in an expression is.
+run!(an_error_literal_pattern_is_typed_by_its_payload, r#"{
+  let r: [i64, Error<string>] = error("x");
+  select r { error:1 => 1, _ => 2 }
+}"#, refused("will never match"); FuseExpect::None);
+
+run!(an_abstract_literal_pattern_is_refused, r#"{
+  let x: Any = 1;
+  select x { abstract:EgABAgMEBQYHCAkKCwwNDg8BAg== => 1, _ => 2 }
+}"#, refused("an abstract value literal has no type"); FuseExpect::None);
+
+// A null literal at a position covers that position's null beside a
+// type-tested arm, and leaves the rest open.
+run!(
+    null_literal_covers_beside_a_type_test,
+    r#"{
+  let h = |x: {a: [i64, null]}| select x { {a: null} => 0, {a: i64} as s => s.a };
+  [h({a: null}), h({a: 3})]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:3]")
+);
+
+run!(null_literal_alone_leaves_the_rest_open, r#"{
+  let h = |x: {a: [i64, null]}| select x { {a: null} => 0 };
+  h({a: null})
+}"#, refused("missing match cases"); FuseExpect::None);

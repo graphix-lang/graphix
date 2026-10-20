@@ -1,10 +1,12 @@
 //! `try … with`: an error-triggered branch inside a seq. The outer
 //! `catch` around each program is what an aborted run's rethrow reaches.
 
-use super::dense_deltas::run_delta;
+use super::{dense_deltas::run_delta, refused_everywhere};
 use anyhow::Result;
-use graphix_package_core::testing::eval;
-use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::{
+    run,
+    testing::{Mode, as_i64s, eval},
+};
 use netidx_value::Value;
 
 const CLOCK: &str = r#"
@@ -237,6 +239,7 @@ async fn seqq_credit(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
 async fn refusals() -> Result<()> {
     for (src, needle) in [
         (
@@ -252,8 +255,6 @@ async fn refusals() -> Result<()> {
             "until is a seq statement; write it at the seq level",
         ),
         ("{ until true; 1 }", "`until` is only legal in a seq block"),
-        ("seq { { catch(e) e; 1 } }", "catch is not allowed inside a seq"),
-        ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
         (
             "{ let bad = |v| -> [i64, Error<`Oops>] error(`Oops); seq { { catch(e) println(e); bad(1)? } } }",
             "catch is not allowed inside a seq",
@@ -271,19 +272,9 @@ async fn refusals() -> Result<()> {
             "Error<`Wrong> does not contain",
         ),
     ] {
-        let r = eval(src, crate::TEST_REGISTER).await;
-        let msg = match &r {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-        };
-        assert!(msg.contains(needle), "wrong refusal for {src}: {msg}");
+        refused_everywhere(src, needle).await?;
     }
     Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn refusals_interp() -> Result<()> {
-    refusals().await
 }
 
 // A lambda literal is its own dynamic scope: a catch inside it is
@@ -359,3 +350,38 @@ async fn abort_while_errors_drain(mode: Mode) -> Result<()> {
 }
 
 modes!(abort_while_errors_drain);
+
+// A try nested as the value of an annotated let's try takes the let's
+// type: its with body may write the other member.
+run!(
+    nested_try_join_takes_the_let_type,
+    r#"{
+  let t = 1;
+  let bad = |x: i64| -> [i64, Error<`E>] error(`E);
+  seq t {
+    let v: [i64, string] = try {
+      try { bad(1)? } with(e) { "inner" }
+    } with(e) {
+      5
+    };
+    v
+  }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "inner")
+);
+
+// A try whose value is written to a variable has each body write it, at
+// its declared type.
+run!(
+    connected_try_writes_the_target_type,
+    r#"{
+  let t = 1;
+  let bad = |x: i64| -> [i64, Error<`E>] error(`E);
+  let x: [i64, string] = 0;
+  seq t {
+    x <- try { bad(1)? } with(e) { "fallback" };
+    x
+  }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "fallback")
+);

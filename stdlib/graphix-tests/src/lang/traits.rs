@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, refused},
+    testing::{FuseExpect, Mode, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -184,7 +184,7 @@ run!(
 // both an Array and a Map.
 run!(
     collection_generic_interface_declared,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
+    is(Value::I64(5)),
     "/test.gx" => r#"
 mod m;
 let result = m::csize([i64:1, i64:2, i64:3]) + m::csize({"a" => i64:1, "b" => i64:2})
@@ -533,7 +533,7 @@ run!(
 // A case-insensitive key: `==` calls the implementation.
 run!(
     core_eq_abstract,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -544,7 +544,7 @@ run!(
 // Values an implementation calls equal hash equal: a dedup keeps one.
 run!(
     core_eq_hash_agrees,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -569,7 +569,7 @@ run!(
 
 run!(
     abstract_dedups_by_payload,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r##"
         type T = Abstract<i64>;
         let result = array::len(array::dedup([T(1), T(2), T(1)]))
@@ -580,7 +580,7 @@ run!(
 // parts compare as values.
 run!(
     core_eq_nested,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -597,7 +597,7 @@ run!(
 // a tuple holding the type.
 run!(
     core_ord_abstract,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r##"
         type Rev = Abstract<i64>;
         impl Ord for Rev {
@@ -679,7 +679,8 @@ async fn core_display_println(mode: Mode) -> Result<()> {
         dbg(#dest: `Stdout, {c, n: 1});
         42
     }"##;
-    let (values, out) = super::dense_deltas::run_delta(code, mode).await?;
+    let (values, out) =
+        super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit).await?;
     assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![42]);
     let (dbg, mut lines): (Vec<&str>, Vec<&str>) =
         out.lines().partition(|l| l.ends_with("): {c: #123, n: 1}"));
@@ -832,7 +833,7 @@ run!(
 // signature, instantiated at the target, annotates the lambda.
 run!(
     trait_builtin_bodied_impl,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
         trait Masked { val masked: fn(self, m: i64) -> i64 };
         impl Masked for i64 { let masked = |x, m| 'core_bit_and };
@@ -845,7 +846,7 @@ run!(
 // body is instantiated per resolved implementation.
 run!(
     trait_builtin_bodied_bound,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    is(Value::I64(4)),
     "/test.gx" => r#"
         trait Masked { val masked: fn(self, m: i64) -> i64 };
         impl Masked for i64 { let masked = |x, m| 'core_bit_and };
@@ -859,7 +860,7 @@ run!(
 // declarations that follow it.
 run!(
     interface_type_after_impl,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         mod m;
         let result = m::f(`A)
@@ -904,12 +905,12 @@ run!(
             let read = |s, n| {
                 let cell = s.0;
                 let b = *cell;
-                let take = select buffer::len(b) < n {
+                let take = (s, n) ~ select buffer::len(b) < n {
                     true => buffer::len(b),
                     false => n
                 };
                 *cell <- take ~ b[take..]$;
-                b[..take]$
+                take ~ b[..take]$
             }
         };
         let src = buffer::from_string("hello world");
@@ -920,15 +921,6 @@ run!(
 
 // The other derived method, on the same Graphix-defined stream:
 // `read_exact` loops over `read` until it has n bytes.
-// CR claude for claude: [test-gap/low] This pin and graphix_defined_read above it use a
-// `Mem` reader that is a self-loop. `*cell <- take ~ b[take..]$` fires its own reader,
-// so the stream gives out a byte every cycle whether or not `read` was called, then
-// spins on the empty buffer. A read_exact that never re-issues `read` (its `want <-`
-// deleted) still yields "hello" first here, so the pin cannot catch a broken re-arm.
-// Sample the request instead: `let take = (s, n) ~ select ..; *cell <- take ~ ..; take
-// ~ b[..take]$`. Then add a pin that calls read_exact several times on one stream.
-// probe: design/review-2026-10-19/repro/gx-stdlib-read-fixture-selfloop.gx
-// (gx-stdlib-06)
 run!(
     graphix_defined_read_exact,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
@@ -940,17 +932,47 @@ run!(
             let read = |s, n| {
                 let cell = s.0;
                 let b = *cell;
-                let take = select buffer::len(b) == u64:0 {
+                let take = (s, n) ~ select buffer::len(b) == u64:0 {
                     true => u64:0,
                     false => u64:1
                 };
                 *cell <- take ~ b[take..]$;
-                b[..take]$
+                take ~ b[..take]$
             }
         };
         let src = buffer::from_string("hello world");
         let m = Mem(&mut src);
         let result = buffer::to_string(Read::read_exact(m, u64:5)?)?
+    "#
+);
+
+// Each read_exact on one stream takes its bytes where the last left off.
+run!(
+    graphix_defined_read_exact_twice,
+    prints(r#"["hello", " world"]"#),
+    "/test.gx" => r#"
+        use sys::io::Read;
+        type Mem = Abstract<&mut bytes>;
+        // reads one byte at a time, so read_exact has to loop
+        impl Read for Mem {
+            let read = |s, n| {
+                let cell = s.0;
+                let b = *cell;
+                let take = (s, n) ~ select buffer::len(b) == u64:0 {
+                    true => u64:0,
+                    false => u64:1
+                };
+                *cell <- take ~ b[take..]$;
+                take ~ b[..take]$
+            }
+        };
+        let src = buffer::from_string("hello world");
+        let m = Mem(&mut src);
+        let result = seq {
+            let a = Read::read_exact(m, u64:5)$;
+            let b = Read::read_exact(m, u64:6)$;
+            (buffer::to_string(a)$, buffer::to_string(b)$)
+        }
     "#
 );
 
@@ -1209,10 +1231,7 @@ const DYNAMIC_MODULE_TC1: &str = r#"
 }
 "#;
 
-run!(dynamic_module_typecheck1, DYNAMIC_MODULE_TC1, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(12))
-));
+run!(dynamic_module_typecheck1, DYNAMIC_MODULE_TC1, is(Value::I64(12)));
 
 // A CORE trait declared by a dynamic module's signature: the value
 // seam's hook site resolves to the declared method binding, which the
@@ -1354,10 +1373,7 @@ const TRAIT_RESULT_IS_FILLED: &str = r#"
 }
 "#;
 
-run!(trait_result_is_filled, TRAIT_RESULT_IS_FILLED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(7))
-); FuseExpect::Jit);
+run!(trait_result_is_filled, TRAIT_RESULT_IS_FILLED, is(Value::I64(7)); FuseExpect::Jit);
 
 // A generic core implementation (`impl<'a> Eq for Box<'a>`) is the one
 // the value's operator consults.
@@ -1370,7 +1386,7 @@ run!(
   Box(1) == Box(2)
 }
 "#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    is(Value::Bool(true));
     FuseExpect::Jit
 );
 
@@ -1392,7 +1408,7 @@ run!(
   *(&m{Rev(1)})
 }
 "#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(10)));
+    is(Value::I64(10));
     FuseExpect::Jit
 );
 
@@ -1421,7 +1437,7 @@ run!(
   (Box(1) == Box(2), Box("a") == Box("b"))
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[true, false]";
+    prints("[true, false]");
     FuseExpect::Jit
 );
 
@@ -1441,7 +1457,7 @@ run!(
   (a == b, c == d)
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, true]";
+    prints("[false, true]");
     FuseExpect::Jit
 );
 
@@ -1468,7 +1484,7 @@ run!(
   (u == v, Pair((1, "a")) == Pair((2, "b")), Pair((1, 2)) == Pair((3, 4)), s == t, n == m)
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, false, true, false, true]";
+    prints("[false, false, true, false, true]");
     FuseExpect::Jit
 );
 
@@ -1486,7 +1502,7 @@ run!(
   }
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["Text", "hi"]"#;
+    prints(r#"["Text", "hi"]"#);
     FuseExpect::Jit
 );
 
@@ -1504,7 +1520,7 @@ run!(
   (a == b, b == a, a == c)
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, false, true]";
+    prints("[false, false, true]");
     FuseExpect::Jit
 );
 
@@ -1524,7 +1540,7 @@ run!(
   }
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#""<<<1>>>""#;
+    prints(r#""<<<1>>>""#);
     FuseExpect::Jit
 );
 
@@ -1560,7 +1576,7 @@ run!(
   q1 == q2
 }
 "#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    is(Value::Bool(true));
     FuseExpect::Jit
 );
 
@@ -1698,27 +1714,23 @@ async fn implementations_are_declared_ones() {
 
 // A trait call whose self argument is never produced dispatches nothing:
 // it is bottom, its other arguments still live, and the program builds.
-// CR claude for claude: [test-gap/medium] trait_call_over_bottom_self cannot fail. run!
-// asserts the first update, and `seen <- never_sized ~ true` lands a cycle later, so
-// the first value is (2, false) even when never_sized produces: with `csize(["x"])` in
-// place of `csize(never())` the program prints (2, false) then (2, true), and this
-// predicate still passes. Read the result after the write could land (gate it on
-// `count(sys::time::timer(..)) == 3`, as core_display_nested_same_tag does) or collect
-// every update with run_delta and assert [(2, false)]. probe:
-// design/review-2026-10-19/repro/tests-fusion-traits-bottom-self-pin-vacuous.gx
-// (tests-fusion-traits-06)
-run!(
-    trait_call_over_bottom_self,
-    r#"{
-    let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
-    let never_sized = csize(never());
-    let sized = csize(["a", "b"]);
-    let seen = false;
-    seen <- never_sized ~ true;
-    (sized, seen)
-}"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:2, false]"
-);
+async fn trait_call_over_bottom_self(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
+        let never_sized = csize(never());
+        let sized = csize(["a", "b"]);
+        let seen = false;
+        seen <- never_sized ~ true;
+        (sized, seen)
+    }"#;
+    let (values, _) =
+        super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit).await?;
+    let printed: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(printed, ["[i64:2, false]"]);
+    Ok(())
+}
+
+modes!(trait_call_over_bottom_self);
 
 // The self argument written later dispatches when it arrives.
 run!(
@@ -1730,7 +1742,7 @@ run!(
     x <- ["a", "b"];
     s
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+    is(Value::I64(2))
 );
 
 // A trait method with an optional label is called, never used as a value:
@@ -1769,8 +1781,7 @@ run!(
         [(held.f)(A(3)), g(4), g(B("y"))]
     ]
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap())
-        == r#"[["1", "2"], ["A1", "Bx"], ["1", "2"], ["A3", "i4", "By"]]"#
+    prints(r#"[["1", "2"], ["A1", "Bx"], ["1", "2"], ["A3", "i4", "By"]]"#)
 );
 
 #[tokio::test(flavor = "current_thread")]
@@ -1793,7 +1804,7 @@ run!(
     let g = |x| Desc::desc(x);
     array::map([A(4), A(5)], g)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["desc4", "desc5"]"#
+    prints(r#"["desc4", "desc5"]"#)
 );
 
 // A generic impl whose bound leads back to a recursive typedef: the trait
@@ -1907,7 +1918,7 @@ run!(
 run!(variadic_trait_param, r#"{
     let f = |@args: Eq| -> Any 'core_all;
     f(1, 1)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+}"#, is(Value::I64(1)); FuseExpect::None);
 
 run!(variadic_trait_param_is_one_type, r#"{
     let f = |@args: Eq| -> Any 'core_all;
@@ -1978,3 +1989,160 @@ run!(dispatch_on_a_never_produced_self_is_bottom, r#"{
     let a = [];
     any(Show::show(a[0]$), "none")
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "none"); FuseExpect::Jit);
+
+// A core-trait impl runs only on values that exist: a kernel compares,
+// orders, renders and keys an abstract value built over a late input
+// only once the input has produced.
+const HOOKS_ON_LATE_INPUT: &str = r#"{
+    type K = Abstract<i64>;
+    impl Eq for K { let eq = |a, b| { println("eq [a.0] [b.0]"); a.0 == b.0 } };
+    impl Ord for K {
+        let cmp = |a, b| {
+            println("cmp [a.0] [b.0]");
+            select (a.0, b.0) {
+                (x, y) if x < y => `Less,
+                (x, y) if x > y => `Greater,
+                _ => `Equal
+            }
+        }
+    };
+    impl Display for K { let fmt = |k| { println("fmt [k.0]"); "K[k.0]" } };
+    let clock = array::iter([1, 2]);
+    (
+        #[native] (K(clock) == K(1)),
+        #[native] (K(clock) < K(2)),
+        #[native] "[K(clock)]",
+        #[native] map::len({K(clock) => 1, K(5) => 2})
+    )
+}"#;
+
+async fn hooks_on_late_input(mode: Mode) -> Result<()> {
+    let (values, out) =
+        super::dense_deltas::run_delta_fused(HOOKS_ON_LATE_INPUT, mode, FuseExpect::Jit)
+            .await?;
+    let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(
+        values,
+        [r#"[true, true, "K1", i64:2]"#, r#"[false, false, "K2", i64:2]"#],
+        "{mode:?}"
+    );
+    let mut lines: Vec<&str> = out.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "cmp 1 2", "cmp 2 2", "cmp 5 1", "cmp 5 1", "cmp 5 2", "cmp 5 2", "eq 1 1",
+            "eq 2 1", "fmt 1", "fmt 2"
+        ],
+        "{mode:?}: {out}"
+    );
+    Ok(())
+}
+
+modes!(hooks_on_late_input);
+
+// A core trait a dynamic module implements follows its reloads: a
+// hook site built before a reload is rebuilt after it.
+run!(
+    core_trait_dynamic_impl_reload,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "two1"),
+    "/test.gx" => r#"
+        let one = """
+            type Counter = Abstract<i64>;
+            impl Display for Counter { let fmt = |c| "one[c.0]" };
+            let make = |x| Counter(x)
+        """;
+        let two = """
+            type Counter = Abstract<i64>;
+            impl Display for Counter { let fmt = |c| "two[c.0]" };
+            let make = |x| Counter(x)
+        """;
+        let source = one;
+        sys::net::publish("/local/dimpl_core_reload", source)?;
+        let status = mod foo dynamic {
+            sandbox whitelist [core];
+            sig {
+                type Counter;
+                impl Display for Counter;
+                val make: fn(x: i64) -> Counter
+            };
+            source sys::net::subscribe("/local/dimpl_core_reload")?
+        };
+        let shown = select status {
+            error as e => never(dbg(e)),
+            null as _ => "[foo::make(1)]"
+        };
+        source <- select shown { "one1" => two, _ => never() };
+        let result = select shown { "two1" => shown, _ => never() }
+    "#; FuseExpect::Jit
+);
+
+// A call into a dynamic module compiled at run time (a collection slot)
+// dispatches dynamically, so it follows a reload as a top-level call does.
+run!(
+    dynamic_module_slot_calls_follow_reloads,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:200, i64:201, i64:202]"),
+    "/test.gx" => r#"
+        let one = "let f = |x: i64| x + 100";
+        let two = "let f = |x: i64| x + 200";
+        let source = one;
+        let status = mod foo dynamic {
+            sandbox whitelist [core];
+            sig { val f: fn(x: i64) -> i64 };
+            source source
+        };
+        let n = 1;
+        let xs = select status {
+            error as e => never(dbg(e)),
+            null as _ => array::map(array::init(n, |i| i), |i| foo::f(i))
+        };
+        n <- select xs { [100] => 3, _ => never() };
+        source <- select xs { [100, 101, 102] => two, _ => never() };
+        let result = select xs { [200, ..] => xs, _ => never() }
+    "#; FuseExpect::Jit
+);
+
+// Every name a trait method's signature writes must name a type.
+run!(trait_signature_undefined_type_refused, r#"{
+  trait Q { val q: fn(self) -> Nope };
+  0
+}"#, refused("undefined type Nope"); FuseExpect::None);
+
+// An impl head's variables are its declared ones: a method may not
+// narrow them.
+run!(impl_method_does_not_narrow_the_head, r#"{
+  type Box<'a> = Abstract<'a>;
+  impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
+  "[Box(41)]"
+}"#, refused("method fmt of impl Display for Box<'a> has type"); FuseExpect::None);
+
+// A core-trait hook site a dynamic load retires is deleted by whichever
+// dispatch finds it stale: its references are registered, and released,
+// under no walk's boundary.
+run!(
+    retired_hook_site_deleted_from_another_statement,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "T3 T0"),
+    "/test.gx" => r#"
+        type T = Abstract<i64>;
+        let un = |t: T| -> i64 t.0;
+        impl Display for T { let fmt = |t| "T[un(t)]" };
+        let step = 0;
+        step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
+        let a = "[T(0)]";
+        let src = select step { 1 => "let x = 1", _ => never() };
+        let st = mod foo dynamic { sandbox whitelist [core]; sig { val x: i64 }; source src };
+        let result = select step { 3 => "[T(step)] [a]", _ => never() }
+    "#; FuseExpect::Jit);
+
+// A union-self trait call lowered to a select keeps the call's spec, so
+// #[native] on the call is checked where it is written.
+run!(
+    native_on_a_union_dispatch,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "sq"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |a| "i[a]" };
+        impl Show for string { let show = |b| "s[b]" };
+        let one: [i64, string] = "q";
+        let result = #[native] Show::show(one)
+    "#);

@@ -9,7 +9,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     run,
-    testing::{Events, FuseExpect, TestCtx, config, next_update, refused},
+    testing::{Events, FuseExpect, TestCtx, config, is, next_update, prints, refused},
 };
 use graphix_rt::EnvStats;
 use netidx::publisher::Value;
@@ -40,7 +40,7 @@ run!(neg_widened_i32, r#"
     let ignored = filter_err({ let x = -y; x });
     -y
 }
-"#, |v: Result<&Value>| matches!(v, Ok(Value::I32(-21))); FuseExpect::Jit);
+"#, is(Value::I32(-21)); FuseExpect::Jit);
 
 /// Run `code` in a fresh runtime compiled with `flags`, after compiling
 /// each of `pre` (kept alive): loaded as a file when `as_file`, else
@@ -1178,10 +1178,7 @@ const NEVER_ARM_FUSES: &str = r#"
 }
 "#;
 
-run!(never_arm_fuses, NEVER_ARM_FUSES, |v: Result<&Value>| match v {
-    Ok(Value::I64(2130)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(never_arm_fuses, NEVER_ARM_FUSES, is(Value::I64(2130)); FuseExpect::Jit);
 
 // An arm whose body is bottom-TYPED but not `never()` still runs: `g`
 // returns the connect's bottom, so the arm's value is a bottom of the
@@ -1197,10 +1194,7 @@ const BOTTOM_TYPED_ARM_RUNS: &str = r#"
 }
 "#;
 
-run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, |v: Result<&Value>| match v {
-    Ok(Value::I64(5)) => true,
-    _ => false,
-}, timeout: 5; FuseExpect::Jit);
+run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, is(Value::I64(5)), timeout: 5; FuseExpect::Jit);
 
 // A `never(args..)` arm is a standing bottom whatever its args do, but
 // the args are consumed: the handler-ful `?` inside one delivers its
@@ -1215,10 +1209,7 @@ const NEVER_ARM_ARGS_RAISE: &str = r#"
 }
 "#;
 
-run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}, timeout: 5; FuseExpect::None);
+run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, is(Value::I64(1)), timeout: 5; FuseExpect::None);
 
 // The error derives from `n`, a let whose init fire no selected arm
 // read: the tracker re-delivers it when the arm is entered and the
@@ -1232,10 +1223,7 @@ const ARM_RAISE_STANDING_INPUT: &str = r#"
 }
 "#;
 
-run!(arm_raise_standing_input, ARM_RAISE_STANDING_INPUT, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}, timeout: 5; FuseExpect::None);
+run!(arm_raise_standing_input, ARM_RAISE_STANDING_INPUT, is(Value::I64(1)), timeout: 5; FuseExpect::None);
 
 // The soak's shape: a call into a connecting body inside a never arm of
 // a collection callback. The call must reach `g` and land the write;
@@ -1249,10 +1237,7 @@ const NEVER_ARM_ARGS_EFFECT: &str = r#"
 }
 "#;
 
-run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}, timeout: 5; FuseExpect::Jit);
+run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, is(Value::I64(1)), timeout: 5; FuseExpect::Jit);
 
 // A tail call whose new value for one composite formal is another
 // formal's old value: the rebind owns every new value before an old one
@@ -1432,10 +1417,7 @@ const SHADOWED_INPUTS_FUSE: &str = r#"
 }
 "#;
 
-run!(shadowed_inputs_fuse, SHADOWED_INPUTS_FUSE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(5))
-); FuseExpect::Jit);
+run!(shadowed_inputs_fuse, SHADOWED_INPUTS_FUSE, is(Value::I64(5)); FuseExpect::Jit);
 
 // A statically resolved call of a lambda literal has a kernel.
 const LAMBDA_LITERAL_CALL_FUSES: &str = r#"
@@ -1446,10 +1428,7 @@ const LAMBDA_LITERAL_CALL_FUSES: &str = r#"
 }
 "#;
 
-run!(lambda_literal_call_fuses, LAMBDA_LITERAL_CALL_FUSES, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(7))
-); FuseExpect::Jit);
+run!(lambda_literal_call_fuses, LAMBDA_LITERAL_CALL_FUSES, is(Value::I64(7)); FuseExpect::Jit);
 
 // A call that is the argument of a node fusion does not descend into
 // as a whole (a builtin without a fast call) is its own region: the
@@ -1462,10 +1441,7 @@ const LOOP_UNDER_A_NODE_WALKED_BUILTIN: &str = r#"
 }
 "#;
 
-run!(loop_under_a_node_walked_builtin, LOOP_UNDER_A_NODE_WALKED_BUILTIN, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::Jit; shape: graphix_compiler::node_shape::NodeShape::contains_fused(
+run!(loop_under_a_node_walked_builtin, LOOP_UNDER_A_NODE_WALKED_BUILTIN, is(Value::I64(1)); FuseExpect::Jit; shape: graphix_compiler::node_shape::NodeShape::contains_fused(
     graphix_compiler::node_shape::KernelMatcher::new().params(&["m"])
 ));
 
@@ -1525,10 +1501,7 @@ const LOCAL_LAMBDA_IN_A_LOOP_BODY: &str = r#"
 }
 "#;
 
-run!(local_lambda_in_a_loop_body, LOCAL_LAMBDA_IN_A_LOOP_BODY, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::Jit);
+run!(local_lambda_in_a_loop_body, LOCAL_LAMBDA_IN_A_LOOP_BODY, is(Value::I64(1)); FuseExpect::Jit);
 
 // A lambda call whose arguments do not all fuse (an effect, a stateful
 // builtin) fuses with each such argument as a feeder: the node-walk runs
@@ -1800,10 +1773,7 @@ array::fold([1, 2], 0, |acc, x| {
 })
 "#;
 
-run!(fold_callback_regions_fuse_in_slots, FOLD_CALLBACK_REGIONS_FUSE_IN_SLOTS, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(115))
-); FuseExpect::Jit);
+run!(fold_callback_regions_fuse_in_slots, FOLD_CALLBACK_REGIONS_FUSE_IN_SLOTS, is(Value::I64(115)); FuseExpect::Jit);
 
 // A slot's call fed by a node-walked argument takes the prototype's
 // kernel with the slot's own feeder.
@@ -1821,11 +1791,7 @@ run!(fed_callback_regions_fuse_in_slots, FED_CALLBACK_REGIONS_FUSE_IN_SLOTS, |v:
 
 // Each slot runs the fed kernel: one run a slot, where a slot that did not
 // take the prototype's kernel would node-walk its call.
-// CR claude for claude: [risk/low] This test asserts `fused == 3`, but fused-kernel
-// runs are counted only in debug builds (record_fusion_invocation is
-// #[cfg(debug_assertions)]), so a release or quick-profile `cargo test` fails it with 0
-// runs. Gate it with #[cfg(debug_assertions)], as the other counter tests in this file
-// are. Found by reading; not run. (tests-fusion-traits-10)
+#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fed_callback_kernel_runs_in_each_slot() -> Result<()> {
     let (v, (fused, _)) = load_and_count(FED_CALLBACK_REGIONS_FUSE_IN_SLOTS).await?;
@@ -1903,10 +1869,7 @@ const SCALAR_LET_CAPTURED_AT_A_NULLABLE: &str = r#"
 }
 "#;
 
-run!(scalar_let_captured_at_a_nullable, SCALAR_LET_CAPTURED_AT_A_NULLABLE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::Bool(true))
-); FuseExpect::Jit);
+run!(scalar_let_captured_at_a_nullable, SCALAR_LET_CAPTURED_AT_A_NULLABLE, is(Value::Bool(true)); FuseExpect::Jit);
 
 // A tail call passing a scalar to a value-shaped formal widens it to the
 // formal's Value encoding.
@@ -1920,22 +1883,12 @@ const TAIL_SCALAR_TO_NULLABLE: &str = r#"
 }
 "#;
 
-run!(tail_scalar_to_nullable, TAIL_SCALAR_TO_NULLABLE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::F64(3.0))
-); FuseExpect::Jit);
+run!(tail_scalar_to_nullable, TAIL_SCALAR_TO_NULLABLE, is(Value::F64(3.0)); FuseExpect::Jit);
 
 // A `?` that always raises stands in its consumer's shape: here an f64
 // operand, which the fused add reads as one.
 async fn always_raising_operand(mode: graphix_package_core::testing::Mode) -> Result<()> {
-    // CR claude for claude: [test-gap/low] This fixture, tail_body_with_collection,
-    // fresh_depth_is_born, fresh_tail_depth_is_born and traits::core_display_println
-    // all describe the fused path, but run_delta never checks that anything fused, so
-    // their jit and jit_par modes would pass on a program that node-walks entirely. Use
-    // super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit), which exists
-    // for this, in all five. Found by reading; the bodies fuse today
-    // (GRAPHIX_DBG_KERNELS). (tests-fusion-traits-07)
-    let (values, _) = super::dense_deltas::run_delta(
+    let (values, _) = super::dense_deltas::run_delta_fused(
         r#"{
             let got = 0;
             let f = |v: f64| v * 2.0 + error(`Boom)?;
@@ -1943,6 +1896,7 @@ async fn always_raising_operand(mode: graphix_package_core::testing::Mode) -> Re
             got
         }"#,
         mode,
+        graphix_package_core::testing::FuseExpect::Jit,
     )
     .await?;
     assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![0, 1]);
@@ -1965,16 +1919,14 @@ const CALLEE_BODY_OTHER_INSTANCE: &str = r#"
 }
 "#;
 
-run!(callee_body_other_instance, CALLEE_BODY_OTHER_INSTANCE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:12, i64:44]"
-}; FuseExpect::Jit);
+run!(callee_body_other_instance, CALLEE_BODY_OTHER_INSTANCE, prints("[i64:12, i64:44]"); FuseExpect::Jit);
 
 // A tail-recursive body holding a collection loop recurses natively:
 // each depth's loop keeps its own length, as each activation's does.
 async fn tail_body_with_collection(
     mode: graphix_package_core::testing::Mode,
 ) -> Result<()> {
-    let (values, _) = super::dense_deltas::run_delta(
+    let (values, _) = super::dense_deltas::run_delta_fused(
         r#"{
             let z = 0;
             z <- 1;
@@ -1985,6 +1937,7 @@ async fn tail_body_with_collection(
             f([1, 2, 3], 0, z)
         }"#,
         mode,
+        graphix_package_core::testing::FuseExpect::Jit,
     )
     .await?;
     assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![6]);
@@ -1997,7 +1950,7 @@ modes!(tail_body_with_collection);
 // the JIT as in the node-walk: its constants fire and its constant-derived
 // error raises once per new depth.
 async fn fresh_depth_is_born(mode: graphix_package_core::testing::Mode) -> Result<()> {
-    let (values, _) = super::dense_deltas::run_delta(
+    let (values, _) = super::dense_deltas::run_delta_fused(
         r#"{
             let errors = 0;
             let depth = 2;
@@ -2010,6 +1963,7 @@ async fn fresh_depth_is_born(mode: graphix_package_core::testing::Mode) -> Resul
             errors
         }"#,
         mode,
+        graphix_package_core::testing::FuseExpect::Jit,
     )
     .await?;
     assert_eq!(graphix_package_core::testing::as_i64s(&values).last(), Some(&5));
@@ -2023,7 +1977,7 @@ modes!(fresh_depth_is_born);
 async fn fresh_tail_depth_is_born(
     mode: graphix_package_core::testing::Mode,
 ) -> Result<()> {
-    let (values, _) = super::dense_deltas::run_delta(
+    let (values, _) = super::dense_deltas::run_delta_fused(
         r#"{
             let errors = 0;
             let depth = 2;
@@ -2036,6 +1990,7 @@ async fn fresh_tail_depth_is_born(
             errors
         }"#,
         mode,
+        graphix_package_core::testing::FuseExpect::Jit,
     )
     .await?;
     assert_eq!(graphix_package_core::testing::as_i64s(&values).last(), Some(&5));
@@ -2250,8 +2205,7 @@ run!(native_on_a_connect_right_side, r#"{
     let y = 0;
     y <- #[native] array::len([x, t]);
     array::group((x, y), |n, _| n == 3)
-}"#, |v: Result<&Value>| format!("{}", v.unwrap())
-    == "[[i64:0, i64:0], [i64:2, i64:2], [i64:4, i64:2]]"; FuseExpect::Jit);
+}"#, prints("[[i64:0, i64:0], [i64:2, i64:2], [i64:4, i64:2]]"); FuseExpect::Jit);
 
 // An error's payload `.0` fuses as an abstract's payload does.
 run!(native_error_payload_read, r#"{
@@ -2260,7 +2214,7 @@ run!(native_error_payload_read, r#"{
         select e.0 { `E(n) => n + 1 }
     };
     f(3)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::Jit);
+}"#, is(Value::I64(4)); FuseExpect::Jit);
 
 // A region of type null fuses: an effect-only body, a select whose arms
 // are all null.
@@ -2268,7 +2222,7 @@ run!(native_null_regions, r#"{
     let f = |x: i64| #[native] println(x + 1);
     let g = |x: i64| #[native] select x { 0 => null, _ => null };
     (f(3), g(4))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[null, null]"; FuseExpect::Jit);
+}"#, prints("[null, null]"); FuseExpect::Jit);
 
 // A map literal with entries computed from arguments fuses, built in
 // written order with a later key replacing an earlier one.
@@ -2276,8 +2230,7 @@ run!(native_dynamic_map_literal, r#"{
     let f = |x: i64| #[native] {"a" => x, "b" => x + 1, "a" => x * 10};
     let g = |k: string, x: i64| #[native] {k => x, "z" => 0};
     (f(3), g("q", 7), g("z", 1))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap())
-    == r#"[{"a" => i64:30, "b" => i64:4}, {"q" => i64:7, "z" => i64:0}, {"z" => i64:0}]"#;
+}"#, prints(r#"[{"a" => i64:30, "b" => i64:4}, {"q" => i64:7, "z" => i64:0}, {"z" => i64:0}]"#);
     FuseExpect::Jit);
 
 // A loop whose callback returns null fuses, run for its effects, its
@@ -2286,7 +2239,7 @@ run!(native_null_element_loops, r#"{
     let f = |xs: Array<i64>| #[native] array::map(xs, |x| println(x));
     let g = |n: i64| #[native] array::init(n, |i| println(i));
     (f([1, 2]), g(2))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
+}"#, prints("[[null, null], [null, null]]");
     FuseExpect::Jit);
 
 // A variant pattern tests a nullable variant, null failing the tag test.
@@ -2296,7 +2249,7 @@ run!(native_variant_pattern_over_a_nullable, r#"{
         null as _ => 0
     };
     (#[native] f(`Found(7)), #[native] f(null))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:7, i64:0]";
+}"#, prints("[i64:7, i64:0]");
     FuseExpect::Jit);
 
 // A bind the guard and the body both read is installed once, for the
@@ -2309,7 +2262,7 @@ run!(native_guard_and_body_share_a_bind, r#"{
         _ => 0
     };
     (#[native] f(`A([5, 6, 7]), 2), #[native] f(`A([5]), 2), #[native] f(`B("abcd"), 2), #[native] f(`B("a"), 2))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:8, i64:0, i64:4, i64:0]";
+}"#, prints("[i64:8, i64:0, i64:4, i64:0]");
     FuseExpect::Jit);
 
 // A union of composites rides a kernel as the Value it is: an arm that
@@ -2326,7 +2279,7 @@ run!(native_union_of_composites_select, r#"{
         {name: string} as {name} => str::len(name)
     };
     (#[native] g((1, "s")), #[native] g(("t", 4)), #[native] h({x: 2, y: 3}), #[native] h({x: -2, y: 3}), #[native] h({name: "abcd"}))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:40, i64:5, i64:-2, i64:4]";
+}"#, prints("[i64:1, i64:40, i64:5, i64:-2, i64:4]");
     FuseExpect::Jit);
 
 // A fold whose acc is a tuple of scalars, built by a tuple literal and
@@ -2342,8 +2295,7 @@ run!(native_tuple_acc_folds, r#"{
         #[native] array::fold(xs, init, |p, x| (p.1, p.0 + x)),
         #[native] array::map([[1, 2], [3, 4, 5]], |row| array::fold(row, (0, 0), |p, x| (p.0 + x, p.1 + 1)))
     )
-}"#, |v: Result<&Value>| format!("{}", v.unwrap())
-    == "[[i64:499500, f64:1.1051653926032188], [i64:7, i64:8], [i64:249503, i64:250004], [[i64:3, i64:2], [i64:12, i64:3]]]";
+}"#, prints("[[i64:499500, f64:1.1051653926032188], [i64:7, i64:8], [i64:249503, i64:250004], [[i64:3, i64:2], [i64:12, i64:3]]]");
     FuseExpect::Jit);
 
 // A tuple acc destructured into names carries each field in a register,
@@ -2356,8 +2308,7 @@ run!(native_destructured_tuple_acc_folds, r#"{
         #[native] array::fold(e, (7, 8), |(a, b), x| (b + x, a)),
         #[native] array::fold(xs, (1, 2.0), |(_, f), x| (x, f * 1.0001))
     )
-}"#, |v: Result<&Value>| format!("{}", v.unwrap())
-    == "[[i64:499500, i64:1000], [i64:7, i64:8], [i64:999, f64:2.2103307852064376]]";
+}"#, prints("[[i64:499500, i64:1000], [i64:7, i64:8], [i64:999, f64:2.2103307852064376]]");
     FuseExpect::Jit);
 
 // A destructuring let's `_` decides nothing of the value it matches: a
@@ -2373,7 +2324,7 @@ run!(native_let_wildcard_keeps_the_value_type, r#"{
         found
     };
     #[native] myfind([10, 20, 30, 40], |x| x > 35)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(40))); FuseExpect::Jit);
+}"#, is(Value::I64(40)); FuseExpect::Jit);
 
 // An interpolated part of any kind fuses, rendered as the node-walk
 // renders it at its type, a core Display impl included.
@@ -2383,8 +2334,7 @@ run!(native_interpolates_every_part_kind, r#"{
     let f = |x: [i64, null], v: [`A, `B(string)], s: {a: i64, b: string}, xs: Array<f64>, m: Money, d: decimal| -> string
         #[native] "x=[x] v=[v] s=[s] xs=[xs] m=[m] d=[d]";
     (f(null, `B("q"), {a: 1, b: "z"}, [1.5, 2.0], Money(7), decimal:1.25), f(4, `A, {a: 2, b: "y"}, [], Money(-1), decimal:0.5))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap())
-    == r#"["x=null v=`B(\"q\") s={a: 1, b: \"z\"} xs=[1.5, 2] m=$7 d=1.25", "x=4 v=`A s={a: 2, b: \"y\"} xs=[] m=$-1 d=0.5"]"#;
+}"#, prints(r#"["x=null v=`B(\"q\") s={a: 1, b: \"z\"} xs=[1.5, 2] m=$7 d=1.25", "x=4 v=`A s={a: 2, b: \"y\"} xs=[] m=$-1 d=0.5"]"#);
     FuseExpect::Jit);
 
 // A literal is no fusion region, its value held by its node, and
@@ -2393,7 +2343,7 @@ run!(native_on_a_literal, r#"{
     let x = #[native] (5);
     let y = #[native] "s";
     (x, y)
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:5, "s"]"#; FuseExpect::Jit);
+}"#, prints(r#"[i64:5, "s"]"#); FuseExpect::Jit);
 
 // A let annotated through a typedef over a method's variable, in a trait
 // default body, freezes and fuses (Option<'b> in find_map's default).
@@ -2406,7 +2356,7 @@ run!(native_trait_default_option_let, r#"{
     };
     let b = Bag([1, 2, 3, 4]);
     #[native] Collection::find_map(b, |x| select x > 2 { true => x, false => null })
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+}"#, is(Value::I64(3)); FuseExpect::Jit);
 
 // A destructuring let fuses: its leaves bind over the value, owned ones
 // cloned out, inside a loop callback too.
@@ -2419,7 +2369,7 @@ run!(native_destructuring_let, r#"{
     };
     let g = |xs: Array<i64>| #[native] array::map(xs, |x| { let (u, v) = (x, "v[x]"); "[u][v]" });
     (f(3), g([1, 2]))
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["3 4 6 s4 4", ["1v1", "2v2"]]"#;
+}"#, prints(r#"["3 4 6 s4 4", ["1v1", "2v2"]]"#);
     FuseExpect::Jit);
 
 // A let typed as an array over a select whose arms are arrays of
@@ -2436,7 +2386,7 @@ run!(composite_let_over_value_select, r#"{
         };
         x
     }
-}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[null]"; FuseExpect::Jit);
+}"#, prints("[null]"); FuseExpect::Jit);
 
 // A struct pattern reads the fields of a tainted scrutinee's empty
 // placeholder, which has no struct marker.
@@ -2456,4 +2406,31 @@ run!(struct_pattern_over_placeholder, r#"{
         ({ y: v5 }, v5)
     };
     null
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
+}"#, is(Value::Null); FuseExpect::Jit);
+
+// Two instances of one generic callback in a region share their call
+// sites' ids; each must call its own instance's kernel (u64::MAX < 0 is
+// false, and an f64 instance never calls an i64 kernel).
+run!(callback_instances_call_their_own_kernels, r#"{
+  let h = |a, b| a < b;
+  let g = |x| h(x, x - x);
+  let n = 0;
+  n <- select n { k if k < 2 => k + 1, _ => never() };
+  let xs: Array<i64> = [0 - 1, n];
+  let ys: Array<u64> = [u64:18446744073709551615, cast<u64>(n)$];
+  (array::map(xs, g), array::map(ys, g))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[true, false], [false, false]]")
+}; FuseExpect::Jit);
+
+run!(callback_instances_at_float_and_int, r#"{
+  let h = |x| x + x;
+  let g = |x| h(x) * x;
+  let n = 0;
+  n <- select n { k if k < 2 => k + 1, _ => never() };
+  let xs: Array<i64> = [1, 2, n];
+  let ys: Array<f64> = [1.5, 2.5, cast<f64>(n)$];
+  (array::map(xs, g), array::map(ys, g))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[i64:2, i64:8, i64:0], [f64:4.5, f64:12.5, f64:0.]]")
+}; FuseExpect::Jit);

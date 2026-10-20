@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -645,11 +645,8 @@ val fract: fn(x: f64) -&gt; f64;
 /// Absolute value.
 val abs: fn(x: f64) -&gt; f64;
 
-// CR claude for claude: [doc-drift/low] The doc promises -1.0, 0.0 or 1.0. The builtin
-// is f64::signum: signum(0.0) is 1 and signum(-0.0) is -1, never 0. Document the zero
-// cases, or return 0.0 for zero if that is the intent. probe:
-// design/review-2026-10-19/repro/gx-stdlib-signum-zero.gx (gx-stdlib-05)
-/// Sign: -1.0, 0.0, or 1.0. NaN if `x` is NaN.
+/// Sign: 1.0 when `x` is positive or `0.0`, -1.0 when it is negative or
+/// `-0.0`. NaN if `x` is NaN.
 val signum: fn(x: f64) -&gt; f64;
 
 /// `x` with the sign of `y`.
@@ -763,27 +760,20 @@ val zip: fn(a: ['a, null], b: ['b, null]) -&gt; [('a, 'b), null];
 /// null input yields (null, null).
 val unzip: fn(p: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
 
-// CR claude for claude: [doc-drift/low] This doc ('invoked at most once per update of
-// v', 'fire-and-forget, no queueing', 'the new input supersedes the pending one')
-// describes the deleted OptHof builtin. opt.gx now implements map as `select v { null
-// as _ =&gt; null, x =&gt; f(x) }`, so it has f's cadence. A slow async f answers both inputs
-// in order, and f fires whenever what it reads fires. flat_map, filter, is_some_and and
-// is_none_or point to the same text. State the select semantics instead. probe:
-// design/review-2026-10-19/repro/gx-stdlib-opt-map-supersede.sh (gx-stdlib-04)
 /// map(v, f): apply f to the inner value if v is non-null, otherwise
-/// return null. f is invoked at most once per update of v — fire-and-
-/// forget, no queueing. If v updates again before f produces a result,
-/// the new input supersedes the pending one.
+/// return null. It is `select v { null as _ =&gt; null, x =&gt; f(x) }`, so it
+/// fires as f does: f answers every non-null input (a slow async f
+/// answers each in order), and fires again whenever what f reads fires.
 val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; ['b, null] throws 'e;
 
 /// flat_map(v, f): apply f to the inner value if v is non-null,
 /// otherwise return null. f's own optional result is forwarded
-/// unchanged. Same fire-and-forget semantics as map.
+/// unchanged. It fires as map does.
 val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null] throws 'e) -&gt; ['b, null] throws 'e;
 
 /// filter(v, pred): if v is non-null and pred(v) is true, emit v.
-/// Otherwise (v is null, or pred is false) emit null. Same fire-and-
-/// forget semantics as map.
+/// Otherwise (v is null, or pred is false) emit null. It fires as map
+/// does.
 ///
 /// Caveat for reactive predicates: when pred takes more than one cycle
 /// to produce its bool, the emitted value is the *current* input, not
@@ -807,13 +797,13 @@ val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null] throws 'e) -&gt; ['a, nu
 val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e throws 'x) -&gt; Result&lt;'a, 'e&gt; throws 'x;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
-/// false when v is null or pred is false. Fire-and-forget like map —
-/// for non-null v, no output is produced until pred fires.
+/// false when v is null or pred is false. It fires as map does: for a
+/// non-null v, no output is produced until pred fires.
 val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e;
 
 /// is_none_or(v, pred): true when v is null or pred(v) is true, false
-/// when v is non-null and pred is false. Fire-and-forget like map —
-/// for non-null v, no output is produced until pred fires.
+/// when v is non-null and pred is false. It fires as map does: for a
+/// non-null v, no output is produced until pred fires.
 val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e
 </code></pre>
 

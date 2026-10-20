@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -224,15 +224,14 @@ line_gauge(
 <h3 id="color-coded-status"><a class="header" href="#color-coded-status">Color-coded Status</a></h3>
 <pre><code class="language-graphix">use tui::{line, style, block::block, line_gauge::line_gauge};
 
-let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
+let percentage = min(100, count(sys::time::timer(0.5, true)));
+let power = cast&lt;f64&gt;(percentage)$ / 100.0;
 
 let color = select power {
     x if x &lt; 0.10 =&gt; `Red,
     x if x &lt; 0.25 =&gt; `Yellow,
     x =&gt; `Green
 };
-
-let percentage = cast&lt;i64&gt;(power * 100.0)$;
 
 block(
     #border: &amp;`All,

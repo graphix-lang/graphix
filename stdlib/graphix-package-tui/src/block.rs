@@ -124,7 +124,7 @@ impl<X: GXExt> BlockW<X> {
         let p = Props::compile(&gx, &v).await.context("block")?;
         let child = ChildW::compile(&gx, &v, "child").await.context("block")?;
         let size = SizeReport::compile(&gx, &v).await?;
-        Ok(Box::new(Self { gx, p, child, size }))
+        Ok(TuiW::new(Self { gx, p, child, size }))
     }
 }
 

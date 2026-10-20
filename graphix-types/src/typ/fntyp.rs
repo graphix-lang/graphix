@@ -425,6 +425,15 @@ impl FnType {
         // alias only its own quantifiers. Then pin the parse/print/check round trip.
         // probe: design/review-2026-10-19/repro/t-fntyp-nested-bound-lost.sh
         // (t-fntyp-01)
+        // 2026-10-19 claude: Tried both fixes the CR names; neither lands as is. (1)
+        // alias_cells for a frozen var in Type::alias_tvars welds a parsed signature's
+        // nested vars to the outer ones but not a lambda's annotation, so stdlib
+        // interfaces stop pairing (array::fold: 'type variable usage mismatch'). (2)
+        // Skipping alias_tvars in a declaring with no constraints passes the repro's
+        // three cases but breaks lang::functions::annotation_variable_is_one_variable,
+        // lang::inference::rigid_type_variables_survive_a_cell_merge and
+        // lang::interfaces::open_union_without_a_pairing_is_refused, which rely on that
+        // aliasing. The weld has to happen in the one place both paths share.
         self.alias_tvars(&mut known);
         seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())));
         self
@@ -1135,6 +1144,9 @@ impl FnType {
         // function type whose own quantifiers are open, not just a rigid formal. probe:
         // design/review-2026-10-19/repro/x-typecheck-generics-rank2-return-annot.gx
         // (x-typecheck-generics-03)
+        // 2026-10-19 claude: The has_open_quantifier change in contains_gated makes
+        // this repro print 1 but breaks two fixtures (see the t-fntyp-03 note);
+        // reverted with it.
         // CR claude for claude: [bug/high] A rank-2 formal is any instance of itself
         // only while its quantifiers are rigid, which holds only in the definition's
         // check. In an instance's elaboration the formal's quantifiers are open but not
@@ -1146,6 +1158,13 @@ impl FnType {
         // (has_open_quantifier), or carry the formal's rigidity into the instance. Pin
         // the two-use shape. probe:
         // design/review-2026-10-19/repro/t-fntyp-rank2-forward-twice.gx (t-fntyp-03)
+        // 2026-10-19 claude: Taking shared_call for any type with an open quantifier
+        // (the CR's first option) does not fix this repro (the build still refuses
+        // fn(x: 'b: f64)) and makes
+        // lang::functions::declared_bound_quantifier_in_the_return_narrows and
+        // lang::traits::select_over_ctor_application produce nothing; reverted. The
+        // instance path that binds g's 'b is elsewhere: carrying the formal's rigidity
+        // into the instance is the option left.
         let t = match t.is_rigid_formal() {
             true => {
                 fresh = t.shared_call();
@@ -1463,26 +1482,28 @@ impl FnType {
                  does not declare"
             )
         };
-        // a quantifier of an implementation's function-typed part is any
-        // type its body likes, so it stands only for a quantifier of the
-        // signature's, never for a type a caller picks
-        let mut impl_quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        impl_fn.inner_quantifiers(&mut impl_quantifiers);
-        let mut sig_quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.inner_quantifiers(&mut sig_quantifiers);
+        // a quantifier of a function the implementation is handed is the
+        // implementation's to pick at each call: the signature's paired
+        // argument must leave it a quantifier too
+        let arg_quantifiers = |f: &FnType| {
+            let mut q: AHashMap<usize, TVar> = AHashMap::new();
+            FnType { args: f.args.clone(), vargs: f.vargs.clone(), ..FnType::default() }
+                .inner_quantifiers(&mut q);
+            q
+        };
+        let (impl_q, sig_q) = (arg_quantifiers(impl_fn), arg_quantifiers(self));
         for (_, tv) in impl_cells.iter() {
-            let paired = tvar_map.cells.get(&tv.cell_addr());
-            if impl_quantifiers.contains_key(&tv.cell_addr())
-                && let Some(sig_type) = paired
-                && !matches!(sig_type, Type::TVar(s) if sig_quantifiers.contains_key(&s.cell_addr()))
-            {
-                bail!(
-                    "the implementation's '{} is a quantifier its body may take at any \
-                     type, but the signature has {sig_type} there, which its caller picks",
-                    tv.name
-                )
+            if impl_q.contains_key(&tv.cell_addr()) {
+                match tvar_map.cells.get(&tv.cell_addr()) {
+                    Some(Type::TVar(s)) if sig_q.contains_key(&s.cell_addr()) => (),
+                    None => (),
+                    Some(t) => bail!(
+                        "the implementation picks {tv} at each call of the function it \
+                         is handed, where the signature hands it a function at {t}"
+                    ),
+                }
             }
-            match paired {
+            match tvar_map.cells.get(&tv.cell_addr()) {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
@@ -1503,10 +1524,10 @@ impl FnType {
                 // Some(Type::TVar) arm, unless the paired signature variable is one of
                 // `self.quantifiers`. probe:
                 // design/review-2026-10-19/repro/t-fntyp-rank2-impl.sh (t-fntyp-02)
-                // 2026-10-19 claude: FnType::sig_bounds refuses an implementation cell
-                // that is a quantifier of a nested fn type (inner_quantifiers) unless
-                // it paired with a quantifier of the signature's nested fn types. Pin:
-                // lang::interfaces::rank2_implementation_of_a_rank1_parameter_refused.
+                // 2026-10-19 claude: sig_matches refuses an implementation quantifier
+                // of a function-typed argument unless it pairs with a quantifier of the
+                // signature's paired argument. Pin:
+                // lang::interfaces::rank2_parameter_does_not_implement_a_monomorphic_one.
                 Some(sig_type) => {
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside

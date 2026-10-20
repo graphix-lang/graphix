@@ -1,6 +1,7 @@
 //! Source text around a position. Columns are char counts here; the
 //! LSP encoding is translated at the boundary (`crate::position`).
 
+use crate::position::lines;
 use graphix_compiler::SourcePosition;
 use lsp_types::Position;
 use poolshark::local::LPooled;
@@ -39,7 +40,7 @@ pub(crate) fn text_between(text: &str, from: Position, to: Position) -> LPooled<
 }
 
 fn line_chars(text: &str, line: u32) -> Option<LPooled<Vec<char>>> {
-    // CR claude for claude: [bug/low] str::lines yields no line after a trailing
+    // XCR claude for claude: [bug/low] str::lines yields no line after a trailing
     // newline, so the cursor on a file's empty last line has no line. typed_before
     // returns None there and completion offers nothing at the most common place to
     // type, the end of the file. position::position_to_char_col_in_text has the same
@@ -47,7 +48,13 @@ fn line_chars(text: &str, line: u32) -> Option<LPooled<Vec<char>>> {
     // trimmed) that counts that empty last line. probe:
     // design/review-2026-10-19/repro/x-lsp-probe-last-line-completion.py
     // (x-lsp-probe-04)
-    let line = text.lines().nth(line as usize)?;
+    // 2026-10-19 claude: line_chars, position_to_char_col_in_text and
+    // char_col_to_position_in_text read lines through position::lines, which counts
+    // the empty line after a last newline (and lone CRs). text_between keeps
+    // str::lines: it walks compiler positions, which break at newlines only. Fails
+    // if undone: graphix-lsp text::tests::the_last_empty_line_is_a_line,
+    // position::tests::lines_break_as_lsp_does.
+    let line = lines(text).nth(line as usize)?;
     let mut chars: LPooled<Vec<char>> = LPooled::take();
     chars.extend(line.chars());
     Some(chars)
@@ -277,6 +284,13 @@ mod tests {
         );
         let t = typed_before(text, at(0, 28)).unwrap();
         assert_eq!((t.path.as_str(), t.receiver.len()), ("array::", 0));
+    }
+
+    /// The empty line after a file's last newline is a line to type on.
+    #[test]
+    fn the_last_empty_line_is_a_line() {
+        let t = typed_before("let x = 1;\n", at(1, 0)).unwrap();
+        assert_eq!((t.path.as_str(), t.receiver.len()), ("", 0));
     }
 
     #[test]

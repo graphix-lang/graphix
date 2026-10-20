@@ -159,7 +159,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                 }
                 _ => false,
             },
-            Message::Nop | Message::Table(..) => false,
+            Message::Nop | Message::Table(..) | Message::ComboText(..) => false,
         }
     }
 }

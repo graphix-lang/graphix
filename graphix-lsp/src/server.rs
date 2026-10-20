@@ -233,14 +233,14 @@ fn handle_notification(state: &mut ServerState, not: Notification) -> Diagnostic
     match not.method.as_str() {
         "textDocument/didOpen" => {
             if let Some(DidOpenTextDocumentParams { text_document: d }) = params(not) {
-                state.set_document(d.uri, d.text, d.version);
+                return state.set_document(d.uri, d.text, d.version);
             }
         }
         "textDocument/didChange" => {
             if let Some(p) = params::<DidChangeTextDocumentParams>(not)
                 && let Some(change) = p.content_changes.into_iter().next_back()
             {
-                state.set_document(
+                return state.set_document(
                     p.text_document.uri,
                     change.text,
                     p.text_document.version,

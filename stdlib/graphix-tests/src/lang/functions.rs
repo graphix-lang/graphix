@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, eval, refused},
+    testing::{FuseExpect, Mode, as_i64s, eval, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -15,16 +15,7 @@ const LAMBDA: &str = r#"
 }
 "#;
 
-// CR claude for claude: [structure/low] The 'value equals X' predicate is written three
-// ways in this file (match with `_ => false` 59 times, matches!, format!("{}",
-// v.unwrap()) == ..), and `_ => false` appears about 300 times across lang tests. The
-// unwrap form panics on a refusal instead of failing the predicate. Add `is(Value)` and
-// `prints(&str)` beside testing::refused and use them where a predicate only compares
-// one value. Found by reading; not run. (tests-functions-07)
-run!(lambda, LAMBDA, |v: Result<&Value>| match v {
-    Ok(Value::I64(20)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(lambda, LAMBDA, is(Value::I64(20)); FuseExpect::Jit);
 
 const FIRST_CLASS_LAMBDAS: &str = r#"
 {
@@ -34,10 +25,7 @@ const FIRST_CLASS_LAMBDAS: &str = r#"
 }
 "#;
 
-run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, is(Value::I64(3)); FuseExpect::Jit);
 
 // A formal with its own quantifier is rank-2: each call of it copies 'a,
 // so the body may apply it at i64.
@@ -103,10 +91,7 @@ const TWO_RIGID_VARS_INDEPENDENT: &str = r#"
 
 // A body that keeps its two declared variables apart accepts equal and
 // unequal instantiations alike.
-run!(two_rigid_vars_independent, TWO_RIGID_VARS_INDEPENDENT, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(two_rigid_vars_independent, TWO_RIGID_VARS_INDEPENDENT, is(Value::I64(3)); FuseExpect::Jit);
 
 const TWO_RIGID_VARS_UNIFIED: &str = r#"
 {
@@ -143,10 +128,7 @@ const DEFAULT_IN_CONSTRAINT_SET: &str = r#"
 // Against a declared variable a default must fit the variable's
 // constraints, not the variable: the site that omits the argument takes
 // the default's type, a site that passes it takes its own.
-run!(default_in_constraint_set, DEFAULT_IN_CONSTRAINT_SET, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(default_in_constraint_set, DEFAULT_IN_CONSTRAINT_SET, is(Value::I64(1)); FuseExpect::Jit);
 
 const DEFAULT_OUTSIDE_CONSTRAINT_SET: &str = r#"
 {
@@ -164,10 +146,7 @@ const LABELED_ARGS: &str = r#"
 }
 "#;
 
-run!(labeled_args, LABELED_ARGS, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(labeled_args, LABELED_ARGS, is(Value::I64(42)); FuseExpect::Jit);
 
 const REQUIRED_ARGS: &str = r#"
 {
@@ -185,10 +164,7 @@ const MIXED_ARGS: &str = r#"
 }
 "#;
 
-run!(mixed_args, MIXED_ARGS, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(mixed_args, MIXED_ARGS, is(Value::I64(42)); FuseExpect::Jit);
 
 const ARG_SUBTYPING: &str = r#"
 {
@@ -198,10 +174,7 @@ const ARG_SUBTYPING: &str = r#"
 }
 "#;
 
-run!(arg_subtyping, ARG_SUBTYPING, |v: Result<&Value>| match v {
-    Ok(Value::I64(45)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(arg_subtyping, ARG_SUBTYPING, is(Value::I64(45)); FuseExpect::Jit);
 
 const ARG_NAME_SHORT: &str = r#"
 {
@@ -211,10 +184,7 @@ const ARG_NAME_SHORT: &str = r#"
 }
 "#;
 
-run!(arg_name_short, ARG_NAME_SHORT, |v: Result<&Value>| match v {
-    Ok(Value::I64(45)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(arg_name_short, ARG_NAME_SHORT, is(Value::I64(45)); FuseExpect::Jit);
 
 const LATE_BINDING0: &str = r#"
 {
@@ -226,10 +196,7 @@ const LATE_BINDING0: &str = r#"
 }
 "#;
 
-run!(late_binding0, LATE_BINDING0, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(late_binding0, LATE_BINDING0, is(Value::I64(1)); FuseExpect::None);
 
 const LATE_BINDING1: &str = r#"
 {
@@ -246,13 +213,7 @@ const LATE_BINDING1: &str = r#"
 }
 "#;
 
-run!(late_binding1, LATE_BINDING1, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(1), Value::I64(2)] => true,
-        _ => false,
-    },
-    _ => false,
-}; FuseExpect::None);
+run!(late_binding1, LATE_BINDING1, prints("[i64:1, i64:2]"); FuseExpect::None);
 
 const LATE_BINDING2: &str = r#"
 {
@@ -262,10 +223,7 @@ const LATE_BINDING2: &str = r#"
 }
 "#;
 
-run!(late_binding2, LATE_BINDING2, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(late_binding2, LATE_BINDING2, is(Value::I64(1)); FuseExpect::None);
 
 const LATE_BINDING3: &str = r#"
 {
@@ -276,10 +234,7 @@ const LATE_BINDING3: &str = r#"
 }
 "#;
 
-run!(late_binding3, LATE_BINDING3, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(late_binding3, LATE_BINDING3, is(Value::I64(2)); FuseExpect::None);
 
 const LATE_BINDING4: &str = r#"
 {
@@ -313,10 +268,7 @@ const TAIL_STATEFUL_PER_ITERATION: &str = r#"
 }
 "#;
 
-run!(tail_stateful_per_iteration, TAIL_STATEFUL_PER_ITERATION, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(3))
-); FuseExpect::None);
+run!(tail_stateful_per_iteration, TAIL_STATEFUL_PER_ITERATION, is(Value::I64(3)); FuseExpect::None);
 
 // A stateful builtin in a value-position select arm inside native
 // recursion node-walks; each activation owns its `once`.
@@ -330,19 +282,13 @@ const TAIL_STATEFUL_SCALAR: &str = r#"
 }
 "#;
 
-run!(tail_stateful_scalar, TAIL_STATEFUL_SCALAR, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(55))
-); FuseExpect::None);
+run!(tail_stateful_scalar, TAIL_STATEFUL_SCALAR, is(Value::I64(55)); FuseExpect::None);
 
 const FOLD_STATEFUL_PER_SLOT: &str = r#"
 array::fold([i64:10, i64:20, i64:30], i64:0, |acc, x| acc + count(x))
 "#;
 
-run!(fold_stateful_per_slot, FOLD_STATEFUL_PER_SLOT, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(3))
-); FuseExpect::None);
+run!(fold_stateful_per_slot, FOLD_STATEFUL_PER_SLOT, is(Value::I64(3)); FuseExpect::None);
 
 // The same loop over `+` alone: a stateless body.
 const TAIL_STATELESS_COLLAPSES: &str = r#"
@@ -355,10 +301,7 @@ const TAIL_STATELESS_COLLAPSES: &str = r#"
 }
 "#;
 
-run!(tail_stateless_collapses, TAIL_STATELESS_COLLAPSES, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(60))
-); FuseExpect::Jit);
+run!(tail_stateless_collapses, TAIL_STATELESS_COLLAPSES, is(Value::I64(60)); FuseExpect::Jit);
 
 const RECURSIVE_LAMBDA0: &str = r#"
 {
@@ -368,10 +311,7 @@ const RECURSIVE_LAMBDA0: &str = r#"
 "#;
 
 // A `let rec` self-call knots to the def's own cells, so the loop fuses.
-run!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
-    Ok(Value::I64(10)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(recursive_lambda0, RECURSIVE_LAMBDA0, is(Value::I64(10)); FuseExpect::Jit);
 
 // A fully annotated arithmetic lambda.
 const FUSED_ARITH: &str = r#"
@@ -381,10 +321,7 @@ const FUSED_ARITH: &str = r#"
 }
 "#;
 
-run!(fused_arith, FUSED_ARITH, |v: Result<&Value>| match v {
-    Ok(Value::I64(25)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(fused_arith, FUSED_ARITH, is(Value::I64(25)); FuseExpect::Jit);
 
 // A tail-recursive countdown: self-call in tail position loops.
 const FUSED_TAIL_LOOP: &str = r#"
@@ -398,10 +335,7 @@ const FUSED_TAIL_LOOP: &str = r#"
 }
 "#;
 
-run!(fused_tail_loop, FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
-    Ok(Value::I64(5050)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(fused_tail_loop, FUSED_TAIL_LOOP, is(Value::I64(5050)); FuseExpect::Jit);
 
 // Deep tail recursion runs in constant stack as a native loop. The
 // node-walk recurses, an activation per level.
@@ -416,10 +350,7 @@ const TAIL_LOOP_DEEP: &str = r#"
 }
 "#;
 
-run!(tail_loop_deep, TAIL_LOOP_DEEP, |v: Result<&Value>| match v {
-    Ok(Value::I64(500000)) => true,
-    _ => false,
-}; FuseExpect::Jit; jit_only);
+run!(tail_loop_deep, TAIL_LOOP_DEEP, is(Value::I64(500000)); FuseExpect::Jit; jit_only);
 
 // A depth kept from an earlier cycle catches up what it missed: `y`
 // fired while depth 1 took arm `0`, so its move to arm `1` writes `y`.
@@ -434,10 +365,7 @@ const TAIL_DEPTH_CATCHES_UP_AN_OUTER_WRITE: &str = r#"
 }
 "#;
 
-run!(tail_depth_catches_up_an_outer_write, TAIL_DEPTH_CATCHES_UP_AN_OUTER_WRITE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::Bool(true))
-), timeout: 5; FuseExpect::Jit);
+run!(tail_depth_catches_up_an_outer_write, TAIL_DEPTH_CATCHES_UP_AN_OUTER_WRITE, is(Value::Bool(true)), timeout: 5; FuseExpect::Jit);
 
 // A self-call in operand position (`n * fact(n - 1)`) is not a tail
 // call and must not be looped.
@@ -451,10 +379,7 @@ const FACT_VALUE_POSITION: &str = r#"
 }
 "#;
 
-run!(fact_value_position, FACT_VALUE_POSITION, |v: Result<&Value>| match v {
-    Ok(Value::I64(120)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(fact_value_position, FACT_VALUE_POSITION, is(Value::I64(120)); FuseExpect::Jit);
 
 // A mandelbrot-shape kernel.
 const FUSED_MANDELBROT: &str = r#"
@@ -469,10 +394,7 @@ const FUSED_MANDELBROT: &str = r#"
 }
 "#;
 
-run!(fused_mandelbrot, FUSED_MANDELBROT, |v: Result<&Value>| match v {
-    Ok(Value::I64(7)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(fused_mandelbrot, FUSED_MANDELBROT, is(Value::I64(7)); FuseExpect::Jit);
 
 // An unannotated callback passed to a HOF.
 const FOLD_DEFERRED_CALLBACK: &str = r#"
@@ -482,10 +404,7 @@ const FOLD_DEFERRED_CALLBACK: &str = r#"
 }
 "#;
 
-run!(fold_deferred_callback, FOLD_DEFERRED_CALLBACK, |v: Result<&Value>| match v {
-    Ok(Value::I64(9900)) => true,
-    _ => false,
-});
+run!(fold_deferred_callback, FOLD_DEFERRED_CALLBACK, is(Value::I64(9900)));
 
 // A recursive lambda with no annotations still computes correctly.
 const UNANNOTATED_RECURSION: &str = r#"
@@ -499,10 +418,7 @@ const UNANNOTATED_RECURSION: &str = r#"
 }
 "#;
 
-run!(unannotated_recursion, UNANNOTATED_RECURSION, |v: Result<&Value>| match v {
-    Ok(Value::I64(5050)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(unannotated_recursion, UNANNOTATED_RECURSION, is(Value::I64(5050)); FuseExpect::Jit);
 
 // A three-level call chain with no annotations. outer(5) = 20.
 const UNANNOTATED_THREE_LEVEL: &str = r#"
@@ -515,10 +431,7 @@ const UNANNOTATED_THREE_LEVEL: &str = r#"
 "#;
 
 // The bare lambdas' operand cells settle to i64, so the chain fuses.
-run!(unannotated_three_level, UNANNOTATED_THREE_LEVEL, |v: Result<&Value>| match v {
-    Ok(Value::I64(20)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(unannotated_three_level, UNANNOTATED_THREE_LEVEL, is(Value::I64(20)); FuseExpect::Jit);
 
 // A higher-order function with a function-typed argument: 5*5 + 1 = 26.
 const FN_FORMAL_HOF: &str = r#"
@@ -529,10 +442,7 @@ const FN_FORMAL_HOF: &str = r#"
 }
 "#;
 
-run!(fn_formal_hof, FN_FORMAL_HOF, |v: Result<&Value>| match v {
-    Ok(Value::I64(26)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(fn_formal_hof, FN_FORMAL_HOF, is(Value::I64(26)); FuseExpect::Jit);
 
 // A let-bound helper whose body is `array::fold` over a literal, called
 // transitively: helper(5) + 1 = 51.
@@ -547,10 +457,7 @@ const STATIC_FOLD_HELPER: &str = r#"
 run!(
     static_fold_helper_fuses,
     STATIC_FOLD_HELPER,
-    |v: Result<&Value>| match v {
-        Ok(Value::I64(51)) => true,
-        _ => false,
-    }; FuseExpect::Jit);
+    is(Value::I64(51)); FuseExpect::Jit);
 
 // A transitive chain g1 -> g2 -> g3 fuses whole: g1(10) = 21.
 const TRANSITIVE_CHAIN: &str = r#"
@@ -562,10 +469,7 @@ const TRANSITIVE_CHAIN: &str = r#"
 }
 "#;
 
-run!(transitive_chain, TRANSITIVE_CHAIN, |v: Result<&Value>| match v {
-    Ok(Value::I64(21)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(transitive_chain, TRANSITIVE_CHAIN, is(Value::I64(21)); FuseExpect::Jit);
 
 // A transitively-called callee whose body contains a cast: g(true) = 1.
 const CALL_THROUGH_CAST_CALLEE: &str = r#"
@@ -575,10 +479,7 @@ const CALL_THROUGH_CAST_CALLEE: &str = r#"
 }
 "#;
 
-run!(call_through_cast_callee, CALL_THROUGH_CAST_CALLEE, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(call_through_cast_callee, CALL_THROUGH_CAST_CALLEE, is(Value::I64(1)); FuseExpect::Jit);
 
 // The cast two callee levels deep: g(b) = h(b) + 10 = 21.
 const CAST_TWO_CALLEES_DEEP: &str = r#"
@@ -589,10 +490,7 @@ const CAST_TWO_CALLEES_DEEP: &str = r#"
 }
 "#;
 
-run!(cast_two_callees_deep, CAST_TWO_CALLEES_DEEP, |v: Result<&Value>| match v {
-    Ok(Value::I64(21)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(cast_two_callees_deep, CAST_TWO_CALLEES_DEEP, is(Value::I64(21)); FuseExpect::Jit);
 
 // A callee shared by two separate regions must compile per region.
 // a = g(true) + cast(false) = 1; bb = g(false) = 0; a + bb = 1.
@@ -605,10 +503,7 @@ const CROSS_REGION_CALLEE_BASE: &str = r#"
 }
 "#;
 
-run!(cross_region_callee_base, CROSS_REGION_CALLEE_BASE, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(cross_region_callee_base, CROSS_REGION_CALLEE_BASE, is(Value::I64(1)); FuseExpect::Jit);
 
 // A recursive callee whose base case is a cast: g(3) = 1.
 const RECURSIVE_CALLEE_CAST_BASE: &str = r#"
@@ -618,10 +513,7 @@ const RECURSIVE_CALLEE_CAST_BASE: &str = r#"
 }
 "#;
 
-run!(recursive_callee_cast_base, RECURSIVE_CALLEE_CAST_BASE, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(recursive_callee_cast_base, RECURSIVE_CALLEE_CAST_BASE, is(Value::I64(1)); FuseExpect::Jit);
 
 const LAMBDAMATCH0: &str = r#"
 {
@@ -632,10 +524,7 @@ const LAMBDAMATCH0: &str = r#"
 }
 "#;
 
-run!(lambdamatch0, LAMBDAMATCH0, |v: Result<&Value>| match v {
-    Ok(Value::I64(84)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(lambdamatch0, LAMBDAMATCH0, is(Value::I64(84)); FuseExpect::Jit);
 
 const LAMBDAMATCH1: &str = r#"
 {
@@ -656,10 +545,7 @@ const LAMBDAMATCH2: &str = r#"
 }
 "#;
 
-run!(lambdamatch2, LAMBDAMATCH2, |v: Result<&Value>| match v {
-    Ok(Value::I64(84)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(lambdamatch2, LAMBDAMATCH2, is(Value::I64(84)); FuseExpect::Jit);
 
 const LAMBDAMATCH3: &str = r#"
 {
@@ -677,10 +563,7 @@ const LAMBDAMATCH4: &str = r#"
 }
 "#;
 
-run!(lambdamatch4, LAMBDAMATCH4, |v: Result<&Value>| match v {
-    Ok(Value::I64(84)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(lambdamatch4, LAMBDAMATCH4, is(Value::I64(84)); FuseExpect::Jit);
 
 const LAMBDAMATCH5: &str = r#"
 {
@@ -703,10 +586,7 @@ const NESTED_OPTIONAL0: &str = r#"
 }
 "#;
 
-run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(nested_optional0, NESTED_OPTIONAL0, is(Value::I64(42)); FuseExpect::Jit);
 
 // Callsite args are updated every cycle, not only when the function
 // binds: the function sees the last arg value delivered before binding.
@@ -727,10 +607,7 @@ const ARG_UPDATE_BEFORE_BIND: &str = r#"
 }
 "#;
 
-run!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, |v: Result<&Value>| match v {
-    Ok(Value::I64(31)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, is(Value::I64(31)); FuseExpect::Jit);
 
 // Arg changes propagate after the function is already bound.
 const ARG_UPDATE_AFTER_BIND: &str = r#"
@@ -758,14 +635,7 @@ const VARGS0: &str = r#"
 array::push([1, 2], 3, 4, 5)
 "#;
 
-run!(vargs0, VARGS0, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] =>
-            true,
-        _ => false,
-    },
-    _ => false,
-});
+run!(vargs0, VARGS0, prints("[i64:1, i64:2, i64:3, i64:4, i64:5]"));
 
 // Cross-kernel callee resolution keys on kernel identity, not source
 // name: g's call to the outer f survives a later `let f` shadow.
@@ -779,12 +649,7 @@ const SHADOWED_NAME_CROSS_KERNEL: &str = r#"
 }
 "#;
 
-run!(shadowed_name_cross_kernel, SHADOWED_NAME_CROSS_KERNEL, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::I64(5))
-); FuseExpect::Jit);
+run!(shadowed_name_cross_kernel, SHADOWED_NAME_CROSS_KERNEL, is(Value::I64(5)); FuseExpect::Jit);
 
 // One polymorphic lambda called at two monomorphizations in one region
 // keys two kernels.
@@ -799,12 +664,7 @@ const TWO_MONOMORPHIZATIONS_ONE_REGION: &str = r#"
 }
 "#;
 
-run!(two_monomorphizations_one_region, TWO_MONOMORPHIZATIONS_ONE_REGION, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::F64(11.0))
-); FuseExpect::Jit);
+run!(two_monomorphizations_one_region, TWO_MONOMORPHIZATIONS_ONE_REGION, is(Value::F64(11.0)); FuseExpect::Jit);
 
 // A fold-callback local sharing a name with a nested callee's parameter
 // resolves by BindId; the collection still fuses.
@@ -819,12 +679,7 @@ const FOLD_CALLBACK_NAME_COLLISION: &str = r#"
 }
 "#;
 
-run!(fold_callback_name_collision, FOLD_CALLBACK_NAME_COLLISION, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::I64(21))
-); FuseExpect::Jit);
+run!(fold_callback_name_collision, FOLD_CALLBACK_NAME_COLLISION, is(Value::I64(21)); FuseExpect::Jit);
 
 // An abandoned kernel-closure build (the rec lambda de-fuses on the
 // base case's type test, which has no tag form) must not break a later
@@ -843,9 +698,7 @@ const ABANDONED_KERNEL_CLOSURE: &str = r#"
 }
 "#;
 
-run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:38, false]"
-}; FuseExpect::Jit);
+run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, prints("[i64:38, false]"); FuseExpect::Jit);
 
 // Taint escalation: a locally-unconsumed bottom bottoms only the
 // consuming path, never the whole kernel.
@@ -875,7 +728,7 @@ const UNUSED_BOTTOM_COMPOSITE_WITH_HOF: &str = r#"
 run!(
     unused_bottom_composite_with_hof,
     UNUSED_BOTTOM_COMPOSITE_WITH_HOF,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)));
+    is(Value::Bool(false));
     FuseExpect::Jit
 );
 
@@ -887,10 +740,7 @@ const UNUSED_BOTTOM_MAP_SLOT: &str = r#"
 }
 "#;
 
-run!(unused_bottom_map_slot, UNUSED_BOTTOM_MAP_SLOT, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::Bool(false))
-); FuseExpect::Jit);
+run!(unused_bottom_map_slot, UNUSED_BOTTOM_MAP_SLOT, is(Value::Bool(false)); FuseExpect::Jit);
 
 // find scans all slots: a bottom predicate after the matching element
 // bottoms the find; the independent tail fires.
@@ -901,10 +751,7 @@ const FIND_BOTTOM_AFTER_MATCH: &str = r#"
 }
 "#;
 
-run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(-1))
-); FuseExpect::Jit);
+run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, is(Value::I64(-1)); FuseExpect::Jit);
 
 // A tainted fold init poisons the acc delivery only: a callback that
 // never consumes the acc recovers.
@@ -933,7 +780,7 @@ const FOLD_TAINTED_INIT_CONSUMED_BOTTOMS: &str = r#"
 run!(
     fold_tainted_init_consumed_bottoms,
     FOLD_TAINTED_INIT_CONSUMED_BOTTOMS,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(-1)))
+    is(Value::I64(-1))
 );
 
 // A capture read only by a sleeping select arm does not re-fire the
@@ -950,7 +797,7 @@ const HOF_SLEEPING_ARM_CAPTURE_QUIET: &str = r#"
 run!(
     hof_sleeping_arm_capture_quiet,
     HOF_SLEEPING_ARM_CAPTURE_QUIET,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    is(Value::I64(1));
     FuseExpect::Jit
 );
 
@@ -985,9 +832,18 @@ run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; FuseExpect::Jit);
 
+/// `code`'s `raised` over a source of four slots: one raise per new
+/// slot, none from a slot already there.
+async fn raises_once_per_slot(code: &str, mode: Mode) -> Result<()> {
+    let (values, _) =
+        super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit).await?;
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), [0, 1, 2, 3, 4]);
+    Ok(())
+}
+
 // Each slot of a growing map calls `g` as an instance of its own, whose
 // first call is an init view: its constant error raises once per new
-// slot, three by the cycle the fourth slot arrives.
+// slot, four in all.
 const HOF_SLOT_CALLEE_FIRST_CALL: &str = r#"
 {
   let n = array::iter([1, 2, 3, 4]);
@@ -1000,24 +856,15 @@ const HOF_SLOT_CALLEE_FIRST_CALL: &str = r#"
     };
     array::map(array::init(n, |i| i), |x| g(x))
   };
-  select count(n) { 4 => raised, _ => never() }
+  raised
 }
 "#;
 
-// CR claude for claude: [test-gap/medium] This test and its two siblings
-// (hof_slot_nested_prev_len, hof_slot_constant_fires) read `raised` at the cycle
-// count(n) reaches 4. The catch handler's event fires at most once per cycle and later
-// raises queue, so `raised` is 3 there whether each new slot raises once or every slot
-// raises every cycle. They pin the under-fire half of 'a loop slot's first iteration is
-// an init view' and miss the over-fire half: a lost first-call or prev-length word that
-// makes old slots re-fire. Fix: assert the settled total, which is 4, for example
-// through dense_deltas::run_delta under modes!(), or by selecting `raised` at an
-// after_idle point. probe:
-// design/review-2026-10-19/repro/tests-functions-hof-slot-overfire-unobserved.sh
-// (tests-functions-01)
-run!(hof_slot_callee_first_call, HOF_SLOT_CALLEE_FIRST_CALL, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(3)))
-}; FuseExpect::Jit);
+async fn hof_slot_callee_first_call(mode: Mode) -> Result<()> {
+    raises_once_per_slot(HOF_SLOT_CALLEE_FIRST_CALL, mode).await
+}
+
+modes!(hof_slot_callee_first_call);
 
 // A nested map over a source outside the loop is an instance per outer
 // slot: a new slot's inner map fires on its first observation of `ys`,
@@ -1035,13 +882,15 @@ const HOF_SLOT_NESTED_PREV_LEN: &str = r#"
       e? + x
     })
   };
-  select count(n) { 4 => raised, _ => never() }
+  raised
 }
 "#;
 
-run!(hof_slot_nested_prev_len, HOF_SLOT_NESTED_PREV_LEN, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(3)))
-}; FuseExpect::Jit);
+async fn hof_slot_nested_prev_len(mode: Mode) -> Result<()> {
+    raises_once_per_slot(HOF_SLOT_NESTED_PREV_LEN, mode).await
+}
+
+modes!(hof_slot_nested_prev_len);
 
 // A new slot is a new instance, whose first update is an init view: a
 // constant in the callback body fires in each new slot, and its error
@@ -1057,13 +906,15 @@ const HOF_SLOT_CONSTANT_FIRES: &str = r#"
       e? + x
     })
   };
-  select count(n) { 4 => raised, _ => never() }
+  raised
 }
 "#;
 
-run!(hof_slot_constant_fires, HOF_SLOT_CONSTANT_FIRES, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(3)))
-}; FuseExpect::Jit);
+async fn hof_slot_constant_fires(mode: Mode) -> Result<()> {
+    raises_once_per_slot(HOF_SLOT_CONSTANT_FIRES, mode).await
+}
+
+modes!(hof_slot_constant_fires);
 
 // Non-tail recursion depth is bounded by memory, not a counter: depth
 // 1000 completes on both engines.
@@ -1164,7 +1015,7 @@ run!(
 // Parens are transparent: `let rec f = (|n| …)` is the bare spelling.
 run!(
     rec_through_parens,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let rec f = (|n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n - i64:1) });
         let result = f(i64:3)
@@ -1177,7 +1028,7 @@ run!(
 // typechecks like the inline one.
 run!(
     extracted_callback_settles_after_finalize,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    is(Value::I64(3)),
     "/test.gx" => r#"
         let a = [(i64:0, i64:1), (i64:2, i64:3)];
         let g = |(k, v)| select k == i64:2 { true => v, false => null };
@@ -1295,10 +1146,7 @@ const REC_IN_HOF_CALLBACK: &str = r#"
 }
 "#;
 
-run!(rec_in_hof_callback, REC_IN_HOF_CALLBACK, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(125250))
-); FuseExpect::Jit);
+run!(rec_in_hof_callback, REC_IN_HOF_CALLBACK, is(Value::I64(125250)); FuseExpect::Jit);
 
 // The split-callback twin: a catch in the same callback splits it and
 // the rec runs in the node-walk residue.
@@ -1312,10 +1160,7 @@ const REC_IN_SPLIT_CALLBACK: &str = r#"
 }
 "#;
 
-run!(rec_in_split_callback, REC_IN_SPLIT_CALLBACK, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(8)]),
-    _ => false,
-}; FuseExpect::Jit);
+run!(rec_in_split_callback, REC_IN_SPLIT_CALLBACK, prints("[i64:8]"); FuseExpect::Jit);
 
 // A recursion stays live to its captures: each cap fire recomputes.
 // Collects [100, 101, 102].
@@ -1328,12 +1173,7 @@ const REC_TRANSIENT_CAPTURE_WAKE: &str = r#"
 }
 "#;
 
-run!(rec_transient_capture_wake, REC_TRANSIENT_CAPTURE_WAKE, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => {
-        matches!(&a[..], [Value::I64(100), Value::I64(101), Value::I64(102)])
-    }
-    _ => false,
-}; FuseExpect::Jit);
+run!(rec_transient_capture_wake, REC_TRANSIENT_CAPTURE_WAKE, prints("[i64:100, i64:101, i64:102]"); FuseExpect::Jit);
 
 // State inside a recursive function persists across fires: three
 // levels of count step across three fires, sums [3, 6, 9].
@@ -1346,12 +1186,7 @@ const REC_TRANSIENT_STATEFUL_RETAINED: &str = r#"
 }
 "#;
 
-run!(rec_transient_stateful_retained, REC_TRANSIENT_STATEFUL_RETAINED, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => {
-        matches!(&a[..], [Value::I64(3), Value::I64(6), Value::I64(9)])
-    }
-    _ => false,
-}; FuseExpect::Jit);
+run!(rec_transient_stateful_retained, REC_TRANSIENT_STATEFUL_RETAINED, prints("[i64:3, i64:6, i64:9]"); FuseExpect::Jit);
 
 // Pure non-tail recursion re-fired with changing args recomputes:
 // [fib(8), fib(9), fib(10)] = [21, 34, 55].
@@ -1364,12 +1199,7 @@ const REC_TRANSIENT_PURE_REFIRE: &str = r#"
 }
 "#;
 
-run!(rec_transient_pure_refire, REC_TRANSIENT_PURE_REFIRE, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => {
-        matches!(&a[..], [Value::I64(21), Value::I64(34), Value::I64(55)])
-    }
-    _ => false,
-}; FuseExpect::Jit);
+run!(rec_transient_pure_refire, REC_TRANSIENT_PURE_REFIRE, prints("[i64:21, i64:34, i64:55]"); FuseExpect::Jit);
 
 // A recursion re-fired with the same argument value fires per delivery;
 // `uniq` is the damp. count(f(10)) reaches 3.
@@ -1383,10 +1213,7 @@ const REC_SAME_ARG_REFIRE_FIRES: &str = r#"
 }
 "#;
 
-run!(rec_same_arg_refire_fires, REC_SAME_ARG_REFIRE_FIRES, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(rec_same_arg_refire_fires, REC_SAME_ARG_REFIRE_FIRES, is(Value::I64(3)); FuseExpect::Jit);
 
 // Stateless builtins in a recursive body: f(4) = 7 per fire.
 const REC_TRANSIENT_STATELESS_BUILTIN: &str = r#"
@@ -1398,12 +1225,7 @@ const REC_TRANSIENT_STATELESS_BUILTIN: &str = r#"
 }
 "#;
 
-run!(rec_transient_stateless_builtin, REC_TRANSIENT_STATELESS_BUILTIN, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => {
-        matches!(&a[..], [Value::I64(7), Value::I64(7), Value::I64(7)])
-    }
-    _ => false,
-}; FuseExpect::Jit);
+run!(rec_transient_stateless_builtin, REC_TRANSIENT_STATELESS_BUILTIN, prints("[i64:7, i64:7, i64:7]"); FuseExpect::Jit);
 
 // Generic Graphix wrappers over compiler-owned collection nodes; a
 // lambda param called inside the body resolves statically per callsite.
@@ -1475,7 +1297,7 @@ const MUTUAL_RECURSIVE_STATIC_CALLS: &str = r#"
 run!(
     mutual_recursive_static_calls,
     MUTUAL_RECURSIVE_STATIC_CALLS,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    is(Value::Bool(true));
     FuseExpect::None
 );
 
@@ -1528,12 +1350,7 @@ const CALL_ARG_VALUE_SLOT_NARROW: &str = r#"
 }
 "#;
 
-run!(call_arg_value_slot_narrow, CALL_ARG_VALUE_SLOT_NARROW, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(2)]),
-        _ => false,
-    }
-});
+run!(call_arg_value_slot_narrow, CALL_ARG_VALUE_SLOT_NARROW, prints("[i64:1, i64:2]"));
 
 // The result twin: a call result whose node type promises a Value is
 // widened from the callee's raw array box.
@@ -1545,14 +1362,7 @@ const CALL_RESULT_VALUE_WIDEN_XKERNEL: &str = r#"
 }
 "#;
 
-run!(call_result_value_widen_xkernel, CALL_RESULT_VALUE_WIDEN_XKERNEL, |v: Result<
-    &Value,
->| {
-    match v {
-        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1)]),
-        _ => false,
-    }
-});
+run!(call_result_value_widen_xkernel, CALL_RESULT_VALUE_WIDEN_XKERNEL, prints("[i64:1]"));
 
 const CALL_RESULT_VALUE_WIDEN_HOF: &str = r#"
 {
@@ -1561,12 +1371,7 @@ const CALL_RESULT_VALUE_WIDEN_HOF: &str = r#"
 }
 "#;
 
-run!(call_result_value_widen_hof, CALL_RESULT_VALUE_WIDEN_HOF, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(3)]),
-        _ => false,
-    }
-});
+run!(call_result_value_widen_hof, CALL_RESULT_VALUE_WIDEN_HOF, prints("[i64:2, i64:3]"));
 
 // String args and returns marshal cross-kernel.
 const XKERNEL_STRING_ARG_RET: &str = r#"
@@ -1576,12 +1381,7 @@ const XKERNEL_STRING_ARG_RET: &str = r#"
 }
 "#;
 
-run!(xkernel_string_arg_ret, XKERNEL_STRING_ARG_RET, |v: Result<&Value>| {
-    match v {
-        Ok(Value::String(s)) => s.as_str() == "hello!",
-        _ => false,
-    }
-});
+run!(xkernel_string_arg_ret, XKERNEL_STRING_ARG_RET, prints(r#""hello!""#));
 
 // A string-returning callee feeding a union-typed param.
 const XKERNEL_STRING_WIDEN: &str = r#"
@@ -1592,12 +1392,7 @@ const XKERNEL_STRING_WIDEN: &str = r#"
 }
 "#;
 
-run!(xkernel_string_widen, XKERNEL_STRING_WIDEN, |v: Result<&Value>| {
-    match v {
-        Ok(Value::String(s)) => s.as_str() == "abc",
-        _ => false,
-    }
-});
+run!(xkernel_string_widen, XKERNEL_STRING_WIDEN, prints(r#""abc""#));
 
 const EXCESS_POSITIONAL_REJECTED: &str = r#"
 {
@@ -1743,17 +1538,14 @@ const OPEN_CALLEE_OBLIGATION_IS_PER_INSTANCE: &str = r#"
 run!(
     open_callee_obligation_is_per_instance,
     OPEN_CALLEE_OBLIGATION_IS_PER_INSTANCE,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[[i64:1], ["two"]]"#
+    prints(r#"[[i64:1], ["two"]]"#)
 );
 
 // A collection callback's element goes to its positional parameter;
 // labeled parameters take their defaults (the callback interprets).
 const LABELED_CALLBACK_DEFAULT: &str =
     r#"array::map([i64:7], |#foo: i64 = i64:42, x| foo + x)"#;
-run!(labeled_callback_default, LABELED_CALLBACK_DEFAULT, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) if &a[..] == [Value::I64(49)] => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(labeled_callback_default, LABELED_CALLBACK_DEFAULT, prints("[i64:49]"); FuseExpect::Jit);
 
 // A callback with only labeled parameters has no slot for the element:
 // a type error.
@@ -1780,12 +1572,7 @@ const OPEN_RETURN_CALLEE_IN_CALLBACK: &str = r#"
 }
 "#;
 
-run!(open_return_callee_in_callback, OPEN_RETURN_CALLEE_IN_CALLBACK, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::I64(42))
-));
+run!(open_return_callee_in_callback, OPEN_RETURN_CALLEE_IN_CALLBACK, is(Value::I64(42)));
 
 // A formal every self-call passes through unchanged is never rebound,
 // so an fn-typed invariant formal does not gate the tail loop.
@@ -1801,10 +1588,7 @@ const FN_INVARIANT_TAIL_LOOP: &str = r#"
 }
 "#;
 
-run!(fn_invariant_tail_loop, FN_INVARIANT_TAIL_LOOP, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(55))
-); FuseExpect::Jit);
+run!(fn_invariant_tail_loop, FN_INVARIANT_TAIL_LOOP, is(Value::I64(55)); FuseExpect::Jit);
 
 // An invariant String formal is a kernel slot that is never rebound.
 const STRING_INVARIANT_TAIL_LOOP: &str = r#"
@@ -1818,11 +1602,7 @@ const STRING_INVARIANT_TAIL_LOOP: &str = r#"
 }
 "#;
 
-run!(string_invariant_tail_loop, STRING_INVARIANT_TAIL_LOOP, |v: Result<&Value>| match v
-{
-    Ok(Value::String(s)) => &**s == "sum:55",
-    _ => false,
-}; FuseExpect::Jit);
+run!(string_invariant_tail_loop, STRING_INVARIANT_TAIL_LOOP, prints(r#""sum:55""#); FuseExpect::Jit);
 
 // Two call sites, one recursive helper, two different callbacks of
 // identical type key two kernels (3008, not 3003 or 8008).
@@ -1837,10 +1617,7 @@ const FN_FORMAL_TWO_CALLBACKS: &str = r#"
 }
 "#;
 
-run!(fn_formal_two_callbacks, FN_FORMAL_TWO_CALLBACKS, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(3008))
-); FuseExpect::Jit);
+run!(fn_formal_two_callbacks, FN_FORMAL_TWO_CALLBACKS, is(Value::I64(3008)); FuseExpect::Jit);
 
 // A non-invariant fn formal (rebound by a self-call): the callbacks
 // fuse, `g` does not.
@@ -1855,10 +1632,7 @@ const FN_FORMAL_REBOUND: &str = r#"
 }
 "#;
 
-run!(fn_formal_rebound, FN_FORMAL_REBOUND, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1100))
-); FuseExpect::Jit);
+run!(fn_formal_rebound, FN_FORMAL_REBOUND, is(Value::I64(1100)); FuseExpect::Jit);
 
 // A helper forwarding its fn formal to another helper: the two
 // forwarding instances key two kernels (110 vs 102 in the low part).
@@ -1870,10 +1644,7 @@ const FN_FORMAL_FORWARDED: &str = r#"
 }
 "#;
 
-run!(fn_formal_forwarded, FN_FORMAL_FORWARDED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(102110))
-); FuseExpect::Jit);
+run!(fn_formal_forwarded, FN_FORMAL_FORWARDED, is(Value::I64(102110)); FuseExpect::Jit);
 
 // A forwarded callback capturing an outer binding spelled like the
 // callee's formal `n`: the tail rebind targets the formal by BindId.
@@ -1887,7 +1658,7 @@ const FN_FORMAL_CAPTURE_COLLIDES_BOUND: &str = r#"
 "#;
 
 run!(fn_formal_capture_collides_bound, FN_FORMAL_CAPTURE_COLLIDES_BOUND,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(11)));
+    is(Value::I64(11));
     FuseExpect::Jit);
 
 // The same collision on the accumulator formal `acc`.
@@ -1901,7 +1672,7 @@ const FN_FORMAL_CAPTURE_COLLIDES_ACC: &str = r#"
 "#;
 
 run!(fn_formal_capture_collides_acc, FN_FORMAL_CAPTURE_COLLIDES_ACC,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(18)));
+    is(Value::I64(18));
     FuseExpect::Jit);
 
 // Instantiation identity keys on the callback's source lambda, so a CPS
@@ -1916,21 +1687,10 @@ const CPS_WRAPPER_RECURSION: &str = r#"
 }
 "#;
 
-run!(cps_wrapper_recursion, CPS_WRAPPER_RECURSION, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(3))
-); FuseExpect::None);
+run!(cps_wrapper_recursion, CPS_WRAPPER_RECURSION, is(Value::I64(3)); FuseExpect::Jit);
 
-// An instantiation snapshots its def's LambdaIds: calls to a returned
-// lambda resolve statically (the fn-valued `let` node-walks).
-// CR claude for claude: [doc-drift/low] The comment above says calls to a returned
-// lambda resolve statically. They do not: try_static_resolve reads only bind_to_lambda,
-// and GXDBG_RESOLVE prints `RESOLVE add1(2) ... b2l=false`. The value 33 is the same
-// under dynamic dispatch, so the test pins only the value. Rewrite the comment to say
-// what it pins (a returned lambda called through an alias and directly, dispatched at
-// run time) or drop the test. probe:
-// design/review-2026-10-19/repro/tests-functions-returned-lambda-dynamic.sh
-// (tests-functions-03)
+// A returned lambda called through an alias and directly: both calls
+// dispatch at run time (the fn-valued `let` node-walks).
 const RETURNED_LAMBDA_RESOLVES: &str = r#"
 {
   let mk = |x: i64| |y: i64| x + y;
@@ -1939,10 +1699,7 @@ const RETURNED_LAMBDA_RESOLVES: &str = r#"
 }
 "#;
 
-run!(returned_lambda_resolves, RETURNED_LAMBDA_RESOLVES, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(33))
-); FuseExpect::None);
+run!(returned_lambda_resolves, RETURNED_LAMBDA_RESOLVES, is(Value::I64(33)); FuseExpect::None);
 
 // Loop-carried non-register formals: the tail rebind carries every
 // kernel param kind.
@@ -1955,10 +1712,7 @@ const STRING_CARRIED_TAIL_LOOP: &str = r#"
 }
 "#;
 
-run!(string_carried_tail_loop, STRING_CARRIED_TAIL_LOOP, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "x.....",
-    _ => false,
-}; FuseExpect::Jit);
+run!(string_carried_tail_loop, STRING_CARRIED_TAIL_LOOP, prints(r#""x.....""#); FuseExpect::Jit);
 
 const VALUE_CARRIED_TAIL_LOOP: &str = r#"
 {
@@ -1968,10 +1722,7 @@ const VALUE_CARRIED_TAIL_LOOP: &str = r#"
 }
 "#;
 
-run!(value_carried_tail_loop, VALUE_CARRIED_TAIL_LOOP, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(3))
-); FuseExpect::Jit);
+run!(value_carried_tail_loop, VALUE_CARRIED_TAIL_LOOP, is(Value::I64(3)); FuseExpect::Jit);
 
 // A List tail bound by a non-scalar payload pattern is carried through
 // the tail loop.
@@ -1984,10 +1735,7 @@ const LIST_CARRIED_FOLD: &str = r#"
 }
 "#;
 
-run!(list_carried_fold, LIST_CARRIED_FOLD, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(6))
-); FuseExpect::Jit);
+run!(list_carried_fold, LIST_CARRIED_FOLD, is(Value::I64(6)); FuseExpect::Jit);
 
 // A dynamic callee that became null makes the call bottom; the bound
 // instance is not invoked in its place.
@@ -2027,9 +1775,7 @@ const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
 }
 "#;
 
-run!(tail_rebind_carries_bottom, TAIL_REBIND_CARRIES_BOTTOM, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[null, i64:7]"
-}; FuseExpect::Jit);
+run!(tail_rebind_carries_bottom, TAIL_REBIND_CARRIES_BOTTOM, prints("[null, i64:7]"); FuseExpect::Jit);
 
 // An omitted default is checked against its own parameter, found by
 // name, when the declared type lists the labels in another order.
@@ -2119,7 +1865,7 @@ const TAIL_QUIET_BOTTOM_INLINE: &str = r#"{
 
 async fn tail_quiet_bottom(code: &str, mode: Mode) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![6, 6]);
+    assert_eq!(as_i64s(&values), vec![6, 6]);
     Ok(())
 }
 
@@ -2179,9 +1925,7 @@ const WIDEST_ARG_EITHER_ORDER: &str = r#"
 }
 "#;
 
-run!(widest_arg_either_order, WIDEST_ARG_EITHER_ORDER, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[null, u64:0]"
-});
+run!(widest_arg_either_order, WIDEST_ARG_EITHER_ORDER, prints("[null, u64:0]"));
 
 const LIST_CONS_WIDER_TAIL: &str = r#"
 {
@@ -2190,9 +1934,7 @@ const LIST_CONS_WIDER_TAIL: &str = r#"
 }
 "#;
 
-run!(list_cons_wider_tail, LIST_CONS_WIDER_TAIL, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[u64:0, u64:1, null]"
-});
+run!(list_cons_wider_tail, LIST_CONS_WIDER_TAIL, prints("[u64:0, u64:1, null]"));
 
 // Two arguments neither of which holds the other wait for a later
 // argument that holds both.
@@ -2204,15 +1946,13 @@ const WIDEST_ARG_LAST: &str = r#"
 }
 "#;
 
-run!(widest_arg_last, WIDEST_ARG_LAST, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "\"B\""
-});
+run!(widest_arg_last, WIDEST_ARG_LAST, prints("\"B\""));
 
 // A lambda in parentheses is a lambda: its binding generalizes.
 run!(
     parenthesized_lambda_generalizes,
     r#"{ let f = (|v| v * v); (array::map([u8:3], f), array::map([4], f)) }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[[u8:9], [i64:16]]"
+    prints("[[u8:9], [i64:16]]")
 );
 
 // A call's refusal is placed at the call, in parentheses or not.
@@ -2234,7 +1974,7 @@ async fn a_call_error_is_placed_at_the_call() -> Result<()> {
 run!(
     widest_arg_literal,
     r#"{ let a = [1]; array::concat(a, [4, null]) }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:4, null]"
+    prints("[i64:1, i64:4, null]")
 );
 
 // A generalized callback's result is at most its inferred shape: an
@@ -2242,27 +1982,21 @@ run!(
 run!(
     generalized_callback_result_widens,
     r#"{ let f = |a| (a, u8:100); let v: Array<(i64, [u8, null])> = array::map([1], f); v }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[[i64:1, u8:100]]"
+    prints("[[i64:1, u8:100]]")
 );
 
 run!(
     generalized_callback_result_does_not_narrow,
     r#"{ let f = |a| (a, null); let v: Array<(i64, u8)> = array::map([1], f); v }"#,
-    refused("does not contain");
+    refused(r#"Array<(i64, u8)> does not contain Array<"#);
     FuseExpect::None
 );
 
 // No argument holds the others: refused, in either order.
-// CR claude for claude: [test-gap/low] This and the four widening refusals around it
-// match only "does not contain", which nearly every type error contains. A refusal for
-// an unrelated reason (say, of `&null` as `&[u64, null]`) would pass and leave
-// callsite.rs::Widening unpinned. Pin each fixture's own mismatch, e.g. "'a: `A does
-// not contain `B" here, "&'a: u64 does not contain &[u64, null]" for the reference
-// case. Messages checked with graphix --check. (tests-functions-05)
 run!(
     no_widest_arg_refused,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; (f(`A, `B), f(`B, `A)) }"#,
-    refused("does not contain");
+    refused(r#"'a: `A does not contain `B"#);
     FuseExpect::None
 );
 
@@ -2270,7 +2004,7 @@ run!(
 run!(
     widest_arg_types_the_result,
     r#"{ let n: [u64, null] = null; let f = |x: 'a, y: 'a| -> 'a y; let r: u64 = f(u64:0, n); r }"#,
-    refused("does not contain");
+    refused(r#"type mismatch u64 does not contain [u64, null]"#);
     FuseExpect::None
 );
 
@@ -2283,7 +2017,7 @@ run!(
   let g = |x: 'a, f: fn(v: 'a) -> 'a, y: 'a| -> 'a f(y);
   g(u64:0, |v| v, n)
 }"#,
-    refused("does not contain");
+    refused(r#"'a: u64 does not contain [u64, null]"#);
     FuseExpect::None
 );
 
@@ -2297,7 +2031,7 @@ run!(
   let f = |x: &'a, y: &'a| -> &'a y;
   f(r, n)
 }"#,
-    refused("does not contain");
+    refused(r#"&'a: u64 does not contain &[u64, null]"#);
     FuseExpect::None
 );
 
@@ -2313,9 +2047,7 @@ const WRAPPED_POLY_REF_TWICE: &str = r#"
 }
 "#;
 
-run!(wrapped_poly_ref_twice, WRAPPED_POLY_REF_TWICE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"], [i64:2]]"#
-}; FuseExpect::None);
+run!(wrapped_poly_ref_twice, WRAPPED_POLY_REF_TWICE, prints(r#"[[i64:1, i64:1], ["s"], [i64:2]]"#); FuseExpect::None);
 
 const FORWARDED_POLY_REF_TWICE: &str = r#"
 {
@@ -2326,9 +2058,7 @@ const FORWARDED_POLY_REF_TWICE: &str = r#"
 }
 "#;
 
-run!(forwarded_poly_ref_twice, FORWARDED_POLY_REF_TWICE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"]]"#
-}; FuseExpect::None);
+run!(forwarded_poly_ref_twice, FORWARDED_POLY_REF_TWICE, prints(r#"[[i64:1, i64:1], ["s"]]"#); FuseExpect::None);
 
 // `flat_map`'s callback returns the collection, never a bare element:
 // whether to splice is never decided by a value's shape.
@@ -2376,7 +2106,7 @@ run!(a_generic_value_written_to_a_generic_binding, r#"
     f <- |z| z;
     str::len(a)
 }
-"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+"#, is(Value::I64(1)); FuseExpect::Jit);
 
 const UNWRITTEN_CALLBACK_IS_GENERIC: &str = r#"
 {
@@ -2385,11 +2115,11 @@ const UNWRITTEN_CALLBACK_IS_GENERIC: &str = r#"
 }
 "#;
 
-run!(unwritten_callback_is_generic, UNWRITTEN_CALLBACK_IS_GENERIC, |v: Result<
-    &Value,
->| {
-    format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s", "s"]]"#
-});
+run!(
+    unwritten_callback_is_generic,
+    UNWRITTEN_CALLBACK_IS_GENERIC,
+    prints(r#"[[i64:1, i64:1], ["s", "s"]]"#)
+);
 
 // A callback typed body-first returns a cell constrained to an array;
 // `Option<'b>` holds it through `'b`, not as the whole `['b, null]`.
@@ -2400,11 +2130,11 @@ const EXTRACTED_FILTER_MAP_CALLBACK: &str = r#"
 }
 "#;
 
-run!(extracted_filter_map_callback, EXTRACTED_FILTER_MAP_CALLBACK, |v: Result<
-    &Value,
->| {
-    format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:2, i64:2]]"
-});
+run!(
+    extracted_filter_map_callback,
+    EXTRACTED_FILTER_MAP_CALLBACK,
+    prints("[[i64:1, i64:1], [i64:2, i64:2]]")
+);
 
 // A callback's argument type holding another function's `'b` stays apart
 // from the collection's own `'b`: type variables are cells, not names.
@@ -2417,11 +2147,7 @@ const SAME_NAMED_TVAR_IN_CALLBACK_ARG: &str = r#"
 }
 "#;
 
-run!(same_named_tvar_in_callback_arg, SAME_NAMED_TVAR_IN_CALLBACK_ARG, |v: Result<
-    &Value,
->| {
-    format!("{}", v.unwrap()) == "[i64:3, i64:3]"
-}; FuseExpect::None);
+run!(same_named_tvar_in_callback_arg, SAME_NAMED_TVAR_IN_CALLBACK_ARG, prints("[i64:3, i64:3]"); FuseExpect::None);
 
 // A call through any expression that reaches a parameter (parens, an
 // alias) types against the definition's own cells: an open gate's
@@ -2438,9 +2164,7 @@ const PARAM_CALLED_THROUGH_AN_EXPRESSION: &str = r#"
 run!(
     param_called_through_an_expression,
     PARAM_CALLED_THROUGH_AN_EXPRESSION,
-    |v: Result<&Value>| {
-        format!("{}", v.unwrap()) == r#"[[i64:2, i64:4], ["a!"], i64:1]"#
-    };
+    prints(r#"[[i64:2, i64:4], ["a!"], i64:1]"#);
     FuseExpect::Jit
 );
 
@@ -2456,9 +2180,7 @@ const ENVIRONMENT_CELL_IS_NOT_GENERALIZED: &str = r#"
 }
 "#;
 
-run!(environment_cell_is_not_generalized, ENVIRONMENT_CELL_IS_NOT_GENERALIZED, |v: Result<
-    &Value,
->| matches!(v, Ok(Value::I64(42))); FuseExpect::Jit);
+run!(environment_cell_is_not_generalized, ENVIRONMENT_CELL_IS_NOT_GENERALIZED, is(Value::I64(42)); FuseExpect::Jit);
 
 // So that definition is monomorphic: a second call at another type is
 // refused where it is made.
@@ -2484,17 +2206,14 @@ const CLOSED_DEFINITIONS_ARE_POLYMORPHIC: &str = r#"
 }
 "#;
 
-run!(closed_definitions_are_polymorphic, CLOSED_DEFINITIONS_ARE_POLYMORPHIC, |v: Result<
-    &Value,
->| format!("{}", v.unwrap())
-        == r#"[[[i64:1, f64:1.], ["s", f64:1.]], [[i64:1, true], ["s", true]], i64:1, "s", i64:2, "t"]"#; FuseExpect::Jit);
+run!(closed_definitions_are_polymorphic, CLOSED_DEFINITIONS_ARE_POLYMORPHIC, prints(r#"[[[i64:1, f64:1.], ["s", f64:1.]], [[i64:1, true], ["s", true]], i64:1, "s", i64:2, "t"]"#); FuseExpect::Jit);
 
 // A definition whose gate has not run yet (a submodule the interface
 // declares first calls into its parent) is called at its declared
 // scheme: each call copies its cells.
 run!(
     call_before_the_definition_is_checked,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:1, "s"]"#,
+    prints(r#"[i64:1, "s"]"#),
     "/test.gx" => r#"
 mod m;
 let result = m::sub::both
@@ -2550,7 +2269,7 @@ run!(
 // constraint the parameter accepts.
 run!(
     rigid_where_every_choice_fits,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    is(Value::I64(3)),
     "/test.gx" => r#"
         let anything = |a: Any| 1;
         let num = |a: Number| 1;
@@ -2608,7 +2327,7 @@ run!(
         let rows = [{domain: "a"}, {domain: "b"}];
         array::map(rows, |d| f(d.domain))
     }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["ok", "ok"]"#
+    prints(r#"["ok", "ok"]"#)
 );
 
 // A binding that aliases a lambda resolves statically, annotated or not.
@@ -2622,16 +2341,13 @@ const LAMBDA_ALIAS_NATIVE: &str = r#"
 }
 "#;
 
-run!(lambda_alias_native, LAMBDA_ALIAS_NATIVE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(5))
-));
+run!(lambda_alias_native, LAMBDA_ALIAS_NATIVE, is(Value::I64(5)));
 
 // An alias of a generalized function stays generic, parenthesized or not.
 run!(
     parenthesized_alias_stays_generic,
     r#"{ let g = |x| x; let f = (g); (array::map([1], f), array::map(["s"], f)) }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[[i64:1], ["s"]]"#
+    prints(r#"[[i64:1], ["s"]]"#)
 );
 
 // A default that calls its own function and omits its own label is
@@ -2644,7 +2360,7 @@ run!(
     let rec f = |#a = select n > 0 { true => f(1), false => 0 }, b: i64| -> i64 a + b;
     f(1)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+    is(Value::I64(1))
 );
 
 // Functions gathered in an array, a map or an `any` meet, as a select's
@@ -2658,7 +2374,7 @@ run!(
     let h = any(|x| x, |x| x + 1);
     (array::map(fs, |f| f(1)), g(1), h(1))
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[[i64:1, i64:2], i64:1, i64:1]";
+    prints("[[i64:1, i64:2], i64:1, i64:1]");
     FuseExpect::None
 );
 
@@ -2672,19 +2388,12 @@ const LAMBDA_ALIAS_WRITTEN: &str = r#"
 }
 "#;
 
-run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, |v: Result<&Value>| matches!(v, Ok(Value::I64(20))); FuseExpect::None);
+run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, is(Value::I64(20)); FuseExpect::None);
 
-// A fresh bind runs each omitted default once: a counting default in a
-// collection callback reads 1 in every slot, in every mode.
 // A labeled default is born with the binding and delivers FIRED at a
 // fresh callee's first dispatch: an arm's first selection and a rebind
 // each sample it. A stale default would give [0] and [10] on both
 // engines alike.
-// CR claude for claude: [readability/low] The first two lines of the comment above ('A
-// fresh bind runs each omitted default once: a counting default ... reads 1 in every
-// slot') describe default_runs_once_per_bind below, not this test, and run into this
-// test's own comment as if they were one claim. Move them to sit above const
-// DEFAULT_RUNS_ONCE_PER_BIND. Found by reading; not run. (tests-functions-06)
 async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
     let code = r#"{
         let d = 5;
@@ -2707,6 +2416,8 @@ async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
 
 modes!(default_fires_at_first_dispatch);
 
+// A fresh bind runs each omitted default once: a counting default in a
+// collection callback reads 1 in every slot, in every mode.
 const DEFAULT_RUNS_ONCE_PER_BIND: &str = r#"
 {
     let f = |#n = count(1), x: i64| (x, n);
@@ -2749,9 +2460,7 @@ const WIDEST_ARGUMENT_ANY_ORDER: &str = r#"
 }
 "#;
 
-run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:1, f64:2.], [i64:3, i64:1]]"
-}; FuseExpect::Jit);
+run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, prints("[[i64:1, i64:1], [i64:1, f64:2.], [i64:3, i64:1]]"); FuseExpect::Jit);
 
 // A default omitted through a fn type that names the label is judged by
 // that type: the call runs the instance with the fn type's parameter, so
@@ -2929,30 +2638,28 @@ const ORDERED_SLOTS_AFTER_A_CALLBACK_CHANGE: &str = r#"
     let n = 0;
     n <- clk ~ n + 1;
     let got: Array<i64> = [];
-    let q = queuefn(#trigger: clk, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+    let pop = clk ~! select n { k if k >= 3 => true, _ => never() };
+    let q = queuefn(#trigger: pop, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
     let g1 = |x: i64| -> i64 x;
     let g2 = |x: i64| -> i64 q(x);
     let f = select n { k if k < 3 => g1, _ => g2 };
     let r = array::map(array::init(8, |j| j + 100 * n), f);
     select n {
-        k if k > 12 => array::find(array::init(9, |j| j), |j| got[j + 1]$ < got[j]$),
+        k if k > 20 => (
+            got[0]$,
+            array::find(array::init(9, |j| j), |j| got[j + 1]$ < got[j]$)
+        ),
         _ => never()
     }
 }
 "#;
 
-// CR claude for claude: [test-gap/low] The queuefn banks two pops (clk fires at n = 1
-// and 2) before g2 is chosen, so three slots run at once in the change cycle. Their
-// `got <- x ~ array::push(got, x)` writes all start from the same `got` and replace one
-// another. `got` starts at 303: the calls of 'the cycle it changes' are never recorded,
-// and running them out of slot order would still pass. Fix: trigger the queuefn only
-// once g2 is chosen (`#trigger: select n { k if k >= 3 => clk, _ => never() }`) or
-// record `(q(x) ~ n, x)` pairs, then assert that `got` starts at 300. probe:
-// design/review-2026-10-19/repro/tests-functions-ordered-slots-lost-records.gx
-// (tests-functions-02)
-run!(ordered_slots_after_a_callback_change, ORDERED_SLOTS_AFTER_A_CALLBACK_CHANGE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Null))
-}; FuseExpect::Jit);
+run!(
+    ordered_slots_after_a_callback_change,
+    ORDERED_SLOTS_AFTER_A_CALLBACK_CHANGE,
+    prints("[i64:300, null]");
+    FuseExpect::Jit
+);
 
 // A lambda two definitions deep reads the outermost one's cells renamed
 // through every enclosing instance.
@@ -2983,9 +2690,7 @@ const BUILTIN_BOUND_WITHOUT_ITS_DEFAULT: &str = r#"
 }
 "#;
 
-run!(builtin_bound_without_its_default, BUILTIN_BOUND_WITHOUT_ITS_DEFAULT, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:3, i64:1, i64:2]"
-}; FuseExpect::None);
+run!(builtin_bound_without_its_default, BUILTIN_BOUND_WITHOUT_ITS_DEFAULT, prints("[i64:3, i64:1, i64:2]"); FuseExpect::None);
 
 // A builtin's variadic type is written like its other types: a trait
 // in it is rewritten.
@@ -3137,18 +2842,12 @@ async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
 
 /// A fused non-tail recursion counts its kernel blocks.
 #[tokio::test(flavor = "multi_thread")]
-// CR claude for claude: [test-gap/low] Nothing checks that this recursion fused. If it
-// de-fuses, the node-walk's call counting stops it and the test passes as a copy of
-// activation_budget_stops_a_runaway_recursion, so the kernel blocks' budget accounting
-// goes unpinned. Assert in budget_stops that ctx.fusion_stats() shows a fused region
-// when fusion is on, or write #[native] on the call. Found by reading; not run.
-// (tests-functions-04)
 async fn activation_budget_stops_a_fused_runaway_recursion() -> anyhow::Result<()> {
     budget_stops(
         Default::default(),
         r#"{
             let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) };
-            f(-1)
+            #[native] f(-1)
         }"#,
     )
     .await
@@ -3162,7 +2861,7 @@ run!(lambda_sampled_on_a_trigger, r#"{
   f <- t ~ |x: i64| x + 1;
   let g = t ~ 'a: Number |x: 'a| -> 'a x + x;
   select f(5) { 6 => g(4), _ => never() }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(8))); FuseExpect::None);
+}"#, is(Value::I64(8)); FuseExpect::None);
 
 // A nested fn type's quantifier named like the signature's is its own:
 // the outer 'b stays rigid whichever parameter comes first.
@@ -3212,13 +2911,13 @@ run!(
 // own, whichever parameter comes first: check and build agree.
 run!(
     shadowing_rank2_formal_after,
-    |v: Result<&Value>| matches!(v, Ok(Value::F64(2.5))),
+    is(Value::F64(2.5)),
     "/test.gx" => "let f = 'a: Number |y: 'a, g: fn<'a: Number>(x: 'a) -> 'a| -> 'a g(y); let result = f(2.5, |x| x)"
 );
 
 run!(
     shadowing_rank2_formal_before,
-    |v: Result<&Value>| matches!(v, Ok(Value::F64(2.5))),
+    is(Value::F64(2.5)),
     "/test.gx" => "let f = 'a: Number |g: fn<'a: Number>(x: 'a) -> 'a, y: 'a| -> 'a g(y); let result = f(|x| x, 2.5)"
 );
 
@@ -3226,7 +2925,7 @@ run!(
 // instance of itself. One bounded tighter than the target is refused.
 run!(
     rank2_formal_forwards_to_rank2,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         let app = |f: fn<'b: Any>(x: 'b) -> 'b| f(1);
         let app2 = |g: fn<'c: Any>(x: 'c) -> 'c| app(g);
@@ -3253,7 +2952,7 @@ run!(declared_quantifier_in_the_return_narrows, r#"
     let r: Array<i64> = f("1");
     array::len(r)
 }
-"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
+"#, is(Value::I64(0)); FuseExpect::Jit);
 
 run!(declared_bound_quantifier_in_the_return_narrows, r#"
 {
@@ -3262,7 +2961,7 @@ run!(declared_bound_quantifier_in_the_return_narrows, r#"
     let r: Result<i64, E> = f("12");
     r$ + 1
 }
-"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(13))); FuseExpect::Jit);
+"#, is(Value::I64(13)); FuseExpect::Jit);
 
 // A builtin or collection intrinsic bound with a callback type of
 // another arity than it calls is refused, never built short.
@@ -3283,3 +2982,105 @@ run!(quantified_lambda_through_a_builtin_callback, r#"{
     let gs = array::group('a: Number |x: 'a| -> 'a x, |n, _| n == 1);
     array::map(gs, |f| f(2))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2)]); FuseExpect::None);
+
+// A compile job stolen while a statement waits in a join runs under its
+// own context: the defaults in check are the compile's, not the
+// thread's, so every `f(i)` omitting `#k` resolves statically and fuses.
+run!(omitted_defaults_resolve_under_stolen_jobs, r#"{
+  let f = |#k = 1, x: i64| -> i64 { let a = x + k; let c = a * 3; let b = c * 2; b };
+  let r0 = #[native] f(0);
+  let r1 = #[native] f(1);
+  let r2 = #[native] f(2);
+  let r3 = #[native] f(3);
+  let r4 = #[native] f(4);
+  let r5 = #[native] f(5);
+  let r6 = #[native] f(6);
+  let r7 = #[native] f(7);
+  let r8 = #[native] f(8);
+  let r9 = #[native] f(9);
+  let r10 = #[native] f(10);
+  let r11 = #[native] f(11);
+  let r12 = #[native] f(12);
+  let r13 = #[native] f(13);
+  let r14 = #[native] f(14);
+  let r15 = #[native] f(15);
+  let r16 = #[native] f(16);
+  let r17 = #[native] f(17);
+  let r18 = #[native] f(18);
+  let r19 = #[native] f(19);
+  let r20 = #[native] f(20);
+  let r21 = #[native] f(21);
+  let r22 = #[native] f(22);
+  let r23 = #[native] f(23);
+  let r24 = #[native] f(24);
+  let r25 = #[native] f(25);
+  let r26 = #[native] f(26);
+  let r27 = #[native] f(27);
+  let r28 = #[native] f(28);
+  let r29 = #[native] f(29);
+  let r30 = #[native] f(30);
+  let r31 = #[native] f(31);
+  let r32 = #[native] f(32);
+  let r33 = #[native] f(33);
+  let r34 = #[native] f(34);
+  let r35 = #[native] f(35);
+  let r36 = #[native] f(36);
+  let r37 = #[native] f(37);
+  let r38 = #[native] f(38);
+  let r39 = #[native] f(39);
+  let r40 = #[native] f(40);
+  let r41 = #[native] f(41);
+  let r42 = #[native] f(42);
+  let r43 = #[native] f(43);
+  let r44 = #[native] f(44);
+  let r45 = #[native] f(45);
+  let r46 = #[native] f(46);
+  let r47 = #[native] f(47);
+  let r48 = #[native] f(48);
+  let r49 = #[native] f(49);
+  let r50 = #[native] f(50);
+  let r51 = #[native] f(51);
+  let r52 = #[native] f(52);
+  let r53 = #[native] f(53);
+  let r54 = #[native] f(54);
+  let r55 = #[native] f(55);
+  let r56 = #[native] f(56);
+  let r57 = #[native] f(57);
+  let r58 = #[native] f(58);
+  let r59 = #[native] f(59);
+  [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52, r53, r54, r55, r56, r57, r58, r59]
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == (1..=60).map(|i| i * 6).collect::<Vec<i64>>())
+}; FuseExpect::Jit);
+
+// A recursive call omitting a labeled default is a self-call, not a site
+// its own default's check keeps dynamic: it fuses under #[native] (the
+// recursion runs at k = 1: 5 * 2 + 4 + 3 + 2 + 1).
+run!(
+    omitted_default_self_call_fuses,
+    r#"{
+  let rec f = |#k: i64 = i64:1, n: i64| -> i64 select n { m if m <= i64:0 => i64:0, m => m * k + f(m - i64:1) };
+  let g = |x: i64| -> i64 #[native] f(#k: i64:2, x);
+  g(i64:5)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(20)))
+);
+
+// A data-only variable settles to the widest argument whatever the order,
+// an argument whose type is an open cell included.
+run!(
+    widening_waits_for_an_open_argument,
+    r#"{
+  let pick = |x: 'a, y: 'a, z: 'a| -> Array<'a> [x, y, z];
+  let v: [i64, null] = null;
+  let h = |z| pick(i64:1, z, v);
+  h(null)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, null, null]")
+);
+
+// A builtin binding declares every argument's type, its variadic's too.
+run!(builtin_binding_needs_a_typed_variadic, r#"{
+  let s = |@args| -> i64 'core_sum;
+  s(1, 2)
+}"#, refused("builtin function core_sum requires all arguments to have type annotations"); FuseExpect::None);

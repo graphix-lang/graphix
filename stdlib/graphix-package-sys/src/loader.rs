@@ -117,6 +117,42 @@ impl ModuleResolver for NetidxResolver {
             let [(imp0, intf0), (imp1, intf1)] = MODULE_LAYOUTS;
             let (i0, f0, i1, f1) =
                 join!(fetch(imp0), fetch(intf0), fetch(imp1), fetch(intf1));
+            // XCR claude for claude: [bug/medium] A miss on netidx records no probe,
+            // so the shell's program entry is written as though netidx had never
+            // been asked. With GRAPHIX_MODPATH='netidx:/mods' ahead of a directory
+            // holding m.gx, the entry's record lists only file probes. Once
+            // /mods/m.gx is published, a cold run compiles netidx's m but a warm
+            // start restores the file's. Fix: push `Probe::Netidx` for every path
+            // fetched here, absent ones included, so `sources_record` refuses the
+            // entry, and document on `ModuleResolver::resolve` that a miss must be
+            // recorded too. probe:
+            // design/review-2026-10-19/repro/shell-netidx-absent-probe.sh
+            // (shell-02)
+            // 2026-10-19 claude: NetidxResolver::resolve pushes Probe::Netidx
+            // whenever it fetched, found or absent, so sources_record writes no
+            // program entry for a resolution that asked netidx. Pin:
+            // graphix-package-sys loader::test::a_miss_records_its_probe. The doc
+            // on ModuleResolver::resolve (graphix-types expr/resolver.rs) saying a
+            // miss must be recorded too is left for the main session.
+            // XCR claude for claude: [bug/high] A probe is recorded only when netidx
+            // HAS the module. When netidx lacks it, this returns TryNextMethod with
+            // no Probe::Netidx. A later file resolver then supplies the module, and
+            // sources_record writes a program image entry that netidx can later
+            // shadow without anyone noticing. With
+            // GRAPHIX_MODPATH="netidx:/mods,<dir>", once /mods/foo.gx is published
+            // a warm start still runs <dir>/foo.gx while --no-cache runs the netidx
+            // one. Push a Probe::Netidx for every path fetched, found or absent (in
+            // `found`), so no program entry is written for a resolution that
+            // consulted netidx. probe:
+            // design/review-2026-10-19/repro/sys-net-netidx-absent-probe.sh
+            // (sys-net-01)
+            // netidx was asked, found or not: no file vouches for what it
+            // answers, now or once it serves the module
+            // 2026-10-19 claude: Fixed with shell-02: a probe is recorded for every
+            // netidx fetch. Pin: loader::test::a_miss_records_its_probe.
+            if let Some(probes) = probes {
+                probes.push(Probe::Netidx(i0.0.clone()))
+            }
             let mut found = |(path, text): (Path, Result<ArcStr>), imp: bool| match text {
                 Ok(text) => Ok((path, Some(text))),
                 Err(e) if absent(&e) => {
@@ -141,40 +177,11 @@ impl ModuleResolver for NetidxResolver {
             })();
             match layouts.and_then(|layouts| choose_layout(name, layouts)) {
                 Err(e) => Resolution::Broken(e),
-                // CR claude for claude: [bug/medium] A miss on netidx records no probe,
-                // so the shell's program entry is written as though netidx had never
-                // been asked. With GRAPHIX_MODPATH='netidx:/mods' ahead of a directory
-                // holding m.gx, the entry's record lists only file probes. Once
-                // /mods/m.gx is published, a cold run compiles netidx's m but a warm
-                // start restores the file's. Fix: push `Probe::Netidx` for every path
-                // fetched here, absent ones included, so `sources_record` refuses the
-                // entry, and document on `ModuleResolver::resolve` that a miss must be
-                // recorded too. probe:
-                // design/review-2026-10-19/repro/shell-netidx-absent-probe.sh
-                // (shell-02)
-                // CR claude for claude: [bug/high] A probe is recorded only when netidx
-                // HAS the module. When netidx lacks it, this returns TryNextMethod with
-                // no Probe::Netidx. A later file resolver then supplies the module, and
-                // sources_record writes a program image entry that netidx can later
-                // shadow without anyone noticing. With
-                // GRAPHIX_MODPATH="netidx:/mods,<dir>", once /mods/foo.gx is published
-                // a warm start still runs <dir>/foo.gx while --no-cache runs the netidx
-                // one. Push a Probe::Netidx for every path fetched, found or absent (in
-                // `found`), so no program entry is written for a resolution that
-                // consulted netidx. probe:
-                // design/review-2026-10-19/repro/sys-net-netidx-absent-probe.sh
-                // (sys-net-01)
                 Ok(None) => Resolution::TryNextMethod,
-                Ok(Some(((impl_path, text), intf))) => {
-                    // no file vouches for a module read from netidx
-                    if let Some(probes) = probes {
-                        probes.push(Probe::Netidx(impl_path.clone()))
-                    }
-                    Resolution::parsed(
-                        intf.map(|(path, text)| ori(text, &path)),
-                        ori(text, &impl_path),
-                    )
-                }
+                Ok(Some(((impl_path, text), intf))) => Resolution::parsed(
+                    intf.map(|(path, text)| ori(text, &path)),
+                    ori(text, &impl_path),
+                ),
             }
         })
     }
@@ -201,5 +208,36 @@ impl ModuleResolver for NetidxResolver {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// A module netidx does not serve still records that netidx was
+    /// asked: a later file resolver's answer is no file's alone to vouch
+    /// for, since netidx may serve the module later (sys-net-01, shell-02).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_miss_records_its_probe() {
+        let env = netidx::InternalOnly::new().await.unwrap();
+        let resolver = NetidxResolver::new(
+            env.subscriber().clone(),
+            Path::from("/mods"),
+            Some(Duration::from_secs(1)),
+        );
+        let parent = Arc::new(Origin {
+            parent: None,
+            source: Source::Unspecified,
+            text: ArcStr::from(""),
+        });
+        let probes = Probes::default();
+        let mut errors = vec![];
+        let name = Path::from("foo");
+        let r = resolver
+            .resolve(&ModPath::root(), &parent, &name, &mut errors, Some(&probes))
+            .await;
+        assert!(matches!(r, Resolution::TryNextMethod));
+        assert!(matches!(&probes.take()[..], [Probe::Netidx(_)]));
     }
 }

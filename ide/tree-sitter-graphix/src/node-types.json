@@ -9327,6 +9327,10 @@
           "named": true
         },
         {
+          "type": "shebang",
+          "named": true
+        },
+        {
           "type": "sig_item",
           "named": true
         },
@@ -10153,6 +10157,10 @@
           "named": true
         },
         {
+          "type": "raw_string",
+          "named": true
+        },
+        {
           "type": "slice_prefix_pattern",
           "named": true
         },
@@ -10162,6 +10170,10 @@
         },
         {
           "type": "struct_pattern",
+          "named": true
+        },
+        {
+          "type": "triple_string",
           "named": true
         },
         {
@@ -13282,6 +13294,10 @@
   {
     "type": "seqq",
     "named": false
+  },
+  {
+    "type": "shebang",
+    "named": true
   },
   {
     "type": "sig",

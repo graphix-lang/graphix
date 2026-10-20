@@ -1614,15 +1614,15 @@ impl Type {
         self.union_parts(Some((env, false)), &mut parts)?;
         match parts.rigid_apart() {
             None => (),
-            Some(RigidApart::BesideKnown(tv)) => bail!(
+            Some(Apart::TwoRigid) => bail!(
+                "{} must be one type, but its type variables may differ",
+                self.resolve_tvars()
+            ),
+            Some(Apart::BesideKnown(tv)) => bail!(
                 "{} must be one type, but the declared variable '{} may differ from \
                  its other members",
                 self.resolve_tvars(),
-                tv.name
-            ),
-            Some(RigidApart::Two) => bail!(
-                "{} must be one type, but its type variables may differ",
-                self.resolve_tvars()
+                ShortName(&tv.name)
             ),
         }
         parts.merge_open();
@@ -1969,7 +1969,7 @@ impl Type {
     /// each alternative of self that matches it, where containment against
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
-    // CR claude for eric: [bug/high] Unioning each open cell's parts is wrong for a
+    // XCR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
     // cell under an abstract type's parameters, which are invariant and compared
     // exactly by the run-time nominal test. An inferred `T(x)` arm over [T<i64>,
     // T<string>] narrows its predicate to T<[i64, string]>, a type no value carries, so
@@ -1980,10 +1980,11 @@ impl Type {
     // of unioning the cells, or make the inferred abstract predicate test the tag
     // alone. probe: design/review-2026-10-19/repro/c-pattern-abstract-union-params.gx
     // (c-pattern-02)
-    // 2026-10-19 claude: Not fixed: the same hole is x-typecheck-patterns-02 just
-    // below, for eric, which asks for a ruling between making the arm's predicate the
-    // set of matching instantiations (this CR's first option) and refusing the inferred
-    // form as the written-union form is. Re-addressed so the two are ruled together.
+    // 2026-10-19 claude: Fixed by its second option: an inferred abstract predicate
+    // tests the tag alone at run time (IsAFlags::MatchAbstract), and Reach covers each
+    // scrutinee member the atom's payload covers. Pin:
+    // lang::select::abstract_pattern_over_two_instantiations (T(x) over [T<i64>,
+    // T<string>] matches both and is exhaustive).
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
@@ -2047,6 +2048,12 @@ impl Type {
                 // the same way. probe:
                 // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-bind-two-insts.gx
                 // (x-typecheck-patterns-02)
+                // 2026-10-19 claude: c-pattern-02's fix resolves the reported behaviour: the
+                // inferred Box(b) arm tests the tag at run time, so it matches Box(true) and
+                // Box(3) (the probe prints ["box true", "box 3", "other"]), and b is [bool,
+                // i64]. The predicate still reads Box<[bool, i64]>; the remaining question is
+                // only whether to spell it as the Set of instantiations instead. Pin:
+                // lang::select::abstract_pattern_over_two_instantiations.
                 Type::union_exact(env, &p)?.contains(env, &Type::TVar(c.clone()))?;
             }
         }
@@ -2476,21 +2483,21 @@ enum Measure {
     Numbers,
 }
 
-/// A type read as a union ([`Type::union_parts`]): how many known members
-/// it has by its measure, the first of them, and its open cells.
 /// Why a union's rigid member keeps it from being one type.
-enum RigidApart {
-    BesideKnown(TVar),
-    Two,
+enum Apart<'a> {
+    BesideKnown(&'a TVar),
+    TwoRigid,
 }
 
+/// A type read as a union ([`Type::union_parts`]): how many known members
+/// it has by its measure, the first of them, and its open cells.
 struct UnionParts {
     measure: Measure,
     known: usize,
     first: Option<Type>,
     open: SmallVec<[TVar; 2]>,
-    /// The primitive and the other known members counted so far, so a
-    /// member met twice counts once.
+    /// The primitives and the other members counted so far: a member
+    /// met twice is one.
     prims: BitFlags<netidx_value::Typ>,
     others: SmallVec<[Type; 2]>,
 }
@@ -2507,15 +2514,15 @@ impl UnionParts {
         }
     }
 
-    /// Why a rigid open member cannot be made one type with the rest:
-    /// it stands beside a known member, or beside another rigid cell.
-    fn rigid_apart(&self) -> Option<RigidApart> {
+    /// A rigid open member that cannot be made one type with the rest:
+    /// beside a known member, or beside another rigid cell.
+    fn rigid_apart(&self) -> Option<Apart<'_>> {
         let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
-        match rigid.next() {
-            None => None,
-            Some(a) if self.known > 0 => Some(RigidApart::BesideKnown(a.clone())),
-            Some(a) => {
-                rigid.any(|b| b.cell_addr() != a.cell_addr()).then_some(RigidApart::Two)
+        let a = rigid.next()?;
+        match self.known > 0 {
+            true => Some(Apart::BesideKnown(a)),
+            false => {
+                rigid.any(|b| b.cell_addr() != a.cell_addr()).then_some(Apart::TwoRigid)
             }
         }
     }
@@ -2554,27 +2561,28 @@ impl UnionParts {
     // members. OR primitive members into one flag set and count it at the end, and skip
     // a non-primitive member equal to one already counted. Pin it in lang::types.
     // probe: design/review-2026-10-19/repro/t-tvar-singleton-dup-members.gx (t-tvar-01)
-    // 2026-10-19 claude: UnionParts counts distinct members: primitive tags OR into one
-    // set (only new tags count) and a non-primitive member equal to one counted is
-    // skipped. Pin: lang::types::unsound_acceptances_are_refused's accepted list
-    // (SINGLETON_DUPLICATE_MEMBER, 9).
+    // 2026-10-19 claude: UnionParts counts distinct members: primitives as one flag
+    // set, any other member once. Pin: lang::types::singleton_counts_a_member_once
+    // (k(false, 3) is 9; the build used to refuse h's instance).
     fn member(&mut self, t: &Type) {
         let n = match (self.measure, t) {
-            (_, Type::Any) => 2,
             (measure, Type::Primitive(p)) => {
-                let p = match measure {
-                    Measure::Members => *p,
-                    Measure::Numbers => *p & netidx_value::Typ::number(),
-                };
-                let fresh = p & !self.prims;
-                self.prims |= p;
-                fresh.len()
+                let new = *p & !self.prims;
+                self.prims |= *p;
+                match measure {
+                    Measure::Members => new.len(),
+                    Measure::Numbers => (new & netidx_value::Typ::number()).len(),
+                }
             }
-            (Measure::Members, t) if !self.others.contains(t) => {
+            (_, Type::Any) => 2,
+            (_, t) if self.others.contains(t) => 0,
+            (measure, t) => {
                 self.others.push(t.clone());
-                1
+                match measure {
+                    Measure::Members => 1,
+                    Measure::Numbers => 0,
+                }
             }
-            (Measure::Members | Measure::Numbers, _) => 0,
         };
         self.known += n;
         if n > 0 && self.first.is_none() {

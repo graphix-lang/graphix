@@ -1,0 +1,1 @@
+{ let g = |q: [Map<string, i64>, bytes]| -> i64 select q { Map<string, i64> as a => str::len("[a]"), bytes as a => str::len("[a]") }; let w: [Map<string, i64>, bytes] = {"a" => i64:1}; let r = #[native] g(w); println("[r]"); sys::exit(sys::time::after_idle(duration:50.ms, 0)) }

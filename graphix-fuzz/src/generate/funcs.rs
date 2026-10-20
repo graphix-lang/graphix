@@ -61,8 +61,8 @@ pub(super) fn gen_typed_lambda(
 ) -> Vec<String> {
     let nlabels = if chance(rng, cfg.p_labeled) { 1 + rng.below(3) } else { 0 };
     let arity = if nlabels > 0 { rng.below(3) } else { 1 + rng.below(3) };
-    let params: Vec<GenType> = (0..arity).map(|_| types::scalar_type(rng)).collect();
-    let ret = types::scalar_type(rng);
+    let params: Vec<GenType> = (0..arity).map(|_| signature_type(rng)).collect();
+    let ret = signature_type(rng);
     let names = param_names_excluding(ctx, rng, cfg, arity, &[]);
     let mut labeled: Vec<(Label, Option<String>)> = Vec::new();
     for name in param_names_excluding(ctx, rng, cfg, nlabels, &names) {
@@ -121,6 +121,72 @@ pub(super) fn gen_typed_lambda(
         stmts.push(format!("let {c}: {} = {name}({args})", ret.render()));
         ctx.push(c, ret);
     }
+    stmts
+}
+
+/// A typed lambda's positional parameter or return type: a scalar, now
+/// and then a union of runtime forms.
+fn signature_type(rng: &mut Rng) -> GenType {
+    match rng.below(16) {
+        0 => types::random_union(rng, 1),
+        _ => types::scalar_type(rng),
+    }
+}
+
+/// A union of runtime forms that flows: built at an annotated let, passed
+/// through a function that takes and returns it, stored in a struct, and
+/// read by a second function's type-test select. Both functions enter the
+/// callable vocabulary, so later calls pass and read unions too.
+pub(super) fn gen_union_flow(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+) -> Vec<String> {
+    stats.union_flow = true;
+    let u = types::random_union(rng, 1);
+    let GenType::Union(members) = &u else { unreachable!() };
+    let t = u.render();
+    let member = rng.pick(members);
+    let built = exprs::gen_typed(ctx, rng, member, 2);
+    let v = ctx.name_for_bind(rng, cfg);
+    let mut stmts = vec![format!("let {v}: {t} = {built}")];
+    ctx.push(v.clone(), u.clone());
+    let (f, p, k, g, q) =
+        (ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh());
+    let other = exprs::gen_typed(ctx, rng, &u, 1);
+    stmts.push(format!(
+        "let {f} = |{p}: {t}, {k}: i64| -> {t} select {k} {{ i64:0 => {other}, _ => {p} }}"
+    ));
+    let mut inner = ctx.clone();
+    inner.push(q.clone(), u.clone());
+    let read = super::patterns::union_select(&inner, rng, &q, members, &I64, 2);
+    stmts.push(format!("let {g} = |{q}: {t}| -> i64 {read}"));
+    let fn_ty = |params: Vec<GenType>, ret: GenType| GenType::Fn {
+        labels: Vec::new(),
+        params,
+        ret: Box::new(ret),
+    };
+    ctx.push(f.clone(), fn_ty(vec![u.clone(), I64], u.clone()));
+    ctx.push(g.clone(), fn_ty(vec![u.clone()], I64));
+    let n = exprs::gen_typed(ctx, rng, &I64, 1);
+    let (w, r) = (ctx.fresh(), ctx.fresh());
+    stmts.push(format!("let {w}: {t} = {f}({v}, {n})"));
+    let carried = match rng.below(2) {
+        0 => w.clone(),
+        _ => {
+            let s = ctx.fresh();
+            stmts.push(format!("let {s} = {{ n: {n}, x: {w} }}"));
+            ctx.push(
+                s.clone(),
+                GenType::Struct(vec![("n".into(), I64), ("x".into(), u.clone())]),
+            );
+            format!("{s}.x")
+        }
+    };
+    stmts.push(format!("let {r} = {g}({carried})"));
+    ctx.push(w, u);
+    ctx.push(r, I64);
     stmts
 }
 
@@ -565,15 +631,21 @@ pub(super) fn gen_rec_lambda(
             format!("({f}({m} - i64:1) + {f}({m} - i64:2))"),
         ),
     };
-    // CR claude for claude: [test-gap/low] The tail shapes here (1 and 2), and the
-    // fold-callback let rec in try_hof, never carry #[tail_recursive], so a change that
-    // stops building them as native loops still AGREEs on every generated program.
-    // fusecheck.manifest only guards corpus pins. Prefix them with #[tail_recursive] at
-    // even odds: the harness already drops a JIT "no loop is built" refusal unrecorded
-    // where the body cannot fuse. Found by reading; a shape-1/2 sample with the
-    // attribute agrees and fuses. (fuzz-gen-a-05)
+    // a tail shape whose base calls nothing (a call may hold per-call
+    // memory, which no loop shares) and reads no reference (references
+    // de-fuse) asserts its loop half the time: a JIT that stops building
+    // it refuses (a body that cannot fuse is dropped unrecorded)
+    let calls_or_derefs = base.contains("::")
+        || base.as_bytes().windows(2).any(|w| {
+            ((w[0].is_ascii_alphanumeric() || w[0] == b'_') && w[1] == b'(')
+                || (w[0] == b'*' && w[1] != b' ')
+        });
+    let attr = match (shape, !calls_or_derefs && chance(rng, 0.5)) {
+        (1 | 2, true) => "#[tail_recursive] ",
+        _ => "",
+    };
     let rec = format!(
-        "let rec {f} = {sig} select {n} {{ {m} if {m} <= i64:0 => {base}, {m} => {step} }}"
+        "{attr}let rec {f} = {sig} select {n} {{ {m} if {m} <= i64:0 => {base}, {m} => {step} }}"
     );
     // the rec lambda itself is not callable vocabulary: random extra call
     // sites risk deep double-recursion blowups
@@ -583,10 +655,80 @@ pub(super) fn gen_rec_lambda(
     stmts
 }
 
+/// The members a kind union draws from: its type, a value of it over an
+/// `i64` `{n}` and a string `{s}`, and its type-test arm reading an `i64`.
+const KIND_MEMBERS: [(&str, &str, &str); 9] = [
+    ("Array<i64>", "[{n}, {n}]", "Array<i64> as a => array::len(a)"),
+    ("(i64, i64)", "({n}, {n})", "(i64, i64) as (x, y) => x + y"),
+    ("List<i64>", "[<{n}>]", "List<i64> as l => list::len(l) + i64:100"),
+    ("{a: i64, b: i64}", "{a: {n}, b: {n}}", "{a: i64, b: i64} as {a, b} => a * b"),
+    ("`A(i64, i64)", "`A({n}, {n})", "`A(x, y) => x - y"),
+    ("string", "{s}", "string as t => str::len(t)"),
+    ("`S", "`S", "`S => i64:7"),
+    ("i64", "{n}", "i64 as k => k"),
+    ("f64", "cast<f64>({n})$", "f64 as f => cast<i64>(f)$"),
+];
+
+/// A union of members of different runtime forms (composite kinds, a
+/// string beside a bare variant, two numeric types), annotated at its
+/// let and read by one type-test arm per member, compared with `==`, and
+/// a map's key.
+fn kind_union(ctx: &mut GenCtx, rng: &mut Rng, n: &str, s: &str) -> Vec<String> {
+    let mut picked: Vec<usize> = (0..KIND_MEMBERS.len()).collect();
+    rng.shuffle(&mut picked);
+    picked.truncate(2 + rng.below(KIND_MEMBERS.len() - 1));
+    let member = |i: usize| KIND_MEMBERS[i];
+    let value = |i: usize| member(i).1.replace("{n}", n).replace("{s}", s);
+    let ty = format!(
+        "[{}]",
+        picked.iter().map(|&i| member(i).0).collect::<Vec<_>>().join(", ")
+    );
+    let arms = picked.iter().map(|&i| member(i).2).collect::<Vec<_>>().join(", ");
+    let (u, w, r, e, m) =
+        (ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh());
+    let (a, b) = (picked[rng.below(picked.len())], picked[rng.below(picked.len())]);
+    let stmts = vec![
+        format!("let {u}: {ty} = {}", value(a)),
+        format!("let {w}: {ty} = {}", value(b)),
+        format!("let {r} = select {u} {{ {arms} }}"),
+        format!("let {e} = {u} == {w}"),
+        format!("let {m} = map::len({{{u} => i64:1, {w} => i64:2}})"),
+    ];
+    ctx.push(r, I64);
+    ctx.push(e, GenType::Bool);
+    ctx.push(m, I64);
+    stmts
+}
+
+/// Results that reach a let and a typed parameter before they are
+/// consumed: a checked product bound as it is, and a `Result` built by a
+/// select, annotated, and passed to a function that takes it.
+fn result_lets(ctx: &mut GenCtx, n: &str, s: &str) -> Vec<String> {
+    let (c, cr, f, p, v, r) =
+        (ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh());
+    let stmts = vec![
+        format!("let {c} = {n} *? {n}"),
+        format!("let {cr} = select {c} {{ error as _ => i64:0, x => x }}"),
+        format!(
+            "let {f} = |{p}: Result<i64, `E(string)>| -> i64 \
+             select {p} {{ error as _ => i64:-1, x => x }}"
+        ),
+        format!(
+            "let {v}: Result<i64, `E(string)> = \
+             select ({n} % i64:2) {{ i64:0 => error(`E({s})), _ => {n} }}"
+        ),
+        format!("let {r} = {f}({v})"),
+    ];
+    ctx.push(cr, I64);
+    ctx.push(r, I64);
+    stmts
+}
+
 /// A value of a shape `random_type` never draws, built and consumed in
 /// place, its consumer bound as an `i64`: a primitive union read by a
-/// type test, an option of a composite, a variant nested in a struct, or
-/// a recursive typedef with a `let rec` builder and consumer. Each crosses
+/// type test, an option of a composite, a variant nested in a struct, a
+/// recursive typedef with a `let rec` builder and consumer, a union of
+/// runtime forms, or Results bound before they are consumed. Each crosses
 /// a kernel as an opaque value.
 pub(super) fn gen_shape_template(
     ctx: &mut GenCtx,
@@ -594,10 +736,21 @@ pub(super) fn gen_shape_template(
     stats: &mut GenStats,
 ) -> Vec<String> {
     stats.shape = true;
-    let v = ctx.fresh();
-    let r = ctx.fresh();
     let n = exprs::gen_typed(ctx, rng, &I64, 1);
     let s = exprs::gen_typed(ctx, rng, &GenType::Str, 1);
+    match rng.below(6) {
+        4 => {
+            stats.kind_union = true;
+            return kind_union(ctx, rng, &n, &s);
+        }
+        5 => {
+            stats.result_let = true;
+            return result_lets(ctx, &n, &s);
+        }
+        _ => (),
+    }
+    let v = ctx.fresh();
+    let r = ctx.fresh();
     let stmts = match rng.below(4) {
         0 => {
             let init = if rng.below(2) == 0 { n } else { s };
@@ -655,41 +808,32 @@ pub(super) fn gen_shape_template(
     stmts
 }
 
-/// Sibling calls of one `queuefn` wrapper, its trigger and arguments drawn
-/// from the program: the calls reach one ORDERED builtin, so they run in
-/// order whatever forks around them.
+/// Sibling calls of one `queuefn` wrapper, each its own `let`, the
+/// trigger a credit for fewer than all of them: the calls reach one ORDERED
+/// builtin, so the first in program order run and the rest stay queued
+/// whatever forks around them. The queued ones print, so a reordered call
+/// shows as another left queued.
 pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<String> {
     let (qf, x) = (ctx.fresh(), ctx.fresh());
-    let trigger = exprs::gen_typed(ctx, rng, &I64, 1);
+    let n = 2 + rng.below(3);
+    let credits = 1 + rng.below(n - 1);
     let body = exprs::gen_typed(ctx, rng, &I64, 1);
     let mut stmts = vec![format!(
-        "let {qf} = queuefn(#trigger: {trigger}, |{x}: i64| -> i64 {x} + {body})"
+        "let {qf} = queuefn(#trigger: i64:{credits}, |{x}: i64| -> i64 {x} + {body})"
     )];
-    // CR claude for claude: [test-gap/medium] This template cannot see call order. With
-    // 3 calls and a trigger that fires once at birth, the last call stays queued
-    // forever, so the one tuple/array holding all the calls is bottom for good (and so
-    // is every reader of it). With 2 calls the pure wrapped fn gives the same values in
-    // either order. Neither form catches the ORDERED violation the template exists for.
-    // Bind each call to its own let pushed into ctx (observe then prints each), with a
-    // trigger that releases fewer than all of them, so a reordered or forked sibling
-    // shows as a different call left queued. probe:
-    // design/review-2026-10-19/repro/fuzz-gen-a-queuefn-siblings-vacuous.gx
-    // (fuzz-gen-a-01)
-    let calls: Vec<String> = (0..2 + rng.below(2))
-        .map(|_| format!("{qf}({})", exprs::gen_typed(ctx, rng, &I64, 1)))
+    let calls: Vec<(String, String)> = (0..n)
+        .map(|_| (ctx.fresh(), format!("{qf}({})", exprs::gen_typed(ctx, rng, &I64, 1))))
         .collect();
-    let r = ctx.fresh();
-    let ty = match rng.below(2) {
-        0 => {
-            stmts.push(format!("let {r} = ({})", calls.join(", ")));
-            GenType::Tuple(vec![I64; calls.len()])
-        }
-        _ => {
-            stmts.push(format!("let {r} = [{}]", calls.join(", ")));
-            GenType::Array(Box::new(I64))
-        }
-    };
     ctx.push_entry(qf, super::Entry::Opaque);
-    ctx.push(r, ty);
+    for (i, (c, call)) in calls.into_iter().enumerate() {
+        stmts.push(format!("let {c} = {call}"));
+        match i < credits {
+            true => ctx.push(c, I64),
+            false => {
+                stmts.push(format!("println(\"[{c}]\")"));
+                ctx.push_entry(c, super::Entry::Opaque);
+            }
+        }
+    }
     stmts
 }

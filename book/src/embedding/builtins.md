@@ -66,14 +66,6 @@ activation's result. This applies outside `seq` as well as inside it.
 Retain outputs for paused computations whose semantic value remains valid;
 do not reset every builtin merely because it is classified asynchronous.
 
-<!-- CR claude for claude: [doc-drift/medium] The Once example below clears `done` in
-`sleep` ("a woken once is a fresh one"). Since a wake became a resume, core's `Once`
-keeps its latch across a sleep: its `sleep` is empty and its `reborn` clears the latch.
-The prose after the example says the same, so the page contradicts itself, and an author
-who copies the code gets a once that re-fires at every re-entry of its arm. Fix: make
-`sleep` empty and move the reset into `reborn`, as core does. The same block is
-duplicated in packages/creating.md; keep this copy and link to it from there. probe:
-design/review-2026-10-19/repro/book-modules-udt-once-sleep.gx (book-modules-udt-01) -->
 ## Implementing Once
 
 ```rust
@@ -141,9 +133,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         }
     }
 
-    // once is a restart builtin: a woken once is a fresh one
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.done = false
+    // sleep is a pause: the latch is kept across it
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+
+    // a seq step entered for its next run is a birth: forget the update
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        self.done = false;
+        self.out = TagValue::phantom()
     }
 }
 ```
@@ -177,34 +173,12 @@ update that follows a sleep and is a birth, a seq step entered for its
 next run: that is where `once` clears its flag, as a new one would
 hold nothing.
 
-<!-- CR claude for claude: [doc-drift/medium] This section and the two after it describe
-`genn::bind`/`genn::reference`/`genn::apply`, the bind ids `pid`/`nid`/`xid`, and
-setting `Event::variables` plus `store_insert` by hand. The `array::group` they cite now
-holds a `genn::Callback` (`Callback::new`, `feed_fn`, `feed_arg`, and
-`update`/`refs`/`sleep`/`delete` forwarded). Feeding goes through `ExecCtx::deliver`,
-which also stands a bottom stale in the store, and CLAUDE.md forbids a node writing
-`event.variables` directly. Fix: rewrite the walkthrough around `genn::Callback` and
-`ExecCtx::deliver`/`publish`, and drop the `pid`/`xid`/`nid` story and the "hard way
-(for now)" paragraph. Found by reading; not run. (book-modules-udt-04) -->
 ## Higher Order Functions
 
-Right, now that the easy stuff is out of the way, lets see how we can
-implement a built-in that takes another Graphix function as an
-argument. This gets compiler guts all over the place, sorry about
-that. The simplest example in the standard library is `array::group`,
-`Group` in `stdlib/graphix-package-array/src/lib.rs`; read it beside
-this section. Its `init` generates the nodes for a call of the
-predicate:
-
-- `genn::bind` makes two variables for the predicate's arguments, `n`
-  and `x`, and returns their `BindId`s (`nid`, `xid`) and reference
-  nodes;
-- a third `BindId` (`pid`) names the predicate itself, and
-  `genn::reference` makes a reference node to it;
-- `genn::apply` builds a call site over that reference with the two
-  argument references, the `pred` node.
-
-Its `update` delivers values to those variables and updates `pred`.
+Now for a built-in that takes another Graphix function as an argument.
+The simplest example in the standard library is `array::group`, `Group`
+in `stdlib/graphix-package-array/src/lib.rs`; read it beside this
+section.
 
 This implements `array::group`, which given an argument, stores that
 argument's updates internally, and creates an array out of them when
@@ -223,12 +197,31 @@ array::group(n, |_, n| (n == 50) || (n == 99))
 create two arrays, one containing `[0, .. 50]` and the other
 containing `[51, .. 99]`.
 
-The implementation needs to build a `Node` representing the
-predicate. `Node` is the fundamental type of everything in the graph.
-Ultimately the entire program compiles to a node. The kind of node we
-need to create here is a function call site, that will handle all the
-details of late binding, optional arguments, default args, etc. The
-`genn` module is specifically for generating nodes.
+The implementation needs a call of the predicate in the graph: a call
+site node, which handles late binding, optional arguments, default
+arguments and the rest. `genn::Callback` builds one and owns it. Its
+`init` makes it from the predicate's resolved function type and a name
+for each argument:
+
+```rust,ignore
+let pred = genn::Callback::new(ctx, &scope, &mftyp, &["n", "x"], top_id)?;
+```
+
+`Callback::new` binds a private variable for each argument and one for
+the function, and builds the call over them. (`Callback::through` calls
+the function a binding the builtin already holds, and
+`Callback::of_value` a function value known when it is built.) From
+then on the builtin drives it:
+
+- `feed_fn(ctx, tv)` hands it the function, every time the function
+  argument (`from[1]`) produces: functions are late bound, so the
+  function a call reaches may change, and the call site follows it;
+- `feed_arg(ctx, i, tv)` delivers argument `i` for this cycle;
+- `update(ctx)` updates the call and returns its production, which
+  fires when the predicate answers: maybe this cycle, maybe later, maybe
+  never;
+- `typecheck0`, `refs`, `sleep` and `delete` are forwarded from the
+  builtin's own.
 
 ### Typecheck
 
@@ -277,50 +270,33 @@ argument (through type references) without refusing.
 
 ### BindIds and Refs
 
-`BindId` is a very fundamental type in compiler guts. The
+`BindId` names a variable. The
 [`Event`](https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html)
-struct contains two tables indexed by it. The most important is `variables`.
-Every bound variable has a `BindId`. If a variable has updated this cycle, then
-its updated value, a `TagValue`, will be in the `variables` table indexed by
-its `BindId`. In
-order to call this predicate function we actually create three different
-variables and store their `BindIds` as `xid`, `nid`, and `pid`.
-`genn::reference` returns a reference `Node` and the `BindId` of the variable it
-is referencing. Since those ref nodes become the arguments to the predicate call
-site we create, `xid` and `nid` allow us to control the arguments passed into
-the function. We just have to set `xid` and `nid` in `Event::variables` before
-we update the predicate in order to `call` the function. This may cause it to
-update immediately, or, it may depend on something else that needs to update
-before it will update. Either way, once we've set `xid` and `nid` once and
-called update on the predicate we've done our duty (it may never update, and
-that's ok). That just leaves `pid`, what is it for? Well, earlier it was
-mentioned that functions are always late bound. This is how that works. The
-lambda argument we were passed `from[1]`, whatever kind of node it is, will
-ultimately update and return a `Lambda`, which a compiled function. So every
-cycle we need to call update on this node just like any other node, because the
-`Lambda` we are calling might change, and if that happens the call site we
-created with `genn::apply` needs to know about it. Luckily we don't have to
-handle any of the wonderful details of late binding beyond this simple passing
-through of updates, the call site will take care of that.
+holds this cycle's deliveries in `variables`, indexed by it: a variable
+that updated this cycle has its `TagValue` there. A `Callback`'s
+arguments and function are variables of its own, and its call site's
+argument nodes are references to them, so feeding an argument is
+delivering to its variable (`args()` lists their ids, for a builtin that
+writes one for a later cycle with `ctx.rt.set_var`).
 
 ### The store, refs, delete
 
 When a call site is initialized for the first time, or a select arm
 wakes from sleep, it needs the current value of every variable it
 depends on, so the runtime keeps the current value of every variable
-in its store. A builtin that sets a variable itself updates both: the
-store (`ctx.rt.store_insert(id, tv)`) and this cycle's event
-(`ctx.event.variables.insert(id, TagValue::fired(v))`).
+in its store. A builtin that sets a variable itself never writes
+`ctx.event.variables` directly: `ExecCtx::deliver(id, tv)` delivers this
+cycle and updates the store (a bottom stands there as a stale one), and
+`ExecCtx::publish(id, tv)` delivers this cycle alone. Both mark the
+variable's readers, so the walk visits them (`Callback::feed_arg` and
+`feed_fn` deliver).
 
-And this also explains another function that you have to implement
-when you're generating nodes, which is `refs`. Turns out we need to know
-all the variables a node depends on, so we can set them when it's
-being woken up from sleep, or stood up at a call site for the first
-time.
+`refs` reports every variable a node depends on, so the runtime can
+hand them their values when the node wakes from sleep or a call site
+stands up for the first time; a builtin that owns a `Callback` forwards
+it.
 
-That just leaves `delete`. The structure of the graph changes at
-runtime, and we need to keep everything straight. It would be nice if
-we could do this with `Drop`, but that would require holding a
-reference to the `ExecCtx` at every `Node`. I'd really rather not pay
-to wrap every access to the context in a mutex, so we're doing it the
-hard way (for now).
+`delete` removes the node's part of the graph, which changes at run
+time: a `Callback`'s `delete` drops its call and releases every
+variable it owns. Graphix does this by hand rather than in `Drop`,
+which would need every `Node` to hold a reference to the `ExecCtx`.

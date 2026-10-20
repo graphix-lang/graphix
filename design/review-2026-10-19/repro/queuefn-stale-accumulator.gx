@@ -1,0 +1,14 @@
+// Title: a queuefn callback that accumulates into an outer variable loses
+//   its first write: the second released call reads the accumulator stale.
+// Command: graphix --no-cache --no-fusion queuefn-stale-accumulator.gx
+// Expected: got grows [1], [1, 2], [1, 2, 3], one call released per tick.
+// Observed (9445a1d21 and after): [1], then [2], then [2, 3]; pruned or not.
+let clk = 0;
+clk <- select clk { k if k < 6 => (k ~ clk) + 1, _ => never() };
+let got: Array<i64> = [];
+let q = queuefn(#trigger: clk, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+let a = q(1);
+let b = q(2);
+let c = q(3);
+println("[clk] [got]");
+got

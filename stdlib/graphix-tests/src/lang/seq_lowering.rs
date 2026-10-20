@@ -2,7 +2,7 @@
 // attributes, declarations, scopes, places, function arguments and the
 // queue's flush (design/seq_blocks.md).
 
-use super::dense_deltas::run_delta;
+use super::{dense_deltas::run_delta, refused_everywhere};
 use anyhow::Result;
 use graphix_package_core::testing::{Mode, as_i64s, eval};
 use netidx::publisher::Value;
@@ -10,26 +10,6 @@ use netidx::publisher::Value;
 async fn last(code: &str, mode: Mode) -> Result<Value> {
     let (values, _) = run_delta(code, mode).await?;
     Ok(values.last().cloned().expect("a value"))
-}
-
-// CR claude for claude: [test-gap/low] This helper and four hand-written copies of it
-// share one gap: seq.rs until_last_refused, seq_errors.rs seq_statement_refusals,
-// seq_try.rs refusals and seq_let.rs seq_let_binds_the_trigger. All go through
-// testing::eval, which builds under Mode::Jit only and never runs check_fixture, so
-// none of their ~27 refusals pins that the check refuses exactly when the build does. A
-// refusal that moved into elaboration would leave --check and the LSP accepting the
-// program while these tests stay green. Build this helper on testing::eval_modes, move
-// it to lang/mod.rs, use it from the other four, and drop the cases seq_errors and
-// seq_try both carry. probe: all 27 sources are refused by `graphix --check` today.
-// (tests-seq-04)
-async fn refused(src: &str, needle: &str) {
-    match eval(src, crate::TEST_REGISTER).await {
-        Err(e) => {
-            let msg = format!("{e:#}");
-            assert!(msg.contains(needle), "wrong refusal for {src}: {msg}")
-        }
-        Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-    }
 }
 
 // A `seq let` pattern takes the trigger's annotation, under seq and seqq.
@@ -79,30 +59,55 @@ async fn declaration_in_a_block(mode: Mode) -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn lowering_refusals() -> Result<()> {
-    refused("seq { until 1 + 1; 42 }", "bool").await;
-    refused("seq { #[bogus] let y = 1; y }", "unknown attribute #[bogus]").await;
-    refused("seq { use str::len; 1 }", "a declaration is not a seq step").await;
+    refused_everywhere("seq { until 1 + 1; 42 }", "bool").await?;
+    refused_everywhere("seq { #[bogus] let y = 1; y }", "unknown attribute #[bogus]")
+        .await?;
+    refused_everywhere("seq { use str::len; 1 }", "a declaration is not a seq step")
+        .await?;
+    refused_everywhere(
+        "{ let f = |x: i64| -> [i64, Error<`E>] x; \
+         seq { #[sync] let v = try { f(1)? } with(_) { 0 }; v } }",
+        "a try statement takes no attribute",
+    )
+    .await?;
+    // a `{ .. }` statement lowers to machinery an attribute would judge
+    refused_everywhere(
+        "{ let t = 1; seq t { let x = #[native] { let y = sys::time::now(t); y }; x } }",
+        "a `{ .. }` statement takes no attribute",
+    )
+    .await?;
+    Ok(())
+}
+
+/// `src` is refused by the build with `needle` in its message: an assertion
+/// only a build checks.
+async fn build_refused(src: &str, needle: &str) {
+    match eval(src, crate::TEST_REGISTER).await {
+        Err(e) => {
+            let msg = format!("{e:#}");
+            assert!(msg.contains(needle), "wrong refusal for {src}: {msg}")
+        }
+        Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn lowering_build_refusals() -> Result<()> {
     // a function a step binds resolves statically, so its assertion is the build's
-    refused(
+    build_refused(
         "seq { #[sync] let f = |x| sys::time::after_idle(duration:1.ms, x); \
          let y = f(41) + 1; y }",
         "this function is async",
     )
     .await;
-    refused(
+    build_refused(
         "seq { let y = { #[sync] let f = |x| sys::time::after_idle(duration:1.ms, x); \
          f(41) }; y }",
         "this function is async",
     )
     .await;
-    refused(
-        "{ let f = |x: i64| -> [i64, Error<`E>] x; \
-         seq { #[sync] let v = try { f(1)? } with(_) { 0 }; v } }",
-        "a try statement takes no attribute",
-    )
-    .await;
     // `#[native]` on a statement moves onto the step's value
-    refused(
+    build_refused(
         "{ let t = sys::time::timer(duration:1.ms, false); seq { #[native] let y = t ~ 5; y } }",
         "did not fully fuse",
     )

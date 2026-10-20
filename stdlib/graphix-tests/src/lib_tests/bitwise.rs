@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::prints};
 use netidx::subscriber::Value;
 
 const BIT_AND_BASIC: &str = r#"
@@ -94,6 +94,8 @@ const SHIFT_COUNT_WRAPS: &str = r#"
   (shl(u8:1, u8:9), shr(u8:200, u8:9), shl(i64:1, i64:-1))
 "#;
 
-run!(shift_count_wraps, SHIFT_COUNT_WRAPS, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[u8:2, u8:100, i64:-9223372036854775808]"
-});
+run!(
+    shift_count_wraps,
+    SHIFT_COUNT_WRAPS,
+    prints("[u8:2, u8:100, i64:-9223372036854775808]")
+);

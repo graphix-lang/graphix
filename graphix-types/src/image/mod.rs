@@ -953,10 +953,9 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
     }
 }
 
-/// An origin is an image object keyed by its address: written once, in
-/// the definitions area, and referenced by its ordinal everywhere, its
-/// parent a reference too. Outside a session it has no encoding.
-/// (`Arc<Origin>` cannot carry the impl itself: the orphan rule.)
+/// An origin is an image object keyed by its address, its parent a
+/// reference; it has no encoding outside a session. (`Arc<Origin>` cannot
+/// carry the impl itself: the orphan rule.)
 pub(crate) fn origin_len(ori: &Arc<Origin>) -> usize {
     let key = Arc::as_ptr(ori) as usize;
     object_len(&key, |k| (*k, ori.clone()), |e| &mut e.origins)

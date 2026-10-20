@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -416,14 +416,8 @@ let sign = |c: Counter| -&gt; i64 select c {
     Counter(_) =&gt; -1
 }
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] `T({ x.0 with a: 1 })` on the next line
-does not parse. The parser refuses it with "a functional update's source is a name or
-parenthesized"; `T({ (x.0) with a: 1 })` works. It is inline prose, so the book-fence
-parse test never sees it. Fix: write `T({ (x.0) with a: 1 })`. probe:
-design/review-2026-10-19/repro/book-modules-udt-abstract-update.gx (book-modules-udt-06)
--->
 <p>The payload keeps its shape: for <code>Abstract&lt;{ a: i64, b: string }&gt;</code>,
-<code>x.0.a</code> reads a field and <code>T({ x.0 with a: 1 })</code> updates one.</p>
+<code>x.0.a</code> reads a field and <code>T({ (x.0) with a: 1 })</code> updates one.</p>
 <p>Outside the module all three are compile errors — users can only call
 the functions the interface exports. The type <em>test</em> <code>T as t</code> works
 everywhere, since it compares the tag:</p>

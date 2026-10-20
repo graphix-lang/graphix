@@ -59,6 +59,20 @@ fn hover() {
     hover_is(&mut c, "let |z", "z: i64");
 }
 
+/// A typedef shows as declared: its parameters and their bounds.
+#[test]
+fn a_typedef_hover_shows_its_parameters() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "type Pair<'a: Number> = { left: 'a, right: 'a };\n\
+         let p: Pair<i64> = { left: 1, right: 2 };\n\
+         p\n",
+    )]);
+    c.open("main.gx");
+    let decl = "type Pair<'a: Number> = { left: 'a, right: 'a }";
+    hover_is(&mut c, "let p: |Pair", decl);
+}
+
 #[test]
 fn hover_never_answers_for_another_name() {
     let mut c = two_files();
@@ -450,6 +464,63 @@ fn completion_offers_only_what_is_in_scope() {
     assert!(got.iter().any(|g| g == "r"), "{got:?}");
 }
 
+/// A write through a reference names the reference where its name is
+/// written, past the `*`.
+#[test]
+fn deref_connect_references_its_name() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "let cell = 0;\n\
+         let rr = &mut cell;\n\
+         *rr <- 5;\n\
+         cell\n",
+    )]);
+    c.open("main.gx");
+    let rr = vec![c.site("main.gx", "let |rr"), c.site("main.gx", "*|rr <-")];
+    assert_eq!(c.references("main.gx", "let |rr"), rr);
+}
+
+/// A block's locals stay in scope inside it though a `seq` follows later
+/// in the function: a seq's lowered expressions have no written end.
+#[test]
+fn completion_keeps_block_locals_above_a_later_seq() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "let local = |q: i64| {\n\
+         \x20 let r = {\n\
+         \x20   let inner_local = q + 1;\n\
+         \x20   inner_local\n\
+         \x20 };\n\
+         \x20 let n = 0;\n\
+         \x20 seq q { n <- q + 1 };\n\
+         \x20 r + n\n\
+         };\n\
+         local(1)\n",
+    )]);
+    c.open("main.gx");
+    let got = c.completions("main.gx", "|inner_local\n");
+    assert!(got.iter().any(|g| g == "inner_local"), "{got:?}");
+}
+
+/// A function is not in scope in its own body, whether or not an
+/// interface declares it.
+#[test]
+fn completion_offers_no_function_in_its_own_body() {
+    let body =
+        "let f = |title: i64, a: i64| -> i64 {\n    let z = title + a;\n    z\n}\n";
+    for gxi in [false, true] {
+        let mut files = vec![("main.gx", "mod m;\nm::f(1, 2)\n"), ("m.gx", body)];
+        if gxi {
+            files.push(("m.gxi", "val f: fn(title: i64, a: i64) -> i64;\n"));
+        }
+        let mut c = Client::start(&files);
+        c.open("m.gx");
+        let got = c.completions("m.gx", "title + |a");
+        let has = |n: &str| got.iter().any(|g| g == n);
+        assert!(has("title") && !has("f"), "interface {gxi}: {got:?}");
+    }
+}
+
 #[test]
 fn a_block_does_not_leak_its_scope() {
     let mut c = two_files();
@@ -652,19 +723,9 @@ fn a_save_rechecks_only_what_it_changes() {
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
 }
 
-/// A check that fails however it fails, a checker panic included,
-/// leaves the server checking every other file.
+/// A check that fails leaves the server checking every other file. A
+/// check that panics is graphix-rt's `a_panicking_check_leaves_the_runtime_checking`.
 #[test]
-// CR claude for claude: [test-gap/medium] This program no longer panics the checker:
-// since the genn arity fix it is an ordinary type error ('called with 2 arguments, but
-// its type fn() -> i64 takes 0'). So the test never reaches the panic path its comment
-// names. The catch_unwind in GX::check and the session restore after it are unpinned,
-// and removing them would pass the suite. Pin the recovery with a check that panics on
-// purpose: for example, a graphix-rt test whose ModuleResolver panics, which asserts
-// 'the check panicked' and then a clean second check on the same runtime. Then fix this
-// comment. probe:
-// design/review-2026-10-19/repro/tests-shell-compiler-lsp-panic-pin-vacuous.sh
-// (tests-shell-compiler-01)
 fn a_failed_check_leaves_the_server_running() {
     let mut c = Client::start(&[
         ("bad.gx", "let g = |a: i64, f: fn() -> i64| -> i64 'array_group;\n0\n"),
@@ -675,6 +736,24 @@ fn a_failed_check_leaves_the_server_running() {
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), ["bad.gx"]);
     hover_is(&mut c, "|x + 1", "x: i64");
+}
+
+/// A module reached through a symlink is in its project: editing it
+/// checks the file that loads it.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_module_is_in_its_project() {
+    let mut c = Client::start(&[
+        ("main.gx", "mod util;\nutil::v + 1\n"),
+        ("shared/util.gx", "let v = 1;\n"),
+    ]);
+    std::os::unix::fs::symlink("shared/util.gx", c.path("util.gx")).unwrap();
+    c.open("main.gx");
+    // the scan that sees the link
+    c.save("main.gx");
+    c.open("util.gx");
+    c.edit("util.gx", "let v = \"s\";\n");
+    assert_eq!(c.diagnostics("main.gx").len(), 1, "main.gx was not checked again");
 }
 
 #[test]
@@ -800,15 +879,9 @@ fn a_watched_change_rescans() {
     assert_eq!(c.diagnostics("helper.gx"), vec![]);
 }
 
-/// An interface written before its implementation has its syntax
-/// checked, and a clean one publishes nothing.
 /// A parse error's message says what went wrong; its squiggle shows
 /// where, so no position or caret line rides in the text.
 #[test]
-// CR claude for claude: [readability/low] The first two doc lines above this test ('An
-// interface written before its implementation has its syntax checked..') describe
-// a_lone_interface_reports_its_parse_error, which has no doc of its own. Move them
-// there. Found by reading. (tests-shell-compiler-08)
 fn a_parse_error_is_published_without_its_snippet() {
     let mut c = Client::start(&[("main.gx", "let x = 1;\nlet y = ;\nx\n")]);
     c.open("main.gx");
@@ -819,12 +892,27 @@ fn a_parse_error_is_published_without_its_snippet() {
     assert!(!msg.contains('^') && !msg.contains("Parse error at"), "{msg}");
 }
 
+/// Opening an interface's implementation ends the interface's own root:
+/// its error goes once the interface is fixed. Closing the
+/// implementation makes the interface a root again, and it is checked.
 #[test]
-// CR claude for claude: [readability/low] This test's doc ("An interface written before
-// its implementation has its syntax checked, and a clean one publishes nothing.") is
-// stacked onto a_parse_error_is_published_without_its_snippet's doc further down, so
-// rustdoc attaches it to the wrong test. Move it above this test's #[test]. Found by
-// reading; not run. (lsp-07)
+fn opening_an_implementation_retires_its_interface_root() {
+    let mut c = Client::start(&[("api.gxi", "val v: i64 = ;\n")]);
+    c.open("api.gxi");
+    assert_eq!(c.diagnostics("api.gxi").len(), 1);
+    c.open_unsaved("api.gx", "let v = 1;\n".into());
+    c.edit("api.gxi", "val v: i64;\n");
+    assert_eq!(c.diagnostics("api.gxi"), vec![]);
+    c.edit("api.gx", "let v = 2;\n");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    c.edit("api.gxi", "val v: i64 = ;\n");
+    c.close("api.gx");
+    assert_eq!(c.diagnostics("api.gxi").len(), 1, "the lone interface was not checked");
+}
+
+/// An interface written before its implementation has its syntax
+/// checked, and a clean one publishes nothing.
+#[test]
 fn a_lone_interface_reports_its_parse_error() {
     let mut c = Client::start(&[("api.gxi", "val x: i64 = ;\n")]);
     c.open("api.gxi");
@@ -963,4 +1051,18 @@ fn birth_only_arm_actions_are_warnings() {
     for (text, message) in &w {
         assert!(message.contains("first entry"), "{text}: {message}");
     }
+}
+
+/// A call to a function whose body performs Io, over constants, acts only
+/// at the arm's first entry as an Io builtin's call does.
+#[test]
+fn birth_only_io_through_a_function_is_a_warning() {
+    let src = "let k = 0;\nlet say = |m: string| println(\"note: [m]\");\nselect k {\n    \
+               0 => say(\"saved\"),\n    _ => say(k ~ \"again\")\n};\n";
+    let mut c = Client::start(&[("a.gx", src)]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let w = c.warnings("a.gx");
+    let texts: Vec<&str> = w.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(texts, ["say(\"saved\")"], "{w:?}");
 }

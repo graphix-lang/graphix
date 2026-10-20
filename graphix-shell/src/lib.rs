@@ -5,6 +5,7 @@
 use ahash::AHashMap;
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
@@ -16,7 +17,9 @@ use graphix_compiler::{
 };
 use graphix_package::{Cdc, CustomResult, MainThreadHandle, Package, register_packages};
 use graphix_package_core::ProgramArgs;
-use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt, RegistrationImage};
+use graphix_rt::{
+    CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt, ProgramImage, RegistrationImage,
+};
 use input::InputReader;
 use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
@@ -53,17 +56,10 @@ fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
     let attempted = after.attempted - base.attempted;
     let fused = after.fused - base.fused;
     let failed = &after.failed[base.failed.len()..];
-    // CR claude for claude: [readability/low] `failed.len()` counts blockers (the
-    // profile includes discovery-time rejections such as a builtin with no fast-call
-    // entry), not attempted regions that failed. A small array::map script prints "2 of
-    // 3 attempted regions fused, 2 blocked", which does not add up. Print the region
-    // line without it, and title the per-reason list as blockers, or print `attempted -
-    // fused` as the failed regions. Found while probing; output from `graphix
-    // --no-cache --fusion-stats` on a map script. (shell-06)
-    eprintln!(
-        "fusion: {fused} of {attempted} attempted regions fused, {} blocked",
-        failed.len()
-    );
+    eprintln!("fusion: {fused} of {attempted} attempted regions fused");
+    if !failed.is_empty() {
+        eprintln!("blockers ({}):", failed.len());
+    }
     let mut by_reason: LPooled<AHashMap<&str, usize>> = LPooled::take();
     for failure in failed {
         let reason = failure.reason.lines().next().unwrap_or("").trim_end();
@@ -74,6 +70,16 @@ fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
     sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     for (reason, n) in sorted.iter() {
         eprintln!("  {n}x {reason}");
+    }
+}
+
+/// The argv[0] a program loaded from `source` names itself by, as it was
+/// asked for on the command line.
+fn argv0(source: &Load) -> Option<ArcStr> {
+    match source {
+        Load::File(p) => Some(arcstr::format!("{}", p.display())),
+        Load::Netidx(p) => Some(arcstr::format!("netidx:{p}")),
+        Load::Text(_) => None,
     }
 }
 
@@ -349,11 +355,53 @@ impl<X: GXExt> ShellBuilder<X> {
     }
 }
 
+/// The cache a runtime's images go to, and the images it will send.
+struct PendingImages {
+    cache: cache::RegistrationCache,
+    registration: Option<oneshot::Receiver<Result<Bytes>>>,
+    program: Option<oneshot::Receiver<Result<ProgramImage>>>,
+}
+
 impl<X: GXExt> Shell<X> {
     async fn init(
         &mut self,
         sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     ) -> Result<GXHandle<X>> {
+        let (config, pending) = self.configure(sub)?;
+        let handle = config.start().await.context("loading initial modules")?;
+        self.store(pending).await?;
+        Ok(handle)
+    }
+
+    /// `--warm`: compile, write the cache's entries and run nothing.
+    async fn warm(&mut self) -> Result<()> {
+        let (sub, _) = mpsc::channel(1);
+        let (config, pending) = self.configure(sub)?;
+        let compiled = config.compile().await.context("loading initial modules");
+        self.store(pending).await?;
+        compiled
+    }
+
+    async fn store(&self, pending: Option<PendingImages>) -> Result<()> {
+        let Some(PendingImages { cache, registration, program }) = pending else {
+            return Ok(());
+        };
+        if let Some(rx) = registration {
+            self.stored(Entry::Registration, rx.await, |i| cache.store_registration(&i))?;
+        }
+        if let Some(rx) = program {
+            self.stored(Entry::Program, rx.await, |p| cache.store_program(&p))?;
+        }
+        Ok(())
+    }
+
+    fn configure(
+        &mut self,
+        sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    ) -> Result<(GXConfig<X>, Option<PendingImages>)> {
+        if let Mode::Script(Load::File(p)) | Mode::Check(Load::File(p)) = &mut self.mode {
+            *p = p.canonicalize().with_context(|| p.display().to_string())?;
+        }
         let mut ctx = GXRt::<X>::new_state().context("creating graphix context")?;
         if let Some(setup) = self.setup_context.take() {
             setup(&mut ctx);
@@ -374,14 +422,10 @@ impl<X: GXExt> Shell<X> {
             }
             _ => (),
         }
-        // CR claude for claude: [bug/medium] A `netidx:` script gets no argv[0]: only
-        // `Load::File` and the embedded main program name themselves here. `graphix
-        // netidx:/apps/p.gx one two` gives `sys::args()` ["one", "two"], and
-        // `args::parse` (clap) eats `one` as the binary name, against sys's documented
-        // "argv[0] names the program". Fix: push `netidx:{path}` for `Load::Netidx`
-        // too. Found by reading; not run. (shell-04)
-        if let Mode::Script(Load::File(p)) | Mode::Check(Load::File(p)) = &self.mode {
-            args.push(ArcStr::from(p.display().to_string().as_str()));
+        if let Mode::Script(source) | Mode::Check(source) = &self.mode
+            && let Some(name) = argv0(source)
+        {
+            args.push(name)
         }
         args.extend(self.program_args.drain(..));
         if !args.is_empty() {
@@ -477,25 +521,14 @@ impl<X: GXExt> Shell<X> {
             gx = gx.resolver_factories(std::mem::take(&mut self.resolver_factories));
         }
         gx = gx.flags(flags);
-        let handle = gx
-            .root(root)
-            .resolvers(mods)
-            .build()
-            .context("building rt config")?
-            .start()
-            .await
-            .context("loading initial modules")?;
-        if let Some(cache) = cache.as_ref() {
-            if let Some(rx) = pending_registration {
-                self.stored(Entry::Registration, rx.await, |i| {
-                    cache.store_registration(&i)
-                })?;
-            }
-            if let Some(rx) = pending_program {
-                self.stored(Entry::Program, rx.await, |p| cache.store_program(&p))?;
-            }
-        }
-        Ok(handle)
+        let config =
+            gx.root(root).resolvers(mods).build().context("building rt config")?;
+        let pending = cache.map(|cache| PendingImages {
+            cache,
+            registration: pending_registration,
+            program: pending_program,
+        });
+        Ok((config, pending))
     }
 
     /// Write the image the runtime sent, if it sent one: it sends none
@@ -617,9 +650,7 @@ impl<X: GXExt> Shell<X> {
         if let Mode::Check(_) = self.mode {
             return self.check().await.map(|()| Some(0));
         }
-        let (tx, mut from_gx) = mpsc::channel(100);
-        let gx = self.init(tx).await?;
-        // CR claude for claude: [bug/high] `--warm` runs the program's first cycle.
+        // XCR claude for claude: [bug/high] `--warm` runs the program's first cycle.
         // `init` has already called `GXConfig::start`, which runs the runtime loop, so
         // the program's init effects happen (a println, a file write) and this branch
         // waits for the first cycle to finish (10 s for a 100000-activation first
@@ -630,12 +661,17 @@ impl<X: GXExt> Shell<X> {
         // program writes the entry and not the file; nothing tests `--warm` today.
         // probe: design/review-2026-10-19/repro/shell-warm-runs-effects.sh Also
         // reported as (x-image-01). (shell-01)
+        // 2026-10-19 claude: The --warm flag runs Shell::warm: configure,
+        // GXConfig::compile (GX::new, which compiles the root and the program and sends
+        // their images, and no run loop), the entries stored, then the program's
+        // compile error if it had one. init (the run) shares configure and store. Fails
+        // if undone: graphix-shell/tests/warm_only_compiles.rs (a println and a file
+        // write, neither happens; a program that does not compile fails the warm run).
         if self.cache == CacheMode::Warm {
-            if let Mode::Script(_) = &self.mode {
-                gx.program().await?;
-            }
-            return Ok(None);
+            return self.warm().await.map(|()| None);
         }
+        let (tx, mut from_gx) = mpsc::channel(100);
+        let gx = self.init(tx).await?;
         // Armed before the first cycle: a program may wedge inside
         // `load_env`, before the input loop exists.
         let sigint = {
@@ -688,7 +724,7 @@ impl<X: GXExt> Shell<X> {
                     Err(_) => exit_open = false,
                 },
                 batch = from_gx.recv() => match batch {
-                    // CR claude for claude: [risk/low] This return skips
+                    // XCR claude for claude: [risk/low] This return skips
                     // `output.clear()`. A GUI's event loop runs on the main thread
                     // inside main's `f()`, so when the runtime dies with a window up,
                     // the process does not exit: the window stays frozen until the user
@@ -696,7 +732,10 @@ impl<X: GXExt> Shell<X> {
                     // loop instead (`break 'repl Err(..)`) so the common exit path
                     // clears the display. Found by reading; the TUI analogue of a
                     // runtime panic was run and reaches this arm. (gui-core-06)
-                    None => return Err(gx.stopped("graphix runtime is dead")),
+                    // 2026-10-19 claude: The dead-runtime arm breaks 'repl with the
+                    // error, so the common exit clears the display. No test: it needs a
+                    // display up when the runtime dies.
+                    None => break 'repl Err(gx.stopped("graphix runtime is dead")),
                     Some(mut batch) => {
                         let shown =
                             output.process_batch(&mut env, &mut newenv, &mut batch).await;
@@ -786,5 +825,35 @@ impl<X: GXExt> Shell<X> {
         gx.interrupt();
         output.clear().await;
         exit
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn argv0_names_the_program_as_asked_for() {
+        let file = Load::File(std::path::PathBuf::from("/apps/p.gx"));
+        assert_eq!(argv0(&file).as_deref(), Some("/apps/p.gx"));
+        let net = Load::Netidx(netidx_core::path::Path::from("/apps/p.gx"));
+        assert_eq!(argv0(&net).as_deref(), Some("netidx:/apps/p.gx"));
+        assert_eq!(argv0(&Load::Text(arcstr::literal!("1"))), None);
+    }
+
+    /// The cache key and the program both name the file the program
+    /// entry's record verifies, whatever directory asked for it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_script_file_is_configured_by_its_canonical_path() {
+        let relative = std::path::PathBuf::from("Cargo.toml");
+        let mut shell = ShellBuilder::<graphix_rt::NoExt>::default()
+            .mode(Mode::Script(Load::File(relative.clone())))
+            .cache(CacheMode::Off)
+            .build()
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        shell.configure(tx).unwrap();
+        let Mode::Script(Load::File(p)) = &shell.mode else { panic!("not a script") };
+        assert_eq!(p, &relative.canonicalize().unwrap());
     }
 }

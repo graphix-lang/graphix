@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -214,9 +214,9 @@ let map_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b| -&gt; Array&lt;'b&gt;
     array::init(array::len(a), |i| f(a[i]$));
 
 let xs = [1, 2, 3, 4, 5];
-let s = fold_go(xs, |acc, x| acc + x, 0, 0);
-let m = select find_go(xs, |x| x &gt; 3, 0) { null as _ =&gt; -1, x =&gt; x };
-let d = map_go(xs, |x| x * 10);
+let s = #[native] fold_go(xs, |acc, x| acc + x, 0, 0);
+let m = select #[native] find_go(xs, |x| x &gt; 3, 0) { null as _ =&gt; -1, x =&gt; x };
+let d = #[native] map_go(xs, |x| x * 10);
 println("sum=[s] found=[m] mapped=[d]");
 sys::exit(s ~ 0)
 </code></pre>
@@ -243,7 +243,7 @@ let flat_map_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Array&lt;'b&gt;| -&gt;
     list::to_array_rev(l)
 };
 
-let r = flat_map_go([1, 2, 3], |x| [x, x * 10]);
+let r = #[native] flat_map_go([1, 2, 3], |x| [x, x * 10]);
 println("[r]");
 sys::exit(r ~ 0)
 </code></pre>
@@ -299,7 +299,7 @@ impl Collection for L&lt;'_&gt; {
 use Collection::*;
 let l: L&lt;i64&gt; = `C(1, `C(2, `C(3, `N)));
 let doubled = map(l, |x| x * 2);
-let s = fold(doubled, 0, |a, x| a + x);
+let s = #[native] fold(doubled, 0, |a, x| a + x);
 let n = len(filter(l, |x| x &gt; 1));
 println("sum=[s] kept=[n]");
 sys::exit(s ~ 0)

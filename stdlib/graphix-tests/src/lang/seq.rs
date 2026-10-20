@@ -5,7 +5,7 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, as_i64s, eval, refused},
+    testing::{FuseExpect, Mode, as_i64s, eval_modes, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -31,10 +31,7 @@ const SEQ_PC_FREE_READ_WAKES_NESTED: &str = r#"
 }
 "#;
 
-run!(seq_pc_free_read_wakes_nested, SEQ_PC_FREE_READ_WAKES_NESTED, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_pc_free_read_wakes_nested, SEQ_PC_FREE_READ_WAKES_NESTED, is(Value::I64(42)); FuseExpect::Jit);
 
 // A pattern bind of the outer scrutinee is a facet of that match and
 // is not re-raised into the nested watch.
@@ -58,10 +55,7 @@ const SEQ_PC_PATTERN_BIND_NOT_RERAISED: &str = r#"
 }
 "#;
 
-run!(seq_pc_pattern_bind_not_reraised, SEQ_PC_PATTERN_BIND_NOT_RERAISED, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_pc_pattern_bind_not_reraised, SEQ_PC_PATTERN_BIND_NOT_RERAISED, is(Value::I64(0)); FuseExpect::Jit);
 
 // The presence select issues on both runs, including an entry that
 // finds `x` bottom after it had been a value.
@@ -92,10 +86,7 @@ const SEQ_PRESENCE_SECOND_RUN: &str = r#"
 }
 "#;
 
-run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, is(Value::I64(2)); FuseExpect::Jit);
 
 // A bare `pc ~ x` at an entry that finds `x` bottom consumes the
 // sample's debt and issues nothing.
@@ -124,10 +115,7 @@ const SEQ_BARE_SAMPLE_STALLS_SECOND_RUN: &str = r#"
 }
 "#;
 
-run!(seq_bare_sample_stalls_second_run, SEQ_BARE_SAMPLE_STALLS_SECOND_RUN, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_bare_sample_stalls_second_run, SEQ_BARE_SAMPLE_STALLS_SECOND_RUN, is(Value::I64(0)); FuseExpect::Jit);
 
 // Busy-drop: the first trigger runs; two arriving mid-run are dropped.
 const SEQ_BUSY_DROPS_RETRIGGER: &str = r#"
@@ -150,10 +138,7 @@ const SEQ_BUSY_DROPS_RETRIGGER: &str = r#"
 }
 "#;
 
-run!(seq_busy_drops_retrigger, SEQ_BUSY_DROPS_RETRIGGER, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_busy_drops_retrigger, SEQ_BUSY_DROPS_RETRIGGER, is(Value::I64(1)); FuseExpect::Jit);
 
 // Same-arm re-entry sampled on the trigger: three entries, three issues.
 const SEQ_SAME_ARM_REENTRY: &str = r#"
@@ -172,10 +157,7 @@ const SEQ_SAME_ARM_REENTRY: &str = r#"
 }
 "#;
 
-run!(seq_same_arm_reentry, SEQ_SAME_ARM_REENTRY, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_same_arm_reentry, SEQ_SAME_ARM_REENTRY, is(Value::I64(3)); FuseExpect::Jit);
 
 // until: enter while the level is false, then it flips.
 const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
@@ -199,10 +181,7 @@ const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
 }
 "#;
 
-run!(seq_until_level_flips, SEQ_UNTIL_LEVEL_FLIPS, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "Done",
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_until_level_flips, SEQ_UNTIL_LEVEL_FLIPS, prints(r#""Done""#); FuseExpect::Jit);
 
 const SEQ_VALUE: &str = r#"
 {
@@ -213,10 +192,7 @@ const SEQ_VALUE: &str = r#"
 }
 "#;
 
-run!(seq_value, SEQ_VALUE, |v: Result<&Value>| match v {
-    Ok(Value::I64(7)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_value, SEQ_VALUE, is(Value::I64(7)); FuseExpect::Jit);
 
 const SEQ_LET_THEN_USE: &str = r#"
 {
@@ -230,10 +206,7 @@ const SEQ_LET_THEN_USE: &str = r#"
 }
 "#;
 
-run!(seq_let_then_use, SEQ_LET_THEN_USE, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_let_then_use, SEQ_LET_THEN_USE, is(Value::I64(4)); FuseExpect::Jit);
 
 const SEQ_TRIGGER_AND_UNTIL: &str = r#"
 {
@@ -250,10 +223,7 @@ const SEQ_TRIGGER_AND_UNTIL: &str = r#"
 }
 "#;
 
-run!(seq_trigger_and_until, SEQ_TRIGGER_AND_UNTIL, |v: Result<&Value>| match v {
-    Ok(Value::I64(9)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_trigger_and_until, SEQ_TRIGGER_AND_UNTIL, is(Value::I64(9)); FuseExpect::Jit);
 
 const SEQ_BUSY_DROPS: &str = r#"
 {
@@ -271,10 +241,7 @@ const SEQ_BUSY_DROPS: &str = r#"
 }
 "#;
 
-run!(seq_busy_drops, SEQ_BUSY_DROPS, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_busy_drops, SEQ_BUSY_DROPS, is(Value::I64(1)); FuseExpect::Jit);
 
 const SEQ_BLOCK_RERUNS: &str = r#"
 {
@@ -292,10 +259,7 @@ const SEQ_BLOCK_RERUNS: &str = r#"
 }
 "#;
 
-run!(seq_block_reruns, SEQ_BLOCK_RERUNS, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_reruns, SEQ_BLOCK_RERUNS, is(Value::I64(2)); FuseExpect::Jit);
 
 #[tokio::test]
 async fn seq_nested_connect_completion() -> Result<()> {
@@ -337,10 +301,7 @@ const SEQ_BLOCK_LET_INSIDE: &str = r#"
 }
 "#;
 
-run!(seq_block_let_inside, SEQ_BLOCK_LET_INSIDE, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_let_inside, SEQ_BLOCK_LET_INSIDE, is(Value::I64(42)); FuseExpect::Jit);
 
 const SEQ_BLOCK_TWO_WRITES: &str = r#"
 {
@@ -360,10 +321,7 @@ const SEQ_BLOCK_TWO_WRITES: &str = r#"
 }
 "#;
 
-run!(seq_block_two_writes, SEQ_BLOCK_TWO_WRITES, |v: Result<&Value>| match v {
-    Ok(Value::I64(34)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_two_writes, SEQ_BLOCK_TWO_WRITES, is(Value::I64(34)); FuseExpect::Jit);
 
 const SEQ_BLOCK_VALUE: &str = r#"
 {
@@ -379,10 +337,7 @@ const SEQ_BLOCK_VALUE: &str = r#"
 }
 "#;
 
-run!(seq_block_value, SEQ_BLOCK_VALUE, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_value, SEQ_BLOCK_VALUE, is(Value::I64(4)); FuseExpect::Jit);
 
 const SEQ_BLOCK_VALUE_AFTER_WAIT: &str = r#"
 {
@@ -401,10 +356,7 @@ const SEQ_BLOCK_VALUE_AFTER_WAIT: &str = r#"
 }
 "#;
 
-run!(seq_block_value_after_wait, SEQ_BLOCK_VALUE_AFTER_WAIT, |v: Result<&Value>| match v {
-    Ok(Value::I64(43)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_value_after_wait, SEQ_BLOCK_VALUE_AFTER_WAIT, is(Value::I64(43)); FuseExpect::Jit);
 
 const SEQ_BLOCK_VALUE_NOT_LAST: &str = r#"
 {
@@ -421,10 +373,7 @@ const SEQ_BLOCK_VALUE_NOT_LAST: &str = r#"
 }
 "#;
 
-run!(seq_block_value_not_last, SEQ_BLOCK_VALUE_NOT_LAST, |v: Result<&Value>| match v {
-    Ok(Value::I64(99)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_value_not_last, SEQ_BLOCK_VALUE_NOT_LAST, is(Value::I64(99)); FuseExpect::Jit);
 
 // Two writes with no read between them share an arm and land in one
 // cycle; the statement that reads them is the next arm, the next cycle.
@@ -516,6 +465,28 @@ run!(seq_nested_reentry, SEQ_NESTED_REENTRY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(121)))
 }; FuseExpect::Jit);
 
+// The same with the nested seq inside a select arm, an operand and a
+// call argument of its step: each waits for its run's result.
+const SEQ_NESTED_REENTRY_IN_EXPR: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 30 => s + 1, _ => never() };
+  let go = select step { 1 | 12 => step, _ => never() };
+  let id = |x: i64| x;
+  let out = seq go {
+    let a = select go { 0 => 0, _ => seq { let a = go; a * 10 } };
+    let b = seq { let b = go; b } + 0;
+    let c = id(seq { let c = go; c });
+    a + b + c
+  };
+  select step { 30 => out, _ => never() }
+}
+"#;
+
+run!(seq_nested_reentry_in_expr, SEQ_NESTED_REENTRY_IN_EXPR, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(144)))
+}; FuseExpect::Jit);
+
 // A block's lets are its own; the statement after it reads the outer x.
 const SEQ_BLOCK_LET_LOCAL: &str = r#"
 {
@@ -535,20 +506,12 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // A block issues its statements at entry, so two calls in one block are
-// in flight together; as separate steps the second starts only when the
-// first completes. 100 ms apart either way, so a stall cannot reorder them.
-// CR claude for claude: [test-gap/low] The fixture still orders "done" against "late"
-// by wall clock, and the comment above is false: a 200 ms stall of the runtime from 150
-// ms after init delivers both deadlines together, and the block case reports "late".
-// Assert an order a stall cannot invert. Take sys::time::now at a's and at b's arrival:
-// the gap is under 200 ms for the block (both calls start in one cycle) and at least
-// 200 ms for the separate steps (b starts when a completes). A stall can only shrink
-// the first. probe:
-// design/review-2026-10-19/repro/x-rerun-6-block-issues-together-stall.sh
-// (x-rerun-6-06)
+// in flight together and answer under 200 ms apart; as separate steps the
+// second starts only when the first answers, at least 200 ms later. A
+// stall of the runtime can only bring the answers closer.
 async fn block_issues_together(mode: Mode) -> Result<()> {
-    for (body, expected) in
-        [("{ a <- f(1); b <- f(2) }", "done"), ("a <- f(1); b <- f(2)", "late")]
+    for (body, together) in
+        [("{ a <- f(1); b <- f(2) }", true), ("a <- f(1); b <- f(2)", false)]
     {
         let code = format!(
             r#"{{
@@ -556,17 +519,13 @@ async fn block_issues_together(mode: Mode) -> Result<()> {
                 let a = never<i64>();
                 let b = never<i64>();
                 seq {{ {body} }};
-                let late = sys::time::timer(duration:300.ms, false);
-                let first = once(any(late ~ "late", (a + b) ~ "done"));
-                sys::time::after_idle(duration:100.ms, first)
+                let ta = sys::time::now(a);
+                let tb = sys::time::now(b);
+                tb ~ (sys::time::diff(tb, ta) < duration:200.ms)
             }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
-        assert_eq!(values.len(), 1, "{body}: {values:?}");
-        assert!(
-            matches!(&values[0], Value::String(s) if &**s == expected),
-            "{body}: {values:?}"
-        );
+        assert_eq!(values, [Value::Bool(together)], "{body}");
     }
     Ok(())
 }
@@ -730,10 +689,7 @@ const SEQ_SHADOWED_CORE_NAMES: &str = r#"
 }
 "#;
 
-run!(seq_shadowed_core_names, SEQ_SHADOWED_CORE_NAMES, |v: Result<&Value>| match v {
-    Ok(Value::I64(43)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_shadowed_core_names, SEQ_SHADOWED_CORE_NAMES, is(Value::I64(43)); FuseExpect::Jit);
 
 // `until` has no value: using the statement's value is refused.
 #[tokio::test(flavor = "current_thread")]
@@ -743,19 +699,15 @@ async fn until_last_refused() -> Result<()> {
         "{ let go = true; seq go { let y = try { until go } with(e) { 1 }; y } }",
         "{ let go = true; seq go { let y = try { 1 } with(e) { until go }; y } }",
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-        };
-        assert!(msg.contains("until has no value"), "wrong refusal for {src}: {msg}");
+        super::refused_everywhere(src, "until has no value").await?;
     }
     // A bare try in the middle of a seq uses no value: until may end it.
-    let (v, _) = eval(
+    let v = eval_modes(
         "{ let go = true; seq go { try { until go } with(e) { 1 }; 5 } }",
         crate::TEST_REGISTER,
     )
     .await?;
-    assert_eq!(v, Value::I64(5));
+    assert_eq!(v, Ok(Value::I64(5)));
     Ok(())
 }
 
@@ -859,7 +811,7 @@ run!(seq_dynamic_source_reads_trigger, r#"{
         };
         f(1)
     }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
+}"#, is(Value::I64(6)); FuseExpect::Jit);
 
 // A select arm's bind that shadows a function is a value: the call reads
 // it from the entry snapshot and is issued once.
@@ -873,5 +825,39 @@ run!(
     let r = seq t { select v { g => sys::time::after_idle(duration:150.ms, g) } };
     sys::time::after_idle(duration:300.ms, r)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
+    is(Value::I64(0))
 );
+
+// A trigger spelled as a module path is snapshotted as a bare name is:
+// the run reads the value it started with, not m::t live.
+run!(
+    qualified_trigger_is_snapshotted,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "started 0"),
+    "/test.gx" => r#"
+        mod m;
+        let result = seq m::t {
+            let w = sys::time::timer(duration:70.ms, false);
+            "started [m::t]"
+        }
+    "#,
+    "/test/m.gx" => r#"
+        let t = 0;
+        t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
+    "#; FuseExpect::Jit);
+
+// A read that spells the trigger's variable another way (`use m::t;
+// seq t { .. m::t .. }`) is snapshotted too.
+run!(trigger_read_by_another_spelling_is_snapshotted,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "started 0"),
+    "/test.gx" => r#"
+        mod m;
+        use m::t;
+        let result = seq t {
+            let w = sys::time::timer(duration:70.ms, false);
+            "started [m::t]"
+        }
+    "#,
+    "/test/m.gx" => r#"
+        let t = 0;
+        t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
+    "#; FuseExpect::Jit);

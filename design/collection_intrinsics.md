@@ -90,14 +90,10 @@ operation has a sound ownership rule.
 
 Firing is `SlotFlags`: per-slot discs fold into a slots word and a
 prev-length word gives exact resize detection
-<!-- CR claude for claude: [doc-drift/low] The rule is incomplete. Filter and find also
-fire when their source fires with the same length and no slot fires, because the result
-reads the elements (MapOp::reads_elements; the JIT agrees). Add that case here and in
-CLAUDE.md's list of what collection loops fire on. probe:
-design/review-2026-10-19/repro/c-collection-filter-fires-on-moved-source.gx
-(c-collection-04) -->
-(`kernel_instance_state.md`) — a loop fires iff resized ∨ a slot fired;
-a same-length refresh with a quiet body does not fire. In a fold each
+(`kernel_instance_state.md`) — a loop fires iff resized ∨ a slot fired,
+or, for `filter` and `find`, whose result reads the source's elements,
+the source fired (`MapOp::reads_elements`; the JIT agrees); for the
+others a same-length refresh with a quiet body does not fire. In a fold each
 body evaluation's STALE folds into the slots word and the accumulator
 carry is one more firing source (it alone covers the empty-source
 chain); taint rides the carry only, so an acc-ignoring callback

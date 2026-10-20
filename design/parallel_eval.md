@@ -46,13 +46,13 @@ S = `stdlib/graphix-package-*/src`.)
 
 | channel | today | under a fork |
 |---|---|---|
-| `event.variables`, the overlay (C/lib.rs:156) | a `let` (`Bind::update`, C/node/bind.rs:372/384), a call's args (`publish_production`, C/node/callsite.rs:2348), pattern binds, collection element delivery (C/node/collection.rs:1258), seq `pc` (C/node/seq_machine.rs:336) insert; readers look here first (`read_var`, C/node/mod.rs:68) | per-branch delta over the parent's (§4) |
+| `event.variables`, the overlay (C/lib.rs:156) | a `let` (`Bind::update`, C/node/bind.rs:372/384), a call's args (`publish_production`, C/node/callsite.rs:2348), pattern binds, collection element delivery (`take_source` through `ExecCtx::deliver`, C/node/collection.rs), seq `pc` (C/node/seq_machine.rs:336) insert; readers look here first (`read_var`, C/node/mod.rs:68) | per-branch delta over the parent's (§4) |
 | `rt.store` stamped with the cycle | a publication also writes the store; a store entry stamped this cycle reads as Delivered (C/node/mod.rs:76) | per-branch delta, as the overlay |
 | `rt.updated` via `notify_set` | a `let` schedules later roots that read it, this cycle (RT/rt.rs:215) | logged; applied at the root (§4.3) |
 | `rt.var_updates`, the write queue | `<-` and `set_var`/`patch_var` queue in evaluation order; at delivery the first write per id wins the cycle, later ones re-queue (RT/gx.rs:403) | logged per branch, concatenated in serial order |
 | error delivery | a `?` delivers to a same-top handler's overlay slot; first raiser wins, later ones go to `set_var` (C/node/error.rs:567) | overlay delta + the same first-wins rule at merge (§4.2) |
 | `ErrorHandler` counters | `raise`/`handled` add and subtract on `raised`/`nested` atomics (C/lib.rs:1646) | commutative; the reader (a `Catch`) runs after its covered statements, never beside them |
-| scoped flags `event.init`, `wake_init` | set and restored around a child (13 scopes: CallSite, MapQ, FoldQ, Catch, Module, Select, seq) | per-branch copies |
+| the scoped `event.view` (`View`) | set and restored around a child (13 scopes: CallSite, MapQ, FoldQ, Catch, Module, Select, seq) | per-branch copies |
 | overlay removals | `CachedArgsAsync` removes its own id (S/core/lib.rs:904); consumers `take` `event.custom` entries (S/http/lib.rs:839, S/sys/net.rs:809, S/sys/watch.rs:509) | tombstones in the delta; `custom` behind a `Mutex` (rare) |
 | other `Rt` calls | `ref_var`/`unref_var`, `set_ref_path`, `set_timer`, `spawn`, `spawn_var`, `watch`, `watch_var` (RT/rt.rs:158-251) | logged; applied in order at merge. `set_ref_path` is also read back (`ref_path`), so it joins the delta |
 | `libstate` | builtins `get_or_default`/`set` per-context library state (T/lib.rs:185): `NetState`, `PrintSink`, `TuiControl`, args | reached through `&` in a forked branch; each value guards its own mutation (§6) |
@@ -78,7 +78,7 @@ A fork point is a node with several children it updates in sequence.
 | `CallSite::update_call` (C/node/callsite.rs:1549) | the arguments (`ArgMap`, an `IndexMap`: insertion order) | then the callee, which depends on all of them |
 | constructors: struct, tuple, variant, array, list literals, string interpolation (`gather`, C/node/mod.rs:398) | fields | |
 | binary operators (C/node/op.rs:173) | the two operands | |
-| `MapQ` (C/node/collection.rs:918) | slots, as a range | init, map, filter, filter_map, flat_map, find, find_map; `find` keeps the first match in index order at merge |
+| `MapQ` (`MapQ::update`, C/node/collection.rs) | slots, as a range | init, map, filter, filter_map, flat_map, find, find_map; `find` keeps the first match in index order at merge |
 | a server's `Handler` (graphix-package-core handler.rs) | the instances of the handler running a request each | `branch::fork_instances`: forked whenever two are running and independent, unmeasured (a request's own cost dwarfs a fork); each instance binds before the fork |
 
 Not fork points: the root loop (top-level roots are not planned, §4.3),
@@ -195,7 +195,7 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
   call, `RtOp`), a `ForkCx` and a forked `Event` over the parent's,
   which is frozen for the join's duration. Reads go: own layer, then
   the parent chain, then the store. Writes go to the deltas or the log.
-- **Event.** The event's overlay (`variables`) is a `Layered` map; `init`/`wake_init` are copied per branch; `custom` is
+- **Event.** The event's overlay (`variables`) is a `Layered` map; `view` is copied per branch; `custom` is
   one locked map every branch shares; `user` is copied.
 - **Bounds.** Sharing the parent's runtime with a forked branch needs
   `R: Sync` (`ForkRt`'s `Send`).
@@ -604,12 +604,7 @@ mid-cycle:
 
 | path | entry | what it writes |
 |---|---|---|
-<!-- CR claude for claude: [doc-drift/low] Slot growth no longer makes env binds: a
-slot's arguments are bare BindIds with no environment binding (Callback::slot_arg). The
-collection.rs line numbers cited here and in the section 3 tables (483, 918, 1258) now
-point at unrelated code. Name what growth writes as pending_refs only, and cite symbols
-(Slot::new, MapQ::update, take_source). Found by reading; not run. (c-collection-05) -->
-| slot growth | `MapQ`/`FoldQ` `resize` → `Slot::new` (C/node/collection.rs:483) | env binds, `pending_refs`; the slot's call binds at its first update (next row) |
+| slot growth | `MapQ`/`FoldQ` `resize` → `Slot::new` (C/node/collection.rs) | `pending_refs` only: a slot's argument is a bare `BindId` with no environment binding (`Callback::slot_arg`); the slot's call binds at its first update (next row) |
 | dynamic bind, recursive activation, callback-holding builtins | `CallSite::bind` (C/node/callsite.rs:1092) inside `with_runtime_settles` | instantiate + typecheck, `lambda_defs`, `bind_to_lambda`, `fn_forward_resolutions`, analysis atomics, `apply_deferred`; a slot also reuses its prototype's kernels (no codegen) |
 | lazy image decode | `CallSite::materialize` (:1765) | the decoder `Mutex`, `pending_refs`, a kernel install under the JIT mutex |
 | dynamic module | `Module::update` → `compile_source` (C/node/module.rs:781) | all of `CompileCtx`; its checks already run on rayon from inside `update` |
@@ -831,8 +826,13 @@ and forced grain (`ctx.fork_mode()`, `ctx.fork.forced`) to the run; a
 callee body ignores the forced grain (`#[parallel]` excludes callees).
 `Off` and runs outside a loan call the chunk once over the whole loop.
 Under `Auto` the loop is a `ProbeSite` (phase 5): it runs its first
-slots in order, timing each, and forks the rest in ranges of the grain
-the estimate gives, at most `CHUNKS_PER_WORKER` (16) per worker: a
+slots in order, timed as one run, and forks the rest in ranges of the
+grain the estimate gives. A slot timed alone carries the run's fixed
+cost, which makes a cheap loop look worth a fork, so while the estimate
+is unknown or under `T / PROBE_BATCH` a probe times at least
+`PROBE_BATCH` (16) slots; a settled loop of dearer slots probes the one
+slot it asks for and forks the rest. Ranges number at most
+`CHUNKS_PER_WORKER` (16) per worker: a
 chunk costs a call and a buffer, so ranges are cheaper than a node-walk
 fork's and more of them even out slots of uneven cost. A loop's cost is
 its code's, so the site (`cost::LoopSite`) is one per compiled loop, a
@@ -878,57 +878,6 @@ Phase 1 is the bulk of the diff, and phases 2–3 are where correctness
 is won. Phase 4 is small by comparison, because by then a fork is
 already a merge, and the only new thing is that the two sides run at
 once.
-
-<!-- CR claude for claude: [doc-drift/low] The branch merged on 10-04, so this
-subsection is history. Delete it. The one open-looking item (startup freezing shared
-type variables, "not investigated") is silent under GRAPHIX_TASK_AUDIT in a single
-runtime: either show it with two runtimes in one process and file a CR at
-`TVar::freeze`, or drop it. Found by reading; the single-runtime audit was run and
-printed nothing. (x-doc-drift-13) -->
-### Found on this branch, owed to main
-
-- **Dependency summaries were blind to fused kernels.**
-  `analysis::local_summary` walks with `fusion::for_each_node`, which
-  does not descend into a `FusedKernel`, so a kernel's reads through its
-  feeders were missing from every summary. Phase 3's block plans hit it
-  (`graphix-shell/tests/jit_arena_rotation.rs` hung under
-  `GRAPHIX_PAR=force`); the branch fixes it in `local_summary`. The seq
-  machine plans its step boundaries from the same summaries
-  (`analysis::plan_machines`), so on main a fused step that reads a
-  variable a pending write targets may be judged same-cycle and read the
-  stale value. **If this branch is not merged, investigate and fix that
-  on main** (Eric, 2026-10-03).
-- **A write through a reference (`*r <- v`) read nothing in its
-  summary,** though it reads `r` to find the target: the walk visits
-  only its right side. The block plan put `let r = &v` and `*r <- 1`
-  in one run (`lang::select::select_guard_after_tainted_init` under
-  `GRAPHIX_PAR_AUDIT`); the branch records the read. Owed to main on
-  the same terms.
-- **Startup freezes shared type variables.** `GRAPHIX_TASK_AUDIT`
-  reports a module check during registration (`Module::compile_static`
-  → `bind_sig` → `Env::deftype` → `alias_tvars` → `TVar::freeze`)
-  writing vars of task 0, once per process: the first runtime to start
-  freezes them and later ones find them frozen. The vars look shared
-  across runtimes (the stdlib's decoded interfaces); concurrently
-  starting runtimes then race on the flag. Seen on this branch, present
-  on main; not investigated.
-
-- **A loop's iterations shared two kernel state words.** A nested
-  loop over a source bound outside the loop kept one prev-length word
-  for every iteration of the enclosing loop, and a cross-kernel call in
-  a loop one first-call word; the node-walk builds an instance per
-  slot, so a growing loop's new slots fired (and raised) where the JIT
-  did not. Phase 6 needed every iteration's memory to be its slot's and
-  found it (5d342b87, pins `lang::functions::hof_slot_*`). Present on
-  main; **port it if this branch is not merged.**
-- **`Env::fork` copied every key its parent's task had written.** It
-  built the fork as `{ forked maps.., ..self.clone() }`, which clones
-  the tracked maps' written-key lists before dropping them, so a task
-  that forks a task per instance (`CallSite::resolve_static`) pays for
-  every earlier instance's writes: quadratic in a task's instances.
-  The branch names the fields it clones. Main's statement compile tasks
-  fork per instance the same way. **If this branch is not merged, port
-  the fix and measure a statement that elaborates many instances.**
 
 ## 12. Deferred and declined
 

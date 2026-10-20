@@ -26,7 +26,7 @@ let tbl = {
             #name: "score",
             #display_name: "Score",
             #source: &`Netidx(score),
-            #width: &f64:180.0
+            #width: &180.0
         ),
         n => n
     });
@@ -52,17 +52,17 @@ let layout = column(
         text(&"Move the sliders to change the score in the three virtual rows."),
         slider(
             #on_change: |v: f64| score <- v ~ map::insert(score, "vr0", v),
-            #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
+            #min: &0.0, #max: &1.0, #step: &0.01,
             &map::get_or(score, "vr0", 0.)
         ),
         slider(
             #on_change: |v: f64| score <- v ~ map::insert(score, "vr1", v),
-            #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
+            #min: &0.0, #max: &1.0, #step: &0.01,
             &map::get_or(score, "vr1", 0.)
         ),
         slider(
             #on_change: |v: f64| score <- v ~ map::insert(score, "vr2", v),
-            #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
+            #min: &0.0, #max: &1.0, #step: &0.01,
             &map::get_or(score, "vr2", 0.)
         ),
         data_table(#table: &tbl)

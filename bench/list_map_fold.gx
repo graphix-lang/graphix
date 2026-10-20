@@ -6,7 +6,7 @@
 let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;
-let result = list::fold(list::map(list::init(n, |i| i), |x| x * 3), seed, |a, x| a + x);
+let result = #[native] list::fold(list::map(list::init(n, |i| i), |x| x * 3), seed, |a, x| a + x);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("list_map_fold n=[n] result=[result] elapsed_s=[elapsed]");

@@ -365,15 +365,8 @@ pub fn choose_layout<P: fmt::Display, T>(
     }
 }
 
-/// Where the submodules of the module at `path` (its implementation or
-/// its interface) live: `{stem}/` beside `{stem}.gx`, its own directory
-/// for `mod.gx`.
 /// [`submodule_base`] of a file, by path operations: any encoding, the
 /// platform's separators.
-// CR claude for claude: [readability/low] The first paragraph of this doc states the
-// rule and belongs on submodule_base below, which is public, used by the netidx loader,
-// and has no doc. Move it there and keep only the "of a file, by path operations"
-// sentence here. Found by reading; not run. (t-format-resolver-05)
 pub fn file_submodule_base(path: &std::path::Path) -> PathBuf {
     match path.file_stem() {
         Some(stem) if stem == "mod" => {
@@ -383,6 +376,9 @@ pub fn file_submodule_base(path: &std::path::Path) -> PathBuf {
     }
 }
 
+/// Where the submodules of the module at `path` (its implementation or
+/// its interface) live: `{stem}/` beside `{stem}.gx`, its own directory
+/// for `mod.gx`.
 pub fn submodule_base(path: &str) -> &str {
     let stem =
         path.strip_suffix(".gxi").or_else(|| path.strip_suffix(".gx")).unwrap_or(path);
@@ -605,14 +601,8 @@ fn needs_no_value(kind: &SigKind) -> bool {
 }
 
 /// `exprs` with the modules, types, traits and uses only `sig` declares
-/// spliced in, keeping their relative location and order; a declaration
-/// without an origin of its own (a packed interface's) takes `ori`, the
-/// interface's.
-pub fn add_interface_modules(
-    exprs: Arc<[Expr]>,
-    sig: &Sig,
-    ori: &Arc<Origin>,
-) -> Arc<[Expr]> {
+/// spliced in, keeping their relative location and order.
+pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let synth = |si: &SigItem| {
         let kind = match &si.kind {
             SigKind::Module(name) => ExprKind::Module {
@@ -628,7 +618,7 @@ pub fn add_interface_modules(
         };
         Some(Expr {
             id: ExprId::new(),
-            ori: si.ori.as_ref().unwrap_or(ori).clone(),
+            ori: si.ori.clone(),
             pos: si.pos,
             kind,
             dec: None,
@@ -727,8 +717,7 @@ async fn parse_module(
     let sig = match interface {
         None => None,
         Some(unit) => {
-            let ori = Arc::new(unit.ori.clone());
-            let sig_ori = ori.clone();
+            let sig_ori = Arc::new(unit.ori.clone());
             let sig = match unit.packed.clone().filter(|_| !packed_ast_disabled()) {
                 Some(bytes) => {
                     task::spawn_blocking(move || serialize::unpack_sig(&bytes, sig_ori))
@@ -739,15 +728,15 @@ async fn parse_module(
             }
             .await?
             .with_context(|| naming(&unit.ori))?;
-            Some((sig, ori))
+            Some(sig)
         }
     };
     let exprs = exprs.await?.with_context(|| naming(&implementation.ori))?;
     let exprs = match &sig {
-        Some((sig, ori)) => add_interface_modules(exprs, sig, ori),
+        Some(sig) => add_interface_modules(exprs, sig),
         None => exprs,
     };
-    Ok((exprs, sig.map(|(sig, _)| sig)))
+    Ok((exprs, sig))
 }
 
 /// A root source file: a program, or a package's `mod.gx`.
@@ -893,15 +882,13 @@ impl Expr {
         if !self.holds_unresolved() {
             return Ok(self.clone());
         }
-        // CR claude for claude: [bug/low] The chain starts empty, so the root file
-        // itself is never on it. A script's `mod main;` in main.gx loads main.gx again
-        // as module `main`, and the error is "module main::main could not be found:
-        // main/main.gx ..." instead of an import cycle. Seed the chain with
-        // self.ori.source when it is a file or a netidx path, and add the case to
-        // graphix-shell/tests/import_cycle.rs. probe:
-        // design/review-2026-10-19/repro/t-format-resolver-root-self-import.sh
-        // (t-format-resolver-03)
-        let e = self.resolve_modules_int(scope, &None, &None, resolvers, probes).await?;
+        // the file this came from is the first load, reaching it again a
+        // cycle; a resolved module's body puts its own source on the chain
+        let chain = match self_kind_origin(&self.kind) {
+            None => LoadChain::root(&self.ori.source),
+            Some(_) => None,
+        };
+        let e = self.resolve_modules_int(scope, &None, &chain, resolvers, probes).await?;
         Ok(e.unwrap_or_else(|| self.clone()))
     }
 
@@ -1119,6 +1106,21 @@ fn chain_source(source: &Source) -> Source {
 }
 
 impl LoadChain {
+    /// The chain a load from `source` starts: the source itself, named by
+    /// its file name, when it is one place.
+    fn root(source: &Source) -> Option<Arc<Self>> {
+        let name = match source {
+            Source::File(p) => ArcStr::from(&*p.file_stem()?.to_string_lossy()),
+            Source::Netidx(p) => ArcStr::from(Path::basename(p)?),
+            Source::Vfs(_) | Source::Program | Source::Unspecified => return None,
+        };
+        Some(Arc::new(Self {
+            source: chain_source(source),
+            name: Name::from(name),
+            prev: None,
+        }))
+    }
+
     fn push(
         chain: &Option<Arc<LoadChain>>,
         source: &Source,

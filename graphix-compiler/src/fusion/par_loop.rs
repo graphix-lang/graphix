@@ -57,7 +57,7 @@ thread_local! {
 
 /// Loan `loan` to the kernel code `f` runs; nested runs stack.
 pub(crate) fn with_par_loan<T>(loan: Option<ParLoan>, f: impl FnOnce() -> T) -> T {
-    let _loan = emit_helpers::Restore::set(&PAR_LOAN, loan);
+    let _loan = crate::Restore::replace(&PAR_LOAN, loan);
     f()
 }
 
@@ -142,14 +142,8 @@ pub(crate) unsafe fn run(
     let find = kind & FIND != 0;
     let root = kind & ROOT != 0;
     let mode = |l: &ParLoan| if root { l.mode } else { l.body_mode };
-    // CR claude for claude: [structure/low] This filter repeats ProbePlan::of's Serial
-    // cases (Off, fewer than 2 slots), and the Serial arm below is unreachable! as a
-    // result. A new serial case in ProbePlan::of would panic here. Keep only the
-    // value-hook test in the filter and route ProbePlan::Serial to in_order. Found by
-    // reading; not run. (f-kernel-07)
-    let loan = PAR_LOAN.with(|c| c.get()).filter(|l| {
-        mode(l) != ParMode::Off && len >= 2 && !abstract_value::value_hooks_loaned()
-    });
+    let loan =
+        PAR_LOAN.with(|c| c.get()).filter(|_| !abstract_value::value_hooks_loaned());
     let Some(loan) = loan else {
         return unsafe { in_order(chunk, frame, len, find, out) };
     };
@@ -158,7 +152,7 @@ pub(crate) unsafe fn run(
     let site = unsafe { &*site };
     let forced = if root { loan.forced } else { None };
     let (at, grain) = match ProbePlan::of(mode(&loan), len, forced) {
-        ProbePlan::Serial => unreachable!("an Off loan and a short loop are filtered"),
+        ProbePlan::Serial => return unsafe { in_order(chunk, frame, len, find, out) },
         ProbePlan::Fork { grain } => (0, Some(grain)),
         plan @ (ProbePlan::Uncalibrated | ProbePlan::Probe) => 'auto: {
             if site.untimed(len) {
@@ -191,16 +185,7 @@ pub(crate) unsafe fn run(
                 }
             };
             // the first slot an uncalibrated loop timed is one of the probes
-            let Some(k) = site.probes(len - at).map(|k| k.saturating_sub(probes.len()))
-            else {
-                if at == 0 {
-                    return unsafe { in_order(chunk, frame, len, find, out) };
-                }
-                break 'auto (at, None);
-            };
-            // the probed slots run as one, at least a batch of them, so a
-            // run's fixed costs spread over them
-            // CR claude for claude: [perf/high] A settled site asks for one probe
+            // XCR claude for claude: [perf/high] A settled site asks for one probe
             // (ProbeSite::probes returns 1), but this widens it to PROBE_BATCH, so
             // every run of a loop whose slots pay for a fork executes 16 slots in order
             // before forking the rest. A 32-slot loop of heavy slots stays half serial
@@ -213,9 +198,19 @@ pub(crate) unsafe fn run(
             // probe:
             // design/review-2026-10-19/repro/c-cost-misc-kernel-loop-probe-batch.gx
             // (c-cost-misc-01)
-            let k = match k {
-                0 => 0,
-                k => k.max(cost::PROBE_BATCH).min(len - at),
+            // 2026-10-19 claude: LoopSite::probes now takes the calibration and the
+            // slots already timed and widens a probe to PROBE_BATCH only while the
+            // site's estimate is unknown or under T / PROBE_BATCH; a settled site of
+            // dearer slots probes the one slot it asks for. design/parallel_eval.md §10
+            // describes the batch. Pin:
+            // cost::tests::loop_site_batches_only_cheap_probes. The repro now traces
+            // '32 slots, 1 probed, 31 ranges' on every settled run: auto 2.5 s against
+            // force 2.2 s (the review binary's auto 8.8 s, a loaded machine).
+            let Some(k) = site.probes(cal, len - at, probes.len()) else {
+                if at == 0 {
+                    return unsafe { in_order(chunk, frame, len, find, out) };
+                }
+                break 'auto (at, None);
             };
             if k > 0 {
                 let mut r = Run::new(at, at + k, find);
@@ -264,10 +259,8 @@ pub(crate) unsafe fn run(
             branch::on_pool(control, || {
                 forked.par_iter_mut().with_max_len(1).for_each(|r| {
                     branch::as_part(control, None, &live, || {
-                        let _env =
-                            emit_helpers::Restore::set(&KERNEL_ENV, env as *const _);
-                        let _gen =
-                            emit_helpers::Restore::set(&SELF_BLOCK_GEN, generation);
+                        let _env = crate::Restore::replace(&KERNEL_ENV, env as *const _);
+                        let _gen = crate::Restore::replace(&SELF_BLOCK_GEN, generation);
                         with_par_loan(Some(loan), || unsafe {
                             run_here(chunk, frame, r)
                         });

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -298,19 +298,12 @@ earlier statement wrote starts the next cycle and reads the new value:
 <code>n &lt;- n + 1; publish(n)</code> publishes the new <code>n</code>. Connects that nothing
 in between reads land together: <code>a &lt;- x; b &lt;- y; let s = a + b</code> writes
 <code>a</code> and <code>b</code> in one cycle and binds <code>s</code> the next.</p>
-<!-- CR claude for claude: [doc-drift/low] The `put(5); let s = b` example below works
-only if `put` returns a value; the pin seq_steps::closure_write_is_seen defines `|v| { b
-<- v; v }`. Written the natural way, `let put = |v| b <- v`, `put(5)` is a step whose
-value is a connect's. A connect never produces, so the run stalls forever and --check
-says nothing. Show put's definition in the text. Also consider a check warning for a seq
-step whose type settles to ⊥ (a connect-valued call, never()), next to select.rs's
-warn_birth_only. probe:
-design/review-2026-10-19/repro/x-engine-firing-seq-connect-step.gx (x-engine-firing-05)
--->
 <p>The compiler decides this after it has resolved every call, following
 each call into the function it reaches. A write a function makes counts
-like one the statement makes itself: <code>put(5); let s = b</code>, where <code>put</code>
-writes the <code>b</code> it captured, reads the new <code>b</code>. A call to a function
+like one the statement makes itself: <code>put(5); let s = b</code>, where <code>let put = |v| { b &lt;- v; v }</code> writes the <code>b</code> it captured, reads the new <code>b</code>. (A
+step must produce a value to complete: written <code>|v| b &lt;- v</code>, <code>put</code>’s
+value would be a connect’s, which never produces, and the run would
+stall.) A call to a function
 that does not read <code>a</code> does not wait for <code>a &lt;- ..</code> to land. Two things
 count as touching every variable, because the compiler cannot name what
 they touch: a read or write through a reference (<code>*r</code>), and a call
@@ -474,23 +467,20 @@ starts. <code>flush(event)</code> also empties the queue:</p>
 </code></pre>
 <p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
 it. A request that arrives with the flush or after it is kept.</p>
-<!-- CR claude for claude: [doc-drift/medium] Two claims in this section contradict the
-code and CLAUDE.md. A triggerless seq does not start a fresh run when its arm wakes: it
-runs only at the arm's first entry, and the check warns of it. Sleeping does not discard
-a seqq's queued requests: they are kept and served after the wake (select.md also says
-queues keep their state). Rewrite the section to say this. probe:
-design/review-2026-10-19/repro/book-core-seq-triggerless-wake.gx and
-design/review-2026-10-19/repro/book-core-seqq-queue-survives-sleep.gx (book-core-04) -->
 <h2 id="sleeping"><a class="header" href="#sleeping">Sleeping</a></h2>
 <p>A sequence inside a <code>select</code> arm, or inside a function called from one,
 sleeps with the arm. A run in progress does not survive that: the
-sequence is idle when the arm wakes, and a <code>seq</code> without a trigger
-starts a fresh run there. The same holds for a <code>seq</code> nested in a step of
-an outer run that was aborted.</p>
+sequence is idle when the arm wakes, since a wake resumes the arm and
+starts nothing. A <code>seq</code> without a trigger in an arm runs only at the
+arm’s first entry, and the check warns of it: to run at every entry,
+trigger it on the event that selects the arm. A <code>seq</code> nested in a step
+of an outer run that was aborted is idle too; a triggerless one starts
+again when a later run enters its step.</p>
 <p>The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
-Sleeping the enclosing expression discards pending queued work, following
-the ordinary <code>queue</code> sleep behavior.</p>
+Sleeping the enclosing expression keeps the queued requests, as <code>queue</code>
+keeps its contents: they are served after the wake, and the credit of
+the run the sleep aborted is returned then.</p>
 
                     </main>
 

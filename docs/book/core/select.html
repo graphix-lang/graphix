@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -227,24 +227,17 @@ select x {
 <p>This program will print 42, 15, 7 and then wait. The compiler will check that
 you have handled all the possible cases. If we remove the null case from this
 select we will get a compile error.</p>
-<!-- CR claude for claude: [doc-drift/low] These transcripts quote diagnostics the
-checker no longer prints. Removing the null arm now gives `missing match cases: no arm
-covers null`, the guarded `i64` case gives `no arm covers i64`, and the `Wrong arm gives
-`unreachable arm: the earlier arms already cover the whole scrutinee, unused match
-cases`. The paragraph after this block explains the old type-set message. Re-capture all
-three and rewrite that paragraph (error.md's "Checked Errors" transcript is stale the
-same way). probe: design/review-2026-10-19/repro/book-core-select-diagnostics.sh
-(book-core-08) -->
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    missing match cases type mismatch [i64, Array&lt;i64&gt;] does not contain [[i64, null], Array&lt;i64&gt;]
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
+    1: missing match cases: no arm covers null
 </code></pre>
-<p>If you read this carefully you can see that the compiler is building up a set of
-types that we did match, and checking that it contains the argument type. This
-goes both ways, a match case that could never match is also an error.</p>
-<pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
+<p>The compiler subtracts what each arm matches from the argument’s type, and
+names what is left when the arms run out: here <code>null</code>, which no arm covers.
+This goes both ways, a match case that could never match is also an error.</p>
+<pre><code class="language-graphix refused">let x: [Array&lt;i64&gt;, i64, null] = null;
 x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
 x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
@@ -257,10 +250,12 @@ select x {
 <p>Here we’ve added an <code>f64</code> match case, but the argument type can never contain an
 <code>f64</code> so we will get a compile error.</p>
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    pattern f64 will never match null, unused match cases
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
+    1: at: line: 7, column: 3 in file test.gx
+    2: pattern f64 will never match null, unused match cases
 </code></pre>
 <p>The diagnostic message gives you an insight into the compiler’s thinking. What
 it is saying is that, by the time it’s gotten to looking at the <code>f64</code> pattern,
@@ -271,7 +266,7 @@ match.</p>
 subtract from the argument type set. You are required to match without a guard
 at some point. No analysis is done to determine if your guard covers the entire
 range of a type.</p>
-<pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
+<pre><code class="language-graphix refused">let x: [Array&lt;i64&gt;, i64, null] = null;
 x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
 x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
@@ -283,10 +278,11 @@ select x {
 <p>This will fail with a missing match case because the <code>i64</code> pattern is guarded
 and no unguarded pattern exists that matches <code>i64</code>.</p>
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    missing match cases type mismatch [null, Array&lt;i64&gt;] does not contain [[i64, null], Array&lt;i64&gt;]
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
+    1: missing match cases: no arm covers i64
 </code></pre>
 <p>This is the same error you would get if you omitted the <code>i64</code> match case
 entirely.</p>
@@ -481,7 +477,7 @@ select v {
 "it's big `MoreArg(\"hello world\", 42) with args \"hello world\" and 42"
 </code></pre>
 <p>Variant patterns enforce the same kinds of match case checking as all the other pattern types</p>
-<pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
+<pre><code class="language-graphix refused">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
 v &lt;- `Arg(42);
 v &lt;- `MoreArg("hello world", 42);
 select v {
@@ -493,10 +489,12 @@ select v {
 </code></pre>
 <p>yields</p>
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    pattern `Wrong will never match [`Arg(i64), `MoreArg(string, i64)], unused match cases
+    0: at: line: 4, column: 1 in file test.gx, in: select v { `Bare =&gt; "it's bare, no arg..
+    1: at: line: 8, column: 3 in file test.gx
+    2: unreachable arm: the earlier arms already cover the whole scrutinee, unused match cases
 </code></pre>
 <h3 id="literals-ignore"><a class="header" href="#literals-ignore">Literals, Ignore</a></h3>
 <p>You can match literals as well as bind variables, as you may have noticed, and
@@ -512,17 +510,12 @@ the arm and delivers its bindings.</p>
 </code></pre>
 <pre><code>$ graphix or.gx
 5
-&lt;!-- CR claude for claude: [doc-drift/low] The checker does not require a name to have
-the same type in every alternative. It types the name as the union, as CLAUDE.md and
-this page's "Matching Structure" section say: `` `A(n) | `B(n) `` over `` [`A(i64),
-`B(string)] `` is accepted with `n: [i64, string]`. Keep "same names" and replace "same
-types" with the union rule. probe:
-design/review-2026-10-19/repro/book-core-or-pattern-types.gx (book-core-07) --&gt;
 </code></pre>
 <p>The rules are the orthodox ones:</p>
 <ul>
-<li><strong>Same binds, same types.</strong> Every alternative must bind exactly the same
-names, and each name must have exactly the same type in every alternative.
+<li><strong>Same binds.</strong> Every alternative must bind exactly the same names, and a
+name’s type is the union of its types in the alternatives:
+<code>`A(n) | `B(n)</code> over <code>[`A(i64), `B(string)]</code> binds <code>n: [i64, string]</code>.
 <code>(0, y) | (y, 0)</code> is fine over <code>(i64, i64)</code>; <code>1 | x</code> is refused (the second
 alternative binds <code>x</code>, the first binds nothing).</li>
 <li><strong>One guard per arm.</strong> A guard written after the alternation covers the

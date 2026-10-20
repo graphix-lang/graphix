@@ -1,6 +1,8 @@
 # Abstract types across data: the `Cast` trait
 
 Status: built 2026-10-18 (Eric's rulings of that day).
+Pins: `lang::cast_trait::*` and the db, net and pack round trips (see
+"Pins" at the end).
 
 ## The rule
 

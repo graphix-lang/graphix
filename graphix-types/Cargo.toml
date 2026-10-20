@@ -34,10 +34,10 @@ netidx-derive = { workspace = true }
 netidx-value = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }
-rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true }
+rust_decimal = { workspace = true }
 smallvec = { workspace = true }
 stacker = { workspace = true }
 tokio = { workspace = true }

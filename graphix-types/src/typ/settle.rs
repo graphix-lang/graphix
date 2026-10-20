@@ -62,6 +62,8 @@ impl TVar {
     /// Bind an unbound cell once its writers are checked: to ⊥ when only
     /// ⊥ was produced into it ([`CellFact::BottomFed`]), whatever bounds
     /// it, else as [`Self::settle_witness`].
+    ///
+    /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
     pub fn settle(&self, env: &Env) -> Result<()> {
         if self.cell().read().facts.contains(CellFact::BottomFed) {
             return self.settle_bottom();

@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, is},
+};
 use netidx::subscriber::Value;
 
 // TLS round-trip: connect + accept, then write/read through upgraded
@@ -146,4 +149,4 @@ run!(tls_upgrade_after_lines, r#"{
     let hello = Read::read(greeted ~ server, u64:4096)?;
     Close::close(hello ~ server)?;
     upgrade ~ (is_err(upgrade) && buffer::len(hello) > u64:0)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);
+}"#, is(Value::Bool(true)); FuseExpect::Jit);

@@ -8,14 +8,7 @@ use std::{env, fs, path::Path, process::ExitCode};
 /// each under the configuration `graphix fmt` would find for it.
 /// `GXFMT_UNCHECKED=1` skips the reparse. Exits non-zero when any file was
 /// unreadable or exposed a formatter bug, and, given one file, when it does
-/// not parse; a file the formatter merely declines is not a failure. Many
-/// files: those that do not parse are skipped and listed.
-// CR claude for claude: [doc-drift/low] The doc above says 'a file the formatter merely
-// declines is not a failure', but check() returns Refused, the formatter declining its
-// own output, as an error that main counts as bad. That is correct, since it is the bug
-// this harness hunts. Delete that clause; the rest of the doc already says formatter
-// bugs fail and unparseable files are skipped. Found by reading.
-// (tests-shell-compiler-07)
+/// not parse. Many files: those that do not parse are skipped and listed.
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let quiet = args.len() > 1;

@@ -89,10 +89,7 @@ pub fn clip_polyline(
     runs
 }
 
-/// The outline of the area under `pts` inside `view`: the line cut to
-/// the view's x interval, its y moved into the view. Filled down to the
-/// baseline clamped the same way, it is exactly the area's visible part.
-// CR claude for claude: [bug/medium] Clamping vertex y is not exact. Where a segment
+// XCR claude for claude: [bug/medium] Clamping vertex y is not exact. Where a segment
 // crosses the view's top or bottom, the fill's edge becomes a chord between clamped
 // endpoints and falls below the line that clip_polyline draws. In view 0..10, area
 // (-5,20),(5,20),(15,-5) fills to y=8 at x=9 while the line is at 10. A NaN point also
@@ -101,22 +98,53 @@ pub fn clip_polyline(
 // clip_polyline, and split each x-clipped segment at its crossings of y.0/y.1 before
 // clamping. an_area_is_cut_to_x_and_clamped_in_y only checks endpoints and cannot see
 // this. probe: design/review-2026-10-19/repro/gui-chart-area-clamp.rs (gui-chart-02)
-pub fn clip_area(pts: &[(f64, f64)], view: View) -> LPooled<Vec<(f64, f64)>> {
+// 2026-10-19 claude: clip_area now returns one outline per run, as clip_polyline does
+// (a non-finite point or a re-entry at the left edge starts a new one), and cuts each
+// x-clipped segment at its crossings of the view's bottom and top before clamping y,
+// so the fill's edge follows the drawn line. draw_xy fills each outline as its own
+// AreaSeries (the legend entry on the first). Pins:
+// clip::test::an_area_is_cut_to_x_and_clamped_in_y (asserts the (9, 10) crossing) and
+// clip::test::non_finite_points_break_the_area.
+/// The outlines of the area under `pts` inside `view`, one for each run
+/// clip_polyline would draw: the line cut to the view's x interval and
+/// at its crossings of the view's bottom and top, its y then moved into
+/// the view. Each, filled down to the baseline clamped the same way, is
+/// exactly the visible part of the area under its run.
+pub fn clip_area(
+    pts: &[(f64, f64)],
+    view: View,
+) -> LPooled<Vec<LPooled<Vec<(f64, f64)>>>> {
     let in_x = View { x: view.x, y: (f64::NEG_INFINITY, f64::INFINITY) };
-    let mut out: LPooled<Vec<(f64, f64)>> = LPooled::take();
+    let mut runs: LPooled<Vec<LPooled<Vec<(f64, f64)>>>> = LPooled::take();
+    let mut open = false;
     for w in pts.windows(2) {
-        if let Some((t0, t1)) = clip_segment(w[0], w[1], in_x) {
-            let (a, b) = (lerp(w[0], w[1], t0), lerp(w[0], w[1], t1));
-            if out.last() != Some(&a) {
-                out.push(a);
-            }
-            out.push(b);
+        let Some((t0, t1)) = clip_segment(w[0], w[1], in_x) else {
+            open = false;
+            continue;
+        };
+        let (a, b) = (lerp(w[0], w[1], t0), lerp(w[0], w[1], t1));
+        if !open || t0 > 0.0 {
+            let mut run: LPooled<Vec<(f64, f64)>> = LPooled::take();
+            run.push(a);
+            runs.push(run);
         }
+        let Some(run) = runs.last_mut() else { continue };
+        let mut cuts = [view.y.0, view.y.1].map(|y| (y - a.1) / (b.1 - a.1));
+        if cuts[1] < cuts[0] {
+            cuts.swap(0, 1);
+        }
+        for t in cuts {
+            if 0.0 < t && t < 1.0 {
+                run.push(lerp(a, b, t));
+            }
+        }
+        run.push(b);
+        open = t1 >= 1.0;
     }
-    for p in out.iter_mut() {
+    for p in runs.iter_mut().flat_map(|r| r.iter_mut()) {
         p.1 = view.clamp_y(p.1);
     }
-    out
+    runs
 }
 
 #[cfg(test)]
@@ -150,9 +178,22 @@ mod test {
 
     #[test]
     fn an_area_is_cut_to_x_and_clamped_in_y() {
-        let out = clip_area(&[(-5.0, 20.0), (5.0, 20.0), (15.0, -5.0)], V);
+        let runs = clip_area(&[(-5.0, 20.0), (5.0, 20.0), (15.0, -5.0)], V);
+        assert_eq!(runs.len(), 1);
+        let out = &runs[0];
         assert_eq!(out.first(), Some(&(0.0, 10.0)));
         assert_eq!(out.last(), Some(&(10.0, 7.5)));
         assert!(out.iter().all(|p| V.contains(*p)));
+        // the outline follows the line down from where it crosses the top
+        assert!(out.contains(&(9.0, 10.0)), "{out:?}");
+    }
+
+    #[test]
+    fn non_finite_points_break_the_area() {
+        let pts = [(1.0, 1.0), (2.0, 2.0), (3.0, f64::NAN), (4.0, 1.0), (5.0, 2.0)];
+        let runs = clip_area(&pts, V);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(&runs[0][..], &[(1.0, 1.0), (2.0, 2.0)]);
+        assert_eq!(&runs[1][..], &[(4.0, 1.0), (5.0, 2.0)]);
     }
 }

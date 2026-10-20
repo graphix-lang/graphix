@@ -30,6 +30,7 @@ pub enum Family {
     RigidVar,
     SharedVar,
     WidenConsumer,
+    WidenHop,
     VariantWiden,
     Retype,
     LabelUnknown,
@@ -43,7 +44,7 @@ pub enum Family {
 }
 
 impl Family {
-    pub const ALL: [Family; 14] = [
+    pub const ALL: [Family; 15] = [
         Family::MonoReuse,
         Family::RigidVar,
         Family::SharedVar,
@@ -51,6 +52,7 @@ impl Family {
         Family::LabelMissing,
         Family::LabelDefault,
         Family::WidenConsumer,
+        Family::WidenHop,
         Family::VariantWiden,
         Family::Retype,
         Family::FunctionBound,
@@ -75,7 +77,7 @@ impl Family {
             Family::LabelDefault => {
                 &["missing required argument", "does not contain fn("]
             }
-            Family::WidenConsumer => &[
+            Family::WidenConsumer | Family::WidenHop => &[
                 "does not contain",
                 "missing match cases",
                 "cannot compute",
@@ -91,7 +93,7 @@ impl Family {
                 "will never match",
             ],
             Family::FunctionBound => &["within Function does not contain"],
-            Family::RefWrite => &["read-only reference"],
+            Family::RefWrite => &["read-only reference", "does not contain &"],
             Family::RefWiden => &["does not contain &mut"],
             Family::SameForm => &["the same runtime form"],
         };
@@ -109,6 +111,7 @@ impl std::fmt::Display for Family {
             Family::LabelMissing => "label-missing",
             Family::LabelDefault => "label-default",
             Family::WidenConsumer => "widen-consumer",
+            Family::WidenHop => "widen-hop",
             Family::VariantWiden => "variant-widen",
             Family::Retype => "retype",
             Family::FunctionBound => "function-bound",
@@ -270,24 +273,24 @@ fn nth_stmt(root: &Expr, i: usize) -> Option<&Expr> {
 }
 
 /// Every mutant of `body` the families take, up to `cap` per family.
-pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
+/// `modules` names the subject's own file modules.
+pub fn probes(
+    body: &str,
+    types: &TypeMap,
+    modules: &[&str],
+    cap: usize,
+) -> Vec<RejectProbe> {
     if typemorph::holds_synthetic(body) {
         return Vec::new();
     }
-    let Some(root) = mutate::parse(body) else { return Vec::new() };
+    let Some(root) = mutate::parse_body(body) else { return Vec::new() };
     let pre = mutate::preorder(&root);
     let mut out = Vec::new();
     mono_reuse(&root, &pre, types, cap, &mut out);
     rigid_var(&root, cap, &mut out);
     shared_var(&root, &pre, types, cap, &mut out);
     labels(&root, &pre, types, cap, &mut out);
-    widen_consumer(&root, &pre, types, cap, &mut out);
-    // CR claude for claude: [test-gap/medium] The hop shares `Family::WidenConsumer`
-    // with `widen_consumer`, which runs first and fills the per-family cap whenever a
-    // subject has 3 direct sites, so the hop's mutants are always dropped below. Its
-    // pin (`{ let a = 1; let w = a; let z = w + 2; z }`) passes on the direct site
-    // alone. Give the hop its own family and id, and pin that id at the let. probe:
-    // design/review-2026-10-19/repro/fuzz-mutate-hop-starved.gx (fuzz-mutate-04)
+    widen_consumer(&root, &pre, types, modules, cap, &mut out);
     widen_through_let(&root, &pre, types, cap, &mut out);
     variant_widen(&root, &pre, types, cap, &mut out);
     retype(&root, &pre, types, cap, &mut out);
@@ -319,7 +322,7 @@ fn same_form(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
-    const R: &str = "tm_ref";
+    const R: &str = "tm__ref";
     let mut taken = 0usize;
     for i in spread(pre.len()) {
         if taken >= cap {
@@ -330,7 +333,7 @@ fn same_form(
         let Some(t) = types.of(&se.arg).first() else { continue };
         // a type test over a function is refused by its own rule first
         let holds_fn = holds(t, &|d| matches!(d, Type::Fn(_)));
-        if !concrete(t) || opaque(t) || holds_fn || binds_outward(&se.arg) {
+        if !concrete(t) || opaque(t) || holds_fn || typemorph::leaks_binds(&se.arg) {
             continue;
         }
         let Some(u) = disjoint_literal(t) else { continue };
@@ -377,7 +380,8 @@ fn same_form(
 
 /// Family 9. A statement `let r = &mut x` over a binding `x`. (a) When a
 /// later statement writes `*r <- ..`, the `&mut` becomes `&`: a write
-/// needs a writable reference. Right site: the write. (b) When the map
+/// needs a writable reference. Right site: the write, or a statement
+/// before it that uses `r` (a call taking `&mut`). (b) When the map
 /// shows `x` a concrete primitive, the let is annotated `&mut Any`: a
 /// writable reference is invariant. Right site: the let.
 fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProbe>) {
@@ -402,14 +406,6 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
             matches!(&s.kind, ExprKind::Connect { name, deref: true, .. }
                 if name.to_string() == *r.name)
         });
-        // CR claude for claude: [bug/medium] A statement between `let r = &mut x` and
-        // the write that needs `r` writable (`let y = f(r)` with `f: |p: &mut i64|`) is
-        // refused first, and correctly. The only expected site is the write, so the
-        // lane records a false MISPLACED. Add every statement in `later[..w]` that
-        // mentions `r` to the expected spans (as `affected_stmts` does for retype), or
-        // skip the site when one does. probe:
-        // design/review-2026-10-19/repro/fuzz-mutate-ref-write-misplaced.gx
-        // (fuzz-mutate-01)
         if let Some(w) = writer
             && writes < cap
             && !later[..w].iter().any(|s| typemorph::binds_after(s, &r.name))
@@ -417,8 +413,15 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
             let shared =
                 ExprKind::ByRef(Mutability::Shared, x.clone()).to_expr(b.value.pos);
             let cand = rebind(None, shared);
+            // a use of `r` before the write may need it writable too
+            let uses = (0..w).filter(|&k| {
+                later[k].fold(false, &mut |m, n| {
+                    m || matches!(&n.kind, ExprKind::Ref { name } if name.to_string() == *r.name)
+                })
+            });
+            let sites: Vec<usize> = uses.chain([w]).collect();
             out.extend(finish(Family::RefWrite, si, &cand, |back, _| {
-                vec![nth_stmt(back, si + 1 + w).and_then(span)]
+                sites.iter().map(|k| nth_stmt(back, si + 1 + k).and_then(span)).collect()
             }));
             writes += 1;
         }
@@ -500,26 +503,6 @@ fn abstract_widen(
             vec![nth_stmt(back, si).and_then(span)]
         }));
         n += 1;
-    }
-}
-
-/// Does `e` bind a name its surroundings see: a dynamic module outside
-/// any block or lambda of its own? Under a select arm the name would be
-/// scoped.
-// CR claude for claude: [structure/low] The doc says a select arm scopes the name, but
-// the code descends into arms and guards via `for_each_child`. `typemorph::leaks_binds`
-// answers the same question and stops at the scrutinee. Delete this and call
-// `typemorph::leaks_binds` (made pub(crate)) so the scoping rule lives in one place.
-// Found by reading; not run. (fuzz-mutate-06)
-fn binds_outward(e: &Expr) -> bool {
-    match &e.kind {
-        ExprKind::Module { .. } => true,
-        ExprKind::Block { .. } | ExprKind::Lambda(_) => false,
-        _ => {
-            let mut any = false;
-            e.for_each_child(&mut |c| any = any || binds_outward(c));
-            any
-        }
     }
 }
 
@@ -837,7 +820,8 @@ fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
 /// the first argument a concrete primitive, gets a second argument of a
 /// type the first's does not relate to: with no argument containing the
 /// other the widest-argument rule refuses, and a variable a callback
-/// holds keeps the first (`callsite.rs::Widening`). Right site: the call.
+/// holds keeps the first (`callsite.rs::Widening`). A first argument whose
+/// type its uses decide (`open_init`) is skipped. Right site: the call.
 fn shared_var(
     root: &Expr,
     pre: &[Expr],
@@ -846,6 +830,11 @@ fn shared_var(
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
+    let block: &[Expr] = match &root.kind {
+        ExprKind::Block { exprs } => exprs,
+        _ => &[],
+    };
+    let stmts = mutate::top_statements(root, &sizes);
     let mut taken = 0usize;
     for i in spread(pre.len()) {
         if taken >= cap {
@@ -867,14 +856,14 @@ fn shared_var(
             ((a + 1)..params.len()).find(|b| same(params[a], params[*b])).map(|b| (a, b))
         });
         let Some((a, b)) = pair else { continue };
-        // CR claude for claude: [bug/medium] The map's type for the first argument is
-        // what the base resolved. For a `let z = never()` that is the type this very
-        // call decided, so it is not a fixed type the call must meet. `g(z, "tm")` is
-        // then a valid program and gets reported as a LEAK. Skip the site when
-        // `open_init` holds for this argument, using its enclosing top-level statement,
-        // as `retype` and `references` do. probe:
-        // design/review-2026-10-19/repro/fuzz-mutate-shared-var-open-leak.gx
-        // (fuzz-mutate-02)
+        // a first argument whose type this call decided meets nothing
+        let si = stmts
+            .iter()
+            .find(|(_, at, _)| (*at..*at + sizes[*at]).contains(&i))
+            .map_or(0, |(si, ..)| *si);
+        if open_init(types, block, si, &ap.args[a].1) {
+            continue;
+        }
         let Some(t) = types.of(&ap.args[a].1).first() else { continue };
         if !concrete(t) || primitive(t).is_none() {
             continue;
@@ -916,7 +905,7 @@ fn function_bound(
         let ExprKind::Apply(ap) = &e.kind else { continue };
         let Some(ft) = callee_type(types, ap) else { continue };
         let found = paired(&ft, ap, i, &sizes).into_iter().find(|(_, arg, param)| {
-            !binds_outward(arg) && param.is_some_and(|p| bounded(&p.typ))
+            !typemorph::leaks_binds(arg) && param.is_some_and(|p| bounded(&p.typ))
         });
         let Some((at, _, _)) = found else { continue };
         let lit = ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos();
@@ -966,7 +955,7 @@ fn labels(
         }
         // an argument that binds outward takes a name the rest reads
         let required = ap.args.iter().position(|(l, e)| {
-            !binds_outward(e)
+            !typemorph::leaks_binds(e)
                 && l.as_ref().is_some_and(|l| {
                     ft.args.iter().any(|a| a.label() == Some(l) && !a.has_default())
                 })
@@ -1062,16 +1051,18 @@ fn widen_consumer(
     root: &Expr,
     pre: &[Expr],
     types: &TypeMap,
+    modules: &[&str],
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
     // A callee's parameter may be a cell shared with the environment
     // (`|y| z <- y` over `let z = never()`), which a call widens rather
-    // than refuses. A call is a consumer only through a module path, a
-    // builtin the body does not rebind, or a let-bound lambda literal whose
-    // every parameter is annotated; any other name the body binds may be
-    // such a lambda (an alias, a block's value, a field).
+    // than refuses. A call is a consumer only through a package's module
+    // path (never the subject's own modules), a builtin the body does not
+    // rebind, or a let-bound lambda literal whose every parameter is
+    // annotated; any other name the body binds may be such a lambda (an
+    // alias, a block's value, a field).
     let mut untyped: AHashSet<&str> = AHashSet::default();
     for e in pre {
         let ExprKind::Bind(b) = &e.kind else { continue };
@@ -1086,15 +1077,10 @@ fn widen_consumer(
     let consumer_callee = |f: &Expr| match &typemorph::unparen(f).kind {
         ExprKind::Ref { name } => {
             let name = name.to_string();
-            // CR claude for claude: [bug/medium] A module path is not always a rigid
-            // consumer. A subject's own `file-v1` module can define `let z = never();
-            // let f = |y| z <- y`, and `m0::f(<widened>)` then widens `z`, so the
-            // checker rightly accepts it and the lane reports a LEAK. The `untyped`
-            // scan only sees the body. Pass the aux module names into `probes` and
-            // treat `m::f` as a consumer only when `m` is not one of them. probe:
-            // design/review-2026-10-19/repro/fuzz-mutate-module-callee-leak.gx
-            // (fuzz-mutate-03)
-            name.contains("::") || !untyped.contains(name.as_str())
+            match name.split_once("::") {
+                Some((m, _)) => !modules.contains(&m),
+                None => !untyped.contains(name.as_str()),
+            }
         }
         _ => false,
     };
@@ -1138,7 +1124,7 @@ fn widen_consumer(
             _ => None,
         };
         let Some((at, value, consumer)) = target else { continue };
-        if binds_outward(value) {
+        if typemorph::leaks_binds(value) {
             continue;
         }
         let Some(t) = types.of(value).first() else { continue };
@@ -1194,6 +1180,7 @@ fn retype(
         // a writer right after the let
         let write = ExprKind::Connect {
             name: ModPath::from([v.name.as_str()]),
+            at: WrittenAt::NOWHERE,
             value: Arc::new(u.clone()),
             deref: false,
         }
@@ -1254,7 +1241,7 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
     sites
 }
 
-/// Family 4 through a `let` (the hop): an unannotated `let w = e` over a
+/// Family 4 through a `let` (the hop, its own id): an unannotated `let w = e` over a
 /// concrete type whose variable a reached use puts directly under an
 /// arithmetic operator, a comparison opposite a literal, or a field read
 /// gets `e` widened.
@@ -1309,12 +1296,12 @@ fn widen_through_let(
         if !consumed {
             continue;
         }
-        if binds_outward(&b.value) {
+        if typemorph::leaks_binds(&b.value) {
             continue;
         }
         let cand = mutate::replace(root, at + 1, &widen(&b.value, u));
         let sites = affected_stmts(block, si, w);
-        out.extend(finish(Family::WidenConsumer, at, &cand, |back, _| {
+        out.extend(finish(Family::WidenHop, at, &cand, |back, _| {
             sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
         taken += 1;
@@ -1437,7 +1424,7 @@ fn variant_widen(
             continue;
         }
         let Some(t) = types.of(arg).first() else { continue };
-        if !only_variants(t) || binds_outward(arg) {
+        if !only_variants(t) || typemorph::leaks_binds(arg) {
             continue;
         }
         let fresh =

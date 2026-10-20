@@ -88,9 +88,11 @@ pub fn compute_3d_ranges<X: GXExt>(
             DatasetEntry::Scatter3D { data, .. } | DatasetEntry::Line3D { data, .. } => {
                 data.t.iter().flat_map(|d| d.0.iter()).for_each(&mut add)
             }
-            DatasetEntry::Surface { data, .. } => {
-                data.t.iter().flat_map(|g| g.0.iter().flatten()).for_each(&mut add)
-            }
+            DatasetEntry::Surface { data, .. } => data
+                .t
+                .iter()
+                .flat_map(|g| g.0.iter().flat_map(|r| r.iter()))
+                .for_each(&mut add),
             _ => {}
         }
     }
@@ -148,23 +150,58 @@ pub fn time_range(r: (f64, f64)) -> (f64, f64) {
     }
 }
 
-/// Decimal places needed to distinguish ~10 plotters ticks over the range.
-pub fn tick_precision(range: f64) -> usize {
-    let step = range / 10.0;
-    if step >= 1.0 {
-        1
-    } else if step >= 0.1 {
-        2
-    } else if step >= 0.01 {
-        3
-    } else {
-        4
+/// How a value axis writes its ticks: enough digits to tell neighbours
+/// apart, and scientific notation for magnitudes fixed notation writes
+/// long.
+#[derive(Clone, Copy, Debug)]
+pub struct TickFormat {
+    decimals: usize,
+    scientific: bool,
+}
+
+impl TickFormat {
+    /// For `labels` ticks over `range`.
+    pub fn new(range: (f64, f64), labels: usize) -> Self {
+        let step = (range.1 - range.0) / labels.max(1) as f64;
+        let magnitude = range.0.abs().max(range.1.abs());
+        let decimals = |x: f64| match x.is_finite() && x > 0.0 {
+            true => ((-x.log10()).ceil().max(0.0) as usize).min(15),
+            false => 0,
+        };
+        if magnitude >= 1e7 || (0.0 < magnitude && magnitude < 1e-3) {
+            Self { decimals: decimals(step / magnitude), scientific: true }
+        } else {
+            Self { decimals: decimals(step).max(1), scientific: false }
+        }
+    }
+
+    pub fn format(self, v: f64) -> String {
+        let d = self.decimals;
+        if self.scientific { format!("{v:.d$e}") } else { format!("{v:.d$}") }
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn ticks_tell_their_values_apart() {
+        for (range, n) in
+            [((0.0, 2e-6), 10), ((1000.0, 1000.00001), 10), ((0.0, 10.0), 5)]
+        {
+            let fmt = TickFormat::new(range, n);
+            let step = (range.1 - range.0) / n as f64;
+            let labels: Vec<String> =
+                (0..=n).map(|k| fmt.format(range.0 + k as f64 * step)).collect();
+            let mut unique = labels.clone();
+            unique.dedup();
+            assert_eq!(unique, labels, "{range:?}");
+        }
+        let fmt = TickFormat::new((0.0, 5e20), 10);
+        assert!(fmt.format(4.5e20).len() <= 8, "{}", fmt.format(4.5e20));
+        assert_eq!(TickFormat::new((0.0, 10.0), 10).format(2.0), "2.0");
+    }
 
     #[test]
     fn padding_extreme_values_keeps_an_ordered_bounded_range() {

@@ -180,7 +180,7 @@ override.
 
 **A passed step is asleep.** Nothing in it re-fires, so a `let` keeps
 the value its step produced while a later step waits; entering a step
-wakes it with catch-up (§6.4). A run whose last write targets its own
+starts it under `View::Step` with catch-up (§6.4). A run whose last write targets its own
 trigger ends before the write lands, so the write starts the next run:
 a seq that must not re-trigger itself outlasts its write.
 
@@ -235,8 +235,9 @@ async step.
 
 **A nested seq is a step that produces later.** A seq written inside a
 step runs as its own machine. Without a trigger it starts every time
-its statement is entered (its constant trigger fires at the arm's
-wake); with one it waits for that trigger. The enclosing step counts
+its statement is entered (its constant trigger fires at the step's
+entry, a `View::Step`, where constants fire; under a `View::Wake` they
+stand); with one it waits for that trigger. The enclosing step counts
 it as a call, not a level: its result cell stands from the previous
 run, and the step completes only on the production of this run. It
 costs two cycles over the same statements written inline, one for the
@@ -280,7 +281,7 @@ A seq inside a definition lowers once per definition: the lowering mints
 expression ids, and every compile of the body (the check and each
 instance) must have the check's ids to take its types from the
 definition's table. The lowerings live with the definition
-(`LambdaDef::seqs`, held for the body's compile in `CompileCtx::body`, a
+(`BodyShared::lowerings` in `LambdaDef::shared`, held for the body's compile in `CompileCtx::body`, a
 `node::lambda::BodyCompile`), and a lambda literal in the body shares
 one cache across every definition its compiles make; they go when the
 definition does. A seq outside every definition compiles once and is
@@ -351,12 +352,8 @@ The strict tuple includes the entry clock, so present standing inputs
 produce a fresh tuple on entry; `~!` is the strict sample so an entry
 that finds an input bottom clears the previous snapshot without
 banking a trigger, and `once` supplies the readiness event when the
-<!-- CR claude for claude: [doc-drift/low] Stale against the wake-is-a-resume rule.
-Once::sleep is a no-op and Once::reborn clears its admission, so `once` resets at the
-step's entry for a run (View::Step), not on sleep. Likewise §5's "its constant trigger
-fires at the arm's wake" should say it fires at the step's entry: constants stand under
-View::Wake. Found by reading; not run. (tests-seq-05) -->
-missing inputs arrive (it resets its admission on sleep). All
+missing inputs arrive (`Once::sleep` keeps its admission; `Once::reborn`
+clears it at the step's entry for a run). All
 arguments, constants and labeled arguments included, come from one
 snapshot. Inline lambda arguments stay at the call site, sampled with
 `pc ~!` on the same cycle: moving them into the tuple would deprive
@@ -384,13 +381,8 @@ than only when a catch-up fire happens to deliver it.
 
 The machine keeps one step awake. A step enters when `pc` fires its
 label (the start event, a `try` jump, a next-cycle boundary), and is
-<!-- CR claude for claude: [doc-drift/low] Stale: evaluate() in node/seq_machine.rs
-enters a step under View::Step, a birth for the run (constants fire, builtins reborn),
-not the wake view, and since no-partial-rebirth a wake fires no constant. §5's 'its
-constant trigger fires at the arm's wake' and the seq_machine.rs module doc ('wakes it
-under the wake view') say the same wrong thing. Reword all three to the Step entry.
-Found by reading; not run. (x-engine-seq-errors-06) -->
-updated under the wake view with `Select`'s catch-up
+updated under `View::Step`, a birth for the run (constants fire, the
+builtins in it are reborn), with `Select`'s catch-up
 (`node/wake.rs::TrackedFires`: one fire bit per step-body input per
 machine, consumed by whichever step reads it, so a fire while a step
 waits its turn is re-raised at its entry). It completes when its
@@ -647,9 +639,11 @@ seqq request; abort(skip); flush(cancel) { .. }
 ```
 
 **The event is an initial step.** The expression is asleep while the
-machine is idle and wakes when a run starts, so a timer in it times
-the run: `abort(sys::time::timer(duration:10.s, false))` is a ten
-second budget per run. Only its fires AFTER the entry cycle count. A
+machine is idle and is born again when a run starts, as a step is at
+each run's entry (its select carries `CFlag::RunEvent`, which the
+lowering asks for with an attribute no source can spell), so a timer
+in it times every run: `abort(sys::time::timer(duration:10.s, false))`
+is a ten second budget per run. Only its fires AFTER the entry cycle count. A
 value standing at entry, and a fire that happened between runs (which
 wake catch-up re-raises at entry), belong to no run and are dropped;
 there is nothing to bank. The expression reads everything live except

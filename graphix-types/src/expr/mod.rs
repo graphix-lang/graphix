@@ -353,16 +353,7 @@ pub struct SigItem {
     // where errors about the item point: excluded from equality, packed
     // as an expression's are (`serialize.rs`)
     pub pos: SourcePosition,
-    // CR claude for claude: [structure/low] No non-test path builds a `SigItem` without
-    // an origin. The parser and the syntax codec both use `Some(get_origin())`, and an
-    // image writes only what those built; only test fixtures write `None`. The `Option`
-    // still costs a tag byte per interface item in the image codec. It also needs five
-    // fallbacks in node/module.rs (`unwrap_or_else(|| Arc::new(Origin::default()))` /
-    // `unwrap_or_default()`) and one in `add_interface_modules`, whose doc ('a packed
-    // interface's' item has no origin) is stale. Make the field `Arc<Origin>`, as
-    // `Expr::ori` is, and remove the fallbacks and the codec tag. Found by reading; not
-    // run. (t-expr-core-03)
-    pub ori: Option<Arc<Origin>>,
+    pub ori: Arc<Origin>,
 }
 
 impl PartialEq for SigItem {
@@ -678,6 +669,8 @@ pub enum ExprKind {
     },
     Connect {
         name: ModPath,
+        /// Where the target's name is written, past a `*`.
+        at: WrittenAt,
         value: Arc<Expr>,
         deref: bool,
     },
@@ -1216,6 +1209,9 @@ pub enum StrForm {
     Raw,
     /// `"""text \[splice]"""`
     Template,
+    /// the text between an interpolation's splices, which has no
+    /// delimiters of its own: what tells it from a spliced string
+    Text,
 }
 
 #[derive(Clone)]
@@ -1497,8 +1493,8 @@ impl Expr {
             Not { expr } => Not { expr: a(f, expr) },
             Construct { name, arg } => Construct { name: name.clone(), arg: a(f, arg) },
             TypeCast { expr, typ } => TypeCast { expr: a(f, expr), typ: typ.clone() },
-            Connect { name, value, deref } => {
-                Connect { name: name.clone(), value: a(f, value), deref: *deref }
+            Connect { name, at, value, deref } => {
+                Connect { name: name.clone(), at: *at, value: a(f, value), deref: *deref }
             }
             StructRef { source, field } => {
                 StructRef { source: a(f, source), field: field.clone() }

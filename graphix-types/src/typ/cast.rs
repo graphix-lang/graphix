@@ -20,9 +20,8 @@ use enumflags2::{BitFlags, bitflags, make_bitflags};
 use immutable_chunkmap::map::Map;
 use netidx_value::{NakedValue, Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use rust_decimal::Decimal;
 use smallvec::SmallVec;
-use std::{borrow::Cow, fmt, mem, ops::ControlFlow, str::FromStr};
+use std::{borrow::Cow, fmt, mem, ops::ControlFlow};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -31,8 +30,9 @@ use triomphe::Arc;
 pub enum IsAFlags {
     /// A `Type::Abstract` test also accepts a Rust-backed abstract
     /// value whose wrapper UUID is not the type's path-derived one
-    /// (packages registering ad-hoc UUIDs). A Graphix-minted box
-    /// always answers by its tag. An explicit `T as t` is strict.
+    /// (packages registering ad-hoc UUIDs), and a Graphix-minted box
+    /// answers by its tag alone, its payload pattern testing the rest.
+    /// An explicit `T as t` is strict.
     MatchAbstract,
     /// The type-blind leaves (`Any`, `⊥`, an unbound tvar) match
     /// nothing instead of everything: "does this type describe v"
@@ -394,6 +394,13 @@ impl Type {
                 // walk is a disjunction whose first answer already stands. Pin:
                 // lang::types::unsound_acceptances_are_refused
                 // (REF_TEST_OVER_ANY_SECOND_APPLICATION).
+                // 2026-10-20 claude: Merged with main's fix (a path of whole
+                // reference types, true at a third growing meeting): the shared
+                // walk is kept, since its growth bound is the one rep_collision and
+                // rep_ambiguity use and its seen set never re-walks a pair; the two
+                // duplicate pins became one,
+                // lang::types::ref_test_over_any_in_a_second_pair
+                // (REF_TEST_OVER_ANY_SECOND_APPLICATION was the same program).
                 walk(
                     seen,
                     pair_at(&p, &r),
@@ -1214,15 +1221,16 @@ impl Type {
                     match a.downcast_ref::<crate::abstract_value::GxAbstract>() {
                         Some(g) => {
                             g.id == *id
-                                && g.params.len() == params.len()
-                                // parameters are invariant: each one equal
-                                && params.iter().zip(g.params.iter()).all(|(p, gp)| {
+                                && (flags.contains(IsAFlags::MatchAbstract)
+                                    || g.params.len() == params.len()
+                                    // parameters are invariant: each one equal
+                                    && params.iter().zip(g.params.iter()).all(|(p, gp)| {
                                     let holds = |a: &Type, b: &Type| {
                                         a.contains_with_flags(BitFlags::empty(), env, b)
                                             .unwrap_or(false)
                                     };
                                     holds(p, gp) && holds(gp, p)
-                                })
+                                }))
                         }
                         None => {
                             a.id().as_u64_pair().1 == id.inner()
@@ -1803,6 +1811,9 @@ fn ref_at(t: &Type) -> Option<At<Type>> {
     matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
 }
 
+/// Whether two heads [`rep_collision`]'s own arms did not decide share a
+/// runtime form: a primitive and a head whose form holds it, two
+/// references, or two function types.
 fn rep_overlaps(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Primitive(p), t) | (t, Type::Primitive(p)) => p.intersects(rep_prims(t)),
@@ -2304,12 +2315,12 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 // then `from_scientific`) before the generic parse, and pin the json round trip. probe:
 // design/review-2026-10-19/repro/x-panics-decimal-parse-via-f64.gx Also reported as
 // (small-pkgs-03). (x-panics-01)
-// 2026-10-19 claude: parse() reads a decimal target with Decimal::from_str, then
-// from_scientific, before the value-literal parse, so cast<decimal>(string) and
-// json::read of a decimal are exact. str::parse<decimal> still reads its text as a
-// value literal first (stdlib str's own CR, x-engine-collections-03). Pins:
-// lang::types::cast_reads_a_string_as_its_target,
-// lib_tests::json::json_decimal_round_trip.
+// 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+// (Decimal::from_str_exact, then from_scientific) and a float target with Rust's float
+// parse; integer() truncates a pre-epoch datetime's fraction toward zero. rust_decimal
+// is now a graphix-types dependency. Pin:
+// lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal round
+// trip).
 fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if t == Typ::DateTime
         && let Ok(d) = chrono::DateTime::parse_from_rfc3339(s)
@@ -2321,17 +2332,17 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     {
         return of_int(n, t);
     }
-    let exact = match t {
-        Typ::F64 => s.trim().parse::<f64>().ok().map(Value::F64),
-        Typ::F32 => s.trim().parse::<f32>().ok().map(Value::F32),
-        Typ::Decimal => Decimal::from_str(s.trim())
-            .or_else(|_| Decimal::from_scientific(s.trim()))
+    if t == Typ::Decimal {
+        let s = s.trim();
+        return rust_decimal::Decimal::from_str_exact(s)
+            .or_else(|_| rust_decimal::Decimal::from_scientific(s))
             .ok()
-            .map(|d| Value::Decimal(Arc::new(d))),
-        _ => None,
-    };
-    if exact.is_some() {
-        return exact;
+            .map(|d| Value::Decimal(d.into()));
+    }
+    match t {
+        Typ::F64 => return s.trim().parse::<f64>().ok().map(Value::F64),
+        Typ::F32 => return s.trim().parse::<f32>().ok().map(Value::F32),
+        _ => (),
     }
     if parses_to_collection(s) {
         return None;
@@ -2345,10 +2356,12 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     // above, and pin a print → cast round trip. probe:
     // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
     // (x-engine-collections-04)
-    // 2026-10-19 claude: parse() reads an f64 or f32 target with
-    // str::parse::<f64>/<f32> of the trimmed text before the value-literal parse:
-    // integers past i64, inf, +3 and -0 read. Pin:
-    // lang::types::cast_reads_a_string_as_its_target.
+    // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+    // (Decimal::from_str_exact, then from_scientific) and a float target with Rust's
+    // float parse; integer() truncates a pre-epoch datetime's fraction toward zero.
+    // rust_decimal is now a graphix-types dependency. Pin:
+    // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
+    // round trip).
     // XCR claude for claude: [bug/medium] A decimal target reaches this parse, which
     // reads "123456789.123456789" as an f64 before convert makes a decimal of it. So
     // digits are lost: cast<decimal>("123456789.123456789") is 123456789.1234568, and
@@ -2357,10 +2370,12 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     // with i128. probe:
     // design/review-2026-10-19/repro/t-cast-setops-decimal-parse-via-f64.gx
     // (t-cast-setops-05)
-    // 2026-10-19 claude: Fixed with x-panics-01: a decimal target parses as a Decimal
-    // first. str::parse's literal-first read is stdlib str's CR
-    // (x-engine-collections-03). Pin: lang::types::cast_reads_a_string_as_its_target
-    // (decimal:123456789.123456789).
+    // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+    // (Decimal::from_str_exact, then from_scientific) and a float target with Rust's
+    // float parse; integer() truncates a pre-epoch datetime's fraction toward zero.
+    // rust_decimal is now a graphix-types dependency. Pin:
+    // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
+    // round trip).
     match s.parse::<Value>() {
         Ok(Value::String(_)) | Err(_) => None,
         Ok(parsed) => convert(parsed, t),
@@ -2404,13 +2419,15 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         // pre-epoch case. probe:
         // design/review-2026-10-19/repro/x-engine-collections-datetime-int-floor.gx
         // (x-engine-collections-06)
-        // 2026-10-19 claude: integer() adds 1 to a negative timestamp with a sub-second
-        // part, so the fraction drops toward zero. Pin:
-        // lang::types::cast_reads_a_string_as_its_target
-        // (cast<i64>(datetime:"1969-12-31T23:59:59.5Z") is 0).
+        // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+        // (Decimal::from_str_exact, then from_scientific) and a float target with
+        // Rust's float parse; integer() truncates a pre-epoch datetime's fraction
+        // toward zero. rust_decimal is now a graphix-types dependency. Pin:
+        // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
+        // round trip).
         Value::DateTime(d) => {
-            let floor = d.timestamp() as i128;
-            floor + (floor < 0 && d.timestamp_subsec_nanos() > 0) as i128
+            let secs = d.timestamp() as i128;
+            secs + (secs < 0 && d.timestamp_subsec_nanos() > 0) as i128
         }
         Value::Duration(d) => d.as_secs() as i128,
         v => return v.clone().cast(t),

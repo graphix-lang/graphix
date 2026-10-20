@@ -27,8 +27,8 @@ let map_go = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b>
     array::init(array::len(a), |i| f(a[i]$));
 
 let xs = [1, 2, 3, 4, 5];
-let s = fold_go(xs, |acc, x| acc + x, 0, 0);
-let m = select find_go(xs, |x| x > 3, 0) { null as _ => -1, x => x };
-let d = map_go(xs, |x| x * 10);
+let s = #[native] fold_go(xs, |acc, x| acc + x, 0, 0);
+let m = select #[native] find_go(xs, |x| x > 3, 0) { null as _ => -1, x => x };
+let d = #[native] map_go(xs, |x| x * 10);
 println("sum=[s] found=[m] mapped=[d]");
 sys::exit(s ~ 0)

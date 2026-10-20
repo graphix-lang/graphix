@@ -66,27 +66,20 @@ This program will print 42, 15, 7 and then wait. The compiler will check that
 you have handled all the possible cases. If we remove the null case from this
 select we will get a compile error.
 
-<!-- CR claude for claude: [doc-drift/low] These transcripts quote diagnostics the
-checker no longer prints. Removing the null arm now gives `missing match cases: no arm
-covers null`, the guarded `i64` case gives `no arm covers i64`, and the `Wrong arm gives
-`unreachable arm: the earlier arms already cover the whole scrutinee, unused match
-cases`. The paragraph after this block explains the old type-set message. Re-capture all
-three and rewrite that paragraph (error.md's "Checked Errors" transcript is stale the
-same way). probe: design/review-2026-10-19/repro/book-core-select-diagnostics.sh
-(book-core-08) -->
 ```
 $ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    missing match cases type mismatch [i64, Array<i64>] does not contain [[i64, null], Array<i64>]
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
+    1: missing match cases: no arm covers null
 ```
 
-If you read this carefully you can see that the compiler is building up a set of
-types that we did match, and checking that it contains the argument type. This
-goes both ways, a match case that could never match is also an error.
+The compiler subtracts what each arm matches from the argument's type, and
+names what is left when the arms run out: here `null`, which no arm covers.
+This goes both ways, a match case that could never match is also an error.
 
-```graphix
+```graphix,refused
 let x: [Array<i64>, i64, null] = null;
 x <- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
 x <- sys::time::timer(duration:2.s, false) ~ 7;
@@ -103,10 +96,12 @@ Here we've added an `f64` match case, but the argument type can never contain an
 
 ```
 $ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    pattern f64 will never match null, unused match cases
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
+    1: at: line: 7, column: 3 in file test.gx
+    2: pattern f64 will never match null, unused match cases
 ```
 
 The diagnostic message gives you an insight into the compiler's thinking. What
@@ -120,7 +115,7 @@ subtract from the argument type set. You are required to match without a guard
 at some point. No analysis is done to determine if your guard covers the entire
 range of a type.
 
-```graphix
+```graphix,refused
 let x: [Array<i64>, i64, null] = null;
 x <- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
 x <- sys::time::timer(duration:2.s, false) ~ 7;
@@ -136,10 +131,11 @@ and no unguarded pattern exists that matches `i64`.
 
 ```
 $ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    missing match cases type mismatch [null, Array<i64>] does not contain [[i64, null], Array<i64>]
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
+    1: missing match cases: no arm covers i64
 ```
 
 This is the same error you would get if you omitted the `i64` match case
@@ -386,7 +382,7 @@ $ graphix test.gx
 
 Variant patterns enforce the same kinds of match case checking as all the other pattern types
 
-```graphix
+```graphix,refused
 let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
 v <- `Arg(42);
 v <- `MoreArg("hello world", 42);
@@ -402,10 +398,12 @@ yields
 
 ```
 $ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    pattern `Wrong will never match [`Arg(i64), `MoreArg(string, i64)], unused match cases
+    0: at: line: 4, column: 1 in file test.gx, in: select v { `Bare => "it's bare, no arg..
+    1: at: line: 8, column: 3 in file test.gx
+    2: unreachable arm: the earlier arms already cover the whole scrutinee, unused match cases
 ```
 
 ### Literals, Ignore
@@ -429,18 +427,13 @@ select (0, 5) {
 ```
 $ graphix or.gx
 5
-<!-- CR claude for claude: [doc-drift/low] The checker does not require a name to have
-the same type in every alternative. It types the name as the union, as CLAUDE.md and
-this page's "Matching Structure" section say: `` `A(n) | `B(n) `` over `` [`A(i64),
-`B(string)] `` is accepted with `n: [i64, string]`. Keep "same names" and replace "same
-types" with the union rule. probe:
-design/review-2026-10-19/repro/book-core-or-pattern-types.gx (book-core-07) -->
 ```
 
 The rules are the orthodox ones:
 
-- **Same binds, same types.** Every alternative must bind exactly the same
-  names, and each name must have exactly the same type in every alternative.
+- **Same binds.** Every alternative must bind exactly the same names, and a
+  name's type is the union of its types in the alternatives:
+  `` `A(n) | `B(n) `` over `` [`A(i64), `B(string)] `` binds `n: [i64, string]`.
   `(0, y) | (y, 0)` is fine over `(i64, i64)`; `1 | x` is refused (the second
   alternative binds `x`, the first binds nothing).
 - **One guard per arm.** A guard written after the alternation covers the

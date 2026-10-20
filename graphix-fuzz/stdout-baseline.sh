@@ -72,7 +72,7 @@ list() {
 export BASELINE_REPO=$repo BASELINE_OUTDIR=$outdir BASELINE_BIN=$bin \
     BASELINE_SECS=$timeout_secs BASELINE_MODE="${mode_args[*]-}"
 
-# CR claude for claude: [perf/low] The worker runs graphix without `--no-cache`, so each
+# XCR claude for claude: [perf/low] The worker runs graphix without `--no-cache`, so each
 # program writes a ~1.6 MB program image into the user's real cache. Over ~600 programs
 # that is about 1 GB, past the 512 MB `KEEP_BYTES` the shell's cache collector keeps
 # (graphix-shell cache.rs `collect`). A capture therefore evicts the user's own warm
@@ -80,12 +80,14 @@ export BASELINE_REPO=$repo BASELINE_OUTDIR=$outdir BASELINE_BIN=$bin \
 # `"$BASELINE_BIN" --no-cache $BASELINE_MODE "$f"`. main.rs `leakcheck` needs the same
 # flag. probe: design/review-2026-10-19/repro/fuzz-main-aux-baseline-cache-churn.sh
 # (fuzz-main-aux-04)
+# 2026-10-19 claude: The baseline worker and the leakcheck children both run graphix
+# with --no-cache, so a capture writes no program images. No test reaches either path.
 list | sort | tr '\n' '\0' | xargs -0 -P "$jobs" -n 1 bash -c '
     f=$1
     rel=${f#"$BASELINE_REPO"/}
     out=$BASELINE_OUTDIR/${rel//\//__}.out
     sb=$(mktemp -d)
-    ( cd "$sb" && timeout "$BASELINE_SECS" "$BASELINE_BIN" $BASELINE_MODE "$f" 2>/dev/null ) >"$out"
+    ( cd "$sb" && timeout "$BASELINE_SECS" "$BASELINE_BIN" --no-cache $BASELINE_MODE "$f" 2>/dev/null ) >"$out"
     rm -rf "$sb"
 ' _
 

@@ -6,7 +6,7 @@ use super::{
     MIN_COL_WIDTH, Message, RESIZE_HANDLE_WIDTH, ROW_NAME_HEADER_LABEL, ROW_NAME_KEY,
     Renderer, TableMsg, VALUE_COL_KEY, VALUE_HEADER_LABEL,
     types::{
-        ColumnType, SortDirection, ViewportMetrics, age_sparkline, cell_path,
+        Choice, ColumnType, SortDirection, ViewportMetrics, age_sparkline, cell_path,
         col_header_width, col_min_width, row_basename, truncate_to_width,
     },
 };
@@ -579,7 +579,7 @@ impl<X: GXExt> DataTableW<X> {
     fn render_cell<'a>(
         &'a self,
         col_name: &ArcStr,
-        col_type: &ColumnType,
+        col_type: &'a ColumnType,
         text: ArcStr,
         row_idx: usize,
         w: f32,
@@ -644,49 +644,26 @@ impl<X: GXExt> DataTableW<X> {
                 tog.into()
             }
             ColumnType::Combo { choices } => {
-                // CR claude for claude: [perf/low] Every drawn Combo cell allocates a
-                // Vec<String> of labels, a selected String and a label->id hash map on
-                // every frame, though the choices are fixed per column. PickList takes
-                // borrowed options and selection: keep the labels as ArcStr in
-                // ColumnType::Combo, pass &labels[..] with selected Option<&ArcStr>,
-                // and map the picked label to its id by a linear search over the
-                // borrowed choices. Found by reading; not run. (gui-datatable-04)
-                let options: Vec<String> =
-                    choices.iter().map(|(_, label)| label.to_string()).collect();
-                let selected = choices
-                    .iter()
-                    .find(|(id, _)| id.as_str() == text.as_str())
-                    .map(|(_, label)| label.to_string());
+                let selected = choices.iter().find(|c| c.id.as_str() == text.as_str());
+                let cell_path = cell_path.clone();
                 widget::PickList::<
                     '_,
-                    String,
-                    Vec<String>,
-                    String,
+                    Choice,
+                    &[Choice],
+                    &Choice,
                     Message,
                     GraphixTheme,
                     Renderer,
-                >::new(options, selected, {
-                    let id_map_owned: LPooled<AHashMap<String, ArcStr>> = choices
-                        .iter()
-                        .map(|(id, label)| (label.to_string(), id.clone()))
-                        .collect();
-                    let cell_path = cell_path.clone();
-                    move |label: String| {
-                        if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
-                            let id = id_map_owned
-                                .get(&label)
-                                .cloned()
-                                .unwrap_or_else(|| ArcStr::from(label));
-                            Message::Call(
-                                cid,
-                                ValArray::from_iter([
-                                    Value::String(cp.clone()),
-                                    Value::String(id),
-                                ]),
-                            )
-                        } else {
-                            Message::Nop
-                        }
+                >::new(&choices[..], selected, move |choice: Choice| {
+                    match (callback_id, &cell_path) {
+                        (Some(cid), Some(cp)) => Message::Call(
+                            cid,
+                            ValArray::from_iter([
+                                Value::String(cp.clone()),
+                                Value::String(choice.id),
+                            ]),
+                        ),
+                        _ => Message::Nop,
                     }
                 })
                 .text_size(13)
@@ -696,14 +673,8 @@ impl<X: GXExt> DataTableW<X> {
                 let val: f64 = text.parse().unwrap_or(*min);
                 if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
                     let path_val = Value::String(cp.clone());
-                    // CR claude for claude: [bug/low] The decrement is clamped only to
-                    // `min` and the increment only to `max`. A cell whose value lies
-                    // outside [min, max] (a publisher can write anything) therefore
-                    // sends an out-of-range on_edit: at 100 with max 64, "-" sends 99.
-                    // data_table.md promises the clamped value. Clamp both to `[*min,
-                    // *max]`. Found by reading; not run. (book-ui-b-06)
-                    let dec_val = (val - increment).max(*min);
-                    let inc_val = (val + increment).min(*max);
+                    let dec_val = (val - increment).max(*min).min(*max);
+                    let inc_val = (val + increment).max(*min).min(*max);
                     let path_dec = path_val.clone();
                     let path_inc = path_val;
                     let cid_dec = cid;

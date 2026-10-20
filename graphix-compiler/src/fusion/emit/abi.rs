@@ -175,14 +175,14 @@ pub(super) fn is_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     b.ins().icmp_imm(IntCC::Equal, m, 0)
 }
 
-/// OR [`STALE`] into a constant's `disc` when `init_flag` is 0: a
+/// OR [`STALE`] into a constant's `disc` when `born_flag` is 0: a
 /// constant fires only where it is born.
 pub(super) fn const_stale_gate(
     b: &mut FunctionBuilder,
-    init_flag: ClifValue,
+    born_flag: ClifValue,
     disc: ClifValue,
 ) -> ClifValue {
-    let not_init = b.ins().icmp_imm(IntCC::Equal, init_flag, 0);
+    let not_init = b.ins().icmp_imm(IntCC::Equal, born_flag, 0);
     let staled = b.ins().bor_imm(disc, STALE);
     b.ins().select(not_init, staled, disc)
 }
@@ -199,55 +199,6 @@ pub(crate) enum OwnedKind {
     Composite,
     String,
     Value,
-}
-
-// CR claude for claude: [structure/low] OwnedKind::of restates LocalKind::of's AbiKind
-// table minus scalars, and LocalKind::owned is its inverse, so a new AbiKind or
-// ParamKind variant is classified in three parallel matches that can drift. Its one
-// caller (select.rs) can be `LocalKind::of(k).and_then(|l| l.owned().ok())`. Making
-// owned return Option avoids building an anyhow error only to discard it. Merge
-// LocalKind's three impl blocks into one after the enum. Found by reading; not run.
-// (f-jit-03)
-impl OwnedKind {
-    /// The owned kind of a value of ABI kind `k`; `None` for a scalar and
-    /// for a shape with no local.
-    pub(super) fn of(k: AbiKind) -> Option<Self> {
-        Some(match k {
-            AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Self::Composite,
-            AbiKind::String => Self::String,
-            AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Self::Value,
-            AbiKind::Scalar(_) | AbiKind::Unit | AbiKind::Null => return None,
-        })
-    }
-}
-
-impl LocalKind {
-    /// The local a kernel parameter of kind `k` binds as. Every kind is a
-    /// two-word `(disc, payload)` pair on the wire; they differ in entry
-    /// binding and body emission.
-    pub(super) fn of_param(k: &kernel_abi::ParamKind) -> Self {
-        use kernel_abi::ParamKind as P;
-        match k {
-            P::Scalar(p) => LocalKind::Scalar(*p),
-            P::Array { .. } | P::Tuple { .. } | P::Struct { .. } => LocalKind::Composite,
-            P::String => LocalKind::String,
-            P::Variant { .. } | P::Nullable { .. } | P::Value { .. } => LocalKind::Value,
-        }
-    }
-}
-
-impl LocalKind {
-    /// The owned kind of a non-scalar local.
-    pub(crate) fn owned(self) -> anyhow::Result<OwnedKind> {
-        Ok(match self {
-            LocalKind::Scalar(p) => {
-                anyhow::bail!("emit_clif: a scalar {p:?} is no owned local")
-            }
-            LocalKind::Composite => OwnedKind::Composite,
-            LocalKind::String => OwnedKind::String,
-            LocalKind::Value => OwnedKind::Value,
-        })
-    }
 }
 
 impl From<OwnedKind> for LocalKind {
@@ -307,6 +258,31 @@ impl LocalKind {
             AbiKind::Unit | AbiKind::Null => return None,
         })
     }
+
+    /// The local a kernel parameter of kind `k` binds as. Every kind is a
+    /// two-word `(disc, payload)` pair on the wire; they differ in entry
+    /// binding and body emission.
+    pub(super) fn of_param(k: &kernel_abi::ParamKind) -> Self {
+        use kernel_abi::ParamKind as P;
+        match k {
+            P::Scalar(p) => LocalKind::Scalar(*p),
+            P::Array { .. } | P::Tuple { .. } | P::Struct { .. } => LocalKind::Composite,
+            P::String => LocalKind::String,
+            P::Variant { .. } | P::Nullable { .. } | P::Value { .. } => LocalKind::Value,
+        }
+    }
+
+    /// The owned kind of a non-scalar local.
+    pub(crate) fn owned(self) -> anyhow::Result<OwnedKind> {
+        Ok(match self {
+            LocalKind::Scalar(p) => {
+                anyhow::bail!("emit_clif: a scalar {p:?} is no owned local")
+            }
+            LocalKind::Composite => OwnedKind::Composite,
+            LocalKind::String => OwnedKind::String,
+            LocalKind::Value => OwnedKind::Value,
+        })
+    }
 }
 
 /// One in-scope kernel local: a two-register Value tagged by `kind`.
@@ -339,9 +315,9 @@ pub(crate) struct JitEnv {
 /// How a loop slot's body reads what stands.
 #[derive(Clone, Copy)]
 pub(super) struct SlotView {
-    /// The slot's init view (`BodyCx::init_flag`): the enclosing one, or
-    /// a new slot's.
-    pub(super) init: ClifValue,
+    /// Whether the slot is born (`BodyCx::born_flag`): the enclosing
+    /// view's, or a new slot's.
+    pub(super) born: ClifValue,
     /// 1 in a new slot, else 0.
     pub(super) new: ClifValue,
     /// ANDed into the disc of a read of a local bound before the loop:

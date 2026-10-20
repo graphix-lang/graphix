@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use arcstr::literal;
 use graphix_package_core::{
     NetConfig, run,
-    testing::{self, Collect, FuseExpect, Mode, collect},
+    testing::{self, Collect, FuseExpect, Mode, collect, is, prints},
 };
 use netidx::subscriber::Value;
 use poolshark::local::LPooled;
@@ -63,15 +63,7 @@ const NET_WRITE0: &str = r#"
 }
 "#;
 
-run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(42), Value::I64(43)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(net_write0, NET_WRITE0, prints("[i64:42, i64:43]"); FuseExpect::None);
 
 const NET_WRITE1: &str = r#"
 {
@@ -178,7 +170,7 @@ run!(net_rpc_defaults, r#"{
     #f: |args: {a: i64, b: i64}| args.a + args.b);
   let r: i64 = sys::net::call(p, {a: 10})?;
   r
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(12))); FuseExpect::None);
+}"#, is(Value::I64(12)); FuseExpect::None);
 
 // A call whose arguments fail the cast is answered with the error and
 // never reaches the handler; the next call is served.
@@ -227,11 +219,12 @@ run!(net_rpc_latest_call_wins, r#"{
   p <- sys::time::timer(duration:50.ms, false) ~ "/local/rpc_fast";
   let r: i64 = sys::net::call(p, null)?;
   sys::time::after_idle(duration:600.ms, r)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::None);
+}"#, is(Value::I64(2)); FuseExpect::None);
 
-// A re-woken arm's subscribe re-establishes from the present path (the
-// path is a binding). The matcher wants a delivery, a sleep marker (-1),
-// then a delivery of a newer value after the rewake.
+// A re-woken arm's subscribe re-establishes, and its last event does not
+// survive the sleep: every value it delivers, either side of a sleep
+// marker (-1), is newer than the last (a resubscribe may first see the
+// value published while the arm slept).
 const NET_SUB_REWAKE: &str = r#"
 {
   let x = i64:0;
@@ -248,7 +241,7 @@ const NET_SUB_REWAKE: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap/medium] This matcher ignores every value not greater
+// XCR claude for claude: [test-gap/medium] This matcher ignores every value not greater
 // than the first, so a woken arm that re-emitted its pre-sleep subscription value still
 // passes: [0, -1, 0, 2, -1, 2] is accepted. The rule that an event source's last event
 // does not survive the sleep has no other pin for net subscriptions. Assert the publish
@@ -256,32 +249,49 @@ const NET_SUB_REWAKE: &str = r#"
 // "present path" is also untested, since the path is a constant. Add a path that moves
 // while the arm sleeps; it should give ["a", "off", "b"]. Found by reading; not run.
 // (tests-lib-b2-04)
+// 2026-10-19 claude: The matcher now refuses any value not newer than the last
+// delivered, either side of a sleep marker, and needs a wake (a value after a -1): [0,
+// -1, 0, ..] fails. It does not require one value per window: under par a resubscribe
+// first sees the value published while the arm slept, [0, -1, 1, 2, -1, 4].
+// net_subscribe_arm_rewake_moved_path pins the present path: the path moves while the
+// arm sleeps and the woken subscribe gives ["a", "off", "b"].
 run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            let vals: Vec<i64> = a
-                .iter()
-                .filter_map(|v| match v {
-                    Value::I64(n) => Some(*n),
-                    _ => None,
-                })
-                .collect();
-            let mut first: Option<i64> = None;
-            let mut slept = false;
-            let mut resub = false;
-            for v in vals {
-                match (first, slept) {
-                    (None, _) if v >= 0 => first = Some(v),
-                    (Some(_), false) if v == -1 => slept = true,
-                    (Some(f), true) if v > f => resub = true,
-                    _ => (),
-                }
-            }
-            resub
+    let Ok(Value::Array(a)) = v else { return false };
+    let mut last = -1;
+    let mut slept = false;
+    let mut woke = false;
+    a.iter().all(|v| match v {
+        Value::I64(-1) if last >= 0 => {
+            slept = true;
+            true
+        }
+        Value::I64(n) if *n > last => {
+            woke |= slept;
+            last = *n;
+            true
         }
         _ => false,
-    }
+    }) && woke
 }; FuseExpect::Jit);
+
+// The woken subscribe reads the path as it stands at the wake: one moved
+// while the arm slept is the one subscribed.
+run!(net_subscribe_arm_rewake_moved_path, r#"
+{
+  sys::net::publish("/local/wakepath/a", "a");
+  sys::net::publish("/local/wakepath/b", "b");
+  let x = 0;
+  x <- sys::time::timer(duration:0.15s, true) ~ x + 1;
+  let p = "/local/wakepath/a";
+  p <- select x { 1 => "/local/wakepath/b", _ => never() };
+  let flip = select x { 1 => `Off, _ => `On };
+  let got = select flip {
+    `On => { let v: string = sys::net::subscribe(p)$; v },
+    `Off => "off"
+  };
+  array::group(got, |n, _| n >= 3)
+}
+"#, prints(r#"["a", "off", "b"]"#); FuseExpect::Jit);
 
 // The publish twin: a sleeping arm unpublishes and a re-woken one
 // republishes from the present value; the observer sees each window it
@@ -707,4 +717,30 @@ run!(net_write_not_repeated_after_wake, r#"{
         false => never()
     };
     sys::time::after_idle(duration:400.ms, ready) ~ writes
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+}"#, is(Value::I64(1)); FuseExpect::None);
+
+// A write handler's argument and an rpc's are read from data: the check
+// refuses a function and a reference (an rpc's argument also a type it
+// cannot settle), and a write a handler's unsettled type cannot be cast
+// to answers the writer, never reaching the handler uncast
+// (x-builtin-effects-02, gx-stdlib-01, sys-net-03, tests-lib-b2-01,
+// tests-lib-b2-02).
+run!(net_on_write_open_type_takes_no_write, r#"{
+    let n: i64 = -1;
+    let p = "/local/ow_open";
+    sys::net::publish(#on_write: |v: Array<'b>| n <- v ~ array::len(v), p, 0);
+    let s: i64 = sys::net::subscribe(p)$;
+    sys::net::write(p, once(s) ~ {a: 1, b: 2});
+    sys::time::after_idle(duration: 300.ms, s) ~ n
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(-1))); FuseExpect::None);
+
+run!(net_on_write_function_refused, r#"{
+    let got = 0;
+    sys::net::publish(#on_write: |f: fn(x: i64) -> i64| got <- f(41), "/local/ow_fn", 0);
+    got
+}"#, testing::refused("is not data"); FuseExpect::None);
+
+run!(net_rpc_reference_argument_refused, r#"{
+    let rpc = sys::net::rpc(#path: "/local/rpc_ref", #doc: "", #spec: null, #f: |a: &i64| *a + 1);
+    rpc
+}"#, testing::refused("is not data"); FuseExpect::None);

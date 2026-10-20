@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -188,6 +188,7 @@ before they propagate further.</p>
   `Paste(string),
   `Resize(i64, i64)
 ];
+
 </code></pre>
 <ul>
 <li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes (enabled while the display runs, independently of mouse input)</li>
@@ -204,6 +205,13 @@ before they propagate further.</p>
   modifiers: Array&lt;KeyModifier&gt;,
   state: Array&lt;KeyEventState&gt;
 };
+
+type KeyEventState = [
+  `Keypad,
+  `CapsLock,
+  `NumLock
+];
+
 </code></pre>
 <h3 id="key-codes"><a class="header" href="#key-codes">Key Codes</a></h3>
 <pre><code class="language-graphix">type KeyCode = [
@@ -235,6 +243,40 @@ before they propagate further.</p>
   `Media(MediaKeyCode),
   `Modifier(ModifierKeyCode)
 ];
+
+type MediaKeyCode = [
+  `Play,
+  `Pause,
+  `PlayPause,
+  `Reverse,
+  `Stop,
+  `FastForward,
+  `Rewind,
+  `TrackNext,
+  `TrackPrevious,
+  `Record,
+  `LowerVolume,
+  `RaiseVolume,
+  `MuteVolume
+];
+
+type ModifierKeyCode = [
+  `LeftShift,
+  `LeftControl,
+  `LeftAlt,
+  `LeftSuper,
+  `LeftHyper,
+  `LeftMeta,
+  `RightShift,
+  `RightControl,
+  `RightAlt,
+  `RightSuper,
+  `RightHyper,
+  `RightMeta,
+  `IsoLevel3Shift,
+  `IsoLevel5Shift
+];
+
 </code></pre>
 <p>Character keys use <code>Char(string)</code>, e.g., <code>Char("a")</code> or <code>Char("A")</code>.
 Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
@@ -244,6 +286,7 @@ Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
   `Repeat,
   `Release
 ];
+
 </code></pre>
 <p>Most applications only care about <code>Press</code> events, and must say so: a
 terminal that reports releases (the Windows console does) delivers two
@@ -274,6 +317,7 @@ other):</p>
   `Hyper,
   `Meta
 ];
+
 </code></pre>
 <p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
 <h2 id="ending-the-program"><a class="header" href="#ending-the-program">Ending the Program</a></h2>
@@ -306,12 +350,11 @@ the level with the program’s exit:</p>
 <pre><code class="language-graphix">tui::mouse &lt;- true
 </code></pre>
 <p>Mouse events contain position and action information:</p>
-<pre><code class="language-graphix">type MouseEvent = {
-  column: i64,
-  kind: MouseEventKind,
-  modifiers: Array&lt;KeyModifier&gt;,
-  row: i64
-};
+<pre><code class="language-graphix">type MouseButton = [
+  `Left,
+  `Right,
+  `Middle
+];
 
 type MouseEventKind = [
   `Down(MouseButton),
@@ -324,11 +367,13 @@ type MouseEventKind = [
   `ScrollRight
 ];
 
-type MouseButton = [
-  `Left,
-  `Right,
-  `Middle
-];
+type MouseEvent = {
+  column: i64,
+  kind: MouseEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  row: i64
+};
+
 </code></pre>
 <h2 id="creating-input-handlers"><a class="header" href="#creating-input-handlers">Creating Input Handlers</a></h2>
 <p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>
@@ -388,21 +433,12 @@ let handle = |e: Event| on_press(e, |k| select k.code {
 
 input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[count]"))
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] This paragraph says a constant write such
-as `mode <- `Insert` "fires once when the arm becomes selected" and that both forms are
-useful. The rule as built is that a constant right-hand side fires only at the arm's
-FIRST entry, because a later entry resumes the arm. The check warns about it, and
-select.md's "Writing From an Arm" says so. Rewrite it to match: sample the event that
-selects the arm (`` k@ `Char("i") => mode <- k ~ `Insert ``), and drop "Both are
-useful". The code span `mode <- \`Insert` also renders broken, because CommonMark has no
-backslash escapes inside code spans; use ``` `` mode <- `Insert `` ```. probe:
-design/review-2026-10-19/repro/book-ui-b-const-arm-write.gx,
-design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-01) -->
 <p>The <code>Up</code> and <code>Down</code> arms sample the key (<code>u ~ count + 1</code>). A write
 inside a select arm fires when its right-hand side fires: <code>count &lt;- count + 1</code> would fire again on its own update and loop, and a constant
-such as <code>mode &lt;- \</code>Insert` fires once when the arm becomes selected
-rather than on every key. Both are useful, and the select chapter’s
-“Writing From an Arm” spells out when.</p>
+such as <code>mode &lt;- `Insert</code> fires only at the arm’s first entry, since a
+later entry resumes the arm (the check warns of it). Sample the event
+that selects the arm instead, <code>k@ `Char("i") =&gt; mode &lt;- k ~ `Insert</code>;
+the select chapter’s “Writing From an Arm” spells out why.</p>
 <h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>
 <p>The <code>#enabled</code> parameter turns a handler on and off. A disabled handler
 drops every event: neither it nor anything it wraps, nested handlers
@@ -449,14 +485,6 @@ input_handler(
 )
 </code></pre>
 <h2 id="event-propagation"><a class="header" href="#event-propagation">Event Propagation</a></h2>
-<!-- CR claude for claude: [doc-drift/medium] This section describes propagation only
-through handlers. It leaves out that containers route each event to one child.
-LayoutW::handle_event sends it only to the `#focused` child (0 when unset),
-TabsW::handle_event only to the selected tab, and OverlayW only to the top layer. So an
-input_handler in a non-focused layout pane or an unselected tab never sees a key, with
-no warning. Say this here, and in one line under layout.md's `focused` and tabs.md's
-`selected`. Also reword tabs.md's "Keyboard Navigation" list as patterns the program
-implements itself. Found by reading; not run. (book-ui-b-02) -->
 <p>Input handlers form a stack. Events flow from the outermost handler inward:</p>
 <pre><code class="language-graphix">use tui::{
   input_handler::{Event, input_handler, on_press},
@@ -490,6 +518,11 @@ input_handler(
 </code></pre>
 <p>If the outer handler returns <code>Continue</code>, the event reaches the inner one. If
 either returns <code>Stop</code>, propagation stops.</p>
+<p>Containers route an event to one child: a block passes it to its child,
+a layout only to its <code>#focused</code> child (the first when <code>#focused</code> is not
+set), tabs only to the selected tab, and an overlay only to its top
+layer. A handler in a pane that is not focused, or in a tab that is not
+selected, sees no event at all.</p>
 <h2 id="the-raw-event-stream"><a class="header" href="#the-raw-event-stream">The Raw Event Stream</a></h2>
 <p>For advanced use cases, you can access the raw event stream directly via
 <code>tui::event</code>:</p>
@@ -615,13 +648,7 @@ type Mode = [`Normal, `Insert];
 let mode: Mode = `Normal;
 let text = "";
 
-// CR claude for claude: [readability/low] `mode` is read unsampled. When a key writes
-// it, the write lands next cycle, the scrutinee fires again with the previous key, and
-// a second arm runs (Esc answers `Stop` and then `Continue`). Nothing breaks today only
-// because every arm samples `k`, but this is the book's showcase of the pattern. Write
-// `select (k ~ mode, k.code)`, as browser_commands does with `k ~ command_mode`. probe:
-// design/review-2026-10-19/repro/examples-tui-vim-unsampled-mode.gx (examples-tui-07)
-let handle = |e: Event| on_press(e, |k| select (mode, k.code) {
+let handle = |e: Event| on_press(e, |k| select (k ~ mode, k.code) {
   (`Normal, `Char("i")) =&gt; {
     mode &lt;- k ~ `Insert;
     `Stop

@@ -62,16 +62,12 @@ val split: fn(#pat: string, s: string) -> Array<string>;
 /// reverse split the string by the specified #pat and return an array of each part
 val rsplit: fn(#pat: string, s: string) -> Array<string>;
 
-// CR claude for claude: [doc-drift/low] splitn returns at most #n PARTS (#n - 1
-// splits): #n: 1 returns the whole string unsplit. rsplitn returns its parts from the
-// end, in reverse order. Both docs say 'at most #n times'; say 'into at most #n parts'
-// as splitn_escaped's doc does, and state rsplitn's order. (collections-str-08)
-/// split the string at most #n times by the specified #pat and return an array of
-/// each part
+/// split the string by the specified #pat into at most #n parts (#n: 1 is the whole
+/// string) and return an array of each part
 val splitn: fn(#pat:string, #n:i64, s: string) -> Result<Array<string>, `StringSplitError(string)>;
 
-/// reverse split the string at most #n times by the specified #pat and return an array of
-/// each part
+/// split the string from its end by the specified #pat into at most #n parts and return
+/// an array of each part, the last part first
 val rsplitn: fn(#pat:string, #n:i64, s: string) -> Result<Array<string>, `StringSplitError(string)>;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array

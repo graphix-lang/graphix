@@ -207,8 +207,7 @@ An image carries each cell's level and each definition's depth.
   union (`[i64, 'x]`), and checks only the known parts
   (`op::constrain_operand`); it never binds the cell to the bound, which
   would claim every type the bound admits at once.
-- A cell remembers that ⊥ reached it while open (`CellFact::BottomFed`
-  in `TCell::facts`,
+- A cell remembers that ⊥ reached it while open (`CellFact::BottomFed`,
   set by that `contains` arm, merged by aliasing, copied at
   instantiation like the conjuncts). Every other production binds a
   cell, so a ⊥-fed cell still open at a settle after its writers binds

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -182,18 +182,11 @@
 <p>Or specify a directory:</p>
 <pre><code>graphix package create mylib --dir ~/projects
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] The tree below leaves out build.rs, which
-`create_package` writes, and the page never says a package needs it or the
-`graphix-ast-pack` build-dependency. `defpackage!` includes `$OUT_DIR/graphix_ast.pack`,
-which only that build script produces, so a crate set up from this page fails with a
-bare "OUT_DIR not defined". `graphix_derive::check_invariants` does not check for it
-either. Fix: list build.rs, show `graphix_ast_pack::emit()` and the build-dependency
-here, and have `check_invariants` panic with that instruction when the build script or
-the build-dependency is missing. Found by reading; not run. (book-modules-udt-05) -->
 <p>This creates a <code>graphix-package-mylib</code> directory with the following structure:</p>
 <pre><code>graphix-package-mylib/
   Cargo.toml
   README.md
+  build.rs
   src/
     lib.rs
     graphix/
@@ -225,6 +218,19 @@ defpackage! {
 <li>Automatic inclusion of all <code>.gx</code> and <code>.gxi</code> files from <code>src/graphix/</code></li>
 <li>Test infrastructure (<code>TEST_REGISTER</code>) for the test harness</li>
 </ul>
+<h3 id="buildrs--packing-the-graphix-source"><a class="header" href="#buildrs--packing-the-graphix-source"><code>build.rs</code> – Packing the Graphix Source</a></h3>
+<p>Every package has the build script the scaffold writes, which packs the
+package’s Graphix source into a pre-parsed blob at build time:</p>
+<pre class="playground"><code class="language-rust">fn main() {
+    graphix_ast_pack::emit().expect("packing graphix AST blob");
+}</code></pre>
+<p>with <code>graphix-ast-pack</code> as its build-dependency in <code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[build-dependencies]
+graphix-ast-pack = "0.9.0"
+</code></pre>
+<p><code>defpackage!</code> includes the blob (<code>$OUT_DIR/graphix_ast.pack</code>), so it
+refuses a package that lacks the build script or the build-dependency,
+with an error that says to add them.</p>
 <h3 id="srcgraphix--graphix-source-modules"><a class="header" href="#srcgraphix--graphix-source-modules"><code>src/graphix/</code> – Graphix Source Modules</a></h3>
 <p>Graphix source files in <code>src/graphix/</code> are automatically included in the
 package. These files provide the Graphix-level API for your package. The
@@ -253,55 +259,41 @@ fine-grained control over the update cycle.</p>
 <p>All builtin names <strong>must</strong> start with your package name. For a package named
 <code>mylib</code>, builtins must be named <code>mylib_something</code> (or <code>mylib</code> itself). The <code>register</code> function
 <code>defpackage!</code> generates refuses any other name when the package loads.</p>
-<!-- CR claude for claude: [doc-drift/low] The MinEv example below declares
-`Effect::Stateless(None)` although this page says `None` is only for a raw Apply and
-every pure CachedArgs builtin takes a fast fn (core's min is `fast_builtin!`). Its
-handling of a missing argument is dead, because CachedArgs never passes one. The copy in
-embedding/overview.md names it `core_min`, which `defpackage!` refuses in a third-party
-package, and binds it without core's `'a: Ordered`. Fix: one example built with
-`fast_builtin!`, named `mylib_min` and bound with `'a: Ordered`, kept here and linked
-from the overview. Found by reading; not run. (book-modules-udt-09) -->
-<h3 id="the-simple-path-evalcached--cachedargs"><a class="header" href="#the-simple-path-evalcached--cachedargs">The Simple Path: <code>EvalCached</code> / <code>CachedArgs</code></a></h3>
-<p>For pure functions that just compute a result from their arguments, use
-<code>EvalCached</code>:</p>
+<h3 id="the-simple-path-fast_builtin"><a class="header" href="#the-simple-path-fast_builtin">The Simple Path: <code>fast_builtin!</code></a></h3>
+<p>A pure function of its arguments is a plain Rust function over their
+values, and <code>graphix_package_core::fast_builtin!</code> writes the rest. For
+example, the minimum of all its arguments:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
+</span>use graphix_package_core::fast_builtin;
 use netidx_value::Value;
 
-#[derive(Debug, Default)]
-struct MyMinEv;
-
-impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyMinEv {
-    const NAME: &amp;str = "mylib_min";
-    // Every output appears on the cycle its inputs arrive, and the
-    // result depends only on the arguments; no fast call yet.
-    const EFFECT: Effect = Effect::Stateless(None);
-
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
-        let mut res = None;
-        for v in from.flat_iter() {
-            match (res, v) {
-                (None, None) | (Some(_), None) =&gt; return None,
-                (None, Some(v)) =&gt; res = Some(v),
-                (Some(v0), Some(v)) =&gt; {
-                    res = if v &lt; v0 { Some(v) } else { Some(v0) };
-                }
-            }
+fn mylib_min(args: &amp;[Value]) -&gt; Option&lt;Value&gt; {
+    let mut res = args.first()?;
+    for v in &amp;args[1..] {
+        if v &lt; res {
+            res = v
         }
-        res
     }
+    Some(res.clone())
 }
 
-// a payload with no state to image
-unit_image_state!(MyMinEv);
-
-type MyMin = CachedArgs&lt;MyMinEv&gt;;
+fast_builtin!(MyMin, MyMinEv, "mylib_min", mylib_min);
 <span class="boring">}</span></code></pre>
-<p>Then list <code>MyMin</code> in your <code>defpackage!</code> builtins. <code>CachedArgs</code> handles all the
-details of caching argument values, calling <code>eval</code> when arguments change, and
-implementing the <code>Apply</code> trait.</p>
+<p>Then list <code>MyMin</code> in your <code>defpackage!</code> builtins, and bind it in your
+package’s Graphix module with every argument and the return type
+annotated:</p>
+<pre><code class="language-graphix ignore">let min = 'a: Ordered |a: 'a, @args: 'a| -&gt; 'a 'mylib_min
+</code></pre>
+<p>The body <code>'mylib_min</code> names the builtin. <code>'a: Ordered</code> holds the
+arguments to a type whose values order (no references or functions),
+the bound core’s own <code>min</code> declares.</p>
+<p>The macro writes an <code>EvalCached</code> (the one method <code>eval</code>, called with the
+cached argument values whenever an argument changes), a
+<code>CachedArgs&lt;MyMinEv&gt;</code> named <code>MyMin</code> that implements <code>Apply</code> around it,
+and declares <code>mylib_min</code> the builtin’s fast call, so the interpreter and
+native code run one implementation. The sections below are what it
+writes by hand.</p>
 <p><code>EFFECT</code> is the builtin’s whole classification, three questions
 answered in one place:</p>
 <ul>
@@ -381,79 +373,9 @@ all its arguments arrive is a raw <code>Apply</code> (below), not an
 state across cycles, or work with higher-order functions, implement the
 <code>BuiltIn</code> and <code>Apply</code> traits directly. See
 <a href="../embedding/builtins.html">Writing Built in Functions</a> for a deep dive.</p>
-<p>Here is a minimal example – <code>once</code> passes through exactly one update:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use anyhow::Result;
-use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
-    UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
-};
-use netidx_core::pack::{Pack, PackError};
-
-#[derive(Debug, Default)]
-struct MyOnce {
-    // whether the one update has passed
-    done: bool,
-    // the result slot `update` lends to the caller
-    out: TagValue,
-}
-
-impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
-    const NAME: &amp;str = "mylib_once";
-    // it keeps state across invocations
-    const EFFECT: Effect = Effect::Sync;
-
-    fn init&lt;'a, 'b, 'c, 'd&gt;(
-        _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
-        _typ: &amp;'a FnType,
-        _resolved_typ: Option&lt;&amp;'d FnType&gt;,
-        _scope: &amp;'b Scope,
-        _from: &amp;'c [Node&lt;R, E&gt;],
-        _top_id: ExprId,
-    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
-        Ok(Box::new(MyOnce::default()))
-    }
-
-    // restore what `image_encode` wrote; the result slot is never imaged
-    fn image_decode(
-        _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
-        _from: &amp;[Node&lt;R, E&gt;],
-        buf: &amp;mut &amp;[u8],
-    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;, PackError&gt; {
-        Ok(Box::new(MyOnce { done: bool::decode(buf)?, out: TagValue::phantom() }))
-    }
-}
-
-impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
-    fn image_encode(&amp;self, buf: &amp;mut ImageBuf) -&gt; Result&lt;(), PackError&gt; {
-        self.done.encode(buf)
-    }
-
-    fn update(
-        &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
-        from: &amp;mut [Node&lt;R, E&gt;],
-    ) -&gt; &amp;TagValue {
-        match from[0].update(ctx).view() {
-            TagView::Fired(tv) if !self.done =&gt; {
-                self.done = true;
-                let v = tv.value_cloned();
-                self.out.set(TagValue::fired(v))
-            }
-            // a bottom input before the update makes the result bottom
-            TagView::FreshBottom if !self.done =&gt; self.out.set_bottom(true),
-            TagView::StaleBottom if !self.done =&gt; self.out.set_bottom(false),
-            _ =&gt; self.out.ride(),
-        }
-    }
-
-    // once is a restart builtin: a woken once is a fresh one
-    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
-        self.done = false
-    }
-}
-<span class="boring">}</span></code></pre>
+<p><a href="../embedding/builtins.html#implementing-once">Implementing Once</a> walks
+through a minimal one, <code>once</code>, which passes through exactly one update;
+in a package its name starts with the package’s (<code>mylib_once</code>).</p>
 <h3 id="generic-builtins"><a class="header" href="#generic-builtins">Generic Builtins</a></h3>
 <p>If your builtin’s type is parameterized over the runtime types <code>R</code> and <code>E</code>, use
 the <code>as</code> syntax in the builtins list:</p>
@@ -564,12 +486,6 @@ graphix-package-sys = "0.9"
 <p>Your package’s <code>register()</code> function (generated by <code>defpackage!</code>) automatically
 calls <code>register()</code> on all its <code>graphix-package-*</code> dependencies before
 registering itself. This ensures transitive dependencies are always available.</p>
-<!-- CR claude for claude: [doc-drift/low] The run! example below checks
-`mylib::my_builtin(true)` against `Bool(true)`, but this page documents my_builtin as
-"Check if a value is an error", so it yields false and the test fails in every mode. It
-also names `netidx::subscriber::Value`, and a scaffolded package depends on
-netidx-value, not netidx. Fix: test `my_builtin(error(`E))`, or expect `Bool(false)`,
-and write `netidx_value::Value`. Found by reading; not run. (book-modules-udt-10) -->
 <h2 id="testing"><a class="header" href="#testing">Testing</a></h2>
 <p>The <code>defpackage!</code> macro generates a <code>TEST_REGISTER</code> constant that includes
 register functions for all package dependencies. Use the test macros from
@@ -580,8 +496,9 @@ register functions for all package dependencies. Use the test macros from
 mod test {
     use graphix_package_core::{run, testing::FuseExpect};
 
+    // true is no error
     run!(my_test, "mylib::my_builtin(true)", |r| {
-        matches!(r, Ok(netidx::subscriber::Value::Bool(true)))
+        matches!(r, Ok(netidx_value::Value::Bool(false)))
     }; FuseExpect::None);
 }
 <span class="boring">}</span></code></pre>

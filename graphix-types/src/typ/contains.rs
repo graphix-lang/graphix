@@ -2297,10 +2297,10 @@ impl Type {
                     // test does. probe:
                     // design/review-2026-10-19/repro/t-contains-distribution-rigid.gx
                     // (t-contains-01)
-                    // 2026-10-19 claude: covers_by_parts probes each candidate's first
-                    // position with RigidCheck. Pin:
-                    // lang::types::unsound_acceptances_are_refused
-                    // (DISTRIBUTION_SPLIT_RIGID).
+                    // 2026-10-19 claude: The distribution probe runs with
+                    // ContainsFlags::RigidCheck, so a declared variable in a candidate
+                    // admits only itself. Pin:
+                    // lang::types::distribution_holds_declared_variables_rigid.
                     if c[0].contains_int(
                         ContainsFlags::RigidCheck.into(),
                         env,

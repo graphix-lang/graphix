@@ -5,7 +5,7 @@ use arcstr::ArcStr;
 use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, refused},
+    testing::{FuseExpect, Mode, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -16,76 +16,52 @@ const ARRAY_INDEXING0: &str = r#"
 }
 "#;
 
-run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; shape: NodeShape::contains_fused(KernelMatcher::new()));
+run!(array_indexing0, ARRAY_INDEXING0, is(Value::I64(0)); shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 // `array[i]` is `[elem, Error<…>]`: out-of-bounds and negative underflow
 // produce an error on every backend.
 
 // A positive index past the end is an error.
-// CR claude for claude: [test-gap/low] This fixture and the other out-of-bounds ones
-// below (negative underflow, the two u64::MAX indexes, array_slice_oob) accept any
-// `Value::Error`. Nothing compares the modes, so a JIT index helper whose message
-// differed from the node-walk's would pass in every mode. Pin the printed value, as
-// array_slice_negative_bound does: `error:`ArrayIndexError("array index out of
-// bounds")` for an index, "slice out of bounds" for a slice. Found by reading; not run.
-// (tests-lang-rest-a-06)
 run!(
     array_index_oob_pos,
     r#"{ let a = [10, 20, 30]; a[10] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+    prints(r#"error:["ArrayIndexError", "array index out of bounds"]"#)
 );
 
 // -1 is the last element.
-run!(
-    array_index_neg_last,
-    r#"{ let a = [10, 20, 30]; a[-1] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(30)))
-);
+run!(array_index_neg_last, r#"{ let a = [10, 20, 30]; a[-1] }"#, is(Value::I64(30)));
 
 // -2 is the second-to-last.
-run!(
-    array_index_neg_mid,
-    r#"{ let a = [10, 20, 30]; a[-2] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(20)))
-);
+run!(array_index_neg_mid, r#"{ let a = [10, 20, 30]; a[-2] }"#, is(Value::I64(20)));
 
 // a[-len] reaches the first element.
-run!(
-    array_index_neg_first,
-    r#"{ let a = [10, 20, 30]; a[-3] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(10)))
-);
+run!(array_index_neg_first, r#"{ let a = [10, 20, 30]; a[-3] }"#, is(Value::I64(10)));
 
 // Negative underflow past the start is an error.
-run!(array_index_neg_underflow, r#"{ let a = [10, 20, 30]; a[-10] }"#, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::Error(_))
-));
+run!(
+    array_index_neg_underflow,
+    r#"{ let a = [10, 20, 30]; a[-10] }"#,
+    prints(r#"error:["ArrayIndexError", "array index out of bounds"]"#)
+);
 
 // An unsigned index above i64::MAX is past the end, never from the end.
 run!(
     array_index_u64_above_i64_max,
     r#"{ let a = [10, 20, 30]; a[u64:18446744073709551615] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+    prints(r#"error:["ArrayIndexError", "array index out of bounds"]"#)
 );
 
 run!(
     bytes_index_u64_above_i64_max,
     r#"{ let b = bytes:AQID; b[u64:18446744073709551615] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+    prints(r#"error:["ArrayIndexError", "array index out of bounds"]"#)
 );
 
 // A negative slice bound counts from the end, on either side.
 run!(
     array_slice_negative_bound,
     r#"{ let a = [1, 2, 3]; (a[-2..], a[..-1], a[-3..-1], a[-1..-1]) }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap())
-        == "[[i64:2, i64:3], [i64:1, i64:2], [i64:1, i64:2], []]"
+    prints("[[i64:2, i64:3], [i64:1, i64:2], [i64:1, i64:2], []]")
 );
 
 // A bound past either end, counted from the end or not, is out of bounds;
@@ -96,35 +72,29 @@ run!(
   let a = [1, 2, 3];
   (is_err(a[-4..]), is_err(a[..-4]), is_err(a[4..]), is_err(a[-1..-2]), a[-3..], a[..3])
 }"#,
-    |v: Result<&Value>| {
-        format!("{}", v.unwrap())
-            == "[true, true, true, true, [i64:1, i64:2, i64:3], [i64:1, i64:2, i64:3]]"
-    }
+    prints("[true, true, true, true, [i64:1, i64:2, i64:3], [i64:1, i64:2, i64:3]]")
 );
 
 // Bytes slice by the same rule.
 run!(
     bytes_slice_negative_bound,
     r#"{ let b = bytes:AQID; (b[-2..], is_err(b[-4..])) }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[bytes:AgM=, true]"
+    prints("[bytes:AgM=, true]")
 );
 
 // An unsigned bound above i64::MAX is out of range, not negative.
 run!(
     array_slice_u64_above_i64_max,
     r#"{ let a = [1, 2, 3]; a[u64:18446744073709551615..] }"#,
-    |v: Result<&Value>| {
-        matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("out of bounds"))
-    }
+    prints(r#"error:["ArrayIndexError", "slice out of bounds"]"#)
 );
 
 // `is_err` over the index observes the error directly.
-run!(array_index_is_err, r#"{ let a = [10, 20, 30]; is_err(a[10]) }"#, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::Bool(true))
-));
+run!(
+    array_index_is_err,
+    r#"{ let a = [10, 20, 30]; is_err(a[10]) }"#,
+    is(Value::Bool(true))
+);
 
 const ARRAY_INDEXING1: &str = r#"
 {
@@ -148,10 +118,7 @@ const ARRAY_INDEXING2: &str = r#"
 "#;
 
 // End-only slice `a[..j]`.
-run!(array_indexing2, ARRAY_INDEXING2, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(1)] => true,
-    _ => false,
-});
+run!(array_indexing2, ARRAY_INDEXING2, prints("[i64:0, i64:1]"));
 
 const ARRAY_INDEXING3: &str = r#"
 {
@@ -161,10 +128,7 @@ const ARRAY_INDEXING3: &str = r#"
 "#;
 
 // Start-only slice `a[i..]`.
-run!(array_indexing3, ARRAY_INDEXING3, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) if &a[..] == [Value::I64(5), Value::I64(6)] => true,
-    _ => false,
-});
+run!(array_indexing3, ARRAY_INDEXING3, prints("[i64:5, i64:6]"));
 
 const ARRAY_INDEXING4: &str = r#"
 {
@@ -194,21 +158,21 @@ run!(array_indexing4, ARRAY_INDEXING4, |v: Result<&Value>| match v {
 run!(
     array_slice_oob,
     r#"{ let a = [0, 1, 2]; a[1..10] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+    prints(r#"error:["ArrayIndexError", "slice out of bounds"]"#)
 );
 
 // The slice error flows into `is_err`.
 run!(
     array_slice_oob_is_err,
     r#"{ let a = [0, 1, 2]; is_err(a[1..10]) }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
+    is(Value::Bool(true))
 );
 
 // A computed negative bound counts from the end on every backend.
 run!(
     array_slice_negative,
     r#"{ let a = [0, 1, 2]; let s = -1; a[s..] }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:2]"
+    prints("[i64:2]")
 );
 
 const ARRAY_INDEXING5: &str = r#"
@@ -264,7 +228,7 @@ run!(
   let size = |c: Collection| Collection::fold(c, 0, |acc, x| acc + 1);
   size((select 1 { 1 => ["a", "b"], _ => ["c"] })[..-1]$)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+    is(Value::I64(1))
 );
 
 const ARRAY_SLICE_NON_ARRAY: &str = r#"
@@ -289,10 +253,7 @@ const ARRAY_MATCH0: &str = r#"
 }
 "#;
 
-run!(array_match0, ARRAY_MATCH0, |v: Result<&Value>| match v {
-    Ok(Value::I64(6)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(array_match0, ARRAY_MATCH0, is(Value::I64(6)); FuseExpect::Jit);
 
 const ARRAY_MATCH1: &str = r#"
 {
@@ -358,7 +319,7 @@ const FOLD_EMPTY: &str = r#"
 }
 "#;
 
-run!(fold_empty, FOLD_EMPTY, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
+run!(fold_empty, FOLD_EMPTY, is(Value::I64(42)));
 
 // A fold whose filter removes every element is also the init.
 const FOLD_FILTERED_EMPTY: &str = r#"
@@ -368,20 +329,14 @@ const FOLD_FILTERED_EMPTY: &str = r#"
 }
 "#;
 
-run!(fold_filtered_empty, FOLD_FILTERED_EMPTY, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(7))
-));
+run!(fold_filtered_empty, FOLD_FILTERED_EMPTY, is(Value::I64(7)));
 
 // find over an empty array yields null.
 const FIND_EMPTY: &str = r#"
 array::find({let a: Array<i64> = []; a}, |x| true)
 "#;
 
-run!(find_empty, FIND_EMPTY, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::Null)
-); FuseExpect::Jit);
+run!(find_empty, FIND_EMPTY, is(Value::Null); FuseExpect::Jit);
 
 // An oversize array::init (> MAX_ARRAY_INIT_LEN) bottoms locally:
 // unrelated outputs in the same region still fire.
@@ -434,10 +389,7 @@ const FOLD_STRUCT_ACC: &str = r#"
 }
 "#;
 
-run!(fold_struct_acc, FOLD_STRUCT_ACC, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(306))
-); FuseExpect::Jit);
+run!(fold_struct_acc, FOLD_STRUCT_ACC, is(Value::I64(306)); FuseExpect::Jit);
 
 const FOLD_ARRAY_ACC: &str = r#"
 {
@@ -450,19 +402,13 @@ const FOLD_ARRAY_ACC: &str = r#"
 }
 "#;
 
-run!(fold_array_acc, FOLD_ARRAY_ACC, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(4)]),
-    _ => false,
-}; FuseExpect::Jit);
+run!(fold_array_acc, FOLD_ARRAY_ACC, prints("[i64:2, i64:4]"); FuseExpect::Jit);
 
 const FOLD_STRING_ACC: &str = r#"
 #[native] array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
 "#;
 
-run!(fold_string_acc, FOLD_STRING_ACC, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "123",
-    _ => false,
-}; FuseExpect::Jit);
+run!(fold_string_acc, FOLD_STRING_ACC, prints(r#""123""#); FuseExpect::Jit);
 
 // Ownership edges of the owned-acc carry: a body that returns the acc
 // unchanged, and a body that returns the element.
@@ -470,19 +416,13 @@ const FOLD_ACC_IDENTITY: &str = r#"
 #[native] array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| acc)
 "#;
 
-run!(fold_acc_identity, FOLD_ACC_IDENTITY, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(9)]),
-    _ => false,
-}; FuseExpect::Jit);
+run!(fold_acc_identity, FOLD_ACC_IDENTITY, prints("[i64:9]"); FuseExpect::Jit);
 
 const FOLD_ACC_ELEM_BODY: &str = r#"
 #[native] array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| v)
 "#;
 
-run!(fold_acc_elem_body, FOLD_ACC_ELEM_BODY, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2)]),
-    _ => false,
-}; FuseExpect::Jit);
+run!(fold_acc_elem_body, FOLD_ACC_ELEM_BODY, prints("[i64:2]"); FuseExpect::Jit);
 
 // A bottoming predicate poisons the whole collection for that cycle:
 // three honest deliveries, so the group closes at n == 3.
@@ -523,6 +463,4 @@ const INDEX_UNTYPED_PARAM: &str = r#"
 }
 "#;
 
-run!(index_untyped_param, INDEX_UNTYPED_PARAM, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"["a", "c"]"#
-});
+run!(index_untyped_param, INDEX_UNTYPED_PARAM, prints(r#"["a", "c"]"#));

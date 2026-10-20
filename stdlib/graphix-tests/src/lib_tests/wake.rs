@@ -8,9 +8,8 @@ use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use graphix_compiler::expr::VfsResolver;
 use graphix_package_core::testing;
-use graphix_rt::{GXEvent, NoExt};
+use graphix_rt::NoExt;
 use netidx::{path::Path, publisher::Value};
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 const TABLE: &str = r#"
@@ -23,7 +22,7 @@ let result = select cond { true => n + i64:1, false => n + i64:42 }
 
 /// cond=false, n=1 -> 43; cond->true wakes the true arm on stale n=1
 /// -> 2; n->20 live -> 21; cond->false wakes the false arm on stale 20
-/// -> 62 (43 would be a ride; 63 a phantom re-fire).
+/// -> 62, once (43 would be a ride; a second 62 a phantom re-fire).
 #[tokio::test(flavor = "multi_thread")]
 async fn wake_recompute_table() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(100);
@@ -51,41 +50,27 @@ async fn wake_recompute_table() -> Result<()> {
     gx.set_many([(n, Value::I64(20))])?;
     gx.wait_idle().await?;
     gx.set_many([(cond, Value::Bool(false))])?;
-    let deadline = tokio::time::sleep(Duration::from_secs(30));
-    tokio::pin!(deadline);
     let mut seen: Vec<i64> = Vec::new();
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, Value::I64(v)) = ev {
-                            if id == expr_id {
-                                seen.push(v);
-                            }
-                        }
-                    }
-                    // CR claude for claude: [test-gap/low] The loop returns at the
-                    // first 62, so a phantom re-fire that delivers a second 62 in a
-                    // later cycle passes. The doc comment's '63 a phantom re-fire'
-                    // cannot occur: n is 20, so the arm computes 62 either way. After
-                    // the last set, wait_idle, drain, and assert exactly [43, 2, 21,
-                    // 62]. Fix the comment. Found by reading; not run.
-                    // (tests-lib-b2-06)
-                    if seen.last() == Some(&62) {
-                        assert_eq!(
-                            seen,
-                            vec![43, 2, 21, 62],
-                            "the wake catch-up table must read 43, 2, 21, 62 \
-                             (62, never the pre-sleep 43 ride)"
-                        );
-                        return Ok(());
-                    }
-                }
-            }
+    testing::drain_idle(&gx, &mut rx, async |id, v| {
+        if id == expr_id {
+            seen.push(as_i64(&v)?);
         }
+        Ok(false)
+    })
+    .await?;
+    assert_eq!(
+        seen,
+        [43, 2, 21, 62],
+        "the wake catch-up table must read 43, 2, 21, 62 (62, never the pre-sleep 43 \
+         ride, and once)"
+    );
+    ctx.shutdown().await;
+    Ok(())
+}
+
+fn as_i64(v: &Value) -> Result<i64> {
+    match v {
+        Value::I64(n) => Ok(*n),
+        v => bail!("expected an i64, got {v}"),
     }
-    bail!("the table never completed (saw {seen:?})")
 }

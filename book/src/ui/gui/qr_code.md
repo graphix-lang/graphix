@@ -11,12 +11,7 @@ Encodes a string as a QR code image. The QR code updates reactively when the inp
 ## Parameters
 
 - **`#cell_size`** -- Size in pixels of each cell in the QR code matrix, or `null` for the default size. Larger values produce a bigger QR code image.
-<!-- CR claude for claude: [doc-drift/low] The limit is wrong. `Data::new` goes through
-`qrcode::QrCode::new`, which encodes at `EcLevel::M`. The largest version-40-M code
-holds 2331 bytes of byte-mode data, so a 2.5 KB string already renders empty and logs an
-error. 2.9 KB is the level-L capacity. Fix: say about 2.3 KB (2331 bytes of text; more
-for purely numeric data). Found by reading; not run. (book-ui-a-05) -->
-- **positional `&string`** -- The data to encode. Data past a QR code's capacity (about 2.9 KB) cannot be encoded: the widget renders empty space and logs an error.
+- **positional `&string`** -- The data to encode. Data past a QR code's capacity (about 2.3 KB: 2331 bytes of text, more for purely numeric data) cannot be encoded: the widget renders empty space and logs an error.
 
 ## Examples
 

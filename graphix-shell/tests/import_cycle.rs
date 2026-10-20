@@ -88,3 +88,27 @@ async fn submodules_beside_a_non_utf8_path() {
     let _ = fs::remove_dir_all(dir.parent().unwrap());
     checked.expect("a's `mod b` is a/b.gx");
 }
+
+/// A script that names its own file as a module loads itself: an import
+/// cycle, not a search for `main/main.gx`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_importing_itself() {
+    let dir = std::env::temp_dir().join(format!("gx-import-self-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("tempdir");
+    fs::write(dir.join("main.gx"), "mod main;\n1").expect("write main.gx");
+    let checked = ShellBuilder::<NoExt>::default()
+        .mode(Mode::Check(Load::File(dir.join("main.gx"))))
+        .module_resolvers(vec![Arc::new(FilesResolver {
+            base: dir.clone(),
+            overrides: None,
+        })])
+        .cache(CacheMode::Off)
+        .build()
+        .expect("building shell")
+        .check()
+        .await;
+    let _ = fs::remove_dir_all(&dir);
+    let err = format!("{:#}", checked.expect_err("main loading itself is a cycle"));
+    assert!(err.contains("import cycle: main -> main"), "{err}");
+}

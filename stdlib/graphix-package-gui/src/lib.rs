@@ -38,7 +38,7 @@ pub(crate) enum ToGui {
     ResizeRenderTick(WindowId),
     /// Fires once per resize burst with the final logical size; the
     /// only event that writes the runtime's size ref.
-    ResizeSettled(WindowId, crate::types::SizeV),
+    ResizeSettled(WindowId, crate::types::WindowSizeV),
     /// Wake the event loop to render widget state mutated outside
     /// the iced event cycle.
     Redraw,

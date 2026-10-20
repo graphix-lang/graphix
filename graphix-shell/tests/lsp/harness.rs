@@ -202,6 +202,12 @@ impl Client {
 
     pub fn open(&mut self, file: &str) {
         let text = self.text(file);
+        self.open_unsaved(file, text)
+    }
+
+    /// Open `file` with `text` in its buffer, whatever is on disk, if
+    /// anything is.
+    pub fn open_unsaved(&mut self, file: &str, text: String) {
         self.versions.insert(file.to_string(), 1);
         self.buffers.insert(file.to_string(), text.clone());
         self.opened.insert(file.to_string());

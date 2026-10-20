@@ -136,7 +136,28 @@ run!(hbs_partial_cycle_refused, r#"{
     let block = hbs::render(#partials: {a: "{{#if x}}{{> a}}{{/if}}"}, "{{> a}}", {x: 1});
     "[cycle]|[inline]|[block]"
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if s.matches("partials nest more than 128 deep").count() == 3)
+    matches!(v, Ok(Value::String(s)) if s.matches("templates nest more than 128 deep").count() == 3)
+}; FuseExpect::Jit);
+
+// Blocks count toward the bound as partials do, and a template whose
+// text nests its blocks past a cap is refused before it is built: neither
+// overflows the stack (x-panics-03).
+run!(hbs_block_nesting_refused, r#"{
+    let nest = |k: i64, inner: string| str::concat(
+        str::join(#sep: "", array::init(k, |i| "{{#if a}}")),
+        inner,
+        str::join(#sep: "", array::init(k, |i| "{{/if}}"))
+    );
+    let p = nest(12, "{{> q}}");
+    let q = nest(12, "{{> p}}");
+    let mutual = hbs::render(#partials: {p, q}, "{{> p}}", {a: true});
+    let deep = hbs::render(nest(5000, "x"), {a: false});
+    let fine = hbs::render(nest(60, "x"), {a: true});
+    "[mutual]|[deep]|[fine]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if matches!(s.split('|').collect::<Vec<_>>()[..],
+        [mutual, deep, "x"] if mutual.contains("templates nest more than 128 deep")
+            && deep.contains("blocks nest more than 64 deep")))
 }; FuseExpect::Jit);
 
 run!(hbs_partial_tree_renders, r#"{

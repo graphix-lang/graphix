@@ -72,7 +72,7 @@ pub(crate) enum VarRead<'a> {
     /// store-stamped THIS cycle: the entry's own tag applies.
     Delivered(&'a TagValue),
     /// A standing store entry from an earlier cycle: the value
-    /// channel. Readers view it Stale, or Fired under an init view.
+    /// channel. Readers view it Stale, or Fired at a birth.
     Standing(&'a TagValue),
 }
 
@@ -95,12 +95,15 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
     }
 }
 
-/// A standing entry as a reader sees it: fresh under a genuine init
-/// view only. A wake-forced view reads it stale, its value is a past
-/// event the graph already consumed.
+/// A standing entry as a reader sees it: fresh at a birth only. A wake
+/// or a step reads it stale: its value is a past event the graph
+/// already consumed.
 pub(crate) fn standing_view<E: UserEvent>(event: &Event<E>, tv: &TagValue) -> TagValue {
-    let tag =
-        if event.init() && !event.wake() { tv.tag().fresh() } else { tv.tag().quiet() };
+    let tag = if event.view == crate::View::Birth {
+        tv.tag().fresh()
+    } else {
+        tv.tag().quiet()
+    };
     let mut tv = tv.clone();
     tv.retag(tag);
     tv
@@ -177,15 +180,19 @@ pub(crate) use crate::expr::NOP;
 /// Set by a node's `sleep()`, taken by its next update: the first update
 /// after a sleep recomputes from the present world.
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct WakeBit(bool);
+pub struct WakeBit(bool);
 
 impl WakeBit {
-    pub(crate) fn set(&mut self) {
+    pub fn set(&mut self) {
         self.0 = true
     }
 
-    pub(crate) fn take(&mut self) -> bool {
+    pub fn take(&mut self) -> bool {
         std::mem::take(&mut self.0)
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0
     }
 }
 
@@ -399,7 +406,13 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
-    site.decide_siblings(ctx, n, || crate::analysis::independent(nodes.iter(), ctx));
+    site.decide_siblings(ctx, n, || {
+        crate::analysis::independent(
+            nodes.iter(),
+            ctx,
+            crate::analysis::Sites::Statements,
+        )
+    });
     fork_point(ctx, nodes, site, gather_in_order, |(t0, mut p0), (t1, p1)| {
         p0.extend(p1);
         (t0.join(t1), p0)
@@ -623,8 +636,8 @@ impl Constant {
         typ: Type,
         spec: Arc<Expr>,
     ) -> Node<R, E> {
-        // the resident starts Stale so an instance bound without an init
-        // view still computes; firing stays init-gated
+        // the resident starts Stale so an instance bound outside a birth
+        // still computes; it fires only where it is born
         let resident = TagValue::stale(value.clone());
         Node::new(Self { spec, value, typ, resident })
     }
@@ -642,16 +655,8 @@ impl Constant {
     }
 }
 
-/// A constant's production: fired at an init view, standing otherwise.
+/// A constant's production: fired where it is born, standing otherwise.
 /// Every argument-less literal is a constant.
-// CR claude for claude: [doc-drift/low] Four docs still describe the old init-view
-// rule. This doc says "fired at an init view" and Constant::new's comment says "firing
-// stays init-gated", but the code fires only where `event.born()`, and a Wake is an
-// init view where constants stand. Event::init's doc ("a birth or a wake" reads
-// standing values as delivered) and VarRead::Standing ("Fired under an init view")
-// contradict standing_view, which reads fresh at a Birth only. Reword the four to the
-// born/Birth rule; standing_view can test `event.view == View::Birth`. Found by
-// reading; not run. (c-node-mod-06)
 pub(crate) fn produce_constant<'a, E: UserEvent>(
     event: &Event<E>,
     resident: &'a mut TagValue,
@@ -735,7 +740,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             planned
                 .get_or_init(|| crate::analysis::plan_block(children, catches, ctx))
                 .iter()
-                // CR claude for claude: [bug/high] A planned run's site is built
+                // XCR claude for claude: [bug/high] A planned run's site is built
                 // Undecided, and nothing ever decides it: update_run and fork_point
                 // never call decide_siblings. ForkSite::plan forks only an Independent
                 // site, so no block run has forked under any mode since that rule
@@ -747,7 +752,11 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
                 // its `a + b` operand fork and cannot catch this. probe:
                 // design/review-2026-10-19/repro/x-parallel-block-runs-never-fork.gx
                 // (x-parallel-01)
-                .map(|&(a, b)| (a, b, ForkSite::default()))
+                // 2026-10-19 claude: A planned run's site is ForkSite::planned()
+                // (Independent): plan_block already decided it. Pin:
+                // lang::par_attrs::block_runs_fork (a block where only its statements
+                // can fork, under Force: forks > 0).
+                .map(|&(a, b)| (a, b, ForkSite::planned()))
                 .collect()
         });
         let last = self.children.len();
@@ -840,17 +849,9 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
         }
-        // CR claude for claude: [bug/low] A trailing catch is refused only where
-        // `value` holds, and `value` is false for every statement of a module body. So
-        // a module file that ends in `catch(e) ..` is accepted although the catch
-        // covers nothing, while the same lines as a script or block are refused. Pass
-        // whether the statement is last separately from whether it is the block's
-        // value, and refuse a trailing catch on `last`. probe:
-        // design/review-2026-10-19/repro/c-node-mod-module-trailing-catch.sh
-        // (c-node-mod-04)
-        let at = StmtAt::Block { value: !module && i + 1 == n };
+        let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
         let boundary = prune::Prune::boundary(ctx);
-        let (node, next) = ctx.in_boundary(&boundary, |ctx| {
+        let (node, next) = ctx.in_boundary(Some(&boundary), |ctx| {
             compile_statement(ctx, flags, e, &scope, top_id, at)
         })?;
         scope = next;
@@ -938,7 +939,7 @@ impl Writes {
 
     fn expr(&mut self, e: &Expr) {
         crate::stack::ensure_sufficient(|| match &e.kind {
-            ExprKind::Connect { name, value, deref } => {
+            ExprKind::Connect { name, value, deref, .. } => {
                 if !deref {
                     self.target(name)
                 }
@@ -1037,7 +1038,12 @@ pub(crate) fn defer_typedef_names<R: Rt, E: UserEvent>(
 #[derive(Clone, Copy)]
 pub(crate) enum StmtAt {
     TopLevel,
-    Block { value: bool },
+    /// `value`: the statement is the block's value, its last statement
+    /// unless the block is a module's body.
+    Block {
+        value: bool,
+        last: bool,
+    },
 }
 
 /// Compile one statement of a block or a top level: a declaration
@@ -1073,7 +1079,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         )
     }
     let node = match &e.kind {
-        ExprKind::Catch(_) if matches!(at, StmtAt::Block { value: true }) => {
+        ExprKind::Catch(_) if matches!(at, StmtAt::Block { last: true, .. }) => {
             bailat!(
                 e,
                 "a catch covers the statements after it, and the last statement of a \
@@ -1103,7 +1109,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         ExprKind::Bind(_) => {
             compiler::compile_statement_expr(ctx, flags, e.clone(), scope, top_id)
         }
-        _ if matches!(at, StmtAt::Block { value: true }) => {
+        _ if matches!(at, StmtAt::Block { value: true, .. }) => {
             compile(ctx, flags, e.clone(), scope, top_id)
         }
         ExprKind::Use { reexport, names } => {
@@ -1702,6 +1708,14 @@ pub struct Connect<R: Rt, E: UserEvent> {
     pub(crate) id: BindId,
 }
 
+/// Where a connect's target name is written, past a `*`.
+fn target_pos(spec: &Expr) -> crate::SourcePosition {
+    match &spec.kind {
+        ExprKind::Connect { at, .. } => at.get().unwrap_or(spec.pos),
+        _ => spec.pos,
+    }
+}
+
 impl<R: Rt, E: UserEvent> Connect<R, E> {
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
@@ -1731,7 +1745,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         ctx.mark_connect_target(id);
         if ctx.env.ide.is_lsp() {
             ctx.env.push_reference(ReferenceSite {
-                pos: spec.pos,
+                pos: target_pos(&spec),
                 ori: spec.ori.clone(),
                 name: name.clone(),
                 bind_id: id,
@@ -1804,17 +1818,20 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     };
     let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
     // a type variable is declared, and no declaration widens it; nor does
-    // one widen a function, as two function types share a runtime form
-    // CR claude for claude: [readability/low] This skips the union proposal only for a
-    // bare variable or function. For an array or struct that holds a function, the
-    // refusal proposes `[Array<fn(x: i64) -> i64>, Array<fn(x: '_7728) -> '_7729 throws
-    // '_7730>]`: raw inference variables, two types of one runtime form, and once
-    // filled in it is refused. The declaration that works is the written type, which
-    // contains the held one. Propose `written` when it contains `held`, and skip the
-    // union whenever either type holds a function anywhere. probe:
-    // design/review-2026-10-19/repro/x-typecheck-generics-write-mismatch-fn-union.gx
-    // (x-typecheck-generics-06)
-    if matches!(held, Type::TVar(_) | Type::Fn(_)) {
+    // one widen what holds a function, as two function types share a
+    // runtime form
+    fn holds_fn(t: &Type) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::Fn(_) => true,
+            Type::TVar(tv) => tv.binding().is_some_and(|b| holds_fn(&b)),
+            t => {
+                let mut any = false;
+                t.for_each_child(&mut |c| any |= holds_fn(c));
+                any
+            }
+        })
+    }
+    if matches!(held, Type::TVar(_)) || holds_fn(&held) || holds_fn(&written) {
         return format_with_flags(
             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
             || anyhow!("{name} is {held} and cannot hold {written}"),
@@ -1898,7 +1915,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 Some((_, b)) => b.id,
             };
         if ctx.env.ide.is_lsp() {
-            // CR claude for claude: [bug/low] `spec.pos` of a `*r <- v` is the `*`,
+            // XCR claude for claude: [bug/low] `spec.pos` of a `*r <- v` is the `*`,
             // because the parser's `connect` takes position() before the optional `*`
             // and spaces. So the reference for `*rr <- v` spans `*r`: references
             // highlight the wrong text, and hover or definition at the end of `rr`
@@ -1907,8 +1924,13 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             // Connect::compile. probe:
             // design/review-2026-10-19/repro/x-lsp-probe-deref-connect-site.py
             // (x-lsp-probe-03)
+            // 2026-10-19 claude: ExprKind::Connect carries `at`, the WrittenAt of the
+            // target's name past a `*` (filled by the parser, NOWHERE in lowerings; it
+            // packs to nothing, so no format change), and Connect/ConnectDeref push
+            // their reference site there (node::target_pos). Pin:
+            // graphix-shell/tests/lsp deref_connect_references_its_name.
             ctx.env.push_reference(ReferenceSite {
-                pos: spec.pos,
+                pos: target_pos(&spec),
                 ori: spec.ori.clone(),
                 name: name.clone(),
                 bind_id: src_id,
@@ -2807,24 +2829,23 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
         };
-        // CR claude for claude: [bug/low] The write's targets are read with
-        // `with_deref` alone, so a union member that is a typedef naming a reference
-        // (`type Cell = &mut i64; [Cell, &mut i64]`) is not expanded. It is refused as
-        // "not a reference", while the same typedef alone as the binding's type is
-        // accepted. Expand Type::Ref through lookup_ref at the top and for each Set
-        // member before matching ByRef, as deref_typ! does. probe:
-        // design/review-2026-10-19/repro/c-node-mod-write-through-aliased-ref-union.gx
-        // (c-node-mod-05)
-        let targets = btyp.with_deref(|t| match t {
+        // a typedef naming a reference, alone or as a union member, is that
+        // reference
+        let expand = |t: &Type| -> Result<Option<Type>> {
+            let mut t = t.with_deref(|t| t.cloned());
+            while let Some(r @ Type::Ref(_)) = &t {
+                t = Some(r.lookup_ref(&ctx.env)?);
+            }
+            Ok(t)
+        };
+        let targets = expand(&btyp).and_then(|t| match &t {
             None => Ok(None),
             Some(Type::ByRef(m, t)) => Ok(Some(vec![(*m, (**t).clone())])),
             Some(Type::Set(ts)) => ts
                 .iter()
-                .map(|t| {
-                    t.with_deref(|t| match t {
-                        Some(Type::ByRef(m, t)) => Ok((*m, (**t).clone())),
-                        _ => bail!("can't write through {btyp}: not a reference"),
-                    })
+                .map(|t| match &expand(t)? {
+                    Some(Type::ByRef(m, t)) => Ok((*m, (**t).clone())),
+                    _ => bail!("can't write through {btyp}: not a reference"),
                 })
                 .collect::<Result<Vec<_>>>()
                 .map(Some),

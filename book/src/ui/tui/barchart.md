@@ -1,11 +1,6 @@
 # The Bar Chart Widget
 
-<!-- CR claude for claude: [doc-drift/low] Bars are vertical only by default:
-`#direction: &`Horizontal` lays them out sideways. The parameter list also leaves out
-`#direction`, `#bar_style`, `#label_style` and `#value_style` (bar_chart) and
-`#value_style` (bar), all in barchart.gxi. Mention them. Found by reading; not run.
-(book-ui-b-09) -->
-The `bar_chart` widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.
+The `bar_chart` widget displays categorical data as bars, vertical by default (`` #direction: &`Horizontal `` lays them out sideways), supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.
 
 ## Interface
 
@@ -21,6 +16,10 @@ The `bar_chart` widget displays categorical data as vertical bars, supporting gr
 - **bar_gap** - Space between bars within a group
 - **group_gap** - Space between bar groups
 - **style** - Base style for the chart
+- **direction** - `` `Vertical `` (the default) or `` `Horizontal ``
+- **bar_style** - Default style for every bar
+- **label_style** - Style for the bar and group labels
+- **value_style** - Default style for the values drawn on the bars
 
 ### bar_group
 - **label** - Line labeling the group (displayed below bars)
@@ -29,6 +28,7 @@ The `bar_chart` widget displays categorical data as vertical bars, supporting gr
 - **style** - Style for the bar
 - **label** - Line labeling the bar
 - **text_value** - String displayed above the bar (defaults to the numeric value)
+- **value_style** - Style for this bar's value
 
 ## Examples
 

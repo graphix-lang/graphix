@@ -891,9 +891,8 @@ impl TypeRef {
 
     /// Do two refs of one scope and name mean one definition, as far as
     /// their cells prove? Filled cells by the definition's identity, two
-    /// empty ones alike. A filled and an empty one do not agree (a def's
-    /// thrown types keep their cells when they move into its scope), and
-    /// a disagreement only sends the pair to the expansion arm.
+    /// open ones agree, and a filled cell beside an open one does not; a
+    /// disagreement only sends the pair to the expansion arm.
     pub(crate) fn cells_agree(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
@@ -1783,6 +1782,25 @@ impl Type {
     /// A `'static` ⊥ for a node whose type is bottom: with drop glue,
     /// `&Type::Bottom` is not promoted.
     pub const BOTTOM: &'static Type = &Type::Bottom;
+
+    /// The type of a literal value, in an expression or a pattern: its
+    /// primitive, or for `error:<v>` the error of its payload's type. A
+    /// literal no type names (`abstract:..`, a collection) is refused.
+    pub fn of_literal(v: &netidx_value::Value) -> Result<Type> {
+        use netidx_value::Value;
+        ensure_sufficient(|| match v {
+            Value::Error(p) => Ok(Type::Error(Arc::new(Type::of_literal(p)?))),
+            Value::Abstract(_) => {
+                bail!(
+                    "an abstract value literal has no type: build it with its constructor"
+                )
+            }
+            Value::Array(_) | Value::Map(_) => {
+                bail!("a collection value literal has no type: write it as an expression")
+            }
+            v => Ok(Type::Primitive(Typ::get(v).into())),
+        })
+    }
 }
 
 /// Field drop glue runs after `drop` returns and cannot be guarded, so
@@ -2707,23 +2725,9 @@ impl Type {
     }
 
     /// Core's `ErrChain<payload>`.
-    // XCR claude for claude: [bug/high] The synthetic `ErrChain` ref is an Open cell in
-    // the root scope, resolved later by name. A script-level `type ErrChain<'a> = ..`
-    // (or a `use` of another ErrChain) shadows core's, so every `?` raise and catch
-    // binder is typed with the user's type while the runtime builds core's struct.
-    // `e.0.ori + 1` is accepted and computes garbage. chain_error_type's Struct arm
-    // judges chain-ness through this ref too. Fix: pre-fill the cell with core's
-    // definition (take the env), or scope the ref at `/core`, and pin the shadowing
-    // case. probe: design/review-2026-10-19/repro/t-typ-mod-errchain-shadowed.gx
-    // (t-typ-mod-01)
-    // 2026-10-19 claude: Type::err_chain scopes its synthetic ref at /core, so its
-    // name resolves to core's ErrChain before any script-level one. A side effect:
-    // unions of ErrChain refs now sort by the /core scope
-    // (lang::errors::catch_connect_union_mismatch_is_an_error's hint order updated).
-    // Pin: lang::types::unsound_acceptances_are_refused (ERRCHAIN_SHADOWED).
     pub fn err_chain(payload: Type) -> Type {
-        static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
         static CORE: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["core"]));
+        static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
         Type::Ref(Arc::new(TypeRef::synthetic(
             CORE.clone(),
             NAME.clone(),
