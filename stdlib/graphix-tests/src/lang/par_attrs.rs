@@ -433,6 +433,50 @@ async fn block_runs_fork() -> Result<()> {
     Ok(())
 }
 
+/// The forks a program `{ mod m; m::b }` makes under `Force`, `m`'s body
+/// `module` behind an interface (a module without one is a block), and
+/// its value.
+async fn module_forks(module: &'static str) -> Result<(u64, Option<Value>)> {
+    use graphix_package_core::testing::{
+        compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    let (ctx, mut rx) = fixture_runtime(
+        [
+            ("/test.gx", result_source("{ mod m; m::b }")),
+            ("/test/m.gxi", arcstr::literal!("val b: i64;").into()),
+            ("/test/m.gx", arcstr::ArcStr::from(module).into()),
+        ],
+        &crate::TEST_REGISTER,
+        Mode::Interp,
+        |ctx| ctx.control.set_par_mode(ParMode::Force),
+    )
+    .await?;
+    let res = compile_result(&ctx).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let id = res.exprs[0].id;
+    let quiet = Duration::from_millis(300);
+    let values = updates_until_quiet(&ctx.rt, &mut rx, id, quiet, deadline).await?;
+    let forks = ctx.rt.control().forks();
+    ctx.shutdown().await;
+    Ok((forks, values.last().cloned()))
+}
+
+// A module's body runs as a block's does: under Force its eight
+// independent statements fork (one flat fork) where one statement cannot.
+#[tokio::test(flavor = "current_thread")]
+async fn module_runs_fork() -> Result<()> {
+    let (one, v1) = module_forks("let b = 2").await?;
+    let eight = "let a1 = 1;\nlet a2 = 1;\nlet a3 = 1;\nlet a4 = 1;\n\
+                 let a5 = 1;\nlet a6 = 1;\nlet a7 = 1;\nlet b = 2";
+    let (many, v2) = module_forks(eight).await?;
+    assert_eq!((v1, v2), (Some(Value::I64(2)), Some(Value::I64(2))));
+    assert!(
+        many > one,
+        "the module's statements ran in order: {many} forks, {one} alone"
+    );
+    Ok(())
+}
+
 // A reference made in a callee's body publishes its cell in the cycle it
 // fires, so a later sibling that reads through a reference to it is not
 // independent of the call.

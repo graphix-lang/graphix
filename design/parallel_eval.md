@@ -144,7 +144,7 @@ earlier independent one and reorder their writes.
   are out of every sibling's scope.
 - A summary reads through a fused kernel's feeders and records the
   reference a `*r <- v` reads.
-- `plan_forks` plans every block the analysis reaches, with the
+- `plan_forks` plans every block and module body the analysis reaches (`node::Runs`), with the
   holder-aware summaries, and `Block::image_encode` writes the plan into
   the image; only a block no analysis reached is planned at its first
   update. A callee bound later than the plan stays opaque in it

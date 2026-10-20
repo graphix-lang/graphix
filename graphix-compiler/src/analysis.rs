@@ -17,7 +17,7 @@ use crate::{
     expr::{At, ExprKind, ModuleKind},
     fusion::{self, lowering},
     node::{
-        Block,
+        Runs,
         callsite::{ArgKey, CallSite},
         fork_control::{ForkControl, ForkKind},
         lambda::{GXLambda, LambdaDef, ParamCalls, SelfCall},
@@ -58,8 +58,9 @@ struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
     machines: LPooled<Vec<(&'a SeqMachine<R, E>, Holder)>>,
-    /// Blocks of two or more statements, by the instance holding them.
-    blocks: LPooled<Vec<&'a Block<R, E>>>,
+    /// Statement lists of two or more statements (a block's, a module's)
+    /// with their runs to plan.
+    blocks: LPooled<Vec<(&'a [Node<R, E>], &'a [usize], &'a Runs)>>,
     /// The `#[parallel]` sites.
     parallels: LPooled<Vec<&'a ForkControl<R, E>>>,
     /// Fork points other than blocks whose siblings nothing decided yet.
@@ -139,7 +140,10 @@ fn walk_static_graph<'a, R: Rt, E: UserEvent>(
                 NodeView::CallSite(site) => site,
                 NodeView::SeqMachine(m) => return graph.machines.push((m, caller)),
                 NodeView::Block(b) if b.children.len() > 1 => {
-                    return graph.blocks.push(b);
+                    return graph.blocks.push((&b.children, &b.catches, &b.runs));
+                }
+                NodeView::Module(m) if m.nodes.len() > 1 => {
+                    return graph.blocks.push((&m.nodes, &m.catches, &m.runs));
                 }
                 NodeView::ForkControl(f) if matches!(f.kind, ForkKind::Parallel(_)) => {
                     return graph.parallels.push(f);
@@ -1631,22 +1635,16 @@ fn plan_forks<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
 ) {
     let mut cx = ForkCx::new(graph, ctx);
-    for b in graph.blocks.iter() {
-        if b.planned.get().is_some() {
+    for (children, catches, runs) in graph.blocks.iter() {
+        if runs.planned.get().is_some() {
             continue;
         }
         let accesses = with_callees(
-            &local_summaries(
-                b.children.iter(),
-                graph,
-                ctx,
-                Detail::Ids,
-                Sites::Statements,
-            ),
+            &local_summaries(children.iter(), graph, ctx, Detail::Ids, Sites::Statements),
             cx.sums(Detail::Ids),
         );
-        let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
-        let _ = b.planned.set(plan);
+        let plan = plan_runs(children, catches, &accesses, &mut |_, _| ());
+        let _ = runs.planned.set(plan);
     }
     let mut kids: SmallVec<[&Node<R, E>; 8]> = SmallVec::new();
     for (siblings, of) in graph.forks.iter() {
@@ -2382,7 +2380,7 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
         let two = |&(a, z): &(u32, u32)| {
             (a..z).filter(|i| is_work(&b.children[*i as usize])).count() >= 2
         };
-        if b.planned.get().is_some_and(|runs| runs.iter().any(two)) {
+        if b.runs.planned.get().is_some_and(|runs| runs.iter().any(two)) {
             return Ok(());
         }
         let mut first: Option<(usize, RunBreak)> = None;
@@ -2427,7 +2425,7 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
                 NodeView::Block(b) => {
                     let forks =
                         |runs: &[(u32, u32)]| runs.iter().any(|(a, z)| z - a >= 2);
-                    match b.planned.get() {
+                    match b.runs.planned.get() {
                         Some(runs) => forks(runs),
                         None => forks(&plan_block(&b.children, &b.catches, ctx)),
                     }

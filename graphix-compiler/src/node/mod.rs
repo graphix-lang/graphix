@@ -740,20 +740,43 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// The block's production when it cannot hand back its last
     /// child's borrow: after a catch pass or a forked run.
     resident: TagValue,
-    /// The statements as runs for forking, as the analysis planned them
-    /// (`analysis::plan_blocks`), which an image carries.
-    pub(crate) planned: OnceLock<Box<[(u32, u32)]>>,
-    /// The runs and their fork points, made at the first update that may
-    /// fork: from `planned`, or planned there for a block no analysis
-    /// reached.
-    plan: Option<Box<[(u32, u32, ForkSite)]>>,
+    pub(crate) runs: Runs,
 }
 
-impl<R: Rt, E: UserEvent> Block<R, E> {
-    /// [`Update::update`] forking each run of its plan.
-    fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let (children, catches, planned) = (&self.children, &self.catches, &self.planned);
-        let plan = self.plan.get_or_insert_with(|| {
+/// A statement list's runs for forking: as the analysis planned them
+/// (`analysis::plan_forks`), which an image carries, and their fork
+/// points, made at the first update that may fork (planned there for a
+/// body no analysis reached).
+#[derive(Debug, Default)]
+pub(crate) struct Runs {
+    pub(crate) planned: OnceLock<Box<[(u32, u32)]>>,
+    sites: Option<Box<[(u32, u32, ForkSite)]>>,
+}
+
+impl Runs {
+    pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.planned.get().map(|p| p.to_vec()).encode(buf)
+    }
+
+    pub(crate) fn image_decode(buf: &mut &[u8]) -> Result<Self, PackError> {
+        let runs = Self::default();
+        if let Some(p) = Option::<Vec<(u32, u32)>>::decode(buf)? {
+            let _ = runs.planned.set(p.into_boxed_slice());
+        }
+        Ok(runs)
+    }
+
+    /// Update `children` run by run, each forked where its site says, then
+    /// the catches in reverse syntactic order: the last child's
+    /// production, unless it is a catch.
+    pub(crate) fn update<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        children: &mut [Node<R, E>],
+        catches: &[usize],
+    ) -> Option<TagValue> {
+        let Self { planned, sites } = self;
+        let sites = sites.get_or_insert_with(|| {
             planned
                 .get_or_init(|| crate::analysis::plan_block(children, catches, ctx))
                 .iter()
@@ -776,19 +799,26 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
                 .map(|&(a, b)| (a, b, ForkSite::planned()))
                 .collect()
         });
-        let last = self.children.len();
+        let last = children.len();
         let mut res: Option<TagValue> = None;
-        for (a, b, site) in plan.iter_mut() {
+        for (a, b, site) in sites.iter_mut() {
             let (a, b) = (*a, *b);
-            let tv = update_run(ctx, &mut self.children[a as usize..b as usize], site);
+            let tv = update_run(ctx, &mut children[a as usize..b as usize], site);
             if b as usize == last {
                 res = Some(tv.clone());
             }
         }
-        for &c in self.catches.iter().rev() {
-            self.children[c].update(ctx);
+        for &c in catches.iter().rev() {
+            children[c].update(ctx);
         }
-        match res {
+        res
+    }
+}
+
+impl<R: Rt, E: UserEvent> Block<R, E> {
+    /// [`Update::update`] forking each run of its plan.
+    fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        match self.runs.update(ctx, &mut self.children, &self.catches) {
             _ if self.module => TagValue::phantom_ref(),
             Some(tv) => self.resident.set(tv),
             None => self.resident.ride(),
@@ -804,8 +834,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches: Box::default(),
             resident: TagValue::phantom(),
-            planned: OnceLock::new(),
-            plan: None,
+            runs: Runs::default(),
         })
     }
 
@@ -826,8 +855,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches,
             resident: TagValue::phantom(),
-            planned: OnceLock::new(),
-            plan: None,
+            runs: Runs::default(),
         }))
     }
 }
@@ -1466,18 +1494,14 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         let spec = Arc::new(Expr::decode(buf)?);
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
-        let planned = OnceLock::new();
-        if let Some(p) = Option::<Vec<(u32, u32)>>::decode(buf)? {
-            let _ = planned.set(p.into_boxed_slice());
-        }
+        let runs = Runs::image_decode(buf)?;
         Ok(Node::new(Self {
             module,
             spec,
             children,
             catches,
             resident: TagValue::phantom(),
-            planned,
-            plan: None,
+            runs,
         }))
     }
 }
@@ -1497,7 +1521,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.spec.encode(buf)?;
         encode_nodes(&self.children, buf)?;
         image::slice_encode(&self.catches, buf)?;
-        self.planned.get().map(|p| p.to_vec()).encode(buf)
+        self.runs.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
