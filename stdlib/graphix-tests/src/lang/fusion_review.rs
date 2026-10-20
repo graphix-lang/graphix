@@ -392,3 +392,12 @@ run!(typedef_dag_freezes_in_linear_time, {
     src.push_str("type T40 = [null, (T0, T0)];\nlet v: T0 = null;\nv }");
     arcstr::ArcStr::from(src.as_str())
 }, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
+
+// An unguarded arm the guard prologue tested hands its condition and binds
+// to the chain, which reads them where it takes the arm.
+run!(prologue_unguarded_arm_binds_reach_the_chain, r#"
+{
+    let f = |v: [`A(i64), `B(i64)], k: i64| select v { `A(x) => x, `B(y) if y > k => y * 10, `B(y) => y };
+    (#[native] f(`A(1), 0), #[native] f(`B(5), 2), #[native] f(`B(1), 2))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:50, i64:1]"); FuseExpect::Jit);

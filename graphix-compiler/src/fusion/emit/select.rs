@@ -918,6 +918,10 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // dominates the chain: the chain reuses them
     let mut conds: SmallVec<[Option<Option<ClifValue>>; 8]> =
         (0..n).map(|_| None).collect();
+    // an unguarded non-or arm's bind specs from the prologue, which the
+    // chain installs where it takes the arm
+    let mut prologue_binds: SmallVec<[Option<SmallVec<[SelectArmBind; 8]>>; 8]> =
+        (0..n).map(|_| None).collect();
     let impure = sel.arms.iter().rposition(|(pat, _)| {
         pat.guard.as_ref().is_some_and(|g| !guard_is_pure_of_binds(pat, &g.node))
     });
@@ -931,7 +935,16 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             // chain's
             let mark = cx.env.mark();
             let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-            // CR claude for claude: [perf/low] An unguarded arm before the last impure
+            let cond =
+                emit_arm_condition(cx, pat, scrut, scrut_typ, None, None, &mut binds)?;
+            emit_scope_drops(cx, mark)?;
+            cx.env.truncate(mark);
+            let still = match cond {
+                Some(c) => cx.b.ins().band_not(reached, c),
+                None => cx.b.ins().iconst(types::I8, 0),
+            };
+            cx.b.def_var(open, still);
+            // XCR claude for claude: [perf/low] An unguarded arm before the last impure
             // guard has its condition emitted here only to update `open`. Nothing is
             // stored in `conds`, so the chain emits the same condition again and
             // repeats every helper call (graphix_list_match's spine walk,
@@ -942,15 +955,17 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             // only the OR of its alternatives' structure conditions; their reads are
             // total, so no installs or done block are needed. Found by reading; not
             // run. (f-select-05)
-            let cond =
-                emit_arm_condition(cx, pat, scrut, scrut_typ, None, None, &mut binds)?;
-            emit_scope_drops(cx, mark)?;
-            cx.env.truncate(mark);
-            let still = match cond {
-                Some(c) => cx.b.ins().band_not(reached, c),
-                None => cx.b.ins().iconst(types::I8, 0),
-            };
-            cx.b.def_var(open, still);
+            // 2026-10-19 claude: An unguarded non-or arm the guard prologue tests keeps
+            // its condition (conds) and its bind specs (prologue_binds); the chain
+            // reuses the condition and installs the specs where it takes the arm, so
+            // its helper calls run once per invocation. An or-arm still recomputes in
+            // the chain (the second half of the suggested fix is not taken). Pin:
+            // fusion_review prologue_unguarded_arm_binds_reach_the_chain (an unguarded
+            // bind before an impure guard, read in the chain; a perf pin it is not).
+            if !matches!(&pat.structure_predicate, StructPatternNode::Or { .. }) {
+                conds[i] = Some(cond);
+                prologue_binds[i] = Some(binds);
+            }
             continue;
         };
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
@@ -1020,9 +1035,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let or_fail = matches!(&pat.structure_predicate, StructPatternNode::Or { .. })
             .then(|| cx.b.create_block());
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-        // a non-or arm the prologue ran has its binds installed already
+        // a guarded non-or arm the prologue ran has its binds installed
+        // already; an unguarded one hands its bind specs to this match
         let pcond = match conds[i].take() {
-            Some(pcond) => pcond,
+            Some(pcond) => {
+                if let Some(b) = prologue_binds[i].take() {
+                    binds = b;
+                }
+                pcond
+            }
             None => {
                 emit_arm_condition(cx, pat, scrut, scrut_typ, or_fail, None, &mut binds)?
             }
