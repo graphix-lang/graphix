@@ -2038,3 +2038,21 @@ run!(impl_method_does_not_narrow_the_head, r#"{
   impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
   "[Box(41)]"
 }"#, refused("method fmt of impl Display for Box<'a> has type"); FuseExpect::None);
+
+// A core-trait hook site a dynamic load retires is deleted by whichever
+// dispatch finds it stale: its references are registered, and released,
+// under no walk's boundary.
+run!(
+    retired_hook_site_deleted_from_another_statement,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "T3 T0"),
+    "/test.gx" => r#"
+        type T = Abstract<i64>;
+        let un = |t: T| -> i64 t.0;
+        impl Display for T { let fmt = |t| "T[un(t)]" };
+        let step = 0;
+        step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
+        let a = "[T(0)]";
+        let src = select step { 1 => "let x = 1", _ => never() };
+        let st = mod foo dynamic { sandbox whitelist [core]; sig { val x: i64 }; source src };
+        let result = select step { 3 => "[T(step)] [a]", _ => never() }
+    "#; FuseExpect::Jit);

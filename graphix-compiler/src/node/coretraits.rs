@@ -365,7 +365,11 @@ fn call_hook<R: Rt, E: UserEvent>(
     args: &[Value],
 ) -> Hooked {
     let mut event = ctx.core_hook_sites.lock().take_event(&ctx.event.user);
+    // a site outlives the walk that built it and runs on spare events
+    // only: it registers, and so unregisters, under no boundary
+    let boundary = ctx.boundary.take();
     let r = call_hook_over(&mut ctx.with_event(&mut event), m, typ, args);
+    ctx.boundary = boundary;
     ctx.core_hook_sites.lock().give_event(event);
     r
 }
