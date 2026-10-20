@@ -18,13 +18,12 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
+    Block, InstBuilder, MemFlags, TrapCode, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::DataId;
 use netidx_value::Value;
 use smallvec::SmallVec;
-use std::convert::Infallible;
 
 use super::{
     abi::{
@@ -348,46 +347,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// Whether an instance whose first use `word` records is born: the
     /// born flag, or set while the word reads 0, which this use records.
-    /// No word, or a null guarded base, is the plain born flag.
+    /// No word is the plain born flag.
     pub(crate) fn first_use(&mut self, word: Option<StateWord>) -> ClifValue {
         let init = self.born_flag();
-        let Some(word) = word else { return init };
-        let Ok([v]) = word.with_addr(self, [init], |cx, addr| {
-            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
-            let one = cx.b.ins().iconst(types::I64, 1);
-            cx.b.ins().store(MemFlags::trusted(), one, addr, 0);
-            let first = cx.b.ins().uextend(types::I64, first);
-            Ok::<_, Infallible>([cx.b.ins().bor(init, first)])
-        });
-        v
-    }
-
-    /// `f`'s values behind a null guard on `base`, `fallback` when it is
-    /// null; each value has its fallback's type.
-    pub(super) fn null_guarded<const N: usize, E>(
-        &mut self,
-        base: ClifValue,
-        fallback: [ClifValue; N],
-        f: impl FnOnce(&mut Self) -> std::result::Result<[ClifValue; N], E>,
-    ) -> std::result::Result<[ClifValue; N], E> {
-        let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-        let then_bl = self.b.create_block();
-        let merge = self.b.create_block();
-        for v in fallback {
-            let t = self.b.func.dfg.value_type(v);
-            self.b.append_block_param(merge, t);
-        }
-        let args = fallback.map(BlockArg::Value);
-        self.b.ins().brif(has, then_bl, &[], merge, &args);
-        self.b.switch_to_block(then_bl);
-        self.b.seal_block(then_bl);
-        let vs = f(self)?;
-        self.b.ins().jump(merge, &vs.map(BlockArg::Value));
-        self.b.switch_to_block(merge);
-        self.b.seal_block(merge);
-        let ps = self.b.block_params(merge);
-        Ok(std::array::from_fn(|i| ps[i]))
+        let Some(StateWord(addr)) = word else { return init };
+        let stored = self.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+        let first = self.b.ins().icmp_imm(IntCC::Equal, stored, 0);
+        let one = self.b.ins().iconst(types::I64, 1);
+        self.b.ins().store(MemFlags::trusted(), one, addr, 0);
+        let first = self.b.ins().uextend(types::I64, first);
+        self.b.ins().bor(init, first)
     }
 
     /// The per-instance state-buffer pointer (`I64`), loaded from wire
@@ -409,11 +378,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub(crate) fn claimed_word(&mut self, off: i32) -> StateWord {
         let base = self.ctx.claims_channel().ptr;
         let addr = self.b.ins().iadd_imm(base, off as i64);
-        let word = match self.ctx.claims {
-            Channel::State => StateWord::Sure(addr),
-            Channel::Site => StateWord::Guarded { base, addr },
-        };
-        // CR claude for claude: [structure/low] This trap makes every site-channel
+        if self.ctx.claims == Channel::Site {
+            self.b.ins().trapz(base, TrapCode::HEAP_OUT_OF_BOUNDS);
+        }
+        // XCR claude for claude: [structure/low] This trap makes every site-channel
         // claim assert a non-null base, which is the contract kernel_instance_state.md
         // states and the callers keep. The null-guard paths are therefore dead:
         // StateWord::Guarded/with_addr, null_guarded, SlotTable::guarded, the `live`
@@ -434,7 +402,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         // emit_site_block, the Guarded arm of emit_slot_truncates) where no trap
         // precedes them; each needs its own proof that the base is non-null before the
         // variant can go.
-        StateWord::Sure(word.required_addr(self))
+        // 2026-10-20 claude: StateWord is now a plain address (lower.rs); a
+        // site-channel claim traps on a null base in claimed_word, emit_slot_truncates
+        // traps the same way for a site anchor instead of guarding, and null_guarded,
+        // SlotTable::guarded and the Guarded arms are gone. The two live selects in
+        // call.rs stay: one guards our own self-block word, whose comment says the
+        // block can be null, and one a callee table pointer from a helper, neither of
+        // which this trap proves. graphix-tests 9636 and the shell tests green,
+        // regress 552/0/0/0; a null base now traps, which the fuzzer records as a
+        // crash.
+        StateWord(addr)
     }
 
     /// Claim and register an owning chain's anchor in this body's channel.
@@ -473,7 +450,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         src_disc: ClifValue,
         idx_var: Variable,
     ) -> Result<()> {
-        let (tables, pending) = self.claim_slot_tables(sites, len, src_disc)?;
+        let tables = self.claim_slot_tables(sites, len, src_disc)?;
         let depth = self.env.loop_depth + 1;
         self.ctx.slot_tables.borrow_mut().push(SlotTableFrame {
             depth,
@@ -481,19 +458,47 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             len,
             src_disc,
             tables,
-            pending,
+            pending: Vec::new(),
         });
         Ok(())
     }
 
+    // XCR claude for claude: [perf/low] This record lands in the new frame's own
+    // pending list, so emit_slot_truncates re-ensures the leaf in the loop's
+    // exit block with the same len and valid the preheader just used: n_dirs +
+    // 1 no-op helper calls per state site per loop run (per outer slot when
+    // nested). The record only matters at the enclosing loops' exits, whose
+    // zero-length epochs skip this preheader. The callee_table record below has
+    // the same problem, and emit_outlined repeats the leaf ensure too. Append
+    // both to the enclosing frame's pending (drop them at depth 0), and keep
+    // claim_callee_block's in-body fallback records in the current frame.
+    // probe: design/review-2026-10-19/repro/f-scaffold-body-exit-reensure.gx
+    // (dumped CLIF shows two graphix_slot_state_table calls with identical
+    // arguments) (f-scaffold-body-02)
+    // 2026-10-20 claude: claim_slot_tables appends its records to the enclosing
+    // frame pending (none at depth 0) instead of its own frame, so a loop no
+    // longer re-ensures its own leaf at its exit, and an outlined loop does not
+    // either (emit_chunk and emit_range lost the seed parameter). The probe
+    // kernel now has one graphix_slot_state_table call (the preheader). A
+    // missed truncation would show in the kernel interior memory pins
+    // (lang::kernel_state, collection slot fixtures); graphix-tests 9636 green
+    // and regress 552/0/0/0.
+    // 2026-10-20 claude: Correction to the pin named above (there is no
+    // lang::kernel_state): a mutation that drops these records instead of
+    // handing them to the enclosing frame aborts
+    // lang::fusion::nested_hof_function_capture (a slot-chain helper panics),
+    // which is the pin.
     /// The claims of [`Self::open_slot_tables`] for a loop at the next
-    /// depth: its sites' tables and its truncate records.
+    /// depth: its sites' tables. Their truncate records go to the
+    /// enclosing loop's frame: the preheader sizes the tables each run,
+    /// and an enclosing level's zero-length epoch, which skips it, is
+    /// truncated at that level's exit.
     pub(crate) fn claim_slot_tables(
         &mut self,
         sites: &[ExprId],
         len: ClifValue,
         src_disc: ClifValue,
-    ) -> Result<(Vec<SlotTable>, Vec<TruncRec>)> {
+    ) -> Result<Vec<SlotTable>> {
         debug_assert!(
             self.ctx.closed_frame.borrow().is_none(),
             "a closed frame's slot truncates were never emitted"
@@ -511,41 +516,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         };
         let n_dirs = enclosing.len();
         let mut tables = Vec::new();
-        // Records for the exit re-ensures: they propagate outward so
-        // every enclosing level truncates on its exit, since an outer
-        // len-0 epoch skips this preheader entirely.
         let mut pending: Vec<TruncRec> = Vec::new();
         for id in sites {
             let (anchor, word) = self.claim_anchor(n_dirs as u32, None);
-            // CR claude for claude: [perf/low] This record lands in the new frame's own
-            // pending list, so emit_slot_truncates re-ensures the leaf in the loop's
-            // exit block with the same len and valid the preheader just used: n_dirs +
-            // 1 no-op helper calls per state site per loop run (per outer slot when
-            // nested). The record only matters at the enclosing loops' exits, whose
-            // zero-length epochs skip this preheader. The callee_table record below has
-            // the same problem, and emit_outlined repeats the leaf ensure too. Append
-            // both to the enclosing frame's pending (drop them at depth 0), and keep
-            // claim_callee_block's in-body fallback records in the current frame.
-            // probe: design/review-2026-10-19/repro/f-scaffold-body-exit-reensure.gx
-            // (dumped CLIF shows two graphix_slot_state_table calls with identical
-            // arguments) (f-scaffold-body-02)
             pending.push(TruncRec {
                 anchor,
                 n_dirs: n_dirs as u32,
                 leaf: TruncLeaf::Table { stride: 1 },
             });
-            let zero = self.b.ins().iconst(types::I64, 0);
-            let [table] = word.with_addr(self, [zero], |cx, addr| {
-                Ok::<_, anyhow::Error>([
-                    cx.emit_slot_chain(addr, &enclosing, len, src_disc)?
-                ])
-            })?;
-            tables.push(SlotTable {
-                site: *id,
-                base: table,
-                guarded: matches!(word, StateWord::Guarded { .. }),
-                blocks: None,
-            });
+            let table = self.emit_slot_chain(word.0, &enclosing, len, src_disc)?;
+            tables.push(SlotTable { site: *id, base: table, blocks: None });
             // a call site's callee blocks too, so an iteration only
             // indexes them
             let layout = self.ctx.lambda_call_sites.get(id).and_then(|info| {
@@ -558,15 +538,13 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 let (base, rec) =
                     super::call::callee_table(self, layout, &enclosing, (len, src_disc))?;
                 pending.push(rec);
-                tables.push(SlotTable {
-                    site: *id,
-                    base,
-                    guarded: false,
-                    blocks: Some(layout.words),
-                });
+                tables.push(SlotTable { site: *id, base, blocks: Some(layout.words) });
             }
         }
-        Ok((tables, pending))
+        if let Some(f) = self.ctx.slot_tables.borrow_mut().last_mut() {
+            f.pending.extend(pending);
+        }
+        Ok(tables)
     }
 
     /// Walk one directory level per entry of `dirs` (an enclosing
@@ -675,22 +653,19 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 None => self.b.ins().iconst(types::I64, 0),
                 Some(l) => self.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
             };
-            // The anchor's word address; a site anchor's base is
-            // null-guarded: branch around the walk.
-            let word = match r.anchor {
+            let word0 = match r.anchor {
                 TruncAnchor::State(off) => {
                     let sp = self.state_ptr();
-                    StateWord::Sure(self.b.ins().iadd_imm(sp, off as i64))
+                    self.b.ins().iadd_imm(sp, off as i64)
                 }
                 TruncAnchor::Site(off) => {
                     let base = self.site_ptr();
-                    StateWord::Guarded {
-                        base,
-                        addr: self.b.ins().iadd_imm(base, off as i64),
-                    }
+                    self.b.ins().trapz(base, TrapCode::HEAP_OUT_OF_BOUNDS);
+                    self.b.ins().iadd_imm(base, off as i64)
                 }
             };
-            word.with_addr(self, [], |cx, word0| {
+            {
+                let cx = &mut *self;
                 // Walk the still-open directory levels by their current
                 // ordinals, then ensure level k: a directory when
                 // k <= n_dirs, the leaf when k == n_dirs + 1.
@@ -719,8 +694,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                         }
                     }
                 }
-                Ok::<_, anyhow::Error>([])
-            })?;
+            }
         }
         if k > 1 {
             let mut frames = self.ctx.slot_tables.borrow_mut();
@@ -737,26 +711,19 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// site is at a different depth than the frame's body, or the
     /// frame claimed no table.
     pub(crate) fn slot_word(&mut self, id: ExprId) -> Option<StateWord> {
-        let (idx_var, table, guarded) = {
+        let (idx_var, table) = {
             let frames = self.ctx.slot_tables.borrow();
             let f = frames.last()?;
             if f.depth != self.env.loop_depth {
                 return None;
             }
-            let SlotTable { base, guarded, .. } =
+            let SlotTable { base, .. } =
                 *f.tables.iter().find(|t| t.site == id && t.blocks.is_none())?;
-            (f.idx_var, base, guarded)
+            (f.idx_var, base)
         };
         let i = self.b.use_var(idx_var);
         let off = self.b.ins().ishl_imm(i, 3);
-        let addr = self.b.ins().iadd(table, off);
-        Some(if guarded {
-            // A callee loop's chain is anchored in the site block,
-            // behind its null guard.
-            StateWord::Guarded { base: table, addr }
-        } else {
-            StateWord::Sure(addr)
-        })
+        Some(StateWord(self.b.ins().iadd(table, off)))
     }
 
     /// The innermost open loop's table of callee blocks for the call

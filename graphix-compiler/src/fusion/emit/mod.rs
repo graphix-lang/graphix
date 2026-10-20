@@ -57,5 +57,5 @@ pub(crate) use self::nodes::{
     emit_seq_new_node, emit_string_interpolate_node, emit_struct_new_node,
     emit_struct_with_node, emit_variant_new_node, widen_result_to_value,
 };
-pub(crate) use self::record::{BodyRecord, KernelType};
+pub(crate) use self::record::{BodyRecord, KernelType, NoMatchSite};
 pub(crate) use self::{scaffold::loop_body, select::emit_select_node};

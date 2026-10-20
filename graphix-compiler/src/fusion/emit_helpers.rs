@@ -37,7 +37,7 @@ use std::{
     cell::{Cell, RefCell},
     mem::{ManuallyDrop, MaybeUninit},
     panic::AssertUnwindSafe,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+    sync::atomic::{AtomicU64, Ordering::Relaxed},
 };
 
 /// The Value ABI the helpers' two-`I64` signatures depend on: two
@@ -535,26 +535,6 @@ safe fn graphix_shape_mismatch(got_disc: u64) {
     )
 }
 
-/// A fused select matched no arm: a hole in the check's coverage. Said
-/// once per process.
-safe fn graphix_select_no_match() {
-    static SAID: AtomicBool = AtomicBool::new(false);
-    // CR claude for claude: [dead/low] This arm is dead. report_coverage_hole already
-    // aborts on the first call when GRAPHIX_ABORT_ON_NO_MATCH is set, and the flag is a
-    // cached constant, so no later call reaches here with it set. Delete it. Also, this
-    // helper reports once per process, while the node-walk's Select reports once per
-    // select (logged_no_match), so a second hole in fused code goes unreported. A
-    // per-site flag word in the kernel record would match the node-walk. Found by
-    // reading; not run. (f-helpers-04)
-    // 2026-10-19 claude: The dead arm is deleted. What remains is the second half: the
-    // helper still reports once per process where the node-walk reports once per
-    // select; a per-site flag word (a KernelConst the site's code names) would match
-    // it.
-    if !SAID.swap(true, Relaxed) {
-        crate::node::error::report_coverage_hole(&"a fused select matched no arm");
-    }
-}
-
 /// Rust's float `%`, which cranelift has no instruction for.
 safe fn graphix_f64_rem(a: f64, b: f64) -> f64 {
     a % b
@@ -573,6 +553,35 @@ safe fn graphix_init_oversize(n: i64) {
 /// Set `KERNEL_ABORT`; emitted on every whole-kernel abort path.
 safe fn graphix_abort_set() {
     KERNEL_ABORT.with(|c| c.set(true))
+}
+
+/// A fused select matched no arm: a hole in the check's coverage, said
+/// once per site, as the node-walk says it once per select.
+unsafe fn graphix_select_no_match(site: *const super::emit::NoMatchSite) {
+    // XCR claude for claude: [dead/low] This arm is dead. report_coverage_hole already
+    // aborts on the first call when GRAPHIX_ABORT_ON_NO_MATCH is set, and the flag is a
+    // cached constant, so no later call reaches here with it set. Delete it. Also, this
+    // helper reports once per process, while the node-walk's Select reports once per
+    // select (logged_no_match), so a second hole in fused code goes unreported. A
+    // per-site flag word in the kernel record would match the node-walk. Found by
+    // reading; not run. (f-helpers-04)
+    // 2026-10-19 claude: The dead arm is deleted. What remains is the second half: the
+    // helper still reports once per process where the node-walk reports once per
+    // select; a per-site flag word (a KernelConst the site's code names) would match
+    // it.
+    // 2026-10-20 claude: The helper takes a per-site KernelConst::NoMatchSite (the
+    // select spec and a said flag, imaged by its spec), so a fused hole is said once
+    // per site with its position, as the node-walk says it once per select. No pin can
+    // trigger it (a hole is a checker bug); checked: the probe select emits the call
+    // with the site pointer, a warm image decodes the constant, fusion suites and
+    // regress green.
+    let site = unsafe { &*site };
+    if !site.said.swap(true, Relaxed) {
+        crate::node::error::report_coverage_hole(&format_args!(
+            "{}: no arm matches",
+            site.spec
+        ));
+    }
 }
 
 /// Run an outlined loop's `len` slots through its `chunk` over `frame`,

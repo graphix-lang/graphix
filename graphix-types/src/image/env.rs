@@ -217,14 +217,21 @@ where
     })
 }
 
-fn nested_decode<V, B: Buf>(buf: &mut B) -> Result<Nested<V>, PackError>
+/// `decoded` sees each entry as its map node decodes: once per distinct
+/// node, however many snapshots share it.
+fn nested_decode<V, B: Buf>(
+    buf: &mut B,
+    decoded: &dyn Fn(&str, &V),
+) -> Result<Nested<V>, PackError>
 where
     V: Pack + Clone + Send + Sync + 'static,
 {
     shared_map::map_decode(buf, &mut |buf| {
         let scope = ModPath::decode(buf)?;
         let inner = shared_map::map_decode(buf, &mut |buf| {
-            Ok((CompactString::decode(buf)?, V::decode(buf)?))
+            let (name, v) = (CompactString::decode(buf)?, V::decode(buf)?);
+            decoded(&name, &v);
+            Ok((name, v))
         })?;
         Ok((scope, inner))
     })
@@ -250,28 +257,16 @@ pub fn lexical_encode(env: &Env, buf: &mut impl BufMut) -> Result<(), PackError>
 #[doc(hidden)]
 pub fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
     let env = Env {
-        binds: nested_decode(buf)?,
+        binds: nested_decode(buf, &|_, _| ())?,
         modules: SharedSet::decode(buf)?.0,
-        typedefs: nested_decode(buf)?,
-        traits: nested_decode(buf)?,
-        ..Env::default()
-    };
-    // CR claude for claude: [perf/medium] This loop walks every typedef of every
-    // environment snapshot decoded, and takes the global ABSTRACT_NAMES lock for each
-    // abstract one. lexical_decode runs per definition at restore, per module and per
-    // materialized instance, and each snapshot holds every earlier typedef, so a warm
-    // start costs typedefs x definitions. Measured warm ImageDefs with N typedefs
-    // placed before vs after N lambdas: 60 vs 42 ms at N=1500, 170 vs 68 ms at N=3000.
-    // Fix: name the type in the typedefs map's pair decode, which runs once per
-    // distinct map node (nodes are shared image objects), and delete this loop. probe:
-    // design/review-2026-10-19/repro/t-image-lexical-naming-quadratic.sh (t-image-01)
-    for (_, defs) in env.typedefs.iter() {
-        for (name, td) in defs.iter() {
+        typedefs: nested_decode(buf, &|name, td: &TypeDef| {
             if let crate::typ::Type::Abstract { id, .. } = td.def.typ() {
                 id.named(name);
             }
-        }
-    }
+        })?,
+        traits: nested_decode(buf, &|_, _| ())?,
+        ..Env::default()
+    };
     Ok(env)
 }
 

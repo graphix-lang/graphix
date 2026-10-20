@@ -75,9 +75,9 @@ pub(super) fn emit_outlined(
     iteration: impl Iteration,
 ) -> Result<Sunk> {
     // The loop's slot tables are made here, where every chunk finds them.
-    let (tables, pending) = cx.claim_slot_tables(&lp.facts.sites, lp.len, lp.src_disc)?;
+    let tables = cx.claim_slot_tables(&lp.facts.sites, lp.len, lp.src_disc)?;
     let site = cx.const_ptr(KernelConst::LoopSite(Arc::new(LoopSite::default())))?;
-    let (id, pending) = emit_chunk(cx, &lp, &tables, pending, iteration)?;
+    let (id, pending) = emit_chunk(cx, &lp, &tables, iteration)?;
     // The chain levels at the loop's own depth are sized before any
     // chunk runs, so a chunk's ensure of one only reads it.
     *cx.ctx.closed_frame.borrow_mut() =
@@ -165,6 +165,15 @@ pub(super) fn emit_outlined(
 // locals the iteration reads are stored and bound). Still open:
 // call::emit_pending_abort rungs use_var every owned local, so every abort exit
 // passes all of them as block arguments.
+// 2026-10-20 claude: Measured the abort-rung half after the frame fix: in the chain
+// probe block params grow as n^2 (41k/162k/645k at n=200/400/800) while
+// instructions grow linearly (82 per loop), and the Cranelift backend on the one
+// large kernel takes 0.41/1.96/7.0 s at n=800/1600/3200 (1.25/4.7 s at 1600/3200
+// with the verifier off; opt_level none does not help), the end-to-end run
+// 1.0/3.5/11.2 s. The fix stands as written, with one hazard: a tail loop redefines
+// its formals variables every iteration (body.rs, the staged def_vars before the
+// jump to the head), so a spill slot must be written at every def_var of an owned
+// local, not only at bind_local, or a rung drops a stale value.
 // XCR claude for claude: [perf/low] Every outlined loop stores every local in scope
 // into the frame, and emit_chunk loads every one back, whether the loop's body
 // reads it or not. A chain of n array::map lets in one function emits about n^2/2
@@ -225,13 +234,12 @@ fn give_back(ch: &StateChannel, from: StateChannel) {
 
 /// Build the chunk `(frame, lo, hi, out)` that runs slots `lo..hi` of
 /// `lp`, over the slot tables `tables` and the body's locals, and add
-/// it to the body's chunks. Returns its id and the frame's chain
-/// records, `pending` and its nested sites', for the body to size.
+/// it to the body's chunks. Returns its id and its nested sites' chain
+/// records, for the body to size.
 fn emit_chunk(
     cx: &mut BodyCx,
     lp: &Loop,
     tables: &[SlotTable],
-    pending: Vec<TruncRec>,
     iteration: impl Iteration,
 ) -> Result<(FuncId, Vec<TruncRec>)> {
     let p = cx.ctx;
@@ -264,7 +272,6 @@ fn emit_chunk(
         .map(|(j, t)| SlotTable {
             site: t.site,
             base: load(&mut b, types::I64, HEADER + j),
-            guarded: t.guarded,
             blocks: t.blocks,
         })
         .collect();
@@ -337,7 +344,7 @@ fn emit_chunk(
     };
     let mut ccx = BodyCx { b: &mut b, env: &mut env, ctx: &ctx };
     let slots = Range { lo, hi, out, src, src_disc, len, entered };
-    let r = emit_range(&mut ccx, lp.kind, slots, tables, pending, iteration);
+    let r = emit_range(&mut ccx, lp.kind, slots, tables, iteration);
     let LowerCtx { state, site, self_call_roots, pending_exit, .. } = ctx;
     give_back(&p.state, state);
     give_back(&p.site, site);
@@ -372,7 +379,6 @@ fn emit_range(
     kind: SinkKind,
     r: Range,
     tables: Vec<SlotTable>,
-    pending: Vec<TruncRec>,
     iteration: impl Iteration,
 ) -> Result<Vec<TruncRec>> {
     let i_var = cx.b.declare_var(types::I64);
@@ -396,7 +402,7 @@ fn emit_range(
         len: r.len,
         src_disc: r.src_disc,
         tables,
-        pending,
+        pending: Vec::new(),
     });
     let frame = LoopFrame::blocks(cx, i_var, r.hi, r.entered);
     iteration(cx, &frame, &Slots { src: r.src, src_disc: r.src_disc, sink, accs })?;

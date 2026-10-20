@@ -1725,12 +1725,17 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         self.attr_census.lock().extend(attr_census.into_inner());
         self.attr_dispatched.lock().extend(attr_dispatched.into_inner());
         self.attr_absorbed.lock().extend(attr_absorbed.into_inner());
-        let mut pending_refs = pending_refs;
+        // neither order matters: the larger side is kept and the smaller
+        // merged in, so nested forks copy each entry a bounded number of times
+        let (mut pending_refs, mut discarded) = (pending_refs, discarded);
         if pending_refs.len() > self.pending_refs.len() {
-            mem::swap(&mut self.pending_refs, &mut pending_refs)
+            mem::swap(&mut pending_refs, &mut self.pending_refs);
         }
         for (k, n) in pending_refs {
             *self.pending_refs.entry(k).or_default() += n;
+        }
+        if discarded.len() > self.discarded.len() {
+            mem::swap(&mut discarded, &mut self.discarded);
         }
         self.discarded.extend(discarded);
         profile.join();
@@ -2499,7 +2504,7 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
-    let Some((a, b)) = test.rep_collision_open(env, rest) else { return Ok(()) };
+    let Some(why) = test.rep_collision_open(env, rest) else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     // a cell the arm's own predicate holds (a slice pattern's element) is
     // the arm's to narrow, not a type it must tell apart
@@ -2518,24 +2523,23 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     let mut own: LPooled<AHashSet<usize>> = LPooled::take();
     cells(test, &mut own);
     let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
-    if (open(&a) && owned(&a)) || (open(&b) && owned(&b)) {
+    if let Indiscernible::Pair(a, b) = &why
+        && ((open(a) && owned(a)) || (open(b) && owned(b)))
+    {
         return Ok(());
     }
     format_with_flags(PrintFlag::DerefTVars, || {
-        let (test, rest) = (test.resolve_tvars(), rest.resolve_tvars());
-        if open(&a) || open(&b) {
-            let known = if open(&a) { b.resolve_tvars() } else { a.resolve_tvars() };
+        if let Indiscernible::Pair(a, b) = &why
+            && (open(a) || open(b))
+        {
+            let (test, rest) = (test.resolve_tvars(), rest.resolve_tvars());
+            let known = if open(a) { b.resolve_tvars() } else { a.resolve_tvars() };
             bail!(
                 "this pattern tests for {test} among {rest}, but a type variable there \
                  isn't known here and may share {known}'s runtime form: annotate it"
             )
         }
-        bail!(
-            "this pattern can't tell {} from {}: both have the same runtime form; wrap \
-             them in distinct variants",
-            a.resolve_tvars(),
-            b.resolve_tvars()
-        )
+        Err(why.untold("this pattern", test, rest))
     })
 }
 

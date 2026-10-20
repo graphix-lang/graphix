@@ -35,6 +35,7 @@ use super::{
     flow::{emit_discard_result, emit_scope_drops},
     lower::{freeze_node_typ, resolve_node_typ},
     nodes::{emit_bottom_of_kind, emit_owned_value_operand_node},
+    record::{KernelConst, NoMatchSite},
     scalar::{
         ElementRead, cast_u64_to_prim, compile_cmp, compile_const, element_read_helper,
         prim_to_clif, scalar_to_payload_i64, struct_get_helper, valarray_get_helper,
@@ -1169,7 +1170,10 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 if is_last {
                     // a valid scrutinee matches an exhaustive chain: this is
                     // a hole in the check, said as the node-walk says it
-                    cx.call_helper("graphix_select_no_match", &[])?;
+                    let site = cx.const_ptr(KernelConst::NoMatchSite(Box::new(
+                        NoMatchSite::new(sel.spec.clone()),
+                    )))?;
+                    cx.call_helper("graphix_select_no_match", &[site])?;
                     cx.b.ins().jump(miss_bl, &[]);
                 }
             }

@@ -3118,6 +3118,18 @@ run!(open_result_success_told_from_its_error, r#"{
   (f(1), f("s"), f(error(`E)))
 }"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:1, i64:0]"); FuseExpect::Jit);
 
+// A member bounded to numbers binds only a number, so it shares no form
+// with an array or a tuple beside it.
+run!(
+    open_numeric_member_told_from_a_collection,
+    r#"{
+  let f = 'a: Int |x: ['a, Array<i64>]| -> i64 select x { Array<i64> as a => array::len(a), _ => -1 };
+  let g = 'a: Number |x: ['a, (i64, i64)]| -> i64 select x { (a, b) => a + b, _ => 0 };
+  (f(5), f([1, 2]), g(5), g((1, 2)))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:-1, i64:2, i64:0, i64:3]")
+);
+
 // A variant arm over a generic union is told apart by its tag: the open
 // cells in its payload meet themselves, not a sibling's form.
 run!(

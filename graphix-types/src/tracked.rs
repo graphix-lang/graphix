@@ -7,16 +7,6 @@ use ahash::AHashSet;
 use poolshark::local::LPooled;
 use std::{fmt::Debug, hash::Hash, ops::Deref};
 
-/// Add the keys a fork wrote to `mine`, in no order: the shorter list
-/// goes into the longer, so a chain of nested joins copies each key
-/// O(log n) times rather than once a level.
-fn absorb<K>(mine: &mut LPooled<Vec<K>>, mut theirs: LPooled<Vec<K>>) {
-    if theirs.len() > mine.len() {
-        std::mem::swap(mine, &mut theirs)
-    }
-    mine.extend(theirs.drain(..))
-}
-
 /// The keys a joined fork wrote, each once, recorded as writes of the
 /// container it joins; `None` when it wrote none.
 fn merged_keys<K: Hash + Eq + Clone>(
@@ -32,6 +22,16 @@ fn merged_keys<K: Hash + Eq + Clone>(
         mine.extend(keys.iter().cloned());
     }
     Some(keys)
+}
+
+/// Add a joined fork's touched keys to the parent's, whose order does
+/// not matter: the larger list is kept and the smaller copied in, so a
+/// chain of nested forks copies each key a bounded number of times.
+fn absorb<K>(mine: &mut LPooled<Vec<K>>, theirs: &mut LPooled<Vec<K>>) {
+    if theirs.len() > mine.len() {
+        std::mem::swap(mine, theirs)
+    }
+    mine.extend(theirs.drain(..))
 }
 
 /// Whether two of a map's values are one write: identity for a shared
@@ -194,8 +194,8 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
         if self.generation == forked_at {
             self.map = map;
             self.generation = generation;
-            if let (Some(mine), Some(theirs)) = (&mut self.touched, touched) {
-                // CR claude for claude: [perf/low] [perf/low] A static bind runs in a
+            if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
+                // XCR claude for claude: [perf/low] [perf/low] A static bind runs in a
                 // forked task, and a nested bind forks inside it. Every join copies
                 // what the child accumulated: this `touched` list, and in
                 // `CompileCtx::join` also pending_refs, pending_settles and discarded.
@@ -220,7 +220,12 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
                 // (push the child's frame whole, flatten where it drains) would close
                 // it; lambda.rs's gate pop/extend copies the same frames per nested
                 // definition.
-                absorb(mine, theirs)
+                // 2026-10-20 claude: TrackedMap/TrackedSet joins keep the larger
+                // touched list and copy the smaller in (absorb), and CompileCtx::join
+                // does the same for pending_refs and discarded. pending_settles still
+                // extends the parent frame with the child's (the chunk-and-flatten form
+                // is not done). Not re-measured.
+                absorb(mine, &mut theirs)
             }
             return;
         }

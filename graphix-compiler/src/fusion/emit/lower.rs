@@ -19,7 +19,7 @@ use anyhow::{Result, anyhow, bail};
 use cranelift_codegen::{
     ir::{
         AbiParam, Block, FuncRef, Function, InstBuilder, Signature, StackSlot,
-        StackSlotData, StackSlotKind, TrapCode, Value as ClifValue, types,
+        StackSlotData, StackSlotKind, Value as ClifValue, types,
     },
     isa::CallConv,
 };
@@ -35,7 +35,7 @@ use triomphe::Arc;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
-    body::{BodyCx, BodyRole, BodySource, emit_interrupt_check_every, param_id},
+    body::{BodyRole, BodySource, emit_interrupt_check_every, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
     record::EmitConst,
@@ -323,48 +323,13 @@ impl CtxWord {
     }
 }
 
-/// A state word's address: an instance's or a call site's word, or a
-/// loop slot's (a prev-length word, a first-call word, an in-loop call
-/// site's block anchor). `Guarded` words ride a site block base, null
-/// only for a body that claims no site words; the consumer takes the
-/// no-memory path when it is.
+/// A claimed state word's address: an instance's or a call site's word,
+/// or a loop slot's (a prev-length word, a first-call word, an in-loop
+/// call site's block anchor). A site-channel claim traps on a null site
+/// block base where it is claimed ([`BodyCx::claimed_word`]), so the
+/// address is never behind a guard.
 #[derive(Clone, Copy)]
-pub(crate) enum StateWord {
-    Sure(ClifValue),
-    Guarded { base: ClifValue, addr: ClifValue },
-}
-
-impl StateWord {
-    /// A claimed word requires a non-null owner.
-    pub(super) fn required_addr(self, cx: &mut BodyCx) -> ClifValue {
-        match self {
-            StateWord::Sure(addr) => addr,
-            StateWord::Guarded { base, addr } => {
-                cx.b.ins().trapz(base, TrapCode::HEAP_OUT_OF_BOUNDS);
-                addr
-            }
-        }
-    }
-
-    /// `f` over the word's address; a `Guarded` one behind its null
-    /// guard, `fallback` on the null path.
-    pub(super) fn with_addr<'a, 'f, 'c, const N: usize, E>(
-        self,
-        cx: &mut BodyCx<'a, 'f, 'c>,
-        fallback: [ClifValue; N],
-        f: impl FnOnce(
-            &mut BodyCx<'a, 'f, 'c>,
-            ClifValue,
-        ) -> std::result::Result<[ClifValue; N], E>,
-    ) -> std::result::Result<[ClifValue; N], E> {
-        match self {
-            StateWord::Sure(addr) => f(cx, addr),
-            StateWord::Guarded { base, addr } => {
-                cx.null_guarded(base, fallback, |cx| f(cx, addr))
-            }
-        }
-    }
-}
+pub(crate) struct StateWord(pub(crate) ClifValue);
 
 /// An in-loop state-chain claim re-ensured in every enclosing loop's
 /// exit block, so a zero-length epoch still truncates the chain and
@@ -409,8 +374,6 @@ impl TruncLeaf {
 pub(crate) struct SlotTable {
     pub(super) site: ExprId,
     pub(super) base: ClifValue,
-    /// The table pointer may be null and must be guarded.
-    pub(super) guarded: bool,
     /// For a lambda call site's callee blocks, their words per slot; a
     /// site's state word otherwise.
     pub(super) blocks: Option<u32>,
@@ -447,8 +410,8 @@ pub(super) enum Channel {
 /// `site` the per-call-site channel (wire slot 2); a body claims from
 /// its [`Channel`] only.
 pub(super) struct StateChannel {
-    /// Base pointer (`I64`); possibly 0, so consumers null-guard where
-    /// it can be absent ([`StateWord::Guarded`]).
+    /// Base pointer (`I64`); 0 only for a body that claims nothing from
+    /// it (a site-channel claim traps on 0).
     pub(super) ptr: ClifValue,
     /// Next unclaimed word index.
     pub(super) next: Cell<usize>,

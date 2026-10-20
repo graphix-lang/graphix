@@ -399,7 +399,7 @@ fn claim_block_run(cx: &mut BodyCx, layout: &SiteLayout) -> ClifValue {
             leaf: a.leaf.clone(),
         }
     }));
-    cx.claimed_word(first).required_addr(cx)
+    cx.claimed_word(first).0
 }
 
 /// Emit the per-call-site state block argument for a cross-kernel call
@@ -571,10 +571,7 @@ pub(super) fn callee_table(
             )?[0],
         })
     };
-    let zero = cx.b.ins().iconst(types::I64, 0);
-    let [table] = anchor.with_addr(cx, [zero], |cx, addr| {
-        Ok::<_, anyhow::Error>([emit_chain(cx, addr)?])
-    })?;
+    let table = emit_chain(cx, anchor.0)?;
     Ok((table, rec))
 }
 

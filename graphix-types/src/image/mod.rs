@@ -21,6 +21,7 @@ use crate::{
     ids::{IdRelocation, IdSpan, IdSpans},
     typ::{
         FnType, ResolvedRef, TVar, Type,
+        fntyp::LambdaIds,
         tvar::{TCell, TVarId},
     },
 };
@@ -200,13 +201,15 @@ pub struct ImageEncoder {
     /// Persistent map nodes by identity.
     pub(crate) map_nodes: Table<usize, Box<dyn std::any::Any + Send + Sync>>,
     ids: IdCounts,
-    /// The next ordinal an object meets at its first sight.
-    next_ordinal: u32,
     /// Every definition written, each where its offset says: appended
     /// to the image after everything that references it (`finish`).
     defs: ImageBuf,
-    /// Each definition's offset in `defs` by ordinal.
+    /// Each definition's offset in `defs` by ordinal: an object met for
+    /// the first time takes the next.
     offsets: Vec<Option<u64>>,
+    /// The definitions are appended ([`Self::finish`]): an object met
+    /// afterwards would never be defined, so it takes no ordinal.
+    finished: bool,
     /// Buffers for definitions being written, one per nesting level.
     scratch: Vec<ImageBuf>,
     paths: Table<ArcStr>,
@@ -227,7 +230,9 @@ pub struct ImageEncoder {
     /// leaf (a variable, a resolution cell, an origin) by identity:
     /// equal types decode to one shared value.
     pub(crate) types: ContentTable,
-    pub(crate) fntypes: ContentTable,
+    /// Function types likewise, each holding its `LambdaIds`, whose
+    /// address its key names.
+    pub(crate) fntypes: Table<Box<[u8]>, LambdaIds>,
     /// The interned key of every shared type node met so far, by the
     /// address of its `Arc`, so a key walk stops at shared subtrees.
     type_keys: AHashMap<usize, (KeyedNode, u64)>,
@@ -270,20 +275,12 @@ impl ImageEncoder {
     /// Append the definitions to `buf`, the image, and return each
     /// one's offset in it by ordinal, for the trailer; `u64::MAX` for
     /// an object measured and never written.
-    // CR claude for claude: [structure/low] `next_ordinal` duplicates `offsets.len()`
-    // until this drain, which leaves the counter and the tables as they were. An object
-    // first seen afterwards gets ordinal N while offsets has length 1, so
-    // object_encode's `e.offsets[ord]` panics, and its definition would never be
-    // appended anyway. write_registration still encodes the instance table inside the
-    // session after finish; it is safe only because InstanceRefs holds ids. Fix: take
-    // the ordinal from `offsets.len()`, keep the offsets here instead of draining them,
-    // and refuse new ordinals once finished (InvalidFormat). Found by reading; not run.
-    // (t-image-03)
     pub fn finish(&mut self, buf: &mut ImageBuf) -> Vec<u64> {
         let base = buf.len() as u64;
         buf.put_slice(&self.defs.0);
         self.defs.0.clear();
-        self.offsets.drain(..).map(|at| at.map_or(u64::MAX, |at| base + at)).collect()
+        self.finished = true;
+        self.offsets.iter().map(|at| at.map_or(u64::MAX, |at| base + at)).collect()
     }
 }
 
@@ -1077,19 +1074,10 @@ pub fn decode_at<T>(
         }
         let prev = d.active.insert(ord, built);
         d.defining.push(ord);
-        Some(((d.image.as_ptr(), d.image.len()), at, prev, d.entered.len()))
+        Some((d.image.clone(), at, prev, d.entered.len()))
     })
     .flatten()
     .ok_or(PackError::InvalidFormat)?;
-    // The session's decoder holds the image, and nothing replaces it
-    // while the session is installed.
-    // CR claude for claude: [style/low] This rebuilds the image from a raw pointer and
-    // length. That is sound only while nothing replaces or drops the decoder's image
-    // during `full`. The image is a bytes::Bytes: return `d.image.clone()` from the
-    // decoding closure above (one refcount bump per definition) and decode from `&mut
-    // &image[at..]`. That deletes the unsafe block and the invariant it relies on.
-    // Found by reading; not run. (x-unsafe-02)
-    let image = unsafe { std::slice::from_raw_parts(image.0, image.1) };
     let r = crate::stack::ensure_sufficient(|| full(&mut &image[at..]));
     decoding(|d| {
         d.defining.pop();
@@ -1121,11 +1109,13 @@ pub struct Slot<P = ()> {
 
 pub(crate) type ContentTable = Table<Box<[u8]>>;
 
-fn new_ordinal(e: &mut ImageEncoder) -> u32 {
-    let ord = e.next_ordinal;
-    e.next_ordinal += 1;
+fn new_ordinal(e: &mut ImageEncoder) -> Option<u32> {
+    if e.finished {
+        return None;
+    }
+    let ord = e.offsets.len() as u32;
     e.offsets.push(None);
-    ord
+    Some(ord)
 }
 
 /// The image length of the object at `key`: a reference, always, so a
@@ -1144,14 +1134,15 @@ where
     Q: std::hash::Hash + Eq + ?Sized,
 {
     let ord = encoding(|e| match table(e).get(key) {
-        Some(s) => s.ord,
+        Some(s) => Some(s.ord),
         None => {
-            let ord = new_ordinal(e);
+            let ord = new_ordinal(e)?;
             let (k, _pin) = owned(key);
             table(e).insert(k, Slot { ord, defined: false, _pin });
-            ord
+            Some(ord)
         }
-    });
+    })
+    .flatten();
     ord.map_or(0, |ord| 1 + varint_len(ord as u64))
 }
 
@@ -1172,14 +1163,15 @@ where
     Q: std::hash::Hash + Eq + ?Sized,
 {
     let seen = encoding(|e| match table(e).get_mut(key) {
-        Some(s) => (s.ord, !std::mem::replace(&mut s.defined, true)),
+        Some(s) => Some((s.ord, !std::mem::replace(&mut s.defined, true))),
         None => {
-            let ord = new_ordinal(e);
+            let ord = new_ordinal(e)?;
             let (k, _pin) = owned(key);
             table(e).insert(k, Slot { ord, defined: true, _pin });
-            (ord, true)
+            Some((ord, true))
         }
-    });
+    })
+    .flatten();
     let (ord, first) = seen.ok_or(PackError::InvalidFormat)?;
     buf.put_u8(REF);
     encode_varint(ord as u64, buf);
@@ -1304,9 +1296,10 @@ pub fn unknown_tag<T>(_: u8) -> Result<T, PackError> {
 }
 
 /// A type node whose key the session holds: kept alive with it, so its
-/// address names it alone for the session. An encode can measure a
-/// node built on the fly (a function type's normalized constraints) and
-/// drop it; its address must not come back as another node's key.
+/// address names it alone for the session. Every address a key names is
+/// pinned by the session for as long as the key can be met again: a
+/// node dropped after its encode could have its address come back as
+/// another node's key.
 #[allow(dead_code)]
 pub(crate) enum KeyedNode {
     Types(Arc<[Type]>),
@@ -1388,19 +1381,16 @@ pub(crate) fn type_encode<B: BufMut>(
 pub(crate) fn fntype_len(t: &FnType) -> usize {
     with_key(
         |key| t.content_key(key),
-        |key| object_len(key, content_owned, |e| &mut e.fntypes),
+        |key| object_len(key, |k| fntype_owned(t, k), |e| &mut e.fntypes),
     )
 }
 
-// CR claude for claude: [risk/low] A function type's key holds `lambda_ids.addr()`, but
-// the fntypes table pins nothing (content_owned) and the definition writes only
-// `own()`. A bare FnType dropped after its encode frees that address. A later one of
-// the same shape, whose LambdaIds lands there, then shares the first's definition and
-// decodes with the first's lambda id. Type keys avoid this because every leaf address
-// is pinned once written; KeyedNode's doc gives 'normalized constraints built on the
-// fly' as the reason, which shape_encode no longer does. Fix: key `fntypes` with a
-// `LambdaIds` pin (owned returns `t.lambda_ids.clone()`), and restate KeyedNode's doc
-// as the invariant. Found by reading; not run. (t-image-02)
+/// A function type's key and its pin: the key names its `LambdaIds` by
+/// address, which must name it alone for the session.
+fn fntype_owned(t: &FnType, k: &[u8]) -> (Box<[u8]>, LambdaIds) {
+    (Box::from(k), t.lambda_ids.clone())
+}
+
 pub(crate) fn fntype_encode<B: BufMut>(
     t: &FnType,
     buf: &mut B,
@@ -1408,7 +1398,9 @@ pub(crate) fn fntype_encode<B: BufMut>(
 ) -> Result<(), PackError> {
     with_key(
         |key| t.content_key(key),
-        |key| object_encode(key, content_owned, |e| &mut e.fntypes, buf, contents),
+        |key| {
+            object_encode(key, |k| fntype_owned(t, k), |e| &mut e.fntypes, buf, contents)
+        },
     )
 }
 
