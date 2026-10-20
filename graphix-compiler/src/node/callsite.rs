@@ -3172,44 +3172,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.ftype.as_ref().unwrap()
             }
         };
-        // XCR claude for claude: [bug/medium] Widening is not order-independent for an
-        // argument whose own type is an open cell. That argument is checked against
-        // whatever the site's cell holds at that moment, and binds its own cell to it.
-        // A later wider argument widens only the site's cell. With `pick(x: 'a, y: 'a,
-        // z: 'a)` and `v: [i64, null]`, `let h = |z| pick(i64:1, z, v); h(null)` is
-        // refused ("i64 does not contain null"), while `pick(v, z, i64:1)` types z as
-        // [i64, null] and runs. CLAUDE.md promises the widest argument whatever the
-        // order. Fix: in a fresh instance, defer an argument with unbound cells whose
-        // formal holds a widenable cell to the deferred pass, as misfit defers an
-        // incomparable one, so it is checked after every concrete argument has widened.
-        // probe: design/review-2026-10-19/repro/c-callsite-widening-order-open-arg.sh
-        // (c-callsite-03)
-        // 2026-10-19 claude: Widening::defers_open: in a fresh instance an argument
-        // that is a reference to an undecided, non-rigid cell, at a formal holding a
-        // widenable variable, is checked in the deferred pass after every concrete
-        // argument widened. Pin: lang::functions::widening_waits_for_an_open_argument;
-        // lang::types::rigid_cell_guides_the_member_placement pins the rigid exclusion.
-        // 2026-10-20 claude: XCR review: Widening::defers_open defers only an argument
-        // whose node is a bare NodeView::Ref to an undecided cell; an argument whose
-        // type merely holds an open cell is still checked in order. With 'let pick =
-        // |x: Array<'a>, y: Array<'a>, z: Array<'a>| -> Array<Array<'a>> [x, y, z]; let
-        // v: [i64, null] = null; let h = |z| pick([i64:1], [z], [v]); h(null)' the
-        // current debug graphix refuses ('type mismatch i64 does not contain null' at
-        // h(null)), while pick([v], [z], [i64:1]) runs and prints [[null], [null],
-        // [1]]. The finding's fix was to defer any argument with unbound cells at a
-        // widenable formal; the pin widening_waits_for_an_open_argument covers only the
-        // bare reference. Generalize the deferral test (n.typ() has an unbound
-        // non-rigid cell at a formal holding a widenable variable) and pin the nested
-        // case.
-        // 2026-10-20 claude: typecheck_arg now reports an argument holding any
-        // undecided non-rigid cell (Type::has_free, not only a bare Ref) as
-        // ArgFit::Open when its formal holds a widenable variable (Widening::waits),
-        // and Widening::fit defers it to the pass after every concrete argument
-        // widened; the varargs loop takes the same rule. Pin:
-        // lang::functions::widening_waits_for_a_nested_open_argument (pick([i64:1],
-        // [z], [v]); the pre-fix binary refuses it with 'i64 does not contain null'),
-        // beside widening_waits_for_an_open_argument. must_reject.md family 3's skip
-        // names a value holding such a cell.
         let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
