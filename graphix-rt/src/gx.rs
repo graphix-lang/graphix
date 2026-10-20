@@ -802,59 +802,6 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
-                // XCR claude for claude: [bug/high] An embedder write is never checked
-                // against its binding's type, though Callable::call checks its
-                // arguments. A string set into an `i64` binding that feeds a fused
-                // kernel makes FusedKernel::stage panic, and the runtime dies. The
-                // node-walk interpreter just drops the update, so the engines diverge,
-                // and a safe public API (GXHandle::set, set_many, set_deref, Ref::set,
-                // TRef::set) crashes the runtime. Fix: here and for SetMany and
-                // SetDeref, test the value with `is_a` against the binding's type in
-                // `ctx.env.by_id` (for a set_deref, the referent's type), and refuse,
-                // logging, a write that fails, as call_callable does. probe:
-                // design/review-2026-10-19/repro/rt-runtime-api.rs
-                // (a_wrong_typed_set_jit) (rt-01)
-                // 2026-10-19 claude: GX::admits checks a Set, every member of a
-                // SetMany (one bad member refuses the set) and a SetDeref against the
-                // binding's type in env.by_id, logging a refusal; a patch through a
-                // place is checked by the root it would make now (write_path over the
-                // stored root). An id with no binding (a callable's argument, already
-                // checked) is admitted. Fails if undone:
-                // graphix-rt/tests/runtime_api.rs
-                // a_wrong_typed_set_is_refused_{jit,interp} and
-                // a_wrong_typed_set_deref_is_refused.
-                // 2026-10-19 claude: Consequence: an embedder that writes a value in
-                // its data form (a bare variant as its tag string, as
-                // stdlib/graphix-package-gui's data_table test did) is now refused,
-                // since the binding's runtime form is a marked variant; that test now
-                // writes rep::make_variant. Embedders outside this repo
-                // (netidx-admin's Rust layer) should be checked for such writes.
-                // 2026-10-20 claude: XCR review: Set, SetMany and a SetDeref to a
-                // binding or a place root are now checked by GX::admits (is_a against
-                // env.by_id), and the runtime_api pins pass. But admits returns true
-                // for any id with no env binding, and a writable reference to a
-                // non-place expression (ByRef with Referent::Channel, compiled from
-                // &mut e where e is not a place) uses the ByRef node's own id as its
-                // cell, which is never in env.by_id. GX::set_deref resolves
-                // ref_target(cell) to that cell and admits it unchecked, so
-                // GXHandle::set_deref of a string into the cell of &mut 0 still lands,
-                // and a *r feeding a fused call delivers it to the kernel as a
-                // node-walked feeder input, the crash class this CR is about (found by
-                // reading, not run). The note's justification for unbound ids covers
-                // callable arguments only. Fix: record the referent type for a channel
-                // cell where the runtime can see it (or type the cell id when the
-                // ByRef registers it) and check against it, or refuse a set_deref
-                // whose target has no known type; add a set_deref-to-fresh-cell case
-                // to a_wrong_typed_set_deref_is_refused.
-                // 2026-10-20 claude: Reproduced first: a set_deref of a string through
-                // the cell of &mut 0 landed and *c read 'hello' (the crash through a
-                // fused '*c + 1' did not reproduce: that sum produced nothing).
-                // ByRef::compile now registers a reference to an unnamed expression
-                // (&mut e, &e) in env.by_id under its own cell id, typed by its
-                // referent cell (what the check settles), and ByRef::delete removes
-                // it, so GX::admits checks a write through it. Pin: graphix-rt
-                // tests/runtime_api.rs a_wrong_typed_set_deref_is_refused, its &mut 0
-                // case (the string lands with the registration undone).
                 ToGX::Set { id, v } => {
                     if self.admits(id, &v) {
                         let mut one = SETS.take();
