@@ -3317,3 +3317,19 @@ run!(ref_test_over_any_in_a_second_pair, r#"{
   let x: (Box<Any>, Box<Any>) = ({v: 1}, {v: &s});
   select x { (Box<i64>, Box<&i64>) as y => *(y.1.v) + 1, _ => 0 }
 }"#, refused("can't tell what the reference"); FuseExpect::None);
+
+// A string casts to a decimal or a float exactly: digits past f64 stay,
+// a float reads anything Rust's float parse reads, and a pre-epoch
+// datetime truncates toward zero as a float does.
+run!(string_casts_to_decimal_and_float_exactly, r#"{
+  let d1 = cast<decimal>("1.23456789012345678901234567")$;
+  let d2 = cast<decimal>("12345678901234567890")$;
+  let f1 = cast<f64>("9223372036854775808")$;
+  let f2 = cast<f64>("inf")$;
+  let f3 = cast<f32>("+3")$;
+  let f4 = cast<f64>("-0")$;
+  let t1 = cast<i64>(datetime:"1969-12-31T23:59:59.5Z")$;
+  let w = json::write_str(d1)$;
+  let r: decimal = json::read(w)$;
+  "[d1] [d2] [f1] [f2] [f3] [f4] [t1] [r]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890. 9223372036854776000 inf 3 -0 0 1.23456789012345678901234567"); FuseExpect::Jit);

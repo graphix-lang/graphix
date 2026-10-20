@@ -2232,7 +2232,7 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 }
 
 /// The string `s` read as the primitive `t`.
-// CR claude for claude: [bug/high] A decimal target is read through
+// XCR claude for claude: [bug/high] A decimal target is read through
 // `s.parse::<Value>()`, which makes an f64. str::parse::<decimal>,
 // cast<decimal>(string) and json::read of a decimal (the json writer writes decimals as
 // strings) are therefore only as exact as f64: "1.23456789012345678901234567" reads as
@@ -2242,6 +2242,12 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 // then `from_scientific`) before the generic parse, and pin the json round trip. probe:
 // design/review-2026-10-19/repro/x-panics-decimal-parse-via-f64.gx Also reported as
 // (small-pkgs-03). (x-panics-01)
+// 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+// (Decimal::from_str_exact, then from_scientific) and a float target with Rust's float
+// parse; integer() truncates a pre-epoch datetime's fraction toward zero. rust_decimal
+// is now a graphix-types dependency. Pin:
+// lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal round
+// trip).
 fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if t == Typ::DateTime
         && let Ok(d) = chrono::DateTime::parse_from_rfc3339(s)
@@ -2253,10 +2259,22 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     {
         return of_int(n, t);
     }
+    if t == Typ::Decimal {
+        let s = s.trim();
+        return rust_decimal::Decimal::from_str_exact(s)
+            .or_else(|_| rust_decimal::Decimal::from_scientific(s))
+            .ok()
+            .map(|d| Value::Decimal(d.into()));
+    }
+    match t {
+        Typ::F64 => return s.trim().parse::<f64>().ok().map(Value::F64),
+        Typ::F32 => return s.trim().parse::<f32>().ok().map(Value::F32),
+        _ => (),
+    }
     if parses_to_collection(s) {
         return None;
     }
-    // CR claude for claude: [bug/medium] Float targets reach this value-literal parse,
+    // XCR claude for claude: [bug/medium] Float targets reach this value-literal parse,
     // which reads a bare integer only as i64. The results:
     // cast<f64>("9223372036854775808") is an InvalidCast; cast<f64>("inf") is refused,
     // though `printed` writes an infinite f64 as "inf"; cast<f32>("+3") is refused
@@ -2265,7 +2283,13 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     // above, and pin a print → cast round trip. probe:
     // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
     // (x-engine-collections-04)
-    // CR claude for claude: [bug/medium] A decimal target reaches this parse, which
+    // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+    // (Decimal::from_str_exact, then from_scientific) and a float target with Rust's
+    // float parse; integer() truncates a pre-epoch datetime's fraction toward zero.
+    // rust_decimal is now a graphix-types dependency. Pin:
+    // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
+    // round trip).
+    // XCR claude for claude: [bug/medium] A decimal target reaches this parse, which
     // reads "123456789.123456789" as an f64 before convert makes a decimal of it. So
     // digits are lost: cast<decimal>("123456789.123456789") is 123456789.1234568, and
     // str::parse<decimal>("12345678901234567.89") is 12345678901234568. Fix: for
@@ -2273,6 +2297,12 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     // with i128. probe:
     // design/review-2026-10-19/repro/t-cast-setops-decimal-parse-via-f64.gx
     // (t-cast-setops-05)
+    // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+    // (Decimal::from_str_exact, then from_scientific) and a float target with Rust's
+    // float parse; integer() truncates a pre-epoch datetime's fraction toward zero.
+    // rust_decimal is now a graphix-types dependency. Pin:
+    // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
+    // round trip).
     match s.parse::<Value>() {
         Ok(Value::String(_)) | Err(_) => None,
         Ok(parsed) => convert(parsed, t),
@@ -2308,7 +2338,7 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         Value::F32(f) => float_int(*f as f64)?,
         Value::F64(f) => float_int(*f)?,
         Value::Bool(b) => *b as i128,
-        // CR claude for claude: [bug/low] timestamp() floors, but this function drops a
+        // XCR claude for claude: [bug/low] timestamp() floors, but this function drops a
         // fraction (as float_int truncates). A pre-1970 datetime with a sub-second part
         // therefore casts one second low: cast<i64>(datetime:"1969-12-31T23:59:59.5Z")
         // is -1, while the same cast through f64 is 0. Truncate toward zero (add 1 when
@@ -2316,7 +2346,16 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         // pre-epoch case. probe:
         // design/review-2026-10-19/repro/x-engine-collections-datetime-int-floor.gx
         // (x-engine-collections-06)
-        Value::DateTime(d) => d.timestamp() as i128,
+        // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
+        // (Decimal::from_str_exact, then from_scientific) and a float target with
+        // Rust's float parse; integer() truncates a pre-epoch datetime's fraction
+        // toward zero. rust_decimal is now a graphix-types dependency. Pin:
+        // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
+        // round trip).
+        Value::DateTime(d) => {
+            let secs = d.timestamp() as i128;
+            secs + (secs < 0 && d.timestamp_subsec_nanos() > 0) as i128
+        }
         Value::Duration(d) => d.as_secs() as i128,
         v => return v.clone().cast(t),
     };
