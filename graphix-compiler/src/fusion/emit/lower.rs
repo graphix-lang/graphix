@@ -35,7 +35,7 @@ use triomphe::Arc;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
-    body::{BodyCx, BodyRole, BodySource, emit_interrupt_check, param_id},
+    body::{BodyCx, BodyRole, BodySource, emit_interrupt_check_every, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
     record::EmitConst,
@@ -143,19 +143,24 @@ pub(super) fn compile_into_function<'a>(
         v
     };
 
+    // the tail loop's head and its iteration count, which paces its
+    // interrupt polls
     let loop_head = if kernel.has_tail_loop {
+        let iters = b.declare_var(types::I64);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.def_var(iters, zero);
         // Sealed after the body: each TailCall adds a predecessor.
         let head = b.create_block();
         b.ins().jump(head, &[]);
         b.switch_to_block(head);
-        Some(head)
+        Some((head, iters))
     } else {
         None
     };
 
     let lower = LowerCtx {
         tail: TailCtx {
-            loop_head,
+            loop_head: loop_head.map(|(head, _)| head),
             param_mark,
             call_slots: &kernel.params,
             params: spec.params,
@@ -195,21 +200,15 @@ pub(super) fn compile_into_function<'a>(
         callee_layouts,
     };
     // A wedged native loop aborts on interrupt; the kernel keeps its last result.
-    // CR claude for claude: [perf/low] The tail loop's head calls `graphix_interrupted`
-    // (an out-of-line helper: a TLS read plus an atomic load) on every iteration. In
-    // the CLIF of `sum(n - 1, acc + n)`, `call fn2()` sits at the loop head beside
-    // about 30 ALU instructions, and 50M iterations take about 178 ms. Scaffold loops
-    // poll every POLL_EVERY slots through `emit_interrupt_check_every`. Carry an
-    // iteration counter Variable from the entry block and poll only when it crosses a
-    // multiple of POLL_EVERY, so the native loop pays the helper once per 64
-    // iterations. probe: GRAPHIX_DUMP_CLIF=1 on a two-formal sum loop; not A/B timed.
-    // (f-call-flow-03)
-    if loop_head.is_some() {
-        emit_interrupt_check(b, &mut env, &lower)?;
+    if let Some((_, iters)) = loop_head {
+        let i = b.use_var(iters);
+        let next = b.ins().iadd_imm(i, 1);
+        b.def_var(iters, next);
+        emit_interrupt_check_every(b, &mut env, &lower, i)?;
     }
     body.hook.emit(b, &mut env, &lower)?;
 
-    if let Some(head) = loop_head {
+    if let Some((head, _)) = loop_head {
         b.seal_block(head);
     }
 

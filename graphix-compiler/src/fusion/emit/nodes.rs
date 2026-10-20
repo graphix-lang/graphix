@@ -352,12 +352,13 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
     Ok(())
 }
 
-/// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
-/// operands are borrowed Values; `graphix_value_checked_<op>` shares the
-/// node-walk's `Value::checked_*` core. The result is a Value: the
-/// scalar, or the catchable `ArithError` (Nullable wire shape) — never
-/// bottom.
-// CR claude for claude: [perf/medium] Checked arithmetic on a register scalar goes
+/// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). The result is
+/// a Value: the scalar, or the catchable `ArithError` (Nullable wire
+/// shape) — never bottom. Over one integer prim the success path is
+/// inline, and a failure builds its error through
+/// `graphix_value_checked_<op>`, the node-walk's `Value::checked_*`
+/// core; any other operands take that helper every time, borrowed.
+// XCR claude for claude: [perf/medium] Checked arithmetic on a register scalar goes
 // through graphix_value_checked_<op> every time. Each op widens both operands to Value
 // words, calls a helper that runs `arith()` on cloned Values, and gets a TagValue pair
 // back. A fused 3M-element fold with `+?`/`*?` runs about 8x slower than the same fold
@@ -367,13 +368,161 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 // build the ArithError. Keep the Value helpers for decimal and varints. probe:
 // design/review-2026-10-19/repro/f-nodes-scalar-checked-arith-helper.sh
 // (f-nodes-scalar-01)
+// 2026-10-19 claude: Over one integer prim, emit_checked_int_arith computes the result
+// and its failure inline in plain instructions every host lowers (narrow widths in 64
+// bits then a fit test; 64-bit add/sub by sign or carry tests, mul by smulhi/umulhi;
+// div/mod by the zero and MIN/-1 tests) and calls graphix_value_checked_<op> only on a
+// failure, so the error is the node-walk's own. Floats, decimals and varints keep the
+// helper. The repro's checked fold: 31 ms against 21 ms unchecked (was ~8x). Pin:
+// fusion_review checked_int_arith_inline (every op at i8, u16, i64, u64, overflow and
+// success).
 pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: ArithOp,
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    emit_value_arith_node(cx, op, true, lhs, rhs)
+    match (cx.node_kind(lhs.typ()), cx.node_kind(rhs.typ())) {
+        (Some(AbiKind::Scalar(p)), Some(AbiKind::Scalar(q)))
+            if p == q && p.is_integer() =>
+        {
+            emit_checked_int_arith(cx, op, p, lhs, rhs)
+        }
+        _ => emit_value_arith_node(cx, op, true, lhs, rhs),
+    }
+}
+
+/// [`emit_checked_arith_node`] over two integers of `prim`: the operation
+/// and whether it fails (an overflow, a zero divisor, `MIN / -1` and
+/// `MIN % -1`) in plain instructions every host lowers.
+fn emit_checked_int_arith<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    op: ArithOp,
+    prim: PrimType,
+    lhs: &Node<R, E>,
+    rhs: &Node<R, E>,
+) -> Result<CompiledExpr> {
+    let lcv = lhs.emit_clif(cx)?;
+    let rcv = rhs.emit_clif(cx)?;
+    let (l, r) = (lcv.payload, rcv.payload);
+    let signed = prim.is_signed();
+    let ty = prim_to_clif(prim);
+    let (value, bad) = match op {
+        ArithOp::Div | ArithOp::Mod => {
+            let mut bad = cx.b.ins().icmp_imm(IntCC::Equal, r, 0);
+            if signed {
+                let min: i64 = match prim {
+                    PrimType::I8 => i8::MIN as i64,
+                    PrimType::I16 => i16::MIN as i64,
+                    PrimType::I32 => i32::MIN as i64,
+                    _ => i64::MIN,
+                };
+                let is_min = cx.b.ins().icmp_imm(IntCC::Equal, l, min);
+                let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
+                let overflow = cx.b.ins().band(is_min, is_neg1);
+                bad = cx.b.ins().bor(bad, overflow);
+            }
+            let one = cx.b.ins().iconst(ty, 1);
+            let safe_r = cx.b.ins().select(bad, one, r);
+            (compile_bin(cx.b, op, prim, l, safe_r)?, bad)
+        }
+        // narrower than 64 bits: the exact result in 64, then whether it
+        // fits back
+        _ if ty != types::I64 => {
+            let (wl, wr) = match signed {
+                true => {
+                    (cx.b.ins().sextend(types::I64, l), cx.b.ins().sextend(types::I64, r))
+                }
+                false => {
+                    (cx.b.ins().uextend(types::I64, l), cx.b.ins().uextend(types::I64, r))
+                }
+            };
+            let wide = match op {
+                ArithOp::Add => cx.b.ins().iadd(wl, wr),
+                ArithOp::Sub => cx.b.ins().isub(wl, wr),
+                _ => cx.b.ins().imul(wl, wr),
+            };
+            let value = cx.b.ins().ireduce(ty, wide);
+            let back = match signed {
+                true => cx.b.ins().sextend(types::I64, value),
+                false => cx.b.ins().uextend(types::I64, value),
+            };
+            (value, cx.b.ins().icmp(IntCC::NotEqual, back, wide))
+        }
+        ArithOp::Add => {
+            let v = cx.b.ins().iadd(l, r);
+            let bad = match signed {
+                // both operands' signs differ from the result's
+                true => {
+                    let a = cx.b.ins().bxor(l, v);
+                    let b = cx.b.ins().bxor(r, v);
+                    let both = cx.b.ins().band(a, b);
+                    cx.b.ins().icmp_imm(IntCC::SignedLessThan, both, 0)
+                }
+                false => cx.b.ins().icmp(IntCC::UnsignedLessThan, v, l),
+            };
+            (v, bad)
+        }
+        ArithOp::Sub => {
+            let v = cx.b.ins().isub(l, r);
+            let bad = match signed {
+                // the operands' signs differ and the result's is not l's
+                true => {
+                    let a = cx.b.ins().bxor(l, r);
+                    let b = cx.b.ins().bxor(l, v);
+                    let both = cx.b.ins().band(a, b);
+                    cx.b.ins().icmp_imm(IntCC::SignedLessThan, both, 0)
+                }
+                false => cx.b.ins().icmp(IntCC::UnsignedLessThan, l, r),
+            };
+            (v, bad)
+        }
+        ArithOp::Mul => {
+            let v = cx.b.ins().imul(l, r);
+            let bad = match signed {
+                // the high word is not the low word's sign
+                true => {
+                    let hi = cx.b.ins().smulhi(l, r);
+                    let sign = cx.b.ins().sshr_imm(v, 63);
+                    cx.b.ins().icmp(IntCC::NotEqual, hi, sign)
+                }
+                false => {
+                    let hi = cx.b.ins().umulhi(l, r);
+                    cx.b.ins().icmp_imm(IntCC::NotEqual, hi, 0)
+                }
+            };
+            (v, bad)
+        }
+    };
+    let merge = cx.b.create_block();
+    cx.b.append_block_param(merge, types::I64);
+    cx.b.append_block_param(merge, types::I64);
+    let (ok_bl, bad_bl) = (cx.b.create_block(), cx.b.create_block());
+    cx.b.ins().brif(bad, bad_bl, &[], ok_bl, &[]);
+    cx.b.switch_to_block(ok_bl);
+    cx.b.seal_block(ok_bl);
+    let disc = scalar_disc(cx.b, prim);
+    let payload = scalar_to_payload_i64(cx.b, prim, value);
+    cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
+    cx.b.switch_to_block(bad_bl);
+    cx.b.seal_block(bad_bl);
+    let helper = match op {
+        ArithOp::Add => "graphix_value_checked_add",
+        ArithOp::Sub => "graphix_value_checked_sub",
+        ArithOp::Mul => "graphix_value_checked_mul",
+        ArithOp::Div => "graphix_value_checked_div",
+        ArithOp::Mod => "graphix_value_checked_rem",
+    };
+    let (ld, lp) = (scalar_disc(cx.b, prim), scalar_to_payload_i64(cx.b, prim, l));
+    let (rd, rp) = (scalar_disc(cx.b, prim), scalar_to_payload_i64(cx.b, prim, r));
+    let call = cx.call_helper(helper, &[ld, lp, rd, rp])?;
+    let (ed, ep) = (call[0], call[1]);
+    cx.b.ins().jump(merge, &[BlockArg::Value(ed), BlockArg::Value(ep)]);
+    cx.b.switch_to_block(merge);
+    cx.b.seal_block(merge);
+    let (rdisc, rpay) = (cx.b.block_params(merge)[0], cx.b.block_params(merge)[1]);
+    let disc = propagate_flags(cx.b, rdisc, &[lcv.disc, rcv.disc]);
+    Ok(CompiledExpr::new(disc, rpay))
 }
 
 /// `lhs op rhs` through the Value helpers, which borrow both operands.

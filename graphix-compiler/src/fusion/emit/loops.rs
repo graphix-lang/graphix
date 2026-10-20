@@ -62,6 +62,18 @@ pub(crate) fn callback_param<R: Rt, E: UserEvent>(
         ));
     }
     let Some(arg) = callback.args().get(index) else { return Ok(None) };
+    let mut binds = false;
+    arg.ids(&mut |_| binds = true);
+    if binds && arg.single_bind_id().is_none() && arg.tuple_leaves().is_none() {
+        return Err(fusion::blocker(
+            spec,
+            format_compact!(
+                "a collection callback whose parameter {} destructures past a flat \
+                 tuple has no fused loop",
+                index + 1
+            ),
+        ));
+    }
     Ok(match arg.tuple_leaves() {
         Some(binds) => Some(CallbackParam { name: fallback, id: None, binds }),
         // CR claude for claude: [perf/medium] A destructuring formal other than a flat
@@ -75,6 +87,11 @@ pub(crate) fn callback_param<R: Rt, E: UserEvent>(
         // both shapes beside native_destructured_tuple_acc_folds. probe:
         // design/review-2026-10-19/repro/tests-fusion-traits-destructured-callback-defuses.gx
         // (tests-fusion-traits-04)
+        // 2026-10-19 claude: callback_param now refuses a formal that binds names and is
+        // neither one name nor a flat tuple with a blocker naming the parameter (pin:
+        // fusion_review destructured_callback_formal_is_named), so a #[native] says what does
+        // not fuse and nothing reaches 'undefined local'. The loop still node-walks: binding
+        // the general pattern's leaves (as select destructuring does) remains.
         None => match &callback.typ().args.get(index).map(|a| &a.kind) {
             Some(FnArgKind::Positional { name: Some(name) }) => Some(CallbackParam {
                 name: name.clone(),

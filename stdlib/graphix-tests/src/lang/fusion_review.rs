@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx_value::Value;
 
 // A callee first dispatched late, under an arm, prints its constant at
@@ -340,3 +343,40 @@ run!(narrow_min_div_minus_one_is_bottom, r#"
     )
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i8:7, i16:7, i32:7, i8:-64]"); FuseExpect::Jit);
+
+// A collection callback whose formal destructures past a flat tuple has
+// no fused loop, and a #[native] says which formal, not an internal name.
+run!(destructured_callback_formal_is_named, r#"
+{
+    let rows = [{a: 1, b: 2}, {a: 3, b: 4}];
+    #[native] array::map(rows, |{a, b}| a + b)
+}
+"#, refused("parameter 1 destructures past a flat tuple"); FuseExpect::None; jit_only);
+
+// A native tail loop polls the interrupt every 64 iterations, its first
+// included: a long one still runs to its answer.
+run!(native_tail_loop_polls_by_count, r#"
+{
+    let rec sum = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => sum(n - 1, acc + n) };
+    #[native] sum(100000, 0)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5000050000))); FuseExpect::Jit);
+
+// Checked integer arithmetic fuses inline and fails as the node-walk
+// does, at every width.
+run!(checked_int_arith_inline, r#"
+{
+    let ck = |a: i8, b: i8| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    let ck16 = |a: u16, b: u16| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    let ck64 = |a: i64, b: i64| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    let cku64 = |a: u64, b: u64| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    (
+        #[native] ck(i8:100, i8:27), #[native] ck(i8:-128, i8:-1),
+        #[native] ck16(u16:65535, u16:2), #[native] ck64(9223372036854775807, 1),
+        #[native] ck64(3037000500, 3037000500), #[native] cku64(u64:1, u64:2),
+        #[native] cku64(u64:9, u64:0)
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == CHECKED_INT_ARITH); FuseExpect::Jit);
+
+const CHECKED_INT_ARITH: &str = r#"[[i8:127, i8:73, error:["ArithError", "attempt to multiply with overflow"], i8:3, i8:19], [error:["ArithError", "attempt to add with overflow"], i8:-127, error:["ArithError", "attempt to multiply with overflow"], error:["ArithError", "attempt to divide with overflow"], i8:0], [error:["ArithError", "attempt to add with overflow"], u16:65533, error:["ArithError", "attempt to multiply with overflow"], u16:32767, u16:1], [error:["ArithError", "attempt to add with overflow"], i64:9223372036854775806, i64:9223372036854775807, i64:9223372036854775807, i64:0], [i64:6074001000, i64:0, error:["ArithError", "attempt to multiply with overflow"], i64:1, i64:0], [u64:3, error:["ArithError", "attempt to subtract with overflow"], u64:2, u64:0, u64:1], [u64:9, u64:9, u64:0, error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"]]]"#;
