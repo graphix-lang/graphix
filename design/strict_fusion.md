@@ -133,9 +133,10 @@ for predictable performance." The delivery is an effect, but a pure
 function of the kernel's inputs, so it is emitted statelessly: a
 failing handler-ful `?` calls `graphix_qop_raise(site, disc, payload)`
 — `site` an interned `QopSite` (handler, own top, spec) — which clones
-the error onto the invocation's `QOP_RAISES` queue (a scoped
-thread-local like `KERNEL_ABORT`/`KERNEL_ENV`, saved and restored
-around nested invocations reached through the value hooks).
+the error onto the invocation's deferred queue (`emit_helpers::Deferred`,
+which holds the queued Io calls too; a scoped thread-local like
+`KERNEL_ABORT`/`KERNEL_ENV`, saved and restored around nested
+invocations reached through the value hooks).
 `FusedKernel::update` drains the queue after the wrapper returns, in push
 (= execution) order, through `node::error::deliver_error`, the handler
 path factored out of `Qop::update` so both engines run one function:
@@ -174,9 +175,10 @@ words per-slot and per-activation multiplicity
 activations. No replay caches (every word a kernel keeps is semantic),
 no selection memory, no inner
 `Apply`s or `Node`s beyond its input feeders. The runtime loans an
-invocation exactly five things through scoped thread-locals:
+invocation exactly these through scoped thread-locals:
 `KERNEL_ABORT` (the interrupt / stack-budget / bottom-abort channel),
-`KERNEL_ENV`, `QOP_RAISES`, the core-trait value hooks and the fork
+`KERNEL_PANIC`, `KERNEL_ENV`, the deferred queue, the self-block counters
+(`SELF_BLOCK_GEN` and its kin), the core-trait value hooks and the fork
 mode (`par_loop::PAR_LOAN`, the invoking context's `ParLoan`). Wire slot 0
 bit 1 is the wake view (the kernel's own `slept` bit or the arm's), so a wake delivers standing args
 STALE and a stateless re-eval's STALE result (`wake_catchup.md`).

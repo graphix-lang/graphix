@@ -747,7 +747,7 @@ own thread-locals must not depend on its ancestors. As built:
 | `VALUE_HOOKS` | no fork runs under a loan: the dispatch that updates a hook site suspends it first, so a stolen job sees none, as the joining thread does |
 | `RUNTIME_BIND`, `DESELECTING_ARM` | set only around compiling and sleeping, neither of which forks |
 | tvar `LEVEL`/`TASK` | `LEVEL` entered from the forking thread in every compile task; `TASK` entered by each run-time bind (`with_runtime_settles`) |
-| kernel loans `KERNEL_ABORT`/`KERNEL_ENV`/`QOP_RAISES`/`KERNEL_PANIC`, `SELF_BLOCK_GEN`/`_REACHED`, the fork mode (`ParLoan`) | saved and restored around every kernel call: a stolen job running a kernel while its thread waits inside another kernel's dynamic call is a nested call, which these already support; a kernel loop's chunk on a worker runs under the invoking run's loans and hands back what it reported (§10) |
+| kernel loans `KERNEL_ABORT`/`KERNEL_ENV`/`KERNEL_PANIC`, the deferred queue (`Deferred`), `SELF_BLOCK_GEN`/`_REACHED`/`_MADE`, the fork mode (`ParLoan`) | saved and restored around every kernel call: a stolen job running a kernel while its thread waits inside another kernel's dynamic call is a nested call, which these already support; a kernel loop's chunk on a worker runs under the invoking run's loans and hands back what it reported (§10) |
 | `FastMemo`, `LPooled` pools, scratch buffers | per-thread caches: unchanged; values freed on another thread return to that thread's pool |
 
 Test instruments that counted per thread (fused kernel runs, JIT

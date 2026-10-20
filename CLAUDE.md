@@ -45,14 +45,17 @@ Rust workspace:
 - **graphix-lsp**: the language server's protocol loop and queries; the
   shell's `lsp_backend.rs` is the backend (`graphix lsp`).
 - **graphix-fuzz**: the differential fuzzer (`design/graphix_fuzz.md`).
-- `stdlib/`: one crate per package — `core`, `array`, `map`, `str`, `re`,
-  `rand`, `sys` (streams, fs, tcp, tls, netidx, timers, processes),
-  `http`, `toml`, `xls`, `pack`, `tui` (ratatui), `gui` (iced); Rust in
+- `stdlib/`: one crate per package — `core`, `array`, `list`, `map`,
+  `str`, `re`, `rand`, `args`, `sys` (streams, fs, tcp, tls, netidx,
+  timers, processes), `http`, `json`, `toml`, `xls`, `pack`, `hbs`, `db`,
+  `sqlite`, `bench`, `tui` (ratatui), `gui` (iced); Rust in
   `src/`, Graphix in `src/graphix/*.gx`. `graphix-tests` holds the
   language and stdlib integration fixtures (a separate crate to avoid
   circular dev-deps).
 - `book/`: mdbook source; `book/src/examples/` (symlinked as
-  `examples/`) holds every example program (`tui/`, `gui/`, `net/`).
+  `examples/`) holds every example program (`tui/`, `gui/`, `net/`,
+  `collection/`, `stdlib/`). `ide/` holds the editor support, the
+  tree-sitter grammar (`ide/tree-sitter-graphix`) a workspace member.
   `docs/` is BUILD OUTPUT — edit `book/`, then from `book/`:
   `mdbook build -d ../docs/book`.
 - `design/`: design as built. `../netidx/` is expected as a sibling
@@ -311,7 +314,8 @@ A new layout setting is a field there, never a constant in the printer
 `textDocument/formatting` from the same `format_source`
 (`graphix-lsp/src/formatting.rs`): one whole-document edit,
 no edit for a document that does not parse, an error response only for
-`format::Refused` (the formatter declined its own output).
+`format::Refused` (the formatter declined its own output) or a malformed
+`graphixfmt.json`.
 
 **Language server.** A ROOT is a project's root file (a `.gx` no other
 file's `mod` reaches; `graphix-lsp/src/workspace.rs` scans) or an open
@@ -321,8 +325,8 @@ file outside every project. A root at `<crate>/src/graphix/mod.gx` of a
 unbind_scope_subtree` must drop everything a package registers, so a new
 global registry is cleared there. `--check` and the server share one
 path (`GXRt::check`), which runs the check alone (`CFlag::CheckOnly`:
-no elaboration, no fusion, so `#[native]` and the def assertions
-are verified by a build; `--expand` builds) and checks a script's file as one block, as it
+no elaboration, no fusion, so `#[native]`, `#[parallel]` and the def
+assertions are verified by a build; `--expand` builds) and checks a script's file as one block, as it
 runs, with its names at the root (`compile_script`); a root loads
 through `RootFile::load`, open
 buffers first, paired with its `.gxi`: a script's interface is spliced
@@ -343,8 +347,8 @@ every parsed `Expr` has an `end`, and a bind, typedef, trait or `mod`
 site is recorded AT THE NAME. All three decide nothing and pack to
 nothing, so a name or an end out of a packed AST or an image is
 `NOWHERE` (`Name::pos_or`). A parser site that builds an `Expr` gives
-it its end (`Expr::ending`; `expr()`, the postfix loop, `mke` and `qop`
-cover what passes through them); pin: `graphix-compiler/tests/
+it its end (`Expr::ending`; `expr()`, the postfix loop and
+`shunting_yard`'s reduce cover what passes through them); pin: `graphix-compiler/tests/
 expr_spans.rs` (every node's `[pos, end)` parses back to the node, over
 the examples and the stdlib). A package under development is not in the binary that checks it, so
 under `lsp_mode` a package root's name is a `package::` root for the
@@ -525,7 +529,9 @@ node graph IS the IR — there is no parallel typed IR
   the slot's, never shared by its iterations) and its loops' cost sites,
   which decide nothing a program sees; no replay caches, no selection
   memory. The runtime loans a kernel exactly `KERNEL_ABORT`,
-  `KERNEL_ENV`, `QOP_RAISES`, the core-trait value hooks and the fork
+  `KERNEL_PANIC`, `KERNEL_ENV`, the deferred raises and Io calls
+  (`emit_helpers::Deferred`), the self-block counters (`SELF_BLOCK_GEN`
+  and its kin), the core-trait value hooks and the fork
   mode (`par_loop::ParLoan`): a map-family loop at a kernel's top level
   runs as chunks of its slots, in order or forked
   (`design/parallel_eval.md` §10).
@@ -706,8 +712,9 @@ size while a fresh one cannot hold the batch; a
   crosses the helper seam by value: a pointer in, an out-pointer back,
   through `HelperRefs::call` alone (`design/helper_abi_portability.md`),
   so fusion runs on every host Cranelift supports, Windows included.
-  Kernel ABI: kind-grouped params from
-  `KernelSig::abi_params`; recursive types, abstract types, primitive
+  Kernel ABI (`KernelSig::abi_params`): the context words, then a
+  (disc, payload) pair per param in source order (formals, then
+  captures); recursive types, abstract types, primitive
   unions (a union naming primitive typedefs, `Number`, is one) and the
   primitives with no register form (varints, decimal,
   error) are opaque 2-word values (`design/unified_value_abi.md`).
@@ -716,7 +723,7 @@ Coverage today: scalar arithmetic/comparison/logic/casts, producers and
 accessors, string interpolation of every part kind, `?`/`$`, the eight array HOFs as native loops (nesting
 included), structural select destructuring with scalar and variant
 payload binds, owned binds of a nullable's payload, of a slice's rest,
-head or whole (`[x, tail..]`, `all@ [..]`) and of non-scalar elements,
+head or whole (`[x, tail..]`, `all@ [_, ..]`) and of non-scalar elements,
 tag tests and binds over a primitive union, nested variant payload
 patterns and payload literals, scalar literals over an option, a result
 or a union, `never()` arms as bottom
@@ -778,8 +785,8 @@ cycle, across workers; the compiler never pins threads.
   every form it carries, and the predicate sees it as data
   (`testing::observed`: markers stripped). `interp` also checks the program alone
   and fails unless the check refuses exactly when the build does
-  (`; build_only` exempts a refusal only a build makes: `#[native]`, the
-  definition assertions). `FuseExpect::{Jit, None}` asserts
+  (`; build_only` exempts a refusal only a build makes: `#[native]`,
+  `#[parallel]`, the definition assertions). `FuseExpect::{Jit, None}` asserts
   WHETHER anything fuses, bidirectionally; `#[native]` asserts that an
   expression does.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
@@ -1018,7 +1025,7 @@ cycle, across workers; the compiler never pins threads.
   one type, each containing the other's (`node/op.rs::operand_type`):
   `[i64, null] == 3`, `` [`A, `B] == `A `` and `[i64, f64] + 1` are
   refused; a ⊥ operand, or one only ⊥ was produced into
-  (`TCell::bottom_fed`), takes the other's type. `Singleton` is a bound
+  (`TVar::bottom_fed`, `CellFact::BottomFed`), takes the other's type. `Singleton` is a bound
   like `Concrete`: whatever binds the variable is no union, a primitive
   set of two or more included, so arithmetic over a type holding two
   numeric types is refused even against itself, and a generic
@@ -1093,7 +1100,11 @@ compile, so unscoped prints are gigabytes.
 | `GXDBG_REFMISS=1` | a kernel read of a name with no local or input |
 | `GXDBG_SEQPLAN=1` | each seq machine's planned steps, its step summaries and captures, and each block's opaque call |
 | `GXDBG_TYPEREF=1` | scope table dump on an "undefined type" refusal |
-| `GXDBG_LETBIND=1` / `GXDBG_REF=1` | let publication decisions / read misses |
+| `GXDBG_LETBIND=1` / `GXDBG_REF=1` | let publication decisions / every read (delivered, standing, miss) |
+| `GRAPHIX_ELAB_AUDIT=1` / `=bt` | each elaboration refusal of what the check accepted (a type-system bug), with a backtrace |
+| `GRAPHIX_JIT_ARENA=<bytes>` | the arena a JIT generation reserves (256MB by default) |
+| `GRAPHIX_DISABLE_PACKED_AST=1` | module resolution parses source even where a packed AST is available |
+| `GRAPHIX_FUSION_DISCOVERY=1` | `run!` asserts no `FuseExpect` and prints each fixture's observed level (`FUSEMAP`) |
 | `GXDBG_SLOT=1` | per-slot production tags and the collection fold decision |
 | `GXDBG_SHALLOW=1` | each select arm's shallow discriminator |
 | `GXDBG_RESOLVE=1` | static-resolution reads and index writes |
@@ -1115,9 +1126,10 @@ test is a result.
   examples_compile.rs` builds every one (check, elaboration, fusion, as
   `graphix --expand` does) in the plain gate, and parses every inline
   ```` ```graphix ```` fence (`,ignore` for a schematic fragment,
-  `,refused` for one the check must refuse); TUI/GUI
-  examples are run by hand
-  (`cargo run --bin graphix -- examples/tui/barchart_basic.gx`).
+  `,refused` for one the check must refuse); the tui package's
+  `examples_test` renders every TUI example and drives some with keys,
+  and the GUI examples are run by hand
+  (`cargo run --bin graphix -- examples/gui/<name>.gx`).
 - A new compiler walk must name the loss without it before it is added;
   the typechecker must stay instant (measure the GUI suite after typing
   changes); predictable fusion is a core value — push on de-fuse corner
@@ -1127,9 +1139,10 @@ test is a result.
 
 ## Stdlib notes
 
-- `sys::process`: children live in the opaque `Proc` with weak polling
-  and `kill_on_drop`; redirects are `Pipe`/`Inherit`/`Null`; the polling
-  task is the sole reaper. Shell tests are Unix-gated; the stdout and
+- `sys::process`: a child lives in a task of its own (`own_child`),
+  which selects on its exit against kill requests over `ctl` and reaps
+  it; dropping the last `Proc` closes `ctl`, which kills a
+  `kill_on_drop` child; redirects are `Pipe`/`Inherit`/`Null`. Shell tests are Unix-gated; the stdout and
   wait-status ones have `cmd.exe` twins.
 - GUI (iced): uses the iced sub-crates directly; `GuiTestHarness::dt()`
   downcasts; tests fire callbacks via `gx.call(callable_id, args)`;

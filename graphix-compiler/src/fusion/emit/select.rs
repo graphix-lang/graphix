@@ -188,7 +188,7 @@ enum SelectArmBind {
     /// for a nested pattern); a non-scalar is cloned out as an owned local,
     /// a short or mismatched read yielding a drop-safe default.
     Elem { id: BindId, idx: ElemIdx, typ: Type, kind: LocalKind, parent_ptr: ClifValue },
-    /// `[h, rest..]` / `[init.., l]` / `all@ [..]` — bind the elements
+    /// `[h, rest..]` / `[init.., l]` / `all@ [_, ..]` — bind the elements
     /// `[start, len - back)` of an array scrutinee, cloned out as an
     /// owned composite local.
     Subslice { id: BindId, start: usize, back: usize, parent_ptr: ClifValue },

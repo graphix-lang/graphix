@@ -19,8 +19,9 @@ only parse: a `#[native]` in one is verified there. The same test
 parses every ```` ```graphix ```` fence written inline in a page, and each
 `〉` input of a REPL transcript; tag a schematic fragment
 ```` ```graphix,ignore ```` and a program meant to be refused
-```` ```graphix,refused ````, which the check must refuse. The
-UI examples are run by hand:
+```` ```graphix,refused ````, which the check must refuse. The tui
+package's `examples_test` renders every TUI example and drives some with
+keys; any UI example also runs by hand:
 
 ```bash
 cargo run --bin graphix -- book/src/examples/tui/barchart_basic.gx
