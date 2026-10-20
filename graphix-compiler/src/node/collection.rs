@@ -471,27 +471,6 @@ impl Callback {
 
     /// A slot's argument: a variable only the slot's call reads, so no
     /// name in the environment.
-    // XCR claude for claude: [bug/low] The slot's synthetic argument is positioned
-    // at SourcePosition::default() with the SYNTHETIC origin. `array::map([1, 2,
-    // 3], dbg)` therefore still prints `line: 1, column: 1 dbg(collection_element):
-    // 1`, a place in no file, while `|x| dbg(x)` prints its own site. Give the
-    // argument the position and origin of what this instance's callback parameter
-    // was bound to at the call: the user's `dbg` argument, or at least the
-    // parameter binding that Callback::spec already looks up. probe:
-    // design/review-2026-10-19/repro/x-rerun-6-builtin-callback-position.gx
-    // (x-rerun-6-03)
-    // 2026-10-19 claude: Tried positioning the slot argument at the callback
-    // formal's binding (env.by_id(self.id)): for array::map that is the stdlib
-    // formal, which has no position either (it printed line 0, column 0). The
-    // user's argument spec at the call is what is needed, and Callback does not
-    // reach it; threading the call site's argument spec into the instance (or into
-    // Callback at its build) is the remaining work.
-    // 2026-10-20 claude: A call that binds an instance records each fn-typed
-    // argument spec by formal (CompileCtx::fn_param_args, beside
-    // instance_fn_params, while the instance checks); a collection callback takes
-    // it at typecheck1 (Callback::see_arg) and its slots are positioned there; the
-    // argument is imaged with the callback (REGISTRATION_FORMAT 77). Pin:
-    // lang::printing::dbg_as_a_callback_reports_its_argument (every mode).
     fn slot_arg<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut CompileCtx<R, E>,

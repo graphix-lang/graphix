@@ -389,23 +389,6 @@ impl Halves {
         self.stop_lines.get_or_init(|| tokio_watch::channel(()).0).subscribe()
     }
 
-    // XCR claude for claude: [bug/high] take() stops the stream's line reader for
-    // every whole-stream operation, not only the TLS upgrade it was added for.
-    // FileFstatEv, FileSeekEv and FileTruncateEv borrow through take, so an fstat
-    // beside Lines::lines ends the reader with no value and no error. line_reader's
-    // select! just returns, while the Lines doc promises a stop only at end of
-    // stream or on a read error. This brings back x-builtin-effects-01's symptom by
-    // another path: the probe prints "lines read 0 of 200000". Fix: signal
-    // stop_lines only on the path that consumes the stream (the TLS handoff in
-    // tls.rs). fstat and truncate on a file can wait for the reader's per-chunk
-    // lock. If seek should end lines, it must say so with an error. probe:
-    // design/review-2026-10-19/repro/x-rerun-5-fstat-stops-lines.gx (x-rerun-5-01)
-    // 2026-10-19 claude: take no longer stops line readers; Halves::stop_lines
-    // does, called by the TLS handoff (take_tcp) and by seek, whose effect on lines
-    // stays as design/async_sleep_outputs.md has it until Eric's sys-io-02 ruling.
-    // fstat and truncate wait for the reader's per-chunk lock. Pin:
-    // lib_tests::fs::file_handle::fstat_leaves_lines_reading (before: never
-    // completes).
     /// End the stream's line readers: what follows consumes the stream or
     /// moves its position.
     pub(crate) fn stop_lines(&self) {
@@ -809,18 +792,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
-            // XCR claude for claude: [bug/low] `code as i32`, and then the OS's low
-            // 8 bits, turn a code the program computed into one it did not:
-            // sys::exit(256) exits 0, so a failure reports success. The ExitRequest
-            // path above takes the same cast. Map a code outside 0..=255 to 1 for
-            // both uses (or type the gxi argument u8). probe:
-            // design/review-2026-10-19/repro/x-panics-exit-code-truncated.gx
-            // (x-panics-07)
-            // a status the OS cannot carry is a failure, never a success
-            // 2026-10-19 claude: A code outside 0..=255 exits 1 (u8::try_from) on
-            // the ExitRequest path and process::exit alike; sys mod.gxi states it.
-            // Pin: graphix-shell/tests/exit_code.rs. Eric's sys-net-05 twin is
-            // noted.
             let code = u8::try_from(code).map_or(1, i32::from);
             let asked = ctx
                 .libstate

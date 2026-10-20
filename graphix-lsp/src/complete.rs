@@ -88,27 +88,6 @@ impl<'a> Completer<'a> {
             .filter(|(pos, end, _)| *pos <= cursor && cursor <= *end)
             .max_by_key(|(pos, end, _)| (*pos, Reverse(*end)));
         let floor = around.map(|(pos, _, _)| pos).unwrap_or_default();
-        // XCR claude for claude: [bug/medium] An entry the parser did not write (every
-        // seq-desugared expr) has end (0,0), so it passes `*end <= cursor` wherever it
-        // stands, even after the cursor, and is taken as the statement before the
-        // cursor. Its scope then hides every block local above a later `seq` in the
-        // same function: no `inner_local` at `let r = { let inner_local = q + 1;
-        // inner_local }` followed by `seq q { .. }`, and nothing at `l.` in
-        // netidx-admin's tui/local.gx. Make ScopeMapEntry::end an Option (as
-        // ExprTypeSite::end is), push `spec.end.get()` in compile_inner, and skip
-        // end-less entries here and in `defining`. probe:
-        // design/review-2026-10-19/repro/x-lsp-probe-seq-hides-block-locals.py
-        // (x-lsp-probe-01)
-        // 2026-10-19 claude: Left for the main session: the fix is ScopeMapEntry::end
-        // as an Option (graphix-types/src/ide.rs) pushed from spec.end.get() in
-        // compile_inner (graphix-compiler/src/node/compiler.rs); this agent was scoped
-        // out of both crates. The LSP side then skips end-less entries in scope_at and
-        // defining.
-        // 2026-10-19 claude: ScopeMapEntry::end is an Option, pushed from
-        // spec.end.get(); scope_at and defining skip an entry with no written end (a
-        // lowering's). Pin: graphix-shell/tests/lsp
-        // completion_keeps_block_locals_above_a_later_seq (fails with the end-less
-        // entries read as (0,0)).
         let before = entries()
             .filter(|(pos, end, _)| {
                 floor <= *pos && *end <= cursor && Some(*pos) != around.map(|a| a.0)
@@ -339,18 +318,6 @@ impl<'a> Completer<'a> {
         // the env is the last check's, which holds every binding of this file
         let defining = self.defining();
         // an interface's `val` is bound where the `let` implementing it is
-        // XCR claude for claude: [bug/low] In a module with an interface, the env's
-        // binding for a name is the interface's `val` (ori is the .gxi), so in_file is
-        // false and this filter never applies. Inside `let f = |..| { .. }` completion
-        // then offers `f`, which the check refuses there ("f not defined"). Map a sig
-        // bind to its implementation through ide.sig_links before testing the file and
-        // position. probe:
-        // design/review-2026-10-19/repro/x-lsp-probe-own-name-via-interface.py
-        // (x-lsp-probe-06)
-        // 2026-10-19 claude: Completer::names maps an interface val to its
-        // implementing let through ide.sig_links before the file and position test.
-        // Fails if undone: graphix-shell/tests/lsp
-        // completion_offers_no_function_in_its_own_body (the interface case).
         let implementation = |b: &'a Bind| -> &'a Bind {
             let links = self.checked.into_iter().flat_map(|c| c.ide.sig_links.iter());
             links

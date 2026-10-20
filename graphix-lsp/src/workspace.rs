@@ -83,20 +83,6 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
             let Ok(entry) = entry else { continue };
             // a link to a file is the file, as the resolver reads it; a link
             // to a directory is not descended
-            // XCR claude for claude: [bug/medium] A symlinked .gx is dropped here:
-            // WalkDir does not follow links, so a symlink's file_type is not a file,
-            // though the resolver reads through it. A module reached through a symlink
-            // is then missing from the project graph. It is checked as a lone script,
-            // and editing it never re-checks the project that loads it (main.gx shows
-            // the new type error only after it is reopened). Fix: accept
-            // `entry.path().is_file()` and take `modified` from
-            // `std::fs::metadata(entry.path())` so saved() sees the target's changes.
-            // Keep not descending symlinked directories. probe:
-            // design/review-2026-10-19/repro/lsp-symlinked-module.py (lsp-02)
-            // 2026-10-19 claude: scan takes fs::metadata (following the link) for the
-            // file test and modified; WalkDir still does not descend linked
-            // directories. Fails if undone: graphix-shell/tests/lsp
-            // a_symlinked_module_is_in_its_project.
             let Ok(meta) = std::fs::metadata(entry.path()) else { continue };
             if !meta.is_file() {
                 continue;

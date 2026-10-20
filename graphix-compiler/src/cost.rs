@@ -152,17 +152,6 @@ fn calibrate() -> Calibration {
     }
     wakes.sort_unstable();
     // contention only adds to a wake: the lower quartile is the pool's
-    // XCR claude for claude: [risk/low] This floor is in raw ticks. On x86's GHz TSC it
-    // never binds, but CNTVCT_EL0 runs at 24 MHz on Apple M1-M3 (54 MHz on a Pi 5),
-    // where 4096 ticks is 76-171 us. On those hosts Auto refuses any fork under about 2
-    // x 171 us, well above 4 x the measured wake. Bucketing does not need the floor
-    // (fix_calibration(1) runs with shift 0), so drop it, or floor T in time through
-    // CNTFRQ_EL0. Found by reading; not run. (c-cost-misc-03)
-    // 2026-10-20 claude: The floor is in time now: calibrate() measures the counter's
-    // rate over its own run (ticks per ns) and cost::threshold floors T at T_FLOOR (1
-    // us) of ticks, 24 ticks on a 24 MHz CNTVCT_EL0. On this x86 host (3.69 ticks/ns)
-    // the floor is 3687 ticks and T came out 209008, so it never binds here, as before.
-    // Not run on aarch64. Pin: cost::tests::threshold_floors_in_time.
     let per_ns = ticks_since(tick0) as f64 / start.elapsed().as_nanos().max(1) as f64;
     let t = threshold(wakes[wakes.len() / 4], per_ns);
     if crate::dbgenv::graphix_dbg_par() {
@@ -315,22 +304,6 @@ impl Siblings {
 
     /// Decide whether `n` siblings are independent, unless that is
     /// decided, or open with nothing bound since it was asked.
-    // XCR claude for claude: [perf/medium] `None` (the verdict rests on a call not bound
-    // yet) becomes Undecided, so decide_siblings calls analysis::independent again at
-    // every update for as long as that call stays unbound, which for a nullable
-    // callback that stays null, or a call in an arm never taken, is forever. That costs
-    // a static-graph walk plus summaries over everything the siblings reach on every
-    // cycle. fork_instances keeps `independent = None` the same way. Fix: hold such a
-    // site serial and decide again only when a call under it binds (a bind generation
-    // the site compares), not at every update. A new aspect of (x-perf-compile-03).
-    // probe:
-    // design/review-2026-10-19/repro/c-analysis-branch-unbound-sibling-redecides.gx
-    // (3000 cycles: off 0.69 s, auto 1.78 s; bound g 0.77 s; 600-function chain: off
-    // 1.76 s, auto 9.0 s). (c-analysis-branch-03)
-    // 2026-10-20 claude: Fixed with x-parallel-03: an open verdict waits for
-    // Control::rebuilds to move (Siblings::decide), and this probe's tuple is now
-    // decided by the analysis. Probe (quick, --no-fusion, taskset 0-3): auto 1.13 s ->
-    // 0.33 s (off 0.33 s). Pin: lang::par_attrs::an_open_verdict_waits_for_a_bind.
     pub(crate) fn decide<'a, R: Rt, E: UserEvent>(
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
@@ -401,53 +374,6 @@ impl ForkSite {
 
     /// Decide whether the site's `n` children are independent
     /// ([`Siblings::decide`]); dependent ones always run in order.
-    // XCR claude for claude: [perf/medium] An Undecided verdict is asked for again
-    // at every update. When it rests on a call that never binds (an arm never
-    // taken, a callback that never arrives), the site rebuilds the static call
-    // graph and every instance summary below it each cycle, forever.
-    // SlotSite::decide_siblings and fork_instances' `independent` do the same. A
-    // 4-slot map whose callback holds such an arm runs twice as slow under auto as
-    // under off, and the twin without the dynamic call runs the same in both.
-    // Re-decide only when a run-time bind happened since the last answer (a bind
-    // counter on Control), or settle the verdict as Dependent until that call site
-    // binds. probe:
-    // design/review-2026-10-19/repro/x-parallel-undecided-reanalyzed-every-cycle.gx
-    // (x-parallel-03)
-    // 2026-10-20 claude: Siblings (cost.rs) now holds an open verdict at the
-    // runtime's rebuild count (Control::rebuilds, bumped by ExecCtx::apply_deferred
-    // when something was built and by CallSite::bind) and asks again only once it
-    // moved; ForkSite, SlotSite and fork_instances share it. Probe (quick,
-    // --no-fusion, taskset 0-3): auto 1.23 s -> 0.40 s (off 0.38 s). Pin:
-    // lang::par_attrs::an_open_verdict_waits_for_a_bind (verdicts <= 4 over 40
-    // cycles; 47 without the gate).
-    // XCR claude for claude: [perf/high] A new aspect of x-perf-compile-03. In a
-    // recursion, every activation's fork site is still Undecided after its first
-    // update, because its callee is not bound yet. The next update that reaches the
-    // chain then runs `independent()` at all N sites at once, each walking the
-    // graph below it. Under the default Auto mode, the update after an argument
-    // changes in a node-walked recursion therefore grows about 8x per doubling of
-    // depth: 0.39/1.34/9.2 s at depth 1000/2000/4000 against 0.20/0.28/0.42 s with
-    // GRAPHIX_PAR=off, and over 40 s at 8000. Nothing ever forks here
-    // (GRAPHIX_PAR_T fixed huge), and the third update costs 15 ms. Force stays
-    // linear only because it turns Off past MAX_FORK_DEPTH.
-    // interrupted_recursion_rides_* re-runs this shape at depth 15000 and
-    // interrupts it, so no test sees the cost. Decide these sites at analysis, or
-    // give a run-time instance its definition's verdict, as x-perf-compile-03
-    // proposes. probe:
-    // design/review-2026-10-19/repro/tests-lib-b1-recursion-rerun-auto-cliff.sh
-    // (tests-lib-b1-01)
-    // 2026-10-20 claude: Fork points other than blocks are now decided by the
-    // analysis that reaches them (analysis::plan_forks, beside the block plans),
-    // from instance summaries computed once per analysis and each subtree's Shallow
-    // facts once (ForkCx::shallow_of); an activation's sites are decided at its
-    // bind (analyze_bound_callee, its call to the next activation a self-call
-    // through self_binds), so the rerun asks nothing. Quick build, GRAPHIX_PAR_T
-    // huge, --no-fusion, taskset 0-3: auto N=1000/2000/4000/8000 1.09/2.45/9.92/>60
-    // s -> 0.13/0.18/0.29/0.55 s (off 0.12/0.18/0.30/0.58). Pin:
-    // lang::par_attrs::activations_decide_their_fork_points_at_bind
-    // (Control::verdicts stays 0; 601 with the analysis verdict disabled).
-    // interrupted_recursion_rides_* now times a rerun before interrupting one: its
-    // old timing landed after the now-fast rerun.
     #[inline]
     pub fn decide_siblings<'a, R: Rt, E: UserEvent>(
         &mut self,

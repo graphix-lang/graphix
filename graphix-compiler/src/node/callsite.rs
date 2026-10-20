@@ -577,28 +577,6 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
-        // XCR claude for claude: [bug/medium] A lambda literal escapes the rank-2 gate
-        // (a new aspect of x-typecheck-generics-02). pre_unify_arg merges the literal's
-        // parameter cells with the formal's rigid quantifier cells, and the body check
-        // then adds Number and Singleton to the quantifier's own cell.
-        // check_contains_rigid ends up comparing that cell with itself, and
-        // quantifier_admits never runs. So `app(|y| y * y)` passes the check where app
-        // takes `g: fn<'b: [string, i64]>(..)` and calls g("a"), and the build refuses
-        // the instance. Through `type F = fn<'b: ..>(..)` the program compiles, and
-        // g("a") fails its run-time bind and stays bottom. The same lambda passed by
-        // name is refused. Fix: record the gates' conjuncts before pre_unify_arg, and
-        // after typecheck0 refuse any new non-predicate conjunct they do not imply.
-        // probe:
-        // design/review-2026-10-19/repro/x-typecheck-generics-rank2-lambda-literal.gx
-        // and
-        // design/review-2026-10-19/repro/x-typecheck-generics-rank2-lambda-literal-typedef.gx
-        // (x-typecheck-generics-02)
-        // 2026-10-19 claude: typecheck_arg snapshots each rank-2 quantifier's conjuncts
-        // before the argument's check and refuses, after it, a new non-predicate conjunct no
-        // declared one implies (callsite::added_bound); new predicates (Singleton, Ordered,
-        // Data) are left to Eric's tests-types-02. Pins:
-        // lang::types::rank2_literal_may_not_narrow_the_quantifier,
-        // rank2_literal_through_an_alias_may_not_narrow.
         // CR claude for eric: [bug/high] A rank-2 quantifier is rigid here, yet the
         // argument's body still adds bounds to it. `x * x` adds Singleton, `x < y` adds
         // Ordered, and a writer adds Data. The callee was checked against the declared
@@ -793,23 +771,6 @@ fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar))
 /// cell at the top level or another definition's, never one the
 /// lambdas `value` holds own nor a quantifier a function type in `value`
 /// binds. Such a value is not general in that cell.
-// XCR claude for claude: [bug/high] The escape test only walks cells reachable from the
-// argument's type. In `|x| { let k = |y| { st <- y; y }; k(x) }` the outer `st` cell is
-// bound to k's cell, so walking from g's signature never reaches it. As a result,
-// `h(g)` with `h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"))` passes the check, `let
-// q: Array<bool> = st` checks, and the build then refuses with the untypeable-instance
-// message. Without a reader, st receives 1 and then "s" at run time. The direct `{ st
-// <- x; x }` form is refused. Fix: also test the argument's captured environment (the
-// types of the outer bindings it and its nested lambdas read or write), or check
-// whether any foreign cell's binding chain reaches a quantified cell, and pin the
-// nested form beside NESTED_QUANTIFIER_ENV_CELL. probe:
-// design/review-2026-10-19/repro/tests-types-rank2-escape-nested-lambda.gx
-// (tests-types-01)
-// 2026-10-19 claude: The rank-2 check also walks the types of the bindings the argument
-// reads or writes (its free refs) for the formal's quantifiers (escapes_through),
-// skipping quantifiers those types bind themselves (bound_quantifiers, shared with
-// carried_out). Pin: lang::types NESTED_QUANTIFIER_ENV_CELL_NESTED refused 'not
-// polymorphic'.
 pub(crate) fn carried_out(
     quantified: &[(ArcStr, usize)],
     value: &Type,
@@ -2030,28 +1991,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // a site its own omitted default's elaboration reaches stays
         // dynamic: elaborating it would elaborate that default again
-        // XCR claude for claude: [bug/medium] These guards live until resolve_static
-        // returns, so they are held across the whole bind_instance, including the
-        // instance body's typecheck1. A recursive call in the body that omits the same
-        // label then returns here, before the self-call branch. It gets no
-        // static_target, stays DynamicUnbound, and fusion refuses it. `#[native] f(#k:
-        // 2, x)` over `f(m - 1)` is refused ("builtin call site `f(m - 1)` not
-        // discovered"), while `f(#k: k, m - 1)` fuses. Fix: hold the guards only around
-        // compiling and elaborating this site's defaults (prepare_bind and
-        // typecheck_static_defaults), and drop them before the body's typecheck1.
-        // fn_arg_identity compounds it: it keys data arguments as (key, None), so a
-        // call that passes a data label and one that omits it get different identities.
-        // The body's call then builds a second instance instead of a self-call. Leave
-        // None sources out of the identity. probe:
-        // design/review-2026-10-19/repro/c-callsite-omitted-default-selfcall-defuses.gx
-        // (c-callsite-02)
-        // 2026-10-19 claude: Default checks are entered only where a default elaborates
-        // (CallSite::checked_default, typecheck_static_defaults); resolve_static stays
-        // dynamic only for a label whose check is in progress
-        // (CompileCtx::default_in_check), so the body's recursive call is a self-call.
-        // fn_arg_identity keys only arguments with a known lambda source, so passing or
-        // omitting a data label is one identity. Pin:
-        // lang::functions::omitted_default_self_call_fuses (#[native]).
         let labels = self.omitted_labels(def);
         if labels.iter().any(|l| ctx.default_in_check(def.id, l)) {
             return Ok(());
@@ -2993,21 +2932,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         }
     }
 
-    // XCR claude for claude: [bug/medium] A lowered union-self trait call answers spec()
-    // with the lowering's spec, so the attribute walk never finds the decorated call.
-    // `let r = #[native] Show::show(one)` over `[i64, string]` is refused with
-    // 'attribute in a position the fusion pass cannot check — put the decorated
-    // expression in its own statement', yet it is already its own statement, and the
-    // same dispatch fuses as the body of `f` under `#[native] f(one)`. Keep the call's
-    // own spec beside the lowered node and return it here, which also makes errors
-    // inside the lowering name the user's call, and pin #[native] on a primitive-union
-    // dispatch in traits.rs. probe:
-    // design/review-2026-10-19/repro/tests-fusion-traits-native-on-union-dispatch.gx
-    // (tests-fusion-traits-05)
-    // 2026-10-19 claude: CallNode::Lowered carries the call's own spec and spec()
-    // answers it, so the attribute walk finds the decorated call and errors name it
-    // (the lowering is built at elaboration, after the table is recorded, so no row key
-    // moves). The probe prints "sq". Pin: lang::traits::native_on_a_union_dispatch.
     fn spec(&self) -> &Expr {
         match self {
             Self::Call(c) => c.spec(),
@@ -3226,7 +3150,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.ftype.as_ref().unwrap()
             }
         };
-        // XCR claude for claude: [bug/medium] Widening is not order-independent for an
+        // CR claude for claude: [bug/medium] Widening is not order-independent for an
         // argument whose own type is an open cell. That argument is checked against
         // whatever the site's cell holds at that moment, and binds its own cell to it.
         // A later wider argument widens only the site's cell. With `pick(x: 'a, y: 'a,
@@ -3243,6 +3167,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // widenable variable, is checked in the deferred pass after every concrete
         // argument widened. Pin: lang::functions::widening_waits_for_an_open_argument;
         // lang::types::rigid_cell_guides_the_member_placement pins the rigid exclusion.
+        // 2026-10-20 claude: XCR review: Widening::defers_open defers only an argument
+        // whose node is a bare NodeView::Ref to an undecided cell; an argument whose
+        // type merely holds an open cell is still checked in order. With 'let pick =
+        // |x: Array<'a>, y: Array<'a>, z: Array<'a>| -> Array<Array<'a>> [x, y, z]; let
+        // v: [i64, null] = null; let h = |z| pick([i64:1], [z], [v]); h(null)' the
+        // current debug graphix refuses ('type mismatch i64 does not contain null' at
+        // h(null)), while pick([v], [z], [i64:1]) runs and prints [[null], [null],
+        // [1]]. The finding's fix was to defer any argument with unbound cells at a
+        // widenable formal; the pin widening_waits_for_an_open_argument covers only the
+        // bare reference. Generalize the deferral test (n.typ() has an unbound
+        // non-rigid cell at a formal holding a widenable variable) and pin the nested
+        // case.
         let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {

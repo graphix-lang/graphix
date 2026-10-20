@@ -166,20 +166,6 @@ impl TxnState {
     /// created here, and dropped again when the commit fails and nothing
     /// claimed it meanwhile.
     fn commit(self) -> Result<Value> {
-        // XCR claude for claude: [risk/low] is_empty, meta.get and drop_tree are three steps
-        // under `creating`, but two writers can reach the just-created tree without that
-        // lock. One is a commit whose transaction opened the name with txn::tree during
-        // this commit (Target::Tree, no creates, so no lock). The other is import_data,
-        // which never takes `creating`. If either commits between the checks and drop_tree,
-        // its successful write is dropped, which breaks the "nothing else has claimed"
-        // promise on Database::creating. Take db.creating in every commit and in
-        // import_data. Commits already serialize on sled's global transaction lock, so this
-        // costs little. Found by reading; not run. (db2-03)
-        // every writer that can reach a tree this commit creates holds it
-        // 2026-10-19 claude: Every commit takes db.creating, and import_data takes it
-        // before its existence checks and its transaction, so nothing writes a just-created
-        // tree between drop_unclaimed's checks and its drop. No pin: a race between two
-        // commits on sled's lock; db's unit tests pass.
         let _creating = self.db.creating.lock();
         let mut created: LPooled<Vec<ArcStr>> = LPooled::take();
         let res = self.apply(&mut created);

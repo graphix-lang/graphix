@@ -358,24 +358,6 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 /// inline, and a failure builds its error through
 /// `graphix_value_checked_<op>`, the node-walk's `Value::checked_*`
 /// core; any other operands take that helper every time, borrowed.
-// XCR claude for claude: [perf/medium] Checked arithmetic on a register scalar goes
-// through graphix_value_checked_<op> every time. Each op widens both operands to Value
-// words, calls a helper that runs `arith()` on cloned Values, and gets a TagValue pair
-// back. A fused 3M-element fold with `+?`/`*?` runs about 8x slower than the same fold
-// with `+`/`*` (92 ms vs 13 ms, both #[native]). Emit the success path inline:
-// Cranelift's sadd/uadd/ssub/usub/smul/umul_overflow for add/sub/mul, and
-// emit_arith_node's zero and MIN/-1 tests for div/mod. Call one cold helper only to
-// build the ArithError. Keep the Value helpers for decimal and varints. probe:
-// design/review-2026-10-19/repro/f-nodes-scalar-checked-arith-helper.sh
-// (f-nodes-scalar-01)
-// 2026-10-19 claude: Over one integer prim, emit_checked_int_arith computes the result
-// and its failure inline in plain instructions every host lowers (narrow widths in 64
-// bits then a fit test; 64-bit add/sub by sign or carry tests, mul by smulhi/umulhi;
-// div/mod by the zero and MIN/-1 tests) and calls graphix_value_checked_<op> only on a
-// failure, so the error is the node-walk's own. Floats, decimals and varints keep the
-// helper. The repro's checked fold: 31 ms against 21 ms unchecked (was ~8x). Pin:
-// fusion_review checked_int_arith_inline (every op at i8, u16, i64, u64, overflow and
-// success).
 pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: ArithOp,

@@ -104,23 +104,6 @@ macro_rules! slider_widget {
                 let bounds = bounds.unwrap_or_default();
                 let step = self.p.step.t.flatten().filter(|s| s.is_finite() && *s > 0.0);
                 let continuous = step.is_none();
-                // XCR claude for claude: [bug/medium] A stepped slider reaches iced with
-                // its raw range and step. iced snaps a drag to min + k*step, but its
-                // ArrowUp/ArrowDown and Ctrl+wheel snap to (round(v/step) ± 1) * step,
-                // i.e. multiples of step from zero. So #min 0.5, #step 1.0 at 0.5 sends
-                // 2.0 on ArrowUp, and arrows never reach 1.5, a value dragging
-                // produces. Express a stepped slider in step counts instead: range
-                // 0..=floor((max-min)/step), step 1, value round((v-min)/step), mapped
-                // back to min + k*step in slider_change. Then both input paths share
-                // one lattice, and the normalized path stays for a non-finite count.
-                // Found by reading; not run. (gui-widgets-b-02)
-                // 2026-10-19 claude: A stepped slider is now given to iced in step
-                // counts (Scale::Steps: range 0..=floor((max-min)/step), step 1, mapped
-                // back to min + k*step), so the drag, the arrows and Ctrl+wheel share
-                // one lattice; a count that is not finite keeps the fraction path.
-                // slider.md says so (gui-widgets-b-04). Pin:
-                // interaction_test::stepped_slider_keys_wheel_and_drags_share_one_lattice
-                // (both orientations).
                 let scale = Scale::new(bounds, step);
                 let (max, val, step) = match scale {
                     Scale::Steps { count, .. } => (count, scale.position(val), 1.0),

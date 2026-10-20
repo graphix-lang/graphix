@@ -40,20 +40,6 @@ pub(crate) fn text_between(text: &str, from: Position, to: Position) -> LPooled<
 }
 
 fn line_chars(text: &str, line: u32) -> Option<LPooled<Vec<char>>> {
-    // XCR claude for claude: [bug/low] str::lines yields no line after a trailing
-    // newline, so the cursor on a file's empty last line has no line. typed_before
-    // returns None there and completion offers nothing at the most common place to
-    // type, the end of the file. position::position_to_char_col_in_text has the same
-    // gap. Read a line with one shared helper (`split('\n').nth(n)`, a trailing '\r'
-    // trimmed) that counts that empty last line. probe:
-    // design/review-2026-10-19/repro/x-lsp-probe-last-line-completion.py
-    // (x-lsp-probe-04)
-    // 2026-10-19 claude: line_chars, position_to_char_col_in_text and
-    // char_col_to_position_in_text read lines through position::lines, which counts
-    // the empty line after a last newline (and lone CRs). text_between keeps
-    // str::lines: it walks compiler positions, which break at newlines only. Fails
-    // if undone: graphix-lsp text::tests::the_last_empty_line_is_a_line,
-    // position::tests::lines_break_as_lsp_does.
     let line = lines(text).nth(line as usize)?;
     let mut chars: LPooled<Vec<char>> = LPooled::take();
     chars.extend(line.chars());

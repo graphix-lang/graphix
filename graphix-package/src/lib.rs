@@ -223,27 +223,6 @@ struct Skel {
 
 static SKEL: Skel = Skel {
     cargo_toml: include_str!("skel/Cargo.toml.hbs"),
-    // XCR claude for claude: [bug/medium] The skeleton's ExampleBuiltin (skel/lib.rs)
-    // answers `TagView::Stale(_) => self.out.ride()` over a phantom default, so every
-    // package made by `graphix package create` gets a builtin that produces bottom
-    // where its argument first arrives stale. That happens at an arm's first entry when
-    // another arm already consumed the input's fire bit. With an empty `sleep`, it also
-    // rides a stale value after a wake. CachedArgs::update_inner computes a STALE value
-    // in both cases. Fix: have the skeleton compute on a Stale arg when `out` holds no
-    // value or a sleep happened, or drop the raw example and keep the EvalCached one.
-    // Also list `Io` in the skeleton's Effect comment. probe:
-    // design/review-2026-10-19/repro/package-skel-stale-entry.gx (is_err in the same
-    // position, Tag(32) stale; the skeleton has no such path) (package-01)
-    // 2026-10-19 claude: The skeleton's ExampleBuiltin computes from a Stale arg too,
-    // tagged stale (it is stateless), never riding its result; the Effect comment lists
-    // Io. Pinned by the slow test build_standalone_produces_working_binary, whose
-    // main.gx now counts a select's two entries over the builtin (the second reads its
-    // arg stale) before printing the sentinel.
-    // 2026-10-19 claude: Checked by hand in a scratch package built from the skeleton
-    // (not committed): run! over a select whose second arm's first entry reads its arg
-    // stale, counting two entries, passes in all four modes with this skeleton and
-    // times out in all four with the old one. The committed pin,
-    // build_standalone_produces_working_binary, is a slow test and was not run here.
     lib_rs: include_str!("skel/lib.rs"),
     build_rs: include_str!("skel/build.rs"),
     mod_gx: include_str!("skel/mod.gx"),
@@ -1479,7 +1458,7 @@ impl GraphixPM {
         packages: &mut Packages,
     ) -> Result<()> {
         let root = self.install_root()?;
-        // XCR claude for claude: [bug/medium] Nothing keeps the record's `removed` set
+        // CR claude for claude: [bug/medium] Nothing keeps the record's `removed` set
         // disjoint from what the build compiles. add_packages and apply_selection move
         // only the named package into `installed`, and Cargo features pull its closure
         // in. After `remove str --yes` (which cascades gui), a later `add gui` compiles
@@ -1497,6 +1476,16 @@ impl GraphixPM {
         // Fails if undone: graphix-package
         // test::pure::an_added_package_reinstalls_what_it_depends_on (the decision;
         // reconcile's call is not tested).
+        // 2026-10-20 claude: XCR review: The stdlib half is fixed: reconcile reads the
+        // source manifest once and reinstall_dependencies moves every removed stdlib
+        // package an installed one transitively depends on (feature_depends_on) back to
+        // installed, pinned by an_added_package_reinstalls_what_it_depends_on. The
+        // finding's other case is still open by the note's own account: an external
+        // package whose own graphix-package-* dependencies include a removed stdlib
+        // package still compiles and registers it while list shows it removed, and
+        // remove then says already removed. Either handle it (read the external crates'
+        // manifests, or compare the built binary's registered packages with the record)
+        // or move that half to a CR of its own so this one can close.
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
         let plan = packages.build_plan();
@@ -1874,17 +1863,6 @@ impl GraphixPM {
             Some(_) => Some(Saved::take(&source_dir).await?),
             None => None,
         };
-        // XCR claude for claude: [risk/low] When ctrl_c wins this select, the build
-        // future is dropped, but build_embedding's cargo Command lacks kill_on_drop, so
-        // tokio leaves the child running. A SIGINT sent to graphix alone (kill -INT, a
-        // supervisor) restores the override's manifest and lockfile while cargo keeps
-        // building in the caller's tree. Only a terminal Ctrl-C reaches cargo too,
-        // through the process group. Fix: `.kill_on_drop(true)` on the cargo Command in
-        // build_embedding (and in install_from_source). Found by reading; not run.
-        // (package-05)
-        // 2026-10-19 claude: kill_on_drop(true) on the cargo Commands of
-        // build_embedding and install_from_source. No test: it needs a cargo child
-        // interrupted mid-build.
         let built = tokio::select! {
             built = self.build_embedding(&source_dir, &external, &features, crate_name) => built,
             _ = tokio::signal::ctrl_c() => Err(anyhow!("interrupted")),
@@ -1966,16 +1944,6 @@ impl GraphixPM {
         // New stdlib packages only ship with a shell bump, so only unpack the
         // latest source to enumerate them when a bump is available.
         let shell_bump = version_gt(&latest, &current);
-        // XCR claude for claude: [perf/low] With a shell bump the plan is never empty,
-        // so without --yes on a non-TTY the bail below is certain. Yet update first
-        // wipes the build dir, unpacks or downloads the whole latest source, and
-        // queries crates.io for every external package. Refuse here when `shell_bump &&
-        // !assume_yes && !stdin.is_terminal()`, and keep the later check for an
-        // externals-only plan. Found by reading; not run. (package-06)
-        // 2026-10-19 claude: update refuses before unpacking or querying anything when
-        // a shell bump is available, no --yes is given and stdin is not a terminal; the
-        // later refusal (an externals-only plan) shares the answerable test and
-        // message. No test: update needs crates.io.
         let answerable = assume_yes || std::io::stdin().is_terminal();
         let unanswerable = || {
             anyhow!(

@@ -43,19 +43,6 @@ let hosts = ["washu-chan", "katana", "aieka", "ryouko"];
 //
 // The last counter line of each source is republished every few seconds.
 // That reduction belongs here, next to the log, not in the dashboard.
-// XCR claude for claude: [bug/low] The remote loop picks the campaign with `ls -dt
-// ~/tmp/target/fuzz/*/ | head -1`, the newest directory by mtime.
-// `~/tmp/target/fuzz/crashes` is the default corpus of a manual `graphix-fuzz
-// fuzz|generate|soak` (main.rs `corpus_dir`). Writing a finding there makes it newer
-// than the running campaign, whose directory mtime never moves after launch. The box
-// then shows as campaign `crashes`, DOWN, while its soak is healthy. Fix: choose the
-// newest `*/state/soak.pid` (`ls -t ~/tmp/target/fuzz/*/state/soak.pid | head -1`) and
-// take its campaign directory. probe:
-// design/review-2026-10-19/repro/fuzz-main-aux-soakdash-picks-crashes.sh
-// (fuzz-main-aux-01)
-// 2026-10-19 claude: The remote loop now takes the newest state/soak.pid and its
-// campaign directory, so a corpus directory with no pid file (crashes) is never
-// picked. The repro, with the new selection lines, prints LIVE oct19a yes.
 let remote = r#"
 while :; do
   # Re-resolve the campaign EVERY cycle. Binding it once at connect time

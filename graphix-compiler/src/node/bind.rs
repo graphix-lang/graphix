@@ -163,24 +163,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         self.pattern.ids(&mut |id| {
             if !ctx.event.variables.contains_key(&id)
                 && let Some((tv, stamp)) = ctx.rt.store_get(&id)
-                // XCR claude for claude: [bug/high] A write queued in the arm's last
-                // awake cycle lands in the cycle the arm is deselected, so its stamp
-                // equals `slept_at` (both are `rt.cycle()` then) and it is never
-                // re-raised. That is the case this function's doc names. The value
-                // stands, but every fire-driven reader in the arm (`out <- s`,
-                // `count(s)`, `t ~ s`) misses it for good: in the probe `out` stays 10
-                // while `s` reads 11 and 12, on both engines. Only a write landing a
-                // cycle after the sleep is re-raised. Fix: compare against the cycle of
-                // the binding's last update, not of its sleep. A plain `>=` would
-                // re-raise a write a seq step saw and then slept on in the same cycle.
-                // Then make `select_arm_local_persists` read `s` through a
-                // fire-sensitive reader. probe:
-                // design/review-2026-10-19/repro/tests-select-reraise-last-awake-write.gx
-                // Also reported as (c-node-mod-01), (c-prune-wake-02).
-                // (tests-select-01)
-                // 2026-10-19 claude: Fixed with c-bind-01 (same mechanism); pin
-                // lang::prune::write_landing_at_the_deselect_is_reraised reads the
-                // re-raised write through count, a fire-sensitive reader.
                 && *stamp > slept_at
                 && !tv.tag().is_bottom()
             {
@@ -278,35 +260,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         }
                     };
                     // a `_` matches what the value holds, deciding none of it
-                    // XCR claude for claude: [bug/medium] A let's shape check still uses
-                    // ptyp.any_as_tvar().contains(typ), which binds the pattern's cells
-                    // to the union's first member. So `let (x, y) = v` over [(i64,
-                    // string), (string, i64)] is refused with "refutable patterns are
-                    // not allowed in let: (i64, string) matches only part of ...". The
-                    // pattern covers both members, and the same pattern as a select arm
-                    // is accepted and runs ("1 s", "s 1"). The same happens for a
-                    // struct let over [{x: i64, y: string}, {x: string, y: i64}]. The
-                    // x-typecheck-patterns-02 fix narrowed select arms with
-                    // Type::narrow_pattern; the let needs the same narrowing before it
-                    // compiles its pattern, refusing only what pattern.covers calls
-                    // refutable. probe:
-                    // design/review-2026-10-19/repro/x-rerun-6-let-union-destructure.gx
-                    // (x-rerun-6-02)
-                    // 2026-10-19 claude: Bind's shape check holds the predicate against
-                    // each member of a union value on its own (fits_every_member); over
-                    // several members the pattern compiles against the predicate
-                    // narrowed per member (narrow_per_member, as a select arm's) and
-                    // the whole-type covers check is skipped. A refusal still names the
-                    // first member. Pins:
-                    // lang::tuples_structs::let_destructures_a_union_of_one_shape,
-                    // let_over_a_union_refuses_a_member_it_misses.
-                    // 2026-10-19 claude: Follow-up: the first version compiled every let
-                    // over a union against the shape check's predicate, whose cells are
-                    // generic, so netidx-admin's `let q = never<Question>(); .. &mut q`
-                    // was refused as made generic by an earlier compile. A bare name now
-                    // keeps the value's type, and the narrowed predicate is inferred
-                    // afresh at the binds' level. Pin:
-                    // lang::tuples_structs::let_over_a_union_takes_a_writable_reference.
                     if !completed && pat.has_partial_struct() {
                         partial = Some(ptyp);
                     } else if pat.single_bind().is_none()
@@ -370,7 +323,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // but for one something writes, which fires alone, its own facet
         let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
         pattern.ids(&mut |id| siblings.push(id));
-        // XCR claude for claude: [bug/high] The facet grouping is decided here from the
+        // CR claude for claude: [bug/high] The facet grouping is decided here from the
         // targets known when the let compiles. A sibling first written from another
         // module (`m::a <- ..` or `&mut m::a`: the module compiles before the
         // importer's writers) or by a later REPL input stays grouped with its siblings.
@@ -387,6 +340,22 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // group to the next sibling. The repro prints count(m::b) = 1 throughout. Pin:
         // lang::modules::sibling_written_from_outside_its_module_fires_alone. Needs a
         // soak (wake catch-up).
+        // 2026-10-20 claude: XCR review: The module case is fixed (mark_connect_target
+        // calls Env::split_facet; pin
+        // modules::sibling_written_from_outside_its_module_fires_alone passes), but the
+        // REPL case the finding names is only half done: split_facet changes the env,
+        // while a live select's TrackedFires keeps the facet grouping it computed
+        // (per_arm keyed by env.facet_of) until that arm's next deselect refresh
+        // (select.rs tracked.refresh at deselect, seq_machine likewise). A later REPL
+        // input that first writes a sibling while the reading arm is asleep therefore
+        // still has its writes observed under the old representative's key, and deliver
+        // at the wake injects a catch-up fire of every grouped sibling, the original
+        // phantom fire. Refresh the trackers whose arms read a split binding (or key
+        // pending fires by the written id and map to the facet at deliver), and pin the
+        // REPL-while-asleep order. Minor: a sibling marked Facet::Let(itself) because
+        // it was a connect target at let compile is its own rep, so every later connect
+        // compile of it rescans all of env.by_id in split_facet; return early when the
+        // binding is alone in its group.
         if siblings.len() > 1 {
             let rep = siblings.iter().find(|id| !ctx.connect_targets.contains(*id));
             let rep = rep.copied();
@@ -665,26 +634,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // XCR claude for claude: [bug/high] slept_at is the wrong reference point for
-        // the re-raise. (a) A `<-` write queued in the arm's last awake cycle lands in
-        // the cycle the select deselects the arm. The select does not walk the arm in
-        // that cycle, but the write's stamp equals slept_at, so `stamp > slept_at`
-        // fails and the write is never re-raised. design/wake_catchup.md cites this
-        // case as the one the re-raise covers; only the seq pc reset, which lands a
-        // cycle after sleep(), passes. (b) Select::sleep sleeps already-sleeping arms
-        // again, so an enclosing deselect moves slept_at past a write that landed in
-        // between, and the write is dropped. Fix: record the last cycle the binding's
-        // region was walked (the previous cycle for a select deselect, the current one
-        // for a seq step that ran), and set it only on the first sleep (when `slept` is
-        // clear). probe: design/review-2026-10-19/repro/c-bind-reraise-same-cycle.gx
-        // and design/review-2026-10-19/repro/c-bind-reraise-resleep.gx (c-bind-01)
-        // 2026-10-19 claude: Bind::sleep takes slept_at only at its first sleep (a
-        // re-sleep keeps it), and takes the cycle its readers were last walked: the
-        // sleep cycle when the let's innermost boundary was visited in it (a seq step
-        // that ran), else the cycle before (a deselect). prune::Boundary records each
-        // visit (BoundaryRef::visit, set by every Prune::update, skipped or not). Pins:
-        // lang::prune::write_landing_at_the_deselect_is_reraised,
-        // second_sleep_keeps_the_first_sleeps_cycle (both fail on the review binary).
         if !self.slept.is_set() {
             let cycle = ctx.rt.cycle();
             let walked = ctx.boundary.as_ref().is_some_and(|b| b.visited(cycle));

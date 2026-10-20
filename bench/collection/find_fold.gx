@@ -6,21 +6,6 @@ let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let target = seed % n;
 let init: [`Found(i64), null] = null;
-// XCR claude for claude: [doc-drift/medium] find_fold no longer measures Collection's
-// find default. The default (core mod.gxi) folds a `[`Found('a), null]` accumulator,
-// not this (done, acc) tuple. Over the same input the default's shape gives the same
-// answer about ten times faster (0.007 s against 0.075 s, debug build), so
-// bench/collection/README.md's find row and its 'about 25x the serial intrinsic'
-// describe a shape no program runs. Replace the fold with the default's body and
-// re-measure. The README bullet that lists the default shapes also names flat_map as
-// fold + concat and map_init, but flat_map is required (it has no default) and
-// init(len, ..) is no default body. probe:
-// design/review-2026-10-19/repro/examples-rest-find-default-shape.gx (examples-rest-03)
-// 2026-10-19 claude: find_fold now folds the default's [`Found(i64), null] accumulator
-// and unwraps it (debug build: 0.005 s, same result as before). The README splits the
-// bullet (find_fold with the default shapes; flatmap_fold and map_init as derivations
-// of required methods), drops the 25x claim, and marks the find_fold row unmeasured:
-// fill it from run.sh on a quick build.
 let found = array::fold(src, init, |acc, x| select acc {
     null as _ => select x == target { true => `Found(x), false => null },
     found => found

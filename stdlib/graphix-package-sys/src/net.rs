@@ -619,7 +619,7 @@ macro_rules! list {
                             "invalid path {requested}"
                         )));
                     };
-                    // XCR claude for claude: [bug/medium] Each poll tick with an
+                    // CR claude for claude: [bug/medium] Each poll tick with an
                     // unchanged path reissues the listing under the same id, and
                     // NetState::spawn_request's replacement aborts the one in flight. A
                     // listing slower than its #update period (default 1 s) therefore
@@ -640,6 +640,21 @@ macro_rules! list {
                     // tick
                     // (design/review-2026-10-19/repro/sys-net-list-poll-starves.sh);
                     // net's list tests pass.
+                    // 2026-10-20 claude: XCR review: The new Listing state goes back to
+                    // Done only when list_response returns Some, but NetState::list
+                    // answers Value::Null when the resolver's ChangeTracker reports no
+                    // change (netstate.rs, check_changed Ok(false)), and list_response
+                    // maps Null to None. So the first poll that finds nothing changed
+                    // leaves the site InFlight forever: every later tick only sets
+                    // Owed, nothing ever issues the owed listing, and the list stops
+                    // polling. Ran with the current quick binary: publish /local/a,
+                    // then /local/b at 700 ms, list(#update: 100 ms timer, '/local')
+                    // prints 1 and never 2. A single trigger at 1 s does print 2.
+                    // Before this change every tick reissued the listing, so a Null
+                    // answer was harmless. Fix: treat any delivery on the var, Null
+                    // included, as the end of the listing in flight (Done, or issue the
+                    // owed one), and pin a polled list that picks up a path published
+                    // after an unchanged poll.
                     match &mut self.current {
                         Some((p, listing)) if *p == path => {
                             match (trigger_fired, *listing) {
@@ -694,54 +709,6 @@ macro_rules! list {
 list!(List, "sys_net_list", false);
 list!(ListTable, "sys_net_list_table", true);
 
-// XCR claude for claude: [bug/medium] publish's #on_write argument ('a in net.gxi) has
-// no Concrete bound, and this casts written values only when that type is concrete. An
-// open handler type such as `|v: Array<'b>|` therefore gets the data form uncast:
-// writing {a: 1, b: 2} gives array::len(v) = 2, and writing 5 hands an i64 to an
-// Array-typed handler. Bound it `'a: Concrete` as subscribe and call do, and cast
-// always (drop the `castable` filter), as PublishRpc::arg does. rpc's 'args needs the
-// same bound: `#f: |a: &i64| ..` passes the check and fails only at run time with
-// PublishRpcError. probe: design/review-2026-10-19/repro/sys-net-on-write-open-type.gx
-// (sys-net-03)
-// 2026-10-19 claude: on_write's 'a: Concrete + Data in net.gx and net.gxi makes the
-// check ask for an annotation, so castable holds for every accepted handler; where
-// cast_typ is still None, Publish::update answers the writer with InvalidCast and
-// feeds nothing. rpc's 'args has the same bound. Pins:
-// lib_tests::net::net_on_write_open_type_refused, net_rpc_reference_argument_refused.
-// 2026-10-19 claude: Correction: publish's on_write argument is bounded 'a: Data, not
-// Concrete + Data. Concrete refused every publish that omits #on_write: the omitted
-// default |v: Any| leaves the site's 'a open ('must be fully known here'), which broke
-// every net, dynamic-module and queue fixture that publishes. So the check refuses a
-// function or reference handler argument, and a type it leaves open is caught at run
-// time: cast_typ is None and Publish::update answers the writer with InvalidCast,
-// feeding nothing. Pins: lib_tests::net::net_on_write_function_refused,
-// net_on_write_open_type_takes_no_write. A Concrete bound needs the omitting site's
-// default to settle 'a (a checker question: the default's |v: Any| does not bind the
-// open cell). rpc keeps 'args: Concrete + Data.
-// XCR claude for claude: [bug/high] When the on_write callback's argument type is not
-// castable (a function, a reference, a type holding ⊥), cast_typ is None, and update
-// hands the written value to the callback uncast. The checker accepts such an
-// annotation because publish's `#on_write: fn(v: 'a)` in net.gx/net.gxi has no `'a:
-// Concrete` bound. So a remote write puts a value of the wrong runtime form into typed
-// code. With `|f: fn(x: i64) -> i64| seen <- f(1)` the first write panics the runtime
-// ('value I64(5) is not a function', both engines). With `|v: &i64|`, v is a plain i64.
-// Fix: add `'a: Concrete` to on_write's argument in net.gx and net.gxi. Then, here,
-// never feed an uncast value: cast, or answer the writer with InvalidCast. probe:
-// design/review-2026-10-19/repro/tests-lib-b2-on-write-raw-value-crash.gx
-// (tests-lib-b2-01)
-// 2026-10-19 claude: Bound added ('a: Concrete + Data) and the uncast feed removed: a
-// None cast_typ answers the writer with InvalidCast. Pins:
-// lib_tests::net::net_on_write_function_refused, net_on_write_open_type_refused.
-// 2026-10-19 claude: Correction: publish's on_write argument is bounded 'a: Data, not
-// Concrete + Data. Concrete refused every publish that omits #on_write: the omitted
-// default |v: Any| leaves the site's 'a open ('must be fully known here'), which broke
-// every net, dynamic-module and queue fixture that publishes. So the check refuses a
-// function or reference handler argument, and a type it leaves open is caught at run
-// time: cast_typ is None and Publish::update answers the writer with InvalidCast,
-// feeding nothing. Pins: lib_tests::net::net_on_write_function_refused,
-// net_on_write_open_type_takes_no_write. A Concrete bound needs the omitting site's
-// default to settle 'a (a checker question: the default's |v: Any| does not bind the
-// open cell). rpc keeps 'args: Concrete + Data.
 /// What a write is cast to for the handler: its argument type, `Any` where
 /// nothing constrains it (open, or settled to ⊥: the handler takes data
 /// as it comes), none where only a part is open (no cast makes that form).

@@ -720,19 +720,6 @@ impl StructPatternNode {
         // under a written type, a constructor pattern at a union narrows to
         // the members it can match, as an arm narrows over its scrutinee;
         // its own test then decides them (`covers`)
-        // XCR claude for claude: [bug/low] Slice and list patterns are missing from this
-        // list, so under a written union they never narrow to their member.
-        // compile_slice then refuses them: `T([x, ..])` over `type T =
-        // Abstract<[Array<i64>, null]>` fails with "slice patterns can't match [null,
-        // Array<i64>]", while `V((x, _))` over Abstract<[(i64, i64), null]> is
-        // accepted. The same refusal hits `[Array<i64>, null] as [x, ..]`. Fix: add
-        // StructurePattern::Slice, SlicePrefix and SliceSuffix here. probe:
-        // design/review-2026-10-19/repro/c-pattern-slice-under-written-union.gx
-        // (c-pattern-05)
-        // 2026-10-19 claude: Slice, SlicePrefix and SliceSuffix narrow under a written
-        // union with the constructor patterns. Pin:
-        // lang::select::slice_pattern_under_written_union (T([x, ..]) over
-        // Abstract<[Array<i64>, null]>, and [Array<i64>, null] as [x, ..]).
         let constructor = matches!(
             spec,
             StructurePattern::Tuple { .. }
@@ -967,33 +954,6 @@ impl StructPatternNode {
                          cannot be destructured"
                     )
                 };
-                // XCR claude for claude: [bug/high] An inferred abstract pattern takes
-                // its type parameters from its payload. For `type Box<'a> =
-                // Abstract<'a>` the payload compiles against the parameter cell itself,
-                // so `Box(null)` gets the predicate Box<null> and `Box(`A)` gets
-                // Box<`A>. Type::is_a compares abstract parameters invariantly, so
-                // neither arm ever matches a Box<[i64, null]> or a Box<[`A, `B]>.
-                // Box(null) runs the `Box(n)` arm. The exhaustive `Box(`A) => 1,
-                // Box(`B) => 2` is refused as an unreachable arm, and `Box(`A) => 1`
-                // alone is accepted with a coverage hole, because the pool reads this
-                // narrowed rep as its head domain. Parameters are invariant, so they
-                // must come from the reaching scrutinee member: compile the payload
-                // against the rep instantiated at that member's parameters, completing
-                // the predicate against the scrutinee first. The two-instantiation
-                // variant is the CR in TVar::narrow_per_member. probe:
-                // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-payload-params.gx
-                // (x-typecheck-patterns-01)
-                // 2026-10-19 claude: An inferred abstract pattern compiles its payload at
-                // parameters of its own (AbstractRep::instantiate), so the payload never binds
-                // the predicate's; bind_narrowed narrows each payload's own rep against the
-                // scrutinee member's (StructPatternNode::narrow_payloads), typing its binds and
-                // captures; the run-time test of an inferred abstract predicate is the tag
-                // (IsAFlags::MatchAbstract), the payload pattern testing the rest; Reach covers
-                // per scrutinee member for an inferred abstract atom; child_types reads the
-                // payload type from the type judged. Pins:
-                // lang::select::abstract_pattern_params_from_the_scrutinee,
-                // abstract_capture_typed_from_the_scrutinee,
-                // abstract_pattern_over_two_instantiations.
                 let (atyp, rep) = r.instantiate(id);
                 let own = cx.inferred.then(|| r.instantiate(id).1);
                 type_predicate.check_contains(&ctx.env, &atyp)?;
@@ -1302,30 +1262,6 @@ impl StructPatternNode {
             },
             // a field is the pair at its index naming it: a struct of
             // another shape that has the index fails
-            // XCR claude for claude: [bug/critical] The struct test ignores whether the
-            // pattern is exhaustive. `{x, y}` matches here, and covers in covers_inner,
-            // a struct with more fields: `a.len() >= binds.len()`. Under a written
-            // union `[{x: i64, y: string}, {x: i64, y: i64, z: string}] as {x, y}`, the
-            // arm is judged exhaustive, y is typed string, and {x: 1, y: 42, z: "z"}
-            // binds 42 into it. The node-walk prints "42!", and the fused kernel panics
-            // ("runtime I64(42) does not match the compiled String slot"), taking the
-            // runtime down. An or-arm `{x, y} | {x, y: _, z: y}` does the same, since
-            // footprint calls the two members apart but this test does not. Fix: record
-            // the field count of the struct type the pattern was compiled or realigned
-            // against, require equality here, in bind_inner and in covers_inner, and
-            // make the JIT's composite cond (the Struct arm's `>=` in
-            // fusion/emit/select.rs) test equality too. probe:
-            // design/review-2026-10-19/repro/c-pattern-struct-exhaustive-ignored.gx,
-            // design/review-2026-10-19/repro/c-pattern-or-struct-field-count.gx
-            // (c-pattern-01)
-            // 2026-10-19 claude: StructPatternNode::Struct carries a StructWidth:
-            // Exact(field count of the struct type it was compiled or realigned
-            // against), or AtLeast for a partial pattern over a predicate inferred from
-            // its own fields that nothing completed (the x-typecheck-patterns-05 case,
-            // left as it was for Eric). is_match, bind, covers, the coverage pool
-            // (select.rs) and the JIT's composite cond (IntCC::Equal for Exact) all
-            // test it. REGISTRATION_FORMAT 69 -> 70. Pins:
-            // lang::select::struct_pattern_width_{uncovered,exact,or}.
             Self::Struct { all: _, width, binds } => match rep::struct_fields(v) {
                 Some(a) => {
                     width.admits(a.len())

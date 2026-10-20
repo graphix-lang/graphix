@@ -1824,22 +1824,6 @@ impl PrettyDisplay for SelectExpr {
 
 /// `e`, then `suffix` on the line `e` ends on: flat when both fit, else
 /// `e` laid out over lines.
-// XCR claude for claude: [bug/low] The text that follows a layout on its last line is
-// not reserved when the inner part is measured. fmt_flat keeps one column (the `;` or
-// `,`), but a hug's closer, this suffix and the separator after them add up:
-// browser.gx's `let col = structure.columns[slot_item(viewport.x, col_slots, c)]$;`
-// lays the call flat at column 89, then `]`, `$` and `;` end the line at 92. Carry the
-// width that will follow on the current line in PrettyBuf (a `tail` that pretty_then,
-// hug_parens, pretty_lookup and pretty_postfix add their suffix to, and that a line
-// break resets to the separator's one column) and have fmt_flat and the hug fit checks
-// subtract it. Found while fixing (x-formatter-02); probe: gxfmt
-// stdlib/graphix-package-tui/src/graphix/browser.gx, line 140. (wt-parse-01)
-// 2026-10-20 claude: PrettyBuf carries a tail: pretty_then adds its suffix while the
-// source lays out, hug_parens its closer; fmt_flat, the flat check of pretty_then and
-// pretty_lookup flat index keep it free; the items of a list laid out over lines run
-// without it (they end before the last line). The corpus harness over 1893 .gx/.gxi
-// files in both repos: 0 bad. Pin: format.rs a_postfix_chain_keeps_its_tail_free
-// (widths 50..=70).
 fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
     if decorated(e) {
         e.fmt_pretty(buf)?

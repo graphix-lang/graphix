@@ -139,22 +139,6 @@ impl SourceKind {
 /// `items` with each run of adjacent use statements rewritten as one
 /// statement per path root and visibility, statements and names sorted.
 /// `as_use` is `None` for anything else, a decorated use included.
-// XCR claude for claude: [bug/medium] merge_uses is not a fixpoint. When a use that
-// depends on the run ends it, the next run starts with that use, and sorting can move a
-// later independent use ahead of it. In the output that use sits next to the previous
-// run, so the reparse merges and sorts the two, and the guard refuses the file as a
-// formatter bug: `use x::p; use p::q; use a::b` (or `use m::v; use n::v; use a::w`)
-// cannot be formatted. The current pins pass because their later runs sort in written
-// order. Fix: iterate the merge to a fixpoint, or offer each independent use after a
-// break to the previous run first. Pin both programs with `stable`. probe:
-// design/review-2026-10-19/repro/x-formatter-use-merge-not-fixpoint.sh (x-formatter-01)
-// 2026-10-19 claude: merge_uses now puts each use in the group after the last group it
-// depends on (one flat run vector tagged by group, sorted by group then root), so every
-// group depends on the one before it and a reparse breaks where the merge did. This
-// moves an independent later use into an earlier group: use z::x as a; use a::v; use
-// b::c now formats b::c first. Tests: format.rs uses_merge_at_every_level (use x::p;
-// use p::q; use a::b and use m::v; use n::v; use a::w through formats_to, which checks
-// stable).
 fn merge_uses<T: Clone>(
     items: &[T],
     as_use: impl Fn(&T) -> Option<(bool, &Arc<[UseItem]>)>,

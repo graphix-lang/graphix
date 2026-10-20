@@ -231,36 +231,6 @@ fn trigger_snapshot(
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
             // the abort clause reads the run's trigger too
-            // XCR claude for claude: [bug/medium] Only a trigger spelled as a simple
-            // name is snapshotted, and only reads with that exact spelling are
-            // redirected. So `seq m::t { .. m::t .. }`, or `use m::t; seq t { .. m::t
-            // .. }`, reads the variable live: a busy-dropped trigger changes what the
-            // running body sees. desugar_queued's trigger_name has the same gap for
-            // `until` and the abort/flush clauses. Resolve the trigger with
-            // env.lookup_bind and redirect every Ref that resolves to the same BindId,
-            // keying the snapshot by the binding rather than the spelling. probe:
-            // design/review-2026-10-19/repro/t-seq-qualified-trigger/main.gx (t-seq-02)
-            // 2026-10-19 claude: Partly fixed: a trigger spelled as a module path is
-            // snapshotted, and reads with that spelling redirected (seq::ref_key keys
-            // the Names map by the path a qualified read spells; redirect already
-            // looked paths up). The probe's qualified seq now starts at 0. Pin:
-            // lang::seq::qualified_trigger_is_snapshotted. Left: a read spelled
-            // differently from the trigger (use m::t; seq t { .. m::t .. }) and
-            // desugar_queued's trigger_name still key by spelling; both need the
-            // binding the trigger resolves to, which the lowering does not have.
-            // 2026-10-20 claude: Plain seq done: trigger_aliases resolves every
-            // spelling the body and abort clause read the trigger binding by (use m::t;
-            // seq t { .. m::t .. }), and the snapshot redirects them all to its one
-            // cell. Pin: lang::seq::trigger_read_by_another_spelling_is_snapshotted.
-            // Left: desugar_queued trigger_name (seqq until and its abort/flush
-            // clauses) still keys by spelling.
-            // 2026-10-20 claude: seqq done: desugar_queued recognizes the trigger by
-            // every spelling that resolves to its binding (ref_key of the trigger plus
-            // trigger_aliases, which now also walks the flush clause), so the abort and
-            // flush clauses read the run request and an until waits on it whatever the
-            // spelling (Rewrite::Captures carries the spellings). Pin:
-            // lang::seq::seqq_abort_reads_the_request_by_any_spelling (fails with the
-            // aliases dropped). netidx-admin 45 green.
             let reads = |n: &str| {
                 reads_name(body, n)
                     || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), n))
@@ -506,25 +476,6 @@ pub const RUN_EVENT: ArcStr = literal!("seq-run");
 /// when a run starts and asleep between runs, and only its fires after
 /// the entry cycle count. What stands at entry, and the fires it missed
 /// asleep, belong to no run.
-// XCR claude for claude: [bug/high] The abort and flush event lowers to a select arm on
-// `seqedge`. Since a wake is a resume, every run after the first wakes that arm instead
-// of giving it a birth. A `sys::time::timer(d, false)` in `abort(..)` is therefore
-// never started again. Once it has fired, Timer's `left` is 0 and the paused run never
-// re-arms, so the documented per-run budget (seq_blocks.md §9, book seq.md, skill)
-// aborts one run and then no run ever again. The next run that overruns wedges the seq,
-// and every later trigger is busy-dropped. The check even warns 'acts only at this
-// arm's first entry' about the user's abort clause. Fix: give the clause a birth at
-// each run's entry (View::Step with reborn, as a step's entry gets), and make the pin
-// seq_abort::abort_timer_starts_with_the_run abort an earlier run with the timer too.
-// It passes today only because its run 1 ends before its timer fires. probe:
-// design/review-2026-10-19/repro/x-engine-seq-errors-abort-timer-budget-first-run-only.gx
-// (x-engine-seq-errors-01)
-// 2026-10-19 claude: run_event's select carries the lowering-only attribute seq-run,
-// which compiles it with CFlag::RunEvent (its arms without): every entry of its arm is a
-// Step, so the builtins in the clause are reborn at each run and a timer budgets every
-// run; the birth-only warning is not given for it; the flag rides the select's image
-// (REGISTRATION_FORMAT 75). Pin: lang::seq_abort::abort_timer_budgets_every_run (the
-// review binary answers [8, 22], this [22]). Needs a soak (seq semantics).
 fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
     let pos = e.pos;
     let mut live = select(
@@ -625,7 +576,7 @@ fn fn_names(
 }
 
 /// Whether a binding is a function: a trait method, or of a function type.
-// XCR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
+// CR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
 // false for an unannotated function parameter. fn_names then moves such a parameter
 // into the issue tuple, and desugar_queued captures it into the request, so
 // `array::map(xs, f)` in a seq inside `|f, t| ..` cannot resolve its callback and
@@ -639,6 +590,16 @@ fn fn_names(
 // label), whatever its own binding's type. Both of the probe's programs fuse 4 regions.
 // Pin: lang::seq_calls::unannotated_fn_param_issued_bare (#[native]; the review binary
 // refuses it).
+// 2026-10-20 claude: XCR review: Fixed for plain seq only. fn_names now keeps an
+// argument bare at a callee-declared function position, but desugar_queued still
+// captures an unannotated function parameter into the request (its capture fold tests
+// only is_function(env, bind), which is false for an unannotated param), and fn_names
+// then runs over the rewritten body where the name is already the capture cell. Probe
+// with the debug binary: the pin's program with seqq in place of seq, '|f, t| seqq t {
+// let y = #[native] array::map([1, 2, 3], f); y }', fails --expand with '#[native]
+// expression did not fully fuse', while the same with 'f: fn(x: i64) -> i64' fuses. The
+// finding named the desugar_queued capture path explicitly; the pin
+// unannotated_fn_param_issued_bare covers only seq.
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -1008,21 +969,6 @@ impl Machine<'_> {
             !sink.is_empty() && sink.iter().all(|w| matches!(w, Write::Connect { .. }));
         let join = (!sink.is_empty() && !direct).then(|| {
             let cell = ArcStr::from(format_compact!("seqj{}", spec.id.inner()).as_str());
-            // XCR claude for claude: [bug/medium] Only a Write::Let sink gives the join
-            // cell a type. A try nested as the last statement of an annotated `let v:
-            // [i64, string] = try { .. }` body gets an untyped join cell, so does `x <-
-            // try { .. }` with `x: [i64, string]`. The first writer then fixes the
-            // cell's type and a with body of the other member is refused ('i64 does not
-            // contain string'). Carry the type in Write::Join from the enclosing join
-            // cell; for a connect, have both bodies' last steps write the target
-            // directly. probe:
-            // design/review-2026-10-19/repro/t-seq-nested-try-join-type.gx and
-            // design/review-2026-10-19/repro/t-seq-connect-try-join-type.gx (t-seq-04)
-            // 2026-10-19 claude: Write::Join carries the join cell's type, so a try
-            // nested as a typed let's value types its own join cell; a try whose value
-            // only writes variables has both bodies write them directly (no join cell).
-            // Pins: lang::seq_try::nested_try_join_takes_the_let_type,
-            // connected_try_writes_the_target_type (both refused by the review binary).
             let typ = match sink.first() {
                 Some(Write::Let { typ, .. } | Write::Join(_, typ)) => typ.clone(),
                 _ => None,
@@ -1867,25 +1813,6 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         // the trigger is the outer step's, issued with it; the clauses
         // and the body belong to the inner machine's own runs
-        // XCR claude for claude: [bug/high] Under Rewrite::Issue a nested seq is rebuilt
-        // here with no completion guard, unlike issue_call's guarded call. Inside a
-        // select arm, an operand, a call argument or a tuple, the step fires at entry
-        // with the nested seq's standing result from the previous run and completes on
-        // it. The step then sleeps before the inner machine's start lands, so the inner
-        // run never happens. `seq go { let r = select go { 1 => seq { println("inner");
-        // k }, _ => 6 }; r }` prints `inner 0, 0, 0` instead of `inner 0, 0, inner 100,
-        // 100`, in both engines. Only a nested seq that is the step's whole value is
-        // guarded, by issue_expr, and that is the only form
-        // lang::seq::seq_nested_reentry pins. Fix: wrap the rebuilt seq in `guard(..)`
-        // when the mode is Issue, and pin the arm and call-argument forms. probe:
-        // design/review-2026-10-19/repro/tests-seq-nested-seq-in-expr-stale.gx
-        // (tests-seq-01)
-        // 2026-10-19 claude: Under Rewrite::Issue a nested seq is rebuilt inside a
-        // SeqGuard, so its step completes only on this run's production; issue_expr
-        // adds no second guard around one. The probe prints inner 0 / 0 / inner 100 /
-        // 100. Pin: lang::seq::seq_nested_reentry_in_expr (arm, operand and call
-        // argument; the review binary answers 12, this 144). Needs a soak (seq
-        // semantics).
         ExprKind::Seq(s) => {
             let SeqExpr { kind, trigger, abort, body } = &**s;
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));

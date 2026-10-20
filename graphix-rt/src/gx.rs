@@ -802,7 +802,7 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
-                // XCR claude for claude: [bug/high] An embedder write is never checked
+                // CR claude for claude: [bug/high] An embedder write is never checked
                 // against its binding's type, though Callable::call checks its
                 // arguments. A string set into an `i64` binding that feeds a fused
                 // kernel makes FusedKernel::stage panic, and the runtime dies. The
@@ -829,6 +829,23 @@ impl<X: GXExt> GX<X> {
                 // since the binding's runtime form is a marked variant; that test now
                 // writes rep::make_variant. Embedders outside this repo
                 // (netidx-admin's Rust layer) should be checked for such writes.
+                // 2026-10-20 claude: XCR review: Set, SetMany and a SetDeref to a
+                // binding or a place root are now checked by GX::admits (is_a against
+                // env.by_id), and the runtime_api pins pass. But admits returns true
+                // for any id with no env binding, and a writable reference to a
+                // non-place expression (ByRef with Referent::Channel, compiled from
+                // &mut e where e is not a place) uses the ByRef node's own id as its
+                // cell, which is never in env.by_id. GX::set_deref resolves
+                // ref_target(cell) to that cell and admits it unchecked, so
+                // GXHandle::set_deref of a string into the cell of &mut 0 still lands,
+                // and a *r feeding a fused call delivers it to the kernel as a
+                // node-walked feeder input, the crash class this CR is about (found by
+                // reading, not run). The note's justification for unbound ids covers
+                // callable arguments only. Fix: record the referent type for a channel
+                // cell where the runtime can see it (or type the cell id when the
+                // ByRef registers it) and check against it, or refuse a set_deref
+                // whose target has no known type; add a set_deref-to-fresh-cell case
+                // to a_wrong_typed_set_deref_is_refused.
                 ToGX::Set { id, v } => {
                     if self.admits(id, &v) {
                         let mut one = SETS.take();
@@ -1019,20 +1036,6 @@ impl<X: GXExt> GX<X> {
             .iter()
             .zip(nodes.drain(..))
             .map(|(e, n)| {
-                // XCR claude for claude: [bug/medium] `is_output` reads the compiled
-                // node's spec, and a `use` compiles to a `Nop` whose spec is the shared
-                // `NOP` expression, so a REPL `use` line counts as output. The shell
-                // prints `-: _` and waits on it, and every line typed after it is
-                // ignored until Ctrl-C (`use array::len` then `len([1, 2])` prints only
-                // `-: _`). The script path (`load_exprs`) already decides from the
-                // source expression. Fix: `is_output_kind(&e.kind)` here, and delete
-                // `is_output`. probe:
-                // design/review-2026-10-19/repro/book-core-repl-use-is-output.sh
-                // (book-core-01)
-                // 2026-10-19 claude: CompRes's output flag is decided from the source
-                // expression (is_output_kind(&e.kind)) as load does; is_output is
-                // deleted. Fails if undone: graphix-rt/tests/runtime_api.rs
-                // a_use_is_not_an_output.
                 let output = is_output_kind(&e.kind);
                 let typ = n.typ().clone();
                 self.ctx.rt.updated.insert(e.id, true);
@@ -1512,20 +1515,6 @@ impl<X: GXExt> GX<X> {
                     custom_tasks.extend(joined(up));
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
-                // XCR claude for claude: [bug/medium] When a watch's sender drops while
-                // the loop waits here, SelectAll removes the finished stream inside its
-                // poll and returns Pending, because the keepalive stream is still
-                // there. This branch never completes, so `settled` (GXRt::outstanding,
-                // which counts `watches.len()`) is not recomputed, and a pending
-                // wait_settled hangs until some unrelated event. The same applies to
-                // var_watches below. Fix: poll each SelectAll through a poll_fn that
-                // returns Ready(None) when its len dropped during the poll, so the loop
-                // comes round. probe: design/review-2026-10-19/repro/rt-runtime-api.rs
-                // (settles_when_a_watch_ends) (rt-02)
-                // 2026-10-19 claude: next_or_ended polls each watch SelectAll and
-                // answers None when a stream of it ended, so the loop comes round and
-                // recomputes outstanding(); var_watches too. Fails if undone:
-                // graphix-rt/tests/runtime_api.rs settles_when_a_watch_ends.
                 up = next_or_ended(&mut self.ctx.rt.watches) => {
                     if let Some(mut up) = up {
                         for v in up.drain(..) {

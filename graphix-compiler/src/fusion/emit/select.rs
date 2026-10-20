@@ -623,29 +623,6 @@ fn emit_composite_pattern_cond_inner(
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
     };
-    // XCR claude for claude: [perf/medium] An element leaf lowers only as a bind, an
-    // exact-scalar literal or a nested composite. A string literal (`("a", n)`, `["a",
-    // ..]`), a literal over a nullable/union element (`[1, ..]` over Array<[i64,
-    // null]>) and an or-pattern (`(true, `A | `B)`, `[x, 1 | 2]`, `` `A(1 | 2) ``) all
-    // de-fuse here. Each of them fuses as a top-level arm, and CLAUDE.md says
-    // or-patterns at element positions fuse natively. The tests hide it:
-    // coverage_nested_or pins FuseExpect::None, and or_nested and or_in_slice_element
-    // pass FuseExpect::Jit only because an unrelated region fused. Fix: read the
-    // element as a borrowed value (as the Variant leaf below does) and emit the
-    // top-level literal / union-literal / or-chain condition against it; then put
-    // #[native] on those fixtures. probe:
-    // design/review-2026-10-19/repro/tests-select-element-leaf-defuses.sh
-    // (tests-select-02)
-    // 2026-10-19 claude: An element leaf that is a literal off its exact scalar type
-    // (a string, a null, a literal over a union element) or an or-pattern that binds
-    // nothing reads the element's borrowed Value words and tests them with
-    // emit_structure_cond's own literal and variant tests (emit_value_leaf_cond:
-    // alternatives OR in one block); a variant payload's literals and bind-free
-    // or-patterns take the same test. An or-pattern leaf that binds still refuses.
-    // #[native] now on coverage_nested_or (FuseExpect::Jit), or_nested and
-    // or_in_slice_element. Pin: graphix-tests --test fusion_review
-    // select_leaves_options_or_kinds_and_own_type_tests (t0..t8) and the review's
-    // tests-select-element-leaf-defuses.sh, which prints nothing.
     let mut lit_leaves: SmallVec<[(ElemIdx, PrimType, &Value); 8]> = SmallVec::new();
     let mut nested: SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> = SmallVec::new();
     let mut value_leaves: SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> =
@@ -680,7 +657,7 @@ fn emit_composite_pattern_cond_inner(
                     })
                 }
             },
-            // XCR claude for claude: [perf/medium] A string, null or union-typed scalar
+            // CR claude for claude: [perf/medium] A string, null or union-typed scalar
             // literal at a tuple/struct/array leaf, and a list pattern at a leaf,
             // de-fuse the whole select. This arm accepts only a literal whose prim is
             // the leaf's exact static type, and the nested-leaf arm below admits no
@@ -704,6 +681,12 @@ fn emit_composite_pattern_cond_inner(
             // refuses: its head binds read from the arm's scrutinee. Pin: fusion_review
             // select_leaves_options_or_kinds_and_own_type_tests (t0..t2, t6..t8); the
             // repro's f, g, h and k fuse, l (the list leaf) does not.
+            // 2026-10-20 claude: XCR review: The literal half is fixed
+            // (emit_value_leaf_cond, shared with emit_variant_cond; pin select_leaves
+            // t0..t2, t6..t8). The finding also names a list pattern at a leaf, and the
+            // note says it still refuses (its head binds read from the arm's
+            // scrutinee); the repro's l still node-walks the whole select. Either lower
+            // it or record the list-leaf gap as accepted somewhere other than this XCR.
             StructPatternNode::Literal(v)
                 if let Some(prim) = kernel_abi::scalar_prim_of_value(v)
                     && kernel_abi::scalar_prim(&leaf.typ) == Some(prim) =>
@@ -961,7 +944,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 None => cx.b.ins().iconst(types::I8, 0),
             };
             cx.b.def_var(open, still);
-            // XCR claude for claude: [perf/low] An unguarded arm before the last impure
+            // CR claude for claude: [perf/low] An unguarded arm before the last impure
             // guard has its condition emitted here only to update `open`. Nothing is
             // stored in `conds`, so the chain emits the same condition again and
             // repeats every helper call (graphix_list_match's spine walk,
@@ -979,6 +962,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             // the chain (the second half of the suggested fix is not taken). Pin:
             // fusion_review prologue_unguarded_arm_binds_reach_the_chain (an unguarded
             // bind before an impure guard, read in the chain; a perf pin it is not).
+            // 2026-10-20 claude: XCR review: Only the non-or half is done: an unguarded
+            // non-or arm keeps its cond and prologue_binds for the chain. For an
+            // unguarded or-arm the prologue still calls emit_arm_condition, whose
+            // emit_or_chain clones the matching alternative's owned binds that
+            // emit_scope_drops then drops unread, and the chain recomputes the or-chain
+            // with all its helper calls. The suggested OR of the alternatives'
+            // structure conditions is not taken; finish it or record it as accepted.
+            // The pin prologue_unguarded_arm_binds_reach_the_chain is correctness only,
+            // as the note says.
             if !matches!(&pat.structure_predicate, StructPatternNode::Or { .. }) {
                 conds[i] = Some(cond);
                 prologue_binds[i] = Some(binds);
@@ -1339,24 +1331,6 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     // stays as a deliberate mirror of the node-walk's shape_matches, and say so, or
     // delete it. Then rewrite this comment to match. Found by reading; not run.
     // (f-select-06)
-    // XCR claude for claude: [perf/medium] A type test that every value of the scrutinee
-    // passes, such as `string as t` over a string or `T as {a, ..}` over a T, is
-    // refused below ('type predicate .. not lowerable'), so a redundant annotation
-    // turns a kernel into node-walk. The same arm without `T as` fuses. selectstruct,
-    // nestedmatch1 and never_arms_absorb carry FuseExpect::Jit but their selects
-    // node-walk for this reason; an unrelated region satisfies the claim. Fix: when the
-    // frozen scrutinee type is contained in the frozen predicate, tcond is None, and
-    // only the structure test runs. Then put #[native] on those fixtures. probe:
-    // design/review-2026-10-19/repro/tests-select-trivial-type-test-defuses.sh
-    // (tests-select-03)
-    // 2026-10-19 claude: emit_arm_cond yields no type test when the frozen predicate
-    // equals the frozen scrutinee type and holds no abstract type
-    // (type_test_is_trivial), so a composite pattern under it reaches
-    // emit_structure_cond untested. Equality, not containment: the node-walk's is_a is
-    // strict. #[native] now on selectstruct, nestedmatch1 and never_arms_absorb. Pin:
-    // those fixtures and fusion_review
-    // select_leaves_options_or_kinds_and_own_type_tests (y0..y2);
-    // tests-select-trivial-type-test-defuses.sh prints nothing.
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate
         || type_test_is_trivial(cx, pat, scrut_typ)
     {
@@ -1369,19 +1343,6 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                 pat.type_predicate
             )
         })?;
-        // XCR claude for claude: [perf/low] A type test the scrutinee's static type
-        // already proves de-fuses every non-scalar select. Examples are `Array<i64> as
-        // [h, ..]` over an Array<i64>, `(i64, string) as (n, _)` over that tuple, and
-        // `string as x` over a string. Only the scalar case below, where the prim
-        // equals the predicate, yields no test. Fix: yield None when the frozen
-        // predicate equals scrut_typ and holds no abstract part, so the node-walk's
-        // strict is_a agrees. Then a composite pattern under it reaches
-        // emit_structure_cond with has_tcond false. probe:
-        // design/review-2026-10-19/repro/f-select-vacuous-type-test-defuse.gx
-        // (f-select-04)
-        // 2026-10-19 claude: Fixed with tests-select-03 (type_test_is_trivial). Pin:
-        // fusion_review select_leaves_options_or_kinds_and_own_type_tests (y0..y2 are
-        // the repro's f, g and h).
         match &pred {
             // Over a primitive union, a primitive predicate is a test of
             // the value's tag against each of its members.
@@ -2066,7 +2027,7 @@ fn emit_structure_cond(
             }
             Some(emit_list_pattern_cond(cx, p, scrut, scrut_typ, binds)?)
         }
-        // XCR claude for claude: [perf/medium] A slice, tuple or struct pattern over a
+        // CR claude for claude: [perf/medium] A slice, tuple or struct pattern over a
         // nullable scrutinee de-fuses the whole select, because this arm lowers
         // composite structure only over SelectScrut::Composite. Examples: `null as _ =>
         // .., [s, rest..] => .., [] => ..` over `[Array<string>, null]`, and `(x, y)`
@@ -2089,6 +2050,14 @@ fn emit_structure_cond(
         // select_leaves_options_or_kinds_and_own_type_tests (o0..o3);
         // select_slice_cover_union and select_tuple_union_member_native (renamed from
         // _node_walks) now fuse.
+        // 2026-10-20 claude: XCR review: An option of a composite now destructures
+        // through its payload (o0..o3 pass). But the finding's defect is a composite
+        // pattern over a Nullable scrutinee, and a result of a composite is also
+        // AbiKind::Nullable (option_result_success); the new path is gated on
+        // nullable_error_marked Some(false), so '[(i64, i64), Error<E>]' with '(x, y)'
+        // still de-fuses, as does a Value-kind union of composites without an explicit
+        // test, and emit_arm_cond's explicit-predicate copy was extended rather than
+        // folded in as asked. Finish those or record them as accepted.
         p @ (StructPatternNode::Slice { .. }
         | StructPatternNode::SlicePrefix { .. }
         | StructPatternNode::SliceSuffix { .. }
@@ -2121,23 +2090,6 @@ fn emit_structure_cond(
                 Some(cx.b.ins().band(some, c))
             }
             _ => {
-                // XCR claude for claude: [perf/medium] An option of a tuple or struct
-                // (`[(i64, i64), null]`) is a Nullable value scrutinee, so the `(x, y)`
-                // or `{x, y}` arm after `null as _` lands here and the whole kernel
-                // node-walks. The explicit `(i64, i64) as (x, y)` spelling is refused
-                // too, while selecting into a scalar option and destructuring a bare
-                // tuple both fuse. Extend emit_arm_cond's composite-member path (today:
-                // ValueKind::Value with an explicit predicate only) to Nullable
-                // scrutinees and to arms narrowed to one composite member: test the
-                // member, then destructure through SelectScrut::Composite { disc, ptr:
-                // payload }. probe:
-                // design/review-2026-10-19/repro/fuzz-gen-a-option-tuple-defuse.gx
-                // (fuzz-gen-a-03)
-                // 2026-10-19 claude: Fixed with f-select-02: an option of a tuple or
-                // struct destructures through its payload, and the explicit (i64, i64)
-                // as (x, y) spelling over it takes the is_a member path. Pin:
-                // fusion_review select_leaves_options_or_kinds_and_own_type_tests
-                // (o1..o3); the repro's #[native] f, g and h build.
                 return Err(anyhow!(
                     "emit_clif: slice/tuple/struct select pattern over a \
                          non-composite scrutinee not lowerable"
@@ -2352,24 +2304,6 @@ fn emit_or_chain(
     let Some((_, first)) = matched.first() else {
         bail!("emit_clif: empty or-pattern chain")
     };
-    // XCR claude for claude: [perf/medium] An or-arm whose shared name binds at
-    // a different kind per alternative de-fuses the whole select. `` `A(x) |
-    // `B(x) => "[x]" `` over `A(i64)`/`B(f64)`, or `A(i64)`/`B(string)`, errs
-    // here because the layout's kinds come from alternative 0. The shared
-    // name's type is the union of the alternatives' types
-    // (design/or_patterns.md), and that union has a Value form. Fix: give each
-    // shared bind its alternatives' common kind, or LocalKind::Value when they
-    // differ. Each alternative then widens its narrower local to Value words
-    // before jumping to done, as emit_owned_value_operand_node widens. Update
-    // the or_patterns.md Engines text, which documents this Err. probe:
-    // design/review-2026-10-19/repro/f-select-or-kind-defuse.gx (f-select-03)
-    // 2026-10-19 claude: emit_or_chain hands each matched alternative's binds,
-    // at its own kinds, to a block of its own; the done block's layout gives
-    // each id its alternatives' common kind or LocalKind::Value where they
-    // differ, and an alternative's block widens a scalar to Value words (a
-    // composite's and a string's words already are a Value's).
-    // design/or_patterns.md's Engines text says so. Pin: fusion_review
-    // select_leaves_options_or_kinds_and_own_type_tests (w0, w1).
     let layout: SmallVec<[(BindId, LocalKind); 8]> = first
         .iter()
         .enumerate()

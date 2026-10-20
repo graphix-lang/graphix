@@ -618,22 +618,6 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
-            // XCR claude for claude: [bug/medium] The method binding is typed over the
-            // impl head's own cells, and those cells are not rigid while the method
-            // checks. `impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| .. }`
-            // therefore binds 'a to i64: the impl is accepted and silently serves
-            // Box<i64> only. Box("str") prints structurally, and a non-core trait call
-            // fails at the call site with "Box<'_> does not implement Show".
-            // Impl::typecheck0's later check compares against the narrowed head, so it
-            // cannot catch this. Check the methods with the head's variables rigid, as
-            // a definition's declared variables are, and keep only the implements
-            // (sig_matches) check there. probe:
-            // design/review-2026-10-19/repro/c-module-traits-impl-head-narrowed-by-method.gx
-            // (c-module-traits-04)
-            // 2026-10-19 claude: Impl::typecheck0 holds the head's variables rigid
-            // (open_rigid) across the body check and the declared-signature check, so a
-            // method annotated at Box<i64> is refused rather than narrowing 'a. Pin:
-            // lang::traits::impl_method_does_not_narrow_the_head.
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
             let b = BindExpr {
                 rec: b.rec,
@@ -761,43 +745,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
 /// writes: one it leaves out is the representation. Registered here,
 /// where the implementation registers, never in a module's check, which
 /// runs beside its siblings'.
-// XCR claude for claude: [bug/high] This re-registration runs in
-// check_sig, inside Module::typecheck0, so for a run of sibling
-// modules it runs in parallel compile tasks. Env::impls is
-// keyed by TraitId with the whole list as the value, so two
-// siblings that both leave Cast's to_value out write the same
-// key. The join then panics in debug (TrackedMap::join's
-// debug_assert), and in release one module's re-registration is
-// lost: its Cast impl keeps a to_value that nothing proxies.
-// design/parallel_compile.md says impls are registered before
-// any body runs. Move this unregister/register into
-// Module::compile_inner for a static body, after the body
-// compiles, and add a fixture with two sibling modules that
-// each declare `impl Cast for T;` and omit to_value. probe:
-// design/review-2026-10-19/repro/t-env-cast-repr-race.sh
-// (t-env-01)
-// 2026-10-19 claude: The narrowing moved out of check_sig into Impl::compile
-// (narrow_to_representation), which registers serially when register_impl
-// returns the declaration an implementation fulfils; check_sig only builds the
-// proxies. Pin: lang::cast_trait::sibling_cast_declarations_narrow_apart (three
-// sibling modules, two leaving to_value out, one leaving both out).
 
-// XCR claude for claude: [bug/high] This narrowing rewrites
-// the global `impls` entry for the Cast trait during a
-// module's check, and sibling modules check in parallel
-// compile tasks. Two modules that each narrow a declared
-// `impl Cast for T;` write the same key, and
-// TrackedMap::join panics in debug ("a fork's write to
-// TraitId(..) would replace a write made since the fork").
-// In release the later join wins and puts back the other
-// module's unnarrowed declaration. Narrow the declaration
-// where the implementation registers, which is serial: in
-// Impl::compile, when register_impl returns the fulfilled
-// declaration. The check should only verify. probe:
-// design/review-2026-10-19/repro/c-module-traits-sibling-cast-narrowing.sh
-// (c-module-traits-01)
-// 2026-10-19 claude: Fixed with t-env-01: narrow_to_representation in
-// Impl::compile. Pin: lang::cast_trait::sibling_cast_declarations_narrow_apart.
 fn narrow_to_representation<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     declared: Arc<ImplDef>,

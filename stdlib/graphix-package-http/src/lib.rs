@@ -83,22 +83,6 @@ fn http_err(e: impl fmt::Display) -> Value {
 /// `e` with its whole source chain, which reqwest's and hyper's Display
 /// leave out: a refused connection and an unknown host read alike
 /// without it.
-// XCR claude for claude: [bug/medium] reqwest::Error's Display
-// leaves out its source chain, so this HTTPError never names the
-// cause. A refused connection and an unknown host both read "error
-// sending request for url (..)", and a malformed URL reads only
-// "builder error". The body-read error below, "failed to build
-// client" in HttpClientEv and serve_connection's log have the same
-// problem. Print the chain (anyhow::Error::from(e) with {:#}) from
-// one helper next to http_err, and use it at every reqwest/hyper
-// error site. probe:
-// design/review-2026-10-19/repro/http-sqlite-db1-http-error-cause.gx
-// (http-sqlite-db1-03)
-// 2026-10-19 claude: chain() prints an error with its source chain ({:#} of
-// anyhow::Error::from), used for request failed, failed to read body, failed to
-// build client and serve_connection's log. Pin:
-// lib_tests::http::http_error_names_its_cause (refused connection names
-// 'refused', a bad URL 'relative URL without a base').
 fn chain(e: impl std::error::Error + Send + Sync + 'static) -> impl fmt::Display {
     format_compact!("{:#}", anyhow::Error::from(e))
 }
@@ -501,23 +485,6 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     // request got which answer. probe:
     // design/review-2026-10-12/repro/http-sqlite-db1-03.gx Also reported as
     // (x-security-04). (http-sqlite-db1-03)
-    // XCR claude for claude: [bug/low] This is a new aspect of http-sqlite-db1-03.
-    // text_response formats the raised value with netidx's Value Display, so since kind
-    // markers the 500 body carries the marker abstracts raw:
-    // `[abstract:EnwukQtE2EoTn2Uo4FoXw40B, ["cause", null], ["error",
-    // [abstract:EnwukQtE2EoTn2Uo4FoXw40C, "Internal", "x"]], ...]`. sys::net::rpc's
-    // reply to a raising handler goes through the data form and carries none. If the
-    // ruling above gives a generic body, this goes with it. Otherwise, write the error
-    // through abstract_value::to_data before formatting, and pin the body's text.
-    // probe: design/review-2026-10-19/repro/x-rerun-2-http-500-markers.gx
-    // (x-rerun-2-02)
-    // the raised value as data: a composite in its written form, never
-    // its kind marker
-    // 2026-10-19 claude: The 500 body is the raised value through rep::strip, so a
-    // composite prints in its data form, never its marker (rep::strip, not to_data:
-    // build_hyper_response runs without the hooks a Cast impl needs). Pin:
-    // lib_tests::http::http_500_body_carries_no_markers. Falls away if Eric's
-    // http-sqlite-db1-03 ruling gives a generic body.
     if let Value::Error(e) = v {
         let data = rep::strip(e);
         return text_response(
@@ -783,23 +750,6 @@ async fn serve_loop(
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
             Err(e) => {
-                // XCR claude for claude: [bug/medium] An accept error goes straight back
-                // into accept. A persistent error, such as EMFILE when the process is
-                // out of descriptors while clients wait in the backlog, then spins this
-                // loop at a full core and logs one error per iteration. Measured: with
-                // RLIMIT_NOFILE 64 and 150 waiting clients, the server burned 346 CPU
-                // ticks in 3 s; with a limit of 1024 it used 0. Sleep briefly (about
-                // 100 ms) after an accept error before retrying, without holding the
-                // permit. probe:
-                // design/review-2026-10-19/repro/http-sqlite-db1-accept-spin.py
-                // (http-sqlite-db1-02)
-                // a persistent error (out of descriptors) would spin: wait,
-                // the permit given back, before accepting again
-                // 2026-10-19 claude: serve_loop gives the permit back and sleeps
-                // ACCEPT_RETRY (100 ms) after an accept error before accepting again.
-                // No pin: reaching EMFILE needs an RLIMIT_NOFILE the test process
-                // shares; the probe is
-                // design/review-2026-10-19/repro/http-sqlite-db1-accept-spin.py.
                 log::error!("HTTP accept error: {e}");
                 drop(permit);
                 tokio::time::sleep(ACCEPT_RETRY).await;

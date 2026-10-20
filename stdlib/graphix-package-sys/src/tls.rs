@@ -92,20 +92,6 @@ impl Started {
 /// A TLS config and the arguments it was built from, or the error they
 /// gave: rebuilt only when they change, so a site's connections share its
 /// session cache.
-// XCR claude for claude: [perf/low] Every accept parses the cert and key PEM
-// and builds a new ServerConfig. TlsConnectEv likewise builds a root store
-// (the whole webpki set when ca_cert is null) and a ClientConfig on every
-// connect. Besides the repeated work, rustls keeps its session cache and
-// ticketer per config, so these sites never resume a session, and every
-// reconnect pays a full handshake. Fix: build the Arc'd config in
-// prepare_args (it has &mut self) when the cert, key or ca_cert value
-// changes, keep it in the Ev beside Started, and pass the Arc in Args.
-// Found by reading; not run. (sys-io-04)
-// 2026-10-19 claude: TlsAcceptEv and TlsConnectEv build their config in
-// prepare_args through built(), which rebuilds only when the cert/key or
-// ca_cert bytes change, and pass the Arc in Args; image state is unchanged (a
-// config is built again after decode). Pin:
-// tls::test::connections_share_a_config.
 type Built<K, C> = Option<(K, Result<Arc<C>, Value>)>;
 
 /// The config `key` builds, from `slot` when it was built from `key`.

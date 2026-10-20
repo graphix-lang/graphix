@@ -1322,20 +1322,6 @@ impl FnType {
         sig_rtype
             .sig_matches_int(env, impl_rtype, tvar_map, hist)
             .context("in return type")?;
-        // XCR claude for claude: [readability/low] A throws mismatch reports a part of
-        // ErrChain's expansion that the user never wrote. For declared
-        // `Error<ErrChain<`A>>` against implemented `Zero, it prints "signature has
-        // [null, ErrChain<`A>], implementation has [null, ErrChain<`Zero>]". For a val
-        // that throws nothing it prints "signature has _". The Ref arm of
-        // sig_matches_int loses the written types when the expanded comparison fails.
-        // Report the unexpanded pair there, and print a bottom throws as "throws
-        // nothing". probe:
-        // design/review-2026-10-19/repro/tests-modules-image-interface-throws.sh
-        // (tests-modules-image-06)
-        // 2026-10-19 claude: The Ref arm of sig_matches_inner adds the unexpanded pair
-        // as context to a failed expansion, and the throws pairing words a bottom side
-        // as throwing nothing. Pins: lang::interfaces::throws_mismatch_names_nothing,
-        // throws_mismatch_names_the_written_types.
         let nothing = |t: &Type| matches!(t.deref_cloned(), Some(Type::Bottom));
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist)
@@ -1368,24 +1354,6 @@ impl FnType {
         tvar_map: &mut SigPairs,
         hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
-        // XCR claude for claude: [bug/medium] This settle also runs for every nested fn
-        // type (a fn-typed parameter reaches it through Type::sig_matches_inner's Fn
-        // arm). It pairs the enclosing signature's deferred unions before the enclosing
-        // signature's later parameters have paired their variables. `val f: fn(x: ['a,
-        // 'b], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64` refuses `|x: ['c, 'd], g:
-        // fn(n: i64) -> i64, y: 'd, z: 'c|` ("type variable usage mismatch"), and
-        // accepts the same interface when g is moved last or dropped. Settle once at
-        // the root, in FnType::sig_matches and Type::sig_matches, and run the bound
-        // checks that read the pairs after it. probe:
-        // design/review-2026-10-19/repro/t-fntyp-nested-settle.sh (t-fntyp-04)
-        // Every declared bound must be among the impl cell's whole
-        // conjunction, compared by meaning (refs are scoped
-        // independently on each side).
-        // 2026-10-19 claude: FnType::sig_matches_int now only pairs structure and
-        // records the pair in SigPairs::fns; SigPairs::finish (from FnType::sig_matches
-        // and Type::sig_matches) settles the deferred unions once and then runs
-        // FnType::sig_bounds for every recorded pair. Pin:
-        // lang::interfaces::union_pairing_waits_for_later_parameters.
         let impl_tvs = sorted_tvars(impl_fn.sig_tvars().drain());
         // every cell the walk may have mapped: an unannotated parameter's
         // is bound, and the cells its binding holds carry the conjuncts
@@ -1510,24 +1478,6 @@ impl FnType {
                         declared(sig_tv, &impl_tc)?
                     }
                 }
-                // XCR claude for claude: [bug/high] An implementation cell that is an
-                // open quantifier of a rank-2 formal (`g: fn<'b: Number>(x: 'b) -> 'b`)
-                // lands here when the signature gave that parameter a monomorphic type
-                // (`g: fn(x: i64) -> i64`). The arm accepts it because Number admits
-                // i64. But the implementation's body may call g at any Number, while
-                // callers through the interface pass a function on i64 alone. The check
-                // accepts; the static build then refuses the instance, and a dynamic
-                // call fails at run time with "a run-time bind .. did not type". A
-                // quantifier of an implementation fn type in argument position must
-                // pair with a quantifier of the paired signature fn type, never with a
-                // concrete type or an outer variable. Refuse it here, and in the
-                // Some(Type::TVar) arm, unless the paired signature variable is one of
-                // `self.quantifiers`. probe:
-                // design/review-2026-10-19/repro/t-fntyp-rank2-impl.sh (t-fntyp-02)
-                // 2026-10-19 claude: sig_matches refuses an implementation quantifier
-                // of a function-typed argument unless it pairs with a quantifier of the
-                // signature's paired argument. Pin:
-                // lang::interfaces::rank2_parameter_does_not_implement_a_monomorphic_one.
                 Some(sig_type) => {
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside

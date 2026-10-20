@@ -82,32 +82,6 @@ pub(crate) fn callback_param<'c, R: Rt, E: UserEvent>(
             binds: Vec::new(),
             pattern: Some(arg),
         }),
-        // XCR claude for claude: [perf/medium] A destructuring formal other than a flat
-        // tuple (`|{a, b}|`, `|((a, b), c)|`, a fold acc `|((n, m), k), x|`) lands here
-        // as if it were a single name: id is None, there are no leaves, and the
-        // pattern's binds are never bound. The loop then fails with 'emit_clif:
-        // undefined local `a`': it silently node-walks, or under #[native] reports that
-        // internal message. Bind the general pattern's leaves (struct fields and nested
-        // positions, as select destructuring does), or at least return a
-        // fusion::blocker naming the destructured formal, and add #[native] pins for
-        // both shapes beside native_destructured_tuple_acc_folds. probe:
-        // design/review-2026-10-19/repro/tests-fusion-traits-destructured-callback-defuses.gx
-        // (tests-fusion-traits-04)
-        // 2026-10-19 claude: callback_param now refuses a formal that binds names and is
-        // neither one name nor a flat tuple with a blocker naming the parameter (pin:
-        // fusion_review destructured_callback_formal_is_named), so a #[native] says what does
-        // not fuse and nothing reaches 'undefined local'. The loop still node-walks: binding
-        // the general pattern's leaves (as select destructuring does) remains.
-        // 2026-10-19 claude: A formal that binds names and is neither one name nor a flat
-        // tuple now rides the CallbackParam as its pattern: the loop binds the element under
-        // its synthetic name and the pattern's names over it through
-        // select::emit_composite_binds (emit_structure_cond plus install_arm_binds, as a let
-        // destructure does), the owned ones dropped with the iteration's leaves; a fold's
-        // composite acc takes the same (FoldAcc::Composite's pattern). A destructure over a
-        // non-composite element or acc refuses (the bind_elem check, the acc arms' guards).
-        // Pin: fusion_review destructured_callback_formals_fuse (the review's three shapes
-        // plus a filter, each #[native]); an RSS watch over 3000 ticks of the three loops
-        // matches the single-name control.
         None => match &callback.typ().args.get(index).map(|a| &a.kind) {
             Some(FnArgKind::Positional { name: Some(name) }) => Some(CallbackParam {
                 name: name.clone(),

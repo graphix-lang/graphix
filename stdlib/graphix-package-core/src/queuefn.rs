@@ -523,35 +523,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     // QueueFn::sleep is a pause and QueueFn::reborn resets queue, credit and #count,
     // design/queue_fn.md and the async_sleep_outputs.md table follow. What remains here
     // is WrapperApply::sleep dropping its site's calls, which is core-aux-02.
-    // XCR claude for claude: [bug/medium] This sleep is a rebirth: it clears the queue
-    // and sets pop_count back to 1. When the arm wakes, the next call runs at once with
-    // no #trigger. In the probe, #trigger never fires, yet q(7) runs at the wake (r =
-    // 70 at 150 ms). CLAUDE.md says sleep is pause, not reset (a queue's contents and
-    // credits survive), and state starts afresh only in Apply::reborn. QueueFn has no
-    // reborn. Fix: move these two resets into a QueueFn::reborn and leave sleep a
-    // pause, as Queue and IterQ now do. probe:
-    // design/review-2026-10-19/repro/x-builtin-effects-queuefn-sleep-reset.gx
-    // (x-builtin-effects-03)
-    // 2026-10-19 claude: Fixed with core-aux-01: sleep keeps queue and credit,
-    // QueueFn::reborn resets them. Pin: lib_tests::core::queuefn_sleep_is_a_pause; the
-    // probe now gives (0, ..) then the re-entry's stale (0, ..), never 70.
-    // XCR claude for claude: [bug/high] A sleep here is a rebirth: it drops the
-    // queued calls and restores the initial credit, so after the arm wakes the
-    // next wrapper call runs with no `#trigger`. This contradicts the rule that
-    // a wake resumes and never rebirths, which `queue`/`iterq` follow: they
-    // keep contents and credits at sleep and reset only in `Apply::reborn`.
-    // Fix: keep `queue` and `pop_count` in `sleep` and move this reset (plus
-    // the `#count` write) into a new `reborn`. Also add queuefn to
-    // design/async_sleep_outputs.md's audit table and pin it. probe:
-    // design/review-2026-10-19/repro/core-aux-queuefn-sleep-resets.gx Also
-    // reported as (tests-lib-a-01), (x-doc-drift-01). (core-aux-01)
-    // 2026-10-19 claude: QueueFn::sleep is a pause (queue and pop_count kept);
-    // the new QueueFn::reborn clears the queue, resets pop_count to 1 and
-    // writes #count. design/queue_fn.md and the async_sleep_outputs.md audit
-    // table (a queuefn row) say so. Pin:
-    // lib_tests::core::queuefn_sleep_is_a_pause (before: [100, 500], after:
-    // [100]). WrapperApply::sleep still drops its own site's calls: that is
-    // core-aux-02, Eric's.
     /// A pause: the queued calls and the credit stay.
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 

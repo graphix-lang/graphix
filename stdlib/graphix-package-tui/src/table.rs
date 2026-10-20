@@ -131,20 +131,6 @@ impl<X: GXExt> TableW<X> {
         Ok(TuiW::new(t))
     }
 
-    // XCR claude for claude: [perf/medium] This recompiles every element each time the
-    // caller's list ref fires, and a ref fires on every production, whether or not the
-    // value changed. `TableW::set_rows` uses it for `&Array<&Row>`: the browser's `rows =
-    // array::map(cells, |row| &tui::table::row(..))` fires whenever any visible cell
-    // changes. Each live update then recompiles every visible row ref: one runtime round
-    // trip, one node created and one deleted per row. Chart datasets, bar-chart groups and
-    // canvas shapes go through here too. `reconcile` below already keeps the elements whose
-    // source value is unchanged. Move these callers to it (they would hold `Vec<(Value,
-    // T)>`) and delete this helper. Found by reading; not run. (tui-core-04)
-    // 2026-10-19 claude: compile_each is deleted. Table rows, canvas shapes, chart
-    // datasets, bar-chart groups and each group's bars hold Vec<(Value, T)> and go through
-    // graphix_rt::reconcile, so an element whose source is unchanged is kept. No pin counts
-    // the round trips a refire costs; the widget tests (render_test, widgets_test,
-    // panic_test) cover the draw paths.
     async fn set_rows(&mut self, v: Value) -> Result<()> {
         reconcile(&mut self.rows, v.cast_to()?, |id| {
             let gx = self.gx.clone();

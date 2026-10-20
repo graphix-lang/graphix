@@ -203,20 +203,6 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// fresh every run and remembers neither,
 /// so the raise node-walks. `selects` are the region's selects in
 /// pre-order; one nested in another's arm is covered by the outer walk.
-// XCR claude for claude: [doc-drift/low] The doc above says a constant fires at the
-// arm's wake. Since "a wake is a resume" it stands: a constant-derived raise happens at
-// the arm's first entry only (observed: one raise across three `A entries, both
-// engines). The blocker still holds for the missed-fire reason. Drop the constant
-// clause here, in design/strict_fusion.md ("The `?` delivery queue") and in CLAUDE.md's
-// strict-fusion paragraph. probe:
-// design/review-2026-10-19/repro/x-doc-drift-const-raise-not-at-wake.gx
-// (x-doc-drift-04)
-// 2026-10-19 claude: The constant clause is corrected rather than dropped, here, in
-// design/strict_fusion.md (both places) and in CLAUDE.md (AGENTS.md regenerated): a
-// constant fires at the arm's first entry only, a wake being a resume. That entry is
-// still memory a kernel lacks (its born flag is its own instance's, not the arm's), so
-// it stays a reason beside the missed fire. Review: drop it instead if a first-entry
-// raise is judged a kernel's to make.
 fn arm_raise_blocker<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     selects: &[&Node<R, E>],

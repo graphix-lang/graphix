@@ -482,7 +482,7 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
             && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
             && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
     };
-    // XCR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
+    // CR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
     // body is the interface's registered typedef, which Env::deftype already passed
     // through rewrite_trait_args. impl_body here only went through scope_refs. A fn
     // type with a trait-typed parameter (`type F = fn(x: Display) -> string`) therefore
@@ -496,6 +496,15 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
     // 2026-10-19 claude: check_typedef_decl rewrites the implementation's alias body
     // with rewrite_trait_args, as Env::deftype rewrote the interface's; the probe's
     // check passes. Pin: lang::modules::interface_typedef_with_a_trait_parameter.
+    // 2026-10-20 claude: XCR review: Only the Alias arm of impl_body is rewritten with
+    // rewrite_trait_args; the Abstract arm still only scope_refs its rep, while
+    // Env::deftype (env.rs, the Abstract rep branch) rewrites the interface's rep too.
+    // So an interface and implementation that both write 'type F = Abstract<fn(x:
+    // Display) -> string>;' are still refused by the current debug graphix --check:
+    // 'signature mismatch in F, expected type F = Abstract<fn(x: Display) -> string>,
+    // found type F = Abstract<fn(x: Display) -> string>' (the alias form now passes).
+    // Rewrite the Abstract rep the same way, and pin the abstract-rep twin of
+    // interface_typedef_with_a_trait_parameter.
     let same_body = sig_td.body == impl_body
         || match (&sig_td.body, &impl_body) {
             (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => one_type(t0, t1),
@@ -1153,28 +1162,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 .and_then(|()| crate::drain_pending_settles(ctx))
                 .and_then(|()| crate::check_pending_names(ctx))
                 .map_err(|e| crate::resite_pending_name(ctx, e))?;
-            // XCR claude for claude: [bug/high] For a dynamic body this maps each
-            // interface binding to this load's LambdaDef. Every call compiled at run
-            // time afterwards (collection slots, activations, core-trait hook sites
-            // through SynthCall) binds statically to it and ignores later reloads.
-            // Repro: `array::map(.., |i| foo::f(i))` stays [100, 101, 102] after a
-            // reload to `x + 200`, while a top-level `foo::f(n)` gives 203. A Display
-            // hook site built before a reload keeps printing the old `fmt`, since
-            // impls_version does not change. A dynamic module's outer bindings are
-            // rewritten at run time and must dispatch dynamically: skip this for
-            // Body::Dynamic, or invalidate both bind_to_lambda and CoreHookSites on
-            // each reload. probe:
-            // design/review-2026-10-19/repro/c-module-traits-dyn-reload-static-binding.gx
-            // and
-            // design/review-2026-10-19/repro/c-module-traits-dyn-reload-stale-core-hook.gx
-            // (c-module-traits-02)
-            // 2026-10-19 claude: Module::proxy_lambda_defs maps nothing for a dynamic
-            // body, so a call compiled after a load dispatches dynamically and follows
-            // reloads; a successful load bumps CoreHookSites' generation
-            // (CoreHookSites::reloaded), and a cached core-trait site is stale when its
-            // impl list or the generation changed (coretraits::Version). Pins:
-            // lang::traits::dynamic_module_slot_calls_follow_reloads,
-            // core_trait_dynamic_impl_reload.
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
             crate::drain_pending_settles(ctx)?;
@@ -1322,19 +1309,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 let tag = tv.tag();
                 if !tag.triggers() {
                     None
-                // XCR claude for claude: [bug/medium] Returning here skips the proxy
-                // copies and the body's update for the whole cycle, so everything the
-                // loaded body had that cycle is lost. A write to an interface val in
-                // the same cycle reaches the readers outside but never the body: the
-                // repro prints "t2: x=5 y=0" where it should print y=50. Keep the
-                // bottom resident but fall through as a non-triggering source does, so
-                // the body and the proxies still update. probe:
-                // design/review-2026-10-19/repro/c-module-traits-dyn-bottom-source-skips-body.gx
-                // (c-module-traits-03)
-                // 2026-10-19 claude: A bottom source sets the bottom resident and falls through:
-                // the loaded body and the proxies update that cycle. The probe prints t2: x=5
-                // y=50. Pin: lang::modules::dynamic_module_runs_on_under_a_bottom_source (the
-                // review binary answers 0).
                 } else if tag.is_bottom() {
                     // a taint placeholder never compiles or tears down; the
                     // loaded body runs on
@@ -1407,31 +1381,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     ctx.event.variables.insert(*inner, tv);
                 }
             }
-            // XCR claude for claude: [perf/medium] A module body updates its statements
-            // one after another: unlike Block::update_forking, it has no planned runs
-            // (analysis::plan_blocks plans only NodeView::Block), so parallel
-            // evaluation never forks a statement inside any module. Hold the body as a
-            // Block (module: true) child and update it between the proxy copies in and
-            // out. That gives modules the planned, imaged runs and removes this
-            // duplicate catch-ordered walk. Found by reading; not run.
-            // (c-module-traits-05)
-            // 2026-10-20 claude: Left for now: holding the body as a Block gives a
-            // module the block plan's runs, but a planned run's ForkSite is never
-            // decided today (x-parallel-01, node::Block::update_forking), so no block
-            // run forks under any mode and the restructure would fork nothing yet
-            // while changing the module's image codec, typecheck and catch walk. Do it
-            // once x-parallel-01 lands, with a #[parallel] module pin.
-            // 2026-10-20 claude: With x-parallel-01 fixed on main: a block's run
-            // machinery is node::Runs now (its plan, which the analysis makes and the
-            // image carries, and the run sites made from it), shared by Block and
-            // Module; the analysis plans a module's statements beside the blocks'
-            // (StaticCallGraph::blocks holds both) and Module::update runs them
-            // through Runs::update when it may fork. A module without an interface
-            // compiles as a Block and forked already; this reaches modules with one
-            // (the stdlib's included: under Force the environment alone goes from 30
-            // to 69 forks). Pin: lang::par_attrs::module_runs_fork (8 statements
-            // behind an interface fork where one cannot; equal counts with the Runs
-            // path disabled).
             if self.nodes.len() > 1 && ctx.fork_mode() != ParMode::Off {
                 self.runs.update(ctx, &mut self.nodes, &self.catches);
             } else {
@@ -1510,25 +1459,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
                 let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
-                    // XCR claude for claude: [readability/medium] This refusal tells
-                    // the user to annotate the binding the module decides, but it
-                    // names neither that binding nor the place in the module that
-                    // decided it. OwnWrites records only a bool. A module that
-                    // decides `x` and one that decides `z` get identical errors at
-                    // `mod m`, so the user has to bisect the module body. Have
-                    // foreign_write keep the first foreign cell. Then name the
-                    // outer binding whose type holds it, with its position, and the
-                    // module expression whose check wrote it. probe:
-                    // design/review-2026-10-19/repro/tests-modules-image-left-open-names-nothing.sh
-                    // (tests-modules-image-03)
-                    // 2026-10-20 claude: OwnWrites keeps the first foreign write, with its cell
-                    // (tvar::ForeignWrite, the TCell address while it lives), and the refusal names
-                    // the bindings outside the module whose types hold that cell, by position, up
-                    // to three (module.rs decided_binds): the probe now says annotate `x` (line 1,
-                    // column 5) and annotate `z` (line 2, column 5). Not done: the place in the
-                    // module whose check made the write (the write site has no expression). Pin:
-                    // lang::modules::module_check_decides_no_outer_type names `x` with its
-                    // position.
                     Some(w) => bail!(
                         "the check decides a type the code around the module \
                          left open: annotate {}",

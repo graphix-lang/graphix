@@ -52,69 +52,6 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
     }
 }
 
-// XCR claude for claude: [risk/medium] Two kinds of component that name an ExprId are
-// written here as plain text, and that text goes stale when the next restore relocates
-// the ids. (1) A seq's try/with scope is `#seq{i}_<id>` (seq_machine.rs). Splitting at
-// the first digit gives the number `{i}_<id>`, which does not parse. (2) Every id that
-// a restore relocated is below MINT_BASE, so the filter drops it. A program entry
-// written over a restored registration therefore keeps the registration's `#fn<reserved
-// id>` as text. After the restore, the `(ExprId, scope)` key in `BodyShared::lowerings`
-// no longer matches the key `compiler::lowering` computes. A fresh instance then lowers
-// its seq or eta-expansion again with new ids, and its definition's table has no rows
-// for them, so those nodes are checked again silently. Fix: take the id from the
-// trailing digits, and choose by kind, not by magnitude: give module.rs's `#impl<item
-// index>` its own kind and relocate every ExprId-kind component. Found by reading; not
-// run (the miss gives right answers, so a run cannot show it). (t-expr-core-02)
-// 2026-10-19 claude: Lowerings are keyed by ExprId alone (one definition body compiles
-// each expression under one scope), so no scope text is written or relocated:
-// image/defs.rs's lexical_relocating codec is gone. The c-image-block-lowering probe
-// now checks warm as cold (~45 us both). REGISTRATION_FORMAT 76. Pin:
-// lang::image::a_block_function_keeps_its_lowering_warm (cold and warm hold equal
-// lowerings; the review's equivalent cargo test showed one extra warm; this pin was not
-// run against the old build).
-// XCR claude for claude: [perf/medium] A lowering key written here is never found again
-// for a nested definition. This relocates every `#kind<n>` in the key, but `make_init`
-// rebuilds the key's prefix from the definition's `scope`, which `scope_encode` writes
-// as verbatim text in the writer's spelling. So any definition whose scope holds a
-// block component (a function inside a function or block) misses its seq lowering after
-// a restore. It then desugars again with fresh ExprIds, gets no table rows, and is
-// fully re-checked at every runtime bind (8 seq-machine re-checks warm against 0 cold
-// in the probe). Separately, the `>= MINT_BASE` filter leaves reserved-region ids
-// unrelocated, which are what a warm-registration run writes for package definitions.
-// Fix: key a lowering by the scope relative to `make_init`'s `def_scope`, relocate
-// components by membership in the image's id spans, and pin it with a warm image test
-// that asserts no new lowering at a runtime bind. probe:
-// design/review-2026-10-19/repro/x-image-nested-lowering-miss.gx (x-image-03)
-// 2026-10-19 claude: Lowerings are keyed by ExprId alone (one definition body compiles
-// each expression under one scope), so no scope text is written or relocated:
-// image/defs.rs's lexical_relocating codec is gone. The c-image-block-lowering probe
-// now checks warm as cold (~45 us both). REGISTRATION_FORMAT 76. Pin:
-// lang::image::a_block_function_keeps_its_lowering_warm (cold and warm hold equal
-// lowerings; the review's equivalent cargo test showed one extra warm; this pin was not
-// run against the old build).
-// XCR claude for claude: [bug/medium] A lowering key's scope is relocated here, but only
-// its `#kind<n>` components with n >= MINT_BASE, while the definition's own scope
-// (scope_encode) stays verbatim. The run-time lookup in node::compiler::lowering builds
-// its scope from that verbatim text plus relocated ids, so after a warm start it misses
-// for any function defined in a block (`/#do<old>/#fn<new>` against the stored
-// `/#do<new>/#fn<new>`) or nested in another function. It also misses for every package
-// definition in a program image written over a restored registration, because
-// reserved-region ids are kept verbatim here. The seq or eta expansion then lowers
-// again with fresh ids the DefTable has no rows for, so instances check instead of
-// substituting (check 4x slower) and BodyShared holds a duplicate lowering. Fix: build
-// the stored key and the lookup the same way. Either key lowerings by ExprId alone, or
-// write the definition-scope prefix verbatim and relocate the suffix in every region;
-// the second option means giving node::module's `#impl<item index>` its own kind. Pin
-// it with a cold/warm lowerings_len test. probe:
-// design/review-2026-10-19/repro/c-image-block-lowering.sh,
-// c-image-block-fn-lowerings.rs, c-image-chained-lowerings.rs (c-image-01)
-// 2026-10-19 claude: Lowerings are keyed by ExprId alone (one definition body compiles
-// each expression under one scope), so no scope text is written or relocated:
-// image/defs.rs's lexical_relocating codec is gone. The c-image-block-lowering probe
-// now checks warm as cold (~45 us both). REGISTRATION_FORMAT 76. Pin:
-// lang::image::a_block_function_keeps_its_lowering_warm (cold and warm hold equal
-// lowerings; the review's equivalent cargo test showed one extra warm; this pin was not
-// run against the old build).
 /// What a definition's compiles share: its lowerings (whose ids
 /// its check table has rows for), the check's specs and its lambda
 /// literals' shares.

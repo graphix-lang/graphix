@@ -195,7 +195,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             self.map = map;
             self.generation = generation;
             if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
-                // XCR claude for claude: [perf/low] [perf/low] A static bind runs in a
+                // CR claude for claude: [perf/low] [perf/low] A static bind runs in a
                 // forked task, and a nested bind forks inside it. Every join copies
                 // what the child accumulated: this `touched` list, and in
                 // `CompileCtx::join` also pending_refs, pending_settles and discarded.
@@ -225,6 +225,16 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
                 // does the same for pending_refs and discarded. pending_settles still
                 // extends the parent frame with the child's (the chunk-and-flatten form
                 // is not done). Not re-measured.
+                // 2026-10-20 claude: XCR review: Incomplete by the notes' own account.
+                // touched, pending_refs and discarded now absorb smaller into larger,
+                // but CompileCtx::join (graphix-compiler/src/lib.rs,
+                // frame.extend(pending_settles.into_iter().flatten())) still copies the
+                // child's whole settle frame into the parent at every level, so a
+                // resolution chain still costs O(depth x instances) in settles: 5.1M
+                // settles moved at chain length 3200, the 40 us per join that remains.
+                // The finding's fix asked for this too (push the child's frame as one
+                // chunk and flatten once where the frame drains), and lambda.rs's gate
+                // pop/extend copies the same frames.
                 absorb(mine, &mut theirs)
             }
             return;

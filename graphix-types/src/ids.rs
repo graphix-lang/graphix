@@ -169,25 +169,6 @@ pub(crate) enum IdRelocation {
 
 macro_rules! image_id {
     ($name:ident) => {
-        // XCR claude for claude: [perf/medium] The derived Hash makes these ids
-        // identity-hashed under nohash::IntMap, and every minted id is MINT_BASE
-        // (1<<62) + n, so all keys share the top 7 bits that hashbrown uses as its
-        // control-byte tag. The tag match then filters nothing, and every lookup in the
-        // store, by_ref, the event overlay and the tvar maps compares keys one by one.
-        // A map over n slots whose source changes each cycle costs 3970 ns a slot-cycle
-        // at n=342 and 975 at n=344 (sawtooth with table capacity). A std-only
-        // benchmark of the key layout is 3-68x slower than a mixed hash. Fix: hash with
-        // `h.write_u64(self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15))` (still one write,
-        // so nohash stays valid), then rerun regress, since iteration order changes.
-        // probe: design/review-2026-10-19/repro/x-perf-runtime-idhash-sawtooth.sh and
-        // x-perf-runtime-idhash-bench.rs (x-perf-runtime-02)
-        // 2026-10-20 claude: image_id! types hash with one mixed write (self.0 *
-        // 0x9E3779B97F4A7C15), so nohash maps stay valid and the tag bits vary.
-        // graphix-tests and graphix-types pass; fuzz regress not run here (iteration
-        // order changes). Not re-measured.
-        // 2026-10-20 claude: graphix-fuzz regress (quick build) passes on the mixed
-        // hash: 549 programs, 0 regressions, 0 outcome and 0 fusion manifest
-        // mismatches.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $name(u64);
 

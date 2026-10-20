@@ -453,26 +453,6 @@ fn assertion_failure<R: Rt, E: UserEvent>(
                  iteration then keeps its own activation and the loop is not \
                  constant-space",
             ),
-            // XCR claude for claude: [readability/medium] This message is given for
-            // every pure TailCalls body. But mark_recursion also lands there when the
-            // body's Io does not follow its formals (io_follows), and
-            // structural_tail_loop does when a handler-ful `?` does not
-            // (claims_no_site_memory). For those the message lists causes the body does
-            // not have (a labeled, variadic or opaque formal, a collection operation)
-            // and never names the println or the raise. Record why the loop was refused
-            // with the TailCalls verdict and name the Io call or `?` site in the
-            // message. attributes.rs has no fixture for either cause: add one each.
-            // probe:
-            // design/review-2026-10-19/repro/tests-lang-rest-a-tail-recursive-io-diagnostic.gx
-            // (tests-lang-rest-a-04)
-            // 2026-10-20 claude: mark_recursion records why a pure TailCalls body builds no
-            // loop on its definition (LambdaDef::no_loop, effects::NoLoop: Formals, Memory,
-            // Io(site), Raise(site)); unfollowed_io names the first call breaking io_follows,
-            // lowering::tail_loop_blocker and site_memory (were structural_tail_loop and
-            // claims_no_site_memory, same decisions) name the first handler-ful ? not firing
-            // with the formals. The refusal says the cause and names the site. Pins:
-            // lang::attributes::tail_recursive_io, tail_recursive_raise. regress 552/0/0/0 (no
-            // loop decision moved).
             RecursionKind::TailCalls => Some(no_loop_message(d.no_loop.lock().as_ref())),
             RecursionKind::Recursive => said(
                 "#[tail_recursive]: this function recurses through a non-tail \
@@ -1865,22 +1845,6 @@ pub(crate) fn fires_with<R: Rt, E: UserEvent>(
 /// ids it binds, and each reference's cell, which a reference (and a
 /// moving place its path) publishes in the cycle it fires for a later
 /// `*r` to read.
-// XCR claude for claude: [bug/high] A reference made inside a callee's body is never
-// counted as a publication: `publishes` and the `cells` scan in `independent` walk only
-// the sibling's own tree (for_each_node, Refs::without_callees). A ByRef with a Channel
-// referent delivers its cell every cycle its value fires, so a later sibling that
-// dereferences a reference to that cell is forked as independent and reads the frozen
-// parent. Fix: have local_summary record that a ByRef was reached, join it through
-// instance_summaries, and treat a sibling or statement carrying it as a non-empty
-// publication for a later `reads.refs`, in `independent` and in `plan_runs`. probe:
-// design/review-2026-10-19/repro/c-analysis-branch-callee-ref-cell.gx (serial
-// deref=10..40, GRAPHIX_PAR=force deref=0, GRAPHIX_PAR_AUDIT=1 panics; #[parallel] on
-// the tuple is accepted). (c-analysis-branch-01)
-// 2026-10-19 claude: Summary::makes_refs: local_summary records a ByRef reached
-// (callees joined through instance_summaries); independent and plan_runs break a later
-// sibling or statement that reads through a reference after one that makes one. Pin:
-// lang::par_attrs::callee_reference_is_a_publication (Force values == Off values;
-// #[parallel] on the pair refused).
 fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
     let mut refs = Refs::without_callees();
     n.refs(&mut refs);
@@ -1904,7 +1868,7 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// one, to ask again once it is bound. A call site decides its arguments
 /// again at each bind (`CallSite::clear_prepared_bind`), a collection its
 /// slots once they are bound to a new callback (`update_slots`).
-// XCR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
+// CR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
 // to a pure function outlives the call's rebind: local_summary counts a call with no
 // static target as its current instance, and ForkSite::decide_siblings keeps the answer
 // forever. Only a call's own arguments and a slot site decide again at a rebind, so a
@@ -1922,102 +1886,27 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 // through a Ref, which counted the current instance the same way; it now records one
 // only for a site with a static target (a self-call). Pin:
 // lang::par_attrs::rebound_dynamic_calls_stay_ordered.
+// 2026-10-20 claude: XCR review: Incomplete: own_access in analysis.rs still summarizes
+// a call with no static target by what it is bound to now when that is a builtin-backed
+// function: the 'Some(ApplyView::BuiltIn(name))' arm returns before the opaque
+// fallthrough, without checking cs.static_target(). So h = select n { k if k < 3 =>
+// once, _ => g2 } (the c-analysis-branch-stale-verdict-after-rebind.gx repro with 'let
+// g1 = once;') still decides the tuple Independent while h is the builtin and keeps
+// forking after h becomes g2 calling the queuefn wrapper: GRAPHIX_PAR=off prints (null,
+// [34, 41, 42, 43, 44, 51, ...]), GRAPHIX_PAR=force prints (1 or 3, [34, 43, 41, 42, 44,
+// ...]) varying (debug binary at HEAD; probe in the reviewer scratchpad as b02.gx). The
+// BuiltIn arm (and the BuiltInLambda view) must count only when the site has a static
+// target or is the slot site's current call; otherwise opaque. Pin
+// rebound_dynamic_calls_stay_ordered covers only a lambda-to-lambda rebind; add the
+// builtin case.
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
     sites: Sites,
 ) -> Option<bool> {
-    // XCR claude for claude: [perf/medium] Every fork site that is not a block (an
-    // operator's operands, a call's arguments, a constructor's fields, a collection's
-    // slots) runs `independent` at its first update. Each run rebuilds
-    // `collect_static_graph_of` and `instance_summaries` over everything reachable
-    // below the site. A call chain with an operator at each level therefore pays
-    // quadratically in the first cycle under the default `GRAPHIX_PAR=auto`, and each
-    // new slot or activation pays again. At n=800 the first value takes 22 s with auto
-    // against 1.5 s with off (40 s against 3 s in debug). Decide these sites from
-    // summaries computed once. Either `analyze` keeps each instance's summary where
-    // `independent` can read it, or analysis decides each fork site's siblings the way
-    // `plan_blocks` decides blocks, and the decision rides the image. probe:
-    // design/review-2026-10-12/repro/x-perf-compile-03-independent-first-cycle.gx
-    // (compare GRAPHIX_PAR=auto with off) (x-perf-compile-03)
-    // 2026-10-15 claude: a verdict that rests on a callee not bound yet (a warm
-    // start's imaged callee, a slot not prebound) now leaves the site Undecided,
-    // serial, and asks again at its next update (Siblings::of, Summary::unbound). So a
-    // warm start forks from its second cycle on but not in its first:
-    // design/review-2026-10-12/repro/c-analysis-branch-04.sh still prints f before g
-    // warm. Deciding these sites at analysis and imaging the verdict, as proposed
-    // here, also closes that first cycle; pin to extend:
-    // lang::image::warm_fork_point_decides_once_its_callees_bind.
-    // 2026-10-15 claude: after b4e2e7312 (instance summaries drop own binds, one SCC
-    // pass) this probe's first value takes 2.2 s under auto against 0.8 s off (was
-    // 17.7 s, debug). What remains is each site's collect_static_graph_of over
-    // everything below it, still quadratic over a chain, and the warm first cycle;
-    // both go with deciding these sites at analysis.
-    // a constant or a variable read publishes nothing and calls nothing,
-    // so beside at most one child that does there is nothing to decide
-    // 2026-10-16 claude: Measured 10-16 (quick build): the probe chain at 800 and 1600
-    // functions takes 0.55 and 1.92 s serial, 1.13 and 7.08 s under auto. Caching each
-    // instance's transitive summary (sound only for statically bound callees) would
-    // not make it linear: a chain function's summary reads every function binding
-    // below it, so the summaries themselves grow by a binding per level and their
-    // unions stay quadratic. Two ways out: decide these sites at analysis, as
-    // proposed, from the one set of summaries analyze builds; or note that siblings at
-    // a non-block fork point cannot read each other's lets, so their summaries need
-    // only the reads a sibling could publish (connect targets and references), which
-    // keeps them small. The second changes what the parallel planner trusts and wants
-    // its own pins.
-    // 2026-10-17 claude: The common case is linear now: a sibling's lets are named by
-    // no other sibling, so independent first takes summaries with no read or write ids
-    // (Detail::Flags) and, when no sibling but the last makes a reference and none
-    // reads through one or calls something opaque, decides by the ordered calls alone.
-    // Every site of the probe chain takes that path; GRAPHIX_PAR=auto at 1600
-    // functions 16.6-16.9 s -> 6.1 s against 5.0 s off (quick, under background load).
-    // What stands: the flags pass still walks the static graph below each site
-    // (quadratic in node visits, cheap ones), siblings that use references or opaque
-    // calls take the full quadratic path, and a warm start's first cycle stays serial;
-    // deciding at analysis and imaging the verdict covers all three.
-    // 2026-10-20 claude: Decided at analysis now: plan_forks decides every fork point
-    // other than a block that an analysis reaches (the program's and each run-time
-    // bind's), from one set of instance summaries per analysis and memoized subtree
-    // facts (ForkCx); an open verdict waits for a bind (Siblings::decide,
-    // Control::rebuilds). The probe chain (quick, --no-fusion, taskset 0-3) at 1600
-    // functions: auto 1.23 s -> 0.56 s (off 0.59 s). What stands: the verdict does not
-    // ride the image, so a warm start's first cycle still decides each site here over
-    // its own children (the old per-site walk), and
-    // lang::image::warm_fork_point_decides_once_its_callees_bind still describes that
-    // first cycle. Imaging ForkSite's verdict in each fork-point node's codec closes
-    // it.
-    // 2026-10-20 claude: The verdict rides the image now: ForkSite::image_encode /
-    // image_decode in the codec of every fork-point node the analysis decides (struct,
-    // tuple, variant, array and list literals, map literal, string interpolation,
-    // binary operators, call sites; a kernel's feeder site is built after the analysis
-    // and stays run-time), image format 70. A warm start's first cycle forks as the
-    // cold one: design/review-2026-10-12/repro/c-analysis-branch-04.sh prints g before
-    // f warm (f first before). Pin: lang::image::warm_fork_point_keeps_its_verdict
-    // (was warm_fork_point_decides_once_its_callees_bind), warm forks now equal to
-    // cold under Force, where it allowed two fewer.
     if !two_work(children.clone()) {
         return Some(true);
     }
-    // XCR claude for claude: [perf/medium] [perf/medium] The first-update cost that
-    // x-perf-compile-03 describes is not confined to deep chains. A left-associated
-    // operator run `f(x) + g0(x) + ... + gK(x)` nests K fork sites, each with f(x) in
-    // its left operand, so `accesses` collects f's whole reachable static graph K
-    // times. That cost compounds through every caller. With 40 functions of 40-term
-    // sums (about 1600 instances, depth 40), the first value takes 1.09 s under the
-    // default GRAPHIX_PAR=auto against 0.24 s off. Depth 25 x 160 terms: 5.4 s against
-    // 0.41 s (debug, --no-fusion). This raises the priority of deciding these sites
-    // once from analysis-time summaries, as the open CR proposes. Until then, a site
-    // whose operand is a fork site of the same kind can reuse that child's summary.
-    // probe: design/review-2026-10-19/repro/x-perf-compile-par-auto-operator-runs.gx
-    // (x-perf-compile-03) (x-perf-compile-02)
-    // 2026-10-20 claude: The analysis now decides these sites (plan_forks) with each
-    // subtree's Shallow facts computed once and memoized by node (ForkCx::shallow_of),
-    // so a run of K nested operators visits f's graph once; the runtime fallback below
-    // runs only for sites no analysis decided (a rebind's arguments, an image-restored
-    // node). Probe (quick, --no-fusion, taskset 0-3): auto 0.77 s -> 0.12 s (off 0.12
-    // s). Pin: lang::par_attrs::activations_decide_their_fork_points_at_bind counts
-    // run-time verdicts (Control::verdicts).
     let flags = accesses(children.clone(), ctx, Detail::Flags, sites);
     let shallow: SmallVec<[Shallow; 8]> = children
         .clone()

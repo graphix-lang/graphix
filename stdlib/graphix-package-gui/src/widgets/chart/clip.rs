@@ -89,22 +89,6 @@ pub fn clip_polyline(
     runs
 }
 
-// XCR claude for claude: [bug/medium] Clamping vertex y is not exact. Where a segment
-// crosses the view's top or bottom, the fill's edge becomes a chord between clamped
-// endpoints and falls below the line that clip_polyline draws. In view 0..10, area
-// (-5,20),(5,20),(15,-5) fills to y=8 at x=9 while the line is at 10. A NaN point also
-// does not break the area: the pieces on either side are joined into one outline, so
-// the fill spans the gap the line shows. Fix: return one outline per run, like
-// clip_polyline, and split each x-clipped segment at its crossings of y.0/y.1 before
-// clamping. an_area_is_cut_to_x_and_clamped_in_y only checks endpoints and cannot see
-// this. probe: design/review-2026-10-19/repro/gui-chart-area-clamp.rs (gui-chart-02)
-// 2026-10-19 claude: clip_area now returns one outline per run, as clip_polyline does
-// (a non-finite point or a re-entry at the left edge starts a new one), and cuts each
-// x-clipped segment at its crossings of the view's bottom and top before clamping y,
-// so the fill's edge follows the drawn line. draw_xy fills each outline as its own
-// AreaSeries (the legend entry on the first). Pins:
-// clip::test::an_area_is_cut_to_x_and_clamped_in_y (asserts the (9, 10) crossing) and
-// clip::test::non_finite_points_break_the_area.
 /// The outlines of the area under `pts` inside `view`, one for each run
 /// clip_polyline would draw: the line cut to the view's x interval and
 /// at its crossings of the view's bottom and top, its y then moved into

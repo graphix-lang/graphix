@@ -558,23 +558,6 @@ safe fn graphix_abort_set() {
 /// A fused select matched no arm: a hole in the check's coverage, said
 /// once per site, as the node-walk says it once per select.
 unsafe fn graphix_select_no_match(site: *const super::emit::NoMatchSite) {
-    // XCR claude for claude: [dead/low] This arm is dead. report_coverage_hole already
-    // aborts on the first call when GRAPHIX_ABORT_ON_NO_MATCH is set, and the flag is a
-    // cached constant, so no later call reaches here with it set. Delete it. Also, this
-    // helper reports once per process, while the node-walk's Select reports once per
-    // select (logged_no_match), so a second hole in fused code goes unreported. A
-    // per-site flag word in the kernel record would match the node-walk. Found by
-    // reading; not run. (f-helpers-04)
-    // 2026-10-19 claude: The dead arm is deleted. What remains is the second half: the
-    // helper still reports once per process where the node-walk reports once per
-    // select; a per-site flag word (a KernelConst the site's code names) would match
-    // it.
-    // 2026-10-20 claude: The helper takes a per-site KernelConst::NoMatchSite (the
-    // select spec and a said flag, imaged by its spec), so a fused hole is said once
-    // per site with its position, as the node-walk says it once per select. No pin can
-    // trigger it (a hole is a checker bug); checked: the probe select emits the call
-    // with the site pointer, a warm image decodes the constant, fusion suites and
-    // regress green.
     let site = unsafe { &*site };
     if !site.said.swap(true, Relaxed) {
         crate::node::error::report_coverage_hole(&format_args!(
@@ -1010,25 +993,6 @@ safe fn graphix_value_cmp(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) 
 }
 
 /// Value equality; borrows both operands.
-// XCR claude for claude: [bug/high] A fused kernel calls this, graphix_value_cmp, the
-// interpolation's Display push and the map-key helpers on tainted operands. While an
-// input is absent, the kernel builds the abstract value from its placeholder and the
-// user's Eq/Ord/Display implementation runs on it: `K(clock) == K(1)` with a
-// println-ing eq prints `eq 0 1` at init under the JIT only. A stateful fmt makes the
-// engines diverge (interp "1#1" vs jit "1#2"). Skip the dispatch when either operand's
-// disc has TAINT (branch at emission or return early here; the disc already carries the
-// taint), and pin it with a printing impl over a late input in traits.rs. probe:
-// design/review-2026-10-19/repro/tests-fusion-traits-hook-runs-on-placeholder.gx
-// (tests-fusion-traits-01)
-// 2026-10-19 claude: graphix_abstract_wrap leaves a bottom payload as the placeholder,
-// so no value of an abstract type is built from one, and graphix_value_eq,
-// graphix_value_cmp and graphix_string_buf_push_value return before any hook when an
-// operand is bottom (the result disc carries the taint). Pin: graphix-tests
-// lang::traits::hooks_on_late_input (println-ing Eq, Ord and Display over array::iter,
-// compared, ordered, interpolated and used as map keys, each #[native]; the review
-// binary prints eq 0 1, cmp 0 2, fmt 0, cmp 5 0 first fused). A stale part of a kernel
-// still reruns a hook at every invocation: see (x-fusion-hooks-01).
-//
 // CR claude for eric: [bug/medium] A kernel recomputes its stale parts at every
 // invocation, so a core-trait impl a value helper reaches (this one, graphix_value_cmp,
 // the interpolation's Display push, the map-key helpers) runs again whenever any other
@@ -1336,32 +1300,6 @@ unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
 /// its entries in written order, a later key replacing an earlier one as
 /// the node-walk's literal does; consumes the buf. Key order is a core
 /// trait's under the kernel's loaned hooks.
-// XCR claude for claude: [risk/low] This helper orders keys through the loaned core Ord
-// hooks, which run Graphix code, but it does not wrap that work in guard_panic.
-// graphix_string_buf_push_value (Display hooks through TVal) has the same gap. A panic
-// in hook code therefore cannot unwind through the extern "C" helper and aborts the
-// process. The guarded helpers (graphix_valarray_into_cmap, graphix_value_cmp,
-// graphix_value_eq, graphix_map_ref) instead record it, and FusedKernel::update resumes
-// it so that only the runtime dies. Fix: wrap the insert loop here, and the write! in
-// graphix_string_buf_push_value, in guard_panic. Extend rust_panics_in_a_kernel with a
-// map literal keyed by K and an interpolated K. Today that test covers only ==. Found
-// by reading; not run. (x-unsafe-01)
-// 2026-10-19 claude: graphix_map_finalize's inserts, graphix_string_buf_push_value's
-// write and graphix_swallowed_error's report run under guard_panic. Pin: graphix-tests
-// lang::test_builtins::rust_panics_in_a_kernel now also panics in an Ord impl through a
-// fused map literal and in a Display impl through a fused interpolation.
-// XCR claude for claude: [risk/low] This helper runs Graphix code: insert_cow orders
-// keys through the loaned core Ord hooks. Unlike graphix_value_cmp, graphix_map_ref and
-// graphix_valarray_into_cmap, it does not run under guard_panic, so a panic in a hook
-// unwinds into the extern "C" frame and aborts the process instead of being resumed by
-// FusedKernel::update. graphix_string_buf_push_value (the Display hooks, through TVal)
-// and graphix_swallowed_error (the error print) have the same gap. Wrap the insert loop
-// in guard_panic(TagValue::phantom(), ..), the write in push_value and the report in
-// swallowed_error in guard_panic((), ..). Found by reading; a probe confirmed that a
-// user Ord impl runs here for a fused map literal with abstract keys. (f-helpers-01)
-// 2026-10-19 claude: Fixed with x-unsafe-01: graphix_map_finalize,
-// graphix_string_buf_push_value and graphix_swallowed_error run their hook work under
-// guard_panic. Pin: rust_panics_in_a_kernel's map-literal and interpolation bodies.
 unsafe fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
     let map = guard_panic(TagValue::phantom(), || {
         let mut m = netidx_value::Map::new();

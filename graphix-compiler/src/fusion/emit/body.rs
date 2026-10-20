@@ -381,36 +381,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         if self.ctx.claims == Channel::Site {
             self.b.ins().trapz(base, TrapCode::HEAP_OUT_OF_BOUNDS);
         }
-        // XCR claude for claude: [structure/low] This trap makes every site-channel
-        // claim assert a non-null base, which is the contract kernel_instance_state.md
-        // states and the callers keep. The null-guard paths are therefore dead:
-        // StateWord::Guarded/with_addr, null_guarded, SlotTable::guarded, the `live`
-        // selects in call::claim_callee_block and emit_site_block, and the Guarded arm
-        // of emit_slot_truncates. They still emit a branch and a merge block per use,
-        // e.g. first_use on a callee loop's slot word, per call per iteration.
-        // SlotFlags::new also re-traps a word claim_word already trapped. Keep the
-        // trap, make StateWord a plain address, and fix the CTX_WIRE_SLOTS doc ("Every
-        // consumer null-guards it"). Found by reading; not run. (f-scaffold-body-01)
-        // 2026-10-19 claude: The CTX_WIRE_SLOTS doc now says a site-channel claim
-        // traps on a null slot 2. The StateWord simplification (dropping the dead
-        // null-guard paths) remains.
-        // the trap proved the base non-null: what follows needs no guard
-        // 2026-10-20 claude: claimed_word now returns StateWord::Sure after its trap,
-        // so words claimed through it emit no null guard downstream. Still open:
-        // claim_anchor and the other StateWord::Guarded constructions in body.rs (and
-        // SlotTable::guarded, the live selects in call::claim_callee_block and
-        // emit_site_block, the Guarded arm of emit_slot_truncates) where no trap
-        // precedes them; each needs its own proof that the base is non-null before the
-        // variant can go.
-        // 2026-10-20 claude: StateWord is now a plain address (lower.rs); a
-        // site-channel claim traps on a null base in claimed_word, emit_slot_truncates
-        // traps the same way for a site anchor instead of guarding, and null_guarded,
-        // SlotTable::guarded and the Guarded arms are gone. The two live selects in
-        // call.rs stay: one guards our own self-block word, whose comment says the
-        // block can be null, and one a callee table pointer from a helper, neither of
-        // which this trap proves. graphix-tests 9636 and the shell tests green,
-        // regress 552/0/0/0; a null base now traps, which the fuzzer records as a
-        // crash.
         StateWord(addr)
     }
 
@@ -463,31 +433,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Ok(())
     }
 
-    // XCR claude for claude: [perf/low] This record lands in the new frame's own
-    // pending list, so emit_slot_truncates re-ensures the leaf in the loop's
-    // exit block with the same len and valid the preheader just used: n_dirs +
-    // 1 no-op helper calls per state site per loop run (per outer slot when
-    // nested). The record only matters at the enclosing loops' exits, whose
-    // zero-length epochs skip this preheader. The callee_table record below has
-    // the same problem, and emit_outlined repeats the leaf ensure too. Append
-    // both to the enclosing frame's pending (drop them at depth 0), and keep
-    // claim_callee_block's in-body fallback records in the current frame.
-    // probe: design/review-2026-10-19/repro/f-scaffold-body-exit-reensure.gx
-    // (dumped CLIF shows two graphix_slot_state_table calls with identical
-    // arguments) (f-scaffold-body-02)
-    // 2026-10-20 claude: claim_slot_tables appends its records to the enclosing
-    // frame pending (none at depth 0) instead of its own frame, so a loop no
-    // longer re-ensures its own leaf at its exit, and an outlined loop does not
-    // either (emit_chunk and emit_range lost the seed parameter). The probe
-    // kernel now has one graphix_slot_state_table call (the preheader). A
-    // missed truncation would show in the kernel interior memory pins
-    // (lang::kernel_state, collection slot fixtures); graphix-tests 9636 green
-    // and regress 552/0/0/0.
-    // 2026-10-20 claude: Correction to the pin named above (there is no
-    // lang::kernel_state): a mutation that drops these records instead of
-    // handing them to the enclosing frame aborts
-    // lang::fusion::nested_hof_function_capture (a slot-chain helper panics),
-    // which is the pin.
     /// The claims of [`Self::open_slot_tables`] for a loop at the next
     /// depth: its sites' tables. Their truncate records go to the
     /// enclosing loop's frame: the preheader sizes the tables each run,

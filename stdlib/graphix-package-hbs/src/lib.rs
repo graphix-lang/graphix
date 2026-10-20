@@ -77,7 +77,7 @@ thread_local! {
 
 /// `text`, refused when its blocks (`{{#..}}`, `{{^..}}`, closed by
 /// `{{/..}}`) nest deeper than [`MAX_BLOCK_DEPTH`].
-// XCR claude for claude: [bug/medium] Only partial expansions are bounded
+// CR claude for claude: [bug/medium] Only partial expansions are bounded
 // (MAX_PARTIAL_DEPTH); block nesting is not. Handlebars compiles iteratively, but the
 // template clone here, bound_partials, Template's drop and render all recurse per
 // level. 3000 nested `{{#if}}` blocks abort the process with a stack overflow, even
@@ -93,6 +93,18 @@ thread_local! {
 // bounds blocks and partials together. Pin: lib_tests::hbs::hbs_block_nesting_refused
 // (mutual partials of 12 blocks, 5000 nested blocks, 60 nested blocks rendering);
 // hbs_partial_cycle_refused's message is now 'templates nest more than 128 deep'.
+// 2026-10-20 claude: XCR review: shallow counts only '{{#' and '{{^' openers, but
+// handlebars-rust 6.4 builds an else chain as nested templates: each '{{else if ..}}'
+// becomes a HelperBlock inside the previous one's inverse
+// (HelperTemplate::insert_inverse_node, template.rs:210), so a chain nests the Template
+// tree one level per link while shallow sees depth 1. Template clone in build_registry,
+// bound_nesting and Template drop then recurse per link. Ran with the current quick
+// binary: hbs::render of '{{#if a}}x' + 5000 x '{{else if a}}y' + '{{/if}}' with {a:
+// false} aborts the process ('tokio-rt-worker has overflowed its stack'); 1000 links
+// answer the render-depth HbsErr. The nested-#if case is refused as the pin says. Fix:
+// count each '{{else ..}}' with a helper name (an else-chain link) as one more level in
+// shallow, or bound the compiled Template's depth before cloning it, and add the
+// else-chain case to hbs_block_nesting_refused.
 fn shallow(text: &str) -> std::result::Result<&str, String> {
     let (mut depth, mut deepest) = (0usize, 0usize);
     for (i, _) in text.match_indices("{{") {

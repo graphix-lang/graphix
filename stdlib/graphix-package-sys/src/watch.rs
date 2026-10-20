@@ -198,19 +198,6 @@ impl WatcherValue {
         path: &str,
         interest: BitFlags<Interest>,
     ) -> Result<Watched> {
-        // XCR claude for claude: [risk/low] add only sends Cmd::Watch to the watcher's
-        // background task. That task can emit the watch's first event, usually
-        // `Established`, before the insert below maps its id, and
-        // NotifyChan::handle_event drops events whose id has no mapping. A program
-        // waiting for `Established` then never proceeds. Hold the idmap lock across the
-        // add and insert under it; handle_event takes the same lock and waits out the
-        // insert. A 400-watch probe did not hit the window in 8 runs. Found by reading.
-        // (x-concurrency-04)
-        // the watch's first event waits for its mapping: handle_event takes
-        // the same lock, and the add only queues a command
-        // 2026-10-19 claude: WatcherValue::add holds the idmap lock across watcher.add
-        // (an unbounded send) and the insert, so handle_event waits for the mapping. No
-        // pin (the window never showed in 400-watch probes).
         let mut idmap = self.idmap.lock();
         let w = self.watcher.add(path.into(), interest)?;
         idmap.insert(w.id(), id);

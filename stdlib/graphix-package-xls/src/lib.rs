@@ -23,21 +23,6 @@ fn data_to_value(cell: &Data) -> Value {
         Data::Float(f) => Value::F64(*f),
         Data::String(s) => Value::String(ArcStr::from(s.as_str())),
         Data::Bool(b) => Value::Bool(*b),
-        // XCR claude for claude: [bug/medium] A duration-formatted cell ([h]:mm:ss,
-        // which calamine marks with is_duration()) goes through as_datetime too. A
-        // 36-hour cell reads as 1900-01-01 12:00:00 UTC instead of 36.h, even though
-        // the row type admits duration. ods time values (DurationIso) come back as raw
-        // "PT.." strings. Map is_duration() cells to Value::Duration (as_f64() days in
-        // seconds, F64 when negative or non-finite), parse DurationIso with
-        // as_duration, and pin a duration cell and a date cell (no xls pin reads either
-        // today). probe: design/review-2026-10-19/repro/small-pkgs-xls-duration.sh
-        // (small-pkgs-04)
-        // a duration-formatted cell ([h]:mm:ss) counts days, never from an epoch
-        // 2026-10-19 claude: A duration-formatted cell reads as Value::Duration (days *
-        // 86400 s, F64 when negative or non-finite), and an ods DurationIso is parsed
-        // (iso_duration_secs: days, hours, minutes, seconds) the same way, else kept as
-        // its string. Pin: xls test::duration_cells_read_as_durations (with a date
-        // cell).
         Data::DateTime(edt) if edt.is_duration() => duration_value(edt.as_f64() * 86400.),
         Data::DateTime(edt) => match edt.as_datetime() {
             Some(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
@@ -169,24 +154,6 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
             }
         };
         match e.name().as_ref() {
-            // XCR claude for claude: [bug/high] check_ods counts XML that calamine never
-            // reads. A `<table:table/>` or a `<table:table-row></table:table-row>`
-            // inside a cell resets the counts here (`table` is replaced, or `row` is
-            // replaced). calamine's read_row skips a cell's content with
-            // read_to_end_into, so it still expands every row. As a result 2000 rows
-            // that reach XFD pass the bound, and an 8000-row file of 10 KB OOM-kills
-            // the runtime from xls::sheets. Fix: skip a non-empty cell's content to its
-            // End as calamine does; reset `table` only on a `table:table` Start outside
-            // a table and end it at the first `table:table` End, as read_table does.
-            // Add a pin with a nested table in each far row. probe:
-            // design/review-2026-10-19/repro/small-pkgs-ods-nested-table.sh
-            // (small-pkgs-01)
-            // what calamine reads: rows of the table it is in, never a table
-            // or row inside a cell, whose content it skips
-            // 2026-10-19 claude: check_ods skips a non-empty cell's content to its End
-            // as calamine does, and starts a table only at a table:table Start outside
-            // a table, ending it at the table's End. Pin: xls
-            // test::ods_counts_no_table_inside_a_cell.
             b"table:table" if !empty && table.is_none() => {
                 table = Some(OdsTable::default())
             }
@@ -329,7 +296,7 @@ fn parse_sheet<RS: Read + Seek + Clone>(rs: RS, sheet: &str) -> Value {
     grid(cells)
 }
 
-// XCR claude for claude: [bug/high] Padding to A1 allocates (end row + 1) x (end col
+// CR claude for claude: [bug/high] Padding to A1 allocates (end row + 1) x (end col
 // + 1) Values. Both numbers come from cell coordinates in the file, not from its
 // size, so a 2 KB xlsx whose only cell is XFD100000 asks for 100000 rows of 16384
 // nulls (1.6e9 Values), and the runtime is OOM-killed. calamine's range for that
@@ -360,6 +327,18 @@ fn parse_sheet<RS: Read + Seek + Clone>(rs: RS, sheet: &str) -> Value {
 // (A1 plus XFD over 5000 repeated rows), ods_reads_padded_to_a1; both refusals fail
 // with the check disabled. calamine's dense ods reader stands upstream (no sparse
 // cells reader for ods), now unreachable past the bound.
+// 2026-10-20 claude: XCR review: The 10-16 note says ods is closed because check_ods
+// refuses any table calamine would expand past MAX_CELLS. But check_ods counts a
+// self-closing cell as valued only when it carries office:value-type or table:formula,
+// while calamine's get_datatype (ods.rs, expand_empty_elements on) makes a value from
+// office:value, office:string-value, office:date-value, office:time-value or
+// office:boolean-value alone. Ran with the current quick binary: 2000 rows of
+// '<table:table-cell table:number-columns-repeated="16383"/><table:table-cell
+// office:value="1"/>' (a 2.6 KB ods) passes the check, and xls::sheets answers ['S']
+// after calamine built 32.7M cells. The same file with office:value-type="float" is
+// refused. Fix: treat a cell as valued when it has any attribute calamine reads a
+// value from (office:value, office:string-value, office:date-value, office:time-value,
+// office:boolean-value) or a formula, and pin the value-type-less far rows.
 /// `cells` as rows of values from A1, a cell not given null.
 fn grid(mut cells: Cells) -> Value {
     let rows = cells.iter().map(|(r, _, _)| *r as usize + 1).max().unwrap_or(0);

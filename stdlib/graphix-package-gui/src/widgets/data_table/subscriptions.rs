@@ -295,25 +295,6 @@ impl SortKey {
                     None => Self::Text(s.clone()),
                 },
             },
-            // XCR claude for claude: [bug/medium] SortKey::of_value has no
-            // Value::Decimal arm, so a decimal falls to this Text arm and sorts by its
-            // printed bytes. Ascending, 10.25 comes before 2.0 and 9.5, and every
-            // decimal sorts after every integer and float, against the interface doc's
-            // 'numbers sort before text'. Fix: map an integral decimal to Int via
-            // to_i128 and any other to Num via to_f64 (or add an exact Dec key), and
-            // pin it in raw_numeric_sort_keys_preserve_precision_and_units. Found by
-            // reading; design/review-2026-10-19/repro/gui-datatable-decimal-sort.gx
-            // type-checks and shows the order when run with a display.
-            // (gui-datatable-01)
-            // 2026-10-19 claude: SortKey::of_value maps an integral decimal to Int
-            // (to_i128, exact: a decimal's mantissa fits) and any other to Num
-            // (to_f64), so decimals sort with the other numbers in value order. A
-            // fractional decimal compares through f64, so two decimals closer than an
-            // f64 ulp at their magnitude tie. The gui crate takes rust_decimal for
-            // ToPrimitive. Pins:
-            // sort_tests::raw_numeric_sort_keys_preserve_precision_and_units (decimal
-            // cases) and order_tests::mixed_sort_keys_are_a_total_order (decimals
-            // added).
             Value::Decimal(d) => match d.to_i128().filter(|_| d.is_integer()) {
                 Some(n) => Self::Int(n),
                 None => Self::Num(d.to_f64().unwrap_or(f64::NAN)),

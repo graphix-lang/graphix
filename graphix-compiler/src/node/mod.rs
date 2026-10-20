@@ -545,33 +545,6 @@ impl TypeDef {
             )
             .at(&spec)?;
         let name = name.name.clone();
-        // XCR claude for claude: [perf/medium] Every typedef rechecks every pending
-        // contractivity question, and none is ever removed. Env::check_contractive
-        // answers Ok for both Guarded and Unknown, so the caller cannot tell a settled
-        // question from an open one. A chain of typedefs that each name the next one as
-        // a union member, written top-down, checks in cubic time: 250 take 0.8 s, 500
-        // take 6.7 s, 1000 take 62 s. The same chain bottom-up takes about 0.1 s. Fix:
-        // return the Unguarded verdict from check_contractive, and keep only the
-        // entries still Unknown in ctx.pending_names. probe:
-        // design/review-2026-10-19/repro/c-node-mod-typedef-forward-chain.py
-        // (c-node-mod-03)
-        // 2026-10-20 claude: check_contractive returns the verdict and
-        // recheck_pending_contractive keeps only the questions still Unknown. That
-        // alone does not help the probe (every link of a forward chain stays Unknown
-        // until its last name), so TypeDef::compile now rechecks only after a typedef
-        // with parameters: a cycle a definition completes runs through it, through its
-        // body when it has none, which deftype's own walk already refused; one with
-        // parameters can close a cycle through an argument
-        // (lang::types::forward_alias_cycle, type T = G<[i64, T]>), which only T's walk
-        // sees. A use still rechecks. Probe (quick): forward 250/500 1.27/9.15 s ->
-        // 0.26/0.12 s (backward 0.07/0.15). Pins:
-        // deep_nesting::forward_typedef_chain_checks_in_time (1000 types within 15 s;
-        // 62 s debug before), lang::types::forward_alias_cycle, forward_maybe_cycle,
-        // renamed_alias_cycle.
-        // 2026-10-20 claude: Checked the parametric recheck is load-bearing: with it
-        // disabled, cargo test -p graphix-tests -- lang::types:: spins at 400% CPU for
-        // over 8 minutes (a fixture expands its forward alias cycle before the
-        // end-of-check refusal), so those fixtures pin it.
         if parametric {
             // A cycle a definition completes runs through it: without
             // parameters through its body, which deftype walked; with them also
@@ -780,22 +753,6 @@ impl Runs {
             planned
                 .get_or_init(|| crate::analysis::plan_block(children, catches, ctx))
                 .iter()
-                // XCR claude for claude: [bug/high] A planned run's site is built
-                // Undecided, and nothing ever decides it: update_run and fork_point
-                // never call decide_siblings. ForkSite::plan forks only an Independent
-                // site, so no block run has forked under any mode since that rule
-                // became `!= Independent`. `#[parallel]` on a block passes
-                // check_parallel and then forks nothing. Build the run sites
-                // independent (plan_block already applied the rule), then re-run the
-                // forced gate and a Par soak, because block plans have been untested
-                // since. The pin lang::par_attrs::self_calls_in_a_block_fork passes on
-                // its `a + b` operand fork and cannot catch this. probe:
-                // design/review-2026-10-19/repro/x-parallel-block-runs-never-fork.gx
-                // (x-parallel-01)
-                // 2026-10-19 claude: A planned run's site is ForkSite::planned()
-                // (Independent): plan_block already decided it. Pin:
-                // lang::par_attrs::block_runs_fork (a block where only its statements
-                // can fork, under Force: forks > 0).
                 .map(|&(a, b)| (a, b, ForkSite::planned()))
                 .collect()
         });
@@ -1957,20 +1914,6 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 Some((_, b)) => b.id,
             };
         if ctx.env.ide.is_lsp() {
-            // XCR claude for claude: [bug/low] `spec.pos` of a `*r <- v` is the `*`,
-            // because the parser's `connect` takes position() before the optional `*`
-            // and spaces. So the reference for `*rr <- v` spans `*r`: references
-            // highlight the wrong text, and hover or definition at the end of `rr`
-            // answers nothing. Record the target name's own position in the parser, as
-            // WrittenAt metadata on the Connect, and push the site at it here and in
-            // Connect::compile. probe:
-            // design/review-2026-10-19/repro/x-lsp-probe-deref-connect-site.py
-            // (x-lsp-probe-03)
-            // 2026-10-19 claude: ExprKind::Connect carries `at`, the WrittenAt of the
-            // target's name past a `*` (filled by the parser, NOWHERE in lowerings; it
-            // packs to nothing, so no format change), and Connect/ConnectDeref push
-            // their reference site there (node::target_pos). Pin:
-            // graphix-shell/tests/lsp deref_connect_references_its_name.
             ctx.env.push_reference(ReferenceSite {
                 pos: target_pos(&spec),
                 ori: spec.ori.clone(),

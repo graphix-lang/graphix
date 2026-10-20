@@ -797,20 +797,6 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    // XCR claude for claude: [bug/low] Every expression that starts with `true`, `false`
-    // or `null` is first probed here as a connect target. spmodpath's `fname()` then
-    // notes "`false` is a reserved word and cannot be used as a name", and
-    // `Reason::explains` applies that note to a failure just past the word. So `let a =
-    // (1, false]` blames the literal instead of the bracket. Read the target with
-    // `fname_noting(false)` segments: a word that really is misused as a name is still
-    // noted by `reference()` in the arith alternative. probe:
-    // design/review-2026-10-19/repro/t-parser-a-literal-reserved-note.gx
-    // (t-parser-a-05)
-    // 2026-10-19 claude: The connect target is read by connect_target, which notes a
-    // reserved word as a misused name only once its <- has parsed (span up to the
-    // arrow); modpath keeps fname's noting. Test: parser/test.rs
-    // a_literal_word_is_noted_only_where_used_as_a_name ((1, false] has no note; false
-    // <- 2 keeps it).
     (
         position(),
         optional(token('*')),
@@ -1407,25 +1393,6 @@ where
         }
     }
     choice((
-        // XCR claude for claude: [bug/low] When this attempt fails after the struct's
-        // first field, the error is reported at the end of the previous field value, as
-        // "the parser could not continue past this point" with no note: `{ a: 2, b c }`
-        // and `{ a: 2, type }` both point at the `,` before the bad field. The furthest
-        // point only advances at grow knots, the separator's note does not explain that
-        // earlier position, and struct_fields refuses the reserved shorthand with
-        // `because`, which notes no reason. Use grow::refuse for the shorthand, make
-        // each field a grow knot (or note the furthest point after it), and add these
-        // cases to parser/test.rs separator_notes_only_where_an_item_follows. probe:
-        // design/review-2026-10-19/repro/tests-parser-struct-literal-diagnostics.sh
-        // (tests-parser-02)
-        // 2026-10-19 claude: separator() now also records the furthest point where it
-        // notes a missing separator, and struct_fields notes the reserved shorthand
-        // with a span over the word (not grow::refuse, whose spanless note would
-        // explain any later failure on the line of a block whose first statement starts
-        // with a keyword) and records the furthest point there. Test: parser/test.rs
-        // separator_notes_only_where_an_item_follows ({ a: 2, b c } at column 19 with
-        // the separator note, { a: 2, type } at 17 with the field note; a block failing
-        // later on the line gets no reserved-word note).
         attempt(structure()),
         (
             position(),

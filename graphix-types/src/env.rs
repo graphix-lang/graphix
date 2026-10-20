@@ -1361,19 +1361,6 @@ impl Env {
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.
-    // XCR claude for claude: [bug/medium] heads_overlap keeps the heads' bounds, so
-    // whether two impls conflict depends on which other impls are registered when the
-    // second one is. `impl<'a: T> T for Array<'a>` followed by `impl T for Array<i64>`
-    // is accepted when `impl T for i64` comes after them, and refused when it comes
-    // before. Once accepted, `T::m([1])` dispatches to the generic impl and the
-    // specific one is never used. traits.md says heads that unify are refused, with no
-    // specialization. Test overlap on copies whose cells carry no bound conjuncts.
-    // probe: design/review-2026-10-19/repro/x-typecheck-patterns-impl-overlap-order.gx
-    // (x-typecheck-patterns-06)
-    // 2026-10-20 claude: heads_overlap drops the conjuncts of its fresh copies
-    // (Type::drop_bounds) before the containment test, so bounded heads that unify
-    // conflict whatever impls are registered. Pin:
-    // lang::traits::trait_overlapping_bounded_head_refused.
     pub(crate) fn heads_overlap(&self, a: &Type, b: &Type) -> Result<bool> {
         let a = a.reset_tvars();
         let b = b.reset_tvars();

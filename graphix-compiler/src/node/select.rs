@@ -368,20 +368,6 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
     })
 }
 
-// XCR claude for claude: [bug/medium] Only a static builtin is classified here.
-// A call to a user function that wraps an effect, with constant arguments, acts
-// only at the arm's first entry exactly as `println("x")` does, but the check
-// says nothing. CLAUDE.md promises a warning for an effect call reading no
-// variable. Fix: when ctx.bind_to_lambda resolves the site's function to a
-// non-builtin LambdaDef, warn when its definition's facts (LambdaDef::facts)
-// are io or async. Add a warning pin. probe:
-// design/review-2026-10-19/repro/c-select-seq-birth-warn-misses-lambda.gx
-// (c-select-seq-02)
-// 2026-10-19 claude: warn_birth_only asks acts_on_the_world: an Async or Io
-// builtin as before, or a statically bound user function whose definition's
-// facts are io. Async user functions are left out while Eric rules on
-// sys-net-04 (resuming async calls warn falsely). Pin: graphix-shell/tests/lsp
-// birth_only_io_through_a_function_is_a_warning.
 /// Whether the call acts on the world: an async or Io builtin, or a
 /// function whose body performs Io.
 fn acts_on_the_world<R: Rt, E: UserEvent>(
@@ -552,24 +538,6 @@ impl Reach {
         };
         let informative = itype != Type::Primitive(BitFlags::empty());
         if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
-            // XCR claude for claude: [bug/high] This settle copies a slice pattern's
-            // per-element Set of open cells into the scrutinee (Array<['a, 'b, 'b,
-            // ..]>), and PendingSettle::Told then reads those cells as foreign open
-            // members and refuses: "may share '_a's runtime form: annotate it". So `let
-            // is_empty = |a| select a { [] => true, [_, ..] => false }`, `|a| select a
-            // { [h, ..] => h, [] => never() }` and `|l| select l { [<h, t..>] => h,
-            // [<>] => 0 }` are all refused. Swapping the arms, or writing `a:
-            // Array<'e>`, makes them pass. Fix: settle against the predicates with each
-            // slice element Set collapsed to one cell (the per-element Set is for
-            // narrowing only), or have `told` skip cells the arm's own predicate holds.
-            // probe: design/review-2026-10-19/repro/c-pattern-generic-slice-refused.gx
-            // (c-pattern-03)
-            // 2026-10-19 claude: told (lib.rs, PendingSettle::Told) skips a collision
-            // whose open cell the arm's own predicate holds: a slice pattern's element
-            // cells are the arm's to narrow, not a type it tests (the colliding pair
-            // was a cell against its own copy). Pin:
-            // lang::select::generic_slice_arms_check (the three functions of the
-            // repro). Check typemorph's one-runtime-form family at the next fuzz run.
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();
@@ -980,19 +948,6 @@ impl Leaf {
 
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null` and variants.
-// XCR claude for claude: [bug/medium] The pool has no null head. heads gives no domain
-// for a position whose type holds null, and head_of ignores a `null` literal. So `P(`A)
-// => 1, `P(null) => 0` over `P([`A, null]) is refused as non-exhaustive, and so are
-// (`A, n) / (null, n) over ([`A, null], i64) and {a: null} beside {a: i64} as s. A
-// top-level null arm covers null, and CLAUDE.md says a null literal covers null, so
-// option payloads are the gap. Add Head::Null: head_of reads a null literal, and heads
-// admits null members next to bools or variants. probe:
-// design/review-2026-10-19/repro/x-typecheck-patterns-null-head-pool.gx
-// (x-typecheck-patterns-07)
-// 2026-10-19 claude: Head::Null: head_of reads a null literal and heads admits null
-// members beside bools and variants. The `P and tuple cases now pass; the struct case
-// with a type-tested arm is not a pool case and has its own CR (null-pool-typetest-01).
-// Pin: lang::select::null_literal_pools_beside_variants.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;
@@ -1178,28 +1133,6 @@ impl Shape {
 
     /// The scrutinee's members of this shape: the types a complete pool
     /// group may cover.
-    // XCR claude for claude: [bug/high] member returns the FIRST union member of the
-    // shape for Tuple, Variant and Abstract, whichever member the atom actually tests.
-    // LiteralPool::claim then pools the arm against that member and covers it when the
-    // group completes. Over [Box<bool>, Box<i64>], `Box(true) => 1, Box(false) => 2,
-    // Box<bool> as b => 3` is accepted, the group having covered Box<i64>, and Box(3)
-    // matches no arm at run time. Over [(bool, i64), ([`A, `B], string)], the arms
-    // `(`A, s)` and `(`B, s)` are pooled against (bool, i64), and PoolGroup::covers is
-    // vacuously true for an arm that matches none of that member's heads. So a live arm
-    // is refused as dead
-    // (design/review-2026-10-19/repro/x-typecheck-patterns-tuple-pool-member.gx).
-    // Choose the member the arm's narrowed predicate can match, and stay unpooled when
-    // several can, as Struct already does. probe:
-    // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-pool-member.gx
-    // (x-typecheck-patterns-03)
-    // 2026-10-19 claude: LiteralPool::claim pools an atom against the one scrutinee
-    // member of its shape it can match (under its type test, every position admitting a
-    // head the member admits: Leaf::reachable), unpooled when several can; groups key
-    // by shape and member; an abstract's payload heads come from the member's
-    // parameters (AbstractRep::instantiate_with), not the pattern's rep. Pins:
-    // lang::select::pool_takes_the_member_an_arm_matches,
-    // pool_reads_the_abstract_payload_of_the_scrutinee,
-    // pool_covers_only_its_own_abstract_instantiation.
     fn members(&self, env: &Env, scrut: &Type) -> Result<SmallVec<[Type; 4]>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, scrut, &mut members)?;
@@ -1251,20 +1184,6 @@ enum Claim {
     Dead,
 }
 
-// XCR claude for claude: [bug/low] A type-tested arm never pools, so a null
-// literal at a position beside it covers nothing: `{a: null} => 0, {a: i64} as s
-// => s.a` over {a: [i64, null]} is refused as non-exhaustive although the two
-// arms cover the struct. Reach could cover the arm's narrowed type ({a: null})
-// for an atom whose only refutable parts are null literals and let set coverage
-// distribute over the product. probe:
-// design/review-2026-10-19/repro/null-pool-typetest.gx, refused "missing
-// match cases: no arm covers { a: [i64, null] }" (null-pool-typetest-01)
-// 2026-10-20 claude: StructPatternNode::null_narrowed gives the type an atom
-// covers when its only refutable parts are null literals (null at those
-// positions of tuples and structs); Reach covers it, and set coverage then
-// distributes with a type-tested arm. The probe prints [0, 3]. Pins:
-// lang::select::null_literal_covers_beside_a_type_test,
-// null_literal_alone_leaves_the_rest_open.
 impl LiteralPool {
     /// Pool the unguarded atom `sp`; `explicit`, its arm's written type
     /// test.
@@ -1487,27 +1406,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 open &= reach.is_none();
                 continue;
             }
-            // XCR claude for claude: [bug/high] The tentative bind takes the scrutinee's
-            // tag. In a re-match driven by an earlier arm's guard flip that tag is
-            // STALE. A guard the chain passed over when the scrutinee last fired then
-            // sees a new value with no fire, and dense_gate makes it ride the verdict
-            // it computed for an older value. In the probe, `x if x > 5` takes x = 0 on
-            // the node-walk ("big"), while the JIT says "other". `y if in2 && y > 5`
-            // fails the same way, because `y > 5` rides while `&&` recomputes. Fix:
-            // keep a bit per guarded arm, set when the scrutinee fires and the chain
-            // passes the arm by. While it is set, bind FIRED so the guard recomputes
-            // over the value it is given. Pin it in lang::select. probe:
-            // design/review-2026-10-19/repro/c-select-seq-stale-guard-rebind.gx
-            // (c-select-seq-01)
-            // a guard the chain passed by when the scrutinee fired has not
-            // seen its value: it is given the value fired
-            // 2026-10-19 claude: LazyArmFacts::missed holds a bit per arm, set when the
-            // scrutinee fires and the guard chain passes the arm by and cleared when
-            // the chain reaches it; while set the tentative bind is delivered fired, so
-            // the guard recomputes over the value it missed. The repro now AGREEs
-            // (graphix-fuzz check). Pin:
-            // lang::select::passed_guard_recomputes_over_the_value_it_missed (the old
-            // binary's node-walk says big). Needs a fleet soak (select semantics).
             let tag = if missed[i] { arg_prod.fresh() } else { arg_prod };
             match reach {
                 Some(_) => missed[i] = false,

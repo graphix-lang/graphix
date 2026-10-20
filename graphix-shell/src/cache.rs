@@ -219,7 +219,7 @@ fn sources_record(probes: &[Probe]) -> Option<String> {
 fn sources_unchanged(record: &str) -> bool {
     record.lines().all(|line| match line.split_at_checked(1) {
         Some(("-", path)) => {
-            // XCR claude for claude: [bug/medium] This absence test is not the one the
+            // CR claude for claude: [bug/medium] This absence test is not the one the
             // compile used. `read_optional` records a path as absent on NotFound or
             // NotADirectory, and it follows symlinks. Here only an lstat NotFound
             // passes. So a probe through a regular file (a file `m` beside `m.gx` makes
@@ -239,6 +239,19 @@ fn sources_unchanged(record: &str) -> bool {
             // Fails if undone: graphix-shell
             // cache::tests::a_program_entry_restores_over_paths_that_name_nothing (a
             // probe through a regular file, a dangling .gxi link).
+            // 2026-10-20 claude: XCR review: Behavior is fixed and pinned:
+            // sources_unchanged treats a path as absent when File::open fails with
+            // NotFound or NotADirectory (following links), and
+            // a_program_entry_restores_over_paths_that_name_nothing covers the probe
+            // through a regular file and the dangling .gxi link. But the Fix asked for
+            // one shared predicate, and the predicate is still written twice (here and
+            // in graphix-types expr::resolver::read_optional), which is exactly how the
+            // two drifted apart in the first place. graphix-shell already depends on
+            // graphix-types through graphix-compiler, so a pub fn beside read_optional
+            // (for example over the io::Error kind) used by both is reachable; 'outside
+            // this change' was agent scope, not a constraint. Also a stray code comment
+            // line ('absent as expr::read_optional finds it: nothing opens there') is
+            // trapped inside the XCR block between the finding and its note.
             matches!(
                 fs::File::open(path).map_err(|e| e.kind()),
                 Err(ErrorKind::NotFound | ErrorKind::NotADirectory)
@@ -272,21 +285,6 @@ impl RegistrationCache {
         let registration = digest(&[&format, root.as_bytes()]);
         let program = program.and_then(|p| {
             let id = match p {
-                // XCR claude for claude: [risk/medium] The key is the path as the
-                // embedder passed it, but the record verifies the canonical path
-                // (`RootFile::load` canonicalizes before its probe). An embedder that
-                // runs `Load::File("prog.gx")` from two directories gets one key, and
-                // the second run restores the first directory's program as long as that
-                // file is unchanged. Only main.rs's canonicalize keeps the CLI safe.
-                // Fix: canonicalize `Load::File` once in `Shell::init`, before the key
-                // and `GXConfig::program`, and drop main.rs's copy. Found by reading;
-                // not run. (shell-05)
-                // 2026-10-19 claude: Shell::configure canonicalizes a Load::File script
-                // or check before the cache key and GXConfig::program are made. main.rs
-                // keeps its canonicalize: it also needs the absolute path for the
-                // directory test and the parent's FilesResolver. Fails if undone:
-                // graphix-shell
-                // test::a_script_file_is_configured_by_its_canonical_path.
                 Load::File(path) => path.to_string_lossy().into_owned().into_bytes(),
                 Load::Text(text) => text.as_bytes().to_vec(),
                 Load::Netidx(_) => return None,

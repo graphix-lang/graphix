@@ -1061,7 +1061,7 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
     // parts fused is residue for its own reason.
     let before = report.len();
     fusion::for_each_node(node, &mut |n| {
-        // XCR claude for claude: [bug/medium] failure_for_source returns the last
+        // CR claude for claude: [bug/medium] failure_for_source returns the last
         // failure recorded for a source, which need not come from this node's attempt.
         // For a handler-ful `?` under a select arm, the select records the arm-raise
         // blocker and then "a region of type _ has no kernel return" from a second
@@ -1085,6 +1085,19 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
         // open-type one. lang::errors::arm_input_raise_node_walks keeps its generic
         // refusal text: there the region type is an unbound cell in the only attempt,
         // so only that failure is recorded.
+        // 2026-10-20 claude: XCR review: The code change holds (native_residue reports
+        // every distinct failure through FusionStats::failures_for_source; the probe
+        // now lists the arm-raise blocker beside the open-type miss), but nothing pins
+        // it: lang::errors::arm_input_raise_node_walks still asserts only the generic
+        // 'did not fully fuse to native code', and no test contains the blocker text
+        // 'arm entry is the node-walk's', so reverting to the last failure passes
+        // every test. The fixture can name the blocker: with 'let v: i64 = { catch(e)
+        // ...; #[native] select x { ... } }' the same top-level program refuses with
+        // exactly the arm-raise blocker (debug binary at HEAD); unannotated, the
+        // select's type stays an unbound cell ('_7775: unbound') although both arms
+        // are i64-or-bottom, which is itself worth a look. Add a pin over the probe's
+        // function-body shape asserting both lines, and tighten
+        // arm_input_raise_node_walks with the annotation.
         let mut failures = ctx.fusion.stats.failures_for_source(n.spec()).peekable();
         if failures.peek().is_none() {
             return;
@@ -1310,24 +1323,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         stack.iter().find(|f| f.def == def).map(|f| f.r.clone())
     }
 
-    // XCR claude for claude: [bug/high] DEFAULTS_IN_CHECK is thread state, but
-    // resolve_static holds its guards across bind_instance, whose statement elaboration
-    // blocks in a rayon join (check_in_tasks). A job stolen there, often a sibling
-    // statement calling the same definition with the same omitted label, sees the pair 'in
-    // progress' and leaves its site dynamic. So `#[native] f(i)` over a multi-statement `f`
-    // with a defaulted label fails at random (about 5 builds in 12), and without
-    // `#[native]` fusion and fork plans vary from run to run. a8b168951 set the other
-    // compile thread-locals aside for stolen jobs, but not this one. Keep the stack in the
-    // CompileCtx beside resolving_lambdas (forked with it), or set it aside wherever
-    // TaskContext is entered. probe:
-    // design/review-2026-10-19/repro/x-parallel-default-in-check-tls.gx (x-parallel-02)
-    // 2026-10-19 claude: The stack is CompileCtx::defaults_in_check
-    // (enter_default/leave_default), cloned by fork beside resolving_lambdas, so a stolen
-    // job checks under its own compile's stack; the thread-local is gone. resolve_static
-    // enters its omitted labels and leaves them around resolve_static_entered. The repro's
-    // --expand built 16/16 (old binary 12/16). Pin (probabilistic, as the race was):
-    // lang::functions::omitted_defaults_resolve_under_stolen_jobs, 60 #[native] calls
-    // omitting #k. c-callsite-02 (the guards' extent) is untouched.
     /// Enter the check of `id`'s default for `label`; false when it is
     /// already in progress.
     pub(crate) fn enter_default(&mut self, id: LambdaId, label: &ArcStr) -> bool {
@@ -1801,7 +1796,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Whether `id` is a binding an earlier compile generalized: its
     /// check already made variables of a function it holds generic.
-    // XCR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
+    // CR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
     // cells too, so this answers true for a rank-2 parameter, for a binding annotated
     // with `type F = fn<'b: ..>(..)`, for a struct holding one, and for a lambda
     // literal's parameter checked against one. The `&mut` check in Bind then refuses
@@ -1821,6 +1816,19 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     // when a generic cell is reached, and bound_quantifiers visits each shared node once
     // (Type::shared_identity): walking it as a tree made deep_nesting's
     // shared_type_dags_check_in_linear_time run past 15 s.
+    // 2026-10-20 claude: XCR review: Incomplete: the finding's fourth case, a lambda
+    // literal's parameter checked against a rank-2 formal, is still refused with the wrong
+    // message. 'let app = |g: fn<'b: Any>(y: 'b) -> 'b| g(1); app(|y| { let r = &mut y; y
+    // })' (and the probe header's own variant with '*r <- y') is refused by --check and the
+    // build: 'y was made generic by an earlier compile, and a writable reference to it
+    // would let a write narrow it' (debug binary at HEAD). There y's type is the bare
+    // quantifier cell, not a function type holding it, so bound_quantifiers over b.typ
+    // finds nothing to exempt. The rank-2 parameter, typedef and struct variants now run
+    // (probe prints 1; the type F variant prints 4; the struct variant prints 1).
+    // generalized_earlier needs to tell a GENERIC cell that is a rank-2 quantifier the
+    // binding was checked under from one an earlier compile generalized (e.g. by the cell's
+    // origin or by the formal's quantifiers reaching the literal's parameters), and the pin
+    // set wants this case beside mut_ref_to_a_rank2_parameter.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| {
             let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
@@ -2098,20 +2106,6 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                 // the root as a reference, which no data carries: the form
                 // equals no array of numbers
                 let target = std::iter::once(reference::reference(root)).chain(steps);
-                // XCR claude for claude: [bug/low] The comparison form of a reference is
-                // an unmarked array [U64(root), steps..], the runtime form of
-                // Array<u64>. Under a union [&i64, Array<u64>], which kind markers made
-                // legal, `&x == [root id]` is true. A reference must never equal an
-                // array. Rewrite the target into a value nothing else carries: for
-                // example a Rust-registered abstract in reference.rs holding (root,
-                // path), as rep's markers do for kinds. probe:
-                // design/review-2026-10-19/repro/t-rep-ref-eq-array-collision.gx
-                // (t-rep-04)
-                // 2026-10-19 claude: ref_targets writes the root as a reference
-                // (reference::reference(root)), a Rust-registered abstract no data
-                // carries, so a reference's comparison form equals no array of numbers.
-                // The probe prints []. Pin:
-                // lang::byref::reference_never_equals_an_array.
                 Value::Array(ValArray::from_iter(target))
             }
             None => r.clone(),
@@ -2271,46 +2265,6 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 
     /// Undo what a failed compile deferred: delete what it discarded and
     /// forget the references it recorded.
-    // XCR claude for claude: [risk/low] unref_var cancels a pending (id, top_id) count
-    // by key, whichever node recorded it. One deferred batch can hold both an OLD
-    // discard whose references are already registered (CallSite::clear_prepared_bind
-    // discards the previous callee apply) and a NEW build's pending references to the
-    // same key. Deleting the old node then cancels the new build's pending count
-    // instead of unregistering at the runtime. drop_deferred is right only if every
-    // node the failed build compiled is later deleted, never just dropped. A partial
-    // instance body that GXLambda's init drops on `?` would leave the old registration
-    // with no owner, and Rt::unref_var silently ignores unknown keys, so neither
-    // direction of imbalance is seen. Not reachable today: a run-time body of a checked
-    // def fails to compile only on a compiler bug. Fix: keep registered discards apart
-    // from fresh ones (a Discarded variant whose delete unrefs straight to the runtime)
-    // so the counts no longer depend on who deletes what, and debug-assert in the
-    // runtime's unref_var that the key is registered. (c-lib-04)
-    // 2026-10-15 claude: apply_deferred now registers the batch's references before it
-    // deletes its discards, so every delete reaches the runtime and the counts no
-    // longer depend on who deletes what on that path; GXRt::unref_var debug-asserts the
-    // key is registered. The assertion found a real imbalance at once: check_sig pushed
-    // proxies as it matched items and recorded their references only when all matched,
-    // so a refused interface left proxies clear_compiled unref'd unregistered
-    // (lang::modules::impl_narrower_than_declared and four more); check_sig now drops a
-    // refused check's proxies. What remains is drop_deferred: a failed build's leftover
-    // references must be cleared, not registered, so a registered discard in that batch
-    // whose key a fresh build also holds still cancels the fresh count. Not reachable
-    // while a run-time body fails only on a compiler bug.
-    // 2026-10-16 claude: Looked again 10-16: telling a registered discard from a fresh
-    // one needs to know whether the node predates the current deferred batch, and the
-    // sites cannot (clear_prepared_bind runs both at a check, where the old callee is
-    // fresh, and at a run-time rebind, where it is registered); a node would have to
-    // carry its batch. Still unreachable: a run-time body fails to build only on a
-    // compiler bug.
-    // 2026-10-17 claude: Closed at the one mixed batch: CallSite::bind (the run-time
-    // rebind) now clears the previous binding and applies that batch before it builds,
-    // so a build's batch holds only what it made: on failure its deletes cancel only
-    // its own pending counts and the rest are cleared, and the old callee's delete has
-    // already reached the runtime. The other drop_deferred callers start from an empty
-    // batch (module recompile deletes its old nodes through clear_compiled first;
-    // roots, images and the checker build fresh). GXRt::unref_var's debug assertion is
-    // what fails if a count goes unregistered. No pin: a run-time body fails to build
-    // only on a compiler bug.
     pub fn drop_deferred(&mut self) {
         if !self.deferred_pending() {
             return;

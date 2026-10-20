@@ -9,23 +9,6 @@ use netidx::publisher::Value;
 use std::time::Duration;
 
 /// Every update of `code`'s result and the boundaries walked, in `mode`.
-// XCR claude for claude: [structure/low] This, test_builtins.rs's `run` and
-// dense_deltas::run_delta_with are one harness copied three times (fixture_runtime,
-// compile_result, updates_until_quiet, shutdown). They differ only in the setup closure
-// and one counter read. fusion_review.rs::late_callee_dispatch_primes_constants
-// hand-rolls the same loop over Mode::ALL. Let run_delta_with take a setup closure in
-// place of `par` (par_attrs passes one that sets the par mode) and record `boundaries`
-// in Delta. Then delete this function and test_builtins::run, and write the late-callee
-// test as a run_delta fixture under modes!. Found by reading; not run.
-// (tests-lang-rest-a-05)
-// 2026-10-19 claude: run_delta_with now takes a setup closure in place of par and
-// records boundaries in Delta; par_attrs passes one that sets the par mode,
-// test_builtins::run and prune::walks are thin callers of it (registering the test
-// builtins; reading boundaries).
-// fusion_review.rs::late_callee_dispatch_primes_constants stays hand-rolled over
-// Mode::ALL: that file is compiled as its own integration test (tests/fusion_review.rs
-// includes it by path), where dense_deltas and modes! are not in scope. Pins:
-// lang::prune::*, lang::par_attrs::*, lang::test_builtins::*.
 async fn walks(code: &str, mode: Mode) -> Result<(Vec<Value>, u64)> {
     let d = run_delta_with(code, mode, |_| (), Duration::from_millis(300)).await?;
     Ok((d.values, d.boundaries))

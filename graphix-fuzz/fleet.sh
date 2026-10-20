@@ -234,21 +234,6 @@ sync_tree() {
             wait_limit=0
         elif [[ $method == rsync ]]; then
             # graphix builds against the sibling netidx
-            # XCR claude for claude: [risk/medium] washu-chan is an rsync host that
-            # reaches itself over ssh. This copy goes onto the session's own checkout,
-            # and ../netidx gets the same. From ~/proj/graphix it changes nothing. From
-            # any other checkout (a worktree, a copy; `local_fingerprint` already allows
-            # `$repo` to differ) it overwrites the live checkout with that tree and
-            # deletes its untracked files. `require_clean_inputs` checks only the source
-            # tree. Fix: skip the rsync, and keep the fingerprint check, when the host
-            # is the local machine (compare `ssh $name hostname` with `hostname`), or
-            # refuse to sync when `$repo` is not `$HOME/proj/graphix`. Found by reading;
-            # not run. (fuzz-main-aux-02)
-            # 2026-10-19 claude: sync_tree skips the rsync when ssh to the host reaches
-            # this machine (is_this_machine compares hostnames) and checks its
-            # fingerprint once, so a worktree deploy reports TREE STALE for the session
-            # box instead of overwriting ~/proj/graphix. No test reaches fleet.sh; bash
-            # -n only.
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/" "$name:proj/graphix/"
             rsync -a --delete --exclude target --exclude .git \

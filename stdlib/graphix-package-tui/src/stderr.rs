@@ -53,25 +53,6 @@ impl HeldOutput {
     }
 }
 
-// XCR claude for claude: [bug/medium] After the stop, the reader drains what is
-// buffered and returns, which drops the pipe's read end. A child spawned while
-// stderr was held (sys::process inherits stderr by default) keeps the write
-// end. After a `tui::suspend` or a `Live::recover`, both of which drop this
-// capture while the program runs on, the child's next stderr write fails with
-// EPIPE and SIGPIPE kills it. Fix: keep one pipe and one reader for the life of
-// the process. Switch the reader between holding (while a Live has the
-// terminal) and forwarding to the restored stderr (between displays), and have
-// re-holding dup2 the same writer back onto fd 2. Never close the read end.
-// probe: design/review-2026-10-19/repro/tui-core-suspend-sigpipes-children.gx
-// (the child dies of a signal; with SIGPIPE trapped, its `echo >&2` returns 1).
-// (tui-core-03)
-// 2026-10-19 claude: One pipe and one reader thread (serve) for the life of the
-// process: a hold tells the reader to keep, a release puts the saved stderr
-// back on fd 2, has the reader keep what is in the pipe, replay it and forward
-// everything after. The read end is never closed. Pin:
-// terminal_test::stderr_inherited_while_held_outlives_the_hold (a write through
-// an fd 2 duplicated while held succeeds after the release and is forwarded; a
-// second hold works). The repro now exits 0.
 /// Instructions to the reader, one byte each on its control pipe.
 const HOLD: u8 = b'h';
 const RELEASE: u8 = b'r';

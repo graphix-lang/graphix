@@ -2047,22 +2047,6 @@ impl Type {
     /// each alternative of self that matches it, where containment against
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
-    // XCR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
-    // cell under an abstract type's parameters, which are invariant and compared
-    // exactly by the run-time nominal test. An inferred `T(x)` arm over [T<i64>,
-    // T<string>] narrows its predicate to T<[i64, string]>, a type no value carries, so
-    // the arm matches neither member. f(T(1)) and f(T("s")) both take the `_` arm, and
-    // without `_` the select is refused as not exhaustive. Tuples and variants (`(x,
-    // _)`, `A(x)) match every member with x: [i64, string]. Fix: under an Abstract's
-    // params, narrow the predicate to the Set of the instantiations it matches instead
-    // of unioning the cells, or make the inferred abstract predicate test the tag
-    // alone. probe: design/review-2026-10-19/repro/c-pattern-abstract-union-params.gx
-    // (c-pattern-02)
-    // 2026-10-19 claude: Fixed by its second option: an inferred abstract predicate
-    // tests the tag alone at run time (IsAFlags::MatchAbstract), and Reach covers each
-    // scrutinee member the atom's payload covers. Pin:
-    // lang::select::abstract_pattern_over_two_instantiations (T(x) over [T<i64>,
-    // T<string>] matches both and is exhaustive).
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
@@ -2631,19 +2615,6 @@ impl UnionParts {
         }
     }
 
-    // XCR claude for claude: [bug/high] member counts every member it meets, with no
-    // dedup. union_parts reads through bindings, so `[i64, 'y]` with 'y later bound to
-    // i64 counts as two types. singleton_holds and one_number_holds then refuse it. An
-    // instance's signature carries exactly that union, so InstanceTypes::new refuses
-    // the instance of `h = |x| x * x` called from `k = |b, y| h(select b { true => 1,
-    // false => y })` at fn(x: [i64, i64]). --check accepts the program and the build
-    // refuses it, and graphix-fuzz check reports the DIVERGENCE. Fix: count distinct
-    // members. OR primitive members into one flag set and count it at the end, and skip
-    // a non-primitive member equal to one already counted. Pin it in lang::types.
-    // probe: design/review-2026-10-19/repro/t-tvar-singleton-dup-members.gx (t-tvar-01)
-    // 2026-10-19 claude: UnionParts counts distinct members: primitives as one flag
-    // set, any other member once. Pin: lang::types::singleton_counts_a_member_once
-    // (k(false, 3) is 9; the build used to refuse h's instance).
     fn member(&mut self, t: &Type) {
         let n = match (self.measure, t) {
             (measure, Type::Primitive(p)) => {

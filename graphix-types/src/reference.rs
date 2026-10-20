@@ -26,23 +26,6 @@ impl Pack for Reference {
         self.0.encode(buf)
     }
 
-    // XCR claude for claude: [bug/medium] Reference::decode has no image-session gate,
-    // unlike rep::Marker::decode and GxAbstract's decode. Outside a session
-    // BindId::decode returns the raw id, so a packed value from outside the program
-    // decodes a reference to an arbitrary cell. pack::read into Array<Any> returns
-    // [&ref]. The same bytes arrive from any netidx publisher through
-    // sys::net::subscribe, sys::net::call replies and rpc arguments, all of which
-    // decode with Value::decode and cast through CastTarget under Any. That breaks the
-    // rule that data is never a reference and the run-time cast refuses one. Fix:
-    // return PackError::InvalidFormat here unless crate::ids::in_session(), as Marker
-    // does, and pin it beside abstract_value_decodes_only_under_an_image. An
-    // unknown-uuid abstract also passes under Any (`abstract:...`); refusing every
-    // Value::Abstract in a data read would close both. probe:
-    // design/review-2026-10-19/repro/x-security-forged-reference.gx (x-security-01)
-    // 2026-10-20 claude: Reference::decode refuses outside an image session
-    // (PackError::InvalidFormat), as Marker and GxAbstract do. The unknown-uuid
-    // abstract under Any is not closed here. Pin:
-    // reference::test::reference_decodes_only_under_an_image (graphix-types).
     /// Data never carries a reference, so bytes holding one are forged or
     /// stale: only an image session reads them.
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {

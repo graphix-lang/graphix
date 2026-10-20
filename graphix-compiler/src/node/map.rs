@@ -40,20 +40,6 @@ pub struct Map<R: Rt, E: UserEvent> {
     pub typ: Type,
     /// Each entry's key then its value, in written order: the order
     /// they update in.
-    // XCR claude for claude: [bug/medium] Every key then every value makes the node-walk
-    // update k1, k2, v1, v2, while emit_map_new_node emits k1, v1, k2, v2. A fused map
-    // literal's effects therefore run in a different order than the node-walk's:
-    // `{dbg(x) => dbg(x + 1), dbg(x + 2) => dbg(x + 3)}` prints 10, 11, 12, 13 fused
-    // and 10, 12, 11, 13 with --no-fusion. Store the entries interleaved in written
-    // order (as image_encode already writes them) and build the map from
-    // `chunks_exact(2)` of the productions. That also drops Map::update's two
-    // SmallVecs, which spill to the heap past 16 entries. probe:
-    // design/review-2026-10-19/repro/c-data-map-map-effect-order.sh (c-data-map-02)
-    // 2026-10-19 claude: Map::n holds each entry's key then its value in written order;
-    // the update folds the productions in pairs, the image codec and emit_map_new_node
-    // and lowering::const_map read the same layout, and Map::update's two SmallVecs are
-    // gone. Pin: graphix-shell/tests/effect_order.rs (dbg order fused and node-walked,
-    // both 10 11 12 13).
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
     pub(crate) fork: ForkSite,

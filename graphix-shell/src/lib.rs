@@ -650,23 +650,6 @@ impl<X: GXExt> Shell<X> {
         if let Mode::Check(_) = self.mode {
             return self.check().await.map(|()| Some(0));
         }
-        // XCR claude for claude: [bug/high] `--warm` runs the program's first cycle.
-        // `init` has already called `GXConfig::start`, which runs the runtime loop, so
-        // the program's init effects happen (a println, a file write) and this branch
-        // waits for the first cycle to finish (10 s for a 100000-activation first
-        // cycle, even with every entry cached). The images were taken before any cycle,
-        // so the cycle buys nothing. Fix: build the runtime without its run loop for
-        // CacheMode::Warm (a GXConfig option that stops after `GX::new` and reports the
-        // program's compile result). Add a test that `--warm` over a file-writing
-        // program writes the entry and not the file; nothing tests `--warm` today.
-        // probe: design/review-2026-10-19/repro/shell-warm-runs-effects.sh Also
-        // reported as (x-image-01). (shell-01)
-        // 2026-10-19 claude: The --warm flag runs Shell::warm: configure,
-        // GXConfig::compile (GX::new, which compiles the root and the program and sends
-        // their images, and no run loop), the entries stored, then the program's
-        // compile error if it had one. init (the run) shares configure and store. Fails
-        // if undone: graphix-shell/tests/warm_only_compiles.rs (a println and a file
-        // write, neither happens; a program that does not compile fails the warm run).
         if self.cache == CacheMode::Warm {
             return self.warm().await.map(|()| None);
         }
@@ -724,17 +707,6 @@ impl<X: GXExt> Shell<X> {
                     Err(_) => exit_open = false,
                 },
                 batch = from_gx.recv() => match batch {
-                    // XCR claude for claude: [risk/low] This return skips
-                    // `output.clear()`. A GUI's event loop runs on the main thread
-                    // inside main's `f()`, so when the runtime dies with a window up,
-                    // the process does not exit: the window stays frozen until the user
-                    // closes it, and only then is the error printed. Break out of the
-                    // loop instead (`break 'repl Err(..)`) so the common exit path
-                    // clears the display. Found by reading; the TUI analogue of a
-                    // runtime panic was run and reaches this arm. (gui-core-06)
-                    // 2026-10-19 claude: The dead-runtime arm breaks 'repl with the
-                    // error, so the common exit clears the display. No test: it needs a
-                    // display up when the runtime dies.
                     None => break 'repl Err(gx.stopped("graphix runtime is dead")),
                     Some(mut batch) => {
                         let shown =

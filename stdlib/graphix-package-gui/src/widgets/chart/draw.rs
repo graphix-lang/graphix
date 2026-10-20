@@ -279,21 +279,6 @@ where
     DB: DrawingBackend,
     C: Ranged + ValueFormatter<C::ValueType>,
 {
-    // XCR claude for claude: [bug/medium] The y axis and a numeric x axis keep plotters'
-    // default f64 formatter: at most 5 decimals and no scientific notation. Every tick
-    // of a 0..2e-6 range reads "0.0", a view zoomed under about 1e-5 repeats its
-    // labels, and values around 1e20 print 21 digits. label_areas also sizes the axis
-    // from a different `{:.prec$}` format. Fix: set a y (and numeric x) label formatter
-    // whose precision comes from log10 of the tick step, with scientific notation for
-    // large or small magnitudes, and have label_areas measure with that same function.
-    // probe: design/review-2026-10-19/repro/gui-chart-tick-labels.rs (gui-chart-05)
-    // 2026-10-19 claude: ranges::TickFormat writes a value axis' ticks with decimals
-    // from log10 of the tick step (span / label count, at least one decimal), in
-    // scientific notation at magnitudes of 1e7 and above or under 1e-3. configure_mesh
-    // sets it as the y formatter, draw_xy_chart as the numeric x formatter, and
-    // label_areas measures with the same y_ticks; tick_precision is deleted. Pin:
-    // ranges::test::ticks_tell_their_values_apart. Labels on ordinary ranges still read
-    // like plotters' (2.0).
     let y_fmt = y_ticks(y, mesh_style);
     let y_formatter = |v: &f64| y_fmt.format(*v);
     let mut mesh_cfg = chart.configure_mesh();
@@ -496,18 +481,6 @@ fn draw_xy<'a, DB, C, X>(
                 let line = ShapeStyle::from(series_color(cs, style.color, i))
                     .stroke_width(stroke(style));
                 let caps = style.point_size.map_or(stroke(style), pixels);
-                // XCR claude for claude: [bug/low] Only x is filtered here; min/avg/max
-                // are clamped. A bar wholly above or below the view collapses onto the
-                // edge, and plotters' ErrorBar still draws both caps and the avg circle
-                // there. A bar that crosses the edge shows a cap at the clamp line,
-                // which looks like a real min/max, and an out-of-view avg shows as a
-                // dot on the edge. Fix: skip bars whose [min, max] misses view.y, draw
-                // no cap on a clamped end, and draw the avg marker only when it is in
-                // view. Found by reading; not run. (gui-chart-06)
-                // 2026-10-19 claude: Error bars draw as ClippedErrorBar: a bar whose
-                // [min, max] misses the view is skipped, a cap is drawn only on an end
-                // inside the view, the avg circle only when avg is in view. Pin:
-                // chart_test::error_bars_draw_only_what_is_in_view.
                 let (lo, hi) = view.y;
                 let bars = d
                     .pts
@@ -810,20 +783,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
             }
         });
         let mut result = vec![chart_geom];
-        // XCR claude for claude: [bug/medium] This draws a snap that was computed at the
-        // last CursorMoved. A data update, a wheel zoom, a drag or a resize changes the
-        // plot without recomputing it, so the highlight and the value go stale. Resting
-        // the cursor on book/src/examples/gui/chart.gx's streaming series shows an old
-        // value over an empty spot. Fix: compute the tooltip here from the `cursor`
-        // argument against the fresh plot_info (find_nearest_point), and let
-        // CursorMoved keep only the (dataset, index) hit it needs to decide on a
-        // redraw. Found by reading; not run. (gui-chart-03)
-        // 2026-10-19 claude: The tooltip is computed in draw from the cursor argument
-        // against the plot as last drawn (ChartState::tooltip -> interact::nearest +
-        // describe). ChartState keeps only hover: (dataset, index), to decide on a
-        // redraw at a CursorMoved; snap_point is gone, and the chart tests read
-        // ChartState::tooltip. Pin:
-        // chart_test::the_tooltip_follows_new_data_under_a_resting_cursor.
         if let Some(snap) = state.tooltip(self, bounds, cursor) {
             let overlay = iced_canvas::Cache::new();
             let geom = overlay.draw(renderer, bounds.size(), |frame| {

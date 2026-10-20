@@ -154,18 +154,6 @@ impl<X: GXExt> TrackedWindow<X> {
         v: &Value,
     ) -> Result<()> {
         if id == self.window_ref.id && self.window_ref.last.as_ref() != Some(v) {
-            // XCR claude for claude: [bug/medium] `last` is recorded before
-            // ResolvedWindow::compile. When the compile fails (for example, the new
-            // window's content is a text whose size is 0 at that moment), the window
-            // keeps the old window's refs but `last` already equals the new value, so a
-            // later delivery of the same value is skipped and never retried.
-            // Child::update and Children::update set `last` only after a successful
-            // compile, and reconcile_test.rs pins that. Move this assignment below the
-            // compile. Found by reading; not run. (gui-core-01)
-            // 2026-10-19 claude: window_ref.last is now set after
-            // ResolvedWindow::compile succeeds, and the window holds its refs as props:
-            // ResolvedWindow (gui-core-07), so a recompile is one assignment. No pin:
-            // handle_update needs an OS window, which no test has.
             self.props = rt
                 .block_on(ResolvedWindow::compile(self.props.gx.clone(), v.clone()))
                 .context("window ref recompile")?;

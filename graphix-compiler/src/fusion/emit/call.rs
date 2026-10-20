@@ -688,58 +688,12 @@ fn marshal_args<R: Rt, E: UserEvent>(
             LambdaCallSlot::Cap(_) => None,
         })
         .collect();
-    // XCR claude for claude: [bug/medium] The slots, and so the emission of the argument
-    // nodes, follow formal order, while the node-walk updates arguments in written
-    // order. Labeled arguments can be written out of formal order, so `f(#b: e1?, #a:
-    // e2?, x)` raises e1 before e2 in the node-walk and e2 before e1 in a kernel, and
-    // the handler sees the errors in a different order. CallSite::emit_clif's builtin
-    // path emits in marshal (formal) order too. Emit the argument nodes in written
-    // order (ArgKey::of_written) into temporaries and pass them in formal order. probe:
-    // design/review-2026-10-19/repro/f-mod-lowering-labeled-arg-order.gx
-    // (f-mod-lowering-02)
-    // 2026-10-19 claude: CallSite::update_order gives the node-walk's update order
-    // (written arguments, then the defaults a bind added) of a call's argument nodes;
-    // marshal_args emits a lambda call's slots in it and emit_builtin_call_node a
-    // builtin's, each into its formal position. Pin: graphix-tests --test fusion_review
-    // labeled_args_raise_in_written_order (the review binary logs [a, b] fused, [b, a]
-    // node-walked).
     for i in cs.update_order(&nodes) {
         let cv = match &slots[i] {
             LambdaCallSlot::Arg(n, t) => {
                 let slot = kernel_abi::abi_kind(t).and_then(LocalKind::of).ok_or_else(|| {
                     anyhow!("lambda call `{fn_name}`: an arg slot of type {t} has no local")
                 })?;
-                // XCR claude for claude: [bug/high] A value-shaped argument passed into
-                // a composite slot is marshalled as-is. Example: a select whose arms
-                // are arrays of different element types, typed [Array<i64>,
-                // Array<string>], passed to an Array<[i64, string]> formal. When it is
-                // bottom, its placeholder is (Null|TAINT, 0). The callee's entry clone
-                // (`graphix_valarray_clone`) or a later drop then reads the zero as
-                // ValArray bits, and the process aborts with "zero ValArray bits — JIT
-                // codegen bug". Only `emit_let_node` narrows this case
-                // (`narrow_value_to_composite`). The same gap is in
-                // `emit_self_tail_call` (a native tail loop's rebind),
-                // `emit_return_from_node` (a composite kernel return) and
-                // `emit_fold_kind` (a composite fold accumulator fed by a value-shaped
-                // body). Fix: one helper that emits a node into a slot of a given ABI
-                // kind (scalar widening, owned clone, value-to-composite narrowing, the
-                // hold), used by all five sites in place of their hand-written copies.
-                // probe:
-                // design/review-2026-10-19/repro/f-call-flow-value-arg-composite-slot.gx;
-                // also f-call-flow-value-arg-tail-rebind.gx,
-                // f-call-flow-value-body-composite-return.gx,
-                // f-call-flow-value-body-composite-fold-acc.gx (f-call-flow-01)
-                // 2026-10-19 claude: body::emit_into_slot (with slot_source, its static
-                // twin) is the one way a node enters a slot of a LocalKind: a scalar into
-                // a value slot widens, a value-shaped production into a composite slot is
-                // owned then narrowed (narrow_value_to_composite), else the production
-                // with its source and what it leaves to drop. marshal_args,
-                // emit_self_tail_call, emit_let_node, emit_return_from_node (composite
-                // returns) and emit_fold_kind (a composite acc's init and body) use it.
-                // Pin: graphix-tests --test fusion_review value_into_composite_slot (an
-                // argument, a composite return, a tail rebind and a fold acc fed a bottom
-                // select of [Array<i64>, Array<string>]; the review binary aborts on its
-                // program at graphix_valarray_clone).
                 let s = emit_into_slot(cx, n, slot)?;
                 if let Some(k) = s.owns {
                     hold_owned(cx, &mut drops, (k, s.cv));
@@ -876,38 +830,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let rmerge = cx.b.create_block();
     cx.b.append_block_param(rmerge, types::I64);
     cx.b.append_block_param(rmerge, types::I64);
-    // XCR claude for claude: [bug/high] A call to another kernel is a plain native
-    // call with no stack check. emit_self_dispatch assumes cross-kernel edges are
-    // acyclic, but acyclic is not shallow: a chain of distinct functions nests
-    // kernel frames as deep as the program is long, and JIT frames cannot grow
-    // through stacker. With fusion on, 400 chained functions `fi(x) = f(i+1)(x) +
-    // vi` abort the process with a native stack overflow (exit 134). --no-fusion
-    // prints the value, even at N=2000. Fix: route Called::Other through the same
-    // graphix_stack_check and spill-thunk dispatch as a self-call, which needs a
-    // spill thunk for every kernel. That also lets the interrupt and the stack
-    // budget reach deep chains. probe:
-    // design/review-2026-10-19/repro/c-callsite-cross-kernel-chain-overflow.sh
-    // (c-callsite-01)
-    // 2026-10-19 claude: Every lambda kernel now has a spill thunk, declared with
-    // its body in compile_region_inner's phase 1 (Declared, CachedBody::thunk_id)
-    // so callers import it; a caller's record names it as
-    // RelocTarget::CalleeThunk and Generation::load installs it with the callee
-    // (Installed). emit_kernel_dispatch (was emit_self_dispatch) runs
-    // graphix_stack_check and the grow path at every kernel call, self or not;
-    // design/recursive_activations.md updated. Pin: graphix-tests --test
-    // fusion_review cross_kernel_chain_stack_space (500 chained fns with
-    // captures; jit_par overflowed the test thread's stack with the cross-kernel
-    // check removed). The repro at N=400 and N=3000 runs; N=3000 now takes ~80 s
-    // to fuse in debug, the pre-existing O(N^2) of transitive captures as kernel
-    // params.
-    // 2026-10-19 claude: A per-call graphix_stack_check doubled a call-heavy
-    // kernel (a fold calling h, which calls g twice: 80 ms against 40 ms over 3M
-    // elements). A call into another kernel now checks only where the caller's and
-    // callee's heights (longest chain of distinct kernels below, itself included)
-    // fall in different blocks of jit::CHECK_EVERY (8): a chain descends in
-    // height, so it checks at least once every 8 frames; that fold is back to 40
-    // ms. Self-calls always check. The 500-chain pin still passes; with no
-    // cross-kernel check it overflowed.
     if callee.checked {
         emit_kernel_dispatch(cx, callee, &clif_args, rmerge, fn_name)?;
     } else {

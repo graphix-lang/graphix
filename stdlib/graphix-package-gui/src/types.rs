@@ -94,7 +94,7 @@ impl FromValue for SizeV {
     }
 }
 
-// XCR claude for claude: [bug/medium] A window size is only checked for finiteness.
+// CR claude for claude: [bug/medium] A window size is only checked for finiteness.
 // winit's X11 create_window converts the physical size to u16 with
 // `try_into().unwrap()`, so `size: {width: 70000.0, ..}` panics the event loop on X11;
 // zero and negative sizes also reach winit. Refuse a dimension that is not positive or
@@ -106,6 +106,18 @@ impl FromValue for SizeV {
 // factor of 7 within X11's 16 bits); a canvas Rect's SizeV keeps taking any finite
 // size. The bound 8192 is my choice. Pin:
 // types::tests::window_sizes_fit_the_window_system.
+// 2026-10-20 claude: XCR review: The program-side read is fixed
+// (WindowSizeV::from_value refuses an edge not in (0, 8192]; pin
+// types::tests::window_sizes_fit_the_window_system), but WindowSizeV's field is pub and
+// event_loop.rs:481 builds WindowSizeV(Size::new(logical.width, logical.height))
+// straight from winit's Resized, unchecked. ResizeSettled (event_loop.rs:514) then
+// writes that size through the program's size reference, and the update that comes back
+// is read with TRef::update -> cast_to::<WindowSizeV>, which refuses it: a minimize on
+// Windows (winit reports Resized 0x0) or a window spanning past 8192 logical pixels now
+// logs 'handle_update: window update size' and the program sees a size its own type
+// refuses. Either keep the OS-reported size out of the refused set (do not echo a
+// non-positive or oversized size into the ref, or clamp it), or make the constructor
+// private so every WindowSizeV passes the check.
 /// A window's size: positive, and no larger than every window system
 /// takes.
 #[derive(Clone, Copy, Debug, PartialEq)]

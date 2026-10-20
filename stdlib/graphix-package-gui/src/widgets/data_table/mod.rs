@@ -375,19 +375,6 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             }
             reconcile = true;
         }
-        // XCR claude for claude: [bug/low] push_defaults_to_sparklines adds a point to
-        // every virtual or stored-source cell of every sparkline column. It runs here
-        // on any column's source fire, any sort_by change and any table update, not
-        // only when that sparkline's own source gives a new value, as the interface doc
-        // says. A sort click turns a one-point virtual sparkline into a flat chart, and
-        // a busy calculated column costs rows x sparkline columns pushes per fire. Push
-        // only the fired column's defaults, and seed only cells with no history on a
-        // table update. Found by reading; not run. (gui-datatable-03)
-        // 2026-10-19 claude: push_defaults_to_sparklines takes the column whose source
-        // fired: every cell of that column gets a point, and any other sparkline cell
-        // only a first point when it has no history. A sort change, a table update or
-        // another column's source adds no point to an existing history. Pin:
-        // data_table_test::sparkline_defaults_ignore_other_columns.
         if reconcile || fired.is_some() {
             self.push_defaults_to_sparklines(fired.as_ref());
         }

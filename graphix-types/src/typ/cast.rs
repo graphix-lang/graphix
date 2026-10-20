@@ -283,22 +283,6 @@ impl Type {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
-            // XCR claude for claude: [bug/medium] An abstract target passes the check
-            // whatever its params hold. With `type Box<'a> = Abstract<'a>; impl<'a>
-            // Cast for Box<'a> {}`, cast<Box<fn(x: string) -> string>> is accepted,
-            // though cast<fn(..)> is refused. The Representation path then wraps any
-            // lambda, because the Type::Fn arm of cast_inner takes every lambda, so the
-            // error surfaces only as a failed run-time bind at the call. Fix: refuse an
-            // abstract whose params hold a function or a reference (as data_holds
-            // does), and make the cast_inner Type::Fn arm an InvalidCast. probe:
-            // design/review-2026-10-19/repro/t-cast-setops-abstract-fn-param-cast.gx
-            // (t-cast-setops-06)
-            // 2026-10-19 claude: check_cast_inner checks an abstract target's params as
-            // cast targets, so a function or reference in them is refused. The run-time
-            // Type::Fn arm of cast_inner is left as it was: the check now refuses every
-            // target that reaches it with a function. Pin:
-            // lang::types::unsound_acceptances_are_refused
-            // (CAST_TO_AN_ABSTRACT_OF_A_FUNCTION).
             Type::Abstract { params, .. } => {
                 params.iter().try_for_each(|p| p.check_cast_int(env, seen))
             }
@@ -375,32 +359,6 @@ impl Type {
                 let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
                     return false;
                 };
-                // XCR claude for claude: [bug/high] `seen` keys on the two
-                // definitions alone, ignores their params, and is never popped. So
-                // the second meeting of a (definition, definition) pair answers
-                // false, whether it comes in a sibling branch or at other params.
-                // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
-                // is accepted (the first Box pair consumed the key), and it then
-                // reads a &string as &i64. The same arm with the components swapped
-                // is refused. Fix: make `seen` a path (pop after the recursive
-                // call) keyed on each side's full RefKey (definition plus params).
-                // probe:
-                // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
-                // (t-cast-setops-01)
-                // 2026-10-19 claude: ref_over_any now rides the shared walk
-                // (RepSeen keyed on the full pair of types, params included; growth
-                // answers true, a refusal): a second application of one definition
-                // is walked, and a pair met again answers false only because the
-                // walk is a disjunction whose first answer already stands. Pin:
-                // lang::types::unsound_acceptances_are_refused
-                // (REF_TEST_OVER_ANY_SECOND_APPLICATION).
-                // 2026-10-20 claude: Merged with main's fix (a path of whole
-                // reference types, true at a third growing meeting): the shared
-                // walk is kept, since its growth bound is the one rep_collision and
-                // rep_ambiguity use and its seen set never re-walks a pair; the two
-                // duplicate pins became one,
-                // lang::types::ref_test_over_any_in_a_second_pair
-                // (REF_TEST_OVER_ANY_SECOND_APPLICATION was the same program).
                 walk(
                     seen,
                     pair_at(&p, &r),
@@ -896,22 +854,6 @@ impl Type {
                     for (i, (fname, ftyp, _)) in ts.iter().enumerate() {
                         match have.peek() {
                             Some((n, _)) if *n == fname => filled.extend(have.next()),
-                            // XCR claude for claude: [bug/medium] The fill wants null
-                            // held unchanged (Ok(None)), so it refuses a field type
-                            // that admits null through a conversion. An example is an
-                            // abstract whose Cast reads null: `type Opt =
-                            // Abstract<[i64, null]>; impl Cast for Opt {}`. There
-                            // cast<{a: i64, o: Opt}>({a: 1}) is "struct size mismatch",
-                            // while {a: 1, o: null} and cast<Opt>(null) both read. It
-                            // also runs a user from_value as a throwaway probe. Fix:
-                            // fill on is_ok() and keep the probe's value for the field
-                            // instead of casting NULL again in cast_elts. probe:
-                            // design/review-2026-10-19/repro/t-cast-setops-struct-omitted-abstract-field.gx
-                            // (t-cast-setops-04)
-                            // 2026-10-19 claude: The fill takes any Ok read of null, keeps it by field
-                            // index and hands it to cast_elts in place of a second cast of NULL. Pin:
-                            // lang::types::cast_keeps_what_a_member_holds (the omitted Opt field reads as
-                            // null).
                             _ => match ftyp.cast_int(env, cx, None, &NULL) {
                                 Ok(read) => {
                                     omitted.push((i, read));
@@ -1070,20 +1012,6 @@ impl Type {
             Type::Set(ts) => {
                 // a member whose tag the value carries is its reading,
                 // whatever a tagless reading of an earlier member says
-                // XCR claude for claude: [bug/medium] The tagged loop returns the first
-                // member whose cast succeeds, a conversion included. It never prefers
-                // the member the value already inhabits, which the untagged passes
-                // below do. A held `A(1.5, 2.5) cast to [`A(i64, i64), `A(f64, f64)]
-                // becomes `A(1, 2), while the tuple (1.5, 2.5) cast to [(i64, i64),
-                // (f64, f64)] stays as it is. Fix: return Ok(None) at the first tagged
-                // member that holds the value; otherwise return the first conversion
-                // after trying them all. probe:
-                // design/review-2026-10-19/repro/t-cast-setops-union-cast-converts-held.gx
-                // (t-cast-setops-02)
-                // 2026-10-19 claude: The tagged loop returns Ok(None) at the first member
-                // that holds the value, else the first conversion after trying them all.
-                // Pin: lang::types::cast_keeps_what_a_member_holds. The data-composite
-                // half is t-cast-setops-03, for eric.
                 let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
                 if tagged.peek().is_some() {
                     let mut read = Err(None);
@@ -1659,18 +1587,6 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
         _ => None,
     };
     // a `NoError` cell is never an error, so it shares no error's form
-    // XCR claude for claude: [bug/medium] This reads every open cell as any type except
-    // for NoError. A cell bounded to numbers ('a: Int, 'a: Number) cannot be an array,
-    // tuple, struct, variant, list, map or error, yet `'a: Int |x: ['a, Array<i64>]|
-    // select x { Array<i64> as a => .., _ => -1 }` is refused with "may share
-    // Array<i64>'s runtime form: annotate it", and it already is annotated. Exempt a
-    // cell whose constraints include a primitive set when `t` holds no primitive of
-    // that set. probe:
-    // design/review-2026-10-19/repro/x-kind-markers-open-member-ignores-bounds.sh
-    // (x-kind-markers-05)
-    // 2026-10-19 claude: open_collision exempts a cell with a primitive-only conjunct
-    // (prims_only) when the other side may carry none of those primitive tags
-    // (holds_prims). Pin: lang::select::open_numeric_member_told_from_a_collection.
     let shares = |cell: &super::TVar, t: &Type| {
         let bounds = cell.cell_constraints();
         shares_form(env, t)
@@ -1822,19 +1738,6 @@ fn rep_overlaps(a: &Type, b: &Type) -> bool {
     }
 }
 
-// XCR claude for claude: [readability/medium] On growth, the walk answers with the pair
-// it stopped at, and the select prints that as "can't tell A from B: both have the same
-// runtime form; wrap them in distinct variants". The real reason is undecidability.
-// Over [N<i64>, N<string>] with `type N<'a> = [null, ('a, N<Array<'a>>)]`, the user is
-// told N<Array^5<i64>> and N<Array^5<string>> share a form. Fix: return Indiscernible
-// (Pair or Grows) from here as rep_ambiguity does, and have the callers word Grows as
-// not_discernible does. probe:
-// design/review-2026-10-19/repro/t-cast-setops-grows-reported-as-collision.gx
-// (t-cast-setops-08)
-// 2026-10-19 claude: rep_collision returns Indiscernible (Pair, or Grows on growth);
-// Indiscernible::untold words both for the select arm, the definition's told check and
-// a trait dispatch. Pin: lang::types::growing_typedef_select_refused now names the
-// growth.
 fn rep_collision(
     env: &Env,
     seen: &mut RepSeen,
@@ -2308,22 +2211,6 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 }
 
 /// The string `s` read as the primitive `t`.
-// XCR claude for claude: [bug/high] A decimal target is read through
-// `s.parse::<Value>()`, which makes an f64. str::parse::<decimal>,
-// cast<decimal>(string) and json::read of a decimal (the json writer writes decimals as
-// strings) are therefore only as exact as f64: "1.23456789012345678901234567" reads as
-// 1.234567890123457, "0.30000000000000000000000001" as 0.3, and "12345678901234567890"
-// does not parse at all. A decimal written by json::write_str does not read back as
-// itself. Give Typ::Decimal an exact branch like the integer one (`Decimal::from_str`,
-// then `from_scientific`) before the generic parse, and pin the json round trip. probe:
-// design/review-2026-10-19/repro/x-panics-decimal-parse-via-f64.gx Also reported as
-// (small-pkgs-03). (x-panics-01)
-// 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
-// (Decimal::from_str_exact, then from_scientific) and a float target with Rust's float
-// parse; integer() truncates a pre-epoch datetime's fraction toward zero. rust_decimal
-// is now a graphix-types dependency. Pin:
-// lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal round
-// trip).
 fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if t == Typ::DateTime
         && let Ok(d) = chrono::DateTime::parse_from_rfc3339(s)
@@ -2350,35 +2237,6 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if parses_to_collection(s) {
         return None;
     }
-    // XCR claude for claude: [bug/medium] Float targets reach this value-literal parse,
-    // which reads a bare integer only as i64. The results:
-    // cast<f64>("9223372036854775808") is an InvalidCast; cast<f64>("inf") is refused,
-    // though `printed` writes an infinite f64 as "inf"; cast<f32>("+3") is refused
-    // while cast<i64>("+3") is 3; and cast<f64>("-0") is 0, the sign lost. Read float
-    // targets directly with s.trim().parse::<f64>(), as integer targets go through i128
-    // above, and pin a print → cast round trip. probe:
-    // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
-    // (x-engine-collections-04)
-    // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
-    // (Decimal::from_str_exact, then from_scientific) and a float target with Rust's
-    // float parse; integer() truncates a pre-epoch datetime's fraction toward zero.
-    // rust_decimal is now a graphix-types dependency. Pin:
-    // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
-    // round trip).
-    // XCR claude for claude: [bug/medium] A decimal target reaches this parse, which
-    // reads "123456789.123456789" as an f64 before convert makes a decimal of it. So
-    // digits are lost: cast<decimal>("123456789.123456789") is 123456789.1234568, and
-    // str::parse<decimal>("12345678901234567.89") is 12345678901234568. Fix: for
-    // Typ::Decimal, parse s.trim() as a Decimal first, as the integer branch above does
-    // with i128. probe:
-    // design/review-2026-10-19/repro/t-cast-setops-decimal-parse-via-f64.gx
-    // (t-cast-setops-05)
-    // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
-    // (Decimal::from_str_exact, then from_scientific) and a float target with Rust's
-    // float parse; integer() truncates a pre-epoch datetime's fraction toward zero.
-    // rust_decimal is now a graphix-types dependency. Pin:
-    // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
-    // round trip).
     match s.parse::<Value>() {
         Ok(Value::String(_)) | Err(_) => None,
         Ok(parsed) => convert(parsed, t),
@@ -2414,20 +2272,6 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         Value::F32(f) => float_int(*f as f64)?,
         Value::F64(f) => float_int(*f)?,
         Value::Bool(b) => *b as i128,
-        // XCR claude for claude: [bug/low] timestamp() floors, but this function drops a
-        // fraction (as float_int truncates). A pre-1970 datetime with a sub-second part
-        // therefore casts one second low: cast<i64>(datetime:"1969-12-31T23:59:59.5Z")
-        // is -1, while the same cast through f64 is 0. Truncate toward zero (add 1 when
-        // the timestamp is negative and timestamp_subsec_nanos is nonzero) and pin the
-        // pre-epoch case. probe:
-        // design/review-2026-10-19/repro/x-engine-collections-datetime-int-floor.gx
-        // (x-engine-collections-06)
-        // 2026-10-19 claude: typ::cast::parse reads a decimal target exactly
-        // (Decimal::from_str_exact, then from_scientific) and a float target with
-        // Rust's float parse; integer() truncates a pre-epoch datetime's fraction
-        // toward zero. rust_decimal is now a graphix-types dependency. Pin:
-        // lang::types::string_casts_to_decimal_and_float_exactly (with the json decimal
-        // round trip).
         Value::DateTime(d) => {
             let secs = d.timestamp() as i128;
             secs + (secs < 0 && d.timestamp_subsec_nanos() > 0) as i128

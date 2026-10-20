@@ -483,24 +483,6 @@ fn update_children<'a>(
     Ok(None)
 }
 
-// XCR claude for claude: [bug/medium] A widget tree nested about 135 deep (debug build)
-// overflows the tokio worker's stack, and the process dies with SIGSEGV. The cause is
-// that `compile` -> `ChildW::compile` -> `compile` is an async recursion whose polls
-// nest, two frames a level, with no stack guard, and `TuiWidget::draw`/`handle_update`
-// recurse the same way. A recursive tree or outline view built from data reaches this.
-// Fix: poll the boxed future through `ensure_sufficient` (a small Future wrapper around
-// the `Box::pin` here) and guard the draw/update recursion too, or refuse a tree past a
-// fixed depth with an error. The gui's `widgets::compile`/`Child::compile` has the same
-// shape (found by reading). probe:
-// design/review-2026-10-19/repro/x-stack-tui-deep-widget.gx (x-stack-01)
-// 2026-10-19 claude: TuiW is now a newtype whose draw, handle_update and handle_event
-// run under graphix_types::stack::ensure_sufficient, and compile's future and
-// update_children's pending future are polled through StackGuarded, which guards each
-// poll. The tui crate takes graphix-types as a dependency for it. Pin:
-// panic_test::a_deep_widget_tree_compiles_and_draws (1000 nested blocks). The GUI's
-// widgets::compile/Child::compile is not changed: iced's own layout and draw recurse
-// through the tree too, so a guard on our side alone would not make a deep GUI tree
-// safe.
 /// A widget in a tree as deep as the program builds it: every walk into
 /// one runs with a guaranteed stack.
 struct TuiW(Box<dyn TuiWidget + Send + Sync + 'static>);
@@ -1290,28 +1272,6 @@ async fn display<X: GXExt>(
                     {
                         set_mouse(*v)
                     }
-                    // XCR claude for claude: [bug/high] This arm awaits the widget
-                    // rebuild, which makes compile round trips to the runtime, and the
-                    // loop reads no terminal input until it returns. If the runtime is
-                    // busy in the cycle after the rebuild (a long or non-terminating
-                    // computation), a Ctrl-C typed then is never read. Raw mode
-                    // disables ISIG, so no SIGINT is raised either, and the program
-                    // cannot be stopped from its own terminal. The liveness check and
-                    // suspend requests stall the same way. Fix: keep reading the
-                    // terminal while an update is in flight. For example, use a nested
-                    // select over the update future and `term.next()` that calls
-                    // `control.finish(Ok(()))` on Ctrl-C and queues other events to
-                    // dispatch after the update. probe:
-                    // design/review-2026-10-19/repro/tui-core-ctrl-c-unread-during-rebuild.gx
-                    // (still running 15 s after the Ctrl-C; without the rebuild it
-                    // exits 130 at once). (tui-core-02)
-                    // 2026-10-19 claude: Term::reading drives the update (and a dispatched
-                    // event) together with the terminal and the liveness tick; a Ctrl-C ends
-                    // the wait (the work is dropped) and finishes the display, other events
-                    // queue in pending and are dispatched in order from the top of the loop.
-                    // Pin: terminal_test::ctrl_c_is_read_while_work_waits (a PTY child;
-                    // in_child now types bytes once the child is raw). The repro now exits
-                    // 130 at the Ctrl-C.
                     match term.reading(screen.update(id, v), &mut liveness, &mut pending).await? {
                         Some(Ok(())) => (),
                         Some(Err(e)) => error!("error handling update {e:?}"),

@@ -689,20 +689,6 @@ impl<X: GXExt> GXHandle<X> {
     /// Shut the runtime down, breaking any wedged loop first. Borrows
     /// `&self`, so it can be called while commands are in flight; pending
     /// commands resolve to errors. Dropping the last handle also does this.
-    // XCR claude for claude: [bug/medium] abort only sets Control's flag. An idle run
-    // loop sees it only when some source next wakes the select!, so its claim that
-    // pending commands resolve to errors fails: a pending wait_settled hangs, and the
-    // runtime keeps every node, server, subscription and timer alive until then. Fix:
-    // share a tokio::sync::Notify between GXHandleInner and the run loop. abort
-    // notifies it, and the run loop's select! and do_cycle's send loop wait on it,
-    // which also retires the send loop's 100 ms poll. probe:
-    // design/review-2026-10-19/repro/rt-runtime-api.rs (abort_answers_a_pending_settle)
-    // (rt-03)
-    // 2026-10-19 claude: GXHandleInner and the run loop share a Notify: abort()
-    // notifies it, the run loop's select! and do_cycle's send loop wait on it (the send
-    // loop's 100 ms poll is gone; an aborted runtime sends what has room and waits for
-    // nothing). Fails if undone: graphix-rt/tests/runtime_api.rs
-    // abort_answers_a_pending_settle.
     pub fn abort(&self) {
         self.0.control.abort();
         self.0.aborted.notify_one()
@@ -972,20 +958,6 @@ impl<X: GXExt> GXHandle<X> {
         }
     }
 
-    // XCR claude for claude: [risk/medium] Writing a variable through a Ref compiled, set
-    // and dropped on each call made two GUI data_table tests time out about one
-    // full-suite run in fifteen; writing with GXHandle::set on the bind id ran 20 runs
-    // clean, so the tests now do that. Find whether a write through a Ref can be lost
-    // when the Ref drops before the write lands (the drop's unref racing the queued
-    // set), and pin it with a loop of compile_ref/set/drop under load. Reported by the
-    // 10-19 GUI/TUI CR-fix agent; not reproduced in isolation. (ref-drop-race-01)
-    // 2026-10-19 claude: Not reproduced. A Set is queued for the next cycle and a Delete
-    // only removes the Ref's own node (its reads), never a write or the variable's other
-    // readers. The pin the CR asked for, graphix-rt/tests/runtime_api.rs
-    // a_write_through_a_dropped_ref_lands (300 compile_ref/set/drop rounds, each waiting
-    // for its value), ran 10 times under a concurrent graphix-tests load with no loss.
-    // The data_table timeouts more likely came from the data-form writes rt-01 now
-    // refuses.
     /// Compile a ref to a bind id
     ///
     /// This will NOT return an error if the id isn't in the environment.

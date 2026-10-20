@@ -227,36 +227,6 @@ impl Label {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-// XCR claude for claude: [test-gap/medium] The only unions here are Nullable (over a
-// scalar) and Variant. No generated program binds, passes or stores a Result, a
-// mixed-number union, or a union of composite kinds (array, tuple, struct, list,
-// variant). That last one is what the new kind markers and select type tests over
-// composites must keep apart, and the opaque two-word kernel ABI for unions is only
-// reached through shape templates consumed in place. Add a Union member drawn at a
-// small rate, annotated at every let and consumed by a select with one `T as x` arm per
-// member, and let Results sometimes reach a let or typed param before being consumed.
-// probe: design/review-2026-10-19/repro/fuzz-gen-a-composite-union.gx (a valid such
-// program; 0 Result-typed lets in 1000 generated programs) (fuzz-gen-a-02)
-// 2026-10-19 claude: Partly addressed: funcs.rs gen_shape_template now binds a union of
-// runtime forms (composite kinds, string beside a bare variant, i64 beside f64) at
-// annotated lets and reads it with one type-test arm per member (kind_union, with
-// fuzz-gen-b-01), and binds Results to a let and passes an annotated Result to a typed
-// parameter (result_lets); audit_bug_shapes_reachable pins both. Still open: a Union
-// member of GenType that flows through the vocabulary (stored, passed between generated
-// functions, read far from where it was built), so the opaque two-word kernel ABI meets
-// a union that is not consumed in place.
-// 2026-10-20 claude: GenType::Union (types.rs random_union) is now vocabulary: two to
-// four members of distinct runtime forms (one per composite kind, scalars of distinct
-// classes, one numeric or an int beside a float; 2 in 5 scalar-only, which a kernel
-// takes as an opaque Value). random_type draws it at 1/32, typed lambdas take and
-// return it (funcs.rs signature_type), every value is pinned by an annotation, and
-// patterns.rs union_select reads it with one type-test arm per member, from
-// maybe_select, try_accessor and after a union let. funcs.rs gen_union_flow builds one
-// at an annotated let, passes it through a fn that takes and returns it, stores it in a
-// struct and reads it in a second fn. Pin: audit_bug_shapes_reachable (union of runtime
-// forms through functions; fails with p_union 0). 4500 union-bearing generated programs
-// checked AGREE; gen-check 100%. Mixed composite unions have no kernel encoding and
-// de-fuse.
 pub enum GenType {
     Num(NumTy),
     Bool,
@@ -629,21 +599,6 @@ pub(super) fn random_union(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Union(members)
 }
 
-// XCR claude for claude: [test-gap/medium] No generator draws a union of different
-// composite kinds (array, tuple, List, struct, variant, string beside a bare variant)
-// or a type-test arm over one. The only unions are Nullable(scalar), tag unions and the
-// two shape templates, so the kind-marker runtime forms (rep.rs, Type::rep_collision)
-// are never told apart in a generated select, compared with ==, or used as a map key.
-// Add a draw or shape template that builds such a union and reads it with one type-test
-// arm per member, as in the probe. probe:
-// design/review-2026-10-19/repro/fuzz-gen-b-kind-union-gap.sh (0 composite type tests
-// in 6000 programs); fuzz-gen-b-kind-union-probe.gx agrees and fuses. (fuzz-gen-b-01)
-// 2026-10-19 claude: funcs.rs gen_shape_template now draws kind_union: a union of two
-// to nine members of distinct runtime forms (Array, tuple, List, struct, payload and
-// bare variants, string, i64, f64) annotated at two lets, read by one type-test arm per
-// member, compared with == and used as map keys. Pinned by the
-// audit_bug_shapes_reachable stat (union of runtime forms); generated samples agree
-// under check.
 pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);

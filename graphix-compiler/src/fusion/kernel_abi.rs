@@ -681,24 +681,6 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
             // A recurring ref becomes the opaque leaf, built on the outer
             // (cell-filled) occurrence with its params frozen so the
             // leaf stays TVar-free.
-            // XCR claude for claude: [perf/medium] Each occurrence of a ref is expanded
-            // and frozen again, so a typedef chain where each names the next twice (T_i
-            // = [null, (T_i+1, T_i+1)]) costs 2^n per freeze. A 22-level chain takes
-            // 15.7 s to start with fusion on and 0.12 s with --no-fusion, all of it in
-            // phase Freeze. The checker's decide_once was made linear on this shape;
-            // this walk was not. Memoize within the walk: keep each ref's frozen result
-            // with the ancestor keys it cut at, and reuse it wherever those keys are on
-            // the current path. probe:
-            // design/review-2026-10-19/repro/x-rerun-3-freeze-dag-exponential.gx
-            // (x-rerun-3-02)
-            // 2026-10-19 claude: Each Seen node keeps the refs a freeze expanded
-            // directly below it and their frozen types; a sibling occurrence of the
-            // same ref (same path, so the same cuts) takes the result. The repro (21
-            // levels, recursive) runs in 0.15 s fused (was 8.7 s at 20). Pin:
-            // graphix-tests --test fusion_review typedef_dag_freezes_in_linear_time (41
-            // levels; not checked against the old build, which would take 2^40).
-            // abi_kind_d and lowering's expand walk expand refs by the same Seen and
-            // were not changed: abi_kind reads the top level only.
             Type::Ref(tr) => {
                 if let Some(outer) = Seen::find(seen, tr) {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =

@@ -239,7 +239,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         }
         tv.with_value(|v| {
             let [disc, payload] = match (p, v) {
-                // XCR claude for claude: [readability/low] The comment above is wrong:
+                // CR claude for claude: [readability/low] The comment above is wrong:
                 // pack_value_to_u64 returns value_words' payload, which sign- or
                 // zero-extends narrow scalars, so no byte is padding.
                 // pack_value_to_u64's doc in emit/jit.rs says a None makes the caller
@@ -255,6 +255,17 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 // slot is the type's own, and an exact test would refuse it; only a
                 // slot that records the varint could tell. Review: drop the third
                 // item or make ParamKind carry varints.
+                // 2026-10-20 claude: XCR review: Comment and doc items are done, but
+                // the reason for not taking the exact-variant test is wrong:
+                // PrimType::from_typ maps no varint Typ (V32/Z32/V64/Z64 return None),
+                // so abi_kind gives a varint type AbiKind::Value and its param is
+                // ParamKind::Value, never ParamKind::Scalar. A varint Value in a
+                // Scalar slot is therefore always a class mismatch, and
+                // pack_value_to_u64 (via scalar_prim_of_value's collapse) relabels it
+                // instead of reporting it. pack_value_to_u64's new doc ('pack as their
+                // fixed-width prim, which is a varint type's own') repeats the error.
+                // Test the exact variant there (or use a prim-of-value that refuses
+                // varints).
                 (ParamKind::Scalar(prim), v) => match pack_value_to_u64(v, *prim) {
                     Some(payload) => [prim_to_value_disc(*prim) as u64, payload],
                     None => mismatch(v),

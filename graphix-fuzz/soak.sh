@@ -215,16 +215,6 @@ start() {
     # The WHOLE box: one pool, so the 8x oversubscription is claimed once.
     workers=${2:-$(( $(ncpu) * 8 ))}
     seed=${3:-$(date +%s)}
-    # XCR claude for claude: [structure/low] The default mix is written here, in
-    # fleet.sh's `MIX` and in main.rs `DEFAULT_MIX`. Because this script always passes a
-    # mix, `DEFAULT_MIX` never governs a launched campaign, and retuning it does nothing
-    # on the fleet. Keep the binary's constant as the only default: pass the mix
-    # argument only when one was given here, and only when FLEET_MIX is set in fleet.sh.
-    # Found by reading; not run. (fuzz-main-aux-07)
-    # 2026-10-19 claude: The soak script now passes a mix only when one is given (its
-    # config records default); the fleet MIX is empty unless FLEET_MIX is set, and it
-    # travels last in the ssh argv so an empty one cannot shift asan. DEFAULT_MIX in
-    # main.rs is the one default. No test reaches the scripts; bash -n only.
     mix=${4:-}
     [[ $workers =~ ^[1-9][0-9]*$ ]] || {
         echo "workers must be positive" >&2

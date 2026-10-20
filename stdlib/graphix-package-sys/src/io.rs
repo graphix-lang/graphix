@@ -237,17 +237,6 @@ fn line_reader(
 }
 
 #[derive(Debug)]
-// XCR claude for claude: [risk/low] Dropping this does not stop the reader: an
-// AbortHandle does not abort on drop, and IoLines aborts only in `stop`. A runtime that
-// ends without deleting its nodes (handle drop, abort, a budget stop) leaves the reader
-// running. It holds the stream's read half and consumes the next chunk of stdin or of a
-// socket before its send fails. An unbatched reader whose last send already went
-// through then waits on `drained` forever, which keeps its task and the stream's fd
-// alive for the rest of the process. Fix: a Drop impl on Reading that aborts `task`, so
-// `stop` only has to take `reading`. Found by reading; not run. (x-concurrency-03)
-// 2026-10-19 claude: Reading has a Drop that aborts its task; IoLines drops the Reading
-// to stop. Found by reading; no pin (a runtime that ends without deleting its nodes is
-// not reachable from a fixture).
 struct Reading {
     stream: Arc<Halves>,
     task: tokio::task::AbortHandle,
@@ -323,25 +312,6 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
             }
             let (tx, rx) = mpsc::channel(3);
             ctx.rt.watch_var(rx);
-            // XCR claude for claude: [bug/medium] lines_batched loses every batch its
-            // reader reads while this call's arm sleeps. Only the unbatched form gets a
-            // LineQueue. The batched reader sends each read straight to the RtVar
-            // through watch_var, the runtime delivers it while IoLines is asleep, and
-            // nothing takes it afterwards. design/async_sleep_outputs.md says a
-            // sleeping listener loses nothing, and the Lines doc says the two forms
-            // frame the same way. In the probe, lines 4-6 of 8 are lost, while `lines`
-            // gets all 8. Fix: give both forms the queue, with the batched one queueing
-            // one Array per read, so a sleeping batched reader holds back too. That
-            // also deletes the batched branch in update and the `batched` split in
-            // line_reader's send. probe:
-            // design/review-2026-10-19/repro/sys-io-lines-batched-sleep-loses-lines.gx
-            // (sys-io-01)
-            // 2026-10-19 claude: Both forms use the LineQueue now: line_reader takes
-            // batched and the queue, queues one array per read when batched, and waits
-            // for the graph to drain it; update pops from the queue alone. Pin:
-            // lib_tests::process::io_lines_batched_keeps_lines_across_a_sleep (before:
-            // never reaches 4 lines). design/async_sleep_outputs.md's Line reader
-            // identity says both forms hold the reader back.
             let queue = Arc::new(LineQueue::new());
             let reader =
                 line_reader(stream.clone(), self.var.id, BATCHED, queue.clone(), tx);
@@ -364,20 +334,6 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         self.var.release(ctx);
     }
 
-    // XCR claude for claude: [bug/high] In BATCHED mode the reader is not held back.
-    // line_reader keeps reading while this node sleeps and sends each batch to
-    // `var.id`, which update reads only from the event. A batch delivered during the
-    // sleep reaches no reader, and the wake catch-up cannot re-raise it because IoLines
-    // has no `refs`. Those lines have been consumed from the stream, so they are lost.
-    // design/async_sleep_outputs.md (Line reader identity) promises a sleeping listener
-    // loses nothing, and that holds only for the unbatched reader, whose LineQueue
-    // holds the reader back. Fix: put batched mode on LineQueue as well, with pop
-    // returning all pending lines as one array, so the reader waits until the graph
-    // takes each batch. Then pin it with an arm that sleeps mid-stream. probe:
-    // design/review-2026-10-19/repro/x-node-contract-lines-batched-sleep.gx
-    // (x-node-contract-01)
-    // 2026-10-19 claude: Fixed with sys-io-01: batched mode is on LineQueue, one array
-    // per read. Pin: lib_tests::process::io_lines_batched_keeps_lines_across_a_sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
     }

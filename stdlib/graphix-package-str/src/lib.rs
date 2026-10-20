@@ -384,41 +384,6 @@ graphix_package_core::fast_builtin!(
 
 /// The most text sprintf writes, as much as `buffer::encode` pads: a
 /// width or precision from data allocates no further.
-// XCR claude for claude: [bug/medium] printf pads to any width and precision, so a `*`
-// width from data or a large width in a format string allocates without bound.
-// `str::sprintf("<%*d>", 100000000000, 1)` OOM-kills the runtime, and `%.999999999f`
-// builds a 1 GB string. buffer::encode caps Pad at 64 MiB; give sprintf the same cap.
-// Write through a bounded fmt::Write that errors past the cap (fish-printf pads
-// incrementally, so that stops it), and answer FormatError. probe:
-// design/review-2026-10-19/repro/x-panics-sprintf-width-oom.gx (x-panics-04)
-// 2026-10-19 claude: sprintf writes through Capped, which refuses past MAX_SPRINTF
-// (64 MiB, buffer::encode's Pad cap) and answers FormatError. Pin:
-// lib_tests::str_tests::sprintf_prints_composites_and_caps_padding (before: OOM).
-// XCR claude for claude: [bug/medium] sprintf formats its `@args: Any` with Value's raw
-// Display, so a tuple, struct, variant or list argument prints its kind-marker
-// abstract: `str::sprintf("%s", (1, 2))` is `[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1,
-// i64:2]`, where interpolation prints `(1, 2)`. Both engines agree on the wrong text.
-// Fix: make it a typed_fast_builtin and render each non-scalar argument with the typed
-// printer interpolation uses (TVal over the site's argument type), passing the result
-// to printf as a string. probe:
-// design/review-2026-10-19/repro/x-builtin-effects-sprintf-markers.gx Also reported as
-// (x-engine-collections-02). (x-builtin-effects-01)
-// 2026-10-19 claude: sprintf is a typed_fast_builtin now (FastCall Plain -> Typed, its
-// image state the resolved type) running under the display hooks; each
-// Array/Map/Abstract/Error argument is rendered with TVal under Any before printf. Pin:
-// lib_tests::str_tests::sprintf_prints_composites_and_caps_padding.
-// XCR claude for claude: [bug/medium] sprintf hands its `Any` args to netidx printf,
-// which formats every array, map and abstract with netidx's own Display. So a tuple,
-// struct, variant or list prints its kind markers (`[abstract:EnwukQtE2EoTn2Uo4FoXw40A,
-// i64:1, i64:2]` for `(1, 2)`), and a user abstract type prints as base64 bytes with
-// its Display impl ignored: a Plain fast fn runs without the display hooks. Make it a
-// typed_fast_builtin running under with_display_hooks, and render each non-scalar
-// argument with TVal under Type::Any (what interpolation prints) before calling printf.
-// probe: design/review-2026-10-19/repro/collections-str-sprintf-markers.gx
-// (collections-str-01)
-// 2026-10-19 claude: Fixed with x-builtin-effects-01 (typed fast fn under
-// with_display_hooks, composites rendered with TVal under Any). Pin:
-// lib_tests::str_tests::sprintf_prints_composites_and_caps_padding.
 const MAX_SPRINTF: usize = 64 * 1024 * 1024;
 
 /// A writer that refuses to grow past [`MAX_SPRINTF`].
@@ -441,24 +406,6 @@ impl std::fmt::Write for Capped<'_> {
 fn fc_sprintf(env: &Env, _ft: &FnType, args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("FormatError");
     let [Value::String(fmt), rest @ ..] = args else { return None };
-    // XCR claude for claude: [bug/medium] netidx's printf formats a composite
-    // argument with netidx's Display, which prints a tuple/struct/variant's
-    // kind marker as `abstract:<base64>`. `str::sprintf("%s", (1, `A(2), {x:
-    // 3}))` returns "[abstract:EnwukQ…A, i64:1, [abstract:…C, \"A\", i64:2],
-    // …]". Render each Array/Map/Error/Abstract argument with typ::Naked into a
-    // string before calling printf. fc_parse's two `errf!(TAG, "{e}")` arms and
-    // core's read_back print a cast error the same way
-    // (ParseError("[abstract:…, \"InvalidCast\", …]")); take the message out of
-    // the InvalidCast variant there. probe:
-    // design/review-2026-10-19/repro/x-panics-marker-leaks-into-text.gx
-    // (x-panics-05)
-    // a composite prints as interpolation prints it, never in netidx's form
-    // 2026-10-19 claude: sprintf renders composites with TVal
-    // (x-builtin-effects-01), and fc_parse and core's read_back print a cast
-    // error through graphix_package_core::ErrorText (a variant's one string,
-    // else Naked). Pins:
-    // lib_tests::str_tests::sprintf_prints_composites_and_caps_padding,
-    // parse_reads_numbers_by_the_cast.
     let composite = |v: &Value| {
         matches!(
             v,
@@ -531,20 +478,6 @@ fn fc_sub(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Sub, SubEv, "str_sub", fc_sub);
 
-// XCR claude for claude: [bug/low] When the cast fails, the `Value::Error(e) =>
-// errf!(TAG, "{e}")` arms format the InvalidCast variant with Value's raw Display, so
-// the ParseError the program sees carries the kind marker:
-// `[abstract:EnwukQtE2EoTn2Uo4FoXw40C, "InvalidCast", "can't cast 1.5 to (i64, string):
-// not a tuple"]`. core's read_back (CachedArgsAsync DATA_RESULT, db subscriptions) has
-// the same `errf!(tag, "{e}")`. Fix: one helper that takes an error value's message (a
-// one-string variant's payload via rep::read_variant, else the typed printer), used
-// here and in read_back. probe:
-// design/review-2026-10-19/repro/x-builtin-effects-parse-error-markers.gx
-// (x-builtin-effects-06)
-// 2026-10-19 claude: One helper, graphix_package_core::ErrorText, prints an error
-// payload's message (a one-string variant's string, else the naked form); fc_parse and
-// read_back use it, and so does PublishRpc's spec check. Pin:
-// lib_tests::str_tests::parse_reads_numbers_by_the_cast (the (i64, string) case).
 fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("ParseError");
     let [Value::String(s)] = args else { return None };
@@ -561,21 +494,6 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     // and keep the literal parse for collection syntax. probe:
     // design/review-2026-10-19/repro/collections-str-parse-not-cast.gx
     // (collections-str-06)
-    // XCR claude for claude: [bug/medium] The value-literal parser takes a bare integer
-    // only as i64. str::parse<u64> therefore refuses every u64 above i64::MAX,
-    // including the string cast<string> writes for u64:18446744073709551615, while
-    // cast<u64> of the same string reads it (typ/cast.rs `parse` goes through i128).
-    // str::parse<f64>("9223372036854775808") fails too. For a scalar target, read the
-    // string with the cast (cast_value of Value::String(s)), so there is one string
-    // reader, and pin the u64::MAX round trip. probe:
-    // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
-    // (x-engine-collections-03)
-    // a number is read by the cast, the one reader of numbers in text
-    // 2026-10-19 claude: A number target (a primitive of number types only) reads the
-    // text with the cast, the one reader of numbers in text; its refusal is 'cannot
-    // parse ".." as T'. Pin: lib_tests::str_tests::parse_reads_numbers_by_the_cast
-    // (u64::MAX round trip). str::parse<f64>("9223372036854775808") still fails: that
-    // is the cast's float parse (x-engine-collections-04, graphix-types).
     if let Type::Primitive(p) = &typ
         && !p.is_empty()
         && p.iter().all(|t| t.is_number())
@@ -585,46 +503,9 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
             v => v,
         });
     }
-    // XCR claude for claude: [bug/medium] A failed cast is rewrapped by printing its
-    // error payload with {e}. Since kind markers, that payload is the marked
-    // `InvalidCast(msg) variant, so the ParseError a program sees reads
-    // "[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast 300 to u8:
-    // ...\"]" for an ordinary `str::parse("300")` into u8. core's read_back rewraps
-    // the same way for typed async reads and db::subscribe. Fix: let Type return
-    // the cast failure's message (cast_value_int has it before errf!) through a
-    // Result-returning entry, and wrap that message here and in read_back, so the
-    // error never round-trips through a Value. probe:
-    // design/review-2026-10-19/repro/x-rerun-5-parse-error-prints-marker.gx
-    // (x-rerun-5-03)
-    // 2026-10-19 claude: Taken the helper route (ErrorText over the error payload)
-    // rather than a Result-returning cast entry in graphix-types. Pin:
-    // lib_tests::str_tests::parse_reads_numbers_by_the_cast.
     Some(match s.parse::<Value>() {
         Ok(Value::Error(e)) => errf!(TAG, "{}", ErrorText(&e)),
         Ok(v) => match typ.cast_value(env, v) {
-            // XCR claude for claude: [bug/medium] `e` is the marked variant
-            // `InvalidCast(msg)`, and `{e}` is netidx's raw Value Display. The
-            // ParseError text therefore carries the kind marker: str::parse<u8>("256")
-            // gives ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\",
-            // \"can't cast 256 to u8: ...\"]") in both engines. Take the message out of
-            // the variant with rep::variant, or print it with tval::Naked, and pin the
-            // text in a fixture. probe:
-            // design/review-2026-10-19/repro/x-engine-collections-parse-marker-leak.gx
-            // (x-engine-collections-01)
-            // 2026-10-19 claude: The message comes out of the variant through
-            // ErrorText; a number target names the text and target. Pin:
-            // lib_tests::str_tests::parse_reads_numbers_by_the_cast.
-            // XCR claude for claude: [bug/medium] `e` here is the cast's marked
-            // `InvalidCast(msg)` variant, and `{e}` is netidx's Display. So
-            // `str::parse` to u8 of "300" reports
-            // ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't
-            // cast 300 to u8: ...\"]"). Use the variant's string payload (rep::variant)
-            // as the message. graphix_package_core::read_back formats the same payload
-            // the same way. probe:
-            // design/review-2026-10-19/repro/collections-str-parse-error-marker.gx Also
-            // reported as (gx-stdlib-02). (collections-str-02)
-            // 2026-10-19 claude: Fixed with x-engine-collections-01 (ErrorText). Pin:
-            // lib_tests::str_tests::parse_reads_numbers_by_the_cast.
             Value::Error(e) => errf!(TAG, "{}", ErrorText(&e)),
             v => v,
         },

@@ -241,20 +241,6 @@ const NET_SUB_REWAKE: &str = r#"
 }
 "#;
 
-// XCR claude for claude: [test-gap/medium] This matcher ignores every value not greater
-// than the first, so a woken arm that re-emitted its pre-sleep subscription value still
-// passes: [0, -1, 0, 2, -1, 2] is accepted. The rule that an event source's last event
-// does not survive the sleep has no other pin for net subscriptions. Assert the publish
-// twin's shape instead: (n, -1) pairs with n strictly increasing. The comment's
-// "present path" is also untested, since the path is a constant. Add a path that moves
-// while the arm sleeps; it should give ["a", "off", "b"]. Found by reading; not run.
-// (tests-lib-b2-04)
-// 2026-10-19 claude: The matcher now refuses any value not newer than the last
-// delivered, either side of a sleep marker, and needs a wake (a value after a -1): [0,
-// -1, 0, ..] fails. It does not require one value per window: under par a resubscribe
-// first sees the value published while the arm slept, [0, -1, 1, 2, -1, 4].
-// net_subscribe_arm_rewake_moved_path pins the present path: the path moves while the
-// arm sleeps and the woken subscribe gives ["a", "off", "b"].
 run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
     let Ok(Value::Array(a)) = v else { return false };
     let mut last = -1;

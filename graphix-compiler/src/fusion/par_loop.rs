@@ -185,27 +185,6 @@ pub(crate) unsafe fn run(
                 }
             };
             // the first slot an uncalibrated loop timed is one of the probes
-            // XCR claude for claude: [perf/high] A settled site asks for one probe
-            // (ProbeSite::probes returns 1), but this widens it to PROBE_BATCH, so
-            // every run of a loop whose slots pay for a fork executes 16 slots in order
-            // before forking the rest. A 32-slot loop of heavy slots stays half serial
-            // forever: about 3.8 s under Auto against 0.95 s under Force, and the trace
-            // shows '32 slots, 16 probed' on every run. Cheap loops, which the batch
-            // was added for, are already in LoopSite's untimed stretch. So either time
-            // the forked Runs on their workers and probe in order only while unsettled,
-            // or keep the batch only while the estimate is below T / PROBE_BATCH.
-            // Update design/parallel_eval.md §10, which does not mention the batch.
-            // probe:
-            // design/review-2026-10-19/repro/c-cost-misc-kernel-loop-probe-batch.gx
-            // (c-cost-misc-01)
-            // 2026-10-19 claude: LoopSite::probes now takes the calibration and the
-            // slots already timed and widens a probe to PROBE_BATCH only while the
-            // site's estimate is unknown or under T / PROBE_BATCH; a settled site of
-            // dearer slots probes the one slot it asks for. design/parallel_eval.md §10
-            // describes the batch. Pin:
-            // cost::tests::loop_site_batches_only_cheap_probes. The repro now traces
-            // '32 slots, 1 probed, 31 ranges' on every settled run: auto 2.5 s against
-            // force 2.2 s (the review binary's auto 8.8 s, a loaded machine).
             let Some(k) = site.probes(cal, len - at, probes.len()) else {
                 if at == 0 {
                     return unsafe { in_order(chunk, frame, len, find, out) };

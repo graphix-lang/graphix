@@ -1513,23 +1513,6 @@ fn instance_type<R: Rt, E: UserEvent>(
 /// A call's copy of the definition's signature `def_typ`, fitted to the
 /// site's view `site` of it as a call fits it: the one rule a static and
 /// a dynamic bind both take when the views list other parameters.
-// XCR claude for claude: [structure/low] This fits a callee with a defaulted
-// label the site's view omits by `def_typ.instantiate(&ctx.rec_defs)`.
-// CallSite::setup_static_bind fits the static case its own way: `reset_tvars`,
-// `alias_tvars`, `check_contains`, `resolve_tvars`. reset_tvars copies every
-// open cell, while instantiate shares open gates' and environment cells and
-// freezes repeated copies. One rule, 'fit as a call fits it', has two
-// implementations that can drift. Fix: let setup_static_bind hand the site's
-// ftype here and fit Static and Dynamic in one branch with FnType::instantiate,
-// then delete the copy in setup_static_bind. Found by reading; not run.
-// (c-lambda-03)
-// 2026-10-20 claude: One helper, lambda::fit_callee (instantiate as a call
-// does, then the site view contains the copy), fits a callee whose parameters
-// differ from the site view for both the dynamic bind (instance_type) and
-// CallSite::setup_static_bind; the static path no longer copies every open cell
-// with reset_tvars and alias_tvars. graphix-tests and netidx-admin pass; no new
-// pin, the existing static/dynamic default fixtures (lang::functions) cover
-// both paths.
 pub(crate) fn fit_callee<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     site: &FnType,
@@ -2107,28 +2090,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
-        // XCR claude for claude: [bug/medium] An instance-defined literal takes its
-        // table's facts here, but its ParamCalls stay default. DefTable records `facts`
-        // and not the ParamCalls that Lambda::typecheck0 stores from
-        // analysis::def_body_facts. So analysis::callback_facts finds no captured fn
-        // parameter, and a builtin handed `|x| f(x)` is judged without f's facts. With
-        // `g = |v, f| filter(v, |x| f(x))` called with an async f, `#[sync]` on the
-        // caller is accepted and `#[async]` refused. GRAPHIX_NO_SUBST=1 gives the right
-        // verdicts, and so does `filter(v, f)`. The same facts decide arm sleep and the
-        // tail-loop stateless gate. Fix: carry ParamCalls in the table and set
-        // def.param_calls here. Remap `captured` (the def check's formal ids) to this
-        // instance's formals, for example by recording formals by position. probe:
-        // design/review-2026-10-19/repro/c-lambda-instance-param-calls.sh (c-lambda-01)
-        // 2026-10-19 claude: DefTable carries the body's parameter calls: its own, and
-        // the enclosing definitions' fn parameters it calls by (definition, position),
-        // taken from CompileCtx::def_gate_params (now a map to that key). An instance's
-        // call site registers its fn-typed formals by the same key
-        // (CompileCtx::instance_fn_params, restored at unregister), and an
-        // instance-defined literal resolves its captured calls through it.
-        // REGISTRATION_FORMAT 70 -> 71. The repro now refuses #[sync] and accepts
-        // #[async] with and without GRAPHIX_NO_SUBST. Pins:
-        // lang::attributes::captured_param_call_sync_refused,
-        // captured_param_call_async_accepted.
         let captured = tables
             .table
             .calls_captured

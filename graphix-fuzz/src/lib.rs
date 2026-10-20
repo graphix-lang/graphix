@@ -1834,22 +1834,6 @@ fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
         // shell's default, and its Par pair ties it to the serial runs
         let forked = par_enabled().then_some(Mode::JitPar);
         for &route in session_routes(code) {
-            // XCR claude for claude: [test-gap/low] Image sessions are compared only at
-            // Interp and Jit, which run ParMode::Off, and the forked pairs run with no
-            // cache. So no lane fuzzes a warm start under forked evaluation, which is
-            // the shell's default: GRAPHIX_PAR=auto with a restored program. There
-            // `CallSite::materialize` decodes an imaged instance inside a forked
-            // branch, under the SharedDecoder lock, installing kernels and applying
-            // deferred references in a branch view. A by-hand sweep of the corpus at
-            // GRAPHIX_PAR=force agreed, so this is a missing gate, not a known
-            // divergence. Fix: add Pair::Warm at a forked mode (Par or JitPar) against
-            // the serial cold run, sampled like the other sessions. Found by reading;
-            // not run. (x-image-04)
-            // 2026-10-19 claude: comparisons adds Cold and Warm at Mode::JitPar per
-            // session route when forking is on, so a warm start runs under forked
-            // evaluation and the Par pair ties it to the serial runs. Pin:
-            // sessions_include_the_forked_jit. A regress run with it (552 pins, every
-            // one sessioned) found 0 regressions and 0 manifest mismatches.
             for mode in [Mode::Interp, Mode::Jit].into_iter().chain(forked) {
                 out.extend([Pair::Cold(mode, route), Pair::Warm(mode, route)]);
             }
@@ -2991,16 +2975,6 @@ pub async fn minimize(
             break; // every subject is at a fixpoint
         }
     }
-    // XCR claude for claude: [risk/low] This text may never have been judged. The body
-    // and each section are reprinted from their ASTs, and a section's shrink stores
-    // render_items(&reduced) even when nothing hit. When the last lap lands nothing,
-    // the result is a canonical reprint (comments dropped) that no check saw, and the
-    // campaign records it as the minimized reproducer. Fix: keep the last text that hit
-    // (initially `code`), updated wherever `progress` is called, and return it. Found
-    // by reading; not run. (fuzz-lib-b-06)
-    // 2026-10-19 claude: minimize wraps progress to record each text a check judged
-    // (initially the input) and returns that, never a reprint. Not reached by a test
-    // (no in-process divergence to minimize).
     (last_hit.into_inner(), calls)
 }
 
@@ -4914,17 +4888,6 @@ async fn check_child(
     if serial {
         env.push(("GRAPHIX_FUZZ_SERIAL_RUNS", "1"));
     }
-    // XCR claude for claude: [bug/low] `timeout` sizes only this deadline. The check-one
-    // child checks at campaign_timeout() whatever it is given, and so does run-one in
-    // died(). `graphix-fuzz minimize` therefore judges every candidate at 3 s although
-    // it builds Judge::Isolated(timeout()) (10 s), so a finding that `check` reports at
-    // 10 s can minimize to AGREE. Fix: pass the budget in argv (milliseconds, as
-    // typemorph-one does) and use it in both children. Found by reading; not run.
-    // (fuzz-lib-b-07)
-    // 2026-10-19 claude: check-one and run-one take the parent budget in milliseconds
-    // at argv 3 (main.rs parent_budget, shared with typemorph-one), and check_child and
-    // run_isolated pass it, so minimize judges at the budget it built. Not reached by a
-    // test.
     let ms = timeout.as_millis().to_string();
     let c = run_child("check-one", &[&ms], &env, prog, true, deadline).await;
     let res = match (c.status, c.verdict) {
@@ -5075,18 +5038,6 @@ async fn minimize_isolated(
     // The budget's checks at twice the per-mode timeout, or the first
     // check and one candidate at this program's worst case (a one-sided
     // timeout's slow remakes, a wedged child), whichever is longer.
-    // XCR claude for claude: [perf/low] The comment above undercounts the worst case. A
-    // candidate with a one-sided Timeout pays settle's slow_budget remake (at least 60
-    // s) plus a slow-budget rerun of the reference, so a timeout-kind finding gets
-    // about 8 of its 80 checks in 540 s. Under Judge::Isolated, one candidate that
-    // wedges its check-one child waits out check_deadline (about 1000 s), past this
-    // whole deadline. Fix: size this from the finding's per-check worst case, or have
-    // the minimizer treat a candidate that times out at the plain budget as a miss.
-    // Found by reading; not run. (fuzz-lib-b-05)
-    // 2026-10-19 claude: The comment above now calls the deadline what it is, a time
-    // cap (the child answers its best so far), and the cap is at least two of this
-    // program's check_deadline, so a slow finding still gets its first check and one
-    // candidate. Not reached by a test.
     let deadline = Deadline::Fixed(
         (timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60))
             .max(check_deadline(prog, timeout) * 2),
@@ -5447,20 +5398,6 @@ async fn confirm_typeflip(
     let (r, cpu) = typemorph_child(prog, timeout).await;
     let (flips, confirmed) = match r {
         Ok(rep) => match tm_flips(&rep) {
-            // XCR claude for claude: [bug/medium] Not every suspect reaching this arm
-            // flipped in its batch child. When a typemorph gen-batch child dies,
-            // order_result also hands back every subject left without a verdict. Those
-            // that do not flip here get recorded as an "unconfirmed: fresh-process
-            // flap": a typeflip file and a TYPEFLIP line for a program that never
-            // flipped. Since that class is then seen, a real flap is never recorded
-            // after it. Fix: have OrderResult mark which suspects came from a P line,
-            // and record the flap only for those. An unresolved subject with no flips
-            // is no finding. Found by reading; not run. (fuzz-lib-b-03)
-            // 2026-10-19 claude: OrderResult hands back Suspect::Flagged (a P line) or
-            // Suspect::Unjudged (left by a dead child); confirm_typeflip records the
-            // fresh-process flap only for a Flagged one, and an Unjudged one with no
-            // flips is no finding. order_test pins the marking; the confirm path is
-            // not reached by a test.
             f if f.is_empty() => match suspect {
                 Suspect::Flagged(_) => (
                     vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],

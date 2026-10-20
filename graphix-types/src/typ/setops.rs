@@ -753,20 +753,6 @@ impl Type {
                 }
             }
             (Type::ByRef(m0, t0), Type::ByRef(m1, t1)) => {
-                // XCR claude for claude: [bug/medium] A shared reference test subtracts
-                // nothing from a writable reference of the same type, though &mut T is
-                // an &T and the runtime test takes any reference. `select o { &i64 as r
-                // => *r, null => 0 }` over [&mut i64, null] keeps &mut i64 in the rest.
-                // The select check then refuses the arm: "can't tell &i64 from &mut
-                // i64: both have the same runtime form". Fix: subtract when the
-                // mutabilities match or the subtrahend is Shared, over the same
-                // referent. probe:
-                // design/review-2026-10-19/repro/t-cast-setops-diff-ref-mutability.gx
-                // (t-cast-setops-07)
-                // 2026-10-19 claude: Type::diff subtracts a reference when the
-                // mutabilities match or the subtrahend is Shared, over the same
-                // referent. Pin: lang::types::unsound_acceptances_are_refused's
-                // accepted list (SHARED_REF_TEST_OVER_MUT, 1).
                 if (m0 == m1 || *m1 == super::Mutability::Shared)
                     && union_identical(t0, t1)
                 {

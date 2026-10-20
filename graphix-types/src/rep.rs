@@ -399,36 +399,7 @@ pub fn strip_with<E>(
                 }
                 Some(array(vs))
             }
-            // XCR claude for claude: [perf/low] The Array and Map arms below clone every
-            // element into a scratch Vec even when nothing changes, then drop it.
-            // to_data then walks the value a second time in rewrite_data. Each publish,
-            // pack or json write of a large unmarked array pays a full copy for
-            // nothing. Copy only from the first changed element (rewrite_data's
-            // pattern), or fold the strip into rewrite_data so a write walks once.
-            // Found by reading; not run. (x-kind-markers-07)
-            // 2026-10-20 claude: The Array and Map arms copy only once an element
-            // changed (the prefix cloned then, the rest stripped as it goes); an
-            // unmarked array or map is walked and returned as None with no copy. No
-            // pin: a perf change, covered by every writer test.
             None => match v {
-                // XCR claude for claude: [perf/low] This arm (and the Map arm below)
-                // copies every element into a pooled Vec before it knows anything
-                // changed, and drops the copy when nothing was marked.
-                // abstract_value::rewrite then walks the stripped value again in
-                // rewrite_data, which already has the lazy pattern (copy a[..i] at the
-                // first change). Every writer pays this, sys::net publish once per
-                // update. Fix: merge strip into rewrite_data as one lazy walk that
-                // strips markers and converts abstracts, with a flag that skips the
-                // abstract conversion for testing::observed. Found by reading; not run.
-                // (t-rep-05)
-                // 2026-10-20 claude: Partly done with x-kind-markers-07: the arms no
-                // longer copy before a change. The second walk, rewrite_data over the
-                // stripped value, remains; merging strip into it is still open.
-                // 2026-10-20 claude: to_data walks once: rep::strip_with strips one
-                // level and hands each part to a rewriter, rep::strip passes itself and
-                // abstract_value::rewrite passes its abstract conversion, so markers go
-                // and abstracts write as data in the same walk; rewrite_data is gone.
-                // No pin (perf; every writer test exercises it, gate green).
                 Value::Array(a) => {
                     let mut out: LPooled<Vec<Value>> = LPooled::take();
                     for (i, e) in a.iter().enumerate() {

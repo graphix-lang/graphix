@@ -56,22 +56,6 @@ pub fn keep_equal<K: Eq + Hash, T>(
         .collect()
 }
 
-// XCR claude for claude: [structure/medium] [structure] This is a second implementation
-// of the GUI's widgets::reconcile, with a weaker rule. It keeps a child only when the
-// value at the same index is unchanged. The GUI's keep_equal keeps any child whose
-// value is still in the list, wherever it moved. So inserting a layout/overlay/tabs
-// child at the front recompiles every later child: their refs are rebuilt, and
-// Rust-side widget state such as a list's ListState offset is lost. The GUI keeps those
-// children. Move keep_equal + reconcile into graphix-rt (both packages depend on it
-// already) and delete this copy. Found by reading; not run. (x-dup-01)
-// 2026-10-19 claude: Moved: keep_equal and reconcile now live here in graphix-rt; the
-// TUI's copy is deleted and LayoutW, OverlayW and TabsW call this one, so a child keeps
-// its widget wherever it moved. The GUI imports it from here. Pins: this module's tests
-// (moved from the GUI's reconcile_test.rs:
-// reordered_children_match_in_linear_comparisons,
-// reconciliation_preserves_old_entries_until_success,
-// reconciliation_compiles_fresh_entries_concurrently). No TUI-level pin observes a kept
-// child's Rust state.
 /// Old entries stay intact until every fresh item compiles. Fresh items
 /// compile concurrently; equal values keep their existing item.
 pub async fn reconcile<T, F: Future<Output = Result<T>>>(

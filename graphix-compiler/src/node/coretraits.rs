@@ -403,22 +403,6 @@ fn take_site<R: Rt, E: UserEvent>(
 ) -> Taken<R, E> {
     let Type::Abstract { id, .. } = typ else { return Taken::None };
     let key = (m as u8, *id);
-    // XCR claude for claude: [bug/high] A Display impl declared by a dynamic module's
-    // sig is never replaced on reload: after the module reloads with a new `fmt`,
-    // interpolation keeps calling the first one ((2, "one1") where (2, "two1") is
-    // owed). The user-trait path follows reloads. The entry is versioned only by the
-    // impl list's identity, which a reload leaves unchanged (the declared impl stays).
-    // The cached SynthCall over the declared method binding runs on spare events, so it
-    // never sees that binding fire with the new lambda. Rebuild the site when the
-    // binding's function changes (put its current lambda, or a module reload
-    // generation, into the version), and add a core-trait twin of
-    // traits::trait_dynamic_impl_reload. probe:
-    // design/review-2026-10-19/repro/tests-fusion-traits-dynamic-core-impl-reload.gx
-    // (tests-fusion-traits-02)
-    // 2026-10-19 claude: Fixed with c-module-traits-02: CoreHookSites::reloaded bumps a
-    // generation at each dynamic load and coretraits::Version carries it. Pin:
-    // lang::traits::core_trait_dynamic_impl_reload (the core-trait twin of
-    // trait_dynamic_impl_reload).
     let impls = ctx.env.impls.get(&m.of().id()).cloned();
     let (version, stale, found) = {
         let mut reg = ctx.core_hook_sites.lock();
@@ -699,17 +683,6 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce() -> T,
 ) -> T {
-    // XCR claude for claude: [perf/low] The node-walk comparison operators reach this
-    // probe on every `==`/`<` evaluation, whatever the operand type: four `env.impls`
-    // lookups before comparing two i64s. Kernels arm the loan only when
-    // `jit.meets_abstract`. Do the same in compare_op!: decide once per node whether
-    // the operand type can hold an abstract value, and skip with_hooks when it cannot.
-    // Found by reading; not run. (c-module-traits-07)
-    // 2026-10-19 claude: compare_op! decides at its first update (Equality::of, now
-    // for the orderings too) whether an operand type can hold an abstract value
-    // (holds_abstract, or an unbound cell) and calls the core-trait hooks only then.
-    // Pins: the lang::traits core Eq/Ord/Display fixtures (all pass); a type that
-    // loses its hooks wrongly compares structurally there.
     if !hooks_live(&ctx.env) {
         return f();
     }

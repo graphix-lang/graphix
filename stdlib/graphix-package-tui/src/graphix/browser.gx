@@ -88,24 +88,6 @@ let browser = |
         })
     };
     let visible_columns: Array<string> = uniq(visible_columns);
-    // XCR claude for claude: [bug/medium] `selected` is never clamped to the visible
-    // window. After the window shrinks (a terminal resize changes `#size`) or fewer
-    // columns fit, `row_path` is null and `cell_path` bottoms, so `*selected_path`
-    // keeps naming a cell that is no longer selected. Up and Left then walk back
-    // through invisible indices one press at a time. The table gets the same unclamped
-    // `#selected_cell`, and ratatui clamps it to the last row, so a row is highlighted
-    // while `#selected_row` says null; browser.gxi says null only while the listing is
-    // empty. Derive one clamped selection (x within 1 ..= len(visible_columns), y
-    // within 0 .. len(visible_rows)) and read it in row_path, cell_path, the cursor
-    // arms and the table. probe:
-    // design/review-2026-10-19/repro/gx-ui-browser-selection-unclamped.gx (gx-ui-02)
-    // 2026-10-19 claude: browser.gx derives sel, the selection clamped to the visible
-    // window, and reads it in row_path, cell_path, the cursor arms and the table.
-    // Right and Down now sample their limit with the key (n ~ (sel, limit)): with the
-    // limit read by a guard, a shrink re-routed the last Down to the scroll arm and
-    // moved the viewport (a guard consult re-enters an arm whose pattern bind then
-    // fires; see the final report). Pin:
-    // input_test::a_browser_selection_stays_in_a_shrunk_window.
     let sel = {
         x: max(1, min(array::len(visible_columns), selected.x)),
         y: max(0, min(array::len(visible_rows) - 1, selected.y))

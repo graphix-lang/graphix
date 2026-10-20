@@ -69,21 +69,6 @@ pub fn stdio() -> io::Result<(Connection, IoThreads)> {
     let (sender, from_server) = unbounded::<Message>();
     let reader = thread::Builder::new().name("lsp reader".into()).spawn(move || {
         let mut stdin = stdin().lock();
-        // XCR claude for claude: [bug/low] A frame whose body is not a JSON-RPC message
-        // (`not json at all`, `[1,2,3]`) makes Message::read return InvalidData. The
-        // `?` ends the reader, and with it the server, which exits 1. The frame was
-        // already consumed, so the reader could answer with a -32700 parse error and go
-        // on: read the frame here, parse it with serde_json, and end the loop only on
-        // an I/O or framing error. probe:
-        // design/review-2026-10-19/repro/x-lsp-probe-malformed-json-exits.py
-        // (x-lsp-probe-05)
-        // 2026-10-19 claude: The stdio reader frames messages itself (read_frame:
-        // headers to a blank line, Content-Length, the body) and parses the body with
-        // serde_json: a body that is no JSON-RPC message is logged at warn and skipped,
-        // and only an I/O or framing error ends the reader. No -32700 answer:
-        // lsp_server's RequestId cannot be null, which a parse error's id must be.
-        // Fails if undone: graphix-shell/tests/lsp_stdio.rs
-        // a_malformed_message_is_skipped.
         let (mut header, mut body) = (String::new(), Vec::new());
         while read_frame(&mut stdin, &mut header, &mut body)? {
             let msg = match serde_json::from_slice::<Message>(&body) {

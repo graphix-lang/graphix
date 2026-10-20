@@ -47,37 +47,6 @@ pub struct FuseObserved {
 /// says `#[native]` on it), `None` when it fused none. A region may first
 /// run after the value the fixture judges, so runs decide nothing; a
 /// region that ran must have entered its JIT wrapper.
-// XCR claude for claude: [test-gap/medium] This judges kernel RUNS counted up to
-// the moment run_mode reads `Control::invocations()` after the first value, not
-// whether anything fused. A fixture whose fused region first runs after its
-// first value passes `FuseExpect::None` and fails `FuseExpect::Jit`, and the
-// count also depends on how many cycles ran during the `observed()` await.
-// Judge both annotations by `FusionStats::fused` read after compile_result,
-// which counts only the fixture since the root compiles with fusion off, and
-// keep `jit > 0` as a secondary check. Found by reading; graphix-fuzz run on
-// design/review-2026-10-19/repro/core-aux-fuseexpect-counts-runs.gx shows
-// fused=1 with a first value from before the region runs. (core-aux-03)
-// 2026-10-19 claude: Tried as written (None iff FusionStats::fused == 0, Jit
-// iff fused > 0 and jit > 0, fused read after the first value) over
-// graphix-tests: 8 jit fixtures flip, in two kinds. (1) A build the check
-// accepts but a #[native] refuses still counts the regions it fused before the
-// refusal (labeled_callback_map/fold_node_walks,
-// select_tuple_union_member_node_walks,
-// native_names_the_blocker_over_a_fused_argument): fused must be judged only
-// for a build that succeeded. (2) Regions that fuse but whose kernel first runs
-// after the first value (dynamic_module2/3/6/8, cps_wrapper_recursion): the
-// CR's own case, but the jit > 0 secondary check then fails them too. Reverted;
-// the fix needs both decided: skip the fused count on a refused build, and
-// either read jit at the end of the run or drop the jit > 0 check for regions
-// that run late.
-// 2026-10-20 claude: Decided and done: run! judges FuseExpect by the regions
-// the build fused (FusionStats::fused after compile_result; the root compiles
-// with fusion off), a refused build asserts nothing about fusion, and the run
-// counters only check that a region which ran entered its JIT wrapper
-// (testing::FuseObserved). run_delta_fused judges the same way. Five fixtures
-// whose regions run after their first value were annotated None and are now Jit
-// (cps_wrapper_recursion, dynamic_module2, a_blacklist_keeps_the_rest,
-// a_whitelisted_function_loads, whitelisted_core_loads).
 #[cfg(debug_assertions)]
 pub fn check_fuse_expectation(observed: FuseObserved, expect: FuseExpect) {
     let Some(regions) = observed.regions else { return };
@@ -211,7 +180,7 @@ impl Mode {
     }
 
     /// Whether the runtime skips clean boundaries, and audits the skips.
-    // XCR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
+    // CR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
     // audit off, and Mode::Unpruned is not in Mode::ALL. So the gate never checks that
     // pruning changes nothing; only lang::prune's walk count touches it. A missed mark
     // that alters an intermediate cycle passes every fixture: the standing-write hole
@@ -226,23 +195,26 @@ impl Mode {
     // pruned), so the gate turns no fixture red. A missed mark now fails any node-walk
     // fixture whose skip it would change. design/walk_pruning.md's 'Verifying it' is
     // left to Eric's x-doc-drift-02, which covers the section's other unbuilt names.
+    // 2026-10-20 claude: XCR review: run! is fixed (Mode::prune gives Interp and Par
+    // PruneMode::Audit when GRAPHIX_PRUNE is unset), but graphix-fuzz shares
+    // Mode::prune: graphix-fuzz/src/lib.rs:505 and :6774 call
+    // ctx.control.set_prune_mode(mode.prune()), and Pair::Prune (lib.rs:1800) runs
+    // Run::plain(Mode::Unpruned) against Run::plain(Mode::Interp). Interp is now
+    // Audit, and Prune::update under Audit walks the child instead of riding the
+    // resident (graphix-compiler/src/node/prune.rs:133, audit()), so the fuzzer's
+    // 'pruned node-walk' never prunes: Pair::Prune compares Off against a full walk,
+    // and a skip that leaves state stale without changing that cycle's production
+    // (which audit does not flag, then heals by walking) is no longer differentially
+    // checked in the node-walk. Fix: keep the Audit default to run! (e.g. a separate
+    // fixture-only prune choice, or have the fuzzer pass PruneMode::On for Interp) and
+    // let the fuzzer's Interp prune for real. The same holds inside graphix-tests:
+    // lang::prune compares walks(code, Mode::Interp) against Mode::Unpruned for values
+    // (prune.rs:82-84, 134, 157, 210), and with Interp now auditing (walking every
+    // clean boundary) those value comparisons no longer exercise a pruned node-walk;
+    // only the walk counts (audit does not call note_boundary) still reflect pruning.
     pub fn prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
-            // XCR claude for claude: [test-gap/low] No run! fixture ever runs the prune
-            // audit. design/walk_pruning.md says the plain gate runs it for the lang
-            // and lib_tests fixtures, but this returns On unless GRAPHIX_PRUNE is set.
-            // The only pruning pin is a walk count,
-            // lang::prune::idle_map_beside_a_ticking_counter. So a dropped mark (for
-            // example ErrorHandler::handled's mark_pollers) fails the gate only if some
-            // predicate happens to depend on the missed walk. Return PruneMode::Audit
-            // for Mode::Interp when GRAPHIX_PRUNE is unset, so every node-walk fixture
-            // checks marks, or correct the design doc. Found by reading; not run.
-            // (c-prune-wake-03)
-            // the node-walk modes audit every skip they would make: a missed
-            // mark fails the fixture
-            // 2026-10-19 claude: Fixed with x-prune-03: Interp (and Par) audit by
-            // default.
             Mode::Interp | Mode::Par if std::env::var_os("GRAPHIX_PRUNE").is_none() => {
                 PruneMode::Audit
             }

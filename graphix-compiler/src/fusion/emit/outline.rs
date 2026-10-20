@@ -174,21 +174,6 @@ pub(super) fn emit_outlined(
 // its formals variables every iteration (body.rs, the staged def_vars before the
 // jump to the head), so a spill slot must be written at every def_var of an owned
 // local, not only at bind_local, or a rung drops a stale value.
-// XCR claude for claude: [perf/low] Every outlined loop stores every local in scope
-// into the frame, and emit_chunk loads every one back, whether the loop's body
-// reads it or not. A chain of n array::map lets in one function emits about n^2/2
-// store pairs: 6478 stores at n=80 and 25758 at n=160, while calls and slot bytes
-// grow linearly. A fused build takes 2.1 s at n=800 against 0.36 s node-walked. Lay
-// the frame out over the locals the iteration reads (its free local names), or
-// store each local once when it is bound. probe:
-// design/review-2026-10-19/repro/x-rerun-6-outline-stores-quadratic.sh
-// (x-rerun-6-05)
-// 2026-10-20 claude: An outlined loop hands its chunk only the locals the iteration
-// reads (its body and callees, Refs external reads: scaffold::loop_body) plus every
-// id-less synthetic local; the probe x-rerun-6-outline-stores-quadratic.sh now
-// prints 78/158/318 stores at n=40/80/160 (was 6478 at 80), and a chain of 800 maps
-// runs in 0.77 s (was 2.1 s). A read the filter missed would refuse the region,
-// which regress fusion manifest catches (552, 0 mismatches).
 /// The locals a chunk is handed: those the iteration reads, and every
 /// synthetic one, which no read names by id.
 fn handed<'e>(env: &'e JitEnv, facts: &'e LoopBody) -> impl Iterator<Item = &'e Local> {

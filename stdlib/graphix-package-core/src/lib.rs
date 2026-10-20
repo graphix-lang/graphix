@@ -405,20 +405,6 @@ pub use memo::FastMemo;
 /// the text a reader's cast of the key reads back, a string bare, a
 /// datetime in RFC3339, a duration in seconds, any other value as the
 /// naked form of its data.
-// XCR claude for claude: [bug/medium] A datetime key is written in its Naked display
-// ("2020-01-01 00:00:00 UTC") and a duration key as "1.5s". The casts that json::read
-// and toml::read apply to keys refuse both, so a Map<datetime, _> or Map<duration, _>
-// that json::write_str or toml::write_str writes does not read back. Values of those
-// types are written as RFC3339 and as seconds, which do read back. Write the key in the
-// text serialize_leaf gives the value (to_rfc3339; seconds for a duration), so the
-// duplicate-key checks compare what the reader will see. probe:
-// design/review-2026-10-19/repro/x-rerun-3-json-datetime-key-roundtrip.gx
-// (x-rerun-3-01)
-// 2026-10-19 claude: map_key writes a datetime key in RFC3339 and a duration key in
-// seconds (as serialize_leaf writes the values), returns ArcStr (core-lib-08), and a
-// composite key is the naked form of its data. Pin:
-// lib_tests::json::time_map_keys_read_back. Note the duration key text is the f64
-// Display of its seconds ("1.5"), which the reader's cast takes.
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match k {
         Value::String(s) => s.clone(),
@@ -510,42 +496,10 @@ fn written<'a>(
 /// Where the type says nothing (`None`, `Any`, an open variable), an
 /// unmarked non-empty array of `(string, _)` pairs in key order (data a
 /// read left untyped) reads as an object.
-// XCR claude for claude: [bug/high] `shape` reads the value after to_data has stripped
-// its markers. So the Set arm's member_of picks a union member by data form, and the
-// List arm (list::is_list on a flat array) never matches. json/toml/hbs then write `{a:
-// 1}` typed [{a: i64}, Array<(string, i64)>] as [["a",1]], which reads back as the
-// array member. They write a tuple of pairs under a nullable as an object, and the
-// arrays of pairs inside a List<Array<(string, i64)>> as objects. Fix: compute the
-// shape from the marked value (convert abstracts only) and strip at the leaves, so
-// markers decide members and lists exactly. probe:
-// design/review-2026-10-19/repro/x-kind-markers-json-union-member.gx
-// (x-kind-markers-01)
-// 2026-10-19 claude: shape now reads the program's value, markers and all: the writers
-// (json, toml, hbs) no longer call to_data first; shape converts an abstract value
-// through its Cast impl where it meets one (written, bounded like to_data) and decides
-// members, lists, tuples, structs and variants by marker, an unmarked pair array under
-// Any still reading as an object. Pin: lib_tests::json::writers_choose_members_by_kind
-// (json and toml). The read side of the probe ({"a":1} read into [{a: i64},
-// Array<(string, i64)>] gives the array member) is the cast's member choice in
-// graphix-types, not this writer.
 pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Result<Shape> {
     let (t, v) = written(env, t.and_then(|t| constructor(env, t)), v)?;
     let v = &*v;
     match (t.as_ref(), v) {
-        // XCR claude for claude: [bug/medium] shape runs on to_data's output, which has
-        // no kind markers, but typ::member_of's has_form reads tuples, structs and
-        // variants by their marker. So a union member written inline ([{a:
-        // Array<(string, i64)>, b: i64}, null]) admits nothing, and untyped_shape's
-        // pair sniff decides instead. Here json::write_str writes field a, an
-        // Array<(string, i64)>, as the object {"k":1}. A member named through a typedef
-        // escapes only because has_form passes Type::Ref. json, toml and hbs all share
-        // this. Fix: pick the member with the data-aware readers
-        // (rep::read_struct/read_tuple/read_variant), or choose it on the value before
-        // stripping, and pin an inline-struct union in a writer test. probe:
-        // design/review-2026-10-19/repro/t-rep-json-union-member-shape.gx (t-rep-03)
-        // 2026-10-19 claude: Fixed with x-kind-markers-01: member_of now sees the
-        // marked value. Pin: lib_tests::json::writers_choose_members_by_kind (the [{a:
-        // Array<(string, i64)>, b: i64}, null] case writes {"a":[["k",1]],"b":7}).
         (Some(Type::Set(ts)), v) => {
             shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
         }
@@ -1488,21 +1442,6 @@ pub fn fast_eval_typed<R: Rt, E: UserEvent>(
 
 /// A value as `#numeric` compares it: an integer, or a string holding
 /// one, exactly; any other value cast to f64 where it casts.
-// XCR claude for claude: [bug/medium] Every numeric key goes through
-// f64, so integers above 2^53 (and numeric strings holding them)
-// become equal keys, and the stable sort keeps their input order.
-// `array::sort(#numeric: true, [9007199254740993,
-// 9007199254740992])` returns them unsorted, though the plain sort
-// orders them, and list::sort shares this code. Key a number as
-// itself and a string as its parsed i64/u64 (else f64), and compare
-// integer pairs exactly (as i128), using f64 only when one side is
-// a float. probe:
-// design/review-2026-10-19/repro/collections-str-numeric-sort-precision.gx
-// (collections-str-03)
-// 2026-10-19 claude: sort_values keys #numeric by NumKey: integers (and strings
-// holding one) as i128, compared exactly; an integer against a float exactly
-// (int_cmp); anything else cast to f64 as before. Pin:
-// lib_tests::array::numeric_sort_is_exact (array and list).
 enum NumKey {
     Int(i128),
     Other(Value),
@@ -2538,16 +2477,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
         let Some(t) = &self.refs else { return fast_eval(ctx, fc_all, from) };
         let mut vs = from.values();
         let hd = vs.next()??;
-        // XCR claude for claude: [bug/low] These comparisons run outside
-        // coretraits::with_hooks, so an abstract type's core Eq implementation is
-        // ignored whenever the argument type also holds a reference. all((&x,
-        // Key("Foo")), (&x, Key("FOO"))) never fires, while == on the same tuples is
-        // true and all() without the reference fires. Rewrite the arguments first, then
-        // compare under with_hooks, as Uniq::update does. probe:
-        // design/review-2026-10-19/repro/core-lib-all-ref-skips-eq.gx (core-lib-03)
-        // 2026-10-19 claude: AllEv::eval compares each rewritten argument under
-        // coretraits::with_hooks. Pin: lib_tests::core::all_with_a_reference_uses_eq
-        // (before: never fires).
         let named = ctx.ref_targets(t, hd);
         for v in vs {
             let v = ctx.ref_targets(t, v?);
@@ -2774,18 +2703,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        // XCR claude for claude: [structure/low] [structure] `pending` exists only after
-        // a cycle, and CLAUDE.md says such state refuses the write with NOT_QUIESCENT,
-        // as Group and IterQ do. Here, in Queue (triggered/queue/pushed) and in sys net
-        // Write (its queued values), it is written and decoded instead. Refuse when it
-        // is set, write nothing, start it empty on decode, and bump
-        // REGISTRATION_FORMAT. Found by reading; not run. (x-dup-04)
-        // the value waiting for the predicate exists only once a cycle ran
-        // 2026-10-19 claude: Filter (pending), Queue (triggered, pushed, queue) and
-        // sys::net Write (its queued values) refuse the image write with NOT_QUIESCENT
-        // when they hold post-cycle state and decode empty; REGISTRATION_FORMAT 70 ->
-        // 71. No pin: an image is taken before any cycle, so the refused branches are
-        // unreachable in a session; the change is the codec's shape.
         if self.pending.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
@@ -3136,20 +3053,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                 return self.out.set(TagValue::fired(e));
             }
         }
-        // XCR claude for claude: [bug/medium] A bottom argument returns here before this
-        // cycle's element is read from ctx.event.variables. Every element of an earlier
-        // range that arrives while an argument is bottom is lost. range(0, j)$ where j
-        // goes bottom after the first element delivers only 0, while array::iter over
-        // the same source delivers all five. bottom_of states the rule: an emission
-        // owed to an earlier input still delivers. Read the delivery first and set the
-        // bottom only when none arrived, as Iter::update does. probe:
-        // design/review-2026-10-19/repro/core-lib-range-bottom-drops.gx (core-lib-01)
-        // an element owed to an earlier range delivers; a bottomed
-        // argument issues nothing and stands in place of a ride
-        // 2026-10-19 claude: Seq::update reads this cycle's delivery before the bottom:
-        // an owed element delivers, a bottomed argument issues nothing and stands in
-        // for a ride. Pin: lib_tests::core::range_delivers_past_a_bottom_argument
-        // (before: never completes).
         match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => match invocation {
@@ -3365,20 +3268,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     // (x-builtin-effects-04)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
-        // XCR claude for claude: [bug/medium] Going to Idle at sleep forgets `last`, the
-        // time of the last emission, so the first fire after a wake emits at once. A
-        // throttle whose arm toggles therefore exceeds its #rate: with #rate 10 s and
-        // two sleeps, it emits three times in about 200 ms. Sleep is a pause: keep the
-        // window by turning Pending { last, .. } and Open { last } into Open { last }
-        // after releasing the timer, and the next fire waits out the rest of `wait`.
-        // probe: design/review-2026-10-19/repro/core-lib-throttle-sleep-resets-rate.gx
-        // (core-lib-02)
-        // a pause keeps the window the last emission opened
-        // 2026-10-19 claude: Throttle::sleep turns Pending { last, .. } into Open {
-        // last } after releasing the timer and keeps Open; reborn goes to Idle. Pin:
-        // lib_tests::core::throttle_sleep_keeps_the_window (before [0, 4], after [0]).
-        // The pending value's loss at sleep stays Eric's
-        // x-engine-firing-01/x-builtin-effects-04.
         if let Run::Pending { last, .. } = self.run {
             self.run = Run::Open { last };
         }
