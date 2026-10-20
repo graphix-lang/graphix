@@ -1339,6 +1339,46 @@ impl StructPatternNode {
         }
     }
 
+    /// The part of `typ` this pattern covers when its only refutable parts
+    /// are `null` literals: `typ` with `null` at each of them, so `{a: null}`
+    /// over `{a: [i64, null]}` covers `{a: null}`. `None` for any other
+    /// pattern, or a position whose type holds no `null`.
+    pub(super) fn null_narrowed(&self, env: &Env, typ: &Type) -> Option<Type> {
+        crate::stack::ensure_sufficient(|| match self {
+            Self::Bind(_) | Self::Ignore => Some(typ.clone()),
+            Self::Literal(Value::Null) => {
+                let null = Type::Primitive(Typ::Null.into());
+                null.could_match(env, typ).unwrap_or(false).then_some(null)
+            }
+            Self::Slice { kind: SliceKind::Tuple, binds, all: _ } => {
+                let Some(Type::Tuple(ref ts)) = expand(env, typ) else { return None };
+                (ts.len() == binds.len()).then_some(())?;
+                let parts = binds
+                    .iter()
+                    .zip(ts.iter())
+                    .map(|(b, t)| b.null_narrowed(env, t))
+                    .collect::<Option<SmallVec<[Type; 8]>>>()?;
+                Some(Type::Tuple(Arc::from_iter(parts)))
+            }
+            Self::Struct { binds, width, all: _ } => {
+                let Some(Type::Struct(ref fs)) = expand(env, typ) else { return None };
+                width.admits(fs.len()).then_some(())?;
+                let fields = fs
+                    .iter()
+                    .map(|(n, t, at)| {
+                        let t = match binds.iter().find(|(m, _, _)| m == n) {
+                            Some((_, _, p)) => p.null_narrowed(env, t)?,
+                            None => t.clone(),
+                        };
+                        Some((n.clone(), t, *at))
+                    })
+                    .collect::<Option<SmallVec<[_; 8]>>>()?;
+                Some(Type::Struct(Arc::from_iter(fields)))
+            }
+            _ => None,
+        })
+    }
+
     /// Whether every value of `typ` passes this pattern's structure:
     /// the pattern is irrefutable over `typ`. A constructor pattern
     /// covers only a position whose type is that constructor, so its own

@@ -757,6 +757,12 @@ impl Reach {
                     false => self.cover(env, at.clone())?,
                 }
             } else {
+                // a null literal covers its position's null
+                if !pat.explicit_type_predicate
+                    && let Some(t) = sp.null_narrowed(env, at)
+                {
+                    self.cover(env, t)?
+                }
                 // under a written union, each member the atom covers
                 if pat.explicit_type_predicate {
                     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
@@ -1245,7 +1251,7 @@ enum Claim {
     Dead,
 }
 
-// CR claude for claude: [bug/low] A type-tested arm never pools, so a null
+// XCR claude for claude: [bug/low] A type-tested arm never pools, so a null
 // literal at a position beside it covers nothing: `{a: null} => 0, {a: i64} as s
 // => s.a` over {a: [i64, null]} is refused as non-exhaustive although the two
 // arms cover the struct. Reach could cover the arm's narrowed type ({a: null})
@@ -1253,6 +1259,12 @@ enum Claim {
 // distribute over the product. probe:
 // design/review-2026-10-19/repro/null-pool-typetest.gx, refused "missing
 // match cases: no arm covers { a: [i64, null] }" (null-pool-typetest-01)
+// 2026-10-20 claude: StructPatternNode::null_narrowed gives the type an atom
+// covers when its only refutable parts are null literals (null at those
+// positions of tuples and structs); Reach covers it, and set coverage then
+// distributes with a type-tested arm. The probe prints [0, 3]. Pins:
+// lang::select::null_literal_covers_beside_a_type_test,
+// null_literal_alone_leaves_the_rest_open.
 impl LiteralPool {
     /// Pool the unguarded atom `sp`; `explicit`, its arm's written type
     /// test.

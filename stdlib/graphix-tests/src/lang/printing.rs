@@ -168,7 +168,12 @@ async fn printing_tail_loop_is_native(mode: Mode) -> Result<()> {
     }"#;
     let (values, out) = run_delta(code, mode).await?;
     assert_eq!(values, [Value::I64(6)]);
-    assert_eq!(out, "3\n2\n1\n");
+    // forked activations print when they run, in no set order
+    let mut lines: Vec<&str> = out.lines().collect();
+    if matches!(mode, Mode::Par | Mode::JitPar) {
+        lines.sort_by(|a, b| b.cmp(a));
+    }
+    assert_eq!(lines, ["3", "2", "1"]);
     Ok(())
 }
 

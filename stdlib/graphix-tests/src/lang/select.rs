@@ -4092,3 +4092,19 @@ run!(an_abstract_literal_pattern_is_refused, r#"{
   let x: Any = 1;
   select x { abstract:EgABAgMEBQYHCAkKCwwNDg8BAg== => 1, _ => 2 }
 }"#, refused("an abstract value literal has no type"); FuseExpect::None);
+
+// A null literal at a position covers that position's null beside a
+// type-tested arm, and leaves the rest open.
+run!(
+    null_literal_covers_beside_a_type_test,
+    r#"{
+  let h = |x: {a: [i64, null]}| select x { {a: null} => 0, {a: i64} as s => s.a };
+  [h({a: null}), h({a: 3})]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:3]")
+);
+
+run!(null_literal_alone_leaves_the_rest_open, r#"{
+  let h = |x: {a: [i64, null]}| select x { {a: null} => 0 };
+  h({a: null})
+}"#, refused("missing match cases"); FuseExpect::None);
