@@ -740,17 +740,108 @@ fn reinstall_dependencies(
     packages: &mut Packages,
     edges: &BTreeMap<CompactString, BTreeSet<CompactString>>,
 ) -> Vec<CompactString> {
+    reinstall(packages, |installed, r| {
+        installed.iter().any(|p| feature_depends_on(p, r, edges))
+    })
+}
+
+/// Move every removed stdlib package in `registered` (what the external
+/// packages register, [`registered_by_external`]) back to the installed
+/// set. The names moved.
+fn reinstall_registered(
+    packages: &mut Packages,
+    registered: &BTreeSet<CompactString>,
+) -> Vec<CompactString> {
+    reinstall(packages, |_, r| registered.contains(r))
+}
+
+/// Move every removed stdlib package `needed` says the installed set needs
+/// back to it. The names moved.
+fn reinstall(
+    packages: &mut Packages,
+    needed: impl Fn(&BTreeSet<CompactString>, &str) -> bool,
+) -> Vec<CompactString> {
     let Packages { stdlib_installed, stdlib_removed, external: _ } = packages;
-    let needed: Vec<CompactString> = stdlib_removed
-        .iter()
-        .filter(|r| stdlib_installed.iter().any(|p| feature_depends_on(p, r, edges)))
-        .cloned()
-        .collect();
+    let needed: Vec<CompactString> =
+        stdlib_removed.iter().filter(|r| needed(stdlib_installed, r)).cloned().collect();
     for name in &needed {
         stdlib_removed.remove(name);
         stdlib_installed.insert(name.clone());
     }
     needed
+}
+
+/// The packages the external packages register, by short name: each one's
+/// `graphix-package-*` dependencies (never a dev- or build-only one),
+/// transitively, in the resolve graph of `metadata` (`cargo metadata`'s
+/// output).
+fn registered_by_external(
+    metadata: &serde_json::Value,
+    external: &BTreeMap<CompactString, PackageEntry>,
+) -> Result<BTreeSet<CompactString>> {
+    let malformed = || anyhow!("malformed cargo metadata");
+    let packages = metadata["packages"].as_array().ok_or_else(malformed)?;
+    let names: BTreeMap<&str, &str> = packages
+        .iter()
+        .filter_map(|p| Some((p["id"].as_str()?, p["name"].as_str()?)))
+        .collect();
+    let nodes = metadata["resolve"]["nodes"].as_array().ok_or_else(malformed)?;
+    let deps: BTreeMap<&str, &Vec<serde_json::Value>> = nodes
+        .iter()
+        .filter_map(|n| Some((n["id"].as_str()?, n["deps"].as_array()?)))
+        .collect();
+    let mut stack: Vec<&str> = names
+        .iter()
+        .filter(|(_, name)| {
+            name.strip_prefix("graphix-package-")
+                .is_some_and(|n| external.contains_key(n))
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    let mut registered = BTreeSet::new();
+    while let Some(id) = stack.pop() {
+        let Some(short) = names.get(id).and_then(|n| n.strip_prefix("graphix-package-"))
+        else {
+            continue;
+        };
+        if !registered.insert(short.to_compact_string()) {
+            continue;
+        }
+        for dep in deps.get(id).into_iter().flat_map(|d| d.iter()) {
+            let normal = dep["dep_kinds"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|k| k["kind"].is_null()));
+            if normal && let Some(pkg) = dep["pkg"].as_str() {
+                stack.push(pkg)
+            }
+        }
+    }
+    Ok(registered)
+}
+
+/// `cargo metadata` for the shell source in `source_dir` built with
+/// `features`.
+async fn shell_metadata(
+    cargo: &Path,
+    source_dir: &Path,
+    features: &[CompactString],
+) -> Result<serde_json::Value> {
+    let mut cmd = Command::new(cargo);
+    cmd.arg("metadata")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--manifest-path")
+        .arg(source_dir.join("Cargo.toml"))
+        .arg("--no-default-features")
+        .kill_on_drop(true);
+    if !features.is_empty() {
+        cmd.arg("--features").arg(features.join(" "));
+    }
+    let out = cmd.output().await.context("running cargo metadata")?;
+    if !out.status.success() {
+        bail!("cargo metadata failed: {}", String::from_utf8_lossy(&out.stderr))
+    }
+    serde_json::from_slice(&out.stdout).context("parsing cargo metadata")
 }
 
 /// A source tree's manifest and lockfile as they were, to put back.
@@ -1488,9 +1579,20 @@ impl GraphixPM {
         // or move that half to a CR of its own so this one can close.
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
-        let plan = packages.build_plan();
+        let mut plan = packages.build_plan();
         println!("Updating Cargo.toml...");
         rewrite_manifest(source_dir, &plan.external).await?;
+        if !plan.external.is_empty() {
+            let metadata =
+                shell_metadata(&self.cargo, source_dir, &plan.features).await?;
+            let registered = registered_by_external(&metadata, &plan.external)?;
+            for name in reinstall_registered(packages, &registered) {
+                println!(
+                    "note: {name} is installed again: an external package depends on it"
+                );
+            }
+            plan = packages.build_plan();
+        }
         // Save previous binary
         let date = Local::now().format(BACKUP_STAMP);
         let backup_name = format!(

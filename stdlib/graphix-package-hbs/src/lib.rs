@@ -75,8 +75,12 @@ thread_local! {
     static RENDER_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
-/// `text`, refused when its blocks (`{{#..}}`, `{{^..}}`, closed by
-/// `{{/..}}`) nest deeper than [`MAX_BLOCK_DEPTH`].
+/// `text`, refused when its blocks nest deeper than [`MAX_BLOCK_DEPTH`]
+/// as handlebars builds them: a block opens at `{{#..}}` and closes at
+/// `{{/..}}`, and each `{{else ..}}` or `{{^ ..}}` naming a helper (a chain
+/// link) nests one level more until its block closes. What the parser does
+/// not read as a tag (an escaped `{{`, a comment, a raw block's text, a
+/// string literal in a tag) opens and closes nothing.
 // CR claude for claude: [bug/medium] Only partial expansions are bounded
 // (MAX_PARTIAL_DEPTH); block nesting is not. Handlebars compiles iteratively, but the
 // template clone here, bound_partials, Template's drop and render all recurse per
@@ -106,21 +110,93 @@ thread_local! {
 // shallow, or bound the compiled Template's depth before cloning it, and add the
 // else-chain case to hbs_block_nesting_refused.
 fn shallow(text: &str) -> std::result::Result<&str, String> {
-    let (mut depth, mut deepest) = (0usize, 0usize);
-    for (i, _) in text.match_indices("{{") {
-        match text[i + 2..].trim_start_matches('~').as_bytes().first() {
-            Some(b'#' | b'^') => {
-                depth += 1;
-                deepest = deepest.max(depth);
+    let refused = || Err(format!("blocks nest more than {MAX_BLOCK_DEPTH} deep"));
+    fn pad(s: &str) -> &str {
+        s.trim_start_matches(|c: char| c == '~' || c.is_whitespace())
+    }
+    let mut links = [0usize; MAX_BLOCK_DEPTH + 1];
+    let (mut blocks, mut depth) = (0usize, 0usize);
+    let mut rest = text;
+    while let Some(i) = unescaped(rest, "{{") {
+        let tag = &rest[i..];
+        rest = if let Some(raw) = tag.strip_prefix("{{{{") {
+            let text = after(raw, "}}}}");
+            after(&text[unescaped(text, "{{{{").unwrap_or(text.len())..], "}}}}")
+        } else if let Some(comment) = tag.strip_prefix("{{!--")
+            && comment.contains("--}}")
+        {
+            after(comment, "--}}")
+        } else if let Some(comment) = tag.strip_prefix("{{!") {
+            after(comment, "}}")
+        } else {
+            let body = pad(&tag[2..]);
+            let invert = body.strip_prefix('^').or_else(|| body.strip_prefix("else"));
+            match (body.as_bytes().first(), invert) {
+                (Some(b'#'), _) => {
+                    depth += 1;
+                    if depth > MAX_BLOCK_DEPTH {
+                        return refused();
+                    }
+                    links[blocks] = 0;
+                    blocks += 1;
+                }
+                (Some(b'/'), _) if blocks > 0 => {
+                    blocks -= 1;
+                    depth -= 1 + links[blocks];
+                }
+                (_, Some(invert)) if blocks > 0 && !pad(invert).starts_with("}}") => {
+                    depth += 1;
+                    if depth > MAX_BLOCK_DEPTH {
+                        return refused();
+                    }
+                    links[blocks - 1] += 1;
+                }
+                _ => (),
             }
-            Some(b'/') => depth = depth.saturating_sub(1),
-            _ => (),
+            &tag[tag_len(tag)..]
+        };
+    }
+    Ok(text)
+}
+
+/// Where in `s` the first `pat` that is not escaped (one backslash before
+/// it) starts.
+fn unescaped(s: &str, pat: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(i) = s[from..].find(pat).map(|i| from + i) {
+        let before = &s[..i];
+        match before.ends_with('\\') && !before.ends_with("\\\\") {
+            true => from = i + pat.len(),
+            false => return Some(i),
         }
     }
-    match deepest > MAX_BLOCK_DEPTH {
-        true => Err(format!("blocks nest more than {MAX_BLOCK_DEPTH} deep")),
-        false => Ok(text),
+    None
+}
+
+/// `s` past the first `pat`, or empty when there is none.
+fn after<'a>(s: &'a str, pat: &str) -> &'a str {
+    s.find(pat).map_or("", |i| &s[i + pat.len()..])
+}
+
+/// The length of the tag `tag` starts with, through its closing `}}`, a
+/// string literal in it read whole.
+fn tag_len(tag: &str) -> usize {
+    let b = tag.as_bytes();
+    let mut i = 2;
+    while i < b.len() {
+        match b[i] {
+            b'}' if b.get(i + 1) == Some(&b'}') => return i + 2,
+            q @ (b'"' | b'\'') if !b[i - 1].is_ascii_alphanumeric() => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
     }
+    b.len()
 }
 
 struct RenderDepth;

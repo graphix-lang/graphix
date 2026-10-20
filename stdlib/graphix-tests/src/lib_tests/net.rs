@@ -110,6 +110,22 @@ run!(net_list, NET_LIST, |v: Result<&Value>| {
     }
 }; FuseExpect::None);
 
+// A polled listing whose resolver reports nothing changed answers no list,
+// and the next tick lists again: a path published after such a poll is seen.
+const NET_LIST_POLLED: &str = r#"
+{
+  sys::net::publish("/local/poll/a", 1);
+  sys::net::publish(sys::time::after_idle(duration:700.ms, "/local/poll/b"), 2);
+  let tick = sys::time::timer(duration:100.ms, true);
+  let n = array::len(sys::net::list(#update: tick, "/local/poll")?);
+  sys::time::after_idle(duration:2.s, null) ~ n
+}
+"#;
+
+run!(net_list_polled_sees_a_later_path, NET_LIST_POLLED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+}; FuseExpect::None);
+
 const NET_LIST_TABLE: &str = r#"
 {
   sys::net::publish("/local/t/0/foo", 42);

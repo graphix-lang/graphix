@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use graphix_compiler::{BindId, FAILURE_TARGET};
 use graphix_package::Stop;
 use graphix_rt::{CompExp, GXExt, GXHandle, Ref};
-use iced_core::{InputMethod, Size, clipboard, mouse, window};
+use iced_core::{InputMethod, clipboard, mouse, window};
 use iced_runtime::user_interface;
 use iced_wgpu::wgpu;
 use log::error;
@@ -475,11 +475,9 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         let _ = proxy.send_event(ToGui::ResizeRenderTick(window_id));
                     });
                 }
-                let logical = size.to_logical::<f32>(scale);
-                let _ = end_tx.send((
-                    window_id,
-                    WindowSizeV(Size::new(logical.width, logical.height)),
-                ));
+                if let Some(sz) = WindowSizeV::reported(*size, scale) {
+                    let _ = end_tx.send((window_id, sz));
+                }
             }
             WindowEvent::RedrawRequested => {
                 if !tw.resize_render_timer_armed {

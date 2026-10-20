@@ -57,7 +57,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             .size
             .t
             .as_ref()
-            .map(|sz| (sz.0.width, sz.0.height))
+            .map(|sz| (sz.size().width, sz.size().height))
             .unwrap_or((800.0, 600.0));
         WindowAttributes::default()
             .with_title(title)
@@ -164,8 +164,8 @@ impl<X: GXExt> TrackedWindow<X> {
             }
             if let Some(sz) = p.size.t.as_ref() {
                 let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
-                    sz.0.width,
-                    sz.0.height,
+                    sz.size().width,
+                    sz.size().height,
                 ));
             }
             self.window.set_window_icon(p.decoded_icon.clone());
@@ -181,8 +181,8 @@ impl<X: GXExt> TrackedWindow<X> {
         if let Some(sz) = p.size.update(id, v).context("window update size")? {
             if self.last_set_size.take() != Some(*sz) {
                 let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
-                    sz.0.width,
-                    sz.0.height,
+                    sz.size().width,
+                    sz.size().height,
                 ));
             }
             changed = true;

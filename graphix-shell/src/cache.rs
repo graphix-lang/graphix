@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    expr::{Load, Probe},
+    expr::{Load, Probe, names_nothing},
     image,
 };
 use graphix_rt::ProgramImage;
@@ -231,7 +231,6 @@ fn sources_unchanged(record: &str) -> bool {
             // tests for the two cases. probe:
             // design/review-2026-10-19/repro/x-image-notadir-always-stale.sh
             // (x-image-02)
-            // absent as `expr::read_optional` finds it: nothing opens there
             // 2026-10-19 claude: sources_unchanged tests an absent path as
             // read_optional finds it: open fails with NotFound or NotADirectory (a link
             // is followed). The predicate is written twice, here and in graphix-types'
@@ -252,10 +251,7 @@ fn sources_unchanged(record: &str) -> bool {
             // this change' was agent scope, not a constraint. Also a stray code comment
             // line ('absent as expr::read_optional finds it: nothing opens there') is
             // trapped inside the XCR block between the finding and its note.
-            matches!(
-                fs::File::open(path).map_err(|e| e.kind()),
-                Err(ErrorKind::NotFound | ErrorKind::NotADirectory)
-            )
+            fs::File::open(path).is_err_and(|e| names_nothing(&e))
         }
         Some(("+", rest)) => match rest.split_once(' ') {
             Some((want, path)) => {
@@ -337,7 +333,7 @@ impl RegistrationCache {
         let path = self.path(entry)?;
         let file = match fs::File::open(&path) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) if e.kind() == ErrorKind::NotFound => return None,
             Err(e) => {
                 warn!("opening the {entry:?} image {}: {e}", path.display());
                 return None;

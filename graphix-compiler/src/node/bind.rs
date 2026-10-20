@@ -12,7 +12,7 @@ use crate::{
     Rt, Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     dbgenv,
-    env::Env,
+    env::{self, Env},
     expr::{self, At, Expr, ExprId, ExprKind, ModPath, PlaceAccess},
     format_with_flags,
     fusion::{
@@ -1478,6 +1478,21 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                     Mutability::Mut if !named => Type::empty_tvar(),
                     _ => child.typ().clone(),
                 };
+                // a reference to an unnamed expression is its own cell: its
+                // binding types an embedder's write through it
+                if !named {
+                    let cell = env::Bind {
+                        id,
+                        typ: referent.clone(),
+                        doc: None,
+                        scope: scope.lexical.clone(),
+                        name: compact_str::format_compact!("{spec}"),
+                        pos: spec.pos,
+                        ori: spec.ori.clone(),
+                        facet: None,
+                    };
+                    ctx.env.by_id.insert(id, Arc::new(cell));
+                }
                 (Referent::Channel(child), Type::ByRef(mutability, Arc::new(referent)))
             }
         };
@@ -1680,6 +1695,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         // dropped, which needs a liveness test a same-cycle birth cannot fail). That is
         // a semantics choice, so it goes to Eric.
         ctx.env.byref_chain.remove(&self.id);
+        ctx.env.by_id.remove(&self.id);
         ctx.rt.store_release(&self.id);
         self.unregister(ctx);
         self.referent.each(&mut |n| n.delete(ctx));

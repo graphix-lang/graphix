@@ -107,6 +107,19 @@ struct OdsRow {
     end: u64,
 }
 
+/// The attributes calamine reads a self-closing cell's value or formula
+/// from: a cell carrying any of them holds a value (a value type alone
+/// makes an empty string).
+const ODS_VALUE_ATTRIBUTES: [&[u8]; 7] = [
+    b"office:value",
+    b"office:string-value",
+    b"office:date-value",
+    b"office:time-value",
+    b"office:boolean-value",
+    b"office:value-type",
+    b"table:formula",
+];
+
 fn ods_count(e: &BytesStart, name: &[u8]) -> Result<u64, String> {
     match e.try_get_attribute(name).map_err(|e| e.to_string())? {
         None => Ok(1),
@@ -174,11 +187,9 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
                 if let Some(r) = &mut row {
                     let repeats = ods_count(e, b"table:number-columns-repeated")?;
                     let valued = !empty
-                        || e.try_get_attribute(b"office:value-type")
-                            .ok()
-                            .flatten()
-                            .is_some()
-                        || e.try_get_attribute(b"table:formula").ok().flatten().is_some();
+                        || ODS_VALUE_ATTRIBUTES.iter().any(|name| {
+                            e.try_get_attribute(name).ok().flatten().is_some()
+                        });
                     if valued {
                         r.first.get_or_insert(r.col);
                         r.end = r.col.saturating_add(repeats).min(ODS_MAX_COLUMNS);
@@ -477,6 +488,27 @@ mod test {
         ] {
             let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
             assert!(format!("{e}").contains("ods table spans"), "{e}");
+        }
+    }
+
+    /// The far rows again, each ending in a self-closing cell that holds a
+    /// value by one attribute calamine reads, without a value type.
+    #[test]
+    fn ods_refuses_far_rows_valued_by_any_attribute() {
+        for value in [
+            r#"office:value="1""#,
+            r#"office:string-value="a""#,
+            r#"office:date-value="2020-01-01""#,
+            r#"office:time-value="PT1H""#,
+            r#"office:boolean-value="true""#,
+            r#"table:formula="of:=1""#,
+        ] {
+            let row = format!(
+                r#"<table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell {value}/></table:table-row>"#
+            );
+            let v = parse_sheets(Cursor::new(ods(&row.repeat(2000))));
+            let Value::Error(e) = v else { panic!("{value}: expected XlsErr, got {v}") };
+            assert!(format!("{e}").contains("ods table spans"), "{value}: {e}");
         }
     }
 

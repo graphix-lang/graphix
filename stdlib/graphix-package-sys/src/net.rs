@@ -2,8 +2,8 @@ use crate::netstate::{NetRpcWake, NetState, NetWrite};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FAILURE_TARGET, LambdaId, Node, Rt,
+    Scope, TagValue, UserEvent,
     effects::Effect,
     err, errf,
     expr::ExprId,
@@ -671,12 +671,9 @@ macro_rules! list {
                         }
                     }
                 }
-                let res = ctx
-                    .event
-                    .variables
-                    .get(&self.var.id)
-                    .and_then(|v| v.with_value(list_response));
-                if res.is_some() {
+                let answer = ctx.event.variables.get(&self.var.id);
+                let res = answer.and_then(|v| v.with_value(list_response));
+                if answer.is_some() {
                     match &mut self.current {
                         Some((path, Listing::Owed)) => {
                             let path = path.clone();
@@ -866,7 +863,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 None | Some(_) => (),
             }
         }
-        if self.current.is_some() {
+        if let Some((path, _)) = &self.current {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
@@ -902,10 +899,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                         // on_write 'a is bounded Data only (Concrete refused the
                         // omitted default, which leaves 'a open); an open handler type
                         // takes no write, the writer is answered InvalidCast.
-                        None => errf!(
-                            literal!("InvalidCast"),
-                            "the write handler's argument type is not known"
-                        ),
+                        None => {
+                            log::error!(
+                                target: FAILURE_TARGET,
+                                "a write of {} to {path} was refused: the write \
+                                 handler's argument type is not known; annotate it",
+                                req.value
+                            );
+                            errf!(
+                                literal!("InvalidCast"),
+                                "the write handler's argument type is not known"
+                            )
+                        }
                     };
                     // a value the handler cannot take is the writer's error
                     if let Value::Error(_) = &v

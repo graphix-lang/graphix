@@ -407,8 +407,9 @@ mod pure {
         DEFAULT_PACKAGES, PackageEntry, Packages, Selection, ShellBump, UpdatePlan,
         apply_selection, compute_update_plan, feature_depends_on, feature_edges,
         installed_dependents, normalize_selection, parse_packages, parse_toggles,
-        plan_items, reinstall_dependencies, selection_from_indices, standalone_features,
-        stdlib_packages_in_cargo_toml, to_toml_string, version_gt,
+        plan_items, registered_by_external, reinstall_dependencies, reinstall_registered,
+        selection_from_indices, standalone_features, stdlib_packages_in_cargo_toml,
+        to_toml_string, version_gt,
     };
     use compact_str::{CompactString, ToCompactString};
     use std::{
@@ -814,6 +815,59 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         );
         assert_eq!(pkgs.stdlib_installed, sset(&["core", "str", "tui", "array", "sys"]));
         assert_eq!(pkgs.stdlib_removed, sset(&["json", "hbs"]));
+    }
+
+    /// An external package `foo` whose own dependencies reach str and,
+    /// through str, array; json is only its dev-dependency and sqlite only
+    /// a dependency of a crate that is no graphix package. The record has
+    /// str, array, json and sqlite removed: the build registers str and
+    /// array through foo, so the record installs them again.
+    #[test]
+    fn an_external_package_reinstalls_what_it_registers() {
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": "foo 0.1", "name": "graphix-package-foo"},
+                {"id": "str 0.9", "name": "graphix-package-str"},
+                {"id": "array 0.9", "name": "graphix-package-array"},
+                {"id": "json 0.9", "name": "graphix-package-json"},
+                {"id": "sqlite 0.9", "name": "graphix-package-sqlite"},
+                {"id": "core 0.9", "name": "graphix-package-core"},
+                {"id": "other 1.0", "name": "other"},
+            ],
+            "resolve": {"nodes": [
+                {"id": "foo 0.1", "deps": [
+                    {"pkg": "str 0.9", "dep_kinds": [{"kind": null}]},
+                    {"pkg": "json 0.9", "dep_kinds": [{"kind": "dev"}]},
+                    {"pkg": "other 1.0", "dep_kinds": [{"kind": null}]},
+                    {"pkg": "core 0.9", "dep_kinds": [{"kind": null}]},
+                ]},
+                {"id": "str 0.9", "deps": [
+                    {"pkg": "array 0.9", "dep_kinds": [{"kind": "build"}, {"kind": null}]},
+                ]},
+                {"id": "other 1.0", "deps": [
+                    {"pkg": "sqlite 0.9", "dep_kinds": [{"kind": null}]},
+                ]},
+                {"id": "array 0.9", "deps": []},
+                {"id": "json 0.9", "deps": []},
+                {"id": "sqlite 0.9", "deps": []},
+                {"id": "core 0.9", "deps": []},
+            ]}
+        });
+        let external =
+            BTreeMap::from([("foo".into(), PackageEntry::Version("0.1".into()))]);
+        let reached = registered_by_external(&metadata, &external).unwrap();
+        assert_eq!(reached, sset(&["foo", "str", "array", "core"]));
+        let mut pkgs = Packages {
+            stdlib_installed: sset(&["core", "tui"]),
+            stdlib_removed: sset(&["str", "array", "json", "sqlite"]),
+            external,
+        };
+        assert_eq!(
+            reinstall_registered(&mut pkgs, &reached),
+            vec![CompactString::from("array"), CompactString::from("str")]
+        );
+        assert_eq!(pkgs.stdlib_installed, sset(&["core", "tui", "str", "array"]));
+        assert_eq!(pkgs.stdlib_removed, sset(&["json", "sqlite"]));
     }
 
     fn shell_cargo_toml() -> String {
