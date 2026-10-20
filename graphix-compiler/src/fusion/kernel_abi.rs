@@ -307,6 +307,13 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // scrutinee is not ready for those kinds; reverted. The order is: make the
             // select lowering test each member kind on a Value (graphix_value_is_a),
             // pin it, then widen this rule.
+            // 2026-10-20 claude: Correction to the note above: the DIVERGENCE verdicts
+            // were the probes own #[native] refusing, not wrong values. With #[native]
+            // stripped and the rule widened, every probe agrees between the engines,
+            // but nothing new fuses: the formal still has no kernel encoding and the
+            // select refuses its scrutinee (type .. does not freeze concrete), so the
+            // freeze step, this rule and the select lowering over a Value scrutinee all
+            // need the change together. Reverted.
             let all_variants = members
                 .iter()
                 .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _, _)))));
