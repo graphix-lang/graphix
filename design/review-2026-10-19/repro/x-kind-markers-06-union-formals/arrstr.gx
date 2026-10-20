@@ -1,0 +1,1 @@
+{ let g = |q: [Array<i64>, string]| -> i64 select q { Array<i64> as a => str::len("[a]"), string as a => str::len("[a]") }; let w: [Array<i64>, string] = "x"; let r = #[native] g(w); println("[r]"); sys::exit(sys::time::after_idle(duration:50.ms, 0)) }

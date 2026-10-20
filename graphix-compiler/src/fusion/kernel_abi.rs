@@ -300,6 +300,13 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // kinds and arrays ride as Value, with #[native] pins. probe:
             // design/review-2026-10-19/repro/x-kind-markers-optional-enum-no-kernel.gx
             // (x-kind-markers-06)
+            // 2026-10-20 claude: Tried widening the Value rule to any members a value
+            // tells apart (lists, maps, tag unions, primitives beside composites):
+            // every probe in x-kind-markers-06-union-formals/ that then fused DIVERGED
+            // (interp != jit), so the select lowering of type tests over a Value
+            // scrutinee is not ready for those kinds; reverted. The order is: make the
+            // select lowering test each member kind on a Value (graphix_value_is_a),
+            // pin it, then widen this rule.
             let all_variants = members
                 .iter()
                 .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _, _)))));

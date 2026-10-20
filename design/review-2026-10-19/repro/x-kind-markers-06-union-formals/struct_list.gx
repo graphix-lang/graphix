@@ -1,0 +1,1 @@
+{ let g = |q: [{a: i64}, List<i64>]| -> i64 select q { {a: i64} as a => str::len("[a]"), List<i64> as a => str::len("[a]") }; let w: [{a: i64}, List<i64>] = [<i64:1>]; let r = #[native] g(w); println("[r]"); sys::exit(sys::time::after_idle(duration:50.ms, 0)) }
