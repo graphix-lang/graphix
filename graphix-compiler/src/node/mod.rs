@@ -1841,8 +1841,8 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
         false => format_compact!(" {}", bind.ori),
     };
     // a name a destructuring let binds is declared by the pattern's type
-    let declare = match bind.facet {
-        Some(env::Facet::Let(_)) => format_compact!(
+    let declare = match bind.binder {
+        Some(env::Binder::LetPattern) => format_compact!(
             "annotate the let's pattern type with {name}'s position as {both}"
         ),
         _ => format_compact!("declare {name}: {both} where it is bound"),

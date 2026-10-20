@@ -843,7 +843,7 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                         name: name.name.as_str().into(),
                         pos: name.pos_or(si.pos),
                         ori: si.ori.clone(),
-                        facet: None,
+                        binder: None,
                     };
                     let link = SigImplLink {
                         scope: scope.clone(),

@@ -343,7 +343,7 @@ fn evaluate<R: Rt, E: UserEvent>(
     let view = if entered { View::Step } else { View::Cycle };
     ctx.under(view, |ctx| {
         if entered {
-            tracked.enter(&ctx.env, k)
+            tracked.enter(k)
         }
         let injected = tracked.deliver(ctx, k);
         let mut done = false;

@@ -2152,9 +2152,9 @@ async fn written_let_sibling_fires_alone(mode: Mode) -> Result<()> {
 
 modes!(written_let_sibling_fires_alone);
 
-// A destructuring `let`'s siblings are facets of one delivery: arm 0
-// handles the pair through `a`, so `b` is spent.
-const LET_SIBLING_BINDS_SPENT: &str = r#"
+// A destructuring `let`'s siblings are inputs of their own, as separate
+// lets are: arm 0 reads `a`, and at the flip arm 1 catches `b` up.
+const LET_SIBLINGS_CATCH_UP_APART: &str = r#"
 {
   let screen = 0;
   let seen = 0;
@@ -2174,11 +2174,11 @@ const LET_SIBLING_BINDS_SPENT: &str = r#"
 "#;
 
 run!(
-    let_sibling_binds_spent,
-    LET_SIBLING_BINDS_SPENT,
+    let_siblings_catch_up_apart,
+    LET_SIBLINGS_CATCH_UP_APART,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) =>
-            a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(0),
+            a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(1),
         _ => false,
     };
     FuseExpect::Jit

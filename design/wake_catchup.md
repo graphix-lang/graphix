@@ -1,7 +1,7 @@
 # Wake catch-up
 
 Status: built 2026-09-01; no partial rebirth 2026-10-18 (below)
-Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_wake_delivers_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_sibling_binds_spent`)
+Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_wake_delivers_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_siblings_catch_up_apart`)
 Supersedes: `pure_select.md`, `levels_and_events.md`, `pure_dataflow_plan.md` part A (the sleep-free select proposals, withdrawn — sleep is pause)
 
 ## The hole
@@ -79,8 +79,8 @@ the tuple was banked, so a read of `i` leaves `toast`'s bit for the
 sibling arm that watches `toast` itself. A tuple or struct literal
 scrutinee stays joined: every fire of any member rebinds every leaf
 FIRED, so each leaf is a facet of all of them. A destructuring
-`let`'s siblings ARE tracked, as one input: a `let` bind is a real
-input whose catch-up is wanted, but its siblings are one delivery.
+`let`'s siblings are inputs of their own, as separate `let`s are: a
+`let` bind is a real input, delivered, whose catch-up is wanted.
 Nesting needs nothing extra: an outer arm's ref set includes everything
 under it, so an inner select's missed window is covered by the outer
 bits; the wake evaluation carries the tags down and the inner select
@@ -157,9 +157,7 @@ is insufficient; the forced recompute republishes `p2` at the present
 Select and the seq machine share it.
 
 - `per_arm`: each arm body's free refs (`Refs` referenced minus bound
-  within the arm, minus pattern binds), keyed by the input they are
-  tracked under (`Env::facet_of` maps a destructuring `let`'s siblings
-  to the group's representative).
+  within the arm, minus pattern binds).
 - `consumes`: per arm, the inputs the pattern binds its body reads are
   facets of (`Env::pattern_inputs`, marked at `Select::compile` for
   each arm's structure-predicate ids: the inputs that reach the

@@ -52,22 +52,21 @@ pub struct Bind {
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
-    /// What wake catch-up tracks the binding as part of, if anything.
-    pub facet: Option<Facet>,
+    /// The pattern that bound it, where that matters past its compile.
+    pub binder: Option<Binder>,
 }
 
-/// A binding that is a facet of other inputs for wake catch-up.
+/// A pattern that bound a binding.
 #[derive(Debug, Clone, Pack)]
-pub enum Facet {
-    /// Bound by a select arm's pattern, with the inputs whose fires
-    /// reach that select's scrutinee (closed over enclosing pattern
-    /// binds): a facet of the scrutinee delivery, so no nested select
-    /// tracks it for wake catch-up, and an arm that reads it consumes
-    /// those inputs' fires.
-    Pattern(Arc<[BindId]>),
-    /// Bound by a destructuring `let`: the group's representative bind,
-    /// which wake catch-up tracks as one input for all siblings.
-    Let(BindId),
+pub enum Binder {
+    /// A select arm's pattern, with the inputs whose fires reach that
+    /// select's scrutinee (closed over enclosing pattern binds): a facet
+    /// of the scrutinee delivery, so no nested select tracks it for wake
+    /// catch-up, and an arm that reads it consumes those inputs' fires.
+    SelectPattern(Arc<[BindId]>),
+    /// A destructuring `let`'s pattern: the type a wider writer needs is
+    /// written on the pattern, not the name.
+    LetPattern,
 }
 
 impl fmt::Debug for Bind {
@@ -2036,7 +2035,7 @@ impl Env {
             typ,
             pos,
             ori,
-            facet: None,
+            binder: None,
         };
         self.with_ide(|ide| ide.binds.push(bind.clone()));
         self.by_id.insert(id, Arc::new(bind));
@@ -2058,7 +2057,7 @@ impl Env {
     /// scrutinee whose fires come from `inputs`.
     pub fn mark_pattern_bind(&mut self, id: BindId, inputs: Arc<[BindId]>) {
         if let Some(b) = self.by_id.get_mut(&id) {
-            Arc::make_mut(b).facet = Some(Facet::Pattern(inputs));
+            Arc::make_mut(b).binder = Some(Binder::SelectPattern(inputs));
         }
     }
 
@@ -2066,63 +2065,16 @@ impl Env {
     /// its select's scrutinee, closed over enclosing pattern binds.
     /// `None` for any other bind.
     pub fn pattern_inputs(&self, id: BindId) -> Option<&[BindId]> {
-        match self.by_id.get(&id).and_then(|b| b.facet.as_ref()) {
-            Some(Facet::Pattern(inputs)) => Some(inputs),
-            Some(Facet::Let(_)) | None => None,
+        match self.by_id.get(&id).and_then(|b| b.binder.as_ref()) {
+            Some(Binder::SelectPattern(inputs)) => Some(inputs),
+            Some(Binder::LetPattern) | None => None,
         }
     }
 
-    /// Record that `id` is one of a destructuring `let`'s siblings,
-    /// represented by `rep` for wake catch-up.
-    pub fn mark_facet(&mut self, id: BindId, rep: BindId) {
+    /// Record that `id` is bound by a destructuring `let`'s pattern.
+    pub fn mark_let_pattern(&mut self, id: BindId) {
         if let Some(b) = self.by_id.get_mut(&id) {
-            Arc::make_mut(b).facet = Some(Facet::Let(rep));
-        }
-    }
-
-    /// Take a destructuring `let`'s sibling that something writes out of
-    /// its group, its own facet: a write fires it alone. A representative
-    /// leaving passes the group to another sibling.
-    pub fn split_facet(&mut self, id: BindId) {
-        let Some(Facet::Let(rep)) = self.by_id.get(&id).and_then(|b| b.facet.clone())
-        else {
-            return;
-        };
-        self.mark_facet(id, id);
-        if rep != id {
-            return;
-        }
-        let mut rest: LPooled<Vec<BindId>> = self
-            .by_id
-            .iter()
-            .filter(|(o, b)| {
-                **o != id && matches!(b.facet, Some(Facet::Let(r)) if r == id)
-            })
-            .map(|(o, _)| *o)
-            .collect();
-        if let Some(&next) = rest.first() {
-            for o in rest.drain(..) {
-                self.mark_facet(o, next)
-            }
-        }
-    }
-
-    /// Whether `id` is one of a destructuring `let`'s grouped siblings.
-    pub fn grouped(&self, id: BindId) -> bool {
-        matches!(self.by_id.get(&id).and_then(|b| b.facet.as_ref()), Some(Facet::Let(_)))
-    }
-
-    /// Whether `a` and `b` are facets of one input (`Self::facet_of`).
-    pub fn same_facet(&self, a: BindId, b: BindId) -> bool {
-        a == b || self.facet_of(a) == self.facet_of(b)
-    }
-
-    /// The bind wake catch-up tracks `id` under: its `let`
-    /// destructuring group's representative, else itself.
-    pub fn facet_of(&self, id: BindId) -> BindId {
-        match self.by_id.get(&id).and_then(|b| b.facet.as_ref()) {
-            Some(Facet::Let(rep)) => *rep,
-            Some(Facet::Pattern(_)) | None => id,
+            Arc::make_mut(b).binder = Some(Binder::LetPattern);
         }
     }
 

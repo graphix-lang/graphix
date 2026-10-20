@@ -80,7 +80,7 @@ async fn environment_round_trips() -> Result<()> {
             assert_eq!(b.pos, r.pos);
             assert_eq!(b.ori.text, r.ori.text);
             let kind = |b: &graphix_compiler::env::Bind| {
-                b.facet.as_ref().map(std::mem::discriminant)
+                b.binder.as_ref().map(std::mem::discriminant)
             };
             assert_eq!(kind(b), kind(r));
             assert_eq!(show(&b.typ), show(&r.typ), "{scope}::{name}");

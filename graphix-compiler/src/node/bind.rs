@@ -319,65 +319,8 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             });
             targets.into_iter().for_each(|id| ctx.mark_connect_target(id));
         }
-        // a destructuring let's siblings fire together, facets of one input,
-        // but for one something writes, which fires alone, its own facet
-        let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
-        pattern.ids(&mut |id| siblings.push(id));
-        // XCR claude for claude: [bug/high] The facet grouping is decided here from the
-        // targets known when the let compiles. A sibling first written from another
-        // module (`m::a <- ..` or `&mut m::a`: the module compiles before the
-        // importer's writers) or by a later REPL input stays grouped with its siblings.
-        // TrackedFires::deliver then injects a catch-up fire of every grouped sibling,
-        // so each write of `a` fires `b` in any select arm that reads both. The probe's
-        // count(m::b) counts every write of m::a. Fix: have mark_connect_target split a
-        // written binding off its Facet::Let group, promoting a new representative when
-        // needed (record the group's members with the facet). Deciding the facets in
-        // typecheck0 instead covers modules but not the REPL. probe:
-        // design/review-2026-10-19/repro/c-bind-facet-module/main.gx (c-bind-03)
-        // 2026-10-19 claude: CompileCtx::mark_connect_target calls Env::split_facet: a
-        // sibling written after its let compiled (from another module, a later REPL
-        // input) leaves its Facet::Let group, and a representative leaving passes the
-        // group to the next sibling. The repro prints count(m::b) = 1 throughout. Pin:
-        // lang::modules::sibling_written_from_outside_its_module_fires_alone. Needs a
-        // soak (wake catch-up).
-        // 2026-10-20 claude: XCR review: The module case is fixed (mark_connect_target
-        // calls Env::split_facet; pin
-        // modules::sibling_written_from_outside_its_module_fires_alone passes), but the
-        // REPL case the finding names is only half done: split_facet changes the env,
-        // while a live select's TrackedFires keeps the facet grouping it computed
-        // (per_arm keyed by env.facet_of) until that arm's next deselect refresh
-        // (select.rs tracked.refresh at deselect, seq_machine likewise). A later REPL
-        // input that first writes a sibling while the reading arm is asleep therefore
-        // still has its writes observed under the old representative's key, and deliver
-        // at the wake injects a catch-up fire of every grouped sibling, the original
-        // phantom fire. Refresh the trackers whose arms read a split binding (or key
-        // pending fires by the written id and map to the facet at deliver), and pin the
-        // REPL-while-asleep order. Minor: a sibling marked Facet::Let(itself) because
-        // it was a connect target at let compile is its own rep, so every later connect
-        // compile of it rescans all of env.by_id in split_facet; return early when the
-        // binding is alone in its group.
-        // 2026-10-20 claude: TrackedFires now keys its fire bits by binding, not by
-        // group: a group fire sets every sibling's bit, and consuming one (an arm's
-        // catch-up, a pattern facet, a seq step's entry, a live read by an evaluated
-        // arm) spends its siblings' bits through Env::same_facet read at that moment.
-        // So a sibling a later compile splits off (Env::split_facet) fires alone in
-        // live trackers at once, with no refresh. Fails if undone:
-        // lang::modules::sibling_first_written_by_a_later_input_fires_alone (REPL: a <-
-        // 5 while the arm sleeps; the wake must give (5, 1), the grouped tracker gives
-        // (5, 2)). Gate, regress 552/0/0/0 and netidx-admin 45 green; a wake catch-up
-        // change, so it needs the soak. The split_facet rescan the review noted for a
-        // lone sibling stays.
-        if siblings.len() > 1 {
-            let rep = siblings.iter().find(|id| !ctx.connect_targets.contains(*id));
-            let rep = rep.copied();
-            for id in siblings {
-                match rep {
-                    Some(rep) if !ctx.connect_targets.contains(&id) => {
-                        ctx.env.mark_facet(id, rep)
-                    }
-                    _ => ctx.env.mark_facet(id, id),
-                }
-            }
+        if !matches!(pat, expr::StructurePattern::Bind(_)) {
+            pattern.ids(&mut |id| ctx.env.mark_let_pattern(id));
         }
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
@@ -1500,7 +1443,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                         name: compact_str::format_compact!("{spec}"),
                         pos: spec.pos,
                         ori: spec.ori.clone(),
-                        facet: None,
+                        binder: None,
                     };
                     ctx.env.by_id.insert(id, Arc::new(cell));
                 }

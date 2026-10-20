@@ -1814,7 +1814,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
                 typ: Type::empty_tvar(),
                 pos: SourcePosition::default(),
                 ori: Arc::new(Origin::default()),
-                facet: None,
+                binder: None,
             }),
         );
         let scope = def.scope.with_catch((faux_id, ExprId::new()), false);

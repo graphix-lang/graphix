@@ -20,7 +20,7 @@ use triomphe::Arc;
 
 impl Pack for Bind {
     fn encoded_len(&self) -> usize {
-        let Bind { id, typ, doc, scope, name, pos, ori, facet } = self;
+        let Bind { id, typ, doc, scope, name, pos, ori, binder } = self;
         id.encoded_len()
             + typ.encoded_len()
             + doc.encoded_len()
@@ -28,11 +28,11 @@ impl Pack for Bind {
             + name.encoded_len()
             + pos_len(pos)
             + origin_len(ori)
-            + facet.encoded_len()
+            + binder.encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let Bind { id, typ, doc, scope, name, pos, ori, facet } = self;
+        let Bind { id, typ, doc, scope, name, pos, ori, binder } = self;
         id.encode(buf)?;
         typ.encode(buf)?;
         doc.encode(buf)?;
@@ -40,7 +40,7 @@ impl Pack for Bind {
         name.encode(buf)?;
         pos_encode(pos, buf)?;
         origin_encode(ori, buf)?;
-        facet.encode(buf)
+        binder.encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
@@ -52,7 +52,7 @@ impl Pack for Bind {
             name: Pack::decode(buf)?,
             pos: pos_decode(buf)?,
             ori: origin_decode(buf)?,
-            facet: Pack::decode(buf)?,
+            binder: Pack::decode(buf)?,
         })
     }
 }
