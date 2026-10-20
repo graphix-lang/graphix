@@ -1,6 +1,9 @@
 use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::{
+    run,
+    testing::{Mode, as_i64s},
+};
 use netidx_value::{ValArray, Value};
 
 async fn carried_arguments(mode: Mode) -> Result<()> {
@@ -211,4 +214,18 @@ modes!(
     builtin_writes_through_nested_references,
     seqq_captures_per_instance,
     seqq_verdict_per_instance
+);
+
+// An unannotated parameter passed where the callee declares a function
+// stays bare in the issue, so the call resolves its callback and fuses.
+run!(
+    unannotated_fn_param_issued_bare,
+    r#"{
+  let apply = |f, t| seq t {
+    let y = #[native] array::map([1, 2, 3], f);
+    y
+  };
+  apply(|x: i64| x + 1, 1)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:3, i64:4]")
 );

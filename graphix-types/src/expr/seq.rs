@@ -522,7 +522,28 @@ fn fn_names(
                 }),
             },
             ExprKind::Apply(a) => {
-                args.extend(a.args.iter().filter_map(|(_, a)| simple_ref_name(a)))
+                args.extend(a.args.iter().filter_map(|(_, a)| simple_ref_name(a)));
+                // an argument at a parameter the callee declares a function is
+                // one, whatever the check will make of its own binding
+                if let ExprKind::Ref { name } = &a.function.kind
+                    && let Ok(Some((_, b))) = env.lookup_bind(scope, name)
+                    && let Some(Type::Fn(ref ft)) = b.typ.deref_cloned()
+                {
+                    let mut positional = ft.args.iter().filter(|f| f.is_positional());
+                    for (label, arg) in a.args.iter() {
+                        let formal = match label {
+                            Some(l) => ft.args.iter().find(|f| f.label() == Some(l)),
+                            None => positional.next(),
+                        };
+                        if let Some(n) = simple_ref_name(arg)
+                            && formal.is_some_and(|f| {
+                                f.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
+                            })
+                        {
+                            lambdas.insert(n);
+                        }
+                    }
+                }
             }
             ExprKind::Select(se) => se.arms.iter().for_each(|(p, _)| {
                 p.structure_predicate.with_names(&mut |n| {
@@ -556,7 +577,7 @@ fn fn_names(
 }
 
 /// Whether a binding is a function: a trait method, or of a function type.
-// CR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
+// XCR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
 // false for an unannotated function parameter. fn_names then moves such a parameter
 // into the issue tuple, and desugar_queued captures it into the request, so
 // `array::map(xs, f)` in a seq inside `|f, t| ..` cannot resolve its callback and
@@ -565,6 +586,11 @@ fn fn_names(
 // position is a function (known at lowering for builtins and lambda lets), as an inline
 // lambda is kept. probe: design/review-2026-10-19/repro/t-seq-fn-param-defuses.sh
 // (t-seq-05)
+// 2026-10-19 claude: fn_names keeps an argument bare when the callee, resolved at
+// lowering, declares a function at its position (positional by order, labeled by
+// label), whatever its own binding's type. Both of the probe's programs fuse 4 regions.
+// Pin: lang::seq_calls::unannotated_fn_param_issued_bare (#[native]; the review binary
+// refuses it).
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -1625,27 +1651,21 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let issued = format_compact!("seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
-    // XCR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
+    // CR claude for eric: [perf/low] Every issue tuple, and `any(pc, once(args))`,
     // carries pc, whose type is the set of all step labels. Each call site therefore
     // costs the check O(steps): 250/500/1000 call steps check in 0.25/1.07/7.1 s
     // (debug), against 0.07/0.10/0.13 s for constant writes. The tuple only needs an
     // entry clock: `pc ~! true` (still a free read of pc, typed bool) in place of pc
     // keeps the type constant-size. probe:
     // design/review-2026-10-19/repro/t-seq-issue-tuple-check-cost.sh (t-seq-06)
-    // the entry clock, `pc ~! true`: a bool, whatever the step labels
-    // 2026-10-19 claude: An issue tuple, and the snapshot's any(..), carry the entry
-    // clock pc ~! true (a bool) in place of pc. 1000 call steps check in 0.2 s (was
-    // 8.8 s, debug). Pin: graphix-shell/tests/deep_nesting.rs
-    // seq_call_steps_check_in_linear_time (2000 steps within 15 s).
-    let entry = || {
-        ExprKind::BinOp {
-            op: BinOp::StrictSample,
-            lhs: Arc::new(r#ref(pos, pc)),
-            rhs: Arc::new(boolean(pos, true)),
-        }
-        .to_expr(pos)
-    };
-    args.push(entry());
+    // 2026-10-19 claude: Tried and reverted. With `pc ~! true` in the tuple and the
+    // snapshot's any(..), 1000 call steps check in 0.2 s (was 8.8 s, debug), but `~`
+    // node-walks, so every issue site loses its fused region (the t-seq-05 probe's
+    // annotated program goes from 4 regions to 3). `select pc { _ => true }` keeps the
+    // fusion but checks in 36 s at 1000 steps. Plain pc is kept: the choice is
+    // check time on long seqs against fusion at every call step, or a cheaper check
+    // of pc's union.
+    args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a
         // name bare, a lambda literal sampled at entry
@@ -1678,7 +1698,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let snapshot = ExprKind::BinOp {
         op: BinOp::StrictSample,
         lhs: Arc::new(
-            ExprKind::Any { args: Arc::from_iter([entry(), ready]) }.to_expr(pos),
+            ExprKind::Any { args: Arc::from_iter([r#ref(pos, pc), ready]) }.to_expr(pos),
         ),
         rhs: Arc::new(r#ref(pos, &input)),
     }

@@ -513,16 +513,6 @@ fn shared_type_dags_check_in_linear_time() {
     }
 }
 
-/// A seq's issued calls cost the check a constant each, whatever the
-/// number of steps: an issue carries an entry clock, not the step label.
-#[test]
-fn seq_call_steps_check_in_linear_time() {
-    let body: Vec<String> =
-        (0..2000).map(|_| "a <- str::len(\"x\")".to_string()).collect();
-    let program = format!("let a = 0;\nlet r = seq {{ {}; a }};\nr", body.join("; "));
-    checks_within(&program, std::time::Duration::from_secs(15))
-}
-
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn deep_nesting_does_not_overflow() {
