@@ -28,6 +28,8 @@ pub(super) struct Delta {
     pub invocations: (u64, u64),
     /// Prune boundaries walked.
     pub boundaries: u64,
+    /// The regions the build fused.
+    pub regions: usize,
 }
 
 /// Run `code` (wrapped as `let result = {code}`) in `mode` until the
@@ -61,6 +63,7 @@ pub(super) async fn run_delta_with(
     .await?;
     ctx.rt.control().reset_invocations();
     let res = compile_result(&ctx).await?;
+    let regions = ctx.fusion_stats().await.map(|s| s.fused).unwrap_or(0);
     let deadline = Instant::now() + Duration::from_secs(20);
     let values =
         updates_until_quiet(&ctx.rt, &mut rx, res.exprs[0].id, quiet, deadline).await?;
@@ -70,7 +73,7 @@ pub(super) async fn run_delta_with(
     let invocations = control.invocations();
     let (boundaries, _) = control.boundaries();
     ctx.shutdown().await;
-    Ok(Delta { values, out, forks, build_forks, invocations, boundaries })
+    Ok(Delta { values, out, forks, build_forks, invocations, boundaries, regions })
 }
 
 /// [`run_delta`] for a fixture that holds on both engines: in the jit
@@ -84,7 +87,13 @@ pub(super) async fn run_delta_fused(
     let d = run_delta_with(code, mode, |_| (), Duration::from_millis(700)).await?;
     #[cfg(debug_assertions)]
     if matches!(mode, Mode::Jit | Mode::JitPar) {
-        graphix_package_core::testing::check_fuse_expectation(d.invocations, expect)
+        graphix_package_core::testing::check_fuse_expectation(
+            graphix_package_core::testing::FuseObserved {
+                regions: Some(d.regions),
+                runs: d.invocations,
+            },
+            expect,
+        )
     }
     #[cfg(not(debug_assertions))]
     let _ = expect;

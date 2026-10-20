@@ -1687,7 +1687,7 @@ const CPS_WRAPPER_RECURSION: &str = r#"
 }
 "#;
 
-run!(cps_wrapper_recursion, CPS_WRAPPER_RECURSION, is(Value::I64(3)); FuseExpect::None);
+run!(cps_wrapper_recursion, CPS_WRAPPER_RECURSION, is(Value::I64(3)); FuseExpect::Jit);
 
 // A returned lambda called through an alias and directly: both calls
 // dispatch at run time (the fn-valued `let` node-walks).

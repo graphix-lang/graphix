@@ -79,7 +79,7 @@ const DYNAMIC_MODULE2: &str = r#"
 }
 "#;
 
-run!(dynamic_module2, DYNAMIC_MODULE2, is(Value::I64(4)); FuseExpect::None);
+run!(dynamic_module2, DYNAMIC_MODULE2, is(Value::I64(4)); FuseExpect::Jit);
 
 /// A dynamic module `test` loaded under `sandbox`, its sig `foo` and `bar`
 /// with `sig` after them, its body the relay `foo` to `bar` with `body`
@@ -125,7 +125,7 @@ run!(
     whitelisted_core_loads,
     sandboxed("whitelist [core]", "", ""),
     prints(r#""hello world""#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -146,7 +146,7 @@ run!(
     a_blacklist_keeps_the_rest,
     sandboxed("blacklist [sys::net::publish]", "", SUBSCRIBES),
     prints(r#""hello world""#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -160,7 +160,7 @@ run!(
     a_whitelisted_function_loads,
     sandboxed("whitelist [core, sys::net::subscribe]", "", SUBSCRIBES),
     prints(r#""hello world""#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
