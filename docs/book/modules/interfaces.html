@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0733e318.js";
+            window.path_to_searchindex_js = "../searchindex-6f15a235.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -261,7 +261,7 @@ let constants = { pi: 3.14159265359, e: 2.71828182845 };
 let internal_helper = |x| x * 2
 </code></pre>
 <p>Note that the <code>Constants</code> type is defined in the interface and automatically
-available in the implementation - it doesn’t need to be repeated. Also,
+available in the implementation - defining it again there is an error. Also,
 <code>internal_helper</code> is not in the interface, so it is not accessible to users of
 the module.</p>
 <p><strong>main.gx</strong> (usage):</p>
@@ -275,9 +275,11 @@ let pi = math::constants.pi
 <p>When a module has an interface file:</p>
 <ol>
 <li>
-<p><strong>Type definitions, <code>mod</code> statements, and <code>use</code> statements</strong> declared in the
-interface automatically apply to the implementation. You do not need to
-duplicate them in the <code>.gx</code> file.</p>
+<p><strong>Type definitions, traits, <code>mod</code> statements, and <code>use</code> statements</strong>
+declared in the interface automatically apply to the implementation. A
+type or trait the interface defines must not be defined again in the <code>.gx</code>
+file. The one exception is a type the interface hides (<code>type T;</code>): the
+implementation defines it, as <code>type T = Abstract&lt;..&gt;</code>.</p>
 </li>
 <li>
 <p><strong>Value declarations (<code>val</code>)</strong> specify what bindings must exist in the
