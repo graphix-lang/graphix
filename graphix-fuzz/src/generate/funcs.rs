@@ -632,15 +632,15 @@ pub(super) fn gen_rec_lambda(
         ),
     };
     // a tail shape whose base calls nothing (a call may hold per-call
-    // memory, which no loop shares) asserts its loop half the time: a JIT
-    // that stops building it refuses (a body that cannot fuse is dropped
-    // unrecorded)
-    let calls = base.contains("::")
-        || base
-            .as_bytes()
-            .windows(2)
-            .any(|w| (w[0].is_ascii_alphanumeric() || w[0] == b'_') && w[1] == b'(');
-    let attr = match (shape, !calls && chance(rng, 0.5)) {
+    // memory, which no loop shares) and reads no reference (references
+    // de-fuse) asserts its loop half the time: a JIT that stops building
+    // it refuses (a body that cannot fuse is dropped unrecorded)
+    let calls_or_derefs = base.contains("::")
+        || base.as_bytes().windows(2).any(|w| {
+            ((w[0].is_ascii_alphanumeric() || w[0] == b'_') && w[1] == b'(')
+                || (w[0] == b'*' && w[1] != b' ')
+        });
+    let attr = match (shape, !calls_or_derefs && chance(rng, 0.5)) {
         (1 | 2, true) => "#[tail_recursive] ",
         _ => "",
     };
