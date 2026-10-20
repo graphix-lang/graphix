@@ -3,15 +3,17 @@
 //! and where it forks.
 
 use crate::{
-    ExecCtx, Rt, UserEvent,
+    ExecCtx, Node, Rt, UserEvent, analysis,
     branch::{eval_pool, pool_idle, saturated},
 };
+use bytes::{Buf, BufMut};
 use graphix_types::stack::ParMode;
+use netidx_core::pack::{Pack, PackError};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
     sync::{
-        OnceLock,
+        LazyLock, OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -66,6 +68,10 @@ const T_BUCKET: u32 = 12;
 /// How many threshold multiples of a stolen job's start latency.
 const T_PER_WAKE: u64 = 4;
 
+/// The least threshold, in time: the counter's rate varies by three
+/// orders of magnitude between hosts.
+const T_FLOOR: Duration = Duration::from_micros(1);
+
 static CALIBRATION: OnceLock<Calibration> = OnceLock::new();
 
 /// The calibration, or `None` while it is being measured: until then
@@ -76,18 +82,14 @@ pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
-    // CR claude for claude: [perf/low] Until the calibration lands, every Auto plan at
-    // every fork site (each operator, call and constructor, each update) runs a getenv
-    // under std's environment lock, then a STARTED.swap that every pool worker also
-    // hits. A program's first cycle runs inside that window, and the window grows when
-    // the pool is busy. Read GRAPHIX_PAR_T once into a LazyLock, and load STARTED
-    // before swapping it (or use a Once), so the pending path is one atomic load. Found
-    // by reading; not run. (c-cost-misc-02)
-    if let Some(t) = std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok()) {
+    static FIXED: LazyLock<Option<u64>> = LazyLock::new(|| {
+        std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok())
+    });
+    if let Some(t) = *FIXED {
         fix_calibration(t);
         return CALIBRATION.get();
     }
-    if !STARTED.swap(true, Ordering::Relaxed) {
+    if !STARTED.load(Ordering::Relaxed) && !STARTED.swap(true, Ordering::Relaxed) {
         std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
             .spawn(|| {
@@ -131,6 +133,7 @@ pub fn fix_calibration(t: u64) {
 /// stolen.
 fn calibrate() -> Calibration {
     let pool = eval_pool();
+    let (tick0, start) = (ticks(), Instant::now());
     let mut wakes = [0u64; 9];
     for w in wakes.iter_mut() {
         // a wake measures an idle pool: a sample taken while a part ran
@@ -149,17 +152,30 @@ fn calibrate() -> Calibration {
     }
     wakes.sort_unstable();
     // contention only adds to a wake: the lower quartile is the pool's
-    // CR claude for claude: [risk/low] This floor is in raw ticks. On x86's GHz TSC it
+    // XCR claude for claude: [risk/low] This floor is in raw ticks. On x86's GHz TSC it
     // never binds, but CNTVCT_EL0 runs at 24 MHz on Apple M1-M3 (54 MHz on a Pi 5),
     // where 4096 ticks is 76-171 us. On those hosts Auto refuses any fork under about 2
     // x 171 us, well above 4 x the measured wake. Bucketing does not need the floor
     // (fix_calibration(1) runs with shift 0), so drop it, or floor T in time through
     // CNTFRQ_EL0. Found by reading; not run. (c-cost-misc-03)
-    let t = (wakes[wakes.len() / 4] * T_PER_WAKE).max(1 << T_BUCKET);
+    // 2026-10-20 claude: The floor is in time now: calibrate() measures the counter's
+    // rate over its own run (ticks per ns) and cost::threshold floors T at T_FLOOR (1
+    // us) of ticks, 24 ticks on a 24 MHz CNTVCT_EL0. On this x86 host (3.69 ticks/ns)
+    // the floor is 3687 ticks and T came out 209008, so it never binds here, as before.
+    // Not run on aarch64. Pin: cost::tests::threshold_floors_in_time.
+    let per_ns = ticks_since(tick0) as f64 / start.elapsed().as_nanos().max(1) as f64;
+    let t = threshold(wakes[wakes.len() / 4], per_ns);
     if crate::dbgenv::graphix_dbg_par() {
-        eprintln!("PAR calibrated: wakes {wakes:?} ticks, T = {t}");
+        eprintln!("PAR calibrated: wakes {wakes:?} ticks, {per_ns:.3} ticks/ns, T = {t}");
     }
     Calibration { t, shift: (63 - t.leading_zeros()).saturating_sub(T_BUCKET) }
+}
+
+/// The fork threshold for a pool that wakes in `wake` ticks, on a counter
+/// running at `per_ns` ticks a nanosecond.
+fn threshold(wake: u64, per_ns: f64) -> u64 {
+    let floor = (T_FLOOR.as_nanos() as f64 * per_ns) as u64;
+    (wake * T_PER_WAKE).max(floor).max(1)
 }
 
 impl Calibration {
@@ -265,20 +281,41 @@ pub enum Plan<'a> {
 /// arguments, a constructor's fields, an operator's operands): its
 /// state under `Auto`.
 #[derive(Debug, Default)]
-pub struct ForkSite(Site, Siblings);
+pub struct ForkSite(Site, pub(crate) Siblings);
 
-/// Whether a fork point's children may run in parallel at all, decided
-/// once ([`crate::analysis::independent`]); undecided runs them in order.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum Siblings {
-    #[default]
-    Undecided,
-    Independent,
-    Dependent,
+/// Whether a fork point's children may run in parallel at all
+/// ([`crate::analysis::independent`]): decided once, by the analysis
+/// that reached the fork point or else at its first update. A question
+/// whose answer rests on a call not bound yet is asked again only once
+/// the runtime has bound something since ([`crate::Control::rebuilds`]).
+/// Children not known independent run in order.
+#[derive(Debug, Default)]
+pub struct Siblings {
+    decided: OnceLock<bool>,
+    /// The runtime's rebuild count when the question was last left open.
+    open_at: Option<u64>,
 }
 
 impl Siblings {
-    // CR claude for claude: [perf/medium] `None` (the verdict rests on a call not bound
+    /// Whether the siblings are known independent.
+    pub fn independent(&self) -> bool {
+        self.decided.get() == Some(&true)
+    }
+
+    pub(crate) fn decided(&self) -> bool {
+        self.decided.get().is_some()
+    }
+
+    /// Take the analysis's verdict, unless one stands.
+    pub(crate) fn decided_by_analysis(&self, independent: Option<bool>) {
+        if let Some(v) = independent {
+            let _ = self.decided.set(v);
+        }
+    }
+
+    /// Decide whether `n` siblings are independent, unless that is
+    /// decided, or open with nothing bound since it was asked.
+    // XCR claude for claude: [perf/medium] `None` (the verdict rests on a call not bound
     // yet) becomes Undecided, so decide_siblings calls analysis::independent again at
     // every update for as long as that call stays unbound, which for a nullable
     // callback that stays null, or a call in an arm never taken, is forever. That costs
@@ -290,11 +327,34 @@ impl Siblings {
     // design/review-2026-10-19/repro/c-analysis-branch-unbound-sibling-redecides.gx
     // (3000 cycles: off 0.69 s, auto 1.78 s; bound g 0.77 s; 600-function chain: off
     // 1.76 s, auto 9.0 s). (c-analysis-branch-03)
-    fn of(independent: Option<bool>) -> Self {
-        match independent {
-            None => Siblings::Undecided,
-            Some(true) => Siblings::Independent,
-            Some(false) => Siblings::Dependent,
+    // 2026-10-20 claude: Fixed with x-parallel-03: an open verdict waits for
+    // Control::rebuilds to move (Siblings::decide), and this probe's tuple is now
+    // decided by the analysis. Probe (quick, --no-fusion, taskset 0-3): auto 1.13 s ->
+    // 0.33 s (off 0.33 s). Pin: lang::par_attrs::an_open_verdict_waits_for_a_bind.
+    pub(crate) fn decide<'a, R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        n: usize,
+        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+        sites: analysis::Sites,
+    ) {
+        if self.decided() || n < 2 || ctx.fork_mode() == ParMode::Off {
+            return;
+        }
+        let rebuilds = ctx.control.rebuilds();
+        if self.open_at == Some(rebuilds) {
+            return;
+        }
+        if !analysis::two_work(children.clone()) {
+            let _ = self.decided.set(true);
+            return;
+        }
+        ctx.control.verdict_asked();
+        match analysis::independent(children, ctx, sites) {
+            Some(v) => {
+                let _ = self.decided.set(v);
+            }
+            None => self.open_at = Some(rebuilds),
         }
     }
 }
@@ -334,49 +394,81 @@ impl ForkSite {
     /// The site of a run a block plan made, whose statements the plan
     /// already found independent.
     pub fn planned() -> Self {
-        Self(Site::default(), Siblings::Independent)
+        let site = Self::default();
+        site.1.decided_by_analysis(Some(true));
+        site
     }
 
-    /// Decide, once, whether the site's `n` children are independent;
-    /// dependent ones always run in order.
+    /// Decide whether the site's `n` children are independent
+    /// ([`Siblings::decide`]); dependent ones always run in order.
+    // XCR claude for claude: [perf/medium] An Undecided verdict is asked for again
+    // at every update. When it rests on a call that never binds (an arm never
+    // taken, a callback that never arrives), the site rebuilds the static call
+    // graph and every instance summary below it each cycle, forever.
+    // SlotSite::decide_siblings and fork_instances' `independent` do the same. A
+    // 4-slot map whose callback holds such an arm runs twice as slow under auto as
+    // under off, and the twin without the dynamic call runs the same in both.
+    // Re-decide only when a run-time bind happened since the last answer (a bind
+    // counter on Control), or settle the verdict as Dependent until that call site
+    // binds. probe:
+    // design/review-2026-10-19/repro/x-parallel-undecided-reanalyzed-every-cycle.gx
+    // (x-parallel-03)
+    // 2026-10-20 claude: Siblings (cost.rs) now holds an open verdict at the
+    // runtime's rebuild count (Control::rebuilds, bumped by ExecCtx::apply_deferred
+    // when something was built and by CallSite::bind) and asks again only once it
+    // moved; ForkSite, SlotSite and fork_instances share it. Probe (quick,
+    // --no-fusion, taskset 0-3): auto 1.23 s -> 0.40 s (off 0.38 s). Pin:
+    // lang::par_attrs::an_open_verdict_waits_for_a_bind (verdicts <= 4 over 40
+    // cycles; 47 without the gate).
+    // XCR claude for claude: [perf/high] A new aspect of x-perf-compile-03. In a
+    // recursion, every activation's fork site is still Undecided after its first
+    // update, because its callee is not bound yet. The next update that reaches the
+    // chain then runs `independent()` at all N sites at once, each walking the
+    // graph below it. Under the default Auto mode, the update after an argument
+    // changes in a node-walked recursion therefore grows about 8x per doubling of
+    // depth: 0.39/1.34/9.2 s at depth 1000/2000/4000 against 0.20/0.28/0.42 s with
+    // GRAPHIX_PAR=off, and over 40 s at 8000. Nothing ever forks here
+    // (GRAPHIX_PAR_T fixed huge), and the third update costs 15 ms. Force stays
+    // linear only because it turns Off past MAX_FORK_DEPTH.
+    // interrupted_recursion_rides_* re-runs this shape at depth 15000 and
+    // interrupts it, so no test sees the cost. Decide these sites at analysis, or
+    // give a run-time instance its definition's verdict, as x-perf-compile-03
+    // proposes. probe:
+    // design/review-2026-10-19/repro/tests-lib-b1-recursion-rerun-auto-cliff.sh
+    // (tests-lib-b1-01)
+    // 2026-10-20 claude: Fork points other than blocks are now decided by the
+    // analysis that reaches them (analysis::plan_forks, beside the block plans),
+    // from instance summaries computed once per analysis and each subtree's Shallow
+    // facts once (ForkCx::shallow_of); an activation's sites are decided at its
+    // bind (analyze_bound_callee, its call to the next activation a self-call
+    // through self_binds), so the rerun asks nothing. Quick build, GRAPHIX_PAR_T
+    // huge, --no-fusion, taskset 0-3: auto N=1000/2000/4000/8000 1.09/2.45/9.92/>60
+    // s -> 0.13/0.18/0.29/0.55 s (off 0.12/0.18/0.30/0.58). Pin:
+    // lang::par_attrs::activations_decide_their_fork_points_at_bind
+    // (Control::verdicts stays 0; 601 with the analysis verdict disabled).
+    // interrupted_recursion_rides_* now times a rerun before interrupting one: its
+    // old timing landed after the now-fast rerun.
     #[inline]
-    pub fn decide_siblings<R: Rt, E: UserEvent>(
+    pub fn decide_siblings<'a, R: Rt, E: UserEvent>(
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         n: usize,
-        independent: impl FnOnce() -> Option<bool>,
+        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ) {
-        // CR claude for claude: [perf/medium] An Undecided verdict is asked for again
-        // at every update. When it rests on a call that never binds (an arm never
-        // taken, a callback that never arrives), the site rebuilds the static call
-        // graph and every instance summary below it each cycle, forever.
-        // SlotSite::decide_siblings and fork_instances' `independent` do the same. A
-        // 4-slot map whose callback holds such an arm runs twice as slow under auto as
-        // under off, and the twin without the dynamic call runs the same in both.
-        // Re-decide only when a run-time bind happened since the last answer (a bind
-        // counter on Control), or settle the verdict as Dependent until that call site
-        // binds. probe:
-        // design/review-2026-10-19/repro/x-parallel-undecided-reanalyzed-every-cycle.gx
-        // (x-parallel-03)
-        // CR claude for claude: [perf/high] A new aspect of x-perf-compile-03. In a
-        // recursion, every activation's fork site is still Undecided after its first
-        // update, because its callee is not bound yet. The next update that reaches the
-        // chain then runs `independent()` at all N sites at once, each walking the
-        // graph below it. Under the default Auto mode, the update after an argument
-        // changes in a node-walked recursion therefore grows about 8x per doubling of
-        // depth: 0.39/1.34/9.2 s at depth 1000/2000/4000 against 0.20/0.28/0.42 s with
-        // GRAPHIX_PAR=off, and over 40 s at 8000. Nothing ever forks here
-        // (GRAPHIX_PAR_T fixed huge), and the third update costs 15 ms. Force stays
-        // linear only because it turns Off past MAX_FORK_DEPTH.
-        // interrupted_recursion_rides_* re-runs this shape at depth 15000 and
-        // interrupts it, so no test sees the cost. Decide these sites at analysis, or
-        // give a run-time instance its definition's verdict, as x-perf-compile-03
-        // proposes. probe:
-        // design/review-2026-10-19/repro/tests-lib-b1-recursion-rerun-auto-cliff.sh
-        // (tests-lib-b1-01)
-        if self.1 == Siblings::Undecided && n >= 2 && ctx.fork_mode() != ParMode::Off {
-            self.1 = Siblings::of(independent())
-        }
+        self.1.decide(ctx, n, children, analysis::Sites::Statements)
+    }
+
+    /// The site's verdict, which an image carries: a warm start's first
+    /// cycle decides as the cold compile's analysis did.
+    pub(crate) fn image_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        self.1.decided.get().copied().encode(buf)
+    }
+
+    /// A fresh site holding the verdict [`Self::image_encode`] wrote.
+    pub(crate) fn image_decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let site = Self::default();
+        site.1.decided_by_analysis(Option::<bool>::decode(buf)?);
+        Ok(site)
     }
 
     /// What this update does with the site's `n` children.
@@ -388,7 +480,7 @@ impl ForkSite {
     ) -> Plan<'_> {
         match ctx.fork_mode() {
             ParMode::Off => Plan::Serial,
-            _ if n < 2 || self.1 != Siblings::Independent => Plan::Serial,
+            _ if n < 2 || !self.1.independent() => Plan::Serial,
             ParMode::Force => Plan::Fork(Splits::Halves),
             ParMode::Auto => self.plan_auto(n),
         }
@@ -646,30 +738,25 @@ impl SlotSite {
     /// Decide, once, whether the slots are independent: they share one
     /// callback, so two of them stand for all; dependent slots always
     /// run in order.
-    pub fn decide_siblings<R: Rt, E: UserEvent>(
+    pub fn decide_siblings<'a, R: Rt, E: UserEvent>(
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         n: usize,
-        independent: impl FnOnce() -> Option<bool>,
+        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ) {
-        if self.siblings == Siblings::Undecided
-            && n >= 2
-            && ctx.fork_mode() != ParMode::Off
-        {
-            self.siblings = Siblings::of(independent())
-        }
+        self.siblings.decide(ctx, n, children, analysis::Sites::Slots)
     }
 
     /// Decide the siblings again at the next update: the slots' callee
     /// changed.
     pub fn redecide(&mut self) {
-        self.siblings = Siblings::Undecided
+        self.siblings = Siblings::default()
     }
 
     /// Whether the slots must run in order: they are not known to be
     /// independent.
     pub fn in_order(&self) -> bool {
-        self.siblings != Siblings::Independent
+        !self.siblings.independent()
     }
 
     /// The plan for the `n` standing slots.
@@ -681,7 +768,7 @@ impl SlotSite {
     ) -> SlotPlan {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
-            _ if n < 2 || self.siblings != Siblings::Independent => SlotPlan::Serial,
+            _ if n < 2 || !self.siblings.independent() => SlotPlan::Serial,
             ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
             ParMode::Auto => self.plan_auto(n),
         }
@@ -1066,6 +1153,16 @@ mod tests {
             matches!(site.plan_with(&cal, 16), SlotPlan::Measure(_)),
             "a serial site that grew to pay for a fork probes again at once"
         );
+    }
+
+    #[test]
+    fn threshold_floors_in_time() {
+        // a 24 MHz counter (Apple's CNTVCT_EL0): a 10 us wake is 240 ticks
+        assert_eq!(threshold(240, 0.024), 960);
+        assert_eq!(threshold(1, 0.024), 24, "the floor is a microsecond");
+        // a 3 GHz TSC
+        assert_eq!(threshold(100, 3.0), 3000);
+        assert_eq!(threshold(30_000, 3.0), 120_000);
     }
 
     #[test]

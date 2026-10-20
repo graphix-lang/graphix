@@ -1472,16 +1472,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // the binds by that shape, and no guard sees the value an earlier
         // arm claimed (`open` is the chain still running at arm `i`).
         // An arm's shape test, which the chain below reuses.
-        // CR claude for claude: [perf/low] This is sized by every arm, but only the
-        // guard pre-pass (arms up to the last guarded) fills it. A select with more
-        // than 16 arms heap-allocates it on every update, even with no guard, when it
-        // stays all None. Fix: size it `guarded.last().map_or(0, |l| l + 1)` and read
-        // it in the chain with `shaped.get(i).copied().flatten()`, falling back to
-        // shape_matches. Found by reading; not run. (c-select-seq-04)
-        let mut shaped: SmallVec<[Option<bool>; 16]> = smallvec![None; arms.len()];
+        let guards_end = guarded.last().map_or(0, |l| l + 1);
+        let mut shaped: SmallVec<[Option<bool>; 16]> = smallvec![None; guards_end];
         let live = arg.value.as_ref().filter(|_| !arg.tag.is_bottom());
         let mut open = live.is_some();
-        for i in 0..guarded.last().map_or(0, |l| l + 1) {
+        for i in 0..guards_end {
             let (pat, shallow) = (&mut arms[i].0, &shallow[i]);
             let reach = live.filter(|_| open).filter(|v| {
                 let s = pat.shape_matches(&ctx.env, shallow.as_ref(), v);
@@ -1576,7 +1571,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 for (i, ((pat, _), shallow)) in
                     arms.iter().zip(shallow.iter()).enumerate()
                 {
-                    let s = shaped[i].unwrap_or_else(|| {
+                    let s = shaped.get(i).copied().flatten().unwrap_or_else(|| {
                         pat.shape_matches(&ctx.env, shallow.as_ref(), v)
                     });
                     match pat.arm_match(s) {

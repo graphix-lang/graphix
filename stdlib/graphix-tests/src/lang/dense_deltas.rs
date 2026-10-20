@@ -24,6 +24,8 @@ pub(super) struct Delta {
     pub forks: u64,
     /// Runs of compile tasks building instances.
     pub build_forks: u64,
+    /// Fork-point verdicts worked out at an update, past the analysis.
+    pub verdicts: u64,
     /// Fused-kernel and JIT invocations of the fixture's own program.
     pub invocations: (u64, u64),
     /// Prune boundaries walked.
@@ -70,10 +72,19 @@ pub(super) async fn run_delta_with(
     let out = sink.take();
     let control = ctx.rt.control();
     let (forks, build_forks) = (control.forks(), control.build_forks());
-    let invocations = control.invocations();
+    let (verdicts, invocations) = (control.verdicts(), control.invocations());
     let (boundaries, _) = control.boundaries();
     ctx.shutdown().await;
-    Ok(Delta { values, out, forks, build_forks, invocations, boundaries, regions })
+    Ok(Delta {
+        values,
+        out,
+        forks,
+        build_forks,
+        verdicts,
+        invocations,
+        boundaries,
+        regions,
+    })
 }
 
 /// [`run_delta`] for a fixture that holds on both engines: in the jit

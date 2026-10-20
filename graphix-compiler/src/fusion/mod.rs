@@ -748,30 +748,30 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
     for_each_child(node, &mut |c| for_each_node::<R, E>(c, f));
 }
 
-/// A binary operator's operands.
+/// A binary operator's operands and the fork point over them.
 pub(crate) fn binary_operands<'a, R: Rt, E: UserEvent>(
     view: &NodeView<'a, R, E>,
-) -> Option<(&'a Node<R, E>, &'a Node<R, E>)> {
+) -> Option<(&'a Node<R, E>, &'a Node<R, E>, &'a crate::cost::ForkSite)> {
     use NodeView as V;
     Some(match view {
-        V::Add(n) => (&n.lhs, &n.rhs),
-        V::Sub(n) => (&n.lhs, &n.rhs),
-        V::Mul(n) => (&n.lhs, &n.rhs),
-        V::Div(n) => (&n.lhs, &n.rhs),
-        V::Mod(n) => (&n.lhs, &n.rhs),
-        V::CheckedAdd(n) => (&n.lhs, &n.rhs),
-        V::CheckedSub(n) => (&n.lhs, &n.rhs),
-        V::CheckedMul(n) => (&n.lhs, &n.rhs),
-        V::CheckedDiv(n) => (&n.lhs, &n.rhs),
-        V::CheckedMod(n) => (&n.lhs, &n.rhs),
-        V::Eq(n) => (&n.lhs, &n.rhs),
-        V::Ne(n) => (&n.lhs, &n.rhs),
-        V::Lt(n) => (&n.lhs, &n.rhs),
-        V::Gt(n) => (&n.lhs, &n.rhs),
-        V::Lte(n) => (&n.lhs, &n.rhs),
-        V::Gte(n) => (&n.lhs, &n.rhs),
-        V::And(n) => (&n.lhs, &n.rhs),
-        V::Or(n) => (&n.lhs, &n.rhs),
+        V::Add(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Sub(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Mul(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Div(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Mod(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::CheckedAdd(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::CheckedSub(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::CheckedMul(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::CheckedDiv(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::CheckedMod(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Eq(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Ne(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Lt(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Gt(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Lte(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Gte(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::And(n) => (&n.lhs, &n.rhs, &n.fork),
+        V::Or(n) => (&n.lhs, &n.rhs, &n.fork),
         _ => return None,
     })
 }

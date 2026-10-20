@@ -490,6 +490,40 @@ fn flat_type_chain_checks_in_linear_time() {
     )
 }
 
+/// A let chain that wraps the last value in any constructor, or in an
+/// array literal holding it twice, checks in time linear in its length:
+/// a let's single name binds without an occurs walk of the value, and a
+/// literal's element of an earlier element's very type adds nothing.
+#[test]
+fn wrapped_let_chains_check_in_linear_time() {
+    const LETS: usize = 20_000;
+    for wrap in ["{a: X}", "(X, 1)", "`A(X)", "[X, X]"] {
+        let mut s = String::from("let x0 = 1;\n");
+        for i in 1..=LETS {
+            s.push_str(&format!(
+                "let x{i} = {};\n",
+                wrap.replace('X', &format!("x{}", i - 1))
+            ));
+        }
+        s.push_str("1");
+        checks_within(&s, std::time::Duration::from_secs(15))
+    }
+}
+
+/// A chain of typedefs each naming the next, written before it is
+/// defined, checks in time near linear in its length: a typedef with no
+/// parameters rechecks nothing pending.
+#[test]
+fn forward_typedef_chain_checks_in_time() {
+    const TYPES: usize = 1000;
+    let mut s = String::new();
+    for i in 0..TYPES {
+        s.push_str(&format!("type T{i} = [`A{i}(i64), T{}];\n", i + 1));
+    }
+    s.push_str(&format!("type T{TYPES} = `End;\n1"));
+    checks_within(&s, std::time::Duration::from_secs(15))
+}
+
 /// A value whose type shares each level twice (`(x, x)`), written to a
 /// binding of an equal type and checked against a typedef built the same
 /// way, checks in time linear in its depth: a walk of it as a tree takes

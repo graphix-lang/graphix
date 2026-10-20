@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, PrintFlag, Refs, Rt, Saved,
-    Scope, Tag, TagValue, Update, UserEvent, View,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, ParMode, PendingImport, PrintFlag, Refs,
+    Rt, Saved, Scope, Tag, TagValue, Update, UserEvent, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -15,7 +15,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{Nop, bind::Bind, traits},
+    node::{Nop, Runs, bind::Bind, traits},
     profile::{self, Phase},
     typ::{
         FnArgKind, FnArgType, FnType, TVar, Type,
@@ -922,6 +922,8 @@ pub struct Module<R: Rt, E: UserEvent> {
     pub(crate) nodes: Box<[Node<R, E>]>,
     /// catch-statement indices in `nodes` (see `Block::catches`).
     pub(crate) catches: Box<[usize]>,
+    /// The statements as runs for forking, as a block's are.
+    pub(crate) runs: Runs,
     top_id: ExprId,
     /// The compile task a static body compiles and checks in: the cells
     /// it creates are its own, and its check writes no others.
@@ -964,6 +966,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let proxy = Vec::<Proxy>::decode(buf)?;
         let nodes = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
+        let runs = Runs::image_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         // the registrations check_sig made
         for Proxy { inner, outer, .. } in proxy.iter() {
@@ -980,6 +983,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             proxy,
             nodes,
             catches,
+            runs,
             top_id,
             task: TaskId::OUTSIDE,
             resident: TagValue::phantom(),
@@ -1023,6 +1027,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             proxy: Vec::new(),
             nodes: Box::new([]),
             catches: Box::new([]),
+            runs: Runs::default(),
             top_id,
             task: TaskId::OUTSIDE,
             resident: TagValue::phantom(),
@@ -1056,6 +1061,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             proxy: Vec::new(),
             nodes: Box::new([]),
             catches: Box::new([]),
+            runs: Runs::default(),
             top_id,
             task,
             resident: TagValue::phantom(),
@@ -1141,6 +1147,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             )
         });
         (self.nodes, self.catches) = compiled?;
+        self.runs = Runs::default();
         if let Body::Dynamic { .. } = &self.body {
             self.check_body(ctx)
                 .and_then(|()| crate::drain_pending_settles(ctx))
@@ -1299,6 +1306,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         self.proxy.encode(buf)?;
         encode_nodes(&self.nodes, buf)?;
         image::slice_encode(&self.catches, buf)?;
+        self.runs.image_encode(buf)?;
         self.top_id.encode(buf)
     }
 
@@ -1399,7 +1407,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     ctx.event.variables.insert(*inner, tv);
                 }
             }
-            // CR claude for claude: [perf/medium] A module body updates its statements
+            // XCR claude for claude: [perf/medium] A module body updates its statements
             // one after another: unlike Block::update_forking, it has no planned runs
             // (analysis::plan_blocks plans only NodeView::Block), so parallel
             // evaluation never forks a statement inside any module. Hold the body as a
@@ -1407,8 +1415,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             // out. That gives modules the planned, imaged runs and removes this
             // duplicate catch-ordered walk. Found by reading; not run.
             // (c-module-traits-05)
-            for i in super::evaluation_order(self.nodes.len(), &self.catches) {
-                let _ = self.nodes[i].update(ctx);
+            // 2026-10-20 claude: Left for now: holding the body as a Block gives a
+            // module the block plan's runs, but a planned run's ForkSite is never
+            // decided today (x-parallel-01, node::Block::update_forking), so no block
+            // run forks under any mode and the restructure would fork nothing yet
+            // while changing the module's image codec, typecheck and catch walk. Do it
+            // once x-parallel-01 lands, with a #[parallel] module pin.
+            // 2026-10-20 claude: With x-parallel-01 fixed on main: a block's run
+            // machinery is node::Runs now (its plan, which the analysis makes and the
+            // image carries, and the run sites made from it), shared by Block and
+            // Module; the analysis plans a module's statements beside the blocks'
+            // (StaticCallGraph::blocks holds both) and Module::update runs them
+            // through Runs::update when it may fork. A module without an interface
+            // compiles as a Block and forked already; this reaches modules with one
+            // (the stdlib's included: under Force the environment alone goes from 30
+            // to 69 forks). Pin: lang::par_attrs::module_runs_fork (8 statements
+            // behind an interface fork where one cannot; equal counts with the Runs
+            // path disabled).
+            if self.nodes.len() > 1 && ctx.fork_mode() != ParMode::Off {
+                self.runs.update(ctx, &mut self.nodes, &self.catches);
+            } else {
+                for i in super::evaluation_order(self.nodes.len(), &self.catches) {
+                    let _ = self.nodes[i].update(ctx);
+                }
             }
         });
         // a prime is for the fresh body alone: left, it would fire readers

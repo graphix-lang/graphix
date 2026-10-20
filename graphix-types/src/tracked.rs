@@ -209,6 +209,17 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
                 // once where the frame drains. probe:
                 // design/review-2026-10-19/repro/x-perf-compile-nested-task-join.sh
                 // (x-perf-compile-03)
+                // 2026-10-20 claude: Done for touched (TrackedMap and TrackedSet join
+                // through absorb: the shorter list goes into the longer) and
+                // pending_refs (CompileCtx::join folds the smaller map into the
+                // larger). Probe (quick, TaskJoin per call at 800/1600/3200): 40/79/307
+                // us -> 13/20/40 us. What stands is pending_settles: its order is the
+                // settle order (sites first, first error wins), so it cannot be
+                // swapped, and a 3200 chain still moves 5.1M settles through joins
+                // (counted with a temporary print), the 40 us left. Chunked frames
+                // (push the child's frame whole, flatten where it drains) would close
+                // it; lambda.rs's gate pop/extend copies the same frames per nested
+                // definition.
                 // 2026-10-20 claude: TrackedMap/TrackedSet joins keep the larger
                 // touched list and copy the smaller in (absorb), and CompileCtx::join
                 // does the same for pending_refs and discarded. pending_settles still

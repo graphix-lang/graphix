@@ -56,18 +56,23 @@ pub struct Map<R: Rt, E: UserEvent> {
     // both 10 11 12 13).
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
-    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        n: Box<[Node<R, E>]>,
+        fork: ForkSite,
+    ) -> Node<R, E> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
             typ,
             n,
             resident: TagValue::phantom(),
-            fork: ForkSite::default(),
+            fork,
         })
     }
 
@@ -86,7 +91,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         let entries = (0..2 * n)
             .map(|_| decode_node(ctx, buf))
             .collect::<Result<Box<[_]>, PackError>>()?;
-        Ok(Self::with(spec, typ, entries))
+        Ok(Self::with(spec, typ, entries, ForkSite::image_decode(buf)?))
     }
 
     pub(crate) fn compile(
@@ -106,7 +111,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Self::with(spec, typ, n))
+        Ok(Self::with(spec, typ, n, ForkSite::default()))
     }
 }
 
@@ -120,7 +125,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
             k.image_encode(buf)?;
             v.image_encode(buf)?;
         }
-        Ok(())
+        self.fork.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -168,7 +173,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         }
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         ktype.require_compared(&Type::Ordered);
-        // CR claude for claude: [perf/low] The chain fix that SeqLit::typecheck0_with
+        // CR claude for eric: [perf/low] The chain fix that SeqLit::typecheck0_with
         // got (one element is its own union; the unshared cell binds with no occurs
         // walk) is missing from this copy of the same code. Here a let chain `x_i = {1
         // => x_(i-1)}` checks in quadratic time: 0.59 / 2.3 / 9.0 s at n = 1000 / 2000
@@ -178,9 +183,33 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         // (union_of_alternatives over identical deep types: skip a pointer-equal
         // member). probe: design/review-2026-10-19/repro/x-rerun-4-literal-chain.sh
         // (x-rerun-4-03)
-        let vtype = wrap!(self, Type::union_of_alternatives(&ctx.env, &vts))?;
-        let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
-        self.typ.check_contains(&ctx.env, &rtype)?;
+        // 2026-10-20 claude: Shared now: array::element_union (an element of the very
+        // type of an earlier one, by cell or by shared Arc, adds nothing; one type
+        // left is its own union) and array::bind_element (the literal's own cell binds
+        // with no occurs walk) serve SeqLit and Map. Probe (quick): two
+        // n=1000/2000/4000 0.36/1.29/7.08 s -> 0.40/0.29/0.33 s; map 0.74/3.23/15.6 s
+        // -> 0.41/2.25/11.3 s. Pin:
+        // deep_nesting::wrapped_let_chains_check_in_linear_time ([X, X] at 20000 lets
+        // within 15 s). What stands is the map's Discernible(Keys) judgment:
+        // map_key_failure walks the value type for nested maps' keys, once per
+        // literal, so a chain of map literals stays quadratic. The nested maps a
+        // literal's value holds were judged where they were built (a literal, a
+        // builtin bound Ordered, a read's Concrete), so judging this literal's key
+        // alone would be linear, but it stops refusing a value whose map type nothing
+        // judged (one only an annotation wrote): a checker rule, so readdressed for
+        // that ruling.
+        let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
+        let bound = match &self.typ {
+            Type::Map { key, value } => {
+                super::array::bind_element(key, &ktype)
+                    && super::array::bind_element(value, &vtype)
+            }
+            _ => false,
+        };
+        if !bound {
+            let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
+            self.typ.check_contains(&ctx.env, &rtype)?;
+        }
         let judgment = crate::PendingSettle::Discernible {
             typ: self.typ.clone(),
             what: crate::Discerned::Keys,

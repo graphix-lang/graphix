@@ -309,23 +309,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // lang::tuples_structs::let_over_a_union_takes_a_writable_reference.
                     if !completed && pat.has_partial_struct() {
                         partial = Some(ptyp);
-                    // CR claude for claude: [perf/low] For a single-name pattern `ptyp`
-                    // is a fresh cell, so this check cannot fail, but binding the cell
-                    // runs `TVar::would_cycle` over the whole value type. Each let in a
-                    // chain that wraps the last value in a struct, tuple or variant
-                    // therefore walks everything before it: --check costs 0.85 s at
-                    // 5000 lets, 4.2 s at 10000 and 17.9 s at 20000, all in BuildGraph,
-                    // while the same chain with `[x]` takes 0.75 s at 20000. Fix: skip
-                    // this check for a bare `StructurePattern::Bind` (or skip the
-                    // occurs check for a cell created after the type), and add these
-                    // shapes to `flat_type_chain_checks_in_linear_time`, which pins
-                    // arrays only. probe:
-                    // design/review-2026-10-19/repro/x-stack-flat-chain-quadratic.sh
-                    // (x-stack-02)
-                    } else if !fits_every_member(ctx, &ptyp, &typ, &mut narrowed, || {
-                        pat.infer_type_predicate(&ctx.env, &scope.lexical)
-                    })
-                    .at(&spec)?
+                    } else if pat.single_bind().is_none()
+                        && !fits_every_member(ctx, &ptyp, &typ, &mut narrowed, || {
+                            pat.infer_type_predicate(&ctx.env, &scope.lexical)
+                        })
+                        .at(&spec)?
                     {
                         let part = ptyp.could_match(&ctx.env, &typ)?;
                         format_with_flags(PrintFlag::DerefTVars, || match part {

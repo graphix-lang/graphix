@@ -1242,7 +1242,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Absent>,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
     /// The reads of an imaged tree this site registered when it decoded
     /// outside every heap instance, released at delete.
     held: Option<Box<[BindId]>>,
@@ -1843,6 +1843,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx.apply_deferred();
         let defaults = match self.build_bound(ctx, fv, f) {
             Ok(d) => {
+                ctx.control.rebuilt();
                 ctx.apply_deferred();
                 d
             }
@@ -2876,8 +2877,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let flags = image::flags_decode(buf)?;
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
+        let fork = ForkSite::image_decode(buf)?;
         let mut site =
             Self::unbound(spec, ftype, rtype, fnode, args, scope, flags, top_id);
+        site.fork = fork;
         site.arg_refs = arg_refs;
         site.callee = callee;
         site.static_target = static_target;
@@ -3127,7 +3130,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.recursive_edge.load(Relaxed).encode(buf)?;
         image::flags_encode(self.flags, buf)?;
         image::scope_encode(&self.scope, buf)?;
-        self.top_id.encode(buf)
+        self.top_id.encode(buf)?;
+        self.fork.image_encode(buf)
     }
 
     pub(crate) fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -3625,13 +3629,7 @@ fn update_args<R: Rt, E: UserEvent>(
     pass: Pass,
 ) -> ArgsOut {
     let n = args.len();
-    site.decide_siblings(ctx, n, || {
-        crate::analysis::independent(
-            args.values().filter_map(|a| a.node.as_ref()),
-            ctx,
-            crate::analysis::Sites::Statements,
-        )
-    });
+    site.decide_siblings(ctx, n, args.values().filter_map(|a| a.node.as_ref()));
     let in_order = |c: &mut ExecCtx<'_, R, E>, p, m: Option<&mut Meter<'_>>| {
         update_args_in_order(c, p, m, pass)
     };

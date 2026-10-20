@@ -289,6 +289,10 @@ pub struct Control {
     forks: AtomicU64,
     /// Runs of compile tasks its cycles forked to build instances.
     build_forks: AtomicU64,
+    /// Batches of run-time binds and compiles its cycles applied.
+    rebuilds: AtomicU64,
+    /// Fork-point verdicts its cycles worked out from the graph.
+    verdicts: AtomicU64,
     /// Live activations its cycles bound, and how many it may hold.
     activations: AtomicU64,
     activation_budget: AtomicU64,
@@ -379,6 +383,8 @@ impl Control {
             self_blocks: AtomicI64::new(0),
             forks: AtomicU64::new(0),
             build_forks: AtomicU64::new(0),
+            rebuilds: AtomicU64::new(0),
+            verdicts: AtomicU64::new(0),
             activations: AtomicU64::new(0),
             activation_budget: AtomicU64::new(
                 DEFAULT_ACTIVATIONS.load(Ordering::Relaxed),
@@ -438,6 +444,29 @@ impl Control {
     #[doc(hidden)]
     pub fn build_forked(&self) {
         self.build_forks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Batches of run-time binds and compiles applied so far: a count
+    /// that changes whenever a call may have been bound since it was
+    /// last read.
+    pub fn rebuilds(&self) -> u64 {
+        self.rebuilds.load(Ordering::Relaxed)
+    }
+
+    #[doc(hidden)]
+    pub fn rebuilt(&self) {
+        self.rebuilds.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Fork-point verdicts this runtime's cycles worked out from the
+    /// graph below the fork point, where no analysis had decided one.
+    pub fn verdicts(&self) -> u64 {
+        self.verdicts.load(Ordering::Relaxed)
+    }
+
+    #[doc(hidden)]
+    pub fn verdict_asked(&self) {
+        self.verdicts.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Live per-activation kernel blocks.

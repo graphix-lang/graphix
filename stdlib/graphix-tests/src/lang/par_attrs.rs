@@ -298,6 +298,47 @@ async fn self_calls_in_a_block_fork() -> Result<()> {
     Ok(())
 }
 
+// An activation's fork points are decided at its bind, its call to the
+// next activation a self-call: the update after an argument changes
+// works nothing out at the chain's operators. Asked there, each operator
+// walked every activation below it, cubic in the depth.
+#[tokio::test(flavor = "current_thread")]
+async fn activations_decide_their_fork_points_at_bind() -> Result<()> {
+    let code = r#"{
+        let rec f = |n: i64, s: string| -> i64 select n {
+            0 => 0,
+            n => select str::contains(#part: "b[n]", s) { true => 2, false => 1 } + f(n - 1, s)
+        };
+        let s = "aaaa";
+        s <- sys::time::timer(duration:5.ms, false) ~ str::concat(s, "b7");
+        f(300, s)
+    }"#;
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(ran.values, [Value::I64(300), Value::I64(301)]);
+    assert_eq!(ran.verdicts, 0, "a fork point was decided at an update");
+    Ok(())
+}
+
+// A verdict that rests on a call never bound is asked again only after
+// something binds, not at every update.
+#[tokio::test(flavor = "current_thread")]
+async fn an_open_verdict_waits_for_a_bind() -> Result<()> {
+    let code = r#"{
+        let n = 0;
+        n <- select sys::time::timer(duration:1.ms, 40) ~ n {
+            k if k < 40 => k + 1,
+            _ => never()
+        };
+        let fs = [|x: i64| x * 2];
+        let xs = array::init(4, |i| i + n);
+        array::fold(array::map(xs, |x| select x { -1 => (fs[0]$)(x), x => x * 3 + x * 5 }), 0, |a, b| a + b)
+    }"#;
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(8 * (6 + 4 * 40))));
+    assert!(ran.verdicts <= 4, "{} verdicts in 40 cycles", ran.verdicts);
+    Ok(())
+}
+
 // Fields, arguments and operands that reach one ordered queuefn wrapper
 // do not fork, so #[parallel] over them has nothing to run in parallel.
 #[tokio::test(flavor = "current_thread")]
@@ -389,6 +430,50 @@ async fn block_runs_fork() -> Result<()> {
     let ran = run_par("{ let a = 1; let b = 2; b }", ParMode::Force).await?;
     assert_eq!(ran.values.last(), Some(&Value::I64(2)));
     assert!(ran.forks > 0, "the block's run ran in order");
+    Ok(())
+}
+
+/// The forks a program `{ mod m; m::b }` makes under `Force`, `m`'s body
+/// `module` behind an interface (a module without one is a block), and
+/// its value.
+async fn module_forks(module: &'static str) -> Result<(u64, Option<Value>)> {
+    use graphix_package_core::testing::{
+        compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    let (ctx, mut rx) = fixture_runtime(
+        [
+            ("/test.gx", result_source("{ mod m; m::b }")),
+            ("/test/m.gxi", arcstr::literal!("val b: i64;").into()),
+            ("/test/m.gx", arcstr::ArcStr::from(module).into()),
+        ],
+        &crate::TEST_REGISTER,
+        Mode::Interp,
+        |ctx| ctx.control.set_par_mode(ParMode::Force),
+    )
+    .await?;
+    let res = compile_result(&ctx).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let id = res.exprs[0].id;
+    let quiet = Duration::from_millis(300);
+    let values = updates_until_quiet(&ctx.rt, &mut rx, id, quiet, deadline).await?;
+    let forks = ctx.rt.control().forks();
+    ctx.shutdown().await;
+    Ok((forks, values.last().cloned()))
+}
+
+// A module's body runs as a block's does: under Force its eight
+// independent statements fork (one flat fork) where one statement cannot.
+#[tokio::test(flavor = "current_thread")]
+async fn module_runs_fork() -> Result<()> {
+    let (one, v1) = module_forks("let b = 2").await?;
+    let eight = "let a1 = 1;\nlet a2 = 1;\nlet a3 = 1;\nlet a4 = 1;\n\
+                 let a5 = 1;\nlet a6 = 1;\nlet a7 = 1;\nlet b = 2";
+    let (many, v2) = module_forks(eight).await?;
+    assert_eq!((v1, v2), (Some(Value::I64(2)), Some(Value::I64(2))));
+    assert!(
+        many > one,
+        "the module's statements ran in order: {many} forks, {one} alone"
+    );
     Ok(())
 }
 

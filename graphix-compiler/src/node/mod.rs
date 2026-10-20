@@ -406,13 +406,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
-    site.decide_siblings(ctx, n, || {
-        crate::analysis::independent(
-            nodes.iter(),
-            ctx,
-            crate::analysis::Sites::Statements,
-        )
-    });
+    site.decide_siblings(ctx, n, nodes.iter());
     fork_point(ctx, nodes, site, gather_in_order, |(t0, mut p0), (t1, p1)| {
         p0.extend(p1);
         (t0.join(t1), p0)
@@ -535,6 +529,7 @@ impl TypeDef {
         body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
         let (params, body) = Type::reset_typedef_tvars(params, body);
+        let parametric = !params.is_empty();
         let verdict = ctx
             .env
             .deftype(
@@ -550,7 +545,7 @@ impl TypeDef {
             )
             .at(&spec)?;
         let name = name.name.clone();
-        // CR claude for claude: [perf/medium] Every typedef rechecks every pending
+        // XCR claude for claude: [perf/medium] Every typedef rechecks every pending
         // contractivity question, and none is ever removed. Env::check_contractive
         // answers Ok for both Guarded and Unknown, so the caller cannot tell a settled
         // question from an open one. A chain of typedefs that each name the next one as
@@ -560,7 +555,29 @@ impl TypeDef {
         // entries still Unknown in ctx.pending_names. probe:
         // design/review-2026-10-19/repro/c-node-mod-typedef-forward-chain.py
         // (c-node-mod-03)
-        crate::recheck_pending_contractive(ctx)?;
+        // 2026-10-20 claude: check_contractive returns the verdict and
+        // recheck_pending_contractive keeps only the questions still Unknown. That
+        // alone does not help the probe (every link of a forward chain stays Unknown
+        // until its last name), so TypeDef::compile now rechecks only after a typedef
+        // with parameters: a cycle a definition completes runs through it, through its
+        // body when it has none, which deftype's own walk already refused; one with
+        // parameters can close a cycle through an argument
+        // (lang::types::forward_alias_cycle, type T = G<[i64, T]>), which only T's walk
+        // sees. A use still rechecks. Probe (quick): forward 250/500 1.27/9.15 s ->
+        // 0.26/0.12 s (backward 0.07/0.15). Pins:
+        // deep_nesting::forward_typedef_chain_checks_in_time (1000 types within 15 s;
+        // 62 s debug before), lang::types::forward_alias_cycle, forward_maybe_cycle,
+        // renamed_alias_cycle.
+        // 2026-10-20 claude: Checked the parametric recheck is load-bearing: with it
+        // disabled, cargo test -p graphix-tests -- lang::types:: spins at 400% CPU for
+        // over 8 minutes (a fixture expands its forward alias cycle before the
+        // end-of-check refusal), so those fixtures pin it.
+        if parametric {
+            // A cycle a definition completes runs through it: without
+            // parameters through its body, which deftype walked; with them also
+            // through an argument (`type T = G<[i64, T]>`), which only T's walk sees.
+            crate::recheck_pending_contractive(ctx)?;
+        }
         if verdict == crate::typ::Unguarded::Unknown {
             ctx.pending_names.push(crate::Pending::Contractive(
                 scope.lexical.clone(),
@@ -723,20 +740,43 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// The block's production when it cannot hand back its last
     /// child's borrow: after a catch pass or a forked run.
     resident: TagValue,
-    /// The statements as runs for forking, as the analysis planned them
-    /// (`analysis::plan_blocks`), which an image carries.
-    pub(crate) planned: OnceLock<Box<[(u32, u32)]>>,
-    /// The runs and their fork points, made at the first update that may
-    /// fork: from `planned`, or planned there for a block no analysis
-    /// reached.
-    plan: Option<Box<[(u32, u32, ForkSite)]>>,
+    pub(crate) runs: Runs,
 }
 
-impl<R: Rt, E: UserEvent> Block<R, E> {
-    /// [`Update::update`] forking each run of its plan.
-    fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let (children, catches, planned) = (&self.children, &self.catches, &self.planned);
-        let plan = self.plan.get_or_insert_with(|| {
+/// A statement list's runs for forking: as the analysis planned them
+/// (`analysis::plan_forks`), which an image carries, and their fork
+/// points, made at the first update that may fork (planned there for a
+/// body no analysis reached).
+#[derive(Debug, Default)]
+pub(crate) struct Runs {
+    pub(crate) planned: OnceLock<Box<[(u32, u32)]>>,
+    sites: Option<Box<[(u32, u32, ForkSite)]>>,
+}
+
+impl Runs {
+    pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.planned.get().map(|p| p.to_vec()).encode(buf)
+    }
+
+    pub(crate) fn image_decode(buf: &mut &[u8]) -> Result<Self, PackError> {
+        let runs = Self::default();
+        if let Some(p) = Option::<Vec<(u32, u32)>>::decode(buf)? {
+            let _ = runs.planned.set(p.into_boxed_slice());
+        }
+        Ok(runs)
+    }
+
+    /// Update `children` run by run, each forked where its site says, then
+    /// the catches in reverse syntactic order: the last child's
+    /// production, unless it is a catch.
+    pub(crate) fn update<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        children: &mut [Node<R, E>],
+        catches: &[usize],
+    ) -> Option<TagValue> {
+        let Self { planned, sites } = self;
+        let sites = sites.get_or_insert_with(|| {
             planned
                 .get_or_init(|| crate::analysis::plan_block(children, catches, ctx))
                 .iter()
@@ -759,19 +799,26 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
                 .map(|&(a, b)| (a, b, ForkSite::planned()))
                 .collect()
         });
-        let last = self.children.len();
+        let last = children.len();
         let mut res: Option<TagValue> = None;
-        for (a, b, site) in plan.iter_mut() {
+        for (a, b, site) in sites.iter_mut() {
             let (a, b) = (*a, *b);
-            let tv = update_run(ctx, &mut self.children[a as usize..b as usize], site);
+            let tv = update_run(ctx, &mut children[a as usize..b as usize], site);
             if b as usize == last {
                 res = Some(tv.clone());
             }
         }
-        for &c in self.catches.iter().rev() {
-            self.children[c].update(ctx);
+        for &c in catches.iter().rev() {
+            children[c].update(ctx);
         }
-        match res {
+        res
+    }
+}
+
+impl<R: Rt, E: UserEvent> Block<R, E> {
+    /// [`Update::update`] forking each run of its plan.
+    fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        match self.runs.update(ctx, &mut self.children, &self.catches) {
             _ if self.module => TagValue::phantom_ref(),
             Some(tv) => self.resident.set(tv),
             None => self.resident.ride(),
@@ -787,8 +834,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches: Box::default(),
             resident: TagValue::phantom(),
-            planned: OnceLock::new(),
-            plan: None,
+            runs: Runs::default(),
         })
     }
 
@@ -809,8 +855,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches,
             resident: TagValue::phantom(),
-            planned: OnceLock::new(),
-            plan: None,
+            runs: Runs::default(),
         }))
     }
 }
@@ -1449,18 +1494,14 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         let spec = Arc::new(Expr::decode(buf)?);
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
-        let planned = OnceLock::new();
-        if let Some(p) = Option::<Vec<(u32, u32)>>::decode(buf)? {
-            let _ = planned.set(p.into_boxed_slice());
-        }
+        let runs = Runs::image_decode(buf)?;
         Ok(Node::new(Self {
             module,
             spec,
             children,
             catches,
             resident: TagValue::phantom(),
-            planned,
-            plan: None,
+            runs,
         }))
     }
 }
@@ -1480,7 +1521,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.spec.encode(buf)?;
         encode_nodes(&self.children, buf)?;
         image::slice_encode(&self.catches, buf)?;
-        self.planned.get().map(|p| p.to_vec()).encode(buf)
+        self.runs.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -1568,7 +1609,7 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
     pub(crate) typs: Box<[Type]>,
     pub args: Box<[Node<R, E>]>,
     resident: TagValue,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
@@ -1587,7 +1628,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             args,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
-            fork: Default::default(),
+            fork: ForkSite::image_decode(buf)?,
         }))
     }
 
@@ -1631,7 +1672,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         image::slice_encode(&self.typs, buf)?;
-        encode_nodes(&self.args, buf)
+        encode_nodes(&self.args, buf)?;
+        self.fork.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {

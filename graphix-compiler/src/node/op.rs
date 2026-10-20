@@ -69,7 +69,7 @@ macro_rules! binary_node {
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
             slept: WakeBit,
-            fork: crate::cost::ForkSite,
+            pub(crate) fork: crate::cost::ForkSite,
             $(
                 /// the operator's own
                 state: $state,
@@ -88,7 +88,7 @@ macro_rules! binary_node {
             ) -> Result<Node<R, E>> {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
-                Ok(Self::node(spec, $typ, lhs, rhs))
+                Ok(Self::node(spec, $typ, lhs, rhs, Default::default()))
             }
 
             pub(crate) fn image_decode(
@@ -99,10 +99,17 @@ macro_rules! binary_node {
                 let typ = Type::decode(buf)?;
                 let lhs = decode_node(ctx, buf)?;
                 let rhs = decode_node(ctx, buf)?;
-                Ok(Self::node(spec, typ, lhs, rhs))
+                let fork = crate::cost::ForkSite::image_decode(buf)?;
+                Ok(Self::node(spec, typ, lhs, rhs, fork))
             }
 
-            fn node(spec: Arc<Expr>, typ: Type, lhs: Node<R, E>, rhs: Node<R, E>) -> Node<R, E> {
+            fn node(
+                spec: Arc<Expr>,
+                typ: Type,
+                lhs: Node<R, E>,
+                rhs: Node<R, E>,
+                fork: crate::cost::ForkSite,
+            ) -> Node<R, E> {
                 Node::new(Self {
                     spec,
                     typ,
@@ -110,7 +117,7 @@ macro_rules! binary_node {
                     rhs,
                     resident: TagValue::phantom(),
                     slept: WakeBit::default(),
-                    fork: Default::default(),
+                    fork,
                     $(state: <$state>::default(),)?
                 })
             }
@@ -122,7 +129,8 @@ macro_rules! binary_node {
                 self.spec.encode(buf)?;
                 self.typ.encode(buf)?;
                 self.lhs.image_encode(buf)?;
-                self.rhs.image_encode(buf)
+                self.rhs.image_encode(buf)?;
+                self.fork.image_encode(buf)
             }
 
             fn spec(&self) -> &Expr {
@@ -189,13 +197,7 @@ macro_rules! gated_operands {
     ($self:ident, $ctx:ident) => {{
         let woke = $self.slept.take();
         let (lhs, rhs) = (&mut $self.lhs, &mut $self.rhs);
-        $self.fork.decide_siblings($ctx, 2, || {
-            $crate::analysis::independent(
-                [&*lhs, &*rhs].into_iter(),
-                $ctx,
-                $crate::analysis::Sites::Statements,
-            )
-        });
+        $self.fork.decide_siblings($ctx, 2, [&*lhs, &*rhs].into_iter());
         let (l, r) = $crate::branch::join2(
             &mut $self.fork,
             $ctx,
