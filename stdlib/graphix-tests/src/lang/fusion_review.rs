@@ -1,8 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{
-    run,
-    testing::{FuseExpect, refused},
-};
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
 // A callee first dispatched late, under an arm, prints its constant at

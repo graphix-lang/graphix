@@ -1796,10 +1796,21 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     // 2026-10-19 claude: generalized_earlier skips the quantifier cells of function types
     // the binding's type holds (callsite::bound_quantifiers). The probe runs and prints 1.
     // Pin: lang::byref::mut_ref_to_a_rank2_parameter.
+    // 2026-10-19 claude: generalized_earlier walks the binding's type for quantifiers only
+    // when a generic cell is reached, and bound_quantifiers visits each shared node once
+    // (Type::shared_identity): walking it as a tree made deep_nesting's
+    // shared_type_dags_check_in_linear_time run past 15 s.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| {
             let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
             b.typ.reached_cells(&mut cells);
+            let mut generic = cells
+                .iter()
+                .filter(|(_, tv)| tv.level() == typ::tvar::Level::GENERIC)
+                .peekable();
+            if generic.peek().is_none() {
+                return false;
+            }
             // a function type's own quantifiers are generic whatever compiled it
             let mut quantified = AHashSet::new();
             node::callsite::bound_quantifiers(
@@ -1807,9 +1818,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
                 &mut quantified,
                 &mut AHashSet::new(),
             );
-            cells.iter().any(|(addr, tv)| {
-                tv.level() == typ::tvar::Level::GENERIC && !quantified.contains(addr)
-            })
+            generic.any(|(addr, _)| !quantified.contains(addr))
         })
     }
 

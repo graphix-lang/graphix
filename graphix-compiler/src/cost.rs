@@ -1041,7 +1041,11 @@ mod tests {
         assert!(l.untimed(127));
         assert!(!l.untimed(128), "a long enough loop is timed");
         let guard = l.probe.lock();
-        assert_eq!(l.probes(&cal, 3, 0), None, "a site being decided is not probed again");
+        assert_eq!(
+            l.probes(&cal, 3, 0),
+            None,
+            "a site being decided is not probed again"
+        );
         drop(guard);
         l.until.store(ticks(), Ordering::Relaxed);
         assert!(!l.untimed(3), "a stretch over, the site probes again");

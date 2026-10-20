@@ -687,7 +687,11 @@ pub(crate) fn bound_quantifiers(
             }
             t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
         }
-        t => t.for_each_child(&mut |c| bound_quantifiers(c, out, seen)),
+        t => {
+            if t.shared_identity().is_none_or(|a| seen.insert(a)) {
+                t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
+            }
+        }
     })
 }
 /// A binding the argument reads or writes holds none of the formal's
