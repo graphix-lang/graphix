@@ -185,6 +185,9 @@ macro_rules! image_id {
         // 0x9E3779B97F4A7C15), so nohash maps stay valid and the tag bits vary.
         // graphix-tests and graphix-types pass; fuzz regress not run here (iteration
         // order changes). Not re-measured.
+        // 2026-10-20 claude: graphix-fuzz regress (quick build) passes on the mixed
+        // hash: 549 programs, 0 regressions, 0 outcome and 0 fusion manifest
+        // mismatches.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $name(u64);
 
