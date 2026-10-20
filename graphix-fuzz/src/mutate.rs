@@ -42,6 +42,12 @@ impl Rng {
     pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
         &xs[self.below(xs.len())]
     }
+
+    pub fn shuffle<T>(&mut self, xs: &mut [T]) {
+        for i in (1..xs.len()).rev() {
+            xs.swap(i, self.below(i + 1));
+        }
+    }
 }
 
 fn aslice(v: Vec<Expr>) -> Arc<[Expr]> {

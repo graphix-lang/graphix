@@ -3,7 +3,7 @@
 //! in-scope references.
 
 use super::{
-    GenCtx, chance,
+    GenCtx, chance, patterns,
     types::{self, GenType, I64, Label, NUM_TYS, NumTy},
 };
 use crate::mutate::Rng;
@@ -44,7 +44,7 @@ pub(super) fn gen_pinned(
         t => narrows(t),
     };
     match wide {
-        true => format!("{{ let mt: {} = {v}; mt }}", ty.render()),
+        true => types::pin_to(ty, &v),
         false => v,
     }
 }
@@ -60,9 +60,7 @@ pub(super) fn call_args(
 ) -> String {
     let mut given: Vec<&Label> =
         labels.iter().filter(|l| !l.optional || chance(rng, 0.5)).collect();
-    for i in (1..given.len()).rev() {
-        given.swap(i, rng.below(i + 1));
-    }
+    rng.shuffle(&mut given);
     let mut args: Vec<String> = given
         .into_iter()
         .map(|l| format!("#{}: {}", l.name, gen_typed(ctx, rng, &l.ty, depth)))
@@ -166,10 +164,15 @@ fn try_accessor(
                     cands.push(consume_fallible(ctx, rng, name, ty, "null", depth));
                 }
             }
+            // a visible union read by a type-test select
+            GenType::Union(ms) if rng.below(2) == 0 => {
+                cands.push(patterns::union_select(ctx, rng, name, ms, ty, depth));
+            }
             GenType::Num(_)
             | GenType::Bool
             | GenType::Str
             | GenType::Variant(_)
+            | GenType::Union(_)
             | GenType::Fn { .. }
             | GenType::Dur
             | GenType::Time
@@ -666,7 +669,7 @@ pub(super) fn gen_typed(
         GenType::Array(elem) => {
             // occasionally empty (annotated: a bare `[]` doesn't infer)
             if rng.below(10) == 0 {
-                return format!("{{ let mt: {} = []; mt }}", ty.render());
+                return types::pin_to(ty, "[]");
             }
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
@@ -676,14 +679,14 @@ pub(super) fn gen_typed(
             // occasionally empty (annotated: a bare `[<>]` leaves the
             // element cell free)
             if rng.below(10) == 0 {
-                return format!("{{ let mt: {} = [<>]; mt }}", ty.render());
+                return types::pin_to(ty, "[<>]");
             }
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
             // nullable-bearing elements must be annotated: a `null` part
             // infers the bare null, not the union
             if ty.contains_nullable() {
-                format!("{{ let mt: {} = [<{}>]; mt }}", ty.render(), parts.join(", "))
+                types::pin_to(ty, &format!("[<{}>]", parts.join(", ")))
             } else {
                 format!("[<{}>]", parts.join(", "))
             }
@@ -728,6 +731,10 @@ pub(super) fn gen_typed(
             } else {
                 gen_typed(ctx, rng, t, d)
             }
+        }
+        GenType::Union(ms) => {
+            let m = rng.pick(ms);
+            types::pin_to(ty, &gen_typed(ctx, rng, m, d))
         }
         // a visible `&T` binding, `&` of a visible T-typed binding, or
         // `&(<expr>)`
@@ -921,7 +928,11 @@ impl Format {
             GenType::Variant(vs) => {
                 vs.iter().all(|(_, ts)| ts.iter().all(|t| self.holds(t, false)))
             }
-            GenType::Fn { .. } | GenType::Ref { .. } | GenType::Abstract { .. } => false,
+            // a reader picks a union's member from the data alone, maybe not the written one
+            GenType::Union(_)
+            | GenType::Fn { .. }
+            | GenType::Ref { .. }
+            | GenType::Abstract { .. } => false,
         }
     }
 }

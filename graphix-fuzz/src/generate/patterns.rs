@@ -251,6 +251,7 @@ pub(super) fn maybe_select(
             | GenType::Array(_)
             | GenType::List(_)
             | GenType::Nullable(_)
+            | GenType::Union(_)
             | GenType::Bool
             | GenType::Str => true,
             GenType::Num(n) => !n.is_float(),
@@ -306,6 +307,11 @@ pub(super) fn maybe_select(
         && rng.below(2) == 0
     {
         return Some(array_ladder(ctx, rng, &scrut, &scrut_ty, e, ty, d, arms));
+    }
+    if let GenType::Union(members) = &scrut_ty
+        && rng.below(4) != 0
+    {
+        return Some(union_select(ctx, rng, &scrut, members, ty, d));
     }
     if let GenType::Variant(tags) = &scrut_ty
         && rng.below(2) == 0
@@ -439,6 +445,71 @@ pub(super) fn full_coverage_select(
             arms.push(format!("{text} => {body}"));
             i += 1;
         }
+    }
+    format!("select {scrut} {{ {} }}", arms.join(", "))
+}
+
+/// A select over a union of runtime forms: one type-test arm per member
+/// in random order, a tuple or struct member sometimes destructured after
+/// its type, and now and then a final `_` or bind in place of the last
+/// test. An `i64` arm usually reads the length of what it bound printed,
+/// plus a constant of its own, so a value routed to the wrong arm shows.
+pub(super) fn union_select(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    scrut: &str,
+    members: &[GenType],
+    ty: &GenType,
+    d: usize,
+) -> String {
+    let mut order: Vec<&GenType> = members.iter().collect();
+    rng.shuffle(&mut order);
+    let last = order.len() - 1;
+    let open_last = rng.below(6) == 0;
+    let mut arms = Vec::new();
+    for (i, m) in order.into_iter().enumerate() {
+        let mut inner = ctx.clone();
+        let mark = inner.mark();
+        let bind = |inner: &mut GenCtx, rng: &mut Rng, t: &GenType| {
+            let n = bind_name(inner, rng, mark);
+            inner.push(n.clone(), t.clone());
+            n
+        };
+        let (pat, read) = match m {
+            _ if open_last && i == last => match rng.below(2) {
+                0 => ("_".to_string(), None),
+                _ => {
+                    let n = bind(&mut inner, rng, m);
+                    (n.clone(), Some(n))
+                }
+            },
+            GenType::Tuple(es) if rng.below(2) == 0 => {
+                let ns: Vec<String> =
+                    es.iter().map(|e| bind(&mut inner, rng, e)).collect();
+                (format!("{} as ({})", m.render(), ns.join(", ")), Some(ns[0].clone()))
+            }
+            GenType::Struct(fs) if rng.below(2) == 0 => {
+                let ps: Vec<(&String, String)> =
+                    fs.iter().map(|(f, t)| (f, bind(&mut inner, rng, t))).collect();
+                let text: Vec<String> =
+                    ps.iter().map(|(f, n)| format!("{f}: {n}")).collect();
+                (
+                    format!("{} as {{{}}}", m.render(), text.join(", ")),
+                    Some(ps[0].1.clone()),
+                )
+            }
+            _ => {
+                let n = bind(&mut inner, rng, m);
+                (format!("{} as {n}", m.render()), Some(n))
+            }
+        };
+        let body = match read {
+            Some(n) if *ty == I64 && rng.below(3) != 0 => {
+                format!("(str::len(\"[{n}]\") + i64:{})", 1000 * (i + 1))
+            }
+            _ => exprs::gen_typed(&inner, rng, ty, d),
+        };
+        arms.push(format!("{pat} => {body}"));
     }
     format!("select {scrut} {{ {} }}", arms.join(", "))
 }

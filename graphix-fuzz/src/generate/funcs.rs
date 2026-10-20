@@ -61,8 +61,8 @@ pub(super) fn gen_typed_lambda(
 ) -> Vec<String> {
     let nlabels = if chance(rng, cfg.p_labeled) { 1 + rng.below(3) } else { 0 };
     let arity = if nlabels > 0 { rng.below(3) } else { 1 + rng.below(3) };
-    let params: Vec<GenType> = (0..arity).map(|_| types::scalar_type(rng)).collect();
-    let ret = types::scalar_type(rng);
+    let params: Vec<GenType> = (0..arity).map(|_| signature_type(rng)).collect();
+    let ret = signature_type(rng);
     let names = param_names_excluding(ctx, rng, cfg, arity, &[]);
     let mut labeled: Vec<(Label, Option<String>)> = Vec::new();
     for name in param_names_excluding(ctx, rng, cfg, nlabels, &names) {
@@ -121,6 +121,72 @@ pub(super) fn gen_typed_lambda(
         stmts.push(format!("let {c}: {} = {name}({args})", ret.render()));
         ctx.push(c, ret);
     }
+    stmts
+}
+
+/// A typed lambda's positional parameter or return type: a scalar, now
+/// and then a union of runtime forms.
+fn signature_type(rng: &mut Rng) -> GenType {
+    match rng.below(16) {
+        0 => types::random_union(rng, 1),
+        _ => types::scalar_type(rng),
+    }
+}
+
+/// A union of runtime forms that flows: built at an annotated let, passed
+/// through a function that takes and returns it, stored in a struct, and
+/// read by a second function's type-test select. Both functions enter the
+/// callable vocabulary, so later calls pass and read unions too.
+pub(super) fn gen_union_flow(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+) -> Vec<String> {
+    stats.union_flow = true;
+    let u = types::random_union(rng, 1);
+    let GenType::Union(members) = &u else { unreachable!() };
+    let t = u.render();
+    let member = rng.pick(members);
+    let built = exprs::gen_typed(ctx, rng, member, 2);
+    let v = ctx.name_for_bind(rng, cfg);
+    let mut stmts = vec![format!("let {v}: {t} = {built}")];
+    ctx.push(v.clone(), u.clone());
+    let (f, p, k, g, q) =
+        (ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh());
+    let other = exprs::gen_typed(ctx, rng, &u, 1);
+    stmts.push(format!(
+        "let {f} = |{p}: {t}, {k}: i64| -> {t} select {k} {{ i64:0 => {other}, _ => {p} }}"
+    ));
+    let mut inner = ctx.clone();
+    inner.push(q.clone(), u.clone());
+    let read = super::patterns::union_select(&inner, rng, &q, members, &I64, 2);
+    stmts.push(format!("let {g} = |{q}: {t}| -> i64 {read}"));
+    let fn_ty = |params: Vec<GenType>, ret: GenType| GenType::Fn {
+        labels: Vec::new(),
+        params,
+        ret: Box::new(ret),
+    };
+    ctx.push(f.clone(), fn_ty(vec![u.clone(), I64], u.clone()));
+    ctx.push(g.clone(), fn_ty(vec![u.clone()], I64));
+    let n = exprs::gen_typed(ctx, rng, &I64, 1);
+    let (w, r) = (ctx.fresh(), ctx.fresh());
+    stmts.push(format!("let {w}: {t} = {f}({v}, {n})"));
+    let carried = match rng.below(2) {
+        0 => w.clone(),
+        _ => {
+            let s = ctx.fresh();
+            stmts.push(format!("let {s} = {{ n: {n}, x: {w} }}"));
+            ctx.push(
+                s.clone(),
+                GenType::Struct(vec![("n".into(), I64), ("x".into(), u.clone())]),
+            );
+            format!("{s}.x")
+        }
+    };
+    stmts.push(format!("let {r} = {g}({carried})"));
+    ctx.push(w, u);
+    ctx.push(r, I64);
     stmts
 }
 
@@ -609,9 +675,7 @@ const KIND_MEMBERS: [(&str, &str, &str); 9] = [
 /// a map's key.
 fn kind_union(ctx: &mut GenCtx, rng: &mut Rng, n: &str, s: &str) -> Vec<String> {
     let mut picked: Vec<usize> = (0..KIND_MEMBERS.len()).collect();
-    for i in (1..picked.len()).rev() {
-        picked.swap(i, rng.below(i + 1));
-    }
+    rng.shuffle(&mut picked);
     picked.truncate(2 + rng.below(KIND_MEMBERS.len() - 1));
     let member = |i: usize| KIND_MEMBERS[i];
     let value = |i: usize| member(i).1.replace("{n}", n).replace("{s}", s);
