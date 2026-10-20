@@ -461,10 +461,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
             _ => not_an_expression(spec, "a module definition"),
         },
         ExprKind::Use { .. } => not_an_expression(spec, "a use declaration"),
-        ExprKind::Connect { name, value, deref: true } => {
+        ExprKind::Connect { name, value, deref: true, .. } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }
-        ExprKind::Connect { name, value, deref: false } => {
+        ExprKind::Connect { name, value, deref: false, .. } => {
             Connect::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }
         ExprKind::Lambda(l) => {

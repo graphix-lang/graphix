@@ -1180,6 +1180,7 @@ fn retype(
         // a writer right after the let
         let write = ExprKind::Connect {
             name: ModPath::from([v.name.as_str()]),
+            at: WrittenAt::NOWHERE,
             value: Arc::new(u.clone()),
             deref: false,
         }

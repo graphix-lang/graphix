@@ -911,7 +911,7 @@ impl Machine<'_> {
                     }
                 }
             }
-            ExprKind::Connect { name, value, deref } => {
+            ExprKind::Connect { name, value, deref, .. } => {
                 let value = self.stmt_value(&decorated(value, &stmt.dec), visible)?;
                 let target = rewrite_target(name, *deref, visible);
                 let result = self.result;
@@ -1127,7 +1127,7 @@ impl Machine<'_> {
                     }
                     shadow_step(s, &mut vis);
                 }
-                ExprKind::Connect { name, value, deref } => {
+                ExprKind::Connect { name, value, deref, .. } => {
                     let value = self.stmt_value(&decorated(value, &s.dec), &vis)?;
                     body.push(let_bind(s.pos, &v, None, value));
                     body.push(connect_path(
@@ -1786,8 +1786,9 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             },
             _ => return e.clone(),
         },
-        ExprKind::Connect { name, value, deref } => ExprKind::Connect {
+        ExprKind::Connect { name, at, value, deref } => ExprKind::Connect {
             name: rewrite_target(name, *deref, map),
+            at: *at,
             value: Arc::new(rewrite(value, map)),
             deref: *deref,
         },
@@ -1990,7 +1991,8 @@ fn connect(pos: SourcePosition, name: &str, value: Expr) -> Expr {
 }
 
 fn connect_path(pos: SourcePosition, name: ModPath, deref: bool, value: Expr) -> Expr {
-    ExprKind::Connect { name, value: Arc::new(value), deref }.to_expr(pos)
+    ExprKind::Connect { name, at: WrittenAt::NOWHERE, value: Arc::new(value), deref }
+        .to_expr(pos)
 }
 
 fn r#ref(pos: SourcePosition, name: &str) -> Expr {

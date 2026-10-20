@@ -464,6 +464,22 @@ fn completion_offers_only_what_is_in_scope() {
     assert!(got.iter().any(|g| g == "r"), "{got:?}");
 }
 
+/// A write through a reference names the reference where its name is
+/// written, past the `*`.
+#[test]
+fn deref_connect_references_its_name() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "let cell = 0;\n\
+         let rr = &mut cell;\n\
+         *rr <- 5;\n\
+         cell\n",
+    )]);
+    c.open("main.gx");
+    let rr = vec![c.site("main.gx", "let |rr"), c.site("main.gx", "*|rr <-")];
+    assert_eq!(c.references("main.gx", "let |rr"), rr);
+}
+
 /// A block's locals stay in scope inside it though a `seq` follows later
 /// in the function: a seq's lowered expressions have no written end.
 #[test]

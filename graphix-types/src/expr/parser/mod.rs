@@ -3,6 +3,7 @@ use crate::{
         Attr, BindExpr, CatchExpr, CatchRole, Decorations, Doc, Expr, ExprKind, ModPath,
         Name, Origin, OriginScope, ParserContext, Pattern, SelectExpr, SeqExpr, SeqKind,
         SeqTrigger, Sig, SigItem, StrForm, StructExpr, StructWithExpr, TryWithExpr,
+        WrittenAt,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -810,12 +811,22 @@ where
     // arrow); modpath keeps fname's noting. Test: parser/test.rs
     // a_literal_word_is_noted_only_where_used_as_a_name ((1, false] has no note; false
     // <- 2 keeps it).
-    (position(), optional(token('*')), connect_target(), expr()).map(
-        |(pos, deref, name, e)| {
-            ExprKind::Connect { name, value: Arc::new(e), deref: deref.is_some() }
-                .to_expr(pos)
-        },
+    (
+        position(),
+        optional(token('*')),
+        spaces().with(position()),
+        connect_target(),
+        expr(),
     )
+        .map(|(pos, deref, at, name, e)| {
+            ExprKind::Connect {
+                name,
+                at: WrittenAt(at),
+                value: Arc::new(e),
+                deref: deref.is_some(),
+            }
+            .to_expr(pos)
+        })
 }
 
 /// A connect's target and its `<-`. Every expression is probed as a

@@ -960,6 +960,7 @@ fn pattern0() {
 fn connect() {
     let exp = ExprKind::Connect {
         name: ModPath::from(["m", "foo"]),
+        at: WrittenAt::NOWHERE,
         value: Arc::new(
             ExprKind::BinOp {
                 op: BinOp::Add,

@@ -2049,7 +2049,7 @@ impl PrettyDisplay for ExprKind {
                 })?;
                 writeln!(buf, "}}")
             }
-            Connect { name, value, deref } => {
+            Connect { name, value, deref, .. } => {
                 let deref = if *deref { "*" } else { "" };
                 write!(buf, "{deref}{name} <-")?;
                 pretty_tail(buf, value)
@@ -2639,7 +2639,7 @@ impl ExprKind {
             ExprKind::Constant(v) => write!(f, "{}", Literal(v)),
             ExprKind::Bind(b) => write!(f, "{b}"),
             ExprKind::StructWith(sw) => write!(f, "{sw}"),
-            ExprKind::Connect { name, value, deref } => {
+            ExprKind::Connect { name, value, deref, .. } => {
                 let deref = if *deref { "*" } else { "" };
                 write!(f, "{deref}{name} <- {value}")
             }

@@ -1153,7 +1153,13 @@ macro_rules! construct {
 macro_rules! connect {
     ($inner:expr) => {
         ($inner, any::<bool>(), modpath()).prop_map(|(e, deref, n)| {
-            ExprKind::Connect { name: n, value: Arc::new(e), deref }.to_expr_nopos()
+            ExprKind::Connect {
+                name: n,
+                at: WrittenAt::NOWHERE,
+                value: Arc::new(e),
+                deref,
+            }
+            .to_expr_nopos()
         })
     };
 }
@@ -2042,8 +2048,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 && (check(value0, value1))
         }
         (
-            ExprKind::Connect { name: name0, value: value0, deref: d0 },
-            ExprKind::Connect { name: name1, value: value1, deref: d1 },
+            ExprKind::Connect { name: name0, value: value0, deref: d0, .. },
+            ExprKind::Connect { name: name1, value: value1, deref: d1, .. },
         ) => (d0 == d1) && (name0 == name1) && (check(value0, value1)),
         (ExprKind::Qop { arg: e0, .. }, ExprKind::Qop { arg: e1, .. }) => check(e0, e1),
         (ExprKind::OrNever(e0), ExprKind::OrNever(e1)) => check(e0, e1),

@@ -669,6 +669,8 @@ pub enum ExprKind {
     },
     Connect {
         name: ModPath,
+        /// Where the target's name is written, past a `*`.
+        at: WrittenAt,
         value: Arc<Expr>,
         deref: bool,
     },
@@ -1491,8 +1493,8 @@ impl Expr {
             Not { expr } => Not { expr: a(f, expr) },
             Construct { name, arg } => Construct { name: name.clone(), arg: a(f, arg) },
             TypeCast { expr, typ } => TypeCast { expr: a(f, expr), typ: typ.clone() },
-            Connect { name, value, deref } => {
-                Connect { name: name.clone(), value: a(f, value), deref: *deref }
+            Connect { name, at, value, deref } => {
+                Connect { name: name.clone(), at: *at, value: a(f, value), deref: *deref }
             }
             StructRef { source, field } => {
                 StructRef { source: a(f, source), field: field.clone() }

@@ -939,7 +939,7 @@ impl Writes {
 
     fn expr(&mut self, e: &Expr) {
         crate::stack::ensure_sufficient(|| match &e.kind {
-            ExprKind::Connect { name, value, deref } => {
+            ExprKind::Connect { name, value, deref, .. } => {
                 if !deref {
                     self.target(name)
                 }
@@ -1708,6 +1708,14 @@ pub struct Connect<R: Rt, E: UserEvent> {
     pub(crate) id: BindId,
 }
 
+/// Where a connect's target name is written, past a `*`.
+fn target_pos(spec: &Expr) -> crate::SourcePosition {
+    match &spec.kind {
+        ExprKind::Connect { at, .. } => at.get().unwrap_or(spec.pos),
+        _ => spec.pos,
+    }
+}
+
 impl<R: Rt, E: UserEvent> Connect<R, E> {
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
@@ -1737,7 +1745,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         ctx.mark_connect_target(id);
         if ctx.env.ide.is_lsp() {
             ctx.env.push_reference(ReferenceSite {
-                pos: spec.pos,
+                pos: target_pos(&spec),
                 ori: spec.ori.clone(),
                 name: name.clone(),
                 bind_id: id,
@@ -1907,7 +1915,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 Some((_, b)) => b.id,
             };
         if ctx.env.ide.is_lsp() {
-            // CR claude for claude: [bug/low] `spec.pos` of a `*r <- v` is the `*`,
+            // XCR claude for claude: [bug/low] `spec.pos` of a `*r <- v` is the `*`,
             // because the parser's `connect` takes position() before the optional `*`
             // and spaces. So the reference for `*rr <- v` spans `*r`: references
             // highlight the wrong text, and hover or definition at the end of `rr`
@@ -1916,8 +1924,13 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             // Connect::compile. probe:
             // design/review-2026-10-19/repro/x-lsp-probe-deref-connect-site.py
             // (x-lsp-probe-03)
+            // 2026-10-19 claude: ExprKind::Connect carries `at`, the WrittenAt of the
+            // target's name past a `*` (filled by the parser, NOWHERE in lowerings; it
+            // packs to nothing, so no format change), and Connect/ConnectDeref push
+            // their reference site there (node::target_pos). Pin:
+            // graphix-shell/tests/lsp deref_connect_references_its_name.
             ctx.env.push_reference(ReferenceSite {
-                pos: spec.pos,
+                pos: target_pos(&spec),
                 ori: spec.ori.clone(),
                 name: name.clone(),
                 bind_id: src_id,
