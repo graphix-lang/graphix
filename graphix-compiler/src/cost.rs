@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
     sync::{
-        OnceLock,
+        LazyLock, OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -66,6 +66,10 @@ const T_BUCKET: u32 = 12;
 /// How many threshold multiples of a stolen job's start latency.
 const T_PER_WAKE: u64 = 4;
 
+/// The least threshold, in time: the counter's rate varies by three
+/// orders of magnitude between hosts.
+const T_FLOOR: Duration = Duration::from_micros(1);
+
 static CALIBRATION: OnceLock<Calibration> = OnceLock::new();
 
 /// The calibration, or `None` while it is being measured: until then
@@ -76,18 +80,14 @@ pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
-    // CR claude for claude: [perf/low] Until the calibration lands, every Auto plan at
-    // every fork site (each operator, call and constructor, each update) runs a getenv
-    // under std's environment lock, then a STARTED.swap that every pool worker also
-    // hits. A program's first cycle runs inside that window, and the window grows when
-    // the pool is busy. Read GRAPHIX_PAR_T once into a LazyLock, and load STARTED
-    // before swapping it (or use a Once), so the pending path is one atomic load. Found
-    // by reading; not run. (c-cost-misc-02)
-    if let Some(t) = std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok()) {
+    static FIXED: LazyLock<Option<u64>> = LazyLock::new(|| {
+        std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok())
+    });
+    if let Some(t) = *FIXED {
         fix_calibration(t);
         return CALIBRATION.get();
     }
-    if !STARTED.swap(true, Ordering::Relaxed) {
+    if !STARTED.load(Ordering::Relaxed) && !STARTED.swap(true, Ordering::Relaxed) {
         std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
             .spawn(|| {
@@ -131,6 +131,7 @@ pub fn fix_calibration(t: u64) {
 /// stolen.
 fn calibrate() -> Calibration {
     let pool = eval_pool();
+    let (tick0, start) = (ticks(), Instant::now());
     let mut wakes = [0u64; 9];
     for w in wakes.iter_mut() {
         // a wake measures an idle pool: a sample taken while a part ran
@@ -149,17 +150,30 @@ fn calibrate() -> Calibration {
     }
     wakes.sort_unstable();
     // contention only adds to a wake: the lower quartile is the pool's
-    // CR claude for claude: [risk/low] This floor is in raw ticks. On x86's GHz TSC it
+    // XCR claude for claude: [risk/low] This floor is in raw ticks. On x86's GHz TSC it
     // never binds, but CNTVCT_EL0 runs at 24 MHz on Apple M1-M3 (54 MHz on a Pi 5),
     // where 4096 ticks is 76-171 us. On those hosts Auto refuses any fork under about 2
     // x 171 us, well above 4 x the measured wake. Bucketing does not need the floor
     // (fix_calibration(1) runs with shift 0), so drop it, or floor T in time through
     // CNTFRQ_EL0. Found by reading; not run. (c-cost-misc-03)
-    let t = (wakes[wakes.len() / 4] * T_PER_WAKE).max(1 << T_BUCKET);
+    // 2026-10-20 claude: The floor is in time now: calibrate() measures the counter's
+    // rate over its own run (ticks per ns) and cost::threshold floors T at T_FLOOR (1
+    // us) of ticks, 24 ticks on a 24 MHz CNTVCT_EL0. On this x86 host (3.69 ticks/ns)
+    // the floor is 3687 ticks and T came out 209008, so it never binds here, as before.
+    // Not run on aarch64. Pin: cost::tests::threshold_floors_in_time.
+    let per_ns = ticks_since(tick0) as f64 / start.elapsed().as_nanos().max(1) as f64;
+    let t = threshold(wakes[wakes.len() / 4], per_ns);
     if crate::dbgenv::graphix_dbg_par() {
-        eprintln!("PAR calibrated: wakes {wakes:?} ticks, T = {t}");
+        eprintln!("PAR calibrated: wakes {wakes:?} ticks, {per_ns:.3} ticks/ns, T = {t}");
     }
     Calibration { t, shift: (63 - t.leading_zeros()).saturating_sub(T_BUCKET) }
+}
+
+/// The fork threshold for a pool that wakes in `wake` ticks, on a counter
+/// running at `per_ns` ticks a nanosecond.
+fn threshold(wake: u64, per_ns: f64) -> u64 {
+    let floor = (T_FLOOR.as_nanos() as f64 * per_ns) as u64;
+    (wake * T_PER_WAKE).max(floor).max(1)
 }
 
 impl Calibration {
@@ -1094,6 +1108,16 @@ mod tests {
             matches!(site.plan_with(&cal, 16), SlotPlan::Measure(_)),
             "a serial site that grew to pay for a fork probes again at once"
         );
+    }
+
+    #[test]
+    fn threshold_floors_in_time() {
+        // a 24 MHz counter (Apple's CNTVCT_EL0): a 10 us wake is 240 ticks
+        assert_eq!(threshold(240, 0.024), 960);
+        assert_eq!(threshold(1, 0.024), 24, "the floor is a microsecond");
+        // a 3 GHz TSC
+        assert_eq!(threshold(100, 3.0), 3000);
+        assert_eq!(threshold(30_000, 3.0), 120_000);
     }
 
     #[test]

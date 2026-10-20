@@ -498,9 +498,9 @@ impl<V: Clone> Layered<V> {
         self.get(id).is_some()
     }
 
-    /// Set `id`, returning what it held.
+    /// Set `id`, returning this layer's own entry for it.
     #[inline]
-    // CR claude for claude: [perf/low] On a miss in its own map a forked layer walks
+    // XCR claude for claude: [perf/low] On a miss in its own map a forked layer walks
     // the whole parent chain and clones the parent's value only to return it, and every
     // delivery a branch makes (deliver, publish, Bind::publish, publish_production)
     // discards that result. Only `put` needs a prior, and it already computes `own` and
@@ -508,12 +508,19 @@ impl<V: Clone> Layered<V> {
     // clearing the tombstone as now, and let `put` decide Inherited from its own
     // `inherited` plus `parent.contains_key`. Found by reading; not run.
     // (c-analysis-branch-05)
+    // 2026-10-20 claude: Layered::insert returns only the layer's own prior (clearing a
+    // tombstone as before); put decides Inherited from its own check plus
+    // parent.contains_key. Every other caller discarded the result. A forced rerun of
+    // the depth-4000 recursion (quick, --no-fusion, taskset 0-3) went 0.78-0.96 s ->
+    // 0.60-0.68 s, mixed with the fork-point change of the same branch. Pins: the wake
+    // catch-up deliveries restore through put/put_back (lang::select, lang::seq under
+    // GRAPHIX_PAR=force and the run! par modes).
     pub fn insert(&mut self, id: BindId, v: V) -> Option<V> {
-        match self.map.insert(id, v) {
-            Some(prev) => Some(prev),
-            None if self.parent.is_null() || self.removed.remove(&id) => None,
-            None => self.parent().and_then(|p| p.get(&id).cloned()),
+        let prev = self.map.insert(id, v);
+        if prev.is_none() && !self.parent.is_null() {
+            self.removed.remove(&id);
         }
+        prev
     }
 
     /// Set `id` if it holds nothing, else hand `v` back.
@@ -529,12 +536,13 @@ impl<V: Clone> Layered<V> {
     /// Set `id` for a while: what [`Self::put_back`] needs to leave the
     /// layer as it was.
     pub(crate) fn put(&mut self, id: BindId, v: V) -> Prior<V> {
-        let own = self.map.contains_key(&id);
-        let inherited = !own && !self.removed.contains(&id) && self.parent().is_some();
+        let inherited = !self.map.contains_key(&id)
+            && !self.removed.contains(&id)
+            && self.parent().is_some_and(|p| p.contains_key(&id));
         match self.insert(id, v) {
-            Some(prev) if own => Prior::Own(prev),
-            Some(_) if inherited => Prior::Inherited,
-            _ => Prior::Absent,
+            Some(prev) => Prior::Own(prev),
+            None if inherited => Prior::Inherited,
+            None => Prior::Absent,
         }
     }
 
@@ -1064,16 +1072,10 @@ pub(crate) fn compile_each<R, E, P, F>(
     P: Send,
     F: Fn(&mut CompileCtx<R, E>, P) + Sync,
 {
-    // CR claude for claude: [risk/low] `ctx.cx.fork()` goes through CxView's Deref, not
-    // ExecCtx's DerefMut, so the tasks inherit CompileCtx::boundary as it was last
-    // synced rather than the walk's current ExecCtx::boundary. A slot instance body
-    // built in a task then gets a Prune whose parent may be another statement's
-    // boundary, and marks from inside the slot miss the enclosing statement. Today the
-    // only caller is masked: take_source's Slot::new deref_muts (and so syncs) just
-    // before build_fresh. Fix: fork from the synced compile view (`let cx: &mut
-    // CompileCtx<R, E> = ctx; cx.fork()`). Found by reading; not run. (c-lib-02)
-    let mut tasks: Vec<(CompileCtx<R, E>, Option<P>)> =
-        parts.into_iter().map(|p| (ctx.cx.fork(), Some(p))).collect();
+    let mut tasks: Vec<(CompileCtx<R, E>, Option<P>)> = {
+        let cx: &mut CompileCtx<R, E> = ctx;
+        parts.into_iter().map(|p| (cx.fork(), Some(p))).collect()
+    };
     let control = ctx.control;
     control.build_forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
@@ -1114,7 +1116,7 @@ where
     let (ra, rb) = on_pool(control, || {
         rayon::join(
             || {
-                // CR claude for claude: [risk/low] The left side of the join skips
+                // XCR claude for claude: [risk/low] The left side of the join skips
                 // `live.cx.enter()`. When fork_join is entered from the runtime thread,
                 // on_pool installs this closure on a pool worker, which may be blocked
                 // inside another compile's join. The left branch's run-time binds then
@@ -1122,6 +1124,9 @@ where
                 // stolen-job leak the TaskContext rule closes for every other pool job.
                 // Run the left side through as_part as the right side does, or enter
                 // the context in on_pool. Found by reading; not run. (x-parallel-04)
+                // 2026-10-20 claude: Closed by entering the caller's TaskContext in
+                // on_pool (see c-analysis-branch-04): the left side runs inside install
+                // under it. No pin, as there.
                 let _part = live.part();
                 a(&mut shared.ctx(&mut left))
             },
@@ -1258,7 +1263,7 @@ impl Drop for Live {
 /// Run `f`, a fork's parallel part, on the evaluation pool: entered here
 /// from the runtime's own thread, so a cycle's serial work stays there,
 /// and joined in place by a fork already on the pool.
-// CR claude for claude: [risk/medium] `install` here enters the control and tokio but
+// XCR claude for claude: [risk/medium] `install` here enters the control and tokio but
 // not the caller's tvar::TaskContext, and fork_join's left closure relies on it: only
 // its right side goes through `as_part`. An installed job can be taken by a worker
 // blocked in another runtime's compile join (check_in_tasks, fuse_each), so a runtime
@@ -1268,15 +1273,23 @@ impl Drop for Live {
 // every other pool job. Fix: capture TaskContext::current() before `install` and enter
 // it inside, or run fork_join's left side through `as_part`. Found by reading; not run.
 // Also reported as (x-concurrency-02). (c-analysis-branch-04)
+// 2026-10-20 claude: on_pool now captures TaskContext::current() on the calling thread
+// and enters it inside install, so every job it installs (fork_join's left side,
+// fork_each, compile_each, a kernel's par_loop) runs under its caller's task and level
+// whichever worker takes it; as_part still enters the Live's context for the stolen
+// side. No pin: the leak needs a worker blocked in another runtime's compile join to
+// take the job, a race no test arranges. Also closes x-parallel-04.
 pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
     let pool = eval_pool();
     if pool.current_thread_index().is_some() {
         return f();
     }
     let tokio = tokio::runtime::Handle::try_current().ok();
+    let cx = TaskContext::current();
     pool.install(|| {
         with_control(control, || {
             let _tokio = tokio.as_ref().map(|h| h.enter());
+            let _cx = cx.enter();
             f()
         })
     })
