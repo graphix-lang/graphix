@@ -643,12 +643,6 @@ const HOLD_NO_TRIGGER: &str = r#"
 }
 "#;
 
-// The hold call node-walks; the scalar sub-regions around it fuse.
-// CR claude for claude: [readability/low] The comment above says scalar sub-regions
-// fuse, but this test asserts FuseExpect::None and graphix-fuzz run reports fused=0
-// (count has no fast-call entry; any depends on partial delivery). Delete the comment;
-// the copy above hold_multiple_values should name what actually fuses or go too. Found
-// by running graphix-fuzz run on the fixture. (tests-lib-a-03)
 run!(hold_no_trigger, HOLD_NO_TRIGGER, is(Value::I64(0)); FuseExpect::None);
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
@@ -660,7 +654,6 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 }
 "#;
 
-// The hold call node-walks; the scalar sub-regions around it fuse.
 run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, is(Value::I64(300)); FuseExpect::Jit);
 
 const NOW: &str = r#"sys::time::now(null)"#;

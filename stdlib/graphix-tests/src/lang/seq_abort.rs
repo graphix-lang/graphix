@@ -3,8 +3,7 @@
 
 use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, as_i64s};
-use graphix_package_core::testing::{TestCtx, config};
+use graphix_package_core::testing::{Mode, TestCtx, as_i64s, config};
 use tokio::sync::mpsc;
 
 const STEPS: &str = r#"

@@ -5,7 +5,7 @@ use graphix_compiler::{
     expr::{ModPath, parser::parse_one},
 };
 use graphix_package_core::testing::{Collect, Mode, TestCtx, collect, config};
-use netidx_value::{ValArray, Value};
+use netidx_value::Value;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -315,74 +315,84 @@ async fn bottom_scrutinee_consults_no_guard(mode: Mode) -> Result<()> {
 
 modes!(strict_bottom, strict_sample, bottom_scrutinee_consults_no_guard);
 
-/// rand::pick and rand::shuffle go bottom with their input: the tuple
-/// holding them gives its value once, before `x` goes, and never again.
-#[tokio::test(flavor = "multi_thread")]
-async fn rand_picks_go_bottom_with_their_input() -> Result<()> {
-    const CODE: &str = r#"{
+/// `x` and `xs` stand until 20ms and then go bottom; `y` turns 1 at 80ms.
+const GOES_AT_20MS: &str = r#"
   let t = 0;
   t <- sys::time::timer(duration:20.ms, false) ~ 1;
-  let x: Array<i64> = select t { 0 => [7], _ => never() };
+  let x = select t { 0 => 7, _ => never() };
+  let xs: Array<i64> = select t { 0 => [7], _ => never() };
   let y = 0;
   y <- sys::time::timer(duration:80.ms, false) ~ 1;
-  (y, rand::pick(x), rand::shuffle(x))
-}"#;
-    let want = Value::Array(ValArray::from_iter_exact(
-        [Value::I64(0), Value::I64(7), Value::Array(ValArray::from([Value::I64(7)]))]
-            .into_iter(),
-    ));
+"#;
+
+/// Every value `(y, expr)` delivers, in each mode, over [`GOES_AT_20MS`].
+async fn beside_y(expr: &str) -> Result<Vec<(Mode, Vec<Value>)>> {
+    let mut runs = tokio::task::JoinSet::new();
     for mode in Mode::ALL {
-        let quiet = Collect::Quiet(Duration::from_millis(300));
-        let got =
-            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
-                .await?;
-        assert_eq!(got, [want.clone()], "{mode:?}");
+        let code = format!("{{ {GOES_AT_20MS} (y, {expr}) }}");
+        runs.spawn(async move {
+            let quiet = Collect::Quiet(Duration::from_millis(300));
+            let got = collect(
+                &code,
+                crate::TEST_REGISTER,
+                mode,
+                quiet,
+                Duration::from_secs(10),
+            )
+            .await;
+            (mode, got)
+        });
+    }
+    let mut out = Vec::new();
+    while let Some(run) = runs.join_next().await {
+        let (mode, got) = run?;
+        out.push((mode, got.with_context(|| format!("{expr} in {mode:?}"))?));
+    }
+    Ok(out)
+}
+
+/// rand::pick and rand::shuffle go bottom with their input: beside `y`
+/// each gives its value once, before `x` goes, and never again.
+#[tokio::test(flavor = "multi_thread")]
+async fn rand_picks_go_bottom_with_their_input() -> Result<()> {
+    for (expr, want) in
+        [("rand::pick(xs)", "[i64:0, i64:7]"), ("rand::shuffle(xs)", "[i64:0, [i64:7]]")]
+    {
+        for (mode, got) in beside_y(expr).await? {
+            let got: Vec<String> = got.iter().map(|v| v.to_string()).collect();
+            assert_eq!(got, [want], "{expr} in {mode:?}");
+        }
     }
     Ok(())
 }
 
 /// The restart and iteration builtins go bottom with their input instead
-/// of re-delivering their last value: once `x` is gone the tuple holding
-/// them delivers nothing, so no value carries `y`'s later 1.
-// CR claude for claude: [test-gap/medium] This test, and
-// rand_picks_go_bottom_with_their_input above, cannot catch one builtin regressing. A
-// tuple is bottom when any element is, so as long as one of the eleven still goes
-// bottom with x, no tuple carries y = 1. Making count, or rand::pick, ride its last
-// value passes both tests. Run `(y, <builtin>)` for each builtin in its own collect and
-// assert each one. probe:
-// design/review-2026-10-19/repro/tests-lib-b1-bottom-tuple-vacuous.gx (tests-lib-b1-03)
+/// of re-delivering their last value: once `x` is gone each, beside `y`,
+/// delivers nothing, so no value carries `y`'s later 1.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_builtins_go_bottom_with_their_input() -> Result<()> {
-    const CODE: &str = r#"{
-  let t = 0;
-  t <- sys::time::timer(duration:20.ms, false) ~ 1;
-  let x = select t { 0 => 7, _ => never() };
-  let xs = select t { 0 => [7], _ => never() };
-  let y = 0;
-  y <- sys::time::timer(duration:80.ms, false) ~ 1;
-  (
-    y,
-    once(x),
-    count(x),
-    take(#n: 5, x),
-    skip(#n: 0, x),
-    queue(#clock: x, x),
-    throttle(x),
-    filter(x, |v| v > 0),
-    array::group(x, |n, _| n >= 1),
-    array::iter(xs),
-    array::iterq(#clock: x, xs)
-  )
-}"#;
-    for mode in Mode::ALL {
-        let quiet = Collect::Quiet(Duration::from_millis(300));
-        let got =
-            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
-                .await?;
-        assert!(!got.is_empty(), "{mode:?}: nothing before x went");
-        for v in &got {
-            let Value::Array(a) = v else { panic!("{mode:?}: {v}") };
-            assert_eq!(a[0], Value::I64(0), "{mode:?}: delivered after x went: {v}");
+    for expr in [
+        "once(x)",
+        "count(x)",
+        "take(#n: 5, x)",
+        "skip(#n: 0, x)",
+        "queue(#clock: x, x)",
+        "throttle(x)",
+        "filter(x, |v| v > 0)",
+        "array::group(x, |n, _| n >= 1)",
+        "array::iter(xs)",
+        "array::iterq(#clock: x, xs)",
+    ] {
+        for (mode, got) in beside_y(expr).await? {
+            assert!(!got.is_empty(), "{expr} in {mode:?}: nothing before x went");
+            for v in &got {
+                let Value::Array(a) = v else { panic!("{expr} in {mode:?}: {v}") };
+                assert_eq!(
+                    a[0],
+                    Value::I64(0),
+                    "{expr} in {mode:?}: delivered after x went: {v}"
+                );
+            }
         }
     }
     Ok(())

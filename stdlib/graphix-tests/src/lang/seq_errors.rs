@@ -1,6 +1,5 @@
-use super::dense_deltas::run_delta;
+use super::{dense_deltas::run_delta, refused_everywhere};
 use anyhow::Result;
-use graphix_package_core::testing::eval;
 use graphix_package_core::testing::{Mode, as_i64s};
 use netidx_value::{ValArray, Value};
 
@@ -496,6 +495,7 @@ async fn slept_catch_in_flight(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
 async fn seq_statement_refusals() -> Result<()> {
     for (src, needle) in [
         ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
@@ -505,19 +505,9 @@ async fn seq_statement_refusals() -> Result<()> {
         ("seq { { 1; catch(e) e } }", "catch is not allowed inside a seq"),
         ("seq { let x = { catch(e) null; 1 }; x }", "catch is not allowed inside a seq"),
     ] {
-        let r = eval(src, crate::TEST_REGISTER).await;
-        let msg = match &r {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-        };
-        assert!(msg.contains(needle), "wrong refusal for {src}: {msg}");
+        refused_everywhere(src, needle).await?;
     }
     Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn seq_statement_refusals_interp() -> Result<()> {
-    seq_statement_refusals().await
 }
 
 modes!(

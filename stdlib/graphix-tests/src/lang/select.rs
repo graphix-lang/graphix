@@ -1386,6 +1386,14 @@ run!(wake_spent_directly, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "b"), 
 // pinned: count 1, 2, 3 at the three entries. probe:
 // design/review-2026-10-19/repro/tests-select-reraise-last-awake-write.gx
 // (tests-select-04)
+// 2026-10-19 claude: Not changed: the strengthened pin fails today on the bug this CR
+// names, which is compiler wake semantics (Bind::reraise_writes_while_asleep, tracked
+// by (tests-select-01) in graphix-compiler/src/node/bind.rs), outside a test fix. Arm
+// body `{ let s = 10; s <- (x ~ s) + 1; (s, count(s)) }` over x = array::iter([1..6]),
+// m = x % 2 prints (10, 1) (0, 0) (11, 1) (0, 0) (12, 1) (0, 0) on both engines: count
+// stays 1 where the rule gives 1, 2, 3. Strengthen this pin to (s, count(s)) with
+// expected [(10,1),(0,0),(11,2),(0,0)] in the same change that fixes
+// (tests-select-01).
 const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);

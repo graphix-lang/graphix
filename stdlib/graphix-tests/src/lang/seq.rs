@@ -5,7 +5,7 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, as_i64s, eval, is, prints, refused},
+    testing::{FuseExpect, Mode, as_i64s, eval_modes, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -484,20 +484,12 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // A block issues its statements at entry, so two calls in one block are
-// in flight together; as separate steps the second starts only when the
-// first completes. 100 ms apart either way, so a stall cannot reorder them.
-// CR claude for claude: [test-gap/low] The fixture still orders "done" against "late"
-// by wall clock, and the comment above is false: a 200 ms stall of the runtime from 150
-// ms after init delivers both deadlines together, and the block case reports "late".
-// Assert an order a stall cannot invert. Take sys::time::now at a's and at b's arrival:
-// the gap is under 200 ms for the block (both calls start in one cycle) and at least
-// 200 ms for the separate steps (b starts when a completes). A stall can only shrink
-// the first. probe:
-// design/review-2026-10-19/repro/x-rerun-6-block-issues-together-stall.sh
-// (x-rerun-6-06)
+// in flight together and answer under 200 ms apart; as separate steps the
+// second starts only when the first answers, at least 200 ms later. A
+// stall of the runtime can only bring the answers closer.
 async fn block_issues_together(mode: Mode) -> Result<()> {
-    for (body, expected) in
-        [("{ a <- f(1); b <- f(2) }", "done"), ("a <- f(1); b <- f(2)", "late")]
+    for (body, together) in
+        [("{ a <- f(1); b <- f(2) }", true), ("a <- f(1); b <- f(2)", false)]
     {
         let code = format!(
             r#"{{
@@ -505,17 +497,13 @@ async fn block_issues_together(mode: Mode) -> Result<()> {
                 let a = never<i64>();
                 let b = never<i64>();
                 seq {{ {body} }};
-                let late = sys::time::timer(duration:300.ms, false);
-                let first = once(any(late ~ "late", (a + b) ~ "done"));
-                sys::time::after_idle(duration:100.ms, first)
+                let ta = sys::time::now(a);
+                let tb = sys::time::now(b);
+                tb ~ (sys::time::diff(tb, ta) < duration:200.ms)
             }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
-        assert_eq!(values.len(), 1, "{body}: {values:?}");
-        assert!(
-            matches!(&values[0], Value::String(s) if &**s == expected),
-            "{body}: {values:?}"
-        );
+        assert_eq!(values, [Value::Bool(together)], "{body}");
     }
     Ok(())
 }
@@ -689,19 +677,15 @@ async fn until_last_refused() -> Result<()> {
         "{ let go = true; seq go { let y = try { until go } with(e) { 1 }; y } }",
         "{ let go = true; seq go { let y = try { 1 } with(e) { until go }; y } }",
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-        };
-        assert!(msg.contains("until has no value"), "wrong refusal for {src}: {msg}");
+        super::refused_everywhere(src, "until has no value").await?;
     }
     // A bare try in the middle of a seq uses no value: until may end it.
-    let (v, _) = eval(
+    let v = eval_modes(
         "{ let go = true; seq go { try { until go } with(e) { 1 }; 5 } }",
         crate::TEST_REGISTER,
     )
     .await?;
-    assert_eq!(v, Value::I64(5));
+    assert_eq!(v, Ok(Value::I64(5)));
     Ok(())
 }
 

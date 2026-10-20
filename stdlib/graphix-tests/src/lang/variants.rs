@@ -1,6 +1,5 @@
 // Tests for variant types
 
-use anyhow::Result;
 use graphix_package_core::{
     run,
     testing::{FuseExpect, is, prints},

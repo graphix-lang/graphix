@@ -88,7 +88,7 @@ async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
     let r = gx.compile_ref(find_bind_id(&m.env, "test::h")?).await?;
     let lambda = r.last.clone().context("h has no value")?;
     for (call, wait) in [(false, true), (true, true), (true, false)] {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        gx.wait_idle().await?;
         let s0 = gx.env_stats().await?.store_len;
         for i in 0..20 {
             let c = gx.compile_callable(lambda.clone()).await?;
@@ -96,11 +96,11 @@ async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
                 c.call(ValArray::from_iter_exact([Value::I64(i)].into_iter())).await?;
             }
             if wait {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                gx.wait_idle().await?;
             }
             drop(c);
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        gx.wait_idle().await?;
         let s1 = gx.env_stats().await?.store_len;
         if s1 != s0 {
             bail!(
@@ -163,15 +163,15 @@ async fn a_mistyped_call_is_refused() -> Result<()> {
         }
         out
     };
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    gx.wait_idle().await?;
     outputs(&mut rx);
     let bad = ValArray::from_iter_exact([Value::String(literal!("no"))].into_iter());
     c.call_unchecked(bad.clone())?;
     gx.call(c.id(), bad)?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    gx.wait_idle().await?;
     assert_eq!(outputs(&mut rx), Vec::<Value>::new());
     c.call(ValArray::from_iter_exact([Value::I64(3)].into_iter())).await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    gx.wait_idle().await?;
     assert_eq!(outputs(&mut rx), [Value::I64(3)]);
     drop((c, r, m));
     ctx.shutdown().await;
@@ -187,7 +187,7 @@ async fn a_failed_input_changes_nothing() -> Result<()> {
     let ctx = runtime(tx).await?;
     let gx = ctx.rt.clone();
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    gx.wait_idle().await?;
     let s0 = gx.env_stats().await?.store_len;
     if gx.compile(literal!("let b = 5; let d = nosuch")).await.is_ok() {
         bail!("an undefined name compiled");
@@ -195,7 +195,7 @@ async fn a_failed_input_changes_nothing() -> Result<()> {
     if gx.compile(literal!("catch(e) e; let w = nosuch")).await.is_ok() {
         bail!("an undefined name compiled");
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    gx.wait_idle().await?;
     let s1 = gx.env_stats().await?.store_len;
     if s1 != s0 {
         bail!("failed inputs left {} store entries", s1 - s0);
@@ -213,14 +213,14 @@ async fn a_deleted_writer_leaves_no_store_entry() -> Result<()> {
     let ctx = runtime(tx).await?;
     let gx = ctx.rt.clone();
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    gx.wait_idle().await?;
     let s0 = gx.env_stats().await?.store_len;
     for _ in 0..5 {
         let e = gx.compile(literal!("{ let x = 0; x <- x + 1; x }")).await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
         drop(e);
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    gx.wait_idle().await?;
     let s1 = gx.env_stats().await?.store_len;
     if s1 != s0 {
         bail!("5 deleted writers left {} store entries", s1 - s0);
@@ -244,30 +244,18 @@ async fn set_many_lands_in_one_cycle() -> Result<()> {
     let sy = find_bind_id(&m.env, "test::sy")?;
     let w = gx.compile(literal!("(test::sx, test::sy)")).await?;
     let wid = w.exprs.last().context("no expr")?.id;
-    // CR claude for claude: [risk/low] This test and its siblings in the file wait for
-    // the runtime with fixed sleeps: 300 ms here, 100 ms before each store_len reading
-    // and before the mistyped-call checks. On a loaded box the initial (0, 0) update
-    // can land after this drain, and the assert then fails with the engine right. Every
-    // run also pays the full sleeps. Use `gx.wait_idle().await?` before each
-    // measurement, and end the read loop at wait_idle instead of a 3 s deadline. Found
-    // by reading; not run. (tests-lib-b2-07)
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    gx.wait_idle().await?;
     while rx.try_recv().is_ok() {}
     gx.set(sx, Value::I64(5))?;
     gx.set_many([(sx, Value::I64(1)), (sy, Value::I64(2))])?;
+    gx.wait_idle().await?;
     let mut seen = vec![];
-    let deadline = tokio::time::sleep(Duration::from_secs(3));
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            b = rx.recv() => match b {
-                None => break,
-                Some(mut b) => for e in b.drain(..) {
-                    if let GXEvent::Updated(id, v) = e && id == wid {
-                        seen.push(format!("{}", graphix_package_core::testing::data(v)));
-                    }
-                }
+    while let Ok(mut b) = rx.try_recv() {
+        for e in b.drain(..) {
+            if let GXEvent::Updated(id, v) = e
+                && id == wid
+            {
+                seen.push(format!("{}", graphix_package_core::testing::data(v)));
             }
         }
     }

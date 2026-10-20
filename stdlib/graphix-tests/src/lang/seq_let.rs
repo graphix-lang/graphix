@@ -1,14 +1,8 @@
 // `seq let pat = e { .. }`: the trigger's value named for the body.
 
+use super::{dense_deltas::run_delta, refused_everywhere};
 use anyhow::Result;
-// CR claude for claude: [style/low] Import grouping: this file writes
-// `super::dense_deltas::run_delta` and `graphix_package_core::testing::as_i64s` out in
-// full three times each, and imports Mode and eval on separate lines. Write `use
-// super::dense_deltas::run_delta; use graphix_package_core::testing::{Mode, as_i64s,
-// eval};`. seq_abort.rs, seq_errors.rs, seq_try.rs and seqq.rs split the same testing
-// import over two lines. Found by reading; not run. (tests-seq-06)
-use graphix_package_core::testing::Mode;
-use graphix_package_core::testing::eval;
+use graphix_package_core::testing::{Mode, as_i64s, eval_modes};
 use netidx::publisher::Value;
 
 const BIND_NAME: &str = r#"{
@@ -51,18 +45,13 @@ async fn seq_let_binds_the_trigger() -> Result<()> {
         (BIND_TUPLE_FROM_CALL, 41),
         (BIND_TYPED, 42),
     ] {
-        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
-        assert_eq!(v, Value::I64(expected), "{src}");
-        ctx.shutdown().await;
+        let v = eval_modes(src, crate::TEST_REGISTER).await?;
+        assert_eq!(v, Ok(Value::I64(expected)), "{src}");
     }
     for (src, refusal) in
         [(BIND_IS_SCOPED, "c not defined"), (BIND_REC_REFUSED, "cannot be rec")]
     {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-        };
-        assert!(msg.contains(refusal), "wrong refusal for {src}: {msg}");
+        refused_everywhere(src, refusal).await?;
     }
     Ok(())
 }
@@ -81,8 +70,8 @@ async fn destructured_snapshot(mode: Mode) -> Result<()> {
                 }}
             }}"#
         );
-        let (values, _) = super::dense_deltas::run_delta(&code, mode).await?;
-        assert_eq!(graphix_package_core::testing::as_i64s(&values), [0], "{trigger}");
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), [0], "{trigger}");
     }
     Ok(())
 }
@@ -102,19 +91,15 @@ async fn trigger_writes_reach_the_variable(mode: Mode) -> Result<()> {
                 select t {{ 0 => never(), n => n }}
             }}"#
         );
-        let (values, _) = super::dense_deltas::run_delta(&code, mode).await?;
-        assert_eq!(graphix_package_core::testing::as_i64s(&values), [10], "{body}");
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), [10], "{body}");
     }
     let code = r#"{
         let t = 0;
         seq t { t <- 10; sys::time::after_idle(duration:20.ms, 1); t + 1 }
     }"#;
-    let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(
-        graphix_package_core::testing::as_i64s(&values),
-        [1],
-        "the body reads the snapshot"
-    );
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [1], "the body reads the snapshot");
     Ok(())
 }
 

@@ -292,23 +292,6 @@ run!(map_union_second_wins, MAP_UNION_SECOND_WINS, |v: Result<&Value>| match v {
     _ => false,
 });
 
-// CR claude for claude: [structure/low] This fixture tests the same rule as
-// MAP_MAP_KEY_COLLISION above (map::map and filter_map keep the last colliding pair),
-// with an integer key instead of a string. It adds no case. Delete it and its run!.
-// Found by reading; not run. (tests-lib-b2-09)
-const MAP_MAP_LAST_KEY_WINS: &str = r#"
-{
-  let m = map::map({"a" => 1, "b" => 2}, |(k, v)| (1, k));
-  let f = map::filter_map({"a" => 1, "b" => 2}, |(k, v)| (1, k));
-  "[map::get(m, 1)$][map::get(f, 1)$]"
-}
-"#;
-
-run!(map_map_last_key_wins, MAP_MAP_LAST_KEY_WINS, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => s == "bb",
-    _ => false,
-});
-
 /// `map::iter` walks every pair of a map keyed by a user `Ord`, in that
 /// order.
 #[tokio::test(flavor = "multi_thread")]

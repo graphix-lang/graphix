@@ -1282,10 +1282,9 @@ const CAST_LIST_TO_ARRAY: &str = r#"{
 }"#;
 run!(cast_list_to_array, CAST_LIST_TO_ARRAY, prints("[i64:1, i64:2]"); FuseExpect::Jit);
 
-// Each refused program was accepted and went wrong at run time (a
-// value the type excludes, a function called on the wrong type, an
-// exhaustive select with no arm to take); each accepted twin shows
-// what the rule still admits.
+// Each refused program would run a value its type excludes, call a
+// function on the wrong type, or take no arm of an exhaustive select;
+// each accepted twin shows what the rule still admits.
 const NON_CONTRACTIVE: &str = r#"{
   type T = [i64, T];
   let v: T = "hello";
@@ -1443,16 +1442,8 @@ const NESTED_QUANTIFIER_SQUARE: &str = r#"{
   let apply = |f: F| f(3);
   apply(|x| x * x)
 }"#;
-// Through an alias of the quantified type, the same.
 /// A type test can't tell one function signature from another, inside
 /// a tuple too.
-// CR claude for claude: [readability/low] The line 'Through an alias of the quantified
-// type, the same.' above this doc comment belongs to NESTED_QUANTIFIER_ALIAS_MONO
-// further down; here it reads as if this fixture were an alias test. The headers above
-// NON_CONTRACTIVE ('Each refused program was accepted and went wrong ...') and
-// CONJUNCT_REACHES_OPEN_CELLS ('each rule below once admitted ...') narrate history.
-// Move the alias line and state the rules instead. Found by reading; not run.
-// (tests-types-07)
 const TYPE_TEST_HOLDING_A_FN: &str = r#"{
     let fs = |x: string| "[x]!";
     let u: [(fn(x: i64) -> i64, i64), (fn(x: string) -> string, i64)] = (fs, 1);
@@ -1506,6 +1497,7 @@ const NESTED_QUANTIFIER_ENV_CELL_NESTED: &str = r#"{
     a * 2
 }"#;
 
+// Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
   type G = F;
@@ -1969,7 +1961,7 @@ run!(singleton_merged_members_run, SINGLETON_MERGED_MEMBERS_RUN, |v: Result<&Val
     matches!(v, Ok(Value::I64(3)))
 });
 
-// Containment: each rule below once admitted an ill-typed program.
+// Containment: each rule below refuses an ill-typed program.
 
 /// A conjunct reaches the open cells of what its cell is bound to.
 const CONJUNCT_REACHES_OPEN_CELLS: &str = r#"
@@ -2143,46 +2135,6 @@ const DEEP_ABSTRACT_EQ: &str = r#"
 
 run!(deep_abstract_eq, DEEP_ABSTRACT_EQ, is(Value::Bool(true)); FuseExpect::Jit);
 
-/// Crafted bytes nesting a type's params past any sane depth are an
-/// error, not a stack overflow.
-// CR claude for claude: [test-gap/medium] This fixture cannot fail. GxAbstract::decode
-// refuses outside an image session before it reads the id, name or params, so the
-// 2^16-deep params never reach the nesting guard, and the target is i64 anyway. The
-// shallow input with no nested params gives the same ParseError. Removing the guard
-// from Type's or GxAbstract's decode leaves this green. Delete it, and if the guard
-// needs a pin, decode the crafted bytes under an image session in a graphix-types unit
-// test, the only path that reads abstract params. probe:
-// design/review-2026-10-19/repro/tests-types-crafted-abstract-vacuous.gx
-// (tests-types-05)
-const CRAFTED_ABSTRACT_PARAMS: &str = r#"
-{
-    type T = Abstract<i64>;
-    let t = T(1);
-    let s0 = "CAgI";
-    let s1 = "[s0][s0]";
-    let s2 = "[s1][s1]";
-    let s3 = "[s2][s2]";
-    let s4 = "[s3][s3]";
-    let s5 = "[s4][s4]";
-    let s6 = "[s5][s5]";
-    let s7 = "[s6][s6]";
-    let s8 = "[s7][s7]";
-    let s9 = "[s8][s8]";
-    let s10 = "[s9][s9]";
-    let s11 = "[s10][s10]";
-    let s12 = "[s11][s11]";
-    let s13 = "[s12][s12]";
-    let s14 = "[s13][s13]";
-    let s15 = "[s14][s14]";
-    let s16 = "[s15][s15]";
-    let input = "abstract:oIAMWgwxfpJLTmG4LW8TyaR9CAAAAAAAADA5AXgB[s16]ARA=";
-    let r: [i64, Error<`ParseError(string)>] = str::parse(t ~ input);
-    select r { error as _ => true, _ => false }
-}
-"#;
-
-run!(crafted_abstract_params, CRAFTED_ABSTRACT_PARAMS, is(Value::Bool(true)); FuseExpect::Jit);
-
 /// A forward-referenced alias cycle is refused once its names exist.
 const FORWARD_ALIAS_CYCLE: &str = r#"
 {
@@ -2248,7 +2200,7 @@ const SAME_NAME_OTHER_DEFINITION: &str = r#"
 }
 "#;
 
-run!(same_name_other_definition, SAME_NAME_OTHER_DEFINITION, refused("does not contain"); FuseExpect::None);
+run!(same_name_other_definition, SAME_NAME_OTHER_DEFINITION, refused("the two P are different definitions"); FuseExpect::None);
 
 /// An undefined type is reported where it is written.
 const UNDEFINED_TYPE_SITED: &str = r#"{
@@ -2320,28 +2272,6 @@ const HOLE_IN_A_FN_QUANTIFIER: &str = r#"
 "#;
 
 run!(hole_in_a_fn_quantifier, HOLE_IN_A_FN_QUANTIFIER, refused("'_ is the hole"); FuseExpect::None);
-
-/// An inline literal passed to a union formal is checked before a member
-/// is chosen for it.
-// CR claude for claude: [structure/low] This program is the `f(["a"])` term of
-// literal_into_a_union_formal below, over the same formal type. Likewise
-// SAME_NAME_OTHER_DEFINITION (refused 'does not contain') is covered by
-// same_name_definitions_are_told_apart, which pins the full 'different definitions'
-// message. Each run! costs four modes. Delete the weaker copies, or fold
-// SAME_NAME_OTHER_DEFINITION's parameter swap into the message test. Found by reading;
-// not run. (tests-types-08)
-const UNION_FORMAL_INLINE_LITERAL: &str = r#"
-{
-    let g = |x: [Array<f64>, Array<string>]| 7;
-    g(["a"])
-}
-"#;
-
-run!(
-    union_formal_inline_literal,
-    UNION_FORMAL_INLINE_LITERAL,
-    is(Value::I64(7)); FuseExpect::Jit
-);
 
 /// A declared variable may be anything, so `_` cannot hold it.
 const BOTTOM_REFUSES_A_DECLARED_VARIABLE: &str = r#"
@@ -2680,12 +2610,8 @@ run!(abstract_payload_prints_typed, ABSTRACT_PAYLOAD_PRINTS_TYPED, |v: Result<&V
     matches!(v, Ok(Value::String(s)) if s == "P({x: 1, y: 2}) V(`A(3)) L([<1, 2>])")
 }; FuseExpect::Jit);
 
-/// A bare variant is a string at run time: `array` does not cover it.
-// CR claude for claude: [doc-drift/low] The doc comment above says a bare variant is a
-// string at run time. Under the kind markers (rep.rs) it is an array whose element 0 is
-// the Variant marker; only data writes it as its tag. The test holds because the
-// primitive `array` holds unmarked arrays only. Reword the comment to give that reason.
-// Found by reading; not run. (tests-types-06)
+/// A bare variant is a marked array at run time, and the primitive
+/// `array` holds unmarked arrays only: it does not cover the variant.
 const ARRAY_DOES_NOT_COVER_A_BARE_VARIANT: &str = r#"
 {
     let f = |x: [`Foo, i64, Array<i64>]| select x { array as _ => 1, i64 as _ => 2 };

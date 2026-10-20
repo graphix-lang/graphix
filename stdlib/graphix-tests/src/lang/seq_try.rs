@@ -1,10 +1,9 @@
 //! `try … with`: an error-triggered branch inside a seq. The outer
 //! `catch` around each program is what an aborted run's rethrow reaches.
 
-use super::dense_deltas::run_delta;
+use super::{dense_deltas::run_delta, refused_everywhere};
 use anyhow::Result;
-use graphix_package_core::testing::eval;
-use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::testing::{Mode, as_i64s, eval};
 use netidx_value::Value;
 
 const CLOCK: &str = r#"
@@ -237,6 +236,7 @@ async fn seqq_credit(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
 async fn refusals() -> Result<()> {
     for (src, needle) in [
         (
@@ -252,8 +252,6 @@ async fn refusals() -> Result<()> {
             "until is a seq statement; write it at the seq level",
         ),
         ("{ until true; 1 }", "`until` is only legal in a seq block"),
-        ("seq { { catch(e) e; 1 } }", "catch is not allowed inside a seq"),
-        ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
         (
             "{ let bad = |v| -> [i64, Error<`Oops>] error(`Oops); seq { { catch(e) println(e); bad(1)? } } }",
             "catch is not allowed inside a seq",
@@ -271,19 +269,9 @@ async fn refusals() -> Result<()> {
             "Error<`Wrong> does not contain",
         ),
     ] {
-        let r = eval(src, crate::TEST_REGISTER).await;
-        let msg = match &r {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-        };
-        assert!(msg.contains(needle), "wrong refusal for {src}: {msg}");
+        refused_everywhere(src, needle).await?;
     }
     Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn refusals_interp() -> Result<()> {
-    refusals().await
 }
 
 // A lambda literal is its own dynamic scope: a catch inside it is

@@ -890,12 +890,12 @@ run!(
             let read = |s, n| {
                 let cell = s.0;
                 let b = *cell;
-                let take = select buffer::len(b) < n {
+                let take = (s, n) ~ select buffer::len(b) < n {
                     true => buffer::len(b),
                     false => n
                 };
                 *cell <- take ~ b[take..]$;
-                b[..take]$
+                take ~ b[..take]$
             }
         };
         let src = buffer::from_string("hello world");
@@ -906,15 +906,6 @@ run!(
 
 // The other derived method, on the same Graphix-defined stream:
 // `read_exact` loops over `read` until it has n bytes.
-// CR claude for claude: [test-gap/low] This pin and graphix_defined_read above it use a
-// `Mem` reader that is a self-loop. `*cell <- take ~ b[take..]$` fires its own reader,
-// so the stream gives out a byte every cycle whether or not `read` was called, then
-// spins on the empty buffer. A read_exact that never re-issues `read` (its `want <-`
-// deleted) still yields "hello" first here, so the pin cannot catch a broken re-arm.
-// Sample the request instead: `let take = (s, n) ~ select ..; *cell <- take ~ ..; take
-// ~ b[..take]$`. Then add a pin that calls read_exact several times on one stream.
-// probe: design/review-2026-10-19/repro/gx-stdlib-read-fixture-selfloop.gx
-// (gx-stdlib-06)
 run!(
     graphix_defined_read_exact,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
@@ -926,17 +917,47 @@ run!(
             let read = |s, n| {
                 let cell = s.0;
                 let b = *cell;
-                let take = select buffer::len(b) == u64:0 {
+                let take = (s, n) ~ select buffer::len(b) == u64:0 {
                     true => u64:0,
                     false => u64:1
                 };
                 *cell <- take ~ b[take..]$;
-                b[..take]$
+                take ~ b[..take]$
             }
         };
         let src = buffer::from_string("hello world");
         let m = Mem(&mut src);
         let result = buffer::to_string(Read::read_exact(m, u64:5)?)?
+    "#
+);
+
+// Each read_exact on one stream takes its bytes where the last left off.
+run!(
+    graphix_defined_read_exact_twice,
+    prints(r#"["hello", " world"]"#),
+    "/test.gx" => r#"
+        use sys::io::Read;
+        type Mem = Abstract<&mut bytes>;
+        // reads one byte at a time, so read_exact has to loop
+        impl Read for Mem {
+            let read = |s, n| {
+                let cell = s.0;
+                let b = *cell;
+                let take = (s, n) ~ select buffer::len(b) == u64:0 {
+                    true => u64:0,
+                    false => u64:1
+                };
+                *cell <- take ~ b[take..]$;
+                take ~ b[..take]$
+            }
+        };
+        let src = buffer::from_string("hello world");
+        let m = Mem(&mut src);
+        let result = seq {
+            let a = Read::read_exact(m, u64:5)$;
+            let b = Read::read_exact(m, u64:6)$;
+            (buffer::to_string(a)$, buffer::to_string(b)$)
+        }
     "#
 );
 
@@ -1678,27 +1699,23 @@ async fn implementations_are_declared_ones() {
 
 // A trait call whose self argument is never produced dispatches nothing:
 // it is bottom, its other arguments still live, and the program builds.
-// CR claude for claude: [test-gap/medium] trait_call_over_bottom_self cannot fail. run!
-// asserts the first update, and `seen <- never_sized ~ true` lands a cycle later, so
-// the first value is (2, false) even when never_sized produces: with `csize(["x"])` in
-// place of `csize(never())` the program prints (2, false) then (2, true), and this
-// predicate still passes. Read the result after the write could land (gate it on
-// `count(sys::time::timer(..)) == 3`, as core_display_nested_same_tag does) or collect
-// every update with run_delta and assert [(2, false)]. probe:
-// design/review-2026-10-19/repro/tests-fusion-traits-bottom-self-pin-vacuous.gx
-// (tests-fusion-traits-06)
-run!(
-    trait_call_over_bottom_self,
-    r#"{
-    let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
-    let never_sized = csize(never());
-    let sized = csize(["a", "b"]);
-    let seen = false;
-    seen <- never_sized ~ true;
-    (sized, seen)
-}"#,
-    prints("[i64:2, false]")
-);
+async fn trait_call_over_bottom_self(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
+        let never_sized = csize(never());
+        let sized = csize(["a", "b"]);
+        let seen = false;
+        seen <- never_sized ~ true;
+        (sized, seen)
+    }"#;
+    let (values, _) =
+        super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit).await?;
+    let printed: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(printed, ["[i64:2, false]"]);
+    Ok(())
+}
+
+modes!(trait_call_over_bottom_self);
 
 // The self argument written later dispatches when it arrives.
 run!(
