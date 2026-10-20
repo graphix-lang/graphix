@@ -6,8 +6,8 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair,
-        TVar, TraitId, Type, node_addr, params_size, probe_key,
+        AbstractId, AndAc, CoreTrait, Indiscernible, Lazy, Mutability, NormKey, Open,
+        RefHist, RefPair, TVar, TraitId, Type, node_addr, params_size, probe_key,
         setops::union_identical,
         tvar::{CellFact, Fresh, would_cycle_inner},
     },
@@ -539,12 +539,14 @@ fn same_head(c: &Type, t: &Type) -> bool {
 /// the cell's constraints. A pure probe.
 fn cell_constraints_ok(
     tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
     env: &Env,
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
+    let probe = guide(flags);
     for c in tv.cell_constraints().iter() {
-        // CR claude for claude: [bug/medium] The conjunct probe ignores the decision's
+        // XCR claude for claude: [bug/medium] The conjunct probe ignores the decision's
         // flags, so a declared (rigid) variable in the type being bound is treated as
         // open. For a predicate, trait or non-exact conjunct this probe is the whole
         // check: commit_cell_constraints skips traits and commit_parts leaves
@@ -556,7 +558,11 @@ fn cell_constraints_ok(
         // guide(flags) at every caller. probe:
         // design/review-2026-10-19/repro/t-contains-conjunct-rigid.gx and
         // t-contains-conjunct-rigid-trait.gx (t-contains-02)
-        if !c.contains_int(BitFlags::empty(), env, hist, t)? {
+        // 2026-10-19 claude: cell_constraints_ok takes the decision's flags and probes
+        // each conjunct with guide(flags) at every caller. Pins:
+        // lang::types::unsound_acceptances_are_refused (CONJUNCT_RIGID,
+        // CONJUNCT_RIGID_TRAIT).
+        if !c.contains_int(probe, env, hist, t)? {
             return Ok(false);
         }
     }
@@ -1070,22 +1076,21 @@ impl Type {
                     ),
                 });
             }
-            if let Some((a, b)) = Self::dispatch_collision(env, &members) {
+            if let Some(why) = Self::dispatch_collision(env, &members) {
                 let open =
                     |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
-                if open(&a) || open(&b) {
-                    let known = if open(&a) { &b } else { &a };
+                if let Indiscernible::Pair(a, b) = &why
+                    && (open(a) || open(b))
+                {
+                    let known = if open(a) { b } else { a };
                     return Some(anyhow::anyhow!(
                         "a {} call over {t} tests each member, but a type variable in it \
                          isn't known here and may share {known}'s runtime form: annotate it",
                         def.name
                     ));
                 }
-                return Some(anyhow::anyhow!(
-                    "a {} call over {t} can't tell {a} from {b}: both have the same \
-                     runtime form; wrap them in distinct variants",
-                    def.name
-                ));
+                let what = format_compact!("a {} call over {t}", def.name);
+                return Some(why.untold(&what, t, t));
             }
         }
         None
@@ -1114,7 +1119,7 @@ impl Type {
     }
 
     /// Two members a dispatch's runtime test can't tell apart.
-    fn dispatch_collision(env: &Env, members: &[Type]) -> Option<(Type, Type)> {
+    fn dispatch_collision(env: &Env, members: &[Type]) -> Option<Indiscernible> {
         members.iter().enumerate().find_map(|(i, a)| {
             members[i + 1..].iter().find_map(|b| a.rep_collision_open(env, b))
         })
@@ -1351,7 +1356,7 @@ impl Type {
                             _ => unreachable!("a definition key is a reference's"),
                         };
                         if !commit {
-                            // CR claude for claude: [bug/low] grew stays set for the
+                            // XCR claude for claude: [bug/low] grew stays set for the
                             // rest of the walk, and check_contains turns any later
                             // refusal into growth_error. `let y: N<f64> = x` with x:
                             // N<i64>, where `type N<'a> = [null, ('a, N<Array<'a>>)]`,
@@ -1365,6 +1370,13 @@ impl Type {
                             // the walk overrides. probe:
                             // design/review-2026-10-19/repro/t-contains-sticky-growth.gx
                             // (t-contains-05)
+                            // 2026-10-19 claude: The law needs two candidates (one only
+                            // repeats set_commit's direct containment), so the repro's
+                            // probe never grows. The second half (restoring grew after
+                            // an overridden guiding probe) is not done; nothing found
+                            // reaches it once the single-candidate case is gone. Pin:
+                            // lang::types::unsound_acceptances_are_refused
+                            // (GROWING_MISMATCH refused as a mismatch).
                             hist.grew = Some(name);
                             return Ok(false);
                         }
@@ -1429,7 +1441,7 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return Ok(false);
                 }
-                if !cell_constraints_ok(t0, env, hist, &Self::Any)? {
+                if !cell_constraints_ok(t0, flags, env, hist, &Self::Any)? {
                     return Ok(false);
                 }
                 // A rigid cell is never written outside the acceptance
@@ -1564,7 +1576,7 @@ impl Type {
                 }
                 // A constraint violation fails here, at the site that
                 // tried it.
-                if !cell_constraints_ok(t0, env, hist, t1)? {
+                if !cell_constraints_ok(t0, flags, env, hist, t1)? {
                     return Ok(false);
                 }
                 if commit && !t0.is_rigid() {
@@ -1609,13 +1621,13 @@ impl Type {
                     }
                     return Ok(false);
                 }
-                if !cell_constraints_ok(t1, env, hist, t0)? {
+                if !cell_constraints_ok(t1, flags, env, hist, t0)? {
                     // a `NoError` cell below a union holding errors takes
                     // the union without them: `Primitive ⊇ 'r` gives `'r`
                     // every primitive but `error`
                     if t1.cell_constraints().contains(&Self::NoError)
                         && let Some(w) = t0.without_errors(env)?
-                        && cell_constraints_ok(t1, env, hist, &w)?
+                        && cell_constraints_ok(t1, flags, env, hist, &w)?
                     {
                         if commit && !t1.is_rigid() {
                             t1.bind(w);
@@ -1930,7 +1942,7 @@ impl Type {
                 }
                 // a probe answers as the commit would: the cell's own
                 // conjuncts must admit the binding
-                if !cell_constraints_ok(t0, env, hist, &b1)? {
+                if !cell_constraints_ok(t0, flags, env, hist, &b1)? {
                     return Ok(false);
                 }
                 if commit && !t0.is_rigid() {
@@ -1958,7 +1970,7 @@ impl Type {
                 if (rigid || commit) && t1.is_rigid() {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
-                if !cell_constraints_ok(t1, env, hist, &b0)? {
+                if !cell_constraints_ok(t1, flags, env, hist, &b0)? {
                     return Ok(false);
                 }
                 if commit && !t1.is_rigid() {
@@ -2045,7 +2057,7 @@ impl Type {
         for m in members {
             if m.contains_int(probe, env, hist, t)? {
                 admitted = true;
-                // CR claude for claude: [perf/medium] Under flags == RigidCheck,
+                // XCR claude for claude: [perf/medium] Under flags == RigidCheck,
                 // guide(flags) is flags, so this repeats the probe it just ran. A Ref
                 // or TVar pair has no probe memo, so every level of nested union
                 // typedefs doubles. Checking `'a: Any |v: 'a| -> T20<'a> v` over a
@@ -2055,7 +2067,13 @@ impl Type {
                 // `flags.is_empty()` return. probe:
                 // design/review-2026-10-19/repro/t-contains-rigid-union-chain.gx
                 // (t-contains-04)
-                if flags.is_empty() || m.contains_int(flags, env, hist, t)? {
+                // 2026-10-19 claude: set_commit, place_members' covering loop and the
+                // law's early return test !Commit, so a RigidCheck probe is no longer
+                // run twice. The repro's 20-deep chain checks in 0.08 s (debug)
+                // against 2.6 s. No timing pin.
+                if !flags.contains(ContainsFlags::Commit)
+                    || m.contains_int(flags, env, hist, t)?
+                {
                     return Ok(Some(true));
                 }
             }
@@ -2125,7 +2143,7 @@ impl Type {
             Type::Variant(_, args, _) => targs.extend(args.iter().cloned()),
             Type::Tuple(args) => targs.extend(args.iter().cloned()),
             Type::Struct(flds) => targs.extend(flds.iter().map(|(_, t, _)| t.clone())),
-            // CR claude for claude: [bug/medium] Error is a one-argument product head,
+            // XCR claude for claude: [bug/medium] Error is a one-argument product head,
             // but it is missing here and from the candidate match below. So
             // `[Error<i64>, Error<string>] ⊇ Error<[i64, string]>` is refused, while
             // the variant form `[`A(i64), `A(string)] ⊇ `A([i64, string])` passes.
@@ -2136,6 +2154,11 @@ impl Type {
             // probe:
             // design/review-2026-10-19/repro/c-data-map-error-union-distribution.gx
             // (c-data-map-03)
+            // 2026-10-19 claude: Error joins the distribution law as a one-position
+            // head, in the scrutinee match and the candidate match. Pin:
+            // lang::types::unsound_acceptances_are_refused's accepted list
+            // (ERROR_UNION_DISTRIBUTES).
+            Type::Error(arg) => targs.push((**arg).clone()),
             _ => return Ok(false),
         }
         let mut cands: LPooled<Vec<LPooled<Vec<Type>>>> = LPooled::take();
@@ -2149,6 +2172,11 @@ impl Type {
                 }
                 (Type::Tuple(ta), Type::Tuple(ma)) if ta.len() == ma.len() => {
                     Some(ma.iter().cloned().collect())
+                }
+                (Type::Error(_), Type::Error(ma)) => {
+                    let mut args: LPooled<Vec<Type>> = LPooled::take();
+                    args.push((**ma).clone());
+                    Some(args)
                 }
                 (Type::Struct(tf), Type::Struct(mf))
                     if tf.len() == mf.len()
@@ -2168,7 +2196,7 @@ impl Type {
                 cands.push(args);
             }
         }
-        if cands.is_empty() {
+        if cands.len() < 2 {
             return Ok(false);
         }
         let probe = BitFlags::from(ContainsFlags::RigidCheck);
@@ -2203,7 +2231,7 @@ impl Type {
         {
             return Ok(false);
         }
-        if flags.is_empty() {
+        if !flags.contains(ContainsFlags::Commit) {
             return Ok(true);
         }
         // With no distributing position the first candidate covers `t`.
@@ -2257,7 +2285,7 @@ impl Type {
             for m in members.iter() {
                 let mut picked: SmallVec<[usize; 8]> = SmallVec::new();
                 for (i, c) in cands.iter().enumerate() {
-                    // CR claude for claude: [bug/high] This probe runs with empty
+                    // XCR claude for claude: [bug/high] This probe runs with empty
                     // flags, so a declared (rigid) variable in a candidate admits
                     // anything. The has_free guard in set_covers_by_distribution_inner
                     // lets such candidates through, and this verdict is final. Inside
@@ -2269,7 +2297,16 @@ impl Type {
                     // test does. probe:
                     // design/review-2026-10-19/repro/t-contains-distribution-rigid.gx
                     // (t-contains-01)
-                    if c[0].contains_int(BitFlags::empty(), env, hist, m)? {
+                    // 2026-10-19 claude: covers_by_parts probes each candidate's first
+                    // position with RigidCheck. Pin:
+                    // lang::types::unsound_acceptances_are_refused
+                    // (DISTRIBUTION_SPLIT_RIGID).
+                    if c[0].contains_int(
+                        ContainsFlags::RigidCheck.into(),
+                        env,
+                        hist,
+                        m,
+                    )? {
                         picked.push(i)
                     }
                 }
@@ -2336,7 +2373,7 @@ impl Type {
             let mut covered = false;
             for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
                 if c.contains_int(probe, env, hist, m)? {
-                    if !c.contains_int(flags, env, hist, m)? {
+                    if commit && !c.contains_int(flags, env, hist, m)? {
                         return Ok(false);
                     }
                     covered = true;
@@ -2459,7 +2496,7 @@ impl Type {
             && !cv.is_bound()
             && !cv.is_rigid()
         {
-            if !cell_constraints_ok(cv, env, hist, ctor)? {
+            if !cell_constraints_ok(cv, flags, env, hist, ctor)? {
                 return Ok(false);
             }
             if flags.contains(ContainsFlags::Commit) {

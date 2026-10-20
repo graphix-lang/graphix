@@ -34,6 +34,7 @@ netidx-derive = { workspace = true }
 netidx-value = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }
+rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true }
@@ -45,7 +46,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-rust_decimal = { workspace = true }
 tempfile = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-graphix = { workspace = true }

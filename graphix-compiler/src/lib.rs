@@ -2398,23 +2398,20 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
-    let Some((a, b)) = test.rep_collision_open(env, rest) else { return Ok(()) };
+    let Some(why) = test.rep_collision_open(env, rest) else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     format_with_flags(PrintFlag::DerefTVars, || {
-        let (test, rest) = (test.resolve_tvars(), rest.resolve_tvars());
-        if open(&a) || open(&b) {
-            let known = if open(&a) { b.resolve_tvars() } else { a.resolve_tvars() };
+        if let Indiscernible::Pair(a, b) = &why
+            && (open(a) || open(b))
+        {
+            let (test, rest) = (test.resolve_tvars(), rest.resolve_tvars());
+            let known = if open(a) { b.resolve_tvars() } else { a.resolve_tvars() };
             bail!(
                 "this pattern tests for {test} among {rest}, but a type variable there \
                  isn't known here and may share {known}'s runtime form: annotate it"
             )
         }
-        bail!(
-            "this pattern can't tell {} from {}: both have the same runtime form; wrap \
-             them in distinct variants",
-            a.resolve_tvars(),
-            b.resolve_tvars()
-        )
+        Err(why.untold("this pattern", test, rest))
     })
 }
 

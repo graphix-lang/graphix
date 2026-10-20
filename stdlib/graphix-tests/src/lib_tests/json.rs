@@ -14,6 +14,14 @@ run!(json_f64, r#"{let v: f64 = json::read(json::write_str(3.14)$)?; v}"#, |v: R
     matches!(v, Ok(Value::F64(f)) if *f == 3.14)
 }; FuseExpect::None);
 
+run!(json_decimal_round_trip, r#"{
+    let v: (decimal, decimal) = json::read(json::write_str((decimal:1.23456789012345678901234567, decimal:12345678901234567890.5))$)?;
+    v
+}"#, |v: Result<&Value>| {
+    format!("{}", v.unwrap())
+        == "[decimal:1.23456789012345678901234567, decimal:12345678901234567890.5]"
+}; FuseExpect::None);
+
 run!(json_bool, r#"{let v: bool = json::read(json::write_str(true)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::None);

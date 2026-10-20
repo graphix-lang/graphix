@@ -3,7 +3,7 @@ use crate::{
     abstract_value::{self, CastHook},
     env::Env,
     errf,
-    expr::{ModPath, WrittenAt},
+    expr::ModPath,
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
@@ -20,8 +20,9 @@ use enumflags2::{BitFlags, bitflags, make_bitflags};
 use immutable_chunkmap::map::Map;
 use netidx_value::{NakedValue, Typ, ValArray, Value};
 use poolshark::local::LPooled;
+use rust_decimal::Decimal;
 use smallvec::SmallVec;
-use std::{borrow::Cow, fmt, mem, ops::ControlFlow};
+use std::{borrow::Cow, fmt, mem, ops::ControlFlow, str::FromStr};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -282,7 +283,7 @@ impl Type {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
-            // CR claude for claude: [bug/medium] An abstract target passes the check
+            // XCR claude for claude: [bug/medium] An abstract target passes the check
             // whatever its params hold. With `type Box<'a> = Abstract<'a>; impl<'a>
             // Cast for Box<'a> {}`, cast<Box<fn(x: string) -> string>> is accepted,
             // though cast<fn(..)> is refused. The Representation path then wraps any
@@ -292,7 +293,15 @@ impl Type {
             // does), and make the cast_inner Type::Fn arm an InvalidCast. probe:
             // design/review-2026-10-19/repro/t-cast-setops-abstract-fn-param-cast.gx
             // (t-cast-setops-06)
-            Type::Abstract { .. } => Ok(()),
+            // 2026-10-19 claude: check_cast_inner checks an abstract target's params as
+            // cast targets, so a function or reference in them is refused. The run-time
+            // Type::Fn arm of cast_inner is left as it was: the check now refuses every
+            // target that reaches it with a function. Pin:
+            // lang::types::unsound_acceptances_are_refused
+            // (CAST_TO_AN_ABSTRACT_OF_A_FUNCTION).
+            Type::Abstract { params, .. } => {
+                params.iter().try_for_each(|p| p.check_cast_int(env, seen))
+            }
             Type::TVar(_) => match self.deref_cloned() {
                 Some(t) => t.check_cast_int(env, seen),
                 None => bail!("can't cast a value to a free type variable"),
@@ -361,68 +370,80 @@ impl Type {
     /// admits `Any`: there the test would take a reference to anything
     /// for one to its type.
     pub fn ref_over_any(&self, env: &Env, reaching: &Type) -> bool {
-        fn go(
-            env: &Env,
-            seen: &mut LPooled<Vec<(usize, usize)>>,
-            p: &Type,
-            r: &Type,
-        ) -> bool {
+        fn go(env: &Env, seen: &mut RepSeen, p: &Type, r: &Type) -> bool {
             ensure_sufficient(|| {
                 let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
                     return false;
                 };
-                if let (Type::Ref(pt), Type::Ref(rt)) = (&p, &r) {
-                    // CR claude for claude: [bug/high] `seen` keys on the two
-                    // definitions alone, ignores their params, and is never popped. So
-                    // the second meeting of a (definition, definition) pair answers
-                    // false, whether it comes in a sibling branch or at other params.
-                    // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
-                    // is accepted (the first Box pair consumed the key), and it then
-                    // reads a &string as &i64. The same arm with the components swapped
-                    // is refused. Fix: make `seen` a path (pop after the recursive
-                    // call) keyed on each side's full RefKey (definition plus params).
-                    // probe:
-                    // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
-                    // (t-cast-setops-01)
-                    let key = (pt.def_key().unwrap_or(0), rt.def_key().unwrap_or(0));
-                    if seen.contains(&key) {
-                        return false;
-                    }
-                    seen.push(key);
-                }
-                let expand = |t: &Type| match t {
-                    Type::Ref(_) => t.lookup_ref(env).ok(),
-                    t => Some(t.clone()),
-                };
-                let (Some(p), Some(r)) = (expand(&p), expand(&r)) else { return false };
-                match (&p, &r) {
-                    (_, Type::Any) => p.holds_ref(env),
-                    (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
-                    (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
-                    (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
-                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                    }
-                    (Type::Array(p), Type::Array(r))
-                    | (Type::List(p), Type::List(r))
-                    | (Type::Error(p), Type::Error(r))
-                    | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
-                    (Type::Struct(ps), Type::Struct(rs)) => ps.iter().any(|(n, p, _)| {
-                        rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
-                    }),
-                    (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
-                        if pt == rt && ps.len() == rs.len() =>
-                    {
-                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                    }
-                    (
-                        Type::Map { key: pk, value: pv },
-                        Type::Map { key: rk, value: rv },
-                    ) => go(env, seen, pk, rk) || go(env, seen, pv, rv),
-                    _ => false,
-                }
+                // XCR claude for claude: [bug/high] `seen` keys on the two
+                // definitions alone, ignores their params, and is never popped. So
+                // the second meeting of a (definition, definition) pair answers
+                // false, whether it comes in a sibling branch or at other params.
+                // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
+                // is accepted (the first Box pair consumed the key), and it then
+                // reads a &string as &i64. The same arm with the components swapped
+                // is refused. Fix: make `seen` a path (pop after the recursive
+                // call) keyed on each side's full RefKey (definition plus params).
+                // probe:
+                // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
+                // (t-cast-setops-01)
+                // 2026-10-19 claude: ref_over_any now rides the shared walk
+                // (RepSeen keyed on the full pair of types, params included; growth
+                // answers true, a refusal): a second application of one definition
+                // is walked, and a pair met again answers false only because the
+                // walk is a disjunction whose first answer already stands. Pin:
+                // lang::types::unsound_acceptances_are_refused
+                // (REF_TEST_OVER_ANY_SECOND_APPLICATION).
+                walk(
+                    seen,
+                    pair_at(&p, &r),
+                    false,
+                    || true,
+                    |seen| {
+                        let expand = |t: &Type| match t {
+                            Type::Ref(_) => t.lookup_ref(env).ok(),
+                            t => Some(t.clone()),
+                        };
+                        let (Some(p), Some(r)) = (expand(&p), expand(&r)) else {
+                            return false;
+                        };
+                        match (&p, &r) {
+                            (_, Type::Any) => p.holds_ref(env),
+                            (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
+                            (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
+                            (Type::Tuple(ps), Type::Tuple(rs))
+                                if ps.len() == rs.len() =>
+                            {
+                                ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                            }
+                            (Type::Array(p), Type::Array(r))
+                            | (Type::List(p), Type::List(r))
+                            | (Type::Error(p), Type::Error(r))
+                            | (Type::ByRef(_, p), Type::ByRef(_, r)) => {
+                                go(env, seen, p, r)
+                            }
+                            (Type::Struct(ps), Type::Struct(rs)) => {
+                                ps.iter().any(|(n, p, _)| {
+                                    rs.iter()
+                                        .any(|(m, r, _)| n == m && go(env, seen, p, r))
+                                })
+                            }
+                            (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
+                                if pt == rt && ps.len() == rs.len() =>
+                            {
+                                ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                            }
+                            (
+                                Type::Map { key: pk, value: pv },
+                                Type::Map { key: rk, value: rv },
+                            ) => go(env, seen, pk, rk) || go(env, seen, pv, rv),
+                            _ => false,
+                        }
+                    },
+                )
             })
         }
-        self.holds_ref(env) && go(env, &mut LPooled::take(), self, reaching)
+        self.holds_ref(env) && go(env, &mut RepSeen::default(), self, reaching)
     }
 
     /// Whether the type holds `Any` or an open cell anywhere: a part a
@@ -860,14 +881,15 @@ impl Type {
                 }
                 // a field the data omits reads as null where its type admits
                 // null (an optional field, a key a document leaves out)
+                static NULL: Value = Value::Null;
+                let mut omitted: SmallVec<[(usize, Option<Value>); 2]> = SmallVec::new();
                 if fields.len() < ts.len() {
-                    static NULL: Value = Value::Null;
                     let mut filled: SmallVec<[(&ArcStr, &Value); 8]> = SmallVec::new();
                     let mut have = fields.iter().copied().peekable();
-                    for (fname, ftyp, _) in ts.iter() {
+                    for (i, (fname, ftyp, _)) in ts.iter().enumerate() {
                         match have.peek() {
                             Some((n, _)) if *n == fname => filled.extend(have.next()),
-                            // CR claude for claude: [bug/medium] The fill wants null
+                            // XCR claude for claude: [bug/medium] The fill wants null
                             // held unchanged (Ok(None)), so it refuses a field type
                             // that admits null through a conversion. An example is an
                             // abstract whose Cast reads null: `type Opt =
@@ -879,14 +901,19 @@ impl Type {
                             // instead of casting NULL again in cast_elts. probe:
                             // design/review-2026-10-19/repro/t-cast-setops-struct-omitted-abstract-field.gx
                             // (t-cast-setops-04)
-                            _ if matches!(
-                                ftyp.cast_int(env, cx, None, &NULL),
-                                Ok(None)
-                            ) =>
-                            {
-                                filled.push((fname, &NULL))
-                            }
-                            _ => return Err(self.cast_fail("struct size mismatch", v)),
+                            // 2026-10-19 claude: The fill takes any Ok read of null, keeps it by field
+                            // index and hands it to cast_elts in place of a second cast of NULL. Pin:
+                            // lang::types::cast_keeps_what_a_member_holds (the omitted Opt field reads as
+                            // null).
+                            _ => match ftyp.cast_int(env, cx, None, &NULL) {
+                                Ok(read) => {
+                                    omitted.push((i, read));
+                                    filled.push((fname, &NULL))
+                                }
+                                Err(_) => {
+                                    return Err(self.cast_fail("struct size mismatch", v));
+                                }
+                            },
                         }
                     }
                     if have.next().is_some() {
@@ -907,7 +934,10 @@ impl Type {
                 let cast = cast_elts(
                     &fields[..],
                     |(_, fv)| *fv,
-                    |i, fv| ts[i].1.cast_int(env, cx, ss.map(|ss| &ss[i].1), fv),
+                    |i, fv| match omitted.iter_mut().find(|(j, _)| *j == i) {
+                        Some((_, read)) => Ok(read.take()),
+                        None => ts[i].1.cast_int(env, cx, ss.map(|ss| &ss[i].1), fv),
+                    },
                 )?;
                 if sorted && cast.is_none() && parts.held() {
                     return Ok(None);
@@ -1033,7 +1063,7 @@ impl Type {
             Type::Set(ts) => {
                 // a member whose tag the value carries is its reading,
                 // whatever a tagless reading of an earlier member says
-                // CR claude for claude: [bug/medium] The tagged loop returns the first
+                // XCR claude for claude: [bug/medium] The tagged loop returns the first
                 // member whose cast succeeds, a conversion included. It never prefers
                 // the member the value already inhabits, which the untagged passes
                 // below do. A held `A(1.5, 2.5) cast to [`A(i64, i64), `A(f64, f64)]
@@ -1043,16 +1073,26 @@ impl Type {
                 // after trying them all. probe:
                 // design/review-2026-10-19/repro/t-cast-setops-union-cast-converts-held.gx
                 // (t-cast-setops-02)
+                // 2026-10-19 claude: The tagged loop returns Ok(None) at the first member
+                // that holds the value, else the first conversion after trying them all.
+                // Pin: lang::types::cast_keeps_what_a_member_holds. The data-composite
+                // half is t-cast-setops-03, for eric.
                 let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
                 if tagged.peek().is_some() {
-                    let mut refused = None;
+                    let mut read = Err(None);
                     for t in tagged {
                         match t.cast_int(env, cx, src, v) {
-                            Ok(r) => return Ok(r),
-                            Err(e) => refused = Some(e),
+                            Ok(None) => return Ok(None),
+                            Ok(Some(c)) if read.is_err() => read = Ok(c),
+                            Ok(Some(_)) => (),
+                            Err(e) if read.is_err() => read = Err(Some(e)),
+                            Err(_) => (),
                         }
                     }
-                    return Err(refused.expect("a tagged member was tried"));
+                    return match read {
+                        Ok(c) => Ok(Some(c)),
+                        Err(e) => Err(e.expect("a tagged member was tried")),
+                    };
                 }
                 // CR claude for eric: [bug/medium] A data composite never holds a
                 // member as is: it is always rebuilt, so it never answers Ok(None). The
@@ -1611,7 +1651,7 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
         _ => None,
     };
     // a `NoError` cell is never an error, so it shares no error's form
-    // CR claude for claude: [bug/medium] This reads every open cell as any type except
+    // XCR claude for claude: [bug/medium] This reads every open cell as any type except
     // for NoError. A cell bounded to numbers ('a: Int, 'a: Number) cannot be an array,
     // tuple, struct, variant, list, map or error, yet `'a: Int |x: ['a, Array<i64>]|
     // select x { Array<i64> as a => .., _ => -1 }` is refused with "may share
@@ -1620,9 +1660,16 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
     // that set. probe:
     // design/review-2026-10-19/repro/x-kind-markers-open-member-ignores-bounds.sh
     // (x-kind-markers-05)
+    // 2026-10-19 claude: open_collision exempts a cell with a primitive-only conjunct
+    // (prims_only) when the other side may carry none of those primitive tags
+    // (holds_prims). Pin: lang::select::open_numeric_member_told_from_a_collection.
     let shares = |cell: &super::TVar, t: &Type| {
+        let bounds = cell.cell_constraints();
         shares_form(env, t)
-            && !(cell.cell_constraints().contains(&Type::NoError) && error_only(env, t))
+            && !(bounds.contains(&Type::NoError) && error_only(env, t))
+            && !bounds
+                .iter()
+                .any(|b| prims_only(env, b).is_some_and(|p| !holds_prims(env, t, p)))
     };
     let collides = match (open(a), open(b)) {
         (Some(x), Some(y)) => x.cell_addr() != y.cell_addr(),
@@ -1631,6 +1678,32 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
         (None, None) => false,
     };
     collides.then(|| (a.clone(), b.clone()))
+}
+
+/// The primitive tags of `t` when every value of it is a primitive
+/// (`Number`, `Int`).
+fn prims_only(env: &Env, t: &Type) -> Option<BitFlags<Typ>> {
+    ensure_sufficient(|| match rep_head(env, t).as_deref() {
+        Some(Type::Primitive(p)) => Some(*p),
+        Some(Type::Set(ts)) => ts
+            .iter()
+            .try_fold(BitFlags::empty(), |acc, t| prims_only(env, t).map(|p| acc | p)),
+        _ => None,
+    })
+}
+
+/// Whether a value of `t` may carry one of the primitive tags `p`.
+fn holds_prims(env: &Env, t: &Type, p: BitFlags<Typ>) -> bool {
+    ensure_sufficient(|| match rep_head(env, t).as_deref() {
+        None => true,
+        Some(Type::Bottom) => false,
+        Some(Type::Primitive(q)) => q.intersects(p),
+        Some(Type::Set(ts)) => ts.iter().any(|t| holds_prims(env, t, p)),
+        Some(h @ (Type::Map { .. } | Type::Error(_) | Type::Array(_))) => {
+            rep_prims(h).intersects(p)
+        }
+        Some(_) => p.intersects(SHARED_PRIMS | Typ::Abstract),
+    })
 }
 
 /// Whether every value of `t` is an error.
@@ -1651,28 +1724,6 @@ fn rep_prims(t: &Type) -> BitFlags<Typ> {
         Type::Error(_) => Typ::Error.into(),
         Type::Array(_) => Typ::Array.into(),
         _ => BitFlags::empty(),
-    }
-}
-
-/// The array a value of `t` is, when it is one, by its kind.
-enum ArrView<'a> {
-    Array,
-    List,
-    Tuple(&'a [Type]),
-    Struct(&'a [(ArcStr, Type, WrittenAt)]),
-    Variant(&'a ArcStr, &'a [Type]),
-}
-
-impl<'a> ArrView<'a> {
-    fn of(t: &'a Type) -> Option<Self> {
-        Some(match t {
-            Type::Tuple(ts) => ArrView::Tuple(ts),
-            Type::Struct(fs) => ArrView::Struct(fs),
-            Type::Variant(tag, args, _) => ArrView::Variant(tag, args),
-            Type::Array(_) => ArrView::Array,
-            Type::List(_) => ArrView::List,
-            _ => return None,
-        })
     }
 }
 
@@ -1752,84 +1803,15 @@ fn ref_at(t: &Type) -> Option<At<Type>> {
     matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
 }
 
-// CR claude for claude: [dead/low] Only rep_collision's fallback calls this, with two
-// non-Ref heads its own arms did not take. So the walk never keys anything, the Set and
-// Error/Error branches are unreachable, and every ArrView pair that gets here fails its
-// length, name or tag test before `parts` recurses. What it decides is a primitive
-// against a head, two references, and two functions. Fix: make it a leaf match on those
-// three cases, delete arr_overlaps and ArrView, and drop the RepSeen argument. Found by
-// reading; not run. (t-cast-setops-10)
-fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
-    ensure_sufficient(|| {
-        walk(
-            seen,
-            pair_at(a, b),
-            false,
-            || true,
-            |seen| {
-                let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
-                    return true;
-                };
-                let (a, b) = (&*a, &*b);
-                match (a, b) {
-                    (Type::Bottom, _) | (_, Type::Bottom) => false,
-                    (Type::Set(ts), _) => {
-                        ts.iter().any(|t| rep_overlaps(env, seen, t, &b))
-                    }
-                    (_, Type::Set(ts)) => {
-                        ts.iter().any(|t| rep_overlaps(env, seen, &a, t))
-                    }
-                    (Type::Primitive(p), Type::Primitive(q)) => p.intersects(*q),
-                    (Type::Primitive(p), t) | (t, Type::Primitive(p)) => {
-                        p.intersects(rep_prims(t))
-                    }
-                    (Type::ByRef(..), Type::ByRef(..))
-                    | (Type::Fn(_), Type::Fn(_))
-                    | (Type::Map { .. }, Type::Map { .. }) => true,
-                    (Type::Error(x), Type::Error(y)) => rep_overlaps(env, seen, x, y),
-                    (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) => {
-                        x == y
-                    }
-                    (a, b) => match (ArrView::of(a), ArrView::of(b)) {
-                        (Some(x), Some(y)) => arr_overlaps(env, seen, x, y),
-                        _ => false,
-                    },
-                }
-            },
-        )
-    })
-}
-
-/// Whether values of the two array kinds can be one value: the same kind,
-/// and for a tuple, struct or variant the same arity (and names, and tag)
-/// with every part overlapping. Two arrays, or two lists, share the empty
-/// one.
-fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
-    use ArrView::*;
-    let mut parts = |x: &mut dyn Iterator<Item = (&Type, &Type)>| {
-        for (x, y) in x {
-            if !rep_overlaps(env, seen, x, y) {
-                return false;
-            }
-        }
-        true
-    };
+fn rep_overlaps(a: &Type, b: &Type) -> bool {
     match (a, b) {
-        (Array, Array) | (List, List) => true,
-        (Tuple(x), Tuple(y)) => x.len() == y.len() && parts(&mut x.iter().zip(y.iter())),
-        (Struct(x), Struct(y)) => {
-            x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0)
-                && parts(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
-        }
-        (Variant(t, x), Variant(u, y)) => {
-            t == u && x.len() == y.len() && parts(&mut x.iter().zip(y.iter()))
-        }
+        (Type::Primitive(p), t) | (t, Type::Primitive(p)) => p.intersects(rep_prims(t)),
+        (Type::ByRef(..), Type::ByRef(..)) | (Type::Fn(_), Type::Fn(_)) => true,
         _ => false,
     }
 }
 
-// CR claude for claude: [readability/medium] On growth, the walk answers with the pair
+// XCR claude for claude: [readability/medium] On growth, the walk answers with the pair
 // it stopped at, and the select prints that as "can't tell A from B: both have the same
 // runtime form; wrap them in distinct variants". The real reason is undecidability.
 // Over [N<i64>, N<string>] with `type N<'a> = [null, ('a, N<Array<'a>>)]`, the user is
@@ -1838,98 +1820,100 @@ fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
 // not_discernible does. probe:
 // design/review-2026-10-19/repro/t-cast-setops-grows-reported-as-collision.gx
 // (t-cast-setops-08)
+// 2026-10-19 claude: rep_collision returns Indiscernible (Pair, or Grows on growth);
+// Indiscernible::untold words both for the select arm, the definition's told check and
+// a trait dispatch. Pin: lang::types::growing_typedef_select_refused now names the
+// growth.
 fn rep_collision(
     env: &Env,
     seen: &mut RepSeen,
     open: Open,
     a: &Type,
     b: &Type,
-) -> Option<(Type, Type)> {
+) -> Option<Indiscernible> {
     ensure_sufficient(|| {
-        walk(
-            seen,
-            pair_at(a, b),
-            None,
-            || Some((a.clone(), b.clone())),
-            |seen| {
-                let pairs =
-                    |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
-                        xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
-                            .find(Option::is_some)
-                            .flatten()
-                    };
-                let (ha, hb) = (rep_head(env, a), rep_head(env, b));
-                let (Some(ha), Some(hb)) = (ha.as_deref(), hb.as_deref()) else {
-                    // an open side meets each member of a union on the other
-                    return match (open, ha.as_deref(), hb.as_deref()) {
-                        (Open::Benign, _, _) => None,
-                        (Open::Unknown, _, Some(Type::Set(ts))) => {
-                            pairs(seen, &mut ts.iter().map(|t| (a, t)))
-                        }
-                        (Open::Unknown, Some(Type::Set(ts)), _) => {
-                            pairs(seen, &mut ts.iter().map(|t| (t, b)))
-                        }
-                        (Open::Unknown, _, _) => open_collision(env, a, b),
-                    };
+        let grows = || match (a, b) {
+            (Type::Ref(tr), _) | (_, Type::Ref(tr)) => {
+                Some(Indiscernible::Grows(tr.name.clone()))
+            }
+            _ => unreachable!("only a reference expands"),
+        };
+        walk(seen, pair_at(a, b), None, grows, |seen| {
+            let pairs =
+                |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
+                    xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
+                        .find(Option::is_some)
+                        .flatten()
                 };
-                let (a, b) = (ha, hb);
-                let mut pairs =
-                    |xs: &mut dyn Iterator<Item = (&Type, &Type)>| pairs(seen, xs);
-                match (a, b) {
-                    (Type::Bottom, _) | (_, Type::Bottom) => None,
-                    (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
-                    (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
-                    (Type::Primitive(_), Type::Primitive(_)) => None,
-                    (Type::Array(x), Type::Array(y))
-                    | (Type::List(x), Type::List(y))
-                    | (Type::Error(x), Type::Error(y)) => {
-                        pairs(&mut std::iter::once((&**x, &**y)))
+            let (ha, hb) = (rep_head(env, a), rep_head(env, b));
+            let (Some(ha), Some(hb)) = (ha.as_deref(), hb.as_deref()) else {
+                // an open side meets each member of a union on the other
+                return match (open, ha.as_deref(), hb.as_deref()) {
+                    (Open::Benign, _, _) => None,
+                    (Open::Unknown, _, Some(Type::Set(ts))) => {
+                        pairs(seen, &mut ts.iter().map(|t| (a, t)))
                     }
-                    (
-                        Type::Map { key: k0, value: v0 },
-                        Type::Map { key: k1, value: v1 },
-                    ) => pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter()),
-                    (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
-                        pairs(&mut x.iter().zip(y.iter()))
+                    (Open::Unknown, Some(Type::Set(ts)), _) => {
+                        pairs(seen, &mut ts.iter().map(|t| (t, b)))
                     }
-                    (Type::Struct(x), Type::Struct(y))
-                        if x.len() == y.len()
-                            && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
-                    {
-                        pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
+                    (Open::Unknown, _, _) => {
+                        open_collision(env, a, b).map(|(a, b)| Indiscernible::Pair(a, b))
                     }
-                    (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
-                        if x == y && xa.len() == ya.len() =>
-                    {
-                        pairs(&mut xa.iter().zip(ya.iter()))
-                    }
-                    // the tag tells them apart
-                    (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
-                    // a Graphix-minted value carries its params and the test compares
-                    // them; a Rust-backed one carries only its id, so two of its
-                    // instantiations share one runtime form
-                    (
-                        a @ Type::Abstract { id: x, params: px },
-                        b @ Type::Abstract { id: y, params: py },
-                    ) if x == y => {
-                        let rust_backed = env.abstract_reps.get(x).is_none();
-                        let same = px.len() == py.len()
-                            && px
-                                .iter()
-                                .zip(py.iter())
-                                .all(|(p, q)| union_identical(p, q));
-                        (rust_backed && !same).then(|| (a.clone(), b.clone()))
-                    }
-                    // a runtime test can't tell a reference's mutability
-                    (Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y => {
-                        None
-                    }
-                    (Type::Fn(x), Type::Fn(y)) if x == y => None,
-                    (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
-                        .then(|| (a.clone(), b.clone())),
+                };
+            };
+            let (a, b) = (ha, hb);
+            let mut pairs =
+                |xs: &mut dyn Iterator<Item = (&Type, &Type)>| pairs(seen, xs);
+            match (a, b) {
+                (Type::Bottom, _) | (_, Type::Bottom) => None,
+                (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
+                (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
+                (Type::Primitive(_), Type::Primitive(_)) => None,
+                (Type::Array(x), Type::Array(y))
+                | (Type::List(x), Type::List(y))
+                | (Type::Error(x), Type::Error(y)) => {
+                    pairs(&mut std::iter::once((&**x, &**y)))
                 }
-            },
-        )
+                (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+                    pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter())
+                }
+                (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
+                    pairs(&mut x.iter().zip(y.iter()))
+                }
+                (Type::Struct(x), Type::Struct(y))
+                    if x.len() == y.len()
+                        && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
+                {
+                    pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
+                }
+                (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
+                    if x == y && xa.len() == ya.len() =>
+                {
+                    pairs(&mut xa.iter().zip(ya.iter()))
+                }
+                // the tag tells them apart
+                (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
+                // a Graphix-minted value carries its params and the test compares
+                // them; a Rust-backed one carries only its id, so two of its
+                // instantiations share one runtime form
+                (
+                    a @ Type::Abstract { id: x, params: px },
+                    b @ Type::Abstract { id: y, params: py },
+                ) if x == y => {
+                    let rust_backed = env.abstract_reps.get(x).is_none();
+                    let same = px.len() == py.len()
+                        && px.iter().zip(py.iter()).all(|(p, q)| union_identical(p, q));
+                    (rust_backed && !same)
+                        .then(|| Indiscernible::Pair(a.clone(), b.clone()))
+                }
+                // a runtime test can't tell a reference's mutability
+                (Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y => None,
+                (Type::Fn(x), Type::Fn(y)) if x == y => None,
+                (a, b) => {
+                    rep_overlaps(a, b).then(|| Indiscernible::Pair(a.clone(), b.clone()))
+                }
+            }
+        })
     })
 }
 
@@ -1939,13 +1923,13 @@ impl Type {
     /// the other (a tuple, struct, list or payload variant and an array; a
     /// bare variant and a string; two references; two function types). A
     /// test that tells them apart can't tell such a value's type.
-    pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<(Type, Type)> {
+    pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
         rep_collision(env, &mut RepSeen::default(), Open::Benign, self, t)
     }
 
     /// [`Self::rep_collision`] with an open cell read as any type it may
     /// yet bind ([`Open::Unknown`]): what a definition must rule out.
-    pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<(Type, Type)> {
+    pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
         rep_collision(env, &mut RepSeen::default(), Open::Unknown, self, t)
     }
 }
@@ -1962,6 +1946,26 @@ pub enum Indiscernible {
 }
 
 impl Indiscernible {
+    /// The refusal of `what`, a runtime test for `test` among `rest`,
+    /// which a [`rep_collision`] found can't tell this apart.
+    pub fn untold(&self, what: &str, test: &Type, rest: &Type) -> anyhow::Error {
+        match self {
+            Indiscernible::Pair(a, b) => anyhow::anyhow!(
+                "{what} can't tell {} from {}: both have the same runtime form; wrap \
+                 them in distinct variants",
+                a.resolve_tvars(),
+                b.resolve_tvars()
+            ),
+            Indiscernible::Grows(name) => anyhow::anyhow!(
+                "{what} tests for {} among {}, which hold {name}, whose parameters grow \
+                 as it recurses, so whether their runtime forms differ can't be decided",
+                test.resolve_tvars(),
+                rest.resolve_tvars()
+            ),
+            Indiscernible::Unordered(_) => unreachable!("a runtime test is no order"),
+        }
+    }
+
     /// What an unordered type is, and how `==` and `!=` compare it.
     pub fn unordered_kind(t: &Type) -> (&'static str, &'static str) {
         match t {
@@ -2031,8 +2035,8 @@ fn rep_ambiguity(
                                     a,
                                     b,
                                 );
-                                if let Some((a, b)) = c {
-                                    return Some(Indiscernible::Pair(a, b));
+                                if c.is_some() {
+                                    return c;
                                 }
                             }
                         }
@@ -2290,7 +2294,7 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 }
 
 /// The string `s` read as the primitive `t`.
-// CR claude for claude: [bug/high] A decimal target is read through
+// XCR claude for claude: [bug/high] A decimal target is read through
 // `s.parse::<Value>()`, which makes an f64. str::parse::<decimal>,
 // cast<decimal>(string) and json::read of a decimal (the json writer writes decimals as
 // strings) are therefore only as exact as f64: "1.23456789012345678901234567" reads as
@@ -2300,6 +2304,12 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 // then `from_scientific`) before the generic parse, and pin the json round trip. probe:
 // design/review-2026-10-19/repro/x-panics-decimal-parse-via-f64.gx Also reported as
 // (small-pkgs-03). (x-panics-01)
+// 2026-10-19 claude: parse() reads a decimal target with Decimal::from_str, then
+// from_scientific, before the value-literal parse, so cast<decimal>(string) and
+// json::read of a decimal are exact. str::parse<decimal> still reads its text as a
+// value literal first (stdlib str's own CR, x-engine-collections-03). Pins:
+// lang::types::cast_reads_a_string_as_its_target,
+// lib_tests::json::json_decimal_round_trip.
 fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if t == Typ::DateTime
         && let Ok(d) = chrono::DateTime::parse_from_rfc3339(s)
@@ -2311,10 +2321,22 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     {
         return of_int(n, t);
     }
+    let exact = match t {
+        Typ::F64 => s.trim().parse::<f64>().ok().map(Value::F64),
+        Typ::F32 => s.trim().parse::<f32>().ok().map(Value::F32),
+        Typ::Decimal => Decimal::from_str(s.trim())
+            .or_else(|_| Decimal::from_scientific(s.trim()))
+            .ok()
+            .map(|d| Value::Decimal(Arc::new(d))),
+        _ => None,
+    };
+    if exact.is_some() {
+        return exact;
+    }
     if parses_to_collection(s) {
         return None;
     }
-    // CR claude for claude: [bug/medium] Float targets reach this value-literal parse,
+    // XCR claude for claude: [bug/medium] Float targets reach this value-literal parse,
     // which reads a bare integer only as i64. The results:
     // cast<f64>("9223372036854775808") is an InvalidCast; cast<f64>("inf") is refused,
     // though `printed` writes an infinite f64 as "inf"; cast<f32>("+3") is refused
@@ -2323,7 +2345,11 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     // above, and pin a print → cast round trip. probe:
     // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
     // (x-engine-collections-04)
-    // CR claude for claude: [bug/medium] A decimal target reaches this parse, which
+    // 2026-10-19 claude: parse() reads an f64 or f32 target with
+    // str::parse::<f64>/<f32> of the trimmed text before the value-literal parse:
+    // integers past i64, inf, +3 and -0 read. Pin:
+    // lang::types::cast_reads_a_string_as_its_target.
+    // XCR claude for claude: [bug/medium] A decimal target reaches this parse, which
     // reads "123456789.123456789" as an f64 before convert makes a decimal of it. So
     // digits are lost: cast<decimal>("123456789.123456789") is 123456789.1234568, and
     // str::parse<decimal>("12345678901234567.89") is 12345678901234568. Fix: for
@@ -2331,6 +2357,10 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     // with i128. probe:
     // design/review-2026-10-19/repro/t-cast-setops-decimal-parse-via-f64.gx
     // (t-cast-setops-05)
+    // 2026-10-19 claude: Fixed with x-panics-01: a decimal target parses as a Decimal
+    // first. str::parse's literal-first read is stdlib str's CR
+    // (x-engine-collections-03). Pin: lang::types::cast_reads_a_string_as_its_target
+    // (decimal:123456789.123456789).
     match s.parse::<Value>() {
         Ok(Value::String(_)) | Err(_) => None,
         Ok(parsed) => convert(parsed, t),
@@ -2366,7 +2396,7 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         Value::F32(f) => float_int(*f as f64)?,
         Value::F64(f) => float_int(*f)?,
         Value::Bool(b) => *b as i128,
-        // CR claude for claude: [bug/low] timestamp() floors, but this function drops a
+        // XCR claude for claude: [bug/low] timestamp() floors, but this function drops a
         // fraction (as float_int truncates). A pre-1970 datetime with a sub-second part
         // therefore casts one second low: cast<i64>(datetime:"1969-12-31T23:59:59.5Z")
         // is -1, while the same cast through f64 is 0. Truncate toward zero (add 1 when
@@ -2374,7 +2404,14 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         // pre-epoch case. probe:
         // design/review-2026-10-19/repro/x-engine-collections-datetime-int-floor.gx
         // (x-engine-collections-06)
-        Value::DateTime(d) => d.timestamp() as i128,
+        // 2026-10-19 claude: integer() adds 1 to a negative timestamp with a sub-second
+        // part, so the fraction drops toward zero. Pin:
+        // lang::types::cast_reads_a_string_as_its_target
+        // (cast<i64>(datetime:"1969-12-31T23:59:59.5Z") is 0).
+        Value::DateTime(d) => {
+            let floor = d.timestamp() as i128;
+            floor + (floor < 0 && d.timestamp_subsec_nanos() > 0) as i128
+        }
         Value::Duration(d) => d.as_secs() as i128,
         v => return v.clone().cast(t),
     };

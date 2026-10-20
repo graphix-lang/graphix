@@ -653,6 +653,59 @@ run!(cast_stays_in_class, CAST_STAYS_IN_CLASS, |v: Result<&Value>| {
         == r#"["42", "1.5", "true", "300", [f64:1., f64:2.], [f64:1., f64:2.], true, duration:1.5s, f64:1.5, i64:1577836800, datetime:"2020-01-01 00:00:00 UTC", i64:1, f64:0., true, true, true, true, true, true, true]"#
 });
 
+// A string read as a float or a decimal is read as that type, never
+// through another: an integer past i64, a printed infinity, a signed zero
+// and a decimal's every digit survive. A datetime before 1970 drops its
+// fraction toward zero, as a float does.
+const CAST_READS_A_STRING_AS_ITS_TARGET: &str = r#"
+{
+  let inf = cast<string>(f64:1. / f64:0.)$;
+  (
+    cast<f64>("9223372036854775808")$,
+    cast<f64>(inf)$,
+    cast<f32>("+3")$,
+    cast<f64>("-0")$,
+    cast<decimal>("123456789.123456789")$,
+    cast<decimal>("0.30000000000000000000000001")$,
+    cast<decimal>("12345678901234567890")$,
+    cast<i64>(datetime:"1969-12-31T23:59:59.5Z")$
+  )
+}
+"#;
+
+run!(
+    cast_reads_a_string_as_its_target,
+    CAST_READS_A_STRING_AS_ITS_TARGET,
+    |v: Result<&Value>| {
+        format!("{}", v.unwrap())
+            == "[f64:9223372036854776000., f64:inf, f32:3., f64:-0., decimal:123456789.123456789, decimal:0.30000000000000000000000001, decimal:12345678901234567890., i64:0]"
+    }
+);
+
+// A union cast keeps a held variant in the member it inhabits, as it
+// keeps a held tuple, and a struct field the data omits reads as null
+// through its type's Cast where the type takes null only that way.
+const CAST_KEEPS_WHAT_A_MEMBER_HOLDS: &str = r#"
+{
+  type Opt = Abstract<[i64, null]>;
+  impl Cast for Opt {};
+  let v: Any = `A(1.5, 2.5);
+  let t: Any = (1.5, 2.5);
+  let a: Any = {a: 1};
+  (
+    cast<[`A(i64, i64), `A(f64, f64)]>(v)$,
+    cast<[(i64, i64), (f64, f64)]>(t)$,
+    cast<{a: i64, o: Opt}>(a)$.o.0
+  )
+}
+"#;
+
+run!(cast_keeps_what_a_member_holds, CAST_KEEPS_WHAT_A_MEMBER_HOLDS, |v: Result<
+    &Value,
+>| {
+    format!("{}", v.unwrap()) == r#"[["A", f64:1.5, f64:2.5], [f64:1.5, f64:2.5], null]"#
+});
+
 // A rec def whose base arm returns a param: the elem union is honestly
 // `[i64, string]`.
 const REC_RETURN_PARAM_ELEM: &str = r#"
@@ -1564,6 +1617,62 @@ const REF_TEST_OVER_ANY_NESTED: &str = r#"{
   select (b, 0) { (&mut string, i64) as (q, _) => { *q <- "boom"; 1 }, _ => 7 }
 }"#;
 
+// An abstract's parameters are a cast target's as much as its other parts.
+const CAST_TO_AN_ABSTRACT_OF_A_FUNCTION: &str = r#"{
+  type Box<'a> = Abstract<'a>;
+  impl<'a> Cast for Box<'a> {};
+  let a: Any = Box(|x: i64| x + 1);
+  let b = cast<Box<fn(x: string) -> string>>(a)$;
+  str::len(b.0("hello"))
+}"#;
+
+// A declared variable is held rigid by every probe a containment decides
+// with: the distribution law's position split, and a cell's conjuncts.
+const DISTRIBUTION_SPLIT_RIGID: &str = r#"{
+  let f = 'a: Any |x: [`A, `B], y: 'a| -> [(`A, 'a), (`B, i64)] (x, 5);
+  select f(`A, "hello") { (`A, s) => str::len(s), (`B, n) => n }
+}"#;
+const CONJUNCT_RIGID: &str = r#"{
+  let g = 'c: Any, 'd: ['c, null] |x: 'c, y: 'd| -> ['c, null] y;
+  let f = 'a: Any |x: 'a| -> ['a, null] g(x, 5);
+  select f("s") { null => 0, s => str::len(s) }
+}"#;
+const CONJUNCT_RIGID_TRAIT: &str = r#"{
+  trait Sz { val sz: fn(self) -> i64 };
+  impl Sz for i64 { let sz = |x| x };
+  let g = 'c: Sz |x: 'c| -> i64 Sz::sz(x);
+  let f = 'a: Any |x: 'a, b: bool| -> i64 {
+    let v: [i64, 'a] = select b { true => 1, false => x };
+    g(v)
+  };
+  f("s", false)
+}"#;
+
+// A mismatch at a growing definition's first level is a mismatch, not a
+// comparison that cannot end.
+const GROWING_MISMATCH: &str = r#"{
+  type N<'a> = [null, ('a, N<Array<'a>>)];
+  let x: N<i64> = null;
+  let y: N<f64> = x;
+  0
+}"#;
+
+// Error is a one-argument product head: a union of errors holds the error
+// its members merge to.
+const ERROR_UNION_DISTRIBUTES: &str = r#"{
+  let b = true;
+  let e: [Error<i64>, Error<string>] = select b { true => error(1), false => error("x") };
+  select e { error as _ => 1 }
+}"#;
+
+// The second application of one definition is walked as the first is.
+const REF_TEST_OVER_ANY_SECOND_APPLICATION: &str = r#"{
+  type Box<'a> = {v: 'a};
+  let s = "hi";
+  let x: (Box<Any>, Box<Any>) = ({v: 1}, {v: &s});
+  select x { (Box<i64>, Box<&i64>) as y => *(y.1.v) + 1, _ => 0 }
+}"#;
+
 #[tokio::test(flavor = "current_thread")]
 async fn unsound_acceptances_are_refused() -> Result<()> {
     for (src, refusal) in [
@@ -1591,6 +1700,12 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
         (REF_TEST_OVER_ANY, "can't tell what the reference in &mut string refers to"),
         (REF_TEST_OVER_ANY_NESTED, "can't tell what the reference"),
+        (REF_TEST_OVER_ANY_SECOND_APPLICATION, "can't tell what the reference"),
+        (CAST_TO_AN_ABSTRACT_OF_A_FUNCTION, "can't cast a value to a function"),
+        (DISTRIBUTION_SPLIT_RIGID, "does not contain ([`A, `B], i64)"),
+        (CONJUNCT_RIGID, "does not contain i64"),
+        (CONJUNCT_RIGID_TRAIT, "does not contain [i64, 'a"),
+        (GROWING_MISMATCH, "does not contain"),
         (ABSTRACT_PATTERN_OVER_A_UNION, "patterns can't match"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
@@ -1617,6 +1732,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_TWO_TYPES, 15),
         (NESTED_QUANTIFIER_TWO_CALLS, 3),
         (TRAIT_BESIDE_WITNESS, 0),
+        (ERROR_UNION_DISTRIBUTES, 1),
     ] {
         let v =
             eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
@@ -2928,7 +3044,7 @@ run!(growing_typedef_select_refused, r#"{
     type N<'a> = [null, ('a, N<Array<'a>>)];
     let f = |u: [N<i64>, N<string>]| select u { N<i64> as a => 1, N<string> as b => 2 };
     f(null)
-}"#, refused("this pattern can't tell"); FuseExpect::None);
+}"#, refused("which hold N, whose parameters grow as it recurses"); FuseExpect::None);
 
 // A finite type whose parameters grow a few times is decided as usual.
 run!(
