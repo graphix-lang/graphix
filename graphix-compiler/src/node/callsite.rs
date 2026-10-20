@@ -1782,10 +1782,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let instance_ftype = if same_parameters(&site_ftype, &f.typ) {
             site_ftype.clone()
         } else {
-            let definition_ftype = f.typ.reset_tvars();
-            definition_ftype.alias_tvars(&mut LPooled::take());
-            site_ftype.check_contains(&ctx.env, &definition_ftype)?;
-            definition_ftype.resolve_tvars()
+            super::lambda::fit_callee(ctx, &site_ftype, &f.typ)?.resolve_tvars()
         };
         let apply = self.init_prepared_bind(
             ctx,

@@ -1503,23 +1503,39 @@ fn instance_type<R: Rt, E: UserEvent>(
     Ok(match mode {
         BindMode::Static { instance } => Arc::new(instance.clone()),
         BindMode::Dynamic(r) if same_parameters(r, def_typ) => Arc::new(r.clone()),
-        // CR claude for claude: [structure/low] This fits a callee with a defaulted
-        // label the site's view omits by `def_typ.instantiate(&ctx.rec_defs)`.
-        // CallSite::setup_static_bind fits the static case its own way: `reset_tvars`,
-        // `alias_tvars`, `check_contains`, `resolve_tvars`. reset_tvars copies every
-        // open cell, while instantiate shares open gates' and environment cells and
-        // freezes repeated copies. One rule, 'fit as a call fits it', has two
-        // implementations that can drift. Fix: let setup_static_bind hand the site's
-        // ftype here and fit Static and Dynamic in one branch with FnType::instantiate,
-        // then delete the copy in setup_static_bind. Found by reading; not run.
-        // (c-lambda-03)
-        BindMode::Dynamic(r) => {
-            let copy = def_typ.instantiate(&ctx.rec_defs);
-            r.check_contains(&ctx.env, &copy)?;
-            Arc::new(copy)
-        }
+        BindMode::Dynamic(r) => Arc::new(fit_callee(ctx, r, def_typ)?),
         BindMode::Definition => def_typ.clone(),
     })
+}
+
+/// A call's copy of the definition's signature `def_typ`, fitted to the
+/// site's view `site` of it as a call fits it: the one rule a static and
+/// a dynamic bind both take when the views list other parameters.
+// XCR claude for claude: [structure/low] This fits a callee with a defaulted
+// label the site's view omits by `def_typ.instantiate(&ctx.rec_defs)`.
+// CallSite::setup_static_bind fits the static case its own way: `reset_tvars`,
+// `alias_tvars`, `check_contains`, `resolve_tvars`. reset_tvars copies every
+// open cell, while instantiate shares open gates' and environment cells and
+// freezes repeated copies. One rule, 'fit as a call fits it', has two
+// implementations that can drift. Fix: let setup_static_bind hand the site's
+// ftype here and fit Static and Dynamic in one branch with FnType::instantiate,
+// then delete the copy in setup_static_bind. Found by reading; not run.
+// (c-lambda-03)
+// 2026-10-20 claude: One helper, lambda::fit_callee (instantiate as a call
+// does, then the site view contains the copy), fits a callee whose parameters
+// differ from the site view for both the dynamic bind (instance_type) and
+// CallSite::setup_static_bind; the static path no longer copies every open cell
+// with reset_tvars and alias_tvars. graphix-tests and netidx-admin pass; no new
+// pin, the existing static/dynamic default fixtures (lang::functions) cover
+// both paths.
+pub(crate) fn fit_callee<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    site: &FnType,
+    def_typ: &FnType,
+) -> Result<FnType> {
+    let copy = def_typ.instantiate(&ctx.rec_defs);
+    site.check_contains(&ctx.env, &copy)?;
+    Ok(copy)
 }
 
 impl Lambda {
