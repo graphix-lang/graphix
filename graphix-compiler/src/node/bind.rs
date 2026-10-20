@@ -300,6 +300,13 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // first member. Pins:
                     // lang::tuples_structs::let_destructures_a_union_of_one_shape,
                     // let_over_a_union_refuses_a_member_it_misses.
+                    // 2026-10-19 claude: Follow-up: the first version compiled every let
+                    // over a union against the shape check's predicate, whose cells are
+                    // generic, so netidx-admin's `let q = never<Question>(); .. &mut q`
+                    // was refused as made generic by an earlier compile. A bare name now
+                    // keeps the value's type, and the narrowed predicate is inferred
+                    // afresh at the binds' level. Pin:
+                    // lang::tuples_structs::let_over_a_union_takes_a_writable_reference.
                     if !completed && pat.has_partial_struct() {
                         partial = Some(ptyp);
                     // CR claude for claude: [perf/low] For a single-name pattern `ptyp`
@@ -315,8 +322,10 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // arrays only. probe:
                     // design/review-2026-10-19/repro/x-stack-flat-chain-quadratic.sh
                     // (x-stack-02)
-                    } else if !fits_every_member(ctx, &ptyp, &typ, &mut narrowed)
-                        .at(&spec)?
+                    } else if !fits_every_member(ctx, &ptyp, &typ, &mut narrowed, || {
+                        pat.infer_type_predicate(&ctx.env, &scope.lexical)
+                    })
+                    .at(&spec)?
                     {
                         let part = ptyp.could_match(&ctx.env, &typ)?;
                         format_with_flags(PrintFlag::DerefTVars, || match part {
@@ -946,16 +955,19 @@ impl Ref {
 
 /// A let's pattern predicate `ptyp` holds every member of the value type
 /// `typ`, each on its own; over several members `narrowed` takes the
-/// predicate with each cell the union of its parts, as a select arm's is.
+/// predicate with each cell the union of its parts, as a select arm's is:
+/// `binds` infers it afresh, at the binds' level (`ptyp`'s cells are the
+/// shape check's). A bare name takes the value's type.
 fn fits_every_member<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     ptyp: &Type,
     typ: &Type,
     narrowed: &mut Option<Type>,
+    binds: impl FnOnce() -> Result<Type>,
 ) -> Result<bool> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     expr::union_members(&ctx.env, typ, &mut members)?;
-    if members.len() < 2 {
+    if members.len() < 2 || matches!(ptyp, Type::TVar(_)) {
         return ptyp.any_as_tvar().contains(&ctx.env, typ);
     }
     for m in members.iter() {
@@ -965,7 +977,7 @@ fn fits_every_member<R: Rt, E: UserEvent>(
             return ptyp.any_as_tvar().contains(&ctx.env, typ);
         }
     }
-    let pred = ptyp.any_as_tvar();
+    let pred = binds()?.any_as_tvar();
     pred.narrow_per_member(&ctx.env, &members)?;
     *narrowed = Some(pred);
     Ok(true)

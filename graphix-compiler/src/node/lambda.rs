@@ -13,7 +13,7 @@ use crate::{
     dbgenv,
     effects::{LambdaFacts, RecursionKind},
     env::{Bind, Env},
-    expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, ModPath, Origin},
+    expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
     fusion::{
         self,
         emit::{

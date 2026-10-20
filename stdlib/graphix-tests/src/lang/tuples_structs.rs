@@ -499,3 +499,18 @@ run!(let_over_a_union_refuses_a_member_it_misses, r#"{
   let f = |v: [(i64, string), (string, i64, bool)]| { let (x, y) = v; x };
   f((1, "s"))
 }"#, refused("refutable patterns are not allowed in let: (i64, string) matches only part of"); FuseExpect::None);
+
+// A let of one name over a union keeps the value's type, so a writable
+// reference to it is no reference to a generalized binding; a
+// destructured union's binds are the same.
+run!(let_over_a_union_takes_a_writable_reference, r#"{
+  type Q = [`A(i64), `B(string)];
+  let q = never<Q>();
+  let set = |r: &mut Q| *r <- `A(1);
+  let v: [(i64, string), (string, i64)] = (1, "s");
+  let (x, y) = v;
+  let rx = &mut x;
+  *rx <- 2;
+  set(&mut q);
+  (q, x)
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[["A", i64:1], i64:2]"#); FuseExpect::Jit);
