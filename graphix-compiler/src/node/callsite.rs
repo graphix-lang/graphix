@@ -891,6 +891,8 @@ fn data_positions(
                 data_positions(&b, data, seen, out)
             }
         }
+        // a shared node is walked once in each kind of position
+        t if t.shared_identity().is_some_and(|n| !seen.insert((n, data))) => (),
         Type::Fn(_)
         | Type::ByRef(..)
         | Type::Ref(_)

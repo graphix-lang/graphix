@@ -195,6 +195,8 @@ fn settle_refs(
                 }
             }
         }
+        // a shared node's address is another allocation than any cell's
+        t if t.shared_identity().is_some_and(|n| !visited.insert(n)) => (),
         Type::Fn(ft) => ft.for_each_part(&mut |t, _| settle_refs(t, index, visited, out)),
         t => t.for_each_child(&mut |c| settle_refs(c, index, visited, out)),
     })
@@ -360,20 +362,36 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut IntSet<usize>)
 // memoize a bound cell's rewritten binding by cell address in
 // instantiate_int/rename_int. probe:
 // design/review-2026-10-19/repro/t-tvar-dag-walks-exponential.sh (t-tvar-02)
+// 2026-10-20 claude: Partly done. Each shared composite is now walked once in
+// position_cells, named_defs, inner_quantifiers, settle_refs, lower, open_beneath,
+// concrete_holds, require_concrete/require_data and callsite::data_positions, and
+// reset_tvars_int, instantiate_int and rename_int rebuild a shared node and a bound
+// cell's binding once (tvar.rs once), so a shared type stays a DAG. --check of the
+// repro is linear: n=400 pair lets checks in 0.07 s (perf build), n=22 in 0.26 s debug
+// where it took about 7 s. Still open: elaboration of the call (graphix without
+// --check) is exponential in a committing Type::contains_int over two DAG sides (no
+// pair memo for commits, only for probes); n=20 runs in 1.4 s, n=40 does not finish in
+// 120 s. A commit memo must keep the probe memo's low_water/taint rule, and whether a
+// committed true stays true under later binds needs care. tvar_occurrences still walks
+// every path (its caller counts occurrences).
 pub fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            if out.insert(tv.cell_addr(), tv.clone()).is_none()
-                && let Some(b) = tv.binding()
-            {
-                position_cells(&b, out)
+    fn go(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AHashSet<usize>) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if out.insert(tv.cell_addr(), tv.clone()).is_none()
+                    && let Some(b) = tv.binding()
+                {
+                    go(&b, out, nodes)
+                }
             }
-        }
-        Type::Fn(ft) => ft.for_each_part(&mut |t, constraint| {
-            if !constraint {
-                position_cells(t, out)
-            }
-        }),
-        t => t.for_each_child(&mut |c| position_cells(c, out)),
-    })
+            t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
+            Type::Fn(ft) => ft.for_each_part(&mut |t, constraint| {
+                if !constraint {
+                    go(t, out, nodes)
+                }
+            }),
+            t => t.for_each_child(&mut |c| go(c, out, nodes)),
+        })
+    }
+    go(t, out, &mut LPooled::take())
 }

@@ -123,6 +123,21 @@ run!(
     ; FuseExpect::None
 );
 
+// Heads that unify conflict whatever their bounds say and whatever impls
+// come after them: no specialization.
+run!(
+    trait_overlapping_bounded_head_refused,
+    refused("conflicting implementation: T is already implemented for Array<'a>"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a: T> T for Array<'a> { let m = |x| 1 };
+        impl T for Array<i64> { let m = |x| 2 };
+        impl T for i64 { let m = |x| 3 };
+        let result = T::m([1])
+    "#
+    ; FuseExpect::None
+);
+
 // Two implementations for one type conflict.
 run!(
     trait_duplicate_impl_refused,

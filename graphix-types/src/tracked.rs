@@ -24,6 +24,16 @@ fn merged_keys<K: Hash + Eq + Clone>(
     Some(keys)
 }
 
+/// Add a joined fork's touched keys to the parent's, whose order does
+/// not matter: the larger list is kept and the smaller copied in, so a
+/// chain of nested forks copies each key a bounded number of times.
+fn absorb<K>(mine: &mut LPooled<Vec<K>>, theirs: &mut LPooled<Vec<K>>) {
+    if theirs.len() > mine.len() {
+        std::mem::swap(mine, theirs)
+    }
+    mine.extend(theirs.drain(..))
+}
+
 /// Whether two of a map's values are one write: identity for a shared
 /// value, equality for a plain one. [`TrackedMap::join`] asks it of each
 /// key a fork wrote, so a write made since the fork is never replaced
@@ -185,7 +195,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             self.map = map;
             self.generation = generation;
             if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
-                // CR claude for claude: [perf/low] [perf/low] A static bind runs in a
+                // XCR claude for claude: [perf/low] [perf/low] A static bind runs in a
                 // forked task, and a nested bind forks inside it. Every join copies
                 // what the child accumulated: this `touched` list, and in
                 // `CompileCtx::join` also pending_refs, pending_settles and discarded.
@@ -199,7 +209,12 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
                 // once where the frame drains. probe:
                 // design/review-2026-10-19/repro/x-perf-compile-nested-task-join.sh
                 // (x-perf-compile-03)
-                mine.extend(theirs.drain(..))
+                // 2026-10-20 claude: TrackedMap/TrackedSet joins keep the larger
+                // touched list and copy the smaller in (absorb), and CompileCtx::join
+                // does the same for pending_refs and discarded. pending_settles still
+                // extends the parent frame with the child's (the chunk-and-flatten form
+                // is not done). Not re-measured.
+                absorb(mine, &mut theirs)
             }
             return;
         }

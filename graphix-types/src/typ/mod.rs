@@ -405,7 +405,7 @@ impl AbstractId {
         if !parts().any(|p| p.starts_with('#')) {
             return Self::of(scope, name);
         }
-        // CR claude for claude: [bug/low] `stable` is spelled "/a/m", while Self::of
+        // XCR claude for claude: [bug/low] `stable` is spelled "/a/m", while Self::of
         // hashes the ModPath's Display form "a::m". A module's abstract type therefore
         // has one identity when the module is loaded inside function bodies and a
         // different one when the same file is loaded at the top level. Two body loads
@@ -414,11 +414,11 @@ impl AbstractId {
         // parts and call Self::of with it (and use its Display in the in-body format).
         // probe: design/review-2026-10-19/repro/t-typ-mod-abstract-id-nested-module.sh
         // (t-typ-mod-03)
-        let mut stable = compact_str::CompactString::new("");
-        for p in parts().filter(|p| !p.starts_with('#')) {
-            stable.push('/');
-            stable.push_str(p);
-        }
+        // 2026-10-19 claude: AbstractId::declared builds a ModPath of the non-# parts
+        // and calls Self::of with it outside a body, and uses its Display inside one.
+        // Pin: lang::modules::module_abstract_type_is_one_in_a_body_and_at_the_top
+        // ([4, 4]; was [-1, 4]).
+        let stable: ModPath = parts().filter(|p| !p.starts_with('#')).collect();
         // CR claude for eric: [bug/medium] A module declared inside a block or function
         // body has scope `/#do../m`. Here its types are keyed by `/m::T` alone, because
         // the `#` parts are dropped unless the last part is one. So two different
@@ -434,7 +434,7 @@ impl AbstractId {
         // (t-expr-core-01)
         let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
         let place = match in_body {
-            false => format_compact!("{stable}::{name}"),
+            false => return Self::of(&stable, name),
             true => match &ori.source {
                 Source::File(_) | Source::Vfs(_) | Source::Netidx(_) => {
                     format_compact!("{stable}::#{}:{pos}::{name}", ori.source)
@@ -1991,8 +1991,10 @@ impl Type {
         }
     }
 
-    /// The definitions this type's filled cells name, and theirs, by
-    /// [`ResolvedRef::def_key`]: through bindings and conjuncts.
+    /// The definitions this type's filled cells name, and theirs, each
+    /// allocation once (an interface's definition and its
+    /// implementation's share a [`ResolvedRef::def_key`] but are two):
+    /// through bindings and conjuncts.
     #[doc(hidden)]
     pub fn named_defs(
         &self,
@@ -2011,7 +2013,7 @@ impl Type {
                 }
             }
             Type::Ref(tr) => {
-                // CR claude for claude: [risk/low] Ownership is deduped by def_key, but
+                // XCR claude for claude: [risk/low] Ownership is deduped by def_key, but
                 // def_key follows same_as. After link_same, an interface's definition
                 // and its implementation's share a key although they are two
                 // allocations, each held only weakly by its own cells. A DefTable or
@@ -2019,10 +2021,14 @@ impl Type {
                 // cells die with its env entry ("outlived its definition"). Key `out`
                 // by Arc::as_ptr(&r) instead; identity questions keep def_key. Found by
                 // reading; not run. (t-typ-mod-04)
+                // 2026-10-19 claude: named_defs keys its out map by the ResolvedRef
+                // allocation (Arc::as_ptr), so both of a linked
+                // interface/implementation pair are owned. Not reproduced: no test
+                // reaches a table naming both.
                 if let Some(r) = tr.resolved()
-                    && !out.contains_key(&r.def_key())
+                    && !out.contains_key(&(sync::Arc::as_ptr(&r) as usize))
                 {
-                    out.insert(r.def_key(), r.clone());
+                    out.insert(sync::Arc::as_ptr(&r) as usize, r.clone());
                     r.typ.named_defs(cells, out);
                     for c in r.params.iter().filter_map(|(_, c)| c.as_ref()) {
                         c.named_defs(cells, out)
@@ -2030,6 +2036,8 @@ impl Type {
                 }
                 self.for_each_child(&mut |c| c.named_defs(cells, out))
             }
+            // a shared node's address is another allocation than any cell's
+            t if node_addr(t).is_some_and(|n| !cells.insert(n)) => (),
             Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.named_defs(cells, out)),
             t => t.for_each_child(&mut |c| c.named_defs(cells, out)),
         })
@@ -2664,7 +2672,7 @@ impl Type {
                                 tv.add_cell_constraint(constraint)
                             }
                         }
-                        // CR claude for claude: [bug/medium] A bound checked against an
+                        // XCR claude for claude: [bug/medium] A bound checked against an
                         // argument that is not a bare cell is checked only as the
                         // argument stands: the open members of a union argument never
                         // get it, as require_bounds gives them when a cell binds. So
@@ -2676,7 +2684,20 @@ impl Type {
                         // (require_bounds(&[constraint], arg)). probe:
                         // design/review-2026-10-19/repro/x-kind-markers-noerror-open-member.sh
                         // (x-kind-markers-04)
-                        _ if commit => constraint.check_contains(env, arg)?,
+                        // 2026-10-19 claude: A bound checked against a non-cell argument is
+                        // handed on with tvar::require_bounds after check_contains. An
+                        // interface's typedef-parameter bounds count the same way: fntyp.rs
+                        // param_bounds_of gives a NoError parameter's bound to the open
+                        // members of a union argument (TVar::open_members), else db's
+                        // Result<[null, 'v], ..> interface refused its implementation. Only
+                        // NoError is mirrored there; no other predicate bound sits on a
+                        // typedef parameter in the tree. Pins:
+                        // lang::types::unsound_acceptances_are_refused (NO_ERROR_OPEN_MEMBER
+                        // refused, NO_ERROR_OPEN_MEMBER_TOLD accepted).
+                        _ if commit => {
+                            constraint.check_contains(env, arg)?;
+                            tvar::require_bounds(std::slice::from_ref(&constraint), arg)
+                        }
                         _ => {
                             if !constraint.contains_with_flags(
                                 BitFlags::empty(),

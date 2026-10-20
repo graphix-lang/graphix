@@ -2017,13 +2017,9 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 .at(&site);
             }
             if checking && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate) {
-                if let Some((a, b)) = pat.type_predicate.rep_collision(&ctx.env, &rest) {
-                    let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
+                if let Some(why) = pat.type_predicate.rep_collision(&ctx.env, &rest) {
                     return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                        anyhow!(
-                            "this pattern can't tell {a} from {b}: both have the same \
-                             runtime form; wrap them in distinct variants"
-                        )
+                        why.untold("this pattern", &pat.type_predicate, &rest)
                     }))
                     .at(&site);
                 }
