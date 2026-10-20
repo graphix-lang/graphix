@@ -2018,6 +2018,8 @@ impl Type {
                 }
                 self.for_each_child(&mut |c| c.named_defs(cells, out))
             }
+            // a shared node's address is another allocation than any cell's
+            t if node_addr(t).is_some_and(|n| !cells.insert(n)) => (),
             Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.named_defs(cells, out)),
             t => t.for_each_child(&mut |c| c.named_defs(cells, out)),
         })

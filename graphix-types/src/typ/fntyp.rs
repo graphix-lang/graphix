@@ -922,6 +922,7 @@ impl FnType {
                         go(&b, out, seen)
                     }
                 }
+                t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
                 Type::Fn(ft) => {
                     ft.open_quantifiers(|_, open| {
                         out.insert(open.cell_addr(), open);

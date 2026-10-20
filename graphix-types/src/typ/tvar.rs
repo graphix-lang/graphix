@@ -404,15 +404,34 @@ impl Drop for AtLevel {
 /// A generic cell stays generic (a scheme bound into a cell is still a
 /// scheme), and a cell already at or above `level`'s depth reaches
 /// nothing deeper.
-pub(super) fn lower(t: &Type, level: Level) {
-    if level.is_generic() {
-        return;
+/// `rebuild` of `t`, made once per shared composite (`memo`, by address;
+/// a cell's address is another allocation, so a cell memo shares the map).
+fn once(
+    t: &Type,
+    memo: &mut AHashMap<usize, Option<Type>>,
+    rebuild: impl FnOnce(&mut AHashMap<usize, Option<Type>>) -> Option<Type>,
+) -> Option<Type> {
+    let Some(n) = node_addr(t) else { return rebuild(memo) };
+    if let Some(r) = memo.get(&n) {
+        return r.clone();
     }
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) if !tv.level().is_generic() => tv.claim(level),
-        Type::TVar(_) => (),
-        t => t.for_each_child(&mut |c| lower(c, level)),
-    })
+    let r = rebuild(memo);
+    memo.insert(n, r.clone());
+    r
+}
+
+pub(super) fn lower(t: &Type, level: Level) {
+    fn go(t: &Type, level: Level, nodes: &mut AHashSet<usize>) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) if !tv.level().is_generic() => tv.claim(level),
+            Type::TVar(_) => (),
+            t if node_addr(t).is_some_and(|n| !nodes.insert(n)) => (),
+            t => t.for_each_child(&mut |c| go(c, level, nodes)),
+        })
+    }
+    if !level.is_generic() {
+        go(t, level, &mut LPooled::take())
+    }
 }
 
 /// How a copy of a type treats its cells: `Copy` makes a fresh cell per
@@ -1686,6 +1705,12 @@ impl Type {
     /// cells judged by their bindings, open cells admitted (a bind hands
     /// them the conjunct).
     pub(crate) fn concrete_holds(&self) -> bool {
+        self.concrete_holds_seen(&mut LPooled::take())
+    }
+
+    /// [`Self::concrete_holds`], each cell and shared node judged once:
+    /// met again, it answers what its first visit is answering.
+    fn concrete_holds_seen(&self, seen: &mut AHashSet<usize>) -> bool {
         ensure_sufficient(|| match self {
             // CR claude for eric: [bug/low] The Type::Fn arm below walks the signature
             // with for_each_part, throws slot included. A fn type that throws nothing
@@ -1700,15 +1725,19 @@ impl Type {
             // must-reject family updated to match. The alternative, skipping the throws
             // slot, admits targets that can only fail at run time. (t-tvar-10)
             Type::Bottom | Type::ByRef(..) => false,
-            Type::TVar(tv) => tv.binding().is_none_or(|b| b.concrete_holds()),
+            Type::TVar(tv) => {
+                !seen.insert(tv.cell_addr())
+                    || tv.binding().is_none_or(|b| b.concrete_holds_seen(seen))
+            }
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => true,
             Type::Fn(ft) => {
                 let mut holds = true;
-                ft.for_each_part(&mut |t, _| holds &= t.concrete_holds());
+                ft.for_each_part(&mut |t, _| holds &= t.concrete_holds_seen(seen));
                 holds
             }
             t => {
                 let mut holds = true;
-                t.for_each_child(&mut |c| holds &= c.concrete_holds());
+                t.for_each_child(&mut |c| holds &= c.concrete_holds_seen(seen));
                 holds
             }
         })
@@ -1717,27 +1746,33 @@ impl Type {
     /// Hand the `Concrete` conjunct to every open cell the type reaches:
     /// a concrete cell's binding is concrete all the way down.
     pub(crate) fn require_concrete(&self) {
+        self.require_everywhere(Type::Concrete, true, &mut LPooled::take())
+    }
+
+    /// Hand `bound` to every open cell the type reaches, a function's
+    /// parts only when `in_fns`; each cell and shared node once.
+    fn require_everywhere(&self, bound: Type, in_fns: bool, seen: &mut AHashSet<usize>) {
         ensure_sufficient(|| match self {
+            Type::TVar(tv) if !seen.insert(tv.cell_addr()) => (),
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_concrete(),
-                None => tv.add_cell_constraint(Type::Concrete),
+                Some(b) => b.require_everywhere(bound, in_fns, seen),
+                None => tv.add_cell_constraint(bound),
             },
-            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.require_concrete()),
-            t => t.for_each_child(&mut |c| c.require_concrete()),
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
+            Type::Fn(ft) if in_fns => ft.for_each_part(&mut |t, _| {
+                t.require_everywhere(bound.clone(), in_fns, seen)
+            }),
+            Type::Fn(_) => (),
+            t => t.for_each_child(&mut |c| {
+                c.require_everywhere(bound.clone(), in_fns, seen)
+            }),
         })
     }
 
     /// Hand the `Data` conjunct to every open cell the type reaches
     /// outside a function, which is no data whatever it holds.
     pub(crate) fn require_data(&self) {
-        ensure_sufficient(|| match self {
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_data(),
-                None => tv.add_cell_constraint(Type::Data),
-            },
-            Type::Fn(_) => (),
-            t => t.for_each_child(&mut |c| c.require_data()),
-        })
+        self.require_everywhere(Type::Data, false, &mut LPooled::take())
     }
 
     /// Drop the conjuncts of every open cell the type reaches: for a
@@ -1891,7 +1926,7 @@ impl Type {
     }
 
     fn open_beneath(&self, rigid: bool) -> bool {
-        fn go(t: &Type, rigid: bool, seen: &mut IntSet<usize>) -> bool {
+        fn go(t: &Type, rigid: bool, seen: &mut AHashSet<usize>) -> bool {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
                     seen.insert(tv.cell_addr())
@@ -1900,6 +1935,7 @@ impl Type {
                             None => rigid || !tv.is_rigid(),
                         }
                 }
+                t if node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
                 t => t
                     .try_for_each_child(&mut |c| {
                         if go(c, rigid, seen) {
@@ -2058,10 +2094,21 @@ impl Type {
         known: &mut AHashMap<usize, TVar>,
         how: Fresh<'_>,
     ) -> Option<Type> {
+        self.reset_memo(known, &mut LPooled::take(), how)
+    }
+
+    /// [`Self::reset_tvars_int`], each shared composite copied once
+    /// (`nodes`, by address), so a shared node stays shared.
+    fn reset_memo(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        nodes: &mut AHashMap<usize, Option<Type>>,
+        how: Fresh<'_>,
+    ) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 Some(Type::TVar(
-                    tv.freshen(known, &mut (), how, |t, k, ()| t.reset_tvars_int(k, how)),
+                    tv.freshen(known, nodes, how, |t, k, n| t.reset_memo(k, n, how)),
                 ))
             }
             // `cow_children` rebuilds a Ref through `with_params`, which
@@ -2069,7 +2116,9 @@ impl Type {
             // A nested fn type is always fresh: its `lambda_ids` cell
             // must be the instance's own.
             Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.reset_tvars_int(known, how)))),
-            t => t.cow_children(&mut |c| c.reset_tvars_int(known, how)),
+            t => once(t, nodes, |nodes| {
+                t.cow_children(&mut |c| c.reset_memo(known, nodes, how))
+            }),
         })
     }
 
@@ -2113,15 +2162,34 @@ impl Type {
     }
 
     pub(super) fn rename_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
+        self.rename_memo(known, &mut LPooled::take())
+    }
+
+    /// [`Self::rename_int`], each bound cell's binding rebuilt once
+    /// (`memo`, by cell), so a shared binding stays shared.
+    fn rename_memo(
+        &self,
+        known: &AHashMap<usize, TVar>,
+        memo: &mut AHashMap<usize, Option<Type>>,
+    ) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match tv.binding() {
-                Some(t) => Some(t.rename_int(known).unwrap_or(t)),
+                Some(t) => Some(match memo.get(&tv.cell_addr()) {
+                    Some(r) => r.clone().unwrap_or(t),
+                    None => {
+                        let r = t.rename_memo(known, memo).unwrap_or(t);
+                        memo.insert(tv.cell_addr(), Some(r.clone()));
+                        r
+                    }
+                }),
                 None => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.clone())),
             },
             Type::Fn(ft) => {
-                ft.cow_walk(|t| t.rename_int(known)).map(|f| Type::Fn(Arc::new(f)))
+                ft.cow_walk(|t| t.rename_memo(known, memo)).map(|f| Type::Fn(Arc::new(f)))
             }
-            t => t.cow_children(&mut |c| c.rename_int(known)),
+            t => {
+                once(t, memo, |memo| t.cow_children(&mut |c| c.rename_memo(known, memo)))
+            }
         })
     }
 
@@ -2132,17 +2200,37 @@ impl Type {
         known: &mut AHashMap<usize, TVar>,
         how: Fresh<'_>,
     ) -> Option<Type> {
+        self.instantiate_memo(known, &mut LPooled::take(), how)
+    }
+
+    /// [`Self::instantiate_int`], each bound cell's binding rebuilt once
+    /// (`memo`, by cell), so a shared binding stays shared.
+    fn instantiate_memo(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        memo: &mut AHashMap<usize, Option<Type>>,
+        how: Fresh<'_>,
+    ) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 Some(match tv.binding() {
-                    Some(t) => t.instantiate_int(known, how).unwrap_or(t),
-                    None => Type::TVar(tv.freshen(known, &mut (), how, |t, k, ()| {
-                        t.instantiate_int(k, how)
+                    Some(t) => match memo.get(&tv.cell_addr()) {
+                        Some(r) => r.clone().unwrap_or(t),
+                        None => {
+                            let r = t.instantiate_memo(known, memo, how).unwrap_or(t);
+                            memo.insert(tv.cell_addr(), Some(r.clone()));
+                            r
+                        }
+                    },
+                    None => Type::TVar(tv.freshen(known, memo, how, |t, k, m| {
+                        t.instantiate_memo(k, m, how)
                     })),
                 })
             }
             Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate_how(known, how)))),
-            t => t.cow_children(&mut |c| c.instantiate_int(known, how)),
+            t => once(t, memo, |memo| {
+                t.cow_children(&mut |c| c.instantiate_memo(known, memo, how))
+            }),
         })
     }
 
