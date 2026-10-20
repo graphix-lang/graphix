@@ -19,7 +19,7 @@ use crate::{
     profile::{self, Phase},
     typ::{
         FnArgKind, FnArgType, FnType, TVar, Type,
-        tvar::{AtLevel, InTask, Level, OwnWrites, TaskId, new_task},
+        tvar::{AtLevel, ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
 };
@@ -1480,25 +1480,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 let _task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
-                let res = self.check_body(ctx).and_then(|()| {
-                    if writes.foreign() {
-                        // CR claude for claude: [readability/medium] This refusal tells
-                        // the user to annotate the binding the module decides, but it
-                        // names neither that binding nor the place in the module that
-                        // decided it. OwnWrites records only a bool. A module that
-                        // decides `x` and one that decides `z` get identical errors at
-                        // `mod m`, so the user has to bisect the module body. Have
-                        // foreign_write keep the first foreign cell. Then name the
-                        // outer binding whose type holds it, with its position, and the
-                        // module expression whose check wrote it. probe:
-                        // design/review-2026-10-19/repro/tests-modules-image-left-open-names-nothing.sh
-                        // (tests-modules-image-03)
-                        bail!(
-                            "the check decides a type the code around the module \
-                             left open: annotate the binding it decides"
-                        )
-                    }
-                    Ok(())
+                let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
+                    // XCR claude for claude: [readability/medium] This refusal tells
+                    // the user to annotate the binding the module decides, but it
+                    // names neither that binding nor the place in the module that
+                    // decided it. OwnWrites records only a bool. A module that
+                    // decides `x` and one that decides `z` get identical errors at
+                    // `mod m`, so the user has to bisect the module body. Have
+                    // foreign_write keep the first foreign cell. Then name the
+                    // outer binding whose type holds it, with its position, and the
+                    // module expression whose check wrote it. probe:
+                    // design/review-2026-10-19/repro/tests-modules-image-left-open-names-nothing.sh
+                    // (tests-modules-image-03)
+                    // 2026-10-20 claude: OwnWrites keeps the first foreign write, with its cell
+                    // (tvar::ForeignWrite, the TCell address while it lives), and the refusal names
+                    // the bindings outside the module whose types hold that cell, by position, up
+                    // to three (module.rs decided_binds): the probe now says annotate `x` (line 1,
+                    // column 5) and annotate `z` (line 2, column 5). Not done: the place in the
+                    // module whose check made the write (the write site has no expression). Pin:
+                    // lang::modules::module_check_decides_no_outer_type names `x` with its
+                    // position.
+                    Some(w) => bail!(
+                        "the check decides a type the code around the module \
+                         left open: annotate {}",
+                        decided_binds(ctx, &self.scope.lexical, &w)
+                    ),
+                    None => Ok(()),
                 });
                 res.with_context(|| {
                     format_compact!("compiling module {}", self.scope.lexical)
@@ -1529,4 +1536,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
         Ok(None)
     }
+}
+
+/// The bindings outside `module` whose types hold what its check wrote,
+/// by position, for its refusal.
+fn decided_binds<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    module: &ModPath,
+    w: &ForeignWrite,
+) -> CompactString {
+    let mut held: LPooled<Vec<(crate::SourcePosition, &str)>> = ctx
+        .env
+        .by_id
+        .iter()
+        .map(|(_, b)| b)
+        .filter(|b| !Path::is_parent(&*module.0, &*b.scope.0) && w.held_by(&b.typ))
+        .map(|b| (b.pos, b.name.as_str()))
+        .collect();
+    held.sort();
+    held.dedup();
+    let mut out = CompactString::new("");
+    for (i, (pos, name)) in held.iter().take(3).enumerate() {
+        let sep = if i == 0 { "" } else { ", " };
+        let _ = write!(out, "{sep}`{name}` (line {}, column {})", pos.line, pos.column);
+    }
+    if out.is_empty() {
+        out.push_str("the binding it decides");
+    }
+    out
 }

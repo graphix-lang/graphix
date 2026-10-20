@@ -275,7 +275,7 @@ let result = [a, b]
 // siblings check concurrently and see each other through interfaces.
 run!(
     module_check_decides_no_outer_type,
-    refused("left open"),
+    refused("left open: annotate `x` (line 2, column 5)"),
     "/test.gx" => r#"
 let x = never();
 mod m;

@@ -183,8 +183,8 @@ thread_local! {
     static LEVEL: std::cell::Cell<Level> = const { std::cell::Cell::new(Level::GENERIC) };
     static TASK: std::cell::Cell<TaskId> = const { std::cell::Cell::new(TaskId::OUTSIDE) };
     /// The compile task whose foreign writes this thread records
-    /// ([`OwnWrites`]), and whether it made one.
-    static OWN_WRITES: std::cell::Cell<Option<(TaskId, bool)>> =
+    /// ([`OwnWrites`]), and the first it made.
+    static OWN_WRITES: std::cell::Cell<Option<(TaskId, Option<ForeignWrite>)>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -284,7 +284,7 @@ impl TaskContext {
 pub struct InContext {
     task: TaskId,
     level: Level,
-    own: Option<(TaskId, bool)>,
+    own: Option<(TaskId, Option<ForeignWrite>)>,
 }
 
 impl Drop for InContext {
@@ -306,7 +306,12 @@ pub(super) fn earlier_task(cell: &TCell) -> bool {
 /// enclosing body's, a sibling's) the check settled, and a concurrent
 /// sibling may be reading it.
 pub(super) fn written(cell: &TCell) {
-    written_of(cell.task, "cell")
+    written_of(cell.task, "cell", Some(cell_addr(cell)))
+}
+
+/// A cell's identity while it lives, for naming what a write reached.
+fn cell_addr(cell: &TCell) -> usize {
+    cell as *const TCell as usize
 }
 
 /// A decision about a type (a binding, a conjunct, a merge, a mark) by
@@ -315,20 +320,20 @@ pub(super) fn written(cell: &TCell) {
 /// recorded and not made: every module of a run that would make it is
 /// refused, whatever order they ran in, and none sees another's.
 pub(super) fn decided(cell: &TCell) -> bool {
-    decided_of(cell.task, "cell")
+    decided_of(cell.task, "cell", Some(cell_addr(cell)))
 }
 
-fn decided_of(owner: TaskId, what: &str) -> bool {
+fn decided_of(owner: TaskId, what: &str, cell: Option<usize>) -> bool {
     if owner >= TASK.get() {
         return true;
     }
-    foreign_write(owner, what);
+    foreign_write(owner, what, cell);
     !OWN_WRITES.get().is_some_and(|(task, _)| task == TASK.get())
 }
 
-fn written_of(owner: TaskId, what: &str) {
+fn written_of(owner: TaskId, what: &str, cell: Option<usize>) {
     if owner < TASK.get() {
-        foreign_write(owner, what)
+        foreign_write(owner, what, cell)
     }
 }
 
@@ -337,18 +342,34 @@ fn written_of(owner: TaskId, what: &str) {
 /// thread, and a task run while it waits keeps its own record.
 #[must_use]
 #[doc(hidden)]
-pub struct OwnWrites(Option<(TaskId, bool)>);
+pub struct OwnWrites(Option<(TaskId, Option<ForeignWrite>)>);
 
 impl OwnWrites {
     #[doc(hidden)]
     pub fn enter(task: TaskId) -> Self {
-        Self(OWN_WRITES.replace(Some((task, false))))
+        Self(OWN_WRITES.replace(Some((task, None))))
     }
 
-    /// Whether the task wrote outside itself.
+    /// The first write the task made outside itself.
     #[doc(hidden)]
-    pub fn foreign(self) -> bool {
-        OWN_WRITES.get().is_some_and(|(_, w)| w)
+    pub fn foreign(self) -> Option<ForeignWrite> {
+        OWN_WRITES.get().and_then(|(_, w)| w)
+    }
+}
+
+/// A compile task's write to what an earlier task created: the cell, when
+/// it was one.
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub struct ForeignWrite {
+    cell: Option<usize>,
+}
+
+impl ForeignWrite {
+    /// Whether `t` reaches the cell written.
+    #[doc(hidden)]
+    pub fn held_by(&self, t: &Type) -> bool {
+        self.cell.is_some_and(|c| t.holds_cell(c))
     }
 }
 
@@ -359,11 +380,12 @@ impl Drop for OwnWrites {
 }
 
 #[cold]
-fn foreign_write(owner: TaskId, what: &str) {
-    if let Some((task, _)) = OWN_WRITES.get()
+fn foreign_write(owner: TaskId, what: &str, cell: Option<usize>) {
+    if let Some((task, first)) = OWN_WRITES.get()
         && task == TASK.get()
+        && first.is_none_or(|f| f.cell.is_none() && cell.is_some())
     {
-        OWN_WRITES.set(Some((task, true)))
+        OWN_WRITES.set(Some((task, Some(ForeignWrite { cell }))))
     }
     if crate::dbgenv::graphix_task_audit() {
         eprintln!(
@@ -1013,7 +1035,11 @@ impl TVar {
             // check needed of them is a decision it may not make
             (true, true) => {
                 if !Arc::ptr_eq(&s_cell, &o_cell) {
-                    written_of(s_cell.read().task, "cell");
+                    written_of(
+                        s_cell.read().task,
+                        "cell",
+                        Some(s_cell.data_ptr() as usize),
+                    );
                 }
                 return;
             }
@@ -1073,16 +1099,17 @@ impl TVar {
             let s_task = s_cell.read().task;
             let o_task = o_cell.read().task;
             let var_task = self.read().task;
-            if !decided_of(s_task, "cell")
-                || (!to_add.is_empty() && !decided_of(o_task, "cell"))
-                || !decided_of(var_task, "var")
+            if !decided_of(s_task, "cell", Some(s_cell.data_ptr() as usize))
+                || (!to_add.is_empty()
+                    && !decided_of(o_task, "cell", Some(o_cell.data_ptr() as usize)))
+                || !decided_of(var_task, "var", None)
             {
                 return;
             }
         }
         let mut s = self.write();
         if same && how == Merge::Name && (!s.frozen || s.id != oid) {
-            written_of(s.task, "var");
+            written_of(s.task, "var", None);
         }
         if how == Merge::Name {
             s.frozen = true;
@@ -1107,7 +1134,7 @@ impl TVar {
             if !earlier_task(&oc) {
                 oc.facts |= facts;
             } else if !oc.facts.contains(facts) {
-                written_of(oc.task, "cell");
+                written_of(oc.task, "cell", Some(cell_addr(&oc)));
             }
         }
         // Forward-link the abandoned cell: other TVars may share it and
@@ -1144,7 +1171,7 @@ impl TVar {
 
     pub fn freeze(&self) {
         let mut l = self.write();
-        if !l.frozen && !decided_of(l.task, "var") {
+        if !l.frozen && !decided_of(l.task, "var", None) {
             return;
         }
         l.frozen = true;
@@ -1829,6 +1856,24 @@ impl Type {
             }
             Type::Fn(ft) => ft.alias_tvars(known),
             t => t.for_each_child(&mut |c| c.alias_tvars(known)),
+        })
+    }
+
+    /// Whether the cell at `addr` ([`ForeignWrite`]) is one of this type's,
+    /// or one a cell it holds is bound to reaches.
+    fn holds_cell(&self, addr: usize) -> bool {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                let cell = tv.cell();
+                cell.data_ptr() as usize == addr
+                    || tv.binding().is_some_and(|b| b.holds_cell(addr))
+            }
+            t => t
+                .try_for_each_child(&mut |c| match c.holds_cell(addr) {
+                    true => ControlFlow::Break(()),
+                    false => ControlFlow::Continue(()),
+                })
+                .is_break(),
         })
     }
 
