@@ -4,7 +4,7 @@
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
-use graphix_package_core::testing::Mode;
+use graphix_package_core::testing::{Mode, data};
 use netidx::publisher::Value;
 use std::time::Duration;
 
