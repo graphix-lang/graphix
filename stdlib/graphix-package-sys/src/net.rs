@@ -619,54 +619,13 @@ macro_rules! list {
                             "invalid path {requested}"
                         )));
                     };
-                    // XCR claude for claude: [bug/medium] Each poll tick with an
-                    // unchanged path reissues the listing under the same id, and
-                    // NetState::spawn_request's replacement aborts the one in flight. A
-                    // listing slower than its #update period (default 1 s) therefore
-                    // never answers. With the resolver 0.3 s away each way, the
-                    // default-polled list answered 0 times in 11 s while the same list
-                    // on a 30 s trigger answered. Abort only on a path change, sleep or
-                    // delete. On a tick while a listing is in flight, let it finish and
-                    // owe at most one more listing (or drop the tick). probe:
-                    // design/review-2026-10-19/repro/sys-net-list-poll-starves.sh
-                    // (sys-net-02)
-                    // a tick while a listing is in flight owes one more: a
-                    // listing slower than the ticks still answers
-                    // 2026-10-19 claude: A listing in flight is no longer replaced by a
-                    // tick on the same path: each site keeps a Listing (Done, InFlight,
-                    // Owed) beside its path; a tick while one is in flight owes one
-                    // more, issued when the answer arrives; a path change, sleep or
-                    // delete still aborts. No pin: needs a resolver slower than the
-                    // tick
-                    // (design/review-2026-10-19/repro/sys-net-list-poll-starves.sh);
-                    // net's list tests pass.
-                    // 2026-10-20 claude: XCR review: The new Listing state goes back to
-                    // Done only when list_response returns Some, but NetState::list
-                    // answers Value::Null when the resolver's ChangeTracker reports no
-                    // change (netstate.rs, check_changed Ok(false)), and list_response
-                    // maps Null to None. So the first poll that finds nothing changed
-                    // leaves the site InFlight forever: every later tick only sets
-                    // Owed, nothing ever issues the owed listing, and the list stops
-                    // polling. Ran with the current quick binary: publish /local/a,
-                    // then /local/b at 700 ms, list(#update: 100 ms timer, '/local')
-                    // prints 1 and never 2. A single trigger at 1 s does print 2.
-                    // Before this change every tick reissued the listing, so a Null
-                    // answer was harmless. Fix: treat any delivery on the var, Null
-                    // included, as the end of the listing in flight (Done, or issue the
-                    // owed one), and pin a polled list that picks up a path published
-                    // after an unchanged poll.
-                    // 2026-10-20 claude: Any delivery on the listing's var now ends the
-                    // listing in flight, an unchanged poll's Null included: the Null
-                    // sets Done (or issues the owed listing) and answers nothing, so
-                    // the next tick lists again. Pin:
-                    // lib_tests::net::net_list_polled_sees_a_later_path (a path
-                    // published at 700 ms under a list polled every 100 ms; it answers
-                    // 1 instead of 2 with the fix undone, all four modes).
                     match &mut self.current {
                         Some((p, listing)) if *p == path => {
                             match (trigger_fired, *listing) {
                                 (false, _) => (),
                                 (true, Listing::Done) => self.list(ctx, path),
+                                // a tick while a listing is in flight owes one
+                                // more: a listing slower than the ticks still answers
                                 (true, Listing::InFlight | Listing::Owed) => {
                                     *listing = Listing::Owed
                                 }
