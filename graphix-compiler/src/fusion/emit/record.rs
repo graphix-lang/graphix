@@ -28,6 +28,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
+use std::sync::atomic::AtomicBool;
 use triomphe::Arc;
 
 /// The addresses the module resolves imported constant symbols to,
@@ -78,6 +79,20 @@ pub enum KernelConst {
     SiteBlockWords,
     /// An outlined loop's fork point, whatever runs the code.
     LoopSite(Arc<LoopSite>),
+    /// A select's coverage-hole report, said once per site.
+    NoMatchSite(Box<NoMatchSite>),
+}
+
+/// Where a fused select matched no arm, and whether that was said.
+pub(crate) struct NoMatchSite {
+    pub(crate) spec: Arc<Expr>,
+    pub(crate) said: AtomicBool,
+}
+
+impl NoMatchSite {
+    pub(crate) fn new(spec: Arc<Expr>) -> Self {
+        Self { spec, said: AtomicBool::new(false) }
+    }
 }
 
 impl KernelConst {
@@ -97,6 +112,7 @@ impl KernelConst {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
             }
             KernelConst::LoopSite(l) => Arc::as_ptr(l) as usize,
+            KernelConst::NoMatchSite(b) => &**b as *const NoMatchSite as usize,
         }
     }
 
@@ -260,6 +276,7 @@ mod tag {
     pub const SITE_BLOCK_WORDS: u8 = 8;
     pub const LOOP_SITE: u8 = 9;
     pub const IO_SITE: u8 = 10;
+    pub const NO_MATCH_SITE: u8 = 11;
 
     pub const HELPER: u8 = 0;
     pub const CALLEE: u8 = 1;
@@ -452,6 +469,7 @@ impl Pack for KernelConst {
             KernelConst::Cast
             | KernelConst::SiteBlockWords
             | KernelConst::LoopSite(_) => 0,
+            KernelConst::NoMatchSite(s) => s.spec.encoded_len(),
             KernelConst::SiteLeaf(l) => kernel_abi::site_leaf_len(l),
         }
     }
@@ -498,6 +516,10 @@ impl Pack for KernelConst {
             }
             KernelConst::SiteBlockWords => Ok(buf.put_u8(tag::SITE_BLOCK_WORDS)),
             KernelConst::LoopSite(_) => Ok(buf.put_u8(tag::LOOP_SITE)),
+            KernelConst::NoMatchSite(s) => {
+                buf.put_u8(tag::NO_MATCH_SITE);
+                s.spec.encode(buf)
+            }
         }
     }
 
@@ -543,6 +565,9 @@ impl Pack for KernelConst {
             tag::SITE_LEAF => KernelConst::SiteLeaf(kernel_abi::site_leaf_decode(buf)?),
             tag::SITE_BLOCK_WORDS => KernelConst::SiteBlockWords,
             tag::LOOP_SITE => KernelConst::LoopSite(Arc::new(LoopSite::default())),
+            tag::NO_MATCH_SITE => KernelConst::NoMatchSite(Box::new(NoMatchSite::new(
+                Arc::new(Expr::decode(buf)?),
+            ))),
             _ => return Err(PackError::UnknownTag),
         })
     }
