@@ -464,6 +464,28 @@ fn completion_offers_only_what_is_in_scope() {
     assert!(got.iter().any(|g| g == "r"), "{got:?}");
 }
 
+/// A block's locals stay in scope inside it though a `seq` follows later
+/// in the function: a seq's lowered expressions have no written end.
+#[test]
+fn completion_keeps_block_locals_above_a_later_seq() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "let local = |q: i64| {\n\
+         \x20 let r = {\n\
+         \x20   let inner_local = q + 1;\n\
+         \x20   inner_local\n\
+         \x20 };\n\
+         \x20 let n = 0;\n\
+         \x20 seq q { n <- q + 1 };\n\
+         \x20 r + n\n\
+         };\n\
+         local(1)\n",
+    )]);
+    c.open("main.gx");
+    let got = c.completions("main.gx", "|inner_local\n");
+    assert!(got.iter().any(|g| g == "inner_local"), "{got:?}");
+}
+
 /// A function is not in scope in its own body, whether or not an
 /// interface declares it.
 #[test]

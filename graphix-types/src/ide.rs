@@ -50,7 +50,9 @@ pub struct ModuleRefSite {
 #[derive(Debug, Clone)]
 pub struct ScopeMapEntry {
     pub pos: SourcePosition,
-    pub end: SourcePosition,
+    /// Where the expression ends; `None` for one the parser did not write
+    /// (a lowering's).
+    pub end: Option<SourcePosition>,
     pub ori: Arc<Origin>,
     pub scope: ModPath,
 }

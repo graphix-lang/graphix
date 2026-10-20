@@ -200,7 +200,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
     if ctx.env.ide.is_lsp() {
         ctx.env.push_scope_map_entry(ScopeMapEntry {
             pos: spec.pos,
-            end: spec.end.0,
+            end: spec.end.get(),
             ori: spec.ori.clone(),
             scope: scope.lexical.clone(),
         });

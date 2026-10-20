@@ -82,13 +82,13 @@ impl<'a> Completer<'a> {
         let entries = || {
             let all = checked.iter().flat_map(|c| c.ide.scope_map.iter());
             all.filter(|e| in_file(&e.ori, file))
-                .map(|e| (zero_based(e.pos), zero_based(e.end), &e.scope))
+                .filter_map(|e| Some((zero_based(e.pos), zero_based(e.end?), &e.scope)))
         };
         let around = entries()
             .filter(|(pos, end, _)| *pos <= cursor && cursor <= *end)
             .max_by_key(|(pos, end, _)| (*pos, Reverse(*end)));
         let floor = around.map(|(pos, _, _)| pos).unwrap_or_default();
-        // CR claude for claude: [bug/medium] An entry the parser did not write (every
+        // XCR claude for claude: [bug/medium] An entry the parser did not write (every
         // seq-desugared expr) has end (0,0), so it passes `*end <= cursor` wherever it
         // stands, even after the cursor, and is taken as the statement before the
         // cursor. Its scope then hides every block local above a later `seq` in the
@@ -104,6 +104,11 @@ impl<'a> Completer<'a> {
         // compile_inner (graphix-compiler/src/node/compiler.rs); this agent was scoped
         // out of both crates. The LSP side then skips end-less entries in scope_at and
         // defining.
+        // 2026-10-19 claude: ScopeMapEntry::end is an Option, pushed from
+        // spec.end.get(); scope_at and defining skip an entry with no written end (a
+        // lowering's). Pin: graphix-shell/tests/lsp
+        // completion_keeps_block_locals_above_a_later_seq (fails with the end-less
+        // entries read as (0,0)).
         let before = entries()
             .filter(|(pos, end, _)| {
                 floor <= *pos && *end <= cursor && Some(*pos) != around.map(|a| a.0)
@@ -148,7 +153,7 @@ impl<'a> Completer<'a> {
             .filter(|e| {
                 in_file(&e.ori, self.file)
                     && zero_based(e.pos) <= cursor
-                    && cursor <= zero_based(e.end)
+                    && e.end.is_some_and(|end| cursor <= zero_based(end))
             })
             .collect();
         move |b| {
