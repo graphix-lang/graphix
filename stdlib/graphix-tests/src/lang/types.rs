@@ -1703,6 +1703,14 @@ const SINGLETON_DUPLICATE_MEMBER: &str = r#"{
   k(false, 3)
 }"#;
 
+// A read-only reference test takes a writable reference to its type: the
+// arm leaves nothing of it behind.
+const SHARED_REF_TEST_OVER_MUT: &str = r#"{
+  let x = 1;
+  let o: [&mut i64, null] = &mut x;
+  select o { &i64 as r => *r, null => 0 }
+}"#;
+
 // The second application of one definition is walked as the first is.
 const REF_TEST_OVER_ANY_SECOND_APPLICATION: &str = r#"{
   type Box<'a> = {v: 'a};
@@ -1779,6 +1787,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (ERROR_UNION_DISTRIBUTES, 1),
         (NO_ERROR_OPEN_MEMBER_TOLD, 1),
         (SINGLETON_DUPLICATE_MEMBER, 9),
+        (SHARED_REF_TEST_OVER_MUT, 1),
     ] {
         let v =
             eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;

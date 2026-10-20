@@ -1740,6 +1740,23 @@ impl Type {
         })
     }
 
+    /// Drop the conjuncts of every open cell the type reaches: for a
+    /// copy the caller owns ([`Self::reset_tvars`]), whose heads unify
+    /// whatever their bounds say.
+    pub(crate) fn drop_bounds(&self) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => b.drop_bounds(),
+                None => {
+                    let cell = tv.cell();
+                    cell.write().constraints.clear();
+                }
+            },
+            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.drop_bounds()),
+            t => t.for_each_child(&mut |c| c.drop_bounds()),
+        })
+    }
+
     /// Every type variable the structure holds, bindings not entered.
     pub(crate) fn tvar_occurrences(&self, out: &mut Vec<TVar>) {
         ensure_sufficient(|| match self {

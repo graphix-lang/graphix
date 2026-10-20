@@ -388,20 +388,15 @@ pub(crate) enum TypeName {
     Trait(TraitId),
 }
 
-/// True if scope `s` is `prefix` itself or a path descendant of it.
 /// Where a scope is, for a message: the root is the top level.
-// CR claude for claude: [readability/low] The doc line "True if scope `s` is `prefix`
-// itself or a path descendant of it" above this function belongs to scope_is_under
-// below, which is left undocumented. Move it there. This function also spells out
-// compact_str::CompactString and compact_str::format_compact!, which the file already
-// imports. Found by reading; not run. (t-env-03)
-fn in_scope(scope: &ModPath) -> compact_str::CompactString {
+fn in_scope(scope: &ModPath) -> CompactString {
     match &*scope.0 {
-        "/" | "" => compact_str::CompactString::const_new("at the top level"),
-        _ => compact_str::format_compact!("in scope {scope}"),
+        "/" | "" => CompactString::const_new("at the top level"),
+        _ => format_compact!("in scope {scope}"),
     }
 }
 
+/// True if scope `s` is `prefix` itself or a path descendant of it.
 pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
     if prefix == "/" || s == prefix {
         return true;
@@ -410,6 +405,23 @@ pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
         return false;
     }
     s.as_bytes().get(prefix.len()).copied() == Some(b'/')
+}
+
+/// [`scope_is_under`] where a component a body or block mints (`#fn..`,
+/// `#do..`) stands for every instance of it: an abstract type a body
+/// declares is one type in every instance ([`AbstractId::declared`]),
+/// and each instance's body sees its definition.
+fn under_some_instance(s: &str, prefix: &str) -> bool {
+    let (mut s, mut prefix) = (Path::parts(s), Path::parts(prefix));
+    loop {
+        match (prefix.next(), s.next()) {
+            (None, _) => return true,
+            (Some(_), None) => return false,
+            (Some(p), Some(c))
+                if p == c || (p.starts_with('#') && c.starts_with('#')) => {}
+            (Some(_), Some(_)) => return false,
+        }
+    }
 }
 
 /// Iterate the lexical levels of `from` from innermost to the
@@ -1349,7 +1361,7 @@ impl Env {
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.
-    // CR claude for claude: [bug/medium] heads_overlap keeps the heads' bounds, so
+    // XCR claude for claude: [bug/medium] heads_overlap keeps the heads' bounds, so
     // whether two impls conflict depends on which other impls are registered when the
     // second one is. `impl<'a: T> T for Array<'a>` followed by `impl T for Array<i64>`
     // is accepted when `impl T for i64` comes after them, and refused when it comes
@@ -1358,9 +1370,15 @@ impl Env {
     // specialization. Test overlap on copies whose cells carry no bound conjuncts.
     // probe: design/review-2026-10-19/repro/x-typecheck-patterns-impl-overlap-order.gx
     // (x-typecheck-patterns-06)
+    // 2026-10-20 claude: heads_overlap drops the conjuncts of its fresh copies
+    // (Type::drop_bounds) before the containment test, so bounded heads that unify
+    // conflict whatever impls are registered. Pin:
+    // lang::traits::trait_overlapping_bounded_head_refused.
     pub(crate) fn heads_overlap(&self, a: &Type, b: &Type) -> Result<bool> {
         let a = a.reset_tvars();
         let b = b.reset_tvars();
+        a.drop_bounds();
+        b.drop_bounds();
         Ok(a.contains(self, &b)? || b.contains(self, &a)?)
     }
 
@@ -1778,7 +1796,7 @@ impl Env {
                 rep: rep.clone(),
                 public,
             };
-            // CR claude for claude: [bug/medium] Every instance of a function body that
+            // CR claude for eric: [bug/medium] Every instance of a function body that
             // declares an abstract type re-inserts its AbstractRep with a fresh Arc,
             // even when the representation is unchanged. Two statements that call such
             // a function elaborate in parallel compile tasks, and Env::join then sees
@@ -1792,7 +1810,23 @@ impl Env {
             // refuse a trait in a function body, as an impl there is refused. probe:
             // design/review-2026-10-19/repro/x-typecheck-patterns-local-abstract-fork-panic.gx
             // (x-typecheck-patterns-04)
-            self.abstract_reps.insert(*id, Arc::new(r));
+            // 2026-10-20 claude: The abstract half is fixed: deftype keeps an existing
+            // AbstractRep of the same publicity (the check above it refused a changed
+            // representation), so instances in parallel statements write nothing, and
+            // Env::abstract_rep judges visibility with a minted component (#fn.., #do..)
+            // standing for every instance of it (under_some_instance), so an instance whose
+            // scope differs from the registering one still sees its own type, cold and warm
+            // (lang::image::function_body_abstract_type_is_one_type). Pin:
+            // lang::modules::body_abstract_type_from_two_statements. The trait half still
+            // panics (x-typecheck-patterns-local-trait-fork-panic.gx); refusing a trait in a
+            // function body is the open ruling c-module-traits-06, so re-addressed.
+
+            // the check above refused a changed representation, so an
+            // entry of the same publicity is this one: writing it again would
+            // be a second write a parallel task's join refuses
+            if self.abstract_reps.get(id).is_none_or(|old| old.public != public) {
+                self.abstract_reps.insert(*id, Arc::new(r));
+            }
         }
         let def = std::sync::Arc::new(ResolvedRef::new(
             scope.clone(),
@@ -1840,7 +1874,7 @@ impl Env {
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
         let r = self.abstract_reps.get(&id)?;
-        (r.public || scope_is_under(from, &r.scope)).then_some(&**r)
+        (r.public || under_some_instance(from, &r.scope)).then_some(&**r)
     }
 
     /// Fill the resolution cell of every `Type::Ref` reachable from a

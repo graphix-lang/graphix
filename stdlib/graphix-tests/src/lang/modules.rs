@@ -329,6 +329,19 @@ let get = |t: T| -> i64 t.0
 "#
     ; FuseExpect::Jit);
 
+// A function that declares an abstract type, called by two statements
+// that elaborate in parallel tasks, registers the type once.
+run!(
+    body_abstract_type_from_two_statements,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2]"),
+    "/test.gx" => r#"
+let mk = |x: i64| { type B = Abstract<i64>; B(x).0 };
+let a = mk(1);
+let b = mk(2);
+let result = [a, b]
+"#
+    ; FuseExpect::Jit);
+
 // A module's check decides no type the code around it left open: its
 // siblings check concurrently and see each other through interfaces.
 run!(
