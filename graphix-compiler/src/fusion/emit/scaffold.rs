@@ -510,7 +510,7 @@ impl SlotFlags {
             let site = cx.collection_site().expect("a loop has a collection site");
             cx.slot_word(site).expect("every collection site has a slot word")
         };
-        let word = word.required_addr(cx);
+        let word = word.0;
         let entered = |cx: &mut BodyCx, addr: ClifValue| {
             let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
             let lenp1 = cx.b.ins().band_imm(stored, !FORGOT);

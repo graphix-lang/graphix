@@ -272,7 +272,6 @@ fn emit_chunk(
         .map(|(j, t)| SlotTable {
             site: t.site,
             base: load(&mut b, types::I64, HEADER + j),
-            guarded: t.guarded,
             blocks: t.blocks,
         })
         .collect();
