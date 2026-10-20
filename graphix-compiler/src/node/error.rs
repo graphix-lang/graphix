@@ -1609,6 +1609,7 @@ impl Receipts {
     ) -> Option<Value> {
         let (bind_id, _) = handler.id();
         let cycle = ctx.rt.cycle();
+        // a catch updated twice in one cycle would read its delivery twice
         let v = match read_var(ctx, &bind_id) {
             Some(VarRead::Delivered(tv))
                 if self.last_cycle != Some(cycle)

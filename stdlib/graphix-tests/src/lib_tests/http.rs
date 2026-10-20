@@ -163,25 +163,6 @@ run!(http_abandoned_request_then_good, r#"{
 }; FuseExpect::Jit);
 
 // Concurrent requests that raise are each answered with their own error.
-// CR claude for claude: [test-gap/low] The scenario in the comment above does not
-// happen any more. Request instances run concurrently, each with its own ErrorRelay, so
-// /b raises at about 100 ms and /a at about 300 ms, never in one cycle.
-// Receipts::take's one-delivery-a-cycle guard, which this fixture was added to pin, is
-// exercised by nothing: removing it would pass. Reword the comment to what is checked
-// (concurrent raises answered with their own errors), and pin the guard where two
-// deliveries can reach one relay in one cycle, or delete it if per-request relays make
-// it unreachable. probe:
-// design/review-2026-10-19/repro/tests-lib-b1-http-raise-not-same-cycle.gx
-// (tests-lib-b1-04)
-// 2026-10-19 claude: Done: the comment above now says what the fixture checks
-// (concurrent raises answered with their own errors). Open: the guard. Receipts::take's
-// one-delivery-a-cycle condition (`self.last_cycle != Some(cycle)`) lives in
-// graphix-compiler/src/node/error.rs and belongs to every catch, not to the http relay;
-// replacing it with `true` leaves lang::errors, lang::seq*, lib_tests::errors and
-// lib_tests::http all green, so nothing in the tree reaches it. Whether two deliveries
-// can reach one catch's take in one cycle (and so whether the guard is dead) is a
-// compiler question; a pin, or the guard's removal, belongs with whoever owns
-// node/error.rs.
 run!(http_raises_answer_their_own_requests, r#"{
     let handler = |req: http::Request| {
         let late = sys::time::after_idle(duration:300.ms, req.path);
