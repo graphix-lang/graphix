@@ -2118,3 +2118,16 @@ run!(
         let st = mod foo dynamic { sandbox whitelist [core]; sig { val x: i64 }; source src };
         let result = select step { 3 => "[T(step)] [a]", _ => never() }
     "#; FuseExpect::Jit);
+
+// A union-self trait call lowered to a select keeps the call's spec, so
+// #[native] on the call is checked where it is written.
+run!(
+    native_on_a_union_dispatch,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "sq"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |a| "i[a]" };
+        impl Show for string { let show = |b| "s[b]" };
+        let one: [i64, string] = "q";
+        let result = #[native] Show::show(one)
+    "#);

@@ -2912,7 +2912,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 #[derive(Debug)]
 pub(crate) enum CallNode<R: Rt, E: UserEvent> {
     Call(CallSite<R, E>),
-    Lowered(Node<R, E>),
+    /// The call's lowering, under the call's own spec: errors and the
+    /// attribute walk name the user's call.
+    Lowered(Node<R, E>, TArc<Expr>),
 }
 
 impl<R: Rt, E: UserEvent> CallNode<R, E> {
@@ -2920,7 +2922,7 @@ impl<R: Rt, E: UserEvent> CallNode<R, E> {
     pub(crate) fn call_mut(&mut self) -> Option<&mut CallSite<R, E>> {
         match self {
             Self::Call(c) => Some(c),
-            Self::Lowered(_) => None,
+            Self::Lowered(..) => None,
         }
     }
 }
@@ -2932,7 +2934,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
                 c.args.values().filter_map(|a| a.node.as_ref()).for_each(&mut *f);
                 f(&c.fnode)
             }
-            Self::Lowered(n) => n.for_each_child(f),
+            Self::Lowered(n, _) => n.for_each_child(f),
         }
     }
 
@@ -2942,7 +2944,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
                 c.args.values_mut().filter_map(|a| a.node.as_mut()).for_each(&mut *f);
                 f(&mut c.fnode)
             }
-            Self::Lowered(n) => n.for_each_child_mut(f),
+            Self::Lowered(n, _) => n.for_each_child_mut(f),
         }
     }
 
@@ -2950,39 +2952,39 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         match self {
             Self::Call(c) => c.image_encode(buf),
-            Self::Lowered(n) => n.image_encode(buf),
+            Self::Lowered(n, _) => n.image_encode(buf),
         }
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         match self {
             Self::Call(c) => c.update(ctx),
-            Self::Lowered(n) => n.update(ctx),
+            Self::Lowered(n, _) => n.update(ctx),
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         match self {
             Self::Call(c) => c.delete(ctx),
-            Self::Lowered(n) => n.delete(ctx),
+            Self::Lowered(n, _) => n.delete(ctx),
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         match self {
             Self::Call(c) => c.sleep(ctx),
-            Self::Lowered(n) => n.sleep(ctx),
+            Self::Lowered(n, _) => n.sleep(ctx),
         }
     }
 
     fn typ(&self) -> &Type {
         match self {
             Self::Call(c) => c.typ(),
-            Self::Lowered(n) => n.typ(),
+            Self::Lowered(n, _) => n.typ(),
         }
     }
 
-    // CR claude for claude: [bug/medium] A lowered union-self trait call answers spec()
+    // XCR claude for claude: [bug/medium] A lowered union-self trait call answers spec()
     // with the lowering's spec, so the attribute walk never finds the decorated call.
     // `let r = #[native] Show::show(one)` over `[i64, string]` is refused with
     // 'attribute in a position the fusion pass cannot check — put the decorated
@@ -2993,17 +2995,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
     // dispatch in traits.rs. probe:
     // design/review-2026-10-19/repro/tests-fusion-traits-native-on-union-dispatch.gx
     // (tests-fusion-traits-05)
+    // 2026-10-19 claude: CallNode::Lowered carries the call's own spec and spec()
+    // answers it, so the attribute walk finds the decorated call and errors name it
+    // (the lowering is built at elaboration, after the table is recorded, so no row key
+    // moves). The probe prints "sq". Pin: lang::traits::native_on_a_union_dispatch.
     fn spec(&self) -> &Expr {
         match self {
             Self::Call(c) => c.spec(),
-            Self::Lowered(n) => n.spec(),
+            Self::Lowered(_, spec) => spec,
         }
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         match self {
             Self::Call(c) => c.typecheck0(ctx),
-            Self::Lowered(n) => n.typecheck0(ctx),
+            Self::Lowered(n, _) => n.typecheck0(ctx),
         }
     }
 
@@ -3015,7 +3021,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         match self {
             Self::Call(c) => c.typecheck0_instance(ctx, types),
             // a lowering is built by elaboration: no table types it
-            Self::Lowered(n) => n.typecheck0(ctx),
+            Self::Lowered(n, _) => n.typecheck0(ctx),
         }
     }
 
@@ -3023,39 +3029,40 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         match self {
             Self::Call(c) => {
                 if let Some(lowered) = c.typecheck1(ctx)? {
-                    *self = Self::Lowered(lowered);
+                    let spec = c.spec.clone();
+                    *self = Self::Lowered(lowered, spec);
                 }
                 Ok(())
             }
-            Self::Lowered(n) => n.typecheck1(ctx),
+            Self::Lowered(n, _) => n.typecheck1(ctx),
         }
     }
 
     fn refs(&self, refs: &mut Refs) {
         match self {
             Self::Call(c) => c.refs(refs),
-            Self::Lowered(n) => n.refs(refs),
+            Self::Lowered(n, _) => n.refs(refs),
         }
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
         match self {
             Self::Call(c) => c.view(),
-            Self::Lowered(n) => n.view(),
+            Self::Lowered(n, _) => n.view(),
         }
     }
 
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         match self {
             Self::Call(c) => c.fuse(ctx),
-            Self::Lowered(n) => n.fuse(ctx),
+            Self::Lowered(n, _) => n.fuse(ctx),
         }
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         match self {
             Self::Call(c) => c.emit_clif(cx),
-            Self::Lowered(n) => n.emit_clif(cx),
+            Self::Lowered(n, _) => n.emit_clif(cx),
         }
     }
 }
