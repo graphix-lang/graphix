@@ -213,11 +213,20 @@ fn trigger_snapshot(
             // env.lookup_bind and redirect every Ref that resolves to the same BindId,
             // keying the snapshot by the binding rather than the spelling. probe:
             // design/review-2026-10-19/repro/t-seq-qualified-trigger/main.gx (t-seq-02)
-            if let Some(n) = simple_ref_name(e)
+            // 2026-10-19 claude: Partly fixed: a trigger spelled as a module path is
+            // snapshotted, and reads with that spelling redirected (seq::ref_key keys
+            // the Names map by the path a qualified read spells; redirect already
+            // looked paths up). The probe's qualified seq now starts at 0. Pin:
+            // lang::seq::qualified_trigger_is_snapshotted. Left: a read spelled
+            // differently from the trigger (use m::t; seq t { .. m::t .. }) and
+            // desugar_queued's trigger_name still key by spelling; both need the
+            // binding the trigger resolves to, which the lowering does not have.
+            if let ExprKind::Ref { name } = &e.kind
+                && let n = ArcStr::from(ref_key(name))
                 && (reads_name(body, &n)
                     || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), &n)))
             {
-                let c = cell(n.as_str());
+                let c = cell(&n.replace('/', "_"));
                 decls.push(let_bind(e.pos, &c, None, never(e.pos)));
                 writes.push(connect(pos, &c, r#ref(pos, go)));
                 visible.insert(n, Redirect::Snapshot(c));
@@ -565,8 +574,7 @@ fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
 fn reads_name(stmts: &[Expr], n: &str) -> bool {
     stmts.iter().any(|s| {
         s.fold(false, &mut |found, e| {
-            found
-                || matches!(&e.kind, ExprKind::Ref { name } if simple_name(name) == Some(n))
+            found || matches!(&e.kind, ExprKind::Ref { name } if ref_key(name) == n)
         })
     })
 }
@@ -1469,8 +1477,14 @@ fn simple_name(p: &ModPath) -> Option<&str> {
     if Path::levels(&p.0) == 1 { Path::parts(&p.0).next() } else { None }
 }
 
+/// What a read of `p` is keyed by in a [`Names`] map: its name, or the
+/// path a qualified read spells.
+fn ref_key(p: &ModPath) -> &str {
+    simple_name(p).unwrap_or(p.0.as_ref())
+}
+
 fn redirect<'a>(p: &ModPath, map: &'a Names) -> Option<&'a Redirect> {
-    map.get(simple_name(p).unwrap_or(p.0.as_ref()))
+    map.get(ref_key(p))
 }
 
 /// A read of `p`.

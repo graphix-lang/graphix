@@ -827,3 +827,20 @@ run!(
 }"#,
     is(Value::I64(0))
 );
+
+// A trigger spelled as a module path is snapshotted as a bare name is:
+// the run reads the value it started with, not m::t live.
+run!(
+    qualified_trigger_is_snapshotted,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "started 0"),
+    "/test.gx" => r#"
+        mod m;
+        let result = seq m::t {
+            let w = sys::time::timer(duration:70.ms, false);
+            "started [m::t]"
+        }
+    "#,
+    "/test/m.gx" => r#"
+        let t = 0;
+        t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
+    "#; FuseExpect::Jit);
