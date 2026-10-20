@@ -1378,41 +1378,21 @@ run!(wake_spent_directly, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "b"), 
 // An arm-local `<-` target persists across the arm's sleep: a wake
 // resumes the arm, so the written 11 survives.
 // findings/arm-local-bind-aug2026/
-// CR claude for claude: [test-gap/low] This pin reads `s` only as the arm's value, and
-// the select emits that on its scrutinee delivery at the wake anyway. So it passes
-// whether or not the write that landed while the arm slept is re-raised: deleting
-// Bind::reraise_writes_while_asleep leaves it green, and it is green today while that
-// re-raise is lost. Return `(s, count(s))` (or `out <- s`) so the fire itself is
-// pinned: count 1, 2, 3 at the three entries. probe:
-// design/review-2026-10-19/repro/tests-select-reraise-last-awake-write.gx
-// (tests-select-04)
-// 2026-10-19 claude: Not changed: the strengthened pin fails today on the bug this CR
-// names, which is compiler wake semantics (Bind::reraise_writes_while_asleep, tracked
-// by (tests-select-01) in graphix-compiler/src/node/bind.rs), outside a test fix. Arm
-// body `{ let s = 10; s <- (x ~ s) + 1; (s, count(s)) }` over x = array::iter([1..6]),
-// m = x % 2 prints (10, 1) (0, 0) (11, 1) (0, 0) (12, 1) (0, 0) on both engines: count
-// stays 1 where the rule gives 1, 2, 3. Strengthen this pin to (s, count(s)) with
-// expected [(10,1),(0,0),(11,2),(0,0)] in the same change that fixes
-// (tests-select-01).
 const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x % 2;
   let sel = select m {
-    0 => 0,
-    _ => { let s = 10; s <- (x ~ s) + 1; s }
+    0 => (0, 0),
+    _ => { let s = 10; s <- (x ~ s) + 1; (s, count(s)) }
   };
   array::group(sel, |n, _| n == 4)
 }
 "#;
 
 run!(select_arm_local_persists, SELECT_ARM_LOCAL_PERSISTS, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            as_i64s(a) == [10, 0, 11, 0]
-        }
-        _ => false,
-    }
+    matches!(v, Ok(v) if v.to_string()
+        == "[[i64:10, i64:1], [i64:0, i64:0], [i64:11, i64:2], [i64:0, i64:0]]")
 }; FuseExpect::Jit);
 
 // Same shape with the connect RHS computed by a fold: re-entry sees 6.
