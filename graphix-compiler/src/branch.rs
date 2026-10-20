@@ -1046,7 +1046,7 @@ where
     if ctx.deferred_pending() {
         ctx.apply_deferred();
     }
-    {
+    if !siblings.decided() {
         let calls: LPooled<Vec<&Node<R, E>>> =
             items.iter_mut().map(|i| &*call(i)).collect();
         siblings.decide(ctx, calls.len(), calls.iter().copied());
