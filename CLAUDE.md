@@ -514,7 +514,7 @@ node graph IS the IR — there is no parallel typed IR
   raise is queued and delivered after the run through the same path
   `Qop` uses), except a handler-ful `?` reachable under a select arm,
   callee bodies included: its raise may be owed to a fire the arm
-  missed asleep or to a constant at its wake, and a kernel remembers
+  missed asleep or to a constant at its first entry, and a kernel remembers
   neither, so it node-walks (`lowering::arm_raise_blocker`); only a
   `never(..)` arm is a
   standing bottom (its args are still emitted and consumed), any other

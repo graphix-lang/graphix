@@ -35,8 +35,8 @@ each do and performs only on its own formals, recursively
 (`analysis::io_follows`), and no arm has a guard
 (`lowering::arm_io_blocker`). Elsewhere a fire the
 arm missed asleep, which the node-walk re-delivers at entry, or a
-constant, which fires at the arm's wake, would print on one engine
-only. A tail recursion that prints by its formals is one native loop.
+constant, which fires at the arm's first entry only, would print on one
+engine only. A tail recursion that prints by its formals is one native loop.
 
 Eric's ruling: "Complexity needs to pay rent, and this whack of
 complexity can't afford to live in our compiler." The machinery that
@@ -147,9 +147,10 @@ placeholder that continues.
 
 The delivery's TRIGGER must be computable by a memoryless kernel. A
 handler-ful `?` under a select arm raises on an edge the arm may owe
-to the select: a constant fires at the arm's wake, so a raise whose
-error derives from one (`error(`E)?`, `cast<i64>("x")?`) fires when
-the arm is ENTERED, and an input fire no selected arm saw is
+to the select: a constant fires at the arm's first entry only (a wake
+is a resume), so a raise whose error derives from one (`error(`E)?`,
+`cast<i64>("x")?`) fires when the arm is first ENTERED, and an input
+fire no selected arm saw is
 re-delivered FIRED to the arm that reads it at its wake
 (design/wake_catchup.md). A kernel derives its selection fresh every
 run and keeps neither memory, so `lowering::arm_raise_blocker` refuses
