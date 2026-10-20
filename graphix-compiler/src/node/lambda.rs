@@ -11,7 +11,7 @@ use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, InitFn, LambdaId,
     LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     dbgenv,
-    effects::{LambdaFacts, RecursionKind},
+    effects::{LambdaFacts, NoLoop, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
     fusion::{
@@ -575,6 +575,8 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// How this lambda recurses, computed by `analysis::analyze`. The
     /// operational tail-loop gate is `GXLambda::tail_loop`, not this.
     pub recursion: Mutex<RecursionKind>,
+    /// Why a `TailCalls` recursion builds no loop, when its body is pure.
+    pub no_loop: Mutex<Option<NoLoop>>,
     /// The lambda expression this def was compiled from; stable across
     /// instance re-compiles, which is what [`crate::FnArgIdentity`] keys on.
     pub source: ExprId,
@@ -1769,6 +1771,7 @@ impl Lambda {
             facts: Mutex::new(facts),
             param_calls: Mutex::new(ParamCalls::default()),
             recursion: Mutex::new(RecursionKind::NotRecursive),
+            no_loop: Mutex::new(None),
             source: spec.id,
             origin: DefOrigin::Source { body, flags, spec: (*spec).clone() },
             level,

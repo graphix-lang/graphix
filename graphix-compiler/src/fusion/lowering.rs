@@ -6,6 +6,7 @@
 use crate::{
     ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, Rt,
     UserEvent,
+    effects::NoLoop,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     fusion::{
@@ -1542,17 +1543,17 @@ fn capture_slots<R: Rt, E: UserEvent>(
     Ok(out)
 }
 
-/// The structural tail-loop predicate shared by the JIT's native-loop
+/// What keeps the structural tail-loop predicate from holding shared by the JIT's native-loop
 /// gate and the interpreter's `tail_loop` gate, so both backends loop
 /// the same lambdas: `g` is self-recursive through `self_bind`, every
 /// formal is positional, every loop-carried formal is a kernel-encodable
 /// kind, and a self-call sits in tail position. Not sync-gated; the
 /// interpreter's `analyze` adds that gate.
-pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
+pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: BindId,
     ec: &CompileCtx<R, E>,
-) -> bool {
+) -> Option<NoLoop> {
     let mut refs = Refs::default();
     g.body().refs(&mut refs);
     let mut is_rec = false;
@@ -1562,16 +1563,16 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
         }
     });
     if !is_rec {
-        return false;
+        return Some(NoLoop::Memory);
     }
     // The rebind maps the self-call's positional args 1:1 onto the formals.
     if g.typ().vargs.is_some() {
-        return false;
+        return Some(NoLoop::Formals);
     }
     let inv = invariant_formals(g, Some(self_bind));
     for (i, fa) in g.typ().args.iter().enumerate() {
         if !matches!(fa.kind, FnArgKind::Positional { .. }) {
-            return false;
+            return Some(NoLoop::Formals);
         }
         if inv[i] {
             continue;
@@ -1579,32 +1580,30 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
         let arg_typ = expand_refs(&fa.typ, &ec.env);
         match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
             Some(kt) if param_kind(&kt).is_some() => (),
-            _ => return false,
+            _ => return Some(NoLoop::Formals),
         }
+    }
+    if !body_has_self_tail_call(g.body(), self_bind) {
+        return Some(NoLoop::Memory);
     }
     let mut visiting: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
     visiting.push(g.instance_id());
-    body_has_self_tail_call(g.body(), self_bind)
-        && claims_no_site_memory(
-            g.body(),
-            Some(self_bind),
-            &g.formal_ids(),
-            &mut visiting,
-        )
+    site_memory(g.body(), Some(self_bind), &g.formal_ids(), &mut visiting)
 }
 
-/// Whether a body holds no per-call-site memory a native tail loop's
+/// The per-call-site memory a body holds that a native tail loop's
 /// passes would share where the node-walk's activations each hold their
 /// own: a collection loop's words, a non-tail self-call's block root, a
 /// handler-ful `?` that does not fire with the body's `formals` (an
 /// activation raises it at its birth, a pass never does), a callee whose
-/// body holds any. Such a body recurses natively.
-fn claims_no_site_memory<R: Rt, E: UserEvent>(
+/// body holds any; `None` when it holds none. Such a body recurses
+/// natively.
+fn site_memory<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     self_bind: Option<BindId>,
     formals: &IntSet<BindId>,
     visiting: &mut LPooled<Vec<LambdaInstanceId>>,
-) -> bool {
+) -> Option<NoLoop> {
     let is_self = |cs: &CallSite<R, E>| {
         self_bind
             .is_some_and(|sb| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb))
@@ -1621,39 +1620,40 @@ fn claims_no_site_memory<R: Rt, E: UserEvent>(
         },
         &mut |_| (),
     );
-    let mut none = true;
+    let mut held = None;
     fusion::for_each_emitted_node(body, &mut |n| {
-        none = none
-            && match n.view() {
-                NodeView::MapQ(_) | NodeView::FoldQ(_) => false,
-                NodeView::Qop(q) if q.handler().is_some() => {
-                    crate::analysis::fires_with(&q.n, formals)
-                }
-                NodeView::CallSite(cs) if is_self(cs) => {
-                    tail_calls.contains(&n.spec().id)
-                }
-                NodeView::CallSite(cs) => match cs.resolved_apply() {
-                    // a cycle through another function roots blocks too
-                    Some(ApplyView::Lambda(g)) if visiting.contains(&g.instance_id()) => {
-                        false
-                    }
-                    Some(ApplyView::Lambda(g)) => {
-                        visiting.push(g.instance_id());
-                        let none = claims_no_site_memory(
-                            g.body(),
-                            g.self_bind(),
-                            &g.formal_ids(),
-                            visiting,
-                        );
-                        visiting.pop();
-                        none
-                    }
-                    _ => true,
-                },
-                _ => true,
+        if held.is_some() {
+            return;
+        }
+        held = match n.view() {
+            NodeView::MapQ(_) | NodeView::FoldQ(_) => Some(NoLoop::Memory),
+            NodeView::Qop(q)
+                if q.handler().is_some()
+                    && !crate::analysis::fires_with(&q.n, formals) =>
+            {
+                Some(NoLoop::Raise(n.spec().clone()))
             }
+            NodeView::CallSite(cs) if is_self(cs) => {
+                (!tail_calls.contains(&n.spec().id)).then_some(NoLoop::Memory)
+            }
+            NodeView::CallSite(cs) => match cs.resolved_apply() {
+                // a cycle through another function roots blocks too
+                Some(ApplyView::Lambda(g)) if visiting.contains(&g.instance_id()) => {
+                    Some(NoLoop::Memory)
+                }
+                Some(ApplyView::Lambda(g)) => {
+                    visiting.push(g.instance_id());
+                    let held =
+                        site_memory(g.body(), g.self_bind(), &g.formal_ids(), visiting);
+                    visiting.pop();
+                    held
+                }
+                _ => None,
+            },
+            _ => None,
+        }
     });
-    none
+    held
 }
 
 /// Does the body contain a self-call in tail position (as

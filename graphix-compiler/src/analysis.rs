@@ -5,16 +5,16 @@
 //! and the dependency summaries that plan seq steps and block runs. Also
 //! the `#[parallel]` check and the arm-sleep rule. Both engines read the
 //! facts; the structural tail-loop predicate is
-//! `fusion::lowering::structural_tail_loop`.
+//! `fusion::lowering::tail_loop_blocker`.
 
 use crate::{
     ApplyView, BindId, CompileCtx, DefAssertion, DefAssertionKind, LambdaId,
     LambdaInstanceId, Node, NodeView, Refs, Rt, Update, UserEvent,
     cost::{ForkSite, Siblings},
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
-    effects::{LambdaFacts, RecursionKind},
+    effects::{LambdaFacts, NoLoop, RecursionKind},
     env::Env,
-    expr::{At, ExprKind, ModuleKind},
+    expr::{At, Expr, ExprKind, ModuleKind},
     fusion::{self, lowering},
     node::{
         Runs,
@@ -30,6 +30,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
+use compact_str::{CompactString, format_compact};
 use netidx_core::pack::{Pack, PackError};
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
@@ -427,27 +428,32 @@ pub fn build_only_refusal(msg: &str) -> bool {
 fn assertion_failure<R: Rt, E: UserEvent>(
     kind: DefAssertionKind,
     d: &LambdaDef<R, E>,
-) -> Option<&'static str> {
+) -> Option<CompactString> {
     let effect = d.facts.lock().effect;
+    let said = |s: &str| Some(CompactString::from(s));
     match kind {
-        DefAssertionKind::Sync => effect.is_async().then_some(
-            "#[sync]: this function is async — its body reaches an async builtin \
-             or an async callee",
-        ),
-        DefAssertionKind::Async => effect.is_sync().then_some(
-            "#[async]: this function is sync — nothing in its body defers an \
-             output to a later cycle",
-        ),
+        DefAssertionKind::Sync => effect.is_async().then(|| {
+            CompactString::from(
+                "#[sync]: this function is async — its body reaches an async builtin \
+                 or an async callee",
+            )
+        }),
+        DefAssertionKind::Async => effect.is_sync().then(|| {
+            CompactString::from(
+                "#[async]: this function is sync — nothing in its body defers an \
+                 output to a later cycle",
+            )
+        }),
         DefAssertionKind::TailRecursive => match *d.recursion.lock() {
             RecursionKind::TailRecursive => None,
-            RecursionKind::TailCalls if !def_facts(d).is_pure() => Some(
+            RecursionKind::TailCalls if !def_facts(d).is_pure() => said(
                 "#[tail_recursive]: this function's body is stateful or async (a \
                  stateful builtin such as `count`, a `<-` to one of its own \
                  bindings, an async operation, or such a callee) — every \
                  iteration then keeps its own activation and the loop is not \
                  constant-space",
             ),
-            // CR claude for claude: [readability/medium] This message is given for
+            // XCR claude for claude: [readability/medium] This message is given for
             // every pure TailCalls body. But mark_recursion also lands there when the
             // body's Io does not follow its formals (io_follows), and
             // structural_tail_loop does when a handler-ful `?` does not
@@ -459,23 +465,55 @@ fn assertion_failure<R: Rt, E: UserEvent>(
             // probe:
             // design/review-2026-10-19/repro/tests-lang-rest-a-tail-recursive-io-diagnostic.gx
             // (tests-lang-rest-a-04)
-            RecursionKind::TailCalls => Some(
-                "#[tail_recursive]: every recursive call is in tail position, but \
-                 no loop is built — the loop rebinds positional formals of types \
-                 a fused kernel can carry and shares nothing between its passes, \
-                 so with a labeled, variadic or opaque formal, or a body holding \
-                 per-call memory (a collection operation, or a callee holding \
-                 one), every call keeps its own activation",
-            ),
-            RecursionKind::Recursive => Some(
+            // 2026-10-20 claude: mark_recursion records why a pure TailCalls body builds no
+            // loop on its definition (LambdaDef::no_loop, effects::NoLoop: Formals, Memory,
+            // Io(site), Raise(site)); unfollowed_io names the first call breaking io_follows,
+            // lowering::tail_loop_blocker and site_memory (were structural_tail_loop and
+            // claims_no_site_memory, same decisions) name the first handler-ful ? not firing
+            // with the formals. The refusal says the cause and names the site. Pins:
+            // lang::attributes::tail_recursive_io, tail_recursive_raise. regress 552/0/0/0 (no
+            // loop decision moved).
+            RecursionKind::TailCalls => Some(no_loop_message(d.no_loop.lock().as_ref())),
+            RecursionKind::Recursive => said(
                 "#[tail_recursive]: this function recurses through a non-tail \
                  self-call or mutual recursion — every recursive call must be in \
                  tail position",
             ),
             RecursionKind::NotRecursive => {
-                Some("#[tail_recursive]: this function is not recursive")
+                said("#[tail_recursive]: this function is not recursive")
             }
         },
+    }
+}
+
+/// Why every recursive call is in tail position and still no loop is built.
+fn no_loop_message(why: Option<&NoLoop>) -> CompactString {
+    const HEAD: &str = "#[tail_recursive]: every recursive call is in tail position, but \
+                        no loop is built";
+    let site = |e: &Expr| {
+        format_compact!("`{e}` (line {}, column {})", e.pos.line, e.pos.column)
+    };
+    match why {
+        Some(NoLoop::Io(e)) => format_compact!(
+            "{HEAD}: {} performs Io that does not fire with the formals, so a \
+             fresh activation performs it at its birth where a loop pass would not",
+            site(e)
+        ),
+        Some(NoLoop::Raise(e)) => format_compact!(
+            "{HEAD}: {} raises to a handler on something that does not fire with \
+             the formals, which a fresh activation raises at its birth and a loop \
+             pass would not",
+            site(e)
+        ),
+        Some(NoLoop::Formals) => format_compact!(
+            "{HEAD}: a labeled, variadic or opaque formal, or one of a type a fused \
+             kernel cannot carry, is one the loop cannot rebind"
+        ),
+        Some(NoLoop::Memory) | None => format_compact!(
+            "{HEAD}: the body holds per-call memory (a collection operation, a \
+             non-tail self-call, or a callee holding one), which every call keeps \
+             in its own activation"
+        ),
     }
 }
 
@@ -1029,13 +1067,21 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         // Io call a depth reached afresh would fire at its birth does not,
         // so a body whose Io does not follow its formals recurses natively,
         // each depth a fresh block
-        let loopable = body.is_pure()
-            && (!body.io
-                || io_follows(g.body(), &g.formal_ids(), ctx, &mut IntSet::default()));
-        let looped = loopable
-            && self_bind.is_some_and(|self_bind| {
-                lowering::structural_tail_loop(g, self_bind, ctx)
-            });
+        let blocker = match body.is_pure() {
+            false => None,
+            true => match body.io {
+                true => {
+                    unfollowed_io(g.body(), &g.formal_ids(), ctx, &mut IntSet::default())
+                        .map(NoLoop::Io)
+                }
+                false => None,
+            }
+            .or_else(|| match self_bind {
+                Some(self_bind) => lowering::tail_loop_blocker(g, self_bind, ctx),
+                None => Some(NoLoop::Memory),
+            }),
+        };
+        let looped = body.is_pure() && blocker.is_none();
         g.set_self_call(self_bind.map(|bind| SelfCall { bind, tail_loop: looped }));
         let summary = match (tail, looped) {
             (true, true) => RecursionKind::TailRecursive,
@@ -1046,6 +1092,11 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         if let Some(d) = lambda_def(ctx, g.id()) {
             let mut r = d.recursion.lock();
             *r = (*r).max(summary);
+            if summary == RecursionKind::TailCalls
+                && let Some(b) = blocker
+            {
+                d.no_loop.lock().get_or_insert(b);
+            }
         }
     }
 }
@@ -1754,14 +1805,25 @@ pub(crate) fn io_follows<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     seen: &mut IntSet<LambdaInstanceId>,
 ) -> bool {
-    let mut follows = true;
+    unfollowed_io(body, formals, ctx, seen).is_none()
+}
+
+/// The first call in `body` that breaks [`io_follows`]: an Io call, or a
+/// call of a function performing Io that does not follow its formals.
+fn unfollowed_io<R: Rt, E: UserEvent>(
+    body: &Node<R, E>,
+    formals: &IntSet<BindId>,
+    ctx: &CompileCtx<R, E>,
+    seen: &mut IntSet<LambdaInstanceId>,
+) -> Option<Expr> {
+    let mut first = None;
     fusion::for_each_emitted_node(body, &mut |n| {
         let NodeView::CallSite(cs) = n.view() else { return };
-        if !follows {
+        if first.is_some() {
             return;
         }
         let Some(triggers) = lowering::performing_args(cs, ctx) else { return };
-        follows = triggers.iter().all(|t| fires_with(t, formals))
+        let follows = triggers.iter().all(|t| fires_with(t, formals))
             && match cs.resolved_apply() {
                 Some(ApplyView::Lambda(g)) => {
                     !seen.insert(g.instance_id())
@@ -1769,8 +1831,11 @@ pub(crate) fn io_follows<R: Rt, E: UserEvent>(
                 }
                 _ => true,
             };
+        if !follows {
+            first = Some(n.spec().clone());
+        }
     });
-    follows
+    first
 }
 
 /// Whether `n` fires whenever one of `ids` does: a read of one of them,

@@ -181,8 +181,23 @@ pub enum RecursionKind {
     TailRecursive,
     /// Every self-call is in tail position but no loop is built: the
     /// body keeps per-activation state, or a formal is one the loop
-    /// cannot rebind (`lowering::structural_tail_loop`).
+    /// cannot rebind (`lowering::tail_loop_blocker`, the reason in `NoLoop`).
     TailCalls,
     /// A self-call outside tail position, or mutual recursion.
     Recursive,
+}
+
+/// Why a pure body whose self-calls are all in tail position builds no
+/// loop ([`RecursionKind::TailCalls`]), for `#[tail_recursive]` to say.
+#[derive(Debug, Clone)]
+pub enum NoLoop {
+    /// A labeled, variadic or opaque formal, which a loop cannot rebind.
+    Formals,
+    /// Per-call memory: a collection operation, a non-tail self-call, a
+    /// callee holding one.
+    Memory,
+    /// An Io call that does not fire with the formals.
+    Io(crate::expr::Expr),
+    /// A raise to a handler that does not fire with the formals.
+    Raise(crate::expr::Expr),
 }

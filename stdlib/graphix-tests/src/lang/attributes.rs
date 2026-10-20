@@ -57,6 +57,38 @@ const TAIL_RECURSIVE_STATEFUL: &str = r#"
 
 run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, refused("#[tail_recursive]: this function's body is stateful or async"); FuseExpect::None; build_only);
 
+// An Io call that does not fire with the formals keeps every depth its
+// own activation, and the refusal names it.
+const TAIL_RECURSIVE_IO: &str = r#"
+{
+  #[tail_recursive]
+  let rec f = |n: i64, acc: i64| -> i64 {
+    println("step");
+    select n { 0 => acc, _ => f(n - 1, acc + n) }
+  };
+  f(3, 0)
+}
+"#;
+
+run!(tail_recursive_io, TAIL_RECURSIVE_IO, refused("no loop is built: `println(\"step\")` (line 5, column 5) performs Io that does not fire with the formals"); FuseExpect::None; build_only);
+
+// So does a raise to a handler that does not fire with the formals.
+const TAIL_RECURSIVE_RAISE: &str = r#"
+{
+  let e: Result<i64, `E> = error(`E);
+  let caught = 0;
+  catch(x) caught <- x ~ 1;
+  #[tail_recursive]
+  let rec f = |n: i64, acc: i64| -> i64 {
+    let k = e?;
+    select n { 0 => acc + k, _ => f(n - 1, acc + n) }
+  };
+  f(3, 0)
+}
+"#;
+
+run!(tail_recursive_raise, TAIL_RECURSIVE_RAISE, refused("no loop is built: `e?` (line 8, column 13) raises to a handler"); FuseExpect::None; build_only);
+
 // A pure body that does not fuse builds no loop: only a fused kernel runs
 // a tail recursion as one, so the assertion is the JIT's.
 const TAIL_RECURSIVE_UNFUSED: &str = r#"

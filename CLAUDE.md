@@ -509,7 +509,7 @@ node graph IS the IR — there is no parallel typed IR
   on its formals, `analysis::io_follows`; and no arm has a guard,
   `lowering::arm_io_blocker`), and a tail recursion is one native loop
   only when its Io and its handler-ful raises follow its formals
-  (`lowering::claims_no_site_memory`: a constant-derived raise is an
+  (`lowering::site_memory`: a constant-derived raise is an
   activation's at its birth); `?` fuses with or without a covering catch (a handler-ful
   raise is queued and delivered after the run through the same path
   `Qop` uses), except a handler-ful `?` reachable under a select arm,

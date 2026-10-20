@@ -178,7 +178,7 @@ its site blocks, so `f(n - 1, acc + max(n))` fuses and answers the same
 on both engines (`tail_stateful_scalar`). A body that is stateless
 loops by rebind-and-jump over one set of slots.
 
-**Which lambdas loop is ONE shared predicate** (`structural_tail_loop`,
+**Which lambdas loop is ONE shared predicate** (`tail_loop_blocker`,
 `fusion/lowering.rs`), so both engines agree: the body references its
 own binding, every formal is positional with no varargs, every
 LOOP-CARRIED formal is a kernel-encodable kind (scalars in registers,

@@ -383,6 +383,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             param_calls: Default::default(),
             facts: Mutex::new(LambdaFacts::ASYNC),
             recursion: Mutex::new(RecursionKind::NotRecursive),
+            no_loop: Default::default(),
             source: self.top_id,
             origin: graphix_compiler::node::lambda::DefOrigin::Runtime,
             level: graphix_compiler::typ::tvar::Level::Def { depth: 1, owner: id },

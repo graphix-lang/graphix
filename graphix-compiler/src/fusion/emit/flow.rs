@@ -313,7 +313,7 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
             .args
             .iter()
             .all(|a| matches!(a.kind, FnArgKind::Positional { .. }))),
-        "structural_tail_loop admits only positional formals"
+        "tail_loop_blocker admits only positional formals"
     );
     let Some(OwnCall { info, .. }) = cx.ctx.self_call else {
         bail!("emit_clif: a self tail-call outside a self-recursive body");
