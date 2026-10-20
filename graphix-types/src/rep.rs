@@ -18,7 +18,7 @@ use immutable_chunkmap::map::Map;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
 use poolshark::local::LPooled;
-use std::{fmt, sync::LazyLock};
+use std::{convert::Infallible, fmt, sync::LazyLock};
 
 /// What a marker says a composite is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -339,41 +339,66 @@ pub fn payload(v: &Value, i: usize) -> Option<&Value> {
 /// `v` written as data: every tuple, struct, variant and list in it in
 /// its data form, markers gone; `None` when nothing in it is marked.
 pub fn strip(v: &Value) -> Option<Value> {
+    match strip_with(v, &mut |c| Ok::<_, Infallible>(strip(c))) {
+        Ok(v) => v,
+    }
+}
+
+/// `v`'s marked form written as data, one level: each part in it is `f`'s
+/// rewrite of that part, or the part itself when `f` changed nothing;
+/// `None` when neither the level nor any part changed. Unchanged parts
+/// are copied only once one has changed.
+pub fn strip_with<E>(
+    v: &Value,
+    f: &mut impl FnMut(&Value) -> Result<Option<Value>, E>,
+) -> Result<Option<Value>, E> {
     crate::stack::ensure_sufficient(|| {
-        let each = |vs: &mut dyn Iterator<Item = &Value>| -> LPooled<Vec<Value>> {
-            vs.map(|v| strip(v).unwrap_or_else(|| v.clone())).collect()
-        };
+        let mut each =
+            |vs: &mut dyn Iterator<Item = &Value>| -> Result<LPooled<Vec<Value>>, E> {
+                vs.map(|v| Ok(f(v)?.unwrap_or_else(|| v.clone()))).collect()
+            };
         let array = |mut vs: LPooled<Vec<Value>>| {
             Value::Array(ValArray::from_iter_exact(vs.drain(..)))
         };
-        match kind(v) {
-            Some(Kind::Tuple) => Some(array(each(&mut tuple_elems(v)?.iter()))),
-            Some(Kind::Struct) => {
-                let fields: LPooled<Vec<Value>> = struct_fields(v)?
-                    .iter()
-                    .map(|f| match field(f) {
-                        Some((n, fv)) => {
-                            make_field(n.clone(), strip(fv).unwrap_or_else(|| fv.clone()))
-                        }
-                        None => f.clone(),
-                    })
-                    .collect();
-                Some(array(fields))
-            }
-            Some(Kind::Variant) => {
-                let (tag, payload) = variant(v)?;
-                if payload.is_empty() {
-                    return Some(Value::String(tag.clone()));
+        Ok(match kind(v) {
+            Some(Kind::Tuple) => match tuple_elems(v) {
+                None => None,
+                Some(es) => Some(array(each(&mut es.iter())?)),
+            },
+            Some(Kind::Struct) => match struct_fields(v) {
+                None => None,
+                Some(fs) => {
+                    let mut fields: LPooled<Vec<Value>> = LPooled::take();
+                    for fl in fs.iter() {
+                        fields.push(match field(fl) {
+                            Some((n, fv)) => make_field(
+                                n.clone(),
+                                f(fv)?.unwrap_or_else(|| fv.clone()),
+                            ),
+                            None => fl.clone(),
+                        })
+                    }
+                    Some(array(fields))
                 }
-                let mut vs = each(&mut payload.iter());
-                vs.insert(0, Value::String(tag.clone()));
+            },
+            Some(Kind::Variant) => match variant(v) {
+                None => None,
+                Some((tag, payload)) if payload.is_empty() => {
+                    Some(Value::String(tag.clone()))
+                }
+                Some((tag, payload)) => {
+                    let mut vs = each(&mut payload.iter())?;
+                    vs.insert(0, Value::String(tag.clone()));
+                    Some(array(vs))
+                }
+            },
+            Some(Kind::List) => {
+                let mut vs: LPooled<Vec<Value>> = LPooled::take();
+                for e in crate::list::Iter::new(v.clone()) {
+                    vs.push(f(&e)?.unwrap_or(e))
+                }
                 Some(array(vs))
             }
-            Some(Kind::List) => Some(array(
-                crate::list::Iter::new(v.clone())
-                    .map(|v| strip(&v).unwrap_or(v))
-                    .collect(),
-            )),
             // XCR claude for claude: [perf/low] The Array and Map arms below clone every
             // element into a scratch Vec even when nothing changes, then drop it.
             // to_data then walks the value a second time in rewrite_data. Each publish,
@@ -386,7 +411,7 @@ pub fn strip(v: &Value) -> Option<Value> {
             // unmarked array or map is walked and returned as None with no copy. No
             // pin: a perf change, covered by every writer test.
             None => match v {
-                // CR claude for claude: [perf/low] This arm (and the Map arm below)
+                // XCR claude for claude: [perf/low] This arm (and the Map arm below)
                 // copies every element into a pooled Vec before it knows anything
                 // changed, and drops the copy when nothing was marked.
                 // abstract_value::rewrite then walks the stripped value again in
@@ -399,16 +424,26 @@ pub fn strip(v: &Value) -> Option<Value> {
                 // 2026-10-20 claude: Partly done with x-kind-markers-07: the arms no
                 // longer copy before a change. The second walk, rewrite_data over the
                 // stripped value, remains; merging strip into it is still open.
+                // 2026-10-20 claude: to_data walks once: rep::strip_with strips one
+                // level and hands each part to a rewriter, rep::strip passes itself and
+                // abstract_value::rewrite passes its abstract conversion, so markers go
+                // and abstracts write as data in the same walk; rewrite_data is gone.
+                // No pin (perf; every writer test exercises it, gate green).
                 Value::Array(a) => {
-                    let (i, first) =
-                        a.iter().enumerate().find_map(|(i, e)| Some((i, strip(e)?)))?;
-                    let mut vs: LPooled<Vec<Value>> = LPooled::take();
-                    vs.extend(a[..i].iter().cloned());
-                    vs.push(first);
-                    vs.extend(
-                        a[i + 1..].iter().map(|e| strip(e).unwrap_or_else(|| e.clone())),
-                    );
-                    Some(array(vs))
+                    let mut out: LPooled<Vec<Value>> = LPooled::take();
+                    for (i, e) in a.iter().enumerate() {
+                        match f(e)? {
+                            Some(e) => {
+                                if out.is_empty() {
+                                    out.extend(a[..i].iter().cloned());
+                                }
+                                out.push(e)
+                            }
+                            None if !out.is_empty() => out.push(e.clone()),
+                            None => (),
+                        }
+                    }
+                    (!out.is_empty()).then(|| array(out))
                 }
                 // CR claude for eric: [bug/medium] Stripping the keys can merge two of
                 // them. "A" and `A both become "A", and (1, 2) and [1, 2] both become
@@ -439,7 +474,7 @@ pub fn strip(v: &Value) -> Option<Value> {
                 Value::Map(m) => {
                     let mut kvs: Option<LPooled<Vec<(Value, Value)>>> = None;
                     for (i, (k, e)) in m.into_iter().enumerate() {
-                        let (k1, e1) = (strip(k), strip(e));
+                        let (k1, e1) = (f(k)?, f(e)?);
                         if kvs.is_none() && (k1.is_some() || e1.is_some()) {
                             kvs = Some(
                                 m.into_iter()
@@ -457,10 +492,10 @@ pub fn strip(v: &Value) -> Option<Value> {
                     }
                     kvs.map(|mut kvs| Value::Map(Map::from_iter(kvs.drain(..))))
                 }
-                Value::Error(e) => strip(e).map(|e| Value::Error(e.into())),
+                Value::Error(e) => f(e)?.map(|e| Value::Error(e.into())),
                 _ => None,
             },
-        }
+        })
     })
 }
 

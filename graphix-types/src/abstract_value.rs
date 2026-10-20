@@ -6,10 +6,8 @@ use crate::typ::{AbstractId, Type};
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use immutable_chunkmap::map::Map;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
-use poolshark::local::LPooled;
+use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -145,17 +143,11 @@ pub fn to_data(v: &Value) -> Result<Value> {
 }
 
 /// [`to_data`] of `v`, `None` when nothing in it changed; `depth` counts
-/// the implementations written through so far.
+/// the implementations written through so far. One walk: each level's
+/// markers go ([`crate::rep::strip_with`]) and each abstract writes as
+/// its data.
 fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
-    match crate::rep::strip(v) {
-        Some(data) => Ok(Some(rewrite_data(&data, depth)?.unwrap_or(data))),
-        None => rewrite_data(v, depth),
-    }
-}
-
-/// [`rewrite`] of `v`, data already: no marker in it.
-fn rewrite_data(v: &Value, depth: usize) -> Result<Option<Value>> {
-    crate::stack::ensure_sufficient(|| match v {
+    match v {
         Value::Abstract(_) => {
             if crate::reference::cell(v).is_some() {
                 return Err(anyhow!("a reference is not data"));
@@ -182,38 +174,8 @@ fn rewrite_data(v: &Value, depth: usize) -> Result<Option<Value>> {
             };
             Ok(Some(rewrite(&data, depth + 1)?.unwrap_or(data)))
         }
-        Value::Array(a) => {
-            let mut out: LPooled<Vec<Value>> = LPooled::take();
-            for (i, e) in a.iter().enumerate() {
-                match rewrite_data(e, depth)? {
-                    Some(e) => {
-                        if out.is_empty() {
-                            out.extend(a[..i].iter().cloned());
-                        }
-                        out.push(e)
-                    }
-                    None if !out.is_empty() => out.push(e.clone()),
-                    None => (),
-                }
-            }
-            Ok((!out.is_empty())
-                .then(|| Value::Array(ValArray::from_iter_exact(out.drain(..)))))
-        }
-        Value::Map(m) => {
-            let mut out: LPooled<Vec<(Value, Value)>> = LPooled::take();
-            let mut changed = false;
-            for (k, e) in m.into_iter() {
-                let (k1, e1) = (rewrite_data(k, depth)?, rewrite_data(e, depth)?);
-                changed |= k1.is_some() || e1.is_some();
-                out.push((
-                    k1.unwrap_or_else(|| k.clone()),
-                    e1.unwrap_or_else(|| e.clone()),
-                ));
-            }
-            Ok(changed.then(|| Value::Map(Map::from_iter(out.drain(..)))))
-        }
-        _ => Ok(None),
-    })
+        v => crate::rep::strip_with(v, &mut |c| rewrite(c, depth)),
+    }
 }
 
 /// `v` read as the abstract type `t` by its `Cast` implementation;
