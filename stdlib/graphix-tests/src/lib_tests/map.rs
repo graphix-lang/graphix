@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::literal;
 use graphix_package_core::{
     run,
-    testing::{Collect, FuseExpect, Mode, collect, refused},
+    testing::{Collect, FuseExpect, Mode, collect, is, prints, refused},
 };
 use netidx::subscriber::Value;
 use std::time::Duration;
@@ -14,10 +14,7 @@ const MAP_LEN: &str = r#"
 }
 "#;
 
-run!(map_len, MAP_LEN, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-});
+run!(map_len, MAP_LEN, is(Value::I64(3)));
 
 const MAP_GET_PRESENT: &str = r#"
 {
@@ -26,10 +23,7 @@ const MAP_GET_PRESENT: &str = r#"
 }
 "#;
 
-run!(map_get_present, MAP_GET_PRESENT, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-});
+run!(map_get_present, MAP_GET_PRESENT, is(Value::I64(2)));
 
 const MAP_GET_ABSENT: &str = r#"
 {
@@ -38,10 +32,7 @@ const MAP_GET_ABSENT: &str = r#"
 }
 "#;
 
-run!(map_get_absent, MAP_GET_ABSENT, |v: Result<&Value>| match v {
-    Ok(Value::Null) => true,
-    _ => false,
-});
+run!(map_get_absent, MAP_GET_ABSENT, is(Value::Null));
 
 const MAP_GET_OR_PRESENT: &str = r#"
 {
@@ -50,10 +41,7 @@ const MAP_GET_OR_PRESENT: &str = r#"
 }
 "#;
 
-run!(map_get_or_present, MAP_GET_OR_PRESENT, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-});
+run!(map_get_or_present, MAP_GET_OR_PRESENT, is(Value::I64(2)));
 
 const MAP_GET_OR_ABSENT: &str = r#"
 {
@@ -62,10 +50,7 @@ const MAP_GET_OR_ABSENT: &str = r#"
 }
 "#;
 
-run!(map_get_or_absent, MAP_GET_OR_ABSENT, |v: Result<&Value>| match v {
-    Ok(Value::I64(99)) => true,
-    _ => false,
-});
+run!(map_get_or_absent, MAP_GET_OR_ABSENT, is(Value::I64(99)));
 
 const MAP_CHANGE_PRESENT: &str = r#"
 {
@@ -74,10 +59,7 @@ const MAP_CHANGE_PRESENT: &str = r#"
 }
 "#;
 
-run!(map_change_present, MAP_CHANGE_PRESENT, |v: Result<&Value>| match v {
-    Ok(Value::I64(12)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(map_change_present, MAP_CHANGE_PRESENT, is(Value::I64(12)); FuseExpect::Jit);
 
 const MAP_CHANGE_ABSENT: &str = r#"
 {
@@ -86,10 +68,7 @@ const MAP_CHANGE_ABSENT: &str = r#"
 }
 "#;
 
-run!(map_change_absent, MAP_CHANGE_ABSENT, |v: Result<&Value>| match v {
-    Ok(Value::I64(110)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(map_change_absent, MAP_CHANGE_ABSENT, is(Value::I64(110)); FuseExpect::Jit);
 
 const MAP_CHANGE_PRESERVES_OTHERS: &str = r#"
 {
@@ -99,10 +78,7 @@ const MAP_CHANGE_PRESERVES_OTHERS: &str = r#"
 }
 "#;
 
-run!(map_change_preserves_others, MAP_CHANGE_PRESERVES_OTHERS, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(map_change_preserves_others, MAP_CHANGE_PRESERVES_OTHERS, is(Value::I64(1)); FuseExpect::Jit);
 
 const MAP_CHANGE_CHAINED: &str = r#"
 {
@@ -114,10 +90,7 @@ const MAP_CHANGE_CHAINED: &str = r#"
 }
 "#;
 
-run!(map_change_chained, MAP_CHANGE_CHAINED, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(map_change_chained, MAP_CHANGE_CHAINED, is(Value::I64(3)); FuseExpect::Jit);
 
 const MAP_MAP: &str = r#"
 {
@@ -172,10 +145,7 @@ const MAP_FOLD: &str = r#"
 }
 "#;
 
-run!(map_fold, MAP_FOLD, |v: Result<&Value>| match v {
-    Ok(Value::I64(6)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(map_fold, MAP_FOLD, is(Value::I64(6)); FuseExpect::Jit);
 
 const MAP_ITER: &str = r#"
 {
@@ -185,13 +155,7 @@ const MAP_ITER: &str = r#"
 }
 "#;
 
-run!(map_iter, MAP_ITER, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(1), Value::I64(2)] => true,
-        _ => false,
-    },
-    _ => false,
-}; FuseExpect::Jit);
+run!(map_iter, MAP_ITER, prints("[i64:1, i64:2]"); FuseExpect::Jit);
 
 const MAP_ITERQ: &str = r#"
 {
@@ -206,14 +170,7 @@ const MAP_ITERQ: &str = r#"
 }
 "#;
 
-run!(map_iterq, MAP_ITERQ, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] =>
-            true,
-        _ => false,
-    },
-    _ => false,
-}; FuseExpect::Jit);
+run!(map_iterq, MAP_ITERQ, prints("[i64:1, i64:2, i64:3, i64:4, i64:5]"); FuseExpect::Jit);
 
 const MAP_INSERT: &str = r#"
 {
@@ -224,10 +181,7 @@ const MAP_INSERT: &str = r#"
 }
 "#;
 
-run!(map_insert, MAP_INSERT, |v: Result<&Value>| match v {
-    Ok(Value::Bool(true)) => true,
-    _ => false,
-});
+run!(map_insert, MAP_INSERT, is(Value::Bool(true)));
 
 const MAP_REMOVE: &str = r#"
 {
@@ -238,10 +192,7 @@ const MAP_REMOVE: &str = r#"
 }
 "#;
 
-run!(map_remove, MAP_REMOVE, |v: Result<&Value>| match v {
-    Ok(Value::Bool(true)) => true,
-    _ => false,
-});
+run!(map_remove, MAP_REMOVE, is(Value::Bool(true)));
 
 // Direct Map-HOF lowering.
 
@@ -411,4 +362,4 @@ run!(written_map_key_cast, r#"{
 run!(written_map_key_type_test, r#"{
     let v: Any = {"A" => 1};
     select v { Map<[string, `A], i64> as m => m{"A"}$, _ => 0 }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+}"#, is(Value::I64(1)); FuseExpect::Jit);

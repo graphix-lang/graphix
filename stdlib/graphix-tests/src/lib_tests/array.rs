@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{Collect, FuseExpect, Mode, collect, refused},
+    testing::{Collect, FuseExpect, Mode, collect, is, prints, refused},
 };
 use netidx::subscriber::Value;
 use std::time::Duration;
@@ -148,21 +148,7 @@ const ARRAY_FILTER: &str = r#"
 }
 "#;
 
-run!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [
-                Value::I64(4),
-                Value::I64(5),
-                Value::I64(6),
-                Value::I64(7),
-                Value::I64(8),
-            ] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-});
+run!(array_filter, ARRAY_FILTER, prints("[i64:4, i64:5, i64:6, i64:7, i64:8]"));
 
 const ARRAY_FLAT_MAP: &str = r#"
 {
@@ -171,15 +157,7 @@ const ARRAY_FLAT_MAP: &str = r#"
 }
 "#;
 
-run!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-});
+run!(array_flat_map, ARRAY_FLAT_MAP, prints("[i64:1, i64:2, i64:2, i64:3]"));
 
 const ARRAY_FLAT_MAP_DESTRUCTURE: &str = r#"
 {
@@ -209,15 +187,7 @@ const ARRAY_FILTER_MAP: &str = r#"
 "#;
 
 // `x ~ null` is a sample, so this callback node-walks.
-run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(7), Value::I64(8), Value::I64(9)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-});
+run!(array_filter_map, ARRAY_FILTER_MAP, prints("[i64:7, i64:8, i64:9]"));
 
 // Scalar `array::filter_map` whose body is an option-typed `select`.
 const ARRAY_FILTER_MAP_SCALAR: &str = r#"
@@ -230,15 +200,7 @@ const ARRAY_FILTER_MAP_SCALAR: &str = r#"
 }
 "#;
 
-run!(array_filter_map_scalar, ARRAY_FILTER_MAP_SCALAR, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(7), Value::I64(8), Value::I64(9)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-});
+run!(array_filter_map_scalar, ARRAY_FILTER_MAP_SCALAR, prints("[i64:7, i64:8, i64:9]"));
 
 const ARRAY_FIND: &str = r#"
 {
@@ -296,12 +258,7 @@ const ARRAY_FIND_COMPOSITE: &str = r#"
 }
 "#;
 
-run!(array_find_composite, ARRAY_FIND_COMPOSITE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(20)]),
-        _ => false,
-    }
-});
+run!(array_find_composite, ARRAY_FIND_COMPOSITE, prints("[i64:2, i64:20]"));
 
 // No composite element matches: every element is fetched and dropped.
 const ARRAY_FIND_COMPOSITE_NONE: &str = r#"
@@ -399,14 +356,7 @@ const ARRAY_FILTER_MAY_BOTTOM: &str = r#"
 }
 "#;
 
-run!(array_filter_may_bottom, ARRAY_FILTER_MAY_BOTTOM, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            matches!(&a[..], [Value::I64(1), Value::I64(2), Value::I64(3)])
-        }
-        _ => false,
-    }
-});
+run!(array_filter_may_bottom, ARRAY_FILTER_MAY_BOTTOM, prints("[i64:1, i64:2, i64:3]"));
 
 // A may-bottom fold body (`acc / x`) over a runtime-clean array fuses.
 const ARRAY_FOLD_MAY_BOTTOM: &str = r#"
@@ -450,14 +400,7 @@ const ARRAY_FOLD_VALUE_ACC_ELEM_BODY: &str = r#"
 }
 "#;
 
-run!(array_fold_value_acc_elem_body, ARRAY_FOLD_VALUE_ACC_ELEM_BODY, |v: Result<
-    &Value,
->| {
-    match v {
-        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(7)]),
-        _ => false,
-    }
-});
+run!(array_fold_value_acc_elem_body, ARRAY_FOLD_VALUE_ACC_ELEM_BODY, prints("[i64:7]"));
 
 // The same seam with a fresh-literal body.
 const ARRAY_FOLD_VALUE_ACC_LITERAL_BODY: &str = r#"
@@ -470,12 +413,7 @@ const ARRAY_FOLD_VALUE_ACC_LITERAL_BODY: &str = r#"
 run!(
     array_fold_value_acc_literal_body,
     ARRAY_FOLD_VALUE_ACC_LITERAL_BODY,
-    |v: Result<&Value>| {
-        match v {
-            Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(5), Value::I64(6)]),
-            _ => false,
-        }
-    }
+    prints("[i64:5, i64:6]")
 );
 
 // The same seam with a scalar body over an `[i64, Error]` acc.
@@ -513,14 +451,11 @@ const ARRAY_FLAT_MAP_MAY_BOTTOM: &str = r#"
 }
 "#;
 
-run!(array_flat_map_may_bottom, ARRAY_FLAT_MAP_MAY_BOTTOM, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            matches!(&a[..], [Value::I64(10), Value::I64(5), Value::I64(2)])
-        }
-        _ => false,
-    }
-});
+run!(
+    array_flat_map_may_bottom,
+    ARRAY_FLAT_MAP_MAY_BOTTOM,
+    prints("[i64:10, i64:5, i64:2]")
+);
 
 // A scalar `array::fold` result flowing into a `connect` sets `s`
 // (lift.rs fold_into_connect_quiesces pins that it then quiesces).
@@ -541,15 +476,7 @@ const FOLD_REACTIVE_SIZE: &str = r#"
 }
 "#;
 
-run!(fold_reactive_size, FOLD_REACTIVE_SIZE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(2), Value::I64(4), Value::I64(6), Value::I64(8)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-});
+run!(fold_reactive_size, FOLD_REACTIVE_SIZE, prints("[i64:2, i64:4, i64:6, i64:8]"));
 
 // The shrink sibling: sizes [1, 2, 1, 4]; a resize is a firing event
 // even when every remaining slot is quiet.
@@ -561,15 +488,7 @@ const FOLD_REACTIVE_SHRINK: &str = r#"
 }
 "#;
 
-run!(fold_reactive_shrink, FOLD_REACTIVE_SHRINK, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(2), Value::I64(4), Value::I64(2), Value::I64(8)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-});
+run!(fold_reactive_shrink, FOLD_REACTIVE_SHRINK, prints("[i64:2, i64:4, i64:2, i64:8]"));
 
 const ARRAY_FOLD1: &str = r#"
 {
@@ -584,22 +503,7 @@ const ARRAY_CONCAT: &str = r#"
   array::concat([1, 2, 3], [4, 5], [6])
 "#;
 
-run!(array_concat, ARRAY_CONCAT, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [
-                Value::I64(1),
-                Value::I64(2),
-                Value::I64(3),
-                Value::I64(4),
-                Value::I64(5),
-                Value::I64(6),
-            ] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-});
+run!(array_concat, ARRAY_CONCAT, prints("[i64:1, i64:2, i64:3, i64:4, i64:5, i64:6]"));
 
 const ARRAY_PUSH: &str = r#"
   array::push([(1, 2), (3, 4)], (5, 6))
@@ -637,9 +541,7 @@ const ARRAY_MAP_UNION_CALLBACK_PUSH_FRONT: &str = r#"
 run!(
     array_map_union_callback_push_front,
     ARRAY_MAP_UNION_CALLBACK_PUSH_FRONT,
-    |v: Result<&Value>| {
-        format!("{}", v.unwrap()) == r#"[[["name", "z"]], [["name", "a"]], "b"]"#
-    }
+    prints(r#"[[["name", "z"]], [["name", "a"]], "b"]"#)
 );
 
 const ARRAY_WINDOW0: &str = r#"
@@ -698,14 +600,7 @@ const CAST_CALLBACK_PER_SLOT: &str = r#"
   array::map([true, false, true], |b| cast<i64>(b))
 "#;
 
-run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            matches!(&a[..], [Value::I64(1), Value::I64(0), Value::I64(1)])
-        }
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, prints("[i64:1, i64:0, i64:1]"); FuseExpect::Jit);
 
 const ARRAY_FLATTEN: &str = r#"
   array::flatten([[1, 2, 3], [4, 5], [6]])
@@ -730,15 +625,7 @@ const ARRAY_GROUP0: &str = r#"
 }
 "#;
 
-run!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(array_group0, ARRAY_GROUP0, prints("[i64:1, i64:2, i64:3]"); FuseExpect::None);
 
 const ARRAY_GROUP1: &str = r#"
 {
@@ -1030,7 +917,7 @@ run!(hof_str_filter_none, HOF_STR_FILTER_NONE, |v: Result<&Value>| matches!(
 
 const HOF_STR_FOLD: &str =
     r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
-run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6)));
+run!(hof_str_fold, HOF_STR_FOLD, is(Value::I64(6));
     FuseExpect::Jit);
 
 // find returns the matched string element; non-matches drop.
@@ -1049,10 +936,7 @@ run!(hof_str_find_last, HOF_STR_FIND_LAST, |v: Result<&Value>| matches!(
 ));
 
 const HOF_STR_FIND_NONE: &str = r#"array::find(["a", "b"], |s| str::len(s) == 9)"#;
-run!(hof_str_find_none, HOF_STR_FIND_NONE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::Null)
-));
+run!(hof_str_find_none, HOF_STR_FIND_NONE, is(Value::Null));
 
 const HOF_STR_FLATMAP: &str = r#"array::flat_map(["a", "b"], |s| [s, s])"#;
 run!(hof_str_flatmap, HOF_STR_FLATMAP, |v: Result<&Value>| {
@@ -1080,9 +964,7 @@ run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
 const HOF_VARIANT_FILTER: &str = r#"
 array::filter([`Red, `Green, `Red], |v| select v { `Red => true, _ => false })
 "#;
-run!(hof_variant_filter, HOF_VARIANT_FILTER, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"["Red", "Red"]"#
-});
+run!(hof_variant_filter, HOF_VARIANT_FILTER, prints(r#"["Red", "Red"]"#));
 
 // A Value-shape variant element returned by find after a dropped
 // non-match.
@@ -1253,33 +1135,28 @@ run!(hof_leaf_composite, HOF_LEAF_COMPOSITE, |v: Result<&Value>| matches!(
 const HOF_LEAF_STRING: &str = r#"
 array::fold([("a", 1), ("bb", 2)], 0, |acc, (s, n)| acc + str::len(s) + n)
 "#;
-run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(6))
-); FuseExpect::Jit);
+run!(hof_leaf_string, HOF_LEAF_STRING, is(Value::I64(6)); FuseExpect::Jit);
 
 // filter over a tuple leaf keeps a match whole; a no-match and an
 // all-match filter too.
 const HOF_LEAF_FILTER: &str = r#"
 array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 3)
 "#;
-run!(hof_leaf_filter, HOF_LEAF_FILTER, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[[i64:5, i64:6], i64:1]]"
-});
+run!(hof_leaf_filter, HOF_LEAF_FILTER, prints("[[[i64:5, i64:6], i64:1]]"));
 
 const HOF_LEAF_FILTER_NONE: &str = r#"
 array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 9)
 "#;
-run!(hof_leaf_filter_none, HOF_LEAF_FILTER_NONE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[]"
-});
+run!(hof_leaf_filter_none, HOF_LEAF_FILTER_NONE, prints("[]"));
 
 const HOF_LEAF_FILTER_ALL: &str = r#"
 array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 0)
 "#;
-run!(hof_leaf_filter_all, HOF_LEAF_FILTER_ALL, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[[i64:1, i64:2], i64:0], [[i64:5, i64:6], i64:1]]"
-});
+run!(
+    hof_leaf_filter_all,
+    HOF_LEAF_FILTER_ALL,
+    prints("[[[i64:1, i64:2], i64:0], [[i64:5, i64:6], i64:1]]")
+);
 
 // A string leaf read twice in the body.
 const HOF_LEAF_STRING_TWICE: &str = r#"

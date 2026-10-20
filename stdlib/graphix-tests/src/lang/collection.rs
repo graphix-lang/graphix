@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, refused},
+    testing::{FuseExpect, Mode, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -14,7 +14,7 @@ use netidx::publisher::Value;
 // the trait's dispatcher.
 run!(
     collection_array_map,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(12))),
+    is(Value::I64(12)),
     "/test.gx" => r#"
         use Collection::*;
         let r = map([1, 2, 3], |x| x * 2);
@@ -25,7 +25,7 @@ run!(
 // The list implementation.
 run!(
     collection_list_fold_map_len,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(63))),
+    is(Value::I64(63)),
     "/test.gx" => r#"
         use Collection::*;
         let l = list::from_array([1, 2, 3]);
@@ -40,7 +40,7 @@ run!(
 // values; `map::map` remains the pair operation.
 run!(
     collection_map_values,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(301))),
+    is(Value::I64(301)),
     "/test.gx" => r#"
         use Collection::*;
         let m = {"a" => 1, "b" => 2};
@@ -56,7 +56,7 @@ run!(
 // each call site resolves the implementation for its own receiver.
 run!(
     collection_generic_param,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(10))),
+    is(Value::I64(10)),
     "/test.gx" => r#"
         use Collection::*;
         let total = |c: Collection| fold(c, 0, |a, x| a + x);
@@ -68,7 +68,7 @@ run!(
 // of an array; `filter`, `map`, `find` and `len` are the defaults.
 run!(
     collection_newtype_defaults,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(240))),
+    is(Value::I64(240)),
     "/test.gx" => r#"
         type Bag<'a> = Abstract<Array<'a>>;
         impl Collection for Bag<'_> {
@@ -94,7 +94,7 @@ run!(
 // fold fuses.
 run!(
     collection_map_find_stops_at_a_null,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[null, i64:5, null]",
+    prints("[null, i64:5, null]"),
     "/test.gx" => r#"
         use Collection::*;
         let m: Map<i64, [i64, null]> = {1 => 4, 2 => null, 3 => 5};
@@ -111,7 +111,7 @@ run!(
 // constructor and `L<i64>` decomposes to it by name.
 run!(
     collection_user_cons_list,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(122))),
+    is(Value::I64(122)),
     "/test.gx" => r#"
         type L<'a> = [`C('a, L<'a>), `N];
         let rec fold_l = |l: L<'a>, acc: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e select l {
@@ -143,7 +143,7 @@ run!(
 // `find_map` is a default over `fold` with a typed accumulator seed.
 run!(
     collection_find_map_default,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(30))),
+    is(Value::I64(30)),
     "/test.gx" => r#"
         type Bag<'a> = Abstract<Array<'a>>;
         impl Collection for Bag<'_> {
@@ -229,7 +229,7 @@ run!(
 
 run!(
     collection_bodies_fold_array,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let src = array::init(200, |i| i);
         let rec fold_go = |a: Array<i64>, f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
@@ -246,7 +246,7 @@ run!(
 
 run!(
     collection_bodies_map_array,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let src = array::init(64, |i| i);
         let rec map_go = |a: Array<i64>, f: fn(x: i64) -> i64, i: i64, out: Array<i64>| -> Array<i64>
@@ -264,7 +264,7 @@ run!(
 
 run!(
     collection_bodies_filter_array,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let src = array::init(64, |i| i);
         let a = array::filter(src, |x| x % 2 == 0);
@@ -278,7 +278,7 @@ run!(
 
 run!(
     collection_bodies_find_array,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let src = array::init(64, |i| i);
         let ffold = |a: Array<i64>, target: i64| -> [i64, null] {
@@ -299,7 +299,7 @@ run!(
 
 run!(
     collection_bodies_flat_map_array,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let src = array::init(64, |i| i);
         let empty: Array<i64> = [];
@@ -311,7 +311,7 @@ run!(
 
 run!(
     collection_bodies_fold_list,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let l = list::init(200, |i| i);
         let rec lfold_go = |l: List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
@@ -327,7 +327,7 @@ run!(
 
 run!(
     collection_bodies_fold_map,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let empty: Map<i64, i64> = {};
         let m = array::fold(array::init(200, |i| i), empty, |m, i| map::insert(m, i, i * 2));
@@ -342,14 +342,11 @@ run!(
 const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
 {
   let a = array::init(10, |i| i);
-  array::fold(array::filter_map(a, |x| x * 3 + 1), 0, |s, x| s + x)
+  #[native] array::fold(array::filter_map(a, |x| x * 3 + 1), 0, |s, x| s + x)
 }
 "#;
 
-run!(filter_map_total_callback, FILTER_MAP_TOTAL_CALLBACK, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(145))
-); FuseExpect::Jit);
+run!(filter_map_total_callback, FILTER_MAP_TOTAL_CALLBACK, is(Value::I64(145)); FuseExpect::Jit);
 
 // A collection callback with a labeled-default parameter before its
 // positional one receives the element in the positional slot; an outer
@@ -365,7 +362,7 @@ const LABELED_CALLBACK_OUTER_SHADOW: &str = r#"
 "#;
 
 run!(labeled_callback_outer_shadow, LABELED_CALLBACK_OUTER_SHADOW,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
+    is(Value::I64(2));
     FuseExpect::Jit);
 
 // The labeled default is read in the body: (42+10)+(42+20)+(42+30) = 186.
@@ -381,7 +378,7 @@ const LABELED_CALLBACK_DEFAULT_USED: &str = r#"
 "#;
 
 run!(labeled_callback_default_used, LABELED_CALLBACK_DEFAULT_USED,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(186)));
+    is(Value::I64(186));
     FuseExpect::Jit);
 
 // A callback with a labeled parameter has no fused loop: the collection
@@ -401,39 +398,22 @@ run!(labeled_callback_fold_node_walks,
 const NESTED_SAME_INTRINSIC: &str = r#"
 {
   let src = array::init(i64:200, |i| i);
-  array::fold(src, i64:0, |acc, x| array::fold([x + i64:1, x * i64:2], acc, |a, y| a + y))
+  #[native] array::fold(src, i64:0, |acc, x| array::fold([x + i64:1, x * i64:2], acc, |a, y| a + y))
 }
 "#;
 
-// CR claude for claude: [test-gap/medium] FuseExpect::Jit holds whenever any kernel
-// runs, and this program also fuses array::init as a region of its own. So this fixture
-// still passes if the nested fold it is about node-walks. Making the inner callback
-// unfusable (`a + (y ~ y)`) still reports fused=1. The same blind spot covers
-// nested_map_in_map, user_hof_nested, nested_mixed_types and filter_map_total_callback
-// here, and organic_deltas guard_fire_emits and tail_same_args_fires, whose `x % 2` /
-// `x / 3` fuse apart from the select under test. Put #[native] on each fixture's
-// subject (the outer fold, the filter_map, the select, the recursive call). All of them
-// build under #[native] today. probe:
-// design/review-2026-10-19/repro/tests-lang-rest-b-fuse-jit-blind.sh
-// (tests-lang-rest-b-01)
-run!(nested_same_intrinsic, NESTED_SAME_INTRINSIC, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(59900))
-); FuseExpect::Jit);
+run!(nested_same_intrinsic, NESTED_SAME_INTRINSIC, is(Value::I64(59900)); FuseExpect::Jit);
 
 // The same through `map`, with the inner loop reached via a named lambda.
 const NESTED_MAP_IN_MAP: &str = r#"
 {
   let src = array::init(i64:100, |i| i);
   let inner = |x| array::map([x, x + i64:1], |y| y * i64:2);
-  array::fold(array::map(src, |x| inner(x)), i64:0, |a, ys| a + array::len(ys))
+  #[native] array::fold(array::map(src, |x| inner(x)), i64:0, |a, ys| a + array::len(ys))
 }
 "#;
 
-run!(nested_map_in_map, NESTED_MAP_IN_MAP, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(200))
-); FuseExpect::Jit);
+run!(nested_map_in_map, NESTED_MAP_IN_MAP, is(Value::I64(200)); FuseExpect::Jit);
 
 // The same for a user-written HOF: `apply` nested under its own callback.
 const USER_HOF_NESTED: &str = r#"
@@ -441,35 +421,29 @@ const USER_HOF_NESTED: &str = r#"
   let apply = |f: fn(x: i64) -> i64, x: i64| f(x);
   let g = |y| y + i64:1;
   let src = array::init(i64:200, |i| i);
-  array::fold(src, i64:0, |a, x| a + apply(|y| apply(g, y), x))
+  #[native] array::fold(src, i64:0, |a, x| a + apply(|y| apply(g, y), x))
 }
 "#;
 
-run!(user_hof_nested, USER_HOF_NESTED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(20100))
-); FuseExpect::Jit);
+run!(user_hof_nested, USER_HOF_NESTED, is(Value::I64(20100)); FuseExpect::Jit);
 
 // Nested same-def use with different element types: each instantiation
 // gets its own cells.
 const NESTED_MIXED_TYPES: &str = r#"
 {
   let z = i64:0;
-  z + array::fold([i64:1, i64:2], i64:0, |acc, x|
-    acc + x + array::fold(["a", "bb"], i64:0, |a, s| a + str::len(s)))
+  #[native] (z + array::fold([i64:1, i64:2], i64:0, |acc, x|
+    acc + x + array::fold(["a", "bb"], i64:0, |a, s| a + str::len(s))))
 }
 "#;
 
-run!(nested_mixed_types, NESTED_MIXED_TYPES, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(9))
-); FuseExpect::Jit);
+run!(nested_mixed_types, NESTED_MIXED_TYPES, is(Value::I64(9)); FuseExpect::Jit);
 
 // A trait-typed parameter of a fn type takes a fresh element at each
 // call, so a rank-2 formal applies to collections of two element types.
 run!(
     collection_rank2_elements_per_call,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    is(Value::I64(21)),
     "/test.gx" => r#"
         use Collection::*;
         let n = |c: Collection| fold(c, 0, |acc, x| acc + 1);
@@ -485,7 +459,7 @@ run!(collection_returns_a_generic_function, r#"{
     let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
     let g = fs[0]$;
     g(#start: 3, 4)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::None);
+}"#, is(Value::I64(7)); FuseExpect::None);
 
 // A collection fires when it resizes or its source comes back from bottom,
 // whatever tag the source arrives with (an arm waking after another arm

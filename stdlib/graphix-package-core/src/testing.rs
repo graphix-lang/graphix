@@ -428,6 +428,16 @@ pub fn refused(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
     move |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains(phrase))
 }
 
+/// A [`run!`] predicate for a program whose value is `expected`.
+pub fn is(expected: Value) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| matches!(v, Ok(v) if *v == expected)
+}
+
+/// A [`run!`] predicate for a program whose value prints as `expected`.
+pub fn prints(expected: &'static str) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == expected)
+}
+
 /// The compile error `let result = {code}` gets, in full; an error if it
 /// compiles, or if the runtime died compiling it.
 pub async fn refusal(code: &str, register: &[PackageRef]) -> Result<String> {
@@ -443,6 +453,25 @@ pub async fn refusal(code: &str, register: &[PackageRef]) -> Result<String> {
         Ok(_) => bail!("compiled: {code}"),
         Err(e) => Ok(format!("{e:#}")),
     }
+}
+
+/// The error compiling `text` gets, with `files` served by the resolver;
+/// an error if it compiles.
+pub async fn compile_error(
+    files: &[(&str, &str)],
+    text: &str,
+    register: &[PackageRef],
+) -> Result<anyhow::Error> {
+    let tbl =
+        ahash::AHashMap::from_iter(files.iter().map(|(p, t)| {
+            (Path::from(ArcStr::from(*p)), VfsEntry::from(ArcStr::from(*t)))
+        }));
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = TestCtx::start(config(tx, register, vec![VfsResolver::new(tbl)], |_| {})?)
+        .await?;
+    let e = ctx.rt.compile(ArcStr::from(text)).await.err();
+    ctx.shutdown().await;
+    e.ok_or_else(|| anyhow::anyhow!("{text} compiled"))
 }
 
 /// The `BindId` of a module-qualified name like `"test::clicks"`. Scope

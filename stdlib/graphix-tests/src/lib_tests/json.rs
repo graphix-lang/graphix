@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::literal;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval_modes, refused},
+    testing::{FuseExpect, eval_modes, prints, refused},
 };
 use netidx::subscriber::Value;
 
@@ -57,10 +57,7 @@ run!(json_optional_fields_read_exactly, r#"{
     let r: Result<{small: [i8, null]}, [`JsonErr(string), `InvalidCast(string)]> =
         json::read("{\"small\": 300}");
     (w, select r { error as e => "[e]", _ => "read" })
-}"#, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == r#"[[["small", i8:7], ["weights", [f64:1., f64:2.]]], "error:`InvalidCast(\"can't cast 300 to [i8, null]: no primitive conversion\")"]"#
-}; FuseExpect::Jit);
+}"#, prints(r#"[[["small", i8:7], ["weights", [f64:1., f64:2.]]], "error:`InvalidCast(\"can't cast 300 to [i8, null]: no primitive conversion\")"]"#); FuseExpect::Jit);
 
 run!(json_read_bytes, r#"{
     let b = json::write_bytes(42)$;
@@ -89,9 +86,7 @@ run!(json_nested, r#"{
     type Nested = {items: Array<i64>, meta: {count: i64}};
     let obj: Nested = json::read(json::write_str({items: [1, 2], meta: {count: 2}})$)?;
     obj
-}"#, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[["items", [i64:1, i64:2]], ["meta", [["count", i64:2]]]]"#
-}; FuseExpect::None);
+}"#, prints(r#"[["items", [i64:1, i64:2]], ["meta", [["count", i64:2]]]]"#); FuseExpect::None);
 
 // json over a tcp stream, read back from the other end.
 run!(json_stream_tcp, r#"{

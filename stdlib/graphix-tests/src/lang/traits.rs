@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, refused},
+    testing::{FuseExpect, Mode, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -169,7 +169,7 @@ run!(
 // both an Array and a Map.
 run!(
     collection_generic_interface_declared,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
+    is(Value::I64(5)),
     "/test.gx" => r#"
 mod m;
 let result = m::csize([i64:1, i64:2, i64:3]) + m::csize({"a" => i64:1, "b" => i64:2})
@@ -518,7 +518,7 @@ run!(
 // A case-insensitive key: `==` calls the implementation.
 run!(
     core_eq_abstract,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -529,7 +529,7 @@ run!(
 // Values an implementation calls equal hash equal: a dedup keeps one.
 run!(
     core_eq_hash_agrees,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -554,7 +554,7 @@ run!(
 
 run!(
     abstract_dedups_by_payload,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r##"
         type T = Abstract<i64>;
         let result = array::len(array::dedup([T(1), T(2), T(1)]))
@@ -565,7 +565,7 @@ run!(
 // parts compare as values.
 run!(
     core_eq_nested,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -582,7 +582,7 @@ run!(
 // a tuple holding the type.
 run!(
     core_ord_abstract,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r##"
         type Rev = Abstract<i64>;
         impl Ord for Rev {
@@ -664,7 +664,8 @@ async fn core_display_println(mode: Mode) -> Result<()> {
         dbg(#dest: `Stdout, {c, n: 1});
         42
     }"##;
-    let (values, out) = super::dense_deltas::run_delta(code, mode).await?;
+    let (values, out) =
+        super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit).await?;
     assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![42]);
     let (dbg, mut lines): (Vec<&str>, Vec<&str>) =
         out.lines().partition(|l| l.ends_with("): {c: #123, n: 1}"));
@@ -817,7 +818,7 @@ run!(
 // signature, instantiated at the target, annotates the lambda.
 run!(
     trait_builtin_bodied_impl,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
         trait Masked { val masked: fn(self, m: i64) -> i64 };
         impl Masked for i64 { let masked = |x, m| 'core_bit_and };
@@ -830,7 +831,7 @@ run!(
 // body is instantiated per resolved implementation.
 run!(
     trait_builtin_bodied_bound,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    is(Value::I64(4)),
     "/test.gx" => r#"
         trait Masked { val masked: fn(self, m: i64) -> i64 };
         impl Masked for i64 { let masked = |x, m| 'core_bit_and };
@@ -844,7 +845,7 @@ run!(
 // declarations that follow it.
 run!(
     interface_type_after_impl,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         mod m;
         let result = m::f(`A)
@@ -1194,10 +1195,7 @@ const DYNAMIC_MODULE_TC1: &str = r#"
 }
 "#;
 
-run!(dynamic_module_typecheck1, DYNAMIC_MODULE_TC1, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(12))
-));
+run!(dynamic_module_typecheck1, DYNAMIC_MODULE_TC1, is(Value::I64(12)));
 
 // A CORE trait declared by a dynamic module's signature: the value
 // seam's hook site resolves to the declared method binding, which the
@@ -1339,10 +1337,7 @@ const TRAIT_RESULT_IS_FILLED: &str = r#"
 }
 "#;
 
-run!(trait_result_is_filled, TRAIT_RESULT_IS_FILLED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(7))
-); FuseExpect::Jit);
+run!(trait_result_is_filled, TRAIT_RESULT_IS_FILLED, is(Value::I64(7)); FuseExpect::Jit);
 
 // A generic core implementation (`impl<'a> Eq for Box<'a>`) is the one
 // the value's operator consults.
@@ -1355,7 +1350,7 @@ run!(
   Box(1) == Box(2)
 }
 "#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    is(Value::Bool(true));
     FuseExpect::Jit
 );
 
@@ -1377,7 +1372,7 @@ run!(
   *(&m{Rev(1)})
 }
 "#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(10)));
+    is(Value::I64(10));
     FuseExpect::Jit
 );
 
@@ -1406,7 +1401,7 @@ run!(
   (Box(1) == Box(2), Box("a") == Box("b"))
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[true, false]";
+    prints("[true, false]");
     FuseExpect::Jit
 );
 
@@ -1426,7 +1421,7 @@ run!(
   (a == b, c == d)
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, true]";
+    prints("[false, true]");
     FuseExpect::Jit
 );
 
@@ -1453,7 +1448,7 @@ run!(
   (u == v, Pair((1, "a")) == Pair((2, "b")), Pair((1, 2)) == Pair((3, 4)), s == t, n == m)
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, false, true, false, true]";
+    prints("[false, false, true, false, true]");
     FuseExpect::Jit
 );
 
@@ -1471,7 +1466,7 @@ run!(
   }
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["Text", "hi"]"#;
+    prints(r#"["Text", "hi"]"#);
     FuseExpect::Jit
 );
 
@@ -1489,7 +1484,7 @@ run!(
   (a == b, b == a, a == c)
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, false, true]";
+    prints("[false, false, true]");
     FuseExpect::Jit
 );
 
@@ -1509,7 +1504,7 @@ run!(
   }
 }
 "#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#""<<<1>>>""#;
+    prints(r#""<<<1>>>""#);
     FuseExpect::Jit
 );
 
@@ -1545,7 +1540,7 @@ run!(
   q1 == q2
 }
 "#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    is(Value::Bool(true));
     FuseExpect::Jit
 );
 
@@ -1702,7 +1697,7 @@ run!(
     seen <- never_sized ~ true;
     (sized, seen)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:2, false]"
+    prints("[i64:2, false]")
 );
 
 // The self argument written later dispatches when it arrives.
@@ -1715,7 +1710,7 @@ run!(
     x <- ["a", "b"];
     s
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+    is(Value::I64(2))
 );
 
 // A trait method with an optional label is called, never used as a value:
@@ -1754,8 +1749,7 @@ run!(
         [(held.f)(A(3)), g(4), g(B("y"))]
     ]
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap())
-        == r#"[["1", "2"], ["A1", "Bx"], ["1", "2"], ["A3", "i4", "By"]]"#
+    prints(r#"[["1", "2"], ["A1", "Bx"], ["1", "2"], ["A3", "i4", "By"]]"#)
 );
 
 #[tokio::test(flavor = "current_thread")]
@@ -1778,7 +1772,7 @@ run!(
     let g = |x| Desc::desc(x);
     array::map([A(4), A(5)], g)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["desc4", "desc5"]"#
+    prints(r#"["desc4", "desc5"]"#)
 );
 
 // A generic impl whose bound leads back to a recursive typedef: the trait
@@ -1892,7 +1886,7 @@ run!(
 run!(variadic_trait_param, r#"{
     let f = |@args: Eq| -> Any 'core_all;
     f(1, 1)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+}"#, is(Value::I64(1)); FuseExpect::None);
 
 run!(variadic_trait_param_is_one_type, r#"{
     let f = |@args: Eq| -> Any 'core_all;

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::subscriber::Value;
 
@@ -121,9 +121,7 @@ const STR_JOIN_EDGES: &str = r#"
   (str::join(#sep: ",", "", "b"), str::join(#sep: "/", str::split(#pat: "/", "/usr/bin")))
 "#;
 
-run!(str_join_edges, STR_JOIN_EDGES, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[",b", "/usr/bin"]"#
-});
+run!(str_join_edges, STR_JOIN_EDGES, prints(r#"[",b", "/usr/bin"]"#));
 
 // A path with no parent has no dirname, and one a level below the root
 // has the root; a trailing `/` names an empty leaf (netidx paths, not
@@ -132,9 +130,7 @@ const STR_DIRNAME_EDGES: &str = r#"
   (str::dirname("foo"), str::dirname(""), str::dirname("/foo"), str::dirname("/foo/"))
 "#;
 
-run!(str_dirname_edges, STR_DIRNAME_EDGES, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[null, null, "/", "/foo"]"#
-});
+run!(str_dirname_edges, STR_DIRNAME_EDGES, prints(r#"[null, null, "/", "/foo"]"#));
 
 const STR_BASENAME: &str = r#"
   str::basename("/foo/bar/baz")
@@ -511,7 +507,7 @@ run!(
 run!(
     parse_target_is_not_its_own_error,
     r#"{ let r: [i64, Error<`ParseError(string)>] = str::parse("7"); r$ + 1 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(8)));
+    is(Value::I64(8));
     FuseExpect::Jit
 );
 

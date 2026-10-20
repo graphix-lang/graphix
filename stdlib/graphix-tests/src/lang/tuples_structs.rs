@@ -5,7 +5,7 @@ use arcstr::ArcStr;
 use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -64,10 +64,7 @@ const TUPLES1: &str = r#"
 }
 "#;
 
-run!(tuples1, TUPLES1, |v: Result<&Value>| match v {
-    Ok(Value::F64(65.5)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(tuples1, TUPLES1, is(Value::F64(65.5)); FuseExpect::Jit);
 
 const TUPLES2: &str = r#"
 {
@@ -79,10 +76,7 @@ const TUPLES2: &str = r#"
 }
 "#;
 
-run!(tuples2, TUPLES2, |v: Result<&Value>| match v {
-    Ok(Value::F64(65.5)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(tuples2, TUPLES2, is(Value::F64(65.5)); FuseExpect::Jit);
 
 const TUPLEACCESSOR: &str = r#"
 {
@@ -91,10 +85,7 @@ const TUPLEACCESSOR: &str = r#"
 }
 "#;
 
-run!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit;
+run!(tupleaccessor, TUPLEACCESSOR, is(Value::I64(42)); FuseExpect::Jit;
    shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 const STRUCTS0: &str = r#"
@@ -137,10 +128,7 @@ const BINDSTRUCT: &str = r#"
 }
 "#;
 
-run!(bindstruct, BINDSTRUCT, |v: Result<&Value>| match v {
-    Ok(Value::F64(126.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(bindstruct, BINDSTRUCT, is(Value::F64(126.0)); FuseExpect::Jit);
 
 const STRUCTACCESSOR: &str = r#"
 {
@@ -173,10 +161,7 @@ const STRUCTWITH1: &str = r#"
 "#;
 
 // A struct-with copying an unchanged `string` field fuses.
-run!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
-    Ok(Value::F64(85.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(structwith1, STRUCTWITH1, is(Value::F64(85.0)); FuseExpect::Jit);
 
 const STRUCTWITH2: &str = r#"
 {
@@ -288,10 +273,7 @@ const STRUCTWITH_COMPOSITE: &str = r#"
 }
 "#;
 
-run!(structwith_composite, STRUCTWITH_COMPOSITE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(7))
-));
+run!(structwith_composite, STRUCTWITH_COMPOSITE, is(Value::I64(7)));
 
 // A `#[native]` struct-with in the differential harness: a no-op with
 // fusion off, native with it on.
@@ -303,10 +285,7 @@ const STRUCTWITH_NATIVE: &str = r#"
 }
 "#;
 
-run!(structwith_native, STRUCTWITH_NATIVE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(9))
-));
+run!(structwith_native, STRUCTWITH_NATIVE, is(Value::I64(9)));
 
 // A may-bottom replacement field (`i64:10 / d`) that is runtime-clean.
 const STRUCTWITH_MAYBOTTOM: &str = r#"
@@ -317,10 +296,7 @@ const STRUCTWITH_MAYBOTTOM: &str = r#"
 }
 "#;
 
-run!(structwith_maybottom, STRUCTWITH_MAYBOTTOM, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(5))
-));
+run!(structwith_maybottom, STRUCTWITH_MAYBOTTOM, is(Value::I64(5)));
 
 // Composite / value-shape cross-kernel calls: the call must sit inside
 // another lambda's body, so `g`'s kernel contains the call to `h`.
@@ -333,10 +309,7 @@ const CALL_TUPLE_ARG: &str = r#"
 }
 "#;
 
-run!(call_tuple_arg, CALL_TUPLE_ARG, |v: Result<&Value>| match v {
-    Ok(Value::I64(35)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(call_tuple_arg, CALL_TUPLE_ARG, is(Value::I64(35)); FuseExpect::Jit);
 
 const CALL_STRUCT_ARG: &str = r#"
 {
@@ -346,10 +319,7 @@ const CALL_STRUCT_ARG: &str = r#"
 }
 "#;
 
-run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
-    Ok(Value::I64(7)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(call_struct_arg, CALL_STRUCT_ARG, is(Value::I64(7)); FuseExpect::Jit);
 
 // A value-shape (nullable) return from a lambda called inside the
 // result block.
@@ -363,10 +333,7 @@ const CALL_NULLABLE_RETURN: &str = r#"
 }
 "#;
 
-run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
-    Ok(Value::I64(5)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(call_nullable_return, CALL_NULLABLE_RETURN, is(Value::I64(5)); FuseExpect::Jit);
 
 // String equality.
 const VALUE_EQ_STRING: &str = r#"
@@ -446,7 +413,7 @@ run!(
     let {x, ..} = p;
     x
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+    is(Value::I64(1))
 );
 
 // The value's type need not be known when the let compiles: a call's
@@ -460,7 +427,7 @@ run!(
     let (k, {y: z, ..}) = (1, g(7));
     (y, k, z)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:2, i64:1, i64:8]"
+    prints("[i64:2, i64:1, i64:8]")
 );
 
 run!(
@@ -489,8 +456,7 @@ run!(
     let ts = [(1, "a"), (2, `B)];
     (r.d.name, array::map(xs, |x| x.n), xs[0]$.act, ts[1]$.0)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap())
-        == r#"["y", [i64:1, i64:2], "A", i64:2]"#
+    prints(r#"["y", [i64:1, i64:2], "A", i64:2]"#)
 );
 
 // A source typed by a typedef name is a struct or an abstract like any
@@ -514,5 +480,5 @@ run!(
     let f = |w: W| -> i64 #[native] (w.c.0 + w.n);
     f({c: Counter(1), n: 2})
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)))
+    is(Value::I64(3))
 );

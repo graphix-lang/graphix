@@ -1,6 +1,9 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{ProgramArgs, run, testing, testing::FuseExpect};
+use graphix_package_core::{
+    ProgramArgs, run,
+    testing::{self, FuseExpect, is},
+};
 use netidx::publisher::Value;
 
 const ARGS_EMPTY: &str = r#"
@@ -144,7 +147,7 @@ run!(handle_accessors_are_sync, r#"{
     let pid = |p: sys::process::Proc| sys::process::pid(p);
     (peer(never()), local(never()), listener(never()), pid(never()));
     true
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit; build_only);
+}"#, is(Value::Bool(true)); FuseExpect::Jit; build_only);
 
 run!(stdio_constructors_are_sync, r#"{
     #[sync]
@@ -156,4 +159,4 @@ run!(stdio_constructors_are_sync, r#"{
     input(null) != input(null)
         && output(null) != output(null)
         && error(null) != error(null)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);
+}"#, is(Value::Bool(true)); FuseExpect::None);

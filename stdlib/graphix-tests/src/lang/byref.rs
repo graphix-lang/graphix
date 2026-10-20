@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode},
+    testing::{FuseExpect, Mode, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -28,10 +28,7 @@ const BYREF_DEREF: &str = r#"
 }
 "#;
 
-run!(byref_deref, BYREF_DEREF, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(byref_deref, BYREF_DEREF, is(Value::I64(42)); FuseExpect::None);
 
 const BYREF_TUPLE: &str = r#"
 {
@@ -41,10 +38,7 @@ const BYREF_TUPLE: &str = r#"
 }
 "#;
 
-run!(byref_tuple, BYREF_TUPLE, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(byref_tuple, BYREF_TUPLE, is(Value::I64(3)); FuseExpect::Jit);
 
 const BYREF_PATTERN: &str = r#"
 {
@@ -55,10 +49,7 @@ const BYREF_PATTERN: &str = r#"
 }
 "#;
 
-run!(byref_pattern, BYREF_PATTERN, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(byref_pattern, BYREF_PATTERN, is(Value::I64(42)); FuseExpect::None);
 
 const CONNECT_DEREF0: &str = r#"
 {
@@ -69,13 +60,7 @@ const CONNECT_DEREF0: &str = r#"
 }
 "#;
 
-run!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(41), Value::I64(42)] => true,
-        _ => false,
-    },
-    _ => false,
-}; FuseExpect::None);
+run!(connect_deref0, CONNECT_DEREF0, prints("[i64:41, i64:42]"); FuseExpect::None);
 
 const CONNECT_DEREF1: &str = r#"
 {
@@ -86,13 +71,7 @@ const CONNECT_DEREF1: &str = r#"
 }
 "#;
 
-run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(41), Value::I64(42)] => true,
-        _ => false,
-    },
-    _ => false,
-}; FuseExpect::None);
+run!(connect_deref1, CONNECT_DEREF1, prints("[i64:41, i64:42]"); FuseExpect::None);
 
 // Refs are first-class runtime values, so a ref read back out of a
 // container derefs like any other (`*(a[0]$)` over `Array<&i64>`).
@@ -104,10 +83,7 @@ const DEREF_FROM_ARRAY: &str = r#"
 }
 "#;
 
-run!(deref_from_array, DEREF_FROM_ARRAY, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(42))
-); FuseExpect::None);
+run!(deref_from_array, DEREF_FROM_ARRAY, is(Value::I64(42)); FuseExpect::None);
 
 const DEREF_FROM_TUPLE_FIELD: &str = r#"
 {
@@ -118,10 +94,7 @@ const DEREF_FROM_TUPLE_FIELD: &str = r#"
 }
 "#;
 
-run!(deref_from_tuple_field, DEREF_FROM_TUPLE_FIELD, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(14))
-); FuseExpect::None);
+run!(deref_from_tuple_field, DEREF_FROM_TUPLE_FIELD, is(Value::I64(14)); FuseExpect::None);
 
 // Place references (design/place_references.md).
 
@@ -152,10 +125,7 @@ const PLACE_READ_WRITE: &str = r#"
 }
 "#;
 
-run!(place_read_write, PLACE_READ_WRITE, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == r#"[[i64:20, i64:5, "p", i64:8, i64:9], [i64:10, i64:21, i64:30], [["tags", ["P", "q"]], ["x", i64:6]], [i64:7, i64:88], i64:99, [i64:21, i64:6, "P", i64:88, i64:99]]"#
-}; FuseExpect::Jit);
+run!(place_read_write, PLACE_READ_WRITE, prints(r#"[[i64:20, i64:5, "p", i64:8, i64:9], [i64:10, i64:21, i64:30], [["tags", ["P", "q"]], ["x", i64:6]], [i64:7, i64:88], i64:99, [i64:21, i64:6, "P", i64:88, i64:99]]"#); FuseExpect::Jit);
 
 // A moving reference points where its key says when it fires; two
 // writes to one root in one cycle both land; a write past an array's
@@ -186,10 +156,7 @@ const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 }
 "#;
 
-run!(place_move_siblings_bad, PLACE_MOVE_SIBLINGS_BAD, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == "[i64:1, [i64:1, i64:2, i64:30], [i64:100, i64:2, i64:300], i64:300]"
-}; FuseExpect::Jit);
+run!(place_move_siblings_bad, PLACE_MOVE_SIBLINGS_BAD, prints("[i64:1, [i64:1, i64:2, i64:30], [i64:100, i64:2, i64:300], i64:300]"); FuseExpect::Jit);
 
 // A write to a key the map lacks inserts it; a write through a path
 // below a missing key has no entry to patch and is dropped.
@@ -208,9 +175,7 @@ const PLACE_MISSING_KEY: &str = r#"
 }
 "#;
 
-run!(place_missing_key, PLACE_MISSING_KEY, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"{"a" => [["x", i64:1], ["y", i64:2]], "b" => [["x", i64:3], ["y", i64:4]]}"#
-}; FuseExpect::Jit);
+run!(place_missing_key, PLACE_MISSING_KEY, prints(r#"{"a" => [["x", i64:1], ["y", i64:2]], "b" => [["x", i64:3], ["y", i64:4]]}"#); FuseExpect::Jit);
 
 // A lambda over `&State` reaches an editor held in an array through a
 // place reference passed as its argument.
@@ -233,10 +198,7 @@ const PLACE_THROUGH_PARAM: &str = r#"
 }
 "#;
 
-run!(place_through_param, PLACE_THROUGH_PARAM, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == r#"[[["cursor", i64:1], ["value", "a"]], [["cursor", i64:2], ["value", "b!"]]]"#
-}; FuseExpect::Jit);
+run!(place_through_param, PLACE_THROUGH_PARAM, prints(r#"[[["cursor", i64:1], ["value", "a"]], [["cursor", i64:2], ["value", "b!"]]]"#); FuseExpect::Jit);
 
 // A reference that became null dereferences to bottom, never to the
 // old target: the late read finds nothing and the deadline wins.
@@ -267,9 +229,7 @@ const DEREF_FIRES_ON_ADDRESS: &str = r#"
 }
 "#;
 
-run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:10, i64:20]"
-}; FuseExpect::None);
+run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, prints("[i64:10, i64:20]"); FuseExpect::None);
 
 // A key move a selected reader saw is read stale by an arm woken after it:
 // the woken arm's counter does not tick.
@@ -310,9 +270,7 @@ const PLACE_KEY_EVALUATED_ONCE: &str = r#"
 }
 "#;
 
-run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:2, i64:10]"
-}; FuseExpect::Jit);
+run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, prints("[i64:2, i64:10]"); FuseExpect::Jit);
 
 // An undetermined key is a bottom reference: a write through it lands
 // nowhere; when the key returns the reference retargets (and, as at
@@ -337,9 +295,7 @@ const PLACE_BOTTOM_KEY: &str = r#"
 }
 "#;
 
-run!(place_bottom_key, PLACE_BOTTOM_KEY, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:10, i64:20], [i64:10, i64:99], [i64:10, i64:20, i64:99]]"
-}; FuseExpect::Jit);
+run!(place_bottom_key, PLACE_BOTTOM_KEY, prints("[[i64:10, i64:20], [i64:10, i64:99], [i64:10, i64:20, i64:99]]"); FuseExpect::Jit);
 
 // A place the root no longer has is bottom, not its last value: a
 // connect sampling it then writes nothing.
@@ -362,9 +318,7 @@ const PLACE_REMOVED_ELEMENT: &str = r#"
 }
 "#;
 
-run!(place_removed_element, PLACE_REMOVED_ELEMENT, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:20, i64:7], null]"
-}; FuseExpect::Jit);
+run!(place_removed_element, PLACE_REMOVED_ELEMENT, prints("[[i64:20, i64:7], null]"); FuseExpect::Jit);
 
 // The referent type is the container's element type: an Error-valued
 // field is referenced as such.
@@ -377,9 +331,7 @@ const PLACE_ERROR_FIELD: &str = r#"
 }
 "#;
 
-run!(place_error_field, PLACE_ERROR_FIELD, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "\"Caught\""
-}; FuseExpect::Jit);
+run!(place_error_field, PLACE_ERROR_FIELD, prints("\"Caught\""); FuseExpect::Jit);
 
 // Parentheses are transparent in a place, and a place through a
 // dereferenced place reference composes the paths: the write reaches
@@ -398,9 +350,7 @@ const PLACE_THROUGH_DEREF: &str = r#"
 }
 "#;
 
-run!(place_through_deref, PLACE_THROUGH_DEREF, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:20, i64:20]"
-}; FuseExpect::Jit);
+run!(place_through_deref, PLACE_THROUGH_DEREF, prints("[i64:20, i64:20]"); FuseExpect::Jit);
 
 // A place through a dereference whose reference went bottom has no
 // address: it reads nothing and a write through it lands nowhere; when
@@ -429,9 +379,7 @@ const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 }
 "#;
 
-run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:10, i64:20], [i64:99, i64:20], null, [i64:7, i64:20]]"
-}; FuseExpect::Jit);
+run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, prints("[[i64:10, i64:20], [i64:99, i64:20], null, [i64:7, i64:20]]"); FuseExpect::Jit);
 
 // A place indexed past i64::MAX addresses nothing, never from the end:
 // its read is bottom and the sample banks.
@@ -467,34 +415,20 @@ run!(place_index_is_an_integer, PLACE_INDEX_IS_AN_INTEGER, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 /// A composed place's cell, which an embedder reads, holds its element.
-// CR claude for claude: [structure/low] The loop below re-implements
-// testing::next_update without its deadline. If the reference is never delivered, which
-// is the regression this test guards, the test hangs `cargo test` instead of failing.
-// Use `testing::next_update(&mut rx, id, deadline)` with a few seconds' deadline, and
-// the current_thread flavor the rest of the file uses. Found by reading; not run.
-// (tests-lang-rest-b-04)
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn place_through_deref_mirror() -> Result<()> {
     use graphix_compiler::Rt;
-    use graphix_package_core::testing::{compile_result, fixture_runtime, result_source};
+    use graphix_package_core::testing::{
+        compile_result, fixture_runtime, next_update, result_source,
+    };
     let src = result_source("{ let a = {p: {x: 10}}; let r = &a.p; &(*r).x }");
     let (ctx, mut rx) =
         fixture_runtime([("/test.gx", src)], crate::TEST_REGISTER, Mode::Jit, |_| ())
             .await?;
     // the graph lives while its cell is read: a deleted reference forgets it
     let res = compile_result(&ctx).await?;
-    let id = res.exprs[0].id;
-    let v = loop {
-        let batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("runtime gone"))?;
-        if let Some(v) = batch.iter().find_map(|e| match e {
-            graphix_rt::GXEvent::Updated(eid, v) if *eid == id => {
-                Some(graphix_package_core::testing::data(v.clone()))
-            }
-            _ => None,
-        }) {
-            break v;
-        }
-    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let v = next_update(&mut rx, res.exprs[0].id, deadline).await?;
     let Some(id) = graphix_compiler::reference::cell(&v) else {
         anyhow::bail!("expected a reference, got {v}")
     };
@@ -573,9 +507,7 @@ const PLACE_PAYLOAD: &str = r#"
 }
 "#;
 
-run!(place_payload, PLACE_PAYLOAD, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:5, i64:1], i64:7, i64:8, i64:7, i64:8]"
-}; FuseExpect::Jit);
+run!(place_payload, PLACE_PAYLOAD, prints("[[i64:5, i64:1], i64:7, i64:8, i64:7, i64:8]"); FuseExpect::Jit);
 
 /// A place whose root goes bottom sets its cell, which an embedder
 /// reads, bottom.
@@ -649,56 +581,77 @@ const BYREF_EQ_COMPARES_TARGETS: &str = r#"
   [
     &x == &x, r == &x, f(&x) == r, &x == &y, &x != &y, &a[0] == &a[0],
     &a[0] == &a[1], &s.f == &s.g, eq(&x, &x), eq(&x, &y), [&x, &y] == [&x, &y],
-    t1 == t2, &mut 0 == &mut 0
+    t1 == t2, &mut 0 == &mut 0, &a[-1] == &a[1]
   ]
 }
 "#;
 
-// CR claude for claude: [test-gap/low] design/place_references.md says a moving
-// reference compares by where it points now, and that paths are compared as written
-// (`&a[-1]` differs from `&a[1]`). This fixture compares only fixed places, so caching
-// a comparison's targets at its first update, or normalizing paths, would pass. Add a
-// modes! twin that moves `i` under `n ~ (&a[i] == &a[0])` and pins [true, true, true,
-// false, false]. Add `&a[-1] == &a[1]` (false) here. Both engines answer correctly
-// today. probe: design/review-2026-10-19/repro/tests-lang-rest-b-moving-ref-eq.gx
-// (tests-lang-rest-b-02)
 run!(byref_eq_compares_targets, BYREF_EQ_COMPARES_TARGETS, |v: Result<&Value>| {
-    let want = [true, true, true, false, true, true, false, false, true, false, true, true, false];
+    let want = [true, true, true, false, true, true, false, false, true, false, true, true, false, false];
     match v {
         Ok(Value::Array(a)) => a.iter().map(|v| *v == Value::Bool(true)).eq(want),
         _ => false,
     }
 }; FuseExpect::Jit);
 
+// A moving reference compares by where it points now: `&a[i]` names
+// `a[0]` until `i` moves.
+async fn byref_eq_follows_a_moving_place(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let code = r#"{
+  let n = 0;
+  n <- select n { k if k < 4 => k + 1, _ => never() };
+  let a = [1, 2];
+  let i = 0;
+  i <- select n { 2 => 1, _ => never() };
+  n ~ (&a[i] == &a[0])
+}"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(values, [true, true, true, false, false].map(Value::Bool));
+    Ok(())
+}
+
+modes!(byref_eq_follows_a_moving_place);
+
 // References have no order: a reference's value is its cell, numbered in
 // whatever order compiling made it. The orderings, sorting, `min`/`max`
 // and map keys refuse them, a generic definition's at the call.
-// CR claude for claude: [test-gap/low] testing::eval builds in Mode::Jit only and never
-// runs the check. These Ordered refusals belong to the check, and a check that accepts
-// what the build refuses is the type-system bug run!'s interp mode exists to catch. As
-// written, a regression where `graphix --check` and the LSP accept `&x < &y` passes
-// here. Make the six programs run! fixtures with refused("no order"); FuseExpect::None.
-// Found by reading; not run (the check refuses all six today). (tests-lang-rest-b-03)
-#[tokio::test(flavor = "current_thread")]
-async fn byref_ordering_refused() -> Result<()> {
-    for src in [
-        "{ let x = 1; let y = 2; &x < &y }",
-        "{ let x = 1; array::len(array::sort([&x])) }",
-        "{ let x = 1; map::len({&x => 1}) }",
-        "{ let x = 1; let lt = |a, b| a < b; lt(&x, &x) }",
-        "{ let x = 1; *min(&x, &x) }",
-        "{ let x = 1; map::len(map::insert({}, &x, 1)) }",
-    ] {
-        match graphix_package_core::testing::eval(src, crate::TEST_REGISTER).await {
-            Err(e) => {
-                let msg = format!("{e:#}");
-                assert!(msg.contains("no order"), "{src}: {msg}")
-            }
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
-        }
-    }
-    Ok(())
-}
+run!(
+    byref_lt_refused,
+    "{ let x = 1; let y = 2; &x < &y }",
+    refused("no order");
+    FuseExpect::None
+);
+run!(
+    byref_sort_refused,
+    "{ let x = 1; array::len(array::sort([&x])) }",
+    refused("no order");
+    FuseExpect::None
+);
+run!(
+    byref_map_key_refused,
+    "{ let x = 1; map::len({&x => 1}) }",
+    refused("no order");
+    FuseExpect::None
+);
+run!(
+    byref_generic_lt_refused,
+    "{ let x = 1; let lt = |a, b| a < b; lt(&x, &x) }",
+    refused("no order");
+    FuseExpect::None
+);
+run!(
+    byref_min_refused,
+    "{ let x = 1; *min(&x, &x) }",
+    refused("no order");
+    FuseExpect::None
+);
+run!(
+    byref_map_insert_refused,
+    "{ let x = 1; map::len(map::insert({}, &x, 1)) }",
+    refused("no order");
+    FuseExpect::None
+);
 
 // `uniq` compares as `==` does: a second reference to `x` is no change.
 const BYREF_UNIQ_COMPARES_TARGETS: &str = r#"
@@ -822,7 +775,7 @@ run!(
     let k = r ~ bump(&mut *r);
     array::group(s, |i, _| i == 3)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:5, i64:11]"; FuseExpect::None
+    prints("[i64:1, i64:5, i64:11]"); FuseExpect::None
 );
 
 // A place reference fires when its address moves, never at a write of

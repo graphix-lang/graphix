@@ -4,7 +4,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -16,10 +16,7 @@ const TAIL_RECURSIVE_OK: &str = r#"
 }
 "#;
 
-run!(tail_recursive_ok, TAIL_RECURSIVE_OK, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(55))
-));
+run!(tail_recursive_ok, TAIL_RECURSIVE_OK, is(Value::I64(55)));
 
 // fib recurses through `+` — non-tail on both self-calls.
 const TAIL_RECURSIVE_NON_TAIL: &str = r#"
@@ -94,7 +91,7 @@ const SYNC_OK: &str = r#"
 }
 "#;
 
-run!(sync_ok, SYNC_OK, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
+run!(sync_ok, SYNC_OK, is(Value::I64(42)));
 
 // Parentheses around the lambda do not hide it from the assertion.
 const SYNC_PARENS: &str = r#"
@@ -105,7 +102,7 @@ const SYNC_PARENS: &str = r#"
 }
 "#;
 
-run!(sync_parens, SYNC_PARENS, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
+run!(sync_parens, SYNC_PARENS, is(Value::I64(42)));
 
 // ... nor from the check: parentheses around an async body still fail.
 const SYNC_PARENS_ON_ASYNC: &str = r#"
@@ -226,7 +223,7 @@ const ASYNC_ON_DYNAMIC_MODULE: &str = r#"
 }
 "#;
 
-run!(async_on_dynamic_module, ASYNC_ON_DYNAMIC_MODULE, |v: Result<&Value>| matches!(v, Ok(Value::I64(43))); FuseExpect::Jit);
+run!(async_on_dynamic_module, ASYNC_ON_DYNAMIC_MODULE, is(Value::I64(43)); FuseExpect::Jit);
 
 const ASYNC_OK: &str = r#"
 {
@@ -236,7 +233,7 @@ const ASYNC_OK: &str = r#"
 }
 "#;
 
-run!(async_ok, ASYNC_OK, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::None);
+run!(async_ok, ASYNC_OK, is(Value::I64(5)); FuseExpect::None);
 
 const ASYNC_ON_SYNC: &str = r#"
 {
@@ -304,7 +301,7 @@ const TAIL_RECURSIVE_PURE_INSTANCES: &str = r#"
 run!(
     tail_recursive_pure_instances,
     TAIL_RECURSIVE_PURE_INSTANCES,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:6, i64:12]"; FuseExpect::Jit);
+    prints("[i64:6, i64:12]"); FuseExpect::Jit);
 
 // A labeled formal keeps the self-call off the loop, so the recursion
 // is not constant-space although every self-call is in tail position.

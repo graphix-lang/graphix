@@ -28,7 +28,13 @@ async fn run_with(code: &str, par: ParMode, mode: Mode) -> Result<Delta> {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
-    run_delta_with(code, mode, Some(par), Duration::from_millis(300)).await
+    run_delta_with(
+        code,
+        mode,
+        move |ctx| ctx.control.set_par_mode(par),
+        Duration::from_millis(300),
+    )
+    .await
 }
 
 /// The compile error `code` gets; a refused program forks nothing, so it

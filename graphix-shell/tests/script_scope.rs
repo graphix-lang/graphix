@@ -53,6 +53,15 @@ fn self_names_the_scripts_top_level() {
         &[("m.gx", "let x = 41\n")],
         "42",
     );
+    accepted(
+        "package-sibling",
+        &format!("mod m0;\nmod m1;\n{EXIT}println(\"[m1::f(1)]\")\n"),
+        &[
+            ("m0.gx", "let k0 = 41\n"),
+            ("m1.gx", "let f = |x: i64| -> i64 package::m0::k0 + x\n"),
+        ],
+        "42",
+    );
 }
 
 #[test]

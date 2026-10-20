@@ -236,15 +236,8 @@ async fn first_values(rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>) -> Vec<Val
 
 /// A program of the node kinds package modules never produce at top
 /// level: select with guards, catch with a connect, sampling, seq,
-/// place references, slices, maps, defaults, casts, any.
-// CR claude for claude: [doc-drift/low] design/program_image.md says
-// program_image_restores restores a program of every node kind. This program holds no
-// connect through a reference (`*r <- v`), no path place (`&arr[1]`, `&s.f`), no
-// variant with a payload and no list. The last two matter because of the kind markers,
-// which only an image decodes. They all restore today, but a broken codec for any of
-// them passes image.rs. Add them to PROGRAM and its expected tuple. probe:
-// design/review-2026-10-19/repro/tests-modules-image-image-kinds-unpinned.sh
-// (tests-modules-image-07)
+/// place references and writes through them, slices, maps, defaults,
+/// casts, any, variants with payloads and lists.
 const PROGRAM: &str = r#"
 type P = {x: i64, y: i64};
 let base = 10;
@@ -267,7 +260,19 @@ let caught = { catch(e) caught_v <- e ~ 0 - 1; g(error(`Bad)?) };
 let s = base ~ text;
 let a = any(base, sum);
 let sq = seq base { let v = base + 1; v };
-(f(#scale: 3, 4), g(0 - 5), sum, text, with.x, slice, d, q, checked, tup.1, caught_v, s, a, sq, cast<string>(base)$)
+type Shape = [`Circle(f64), `Rect(f64, f64), `Dot];
+let shape: Shape = `Rect(2.0, 3.0);
+let area = select shape { `Circle(r) => r * r, `Rect(w, h) => w * h, `Dot => 0.0 };
+let l = [<1, 2, 3>];
+let lsum = select l { [<h, t..>] => h + list::len(t), [<>] => 0 };
+let cells = [10, 20, 30];
+let cell = &mut cells[1];
+*cell <- 99;
+let named = {name: "n"};
+let nf = &mut named.name;
+*nf <- "m";
+(f(#scale: 3, 4), g(0 - 5), sum, text, with.x, slice, d, q, checked, tup.1, caught_v, s, a, sq, cast<string>(base)$,
+ shape, area, l, lsum, cells, named.name)
 "#;
 
 /// A program compiled with fusion on writes its kernels into the image;
@@ -311,52 +316,60 @@ async fn program_image_restores_kernels() -> Result<()> {
     Ok(())
 }
 
-/// One run of `program`, compiled cold, or restored from `image` when
-/// given; the cold run also hands back the program image it wrote.
+/// How a session gets its program.
+enum Run {
+    /// Compiled from its source, writing its image.
+    Cold,
+    /// Restored from the image alone.
+    Warm(Bytes),
+    /// Restored from the image, else compiled from the source.
+    WarmOrCold(Bytes),
+}
+
+/// One run of `program`, compiled cold, or restored from `image` alone
+/// when given; the cold run also hands back the program image it wrote.
 async fn session(
     program: &str,
     image: Option<Bytes>,
     par: ParMode,
 ) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
-    session_with(program, image, par, None).await
+    let run = match image {
+        None => Run::Cold,
+        Some(image) => Run::Warm(image),
+    };
+    session_with(program, run, par, None).await
 }
 
-/// [`session`] under an activation budget, when given.
+/// [`session`] as `run` says, under an activation budget, when given.
 async fn session_with(
     program: &str,
-    image: Option<Bytes>,
+    run: Run,
     par: ParMode,
     budget: Option<u64>,
 ) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
     let (tx, mut rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
-    // a restored image's program wins; a refused one compiles the source
     let cfg = config(tx, TEST_REGISTER, vec![], move |ctx| {
         ctx.control.set_par_mode(par);
         if let Some(b) = budget {
             ctx.control.set_activation_budget(b)
         }
     })?
-    .flags(CFlag::FusionDisabled.into())
-    .program(Load::Text(program.into()));
-    // CR claude for claude: [test-gap/low] The warm run gets the program's source as
-    // well as the image, and cold_and_warm asserts only `restored`, which says the
-    // registration read. An image holding no program at all passes: the warm runtime
-    // compiles the source cold, and the values match. So none of the tests on this path
-    // shows that the program it checks was restored. Take the warm program from the
-    // image alone, as program_image_restores_kernels does, and fail if `rt.program()`
-    // is None. Keep the source fallback only for
-    // an_instance_outside_the_heap_is_refused. Giving this function the flags and
-    // resolvers as parameters would also fold in the hand-built cold/warm pairs below.
-    // probe:
-    // design/review-2026-10-19/repro/tests-modules-image-warm-program-not-checked.rs
-    // (tests-modules-image-04)
-    let cfg = match image {
-        None => cfg.registration(RegistrationImage::save(reg_tx)).program_image(prog_tx),
-        Some(image) => {
+    .flags(CFlag::FusionDisabled.into());
+    let source = Load::Text(program.into());
+    let cfg = match run {
+        Run::Cold => cfg
+            .program(source)
+            .registration(RegistrationImage::save(reg_tx))
+            .program_image(prog_tx),
+        Run::Warm(image) => {
             drop(prog_tx);
             cfg.registration(RegistrationImage::load(image))
+        }
+        Run::WarmOrCold(image) => {
+            drop(prog_tx);
+            cfg.program(source).registration(RegistrationImage::load(image))
         }
     };
     let ctx = TestCtx::start(cfg).await?;
@@ -452,7 +465,9 @@ async fn program_image_restores() -> Result<()> {
     assert_eq!(
         format!("{last}"),
         "[i64:22, i64:5, i64:20, \"pt 3 4 sum 20\", i64:9, [i64:2, i64:3], i64:10, i64:2, \
-         i64:8, \"two\", i64:-1, \"pt 3 4 sum 20\", i64:10, i64:11, \"10\"]"
+         i64:8, \"two\", i64:-1, \"pt 3 4 sum 20\", i64:10, i64:11, \"10\", \
+         [\"Rect\", f64:2., f64:3.], f64:6., [i64:1, i64:2, i64:3], i64:3, \
+         [i64:10, i64:99, i64:30], \"m\"]"
     );
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
     assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));
@@ -634,10 +649,10 @@ async fn warm_start_charges_the_budget_as_cold() -> Result<()> {
         sum.join(" + ")
     );
     let (_, cold, image, _, _) =
-        session_with(&program, None, ParMode::Off, Some(30)).await?;
+        session_with(&program, Run::Cold, ParMode::Off, Some(30)).await?;
     let image = image.expect("the cold run wrote its image");
     let (_, warm, _, restored, _) =
-        session_with(&program, Some(image), ParMode::Off, Some(30)).await?;
+        session_with(&program, Run::Warm(image), ParMode::Off, Some(30)).await?;
     assert!(restored, "the warm runtime compiled cold");
     assert_eq!(cold.len(), 4, "the cold run fits the budget: {cold:?}");
     assert_eq!(cold, warm);
@@ -654,7 +669,7 @@ async fn an_instance_outside_the_heap_is_refused() -> Result<()> {
     let past_the_end = image.len() as u64 + 1000;
     let bad = with_first_instance_at(&image, past_the_end);
     let (_, values, _, restored, _) =
-        session(PROGRAM, Some(bad), ParMode::from_env()).await?;
+        session_with(PROGRAM, Run::WarmOrCold(bad), ParMode::from_env(), None).await?;
     assert!(!restored, "an image with an instance past its end restored");
     assert_eq!(cold_values, values);
     Ok(())
@@ -818,43 +833,6 @@ async fn program_image_restores_builtins() -> Result<()> {
     assert_eq!(cold_values, warm_values);
     cold.shutdown().await;
     warm.shutdown().await;
-    Ok(())
-}
-
-/// A loaded script's `package::` is its own top level: a file-top
-/// `mod` is reachable from a sibling module as `package::m`, on the
-/// script path as in check mode.
-#[tokio::test]
-// CR claude for claude: [readability/low] This is not an image test. It restores
-// nothing, the registration image it saves goes to a receiver that is dropped, and the
-// "as in check mode" its doc claims is not checked here.
-// graphix-shell/tests/script_scope.rs already pins `package::` from a script's top
-// level under both the check and the run. Move it to modules.rs as a run! fixture
-// without the save, or delete it. Found by reading; not run. (tests-modules-image-11)
-async fn program_package_root_is_the_script() -> Result<()> {
-    let table = ahash::AHashMap::from_iter([
-        (
-            netidx_core::path::Path::from("/m0.gx"),
-            VfsEntry::from(literal!("let k0 = i64:41")),
-        ),
-        (
-            netidx_core::path::Path::from("/m1.gx"),
-            VfsEntry::from(literal!("let f = |x: i64| -> i64 package::m0::k0 + x")),
-        ),
-    ]);
-    let (tx, mut rx) = mpsc::channel(10);
-    let (reg_tx, _reg_rx) = oneshot::channel();
-    let ctx = TestCtx::start(
-        config(tx, TEST_REGISTER, vec![VfsResolver::new(table)], |_| {})?
-            .flags(CFlag::FusionDisabled.into())
-            .registration(RegistrationImage::save(reg_tx))
-            .program(Load::Text(literal!("mod m0; mod m1; m1::f(i64:1)"))),
-    )
-    .await?;
-    ctx.rt.program().await?.expect("the program compiled");
-    let values = first_values(&mut rx).await;
-    assert_eq!(values.last(), Some(&Value::I64(42)), "{values:?}");
-    ctx.shutdown().await;
     Ok(())
 }
 

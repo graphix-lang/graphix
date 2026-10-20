@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, prints},
+};
 use netidx::subscriber::Value;
 
 // A `bytes` literal bound to a let-local and returned as a Value.
@@ -56,9 +59,7 @@ run!(pack_struct, r#"{
     type S = {x: i64, y: string};
     let obj: S = pack::read(pack::write_bytes({x: 42, y: "hi"})$)?;
     obj
-}"#, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[["x", i64:42], ["y", "hi"]]"#
-}; FuseExpect::None);
+}"#, prints(r#"[["x", i64:42], ["y", "hi"]]"#); FuseExpect::None);
 
 run!(pack_bytes, r#"{
     let b = buffer::from_string("abc");

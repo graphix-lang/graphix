@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, is},
+};
 use netidx_value::Value;
 
 // A callee first dispatched late, under an arm, prints its constant at
@@ -138,7 +141,7 @@ run!(decimal_guard_bottom_is_undecided, r#"
     };
     any(#[native] g(decimal:79228162514264337593543950335.0), 7)
 }
-"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
+"#, is(Value::I64(7)); FuseExpect::Jit);
 
 run!(variant_payload_literal_tags, r#"
 {

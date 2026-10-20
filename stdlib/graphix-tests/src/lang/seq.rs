@@ -5,7 +5,7 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, as_i64s, eval, refused},
+    testing::{FuseExpect, Mode, as_i64s, eval, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -31,10 +31,7 @@ const SEQ_PC_FREE_READ_WAKES_NESTED: &str = r#"
 }
 "#;
 
-run!(seq_pc_free_read_wakes_nested, SEQ_PC_FREE_READ_WAKES_NESTED, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_pc_free_read_wakes_nested, SEQ_PC_FREE_READ_WAKES_NESTED, is(Value::I64(42)); FuseExpect::Jit);
 
 // A pattern bind of the outer scrutinee is a facet of that match and
 // is not re-raised into the nested watch.
@@ -58,10 +55,7 @@ const SEQ_PC_PATTERN_BIND_NOT_RERAISED: &str = r#"
 }
 "#;
 
-run!(seq_pc_pattern_bind_not_reraised, SEQ_PC_PATTERN_BIND_NOT_RERAISED, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_pc_pattern_bind_not_reraised, SEQ_PC_PATTERN_BIND_NOT_RERAISED, is(Value::I64(0)); FuseExpect::Jit);
 
 // The presence select issues on both runs, including an entry that
 // finds `x` bottom after it had been a value.
@@ -92,10 +86,7 @@ const SEQ_PRESENCE_SECOND_RUN: &str = r#"
 }
 "#;
 
-run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, is(Value::I64(2)); FuseExpect::Jit);
 
 // A bare `pc ~ x` at an entry that finds `x` bottom consumes the
 // sample's debt and issues nothing.
@@ -124,10 +115,7 @@ const SEQ_BARE_SAMPLE_STALLS_SECOND_RUN: &str = r#"
 }
 "#;
 
-run!(seq_bare_sample_stalls_second_run, SEQ_BARE_SAMPLE_STALLS_SECOND_RUN, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_bare_sample_stalls_second_run, SEQ_BARE_SAMPLE_STALLS_SECOND_RUN, is(Value::I64(0)); FuseExpect::Jit);
 
 // Busy-drop: the first trigger runs; two arriving mid-run are dropped.
 const SEQ_BUSY_DROPS_RETRIGGER: &str = r#"
@@ -150,10 +138,7 @@ const SEQ_BUSY_DROPS_RETRIGGER: &str = r#"
 }
 "#;
 
-run!(seq_busy_drops_retrigger, SEQ_BUSY_DROPS_RETRIGGER, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_busy_drops_retrigger, SEQ_BUSY_DROPS_RETRIGGER, is(Value::I64(1)); FuseExpect::Jit);
 
 // Same-arm re-entry sampled on the trigger: three entries, three issues.
 const SEQ_SAME_ARM_REENTRY: &str = r#"
@@ -172,10 +157,7 @@ const SEQ_SAME_ARM_REENTRY: &str = r#"
 }
 "#;
 
-run!(seq_same_arm_reentry, SEQ_SAME_ARM_REENTRY, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_same_arm_reentry, SEQ_SAME_ARM_REENTRY, is(Value::I64(3)); FuseExpect::Jit);
 
 // until: enter while the level is false, then it flips.
 const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
@@ -199,10 +181,7 @@ const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
 }
 "#;
 
-run!(seq_until_level_flips, SEQ_UNTIL_LEVEL_FLIPS, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "Done",
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_until_level_flips, SEQ_UNTIL_LEVEL_FLIPS, prints(r#""Done""#); FuseExpect::Jit);
 
 const SEQ_VALUE: &str = r#"
 {
@@ -213,10 +192,7 @@ const SEQ_VALUE: &str = r#"
 }
 "#;
 
-run!(seq_value, SEQ_VALUE, |v: Result<&Value>| match v {
-    Ok(Value::I64(7)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_value, SEQ_VALUE, is(Value::I64(7)); FuseExpect::Jit);
 
 const SEQ_LET_THEN_USE: &str = r#"
 {
@@ -230,10 +206,7 @@ const SEQ_LET_THEN_USE: &str = r#"
 }
 "#;
 
-run!(seq_let_then_use, SEQ_LET_THEN_USE, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_let_then_use, SEQ_LET_THEN_USE, is(Value::I64(4)); FuseExpect::Jit);
 
 const SEQ_TRIGGER_AND_UNTIL: &str = r#"
 {
@@ -250,10 +223,7 @@ const SEQ_TRIGGER_AND_UNTIL: &str = r#"
 }
 "#;
 
-run!(seq_trigger_and_until, SEQ_TRIGGER_AND_UNTIL, |v: Result<&Value>| match v {
-    Ok(Value::I64(9)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_trigger_and_until, SEQ_TRIGGER_AND_UNTIL, is(Value::I64(9)); FuseExpect::Jit);
 
 const SEQ_BUSY_DROPS: &str = r#"
 {
@@ -271,10 +241,7 @@ const SEQ_BUSY_DROPS: &str = r#"
 }
 "#;
 
-run!(seq_busy_drops, SEQ_BUSY_DROPS, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_busy_drops, SEQ_BUSY_DROPS, is(Value::I64(1)); FuseExpect::Jit);
 
 const SEQ_BLOCK_RERUNS: &str = r#"
 {
@@ -292,10 +259,7 @@ const SEQ_BLOCK_RERUNS: &str = r#"
 }
 "#;
 
-run!(seq_block_reruns, SEQ_BLOCK_RERUNS, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_reruns, SEQ_BLOCK_RERUNS, is(Value::I64(2)); FuseExpect::Jit);
 
 #[tokio::test]
 async fn seq_nested_connect_completion() -> Result<()> {
@@ -337,10 +301,7 @@ const SEQ_BLOCK_LET_INSIDE: &str = r#"
 }
 "#;
 
-run!(seq_block_let_inside, SEQ_BLOCK_LET_INSIDE, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_let_inside, SEQ_BLOCK_LET_INSIDE, is(Value::I64(42)); FuseExpect::Jit);
 
 const SEQ_BLOCK_TWO_WRITES: &str = r#"
 {
@@ -360,10 +321,7 @@ const SEQ_BLOCK_TWO_WRITES: &str = r#"
 }
 "#;
 
-run!(seq_block_two_writes, SEQ_BLOCK_TWO_WRITES, |v: Result<&Value>| match v {
-    Ok(Value::I64(34)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_two_writes, SEQ_BLOCK_TWO_WRITES, is(Value::I64(34)); FuseExpect::Jit);
 
 const SEQ_BLOCK_VALUE: &str = r#"
 {
@@ -379,10 +337,7 @@ const SEQ_BLOCK_VALUE: &str = r#"
 }
 "#;
 
-run!(seq_block_value, SEQ_BLOCK_VALUE, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_value, SEQ_BLOCK_VALUE, is(Value::I64(4)); FuseExpect::Jit);
 
 const SEQ_BLOCK_VALUE_AFTER_WAIT: &str = r#"
 {
@@ -401,10 +356,7 @@ const SEQ_BLOCK_VALUE_AFTER_WAIT: &str = r#"
 }
 "#;
 
-run!(seq_block_value_after_wait, SEQ_BLOCK_VALUE_AFTER_WAIT, |v: Result<&Value>| match v {
-    Ok(Value::I64(43)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_value_after_wait, SEQ_BLOCK_VALUE_AFTER_WAIT, is(Value::I64(43)); FuseExpect::Jit);
 
 const SEQ_BLOCK_VALUE_NOT_LAST: &str = r#"
 {
@@ -421,10 +373,7 @@ const SEQ_BLOCK_VALUE_NOT_LAST: &str = r#"
 }
 "#;
 
-run!(seq_block_value_not_last, SEQ_BLOCK_VALUE_NOT_LAST, |v: Result<&Value>| match v {
-    Ok(Value::I64(99)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_block_value_not_last, SEQ_BLOCK_VALUE_NOT_LAST, is(Value::I64(99)); FuseExpect::Jit);
 
 // Two writes with no read between them share an arm and land in one
 // cycle; the statement that reads them is the next arm, the next cycle.
@@ -730,10 +679,7 @@ const SEQ_SHADOWED_CORE_NAMES: &str = r#"
 }
 "#;
 
-run!(seq_shadowed_core_names, SEQ_SHADOWED_CORE_NAMES, |v: Result<&Value>| match v {
-    Ok(Value::I64(43)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(seq_shadowed_core_names, SEQ_SHADOWED_CORE_NAMES, is(Value::I64(43)); FuseExpect::Jit);
 
 // `until` has no value: using the statement's value is refused.
 #[tokio::test(flavor = "current_thread")]
@@ -859,7 +805,7 @@ run!(seq_dynamic_source_reads_trigger, r#"{
         };
         f(1)
     }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
+}"#, is(Value::I64(6)); FuseExpect::Jit);
 
 // A select arm's bind that shadows a function is a value: the call reads
 // it from the entry snapshot and is issued once.
@@ -873,5 +819,5 @@ run!(
     let r = seq t { select v { g => sys::time::after_idle(duration:150.ms, g) } };
     sys::time::after_idle(duration:300.ms, r)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
+    is(Value::I64(0))
 );

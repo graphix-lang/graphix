@@ -3,12 +3,11 @@
 // expectations without a ruling.
 
 use anyhow::Result;
-use graphix_compiler::ParMode;
 use graphix_package_core::{
     PrintSink,
     testing::{
-        FuseExpect, Mode, as_i64s, compile_result, fixture_runtime, result_source,
-        updates_until_quiet,
+        FuseExpect, Mode, TestState, as_i64s, compile_result, fixture_runtime,
+        result_source, updates_until_quiet,
     },
 };
 use netidx::publisher::Value;
@@ -27,6 +26,8 @@ pub(super) struct Delta {
     pub build_forks: u64,
     /// Fused-kernel and JIT invocations of the fixture's own program.
     pub invocations: (u64, u64),
+    /// Prune boundaries walked.
+    pub boundaries: u64,
 }
 
 /// Run `code` (wrapped as `let result = {code}`) in `mode` until the
@@ -34,16 +35,16 @@ pub(super) struct Delta {
 /// for 700ms), collecting every update of the result and the captured
 /// print output.
 pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, String)> {
-    let d = run_delta_with(code, mode, None, Duration::from_millis(700)).await?;
+    let d = run_delta_with(code, mode, |_| (), Duration::from_millis(700)).await?;
     Ok((d.values, d.out))
 }
 
-/// [`run_delta`] forking under `par` when given, else as `mode` does,
-/// until the runtime settles or no event arrives for `quiet`.
+/// [`run_delta`] with `setup` run over the state before the runtime
+/// starts, until the runtime settles or no event arrives for `quiet`.
 pub(super) async fn run_delta_with(
     code: &str,
     mode: Mode,
-    par: Option<ParMode>,
+    setup: impl FnOnce(&mut TestState),
     quiet: Duration,
 ) -> Result<Delta> {
     let sink = PrintSink::default();
@@ -54,9 +55,7 @@ pub(super) async fn run_delta_with(
         mode,
         move |ctx| {
             ctx.libstate.set(seeded);
-            if let Some(par) = par {
-                ctx.control.set_par_mode(par)
-            }
+            setup(ctx)
         },
     )
     .await?;
@@ -69,8 +68,9 @@ pub(super) async fn run_delta_with(
     let control = ctx.rt.control();
     let (forks, build_forks) = (control.forks(), control.build_forks());
     let invocations = control.invocations();
+    let (boundaries, _) = control.boundaries();
     ctx.shutdown().await;
-    Ok(Delta { values, out, forks, build_forks, invocations })
+    Ok(Delta { values, out, forks, build_forks, invocations, boundaries })
 }
 
 /// [`run_delta`] for a fixture that holds on both engines: in the jit
@@ -81,7 +81,7 @@ pub(super) async fn run_delta_fused(
     mode: Mode,
     expect: FuseExpect,
 ) -> Result<(Vec<Value>, String)> {
-    let d = run_delta_with(code, mode, None, Duration::from_millis(700)).await?;
+    let d = run_delta_with(code, mode, |_| (), Duration::from_millis(700)).await?;
     #[cfg(debug_assertions)]
     if matches!(mode, Mode::Jit | Mode::JitPar) {
         graphix_package_core::testing::check_fuse_expectation(d.invocations, expect)

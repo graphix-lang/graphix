@@ -4,7 +4,10 @@
 // determinism guard.
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, is, prints},
+};
 use netidx::subscriber::Value;
 
 // Inexact: 0.1 + 0.2 is not 0.3.
@@ -50,9 +53,7 @@ const NAN_BELOW_NEG_INF: &str = r#"{
   };
   #[native] f(0.0, 0.0)
 }"#;
-run!(nan_below_neg_inf, NAN_BELOW_NEG_INF, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[true, false, true]"
-});
+run!(nan_below_neg_inf, NAN_BELOW_NEG_INF, prints("[true, false, true]"));
 
 // NaN equals itself (the deliberate non-IEEE choice).
 const NAN_EQ_SELF: &str = "{ let x = f64:0.0 / f64:0.0; x == x }";
@@ -160,10 +161,10 @@ run!(min_div_neg_one_sink, MIN_DIV_NEG_ONE_SINK, |v: Result<&Value>| {
 });
 
 const DIV_VALID: &str = "i64:10 / i64:2";
-run!(div_valid, DIV_VALID, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))));
+run!(div_valid, DIV_VALID, is(Value::I64(5)));
 
 const MOD_VALID: &str = "i64:10 % i64:3";
-run!(mod_valid, MOD_VALID, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))));
+run!(mod_valid, MOD_VALID, is(Value::I64(1)));
 
 // A div-by-zero in an un-taken select arm still produces a value.
 const DIV_IN_ARM: &str = "select i64:1 { 1 => i64:42, n => n / i64:0 }";
@@ -224,11 +225,11 @@ run!(dead_let_keeps_live, DEAD_LET_KEEPS_LIVE, |v: Result<&Value>| {
 // v feeds only the un-taken arm: 99.
 const SINK_ONE_ARM: &str =
     "{ let v = i64:1 / i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
-run!(sink_one_arm, SINK_ONE_ARM, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+run!(sink_one_arm, SINK_ONE_ARM, is(Value::I64(99)));
 
 // The same for a mod-by-zero.
 const SINK_MOD: &str = "{ let v = i64:1 % i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
-run!(sink_mod, SINK_MOD, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+run!(sink_mod, SINK_MOD, is(Value::I64(99)));
 
 // v feeds two un-taken arms.
 const SINK_MULTI_ARM: &str =
@@ -240,12 +241,12 @@ run!(sink_multi_arm, SINK_MULTI_ARM, |v: Result<&Value>| {
 // A dependency chain v -> w where w feeds only an un-taken arm.
 const SINK_CHAIN: &str =
     "{ let v = i64:1 / i64:0; let w = v + i64:1; select i64:5 { 2 => w, _ => i64:99 } }";
-run!(sink_chain, SINK_CHAIN, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+run!(sink_chain, SINK_CHAIN, is(Value::I64(99)));
 
 // v is referenced only inside a nested select in the un-taken arm.
 const SINK_NESTED: &str = "{ let v = i64:1 / i64:0; \
     select i64:5 { 2 => select i64:1 { 1 => v, _ => i64:0 }, _ => i64:99 } }";
-run!(sink_nested, SINK_NESTED, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+run!(sink_nested, SINK_NESTED, is(Value::I64(99)));
 
 // The scrutinee picks the literal arm that does not use v: 99, even
 // though the un-taken catch-all references v.

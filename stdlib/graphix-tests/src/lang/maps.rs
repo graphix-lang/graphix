@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, refused},
 };
 use netidx::publisher::Value;
 
@@ -90,10 +90,7 @@ const MAP_REF0: &str = r#"
 }
 "#;
 
-run!(map_ref0, MAP_REF0, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-});
+run!(map_ref0, MAP_REF0, is(Value::I64(2)));
 
 const MAP_REF1: &str = r#"
 {
@@ -221,5 +218,5 @@ run!(
     let m = #[parallel] {"x" => f(a), "y" => f(a + 1)};
     m{"x"}$ + m{"y"}$
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(14)))
+    is(Value::I64(14))
 );

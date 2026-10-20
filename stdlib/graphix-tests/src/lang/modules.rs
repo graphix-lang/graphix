@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, eval, refusal, refused},
+    testing::{FuseExpect, Mode, compile_error, eval, is, prints, refusal, refused},
 };
 use netidx::publisher::Value;
 
@@ -32,10 +32,7 @@ const DYNAMIC_MODULE0: &str = r#"
 }
 "#;
 
-run!(dynamic_module0, DYNAMIC_MODULE0, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(dynamic_module0, DYNAMIC_MODULE0, is(Value::I64(2)); FuseExpect::None);
 
 const DYNAMIC_MODULE1: &str = r#"
 {
@@ -82,212 +79,144 @@ const DYNAMIC_MODULE2: &str = r#"
 }
 "#;
 
-run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(dynamic_module2, DYNAMIC_MODULE2, is(Value::I64(4)); FuseExpect::None);
 
-// CR claude for claude: [structure/low] DYNAMIC_MODULE3 to DYNAMIC_MODULE8 and
-// DYNAMIC_MODULE_BLACKLIST_ROOT are seven copies of one 25-line program. They differ
-// only in the sandbox clause, one sig item and one source line, and the numbered names
-// do not say what each pins. Build them with one function taking those three strings:
-// run! takes any expression result_text can borrow. Name each case by its rule, e.g.
-// blacklisted_publish_refused. Found by reading; not run. (tests-modules-image-09)
-const DYNAMIC_MODULE3: &str = r#"
-{
+/// A dynamic module `test` loaded under `sandbox`, its sig `foo` and `bar`
+/// with `sig` after them, its body the relay `foo` to `bar` with `body`
+/// after it: `test::bar` once the program writes `test::foo`, or the
+/// load's error.
+fn sandboxed(sandbox: &str, sig: &str, body: &str) -> String {
+    format!(
+        r#"{{
     let source = "
         let foo = never();
         let bar = never();
-        select foo { x => bar <- dbg(x) }
+        select foo {{ x => bar <- dbg(x) }}{body}
     ";
     sys::net::publish("/local/test", source)?;
-    let status = mod test dynamic {
-        sandbox whitelist [core];
-        sig {
+    let status = mod test dynamic {{
+        sandbox {sandbox};
+        sig {{
             val foo: string;
-            val bar: string
-        };
+            val bar: string{sig}
+        }};
         source sys::net::subscribe("/local/test")?
-    };
-    select status {
+    }};
+    select status {{
         error as e => dbg(e),
-        null as _ => {
+        null as _ => {{
             test::foo <- dbg("hello world");
             test::bar
-        }
-    }
+        }}
+    }}
+}}"#
+    )
 }
-"#;
 
-run!(dynamic_module3, DYNAMIC_MODULE3, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) if s == "hello world" => true,
-    _ => false,
-}; FuseExpect::None);
+/// A body line that subscribes, which `sys::net::subscribe` grants.
+const SUBSCRIBES: &str = r#";
+        let probe: string = sys::net::subscribe(\"/local/test\")$"#;
 
-const DYNAMIC_MODULE4: &str = r#"
-{
-    let source = "
-        let foo = never();
-        let bar = never();
-        select foo { x => bar <- dbg(x) }
-    ";
-    sys::net::publish("/local/test", source)?;
-    let status = mod test dynamic {
-        sandbox whitelist [core];
-        sig {
-            val foo: string;
-            val bar: string;
-            val baz: string
-        };
-        source sys::net::subscribe("/local/test")?
-    };
-    select status {
-        error as e => dbg(e),
-        null as _ => {
-            test::foo <- dbg("hello world");
-            test::bar
-        }
-    }
+/// A body line that publishes, which `sys::net::publish` grants.
+const PUBLISHES: &str = r#";
+        sys::net::publish(\"/local/test\", 42)"#;
+
+run!(
+    whitelisted_core_loads,
+    sandboxed("whitelist [core]", "", ""),
+    prints(r#""hello world""#);
+    FuseExpect::None
+);
+
+run!(
+    a_missing_implementation_is_refused,
+    sandboxed("whitelist [core]", ";\n            val baz: string", ""),
+    load_refused("val baz: string is missing an implementation");
+    FuseExpect::Jit
+);
+
+run!(
+    an_unlisted_package_is_refused,
+    sandboxed("whitelist [core]", "", SUBSCRIBES),
+    load_refused("no module `net` in `sys`");
+    FuseExpect::Jit
+);
+
+run!(
+    a_blacklist_keeps_the_rest,
+    sandboxed("blacklist [sys::net::publish]", "", SUBSCRIBES),
+    prints(r#""hello world""#);
+    FuseExpect::None
+);
+
+run!(
+    a_blacklisted_function_is_refused,
+    sandboxed("blacklist [sys::net::publish]", "", PUBLISHES),
+    load_refused("sys::net::publish not defined");
+    FuseExpect::Jit
+);
+
+run!(
+    a_whitelisted_function_loads,
+    sandboxed("whitelist [core, sys::net::subscribe]", "", SUBSCRIBES),
+    prints(r#""hello world""#);
+    FuseExpect::None
+);
+
+run!(
+    a_blacklisted_root_is_refused,
+    sandboxed("blacklist [sys]", "", PUBLISHES),
+    load_refused("no module `net` in `sys`");
+    FuseExpect::Jit
+);
+
+/// A module `m` loaded under `sandbox` from `body`, reading the loader's
+/// `y`: its status.
+fn reads_the_loader(sandbox: &str, body: &str) -> String {
+    format!(
+        r#"{{
+    let y = 41;
+    mod m dynamic {{ sandbox {sandbox}; sig {{ val v: i64 }}; source "{body}" }}
+}}"#
+    )
 }
-"#;
 
-run!(dynamic_module4, DYNAMIC_MODULE4, load_refused("val baz: string is missing an implementation"); FuseExpect::Jit);
+// A whitelist sandbox keeps a loaded body from the loader's own
+// bindings, however the body names them; a blacklist only removes what
+// it lists.
+run!(
+    a_whitelist_hides_the_loaders_super,
+    reads_the_loader("whitelist [core]", "let v = super::y + 1"),
+    load_refused("super::y not defined");
+    FuseExpect::None
+);
 
-const DYNAMIC_MODULE5: &str = r#"
-{
-    let source = "
-        let foo = never();
-        let bar = never();
-        select foo { x => bar <- dbg(x) };
-        let probe: string = sys::net::subscribe(\"/local/test\")$
-    ";
-    sys::net::publish("/local/test", source)?;
-    let status = mod test dynamic {
-        sandbox whitelist [core];
-        sig {
-            val foo: string;
-            val bar: string
-        };
-        source sys::net::subscribe("/local/test")?
-    };
-    select status {
-        error as e => dbg(e),
-        null as _ => {
-            test::foo <- dbg("hello world");
-            test::bar
-        }
-    }
-}
-"#;
+run!(
+    a_whitelist_hides_the_loaders_package,
+    reads_the_loader("whitelist [core]", "let v = package::y + 1"),
+    load_refused("package::y not defined");
+    FuseExpect::None
+);
 
-// CR claude for claude: [test-gap/medium] No test pins that a whitelist sandbox keeps a
-// loaded body from the loader's own bindings. Today `super::y`, `package::y` and `use
-// super::*; y` are each refused under `sandbox whitelist [core]`, while `blacklist
-// [sys]` allows `super::y`. Only unlisted packages are pinned here, and
-// graphix-shell/tests/sandbox_whitelist.rs pins only what a whitelist grants. A
-// resolver change that lets sandboxed source reach the program's state would pass the
-// gate. Add a fixture pinning the three refusals and the blacklist case. probe:
-// design/review-2026-10-19/repro/tests-modules-image-sandbox-reaches-parent.gx
-// (tests-modules-image-02)
-run!(dynamic_module5, DYNAMIC_MODULE5, load_refused("no module `net` in `sys`"); FuseExpect::Jit);
+run!(
+    a_whitelist_hides_the_loaders_glob,
+    reads_the_loader("whitelist [core]", "use super::*; let v = y + 1"),
+    load_refused("y not defined");
+    FuseExpect::None
+);
 
-const DYNAMIC_MODULE6: &str = r#"
-{
-    let source = "
-        let foo = never();
-        let bar = never(); select foo { x => bar <- dbg(x) };
-        let probe: string = sys::net::subscribe(\"/local/test\")$
-    ";
-    sys::net::publish("/local/test", source)?;
-    let status = mod test dynamic {
-        sandbox blacklist [sys::net::publish];
-        sig {
-            val foo: string;
-            val bar: string
-        };
-        source sys::net::subscribe("/local/test")?
-    };
-    select status {
-        error as e => dbg(e),
-        null as _ => {
-            test::foo <- dbg("hello world");
-            test::bar
-        }
-    }
-}
-"#;
-
-run!(dynamic_module6, DYNAMIC_MODULE6, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) if s == "hello world" => true,
-    _ => false,
-}; FuseExpect::None);
-
-const DYNAMIC_MODULE7: &str = r#"
-{
-    let source = "
-        let foo = never();
-        let bar = never();
-        select foo { x => bar <- dbg(x) };
-        sys::net::publish(\"/local/test\", 42)
-    ";
-    sys::net::publish("/local/test", source)?;
-    let status = mod test dynamic {
-        sandbox blacklist [sys::net::publish];
-        sig {
-            val foo: string;
-            val bar: string
-        };
-        source sys::net::subscribe("/local/test")?
-    };
-    select status {
-        error as e => dbg(e),
-        null as _ => {
-            test::foo <- dbg("hello world");
-            test::bar
-        }
-    }
-}
-"#;
-
-run!(dynamic_module7, DYNAMIC_MODULE7, load_refused("sys::net::publish not defined"); FuseExpect::Jit);
-
-const DYNAMIC_MODULE8: &str = r#"
-{
-    let source = "
-        let foo = never();
-        let bar = never();
-        select foo { x => bar <- dbg(x) };
-        let probe: string = sys::net::subscribe(\"/local/test\")$
-    ";
-    sys::net::publish("/local/test", source)?;
-    let status = mod test dynamic {
-        sandbox whitelist [core, sys::net::subscribe];
-        sig {
-            val foo: string;
-            val bar: string
-        };
-        source sys::net::subscribe("/local/test")?
-    };
-    select status {
-        error as e => dbg(e),
-        null as _ => {
-            test::foo <- dbg("hello world");
-            test::bar
-        }
-    }
-}
-"#;
-
-run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) if s == "hello world" => true,
-    _ => false,
-}; FuseExpect::None);
+run!(
+    a_blacklist_shows_the_loaders_super,
+    reads_the_loader("blacklist [sys]", "let v = super::y + 1"),
+    is(Value::Null);
+    FuseExpect::None
+);
 
 // A module declared in a seq body is a scope of its own: the seq's
 // rewrite and its catch refusal do not reach into its file.
 run!(
     seq_module_is_its_own_scope,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(29))),
+    is(Value::I64(29)),
     "/test.gx" => r#"
 let x = 100;
 let t = 1;
@@ -354,7 +283,7 @@ let y = super::x + 2
 // Annotated, the outer binding's type is the module's to read.
 run!(
     module_check_reads_an_annotated_outer_type,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
 let x: i64 = never();
 x <- 1;
@@ -374,7 +303,7 @@ let y = super::x + 1
 // the def site resolves the same from any deferred consumer.
 run!(
     sig_type_through_use_alias,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    is(Value::I64(21)),
     "/test.gx" => r#"
 mod a;
 mod m;
@@ -399,7 +328,7 @@ let wrap = |x: U| -> U x
 // A module-private type annotating a public lambda's body.
 run!(
     private_type_in_public_body,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    is(Value::I64(21)),
     "/test.gx" => r#"
 mod m;
 let result = m::f(20)
@@ -420,7 +349,7 @@ let f = |x: i64| -> i64 {
 // lambda's body.
 run!(
     imported_type_in_body,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    is(Value::I64(21)),
     "/test.gx" => r#"
 mod a;
 mod m;
@@ -512,7 +441,7 @@ async fn bottom_connect_target_witness_rejected() {
 // the defining module's env.
 run!(
     private_type_union_member,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    is(Value::I64(21)),
     "/test.gx" => r#"
 mod m;
 let result = m::f(20)
@@ -541,7 +470,7 @@ let f = |x: i64| -> i64 {
 // and a map key resolves like one in a lambda body.
 run!(
     mod_in_every_expression_position,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))),
+    is(Value::I64(7)),
     "/test.gx" => r#"
 let a = ({mod helper; {x: helper::x}}).x;
 let f = |#x = {mod helper2; helper2::x}, y| x + y;
@@ -558,7 +487,7 @@ let result = a + f(1) + map::len(m) + map::get_or(m, 2, 3)
 // each other are not one either; a directory linking into itself is).
 run!(
     nested_module_of_its_own_name,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    is(Value::I64(3)),
     "/test.gx" => "mod a;\nlet result = a::x",
     "/test/a.gx" => "mod b;\nlet x = b::y",
     "/test/a/b.gx" => "mod a;\nlet y = a::z",
@@ -568,7 +497,7 @@ run!(
 // The same source imported on two branches is not a cycle.
 run!(
     sibling_imports_of_one_source,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
 mod x;
 mod y;
@@ -581,35 +510,6 @@ let result = x::a + y::b
     ; FuseExpect::Jit);
 
 // A blacklisted package takes its submodules with it.
-const DYNAMIC_MODULE_BLACKLIST_ROOT: &str = r#"
-{
-    let source = "
-        let foo = never();
-        let bar = never();
-        select foo { x => bar <- dbg(x) };
-        sys::net::publish(\"/local/test\", 42)
-    ";
-    sys::net::publish("/local/test", source)?;
-    let status = mod test dynamic {
-        sandbox blacklist [sys];
-        sig {
-            val foo: string;
-            val bar: string
-        };
-        source sys::net::subscribe("/local/test")?
-    };
-    select status {
-        error as e => dbg(e),
-        null as _ => {
-            test::foo <- dbg("hello world");
-            test::bar
-        }
-    }
-}
-"#;
-
-run!(dynamic_module_blacklist_root, DYNAMIC_MODULE_BLACKLIST_ROOT, load_refused("no module `net` in `sys`"); FuseExpect::Jit);
-
 // A loaded body's deferred import must name something, as a file's must.
 const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
 {
@@ -656,39 +556,13 @@ run!(dynamic_module_sleep_is_pause, DYNAMIC_MODULE_SLEEP, |v: Result<&Value>| ma
     _ => false,
 }; FuseExpect::Jit);
 
-async fn compile_error(
-    files: &[(&str, &str)],
-    text: &'static str,
-) -> Result<anyhow::Error> {
-    let tbl = ahash::AHashMap::from_iter(files.iter().map(|(p, t)| {
-        (
-            netidx_core::path::Path::from(arcstr::ArcStr::from(*p)),
-            graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(*t)),
-        )
-    }));
-    let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let resolver = graphix_compiler::expr::VfsResolver::new(tbl);
-    let ctx = graphix_package_core::testing::TestCtx::start(
-        graphix_package_core::testing::config(
-            tx,
-            &crate::TEST_REGISTER,
-            vec![resolver],
-            |_| {},
-        )?,
-    )
-    .await?;
-    let e = ctx.rt.compile(arcstr::ArcStr::from(text)).await.err();
-    ctx.shutdown().await;
-    e.ok_or_else(|| anyhow::anyhow!("{text} compiled"))
-}
-
 // Refusals of a statement in the wrong place carry their site.
 #[tokio::test(flavor = "current_thread")]
 async fn misplaced_statements_are_placed() -> Result<()> {
     use graphix_compiler::expr::ErrorSite;
     let m = [("/m.gx", "let k = 1")];
     for text in ["let x = (use array::map)", "mod m; mod m", "let x = (type T = i64)"] {
-        let e = compile_error(&m, text).await?;
+        let e = compile_error(&m, text, crate::TEST_REGISTER).await?;
         assert!(e.downcast_ref::<ErrorSite>().is_some(), "{text}: {e:#}");
     }
     Ok(())
@@ -700,7 +574,8 @@ async fn module_errors_are_framed_by_the_module() -> Result<()> {
     for inner in ["let x: i64 = \"s\"", "let x = no_such_name"] {
         let files =
             [("/test.gx", "mod inner; let result = 0"), ("/test/inner.gx", inner)];
-        let e = compile_error(&files, "{ mod test; test::result }").await?;
+        let e = compile_error(&files, "{ mod test; test::result }", crate::TEST_REGISTER)
+            .await?;
         assert!(format!("{e:?}").contains("in module /test/inner"), "{inner}: {e:?}");
     }
     Ok(())
@@ -724,12 +599,7 @@ const DYNAMIC_MODULE_AFTER_A_FAILURE: &str = r#"
 }
 "#;
 
-run!(dynamic_module_after_a_failure, DYNAMIC_MODULE_AFTER_A_FAILURE, |v: Result<
-    &Value,
->| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-});
+run!(dynamic_module_after_a_failure, DYNAMIC_MODULE_AFTER_A_FAILURE, is(Value::I64(42)));
 
 // A module's check that would unify two cells the code around it left
 // open is refused, as a write to one is.
@@ -752,7 +622,7 @@ run!(
 // deciding it, though the binding is not in normal form.
 run!(
     module_reads_an_outer_binding,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
+    is(Value::I64(5)),
     "/test.gx" => r#"
         let v = never();
         v <- [`A, `B][0];
@@ -771,7 +641,7 @@ run!(
 // label, whatever order each writes them in.
 run!(
     interface_labels_pair_by_name,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         mod m;
         let result = m::f(#a: 1, #b: "x")
@@ -784,7 +654,7 @@ run!(
 // checked against the interface: declared, they pass; omitted, refused.
 run!(
     interface_declares_inferred_bounds,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
         mod m;
         let result = m::f([1])[0]$
@@ -936,19 +806,69 @@ run!(reload_changes_a_representation, RELOAD_CHANGES_A_REPRESENTATION,
 
 // `use super::*` from a block-level module takes a name shadowed across
 // the block chain innermost-first, as `use super::x` does.
-// CR claude for claude: [test-gap/medium] design/module_system.md's resolution rules
-// have no pin in any test. These are: a value bound after the `mod` that imports it is
-// refused (`top not defined`), two explicit imports of one name are refused, a `use`
-// colliding with a same-scope declaration is refused, `pub use` is refused, `super`
-// above the root is refused, a .gxi `use` is not a re-export (`m::U` is undefined
-// outside), and `let array = ..` leaves `array::len` working. All of them hold today,
-// but a change to the import table that breaks any one passes the gate. Add a fixture
-// per rule here with the exact message. probe:
-// design/review-2026-10-19/repro/tests-modules-image-module-rules-unpinned.sh
-// (tests-modules-image-01)
+run!(
+    an_import_of_a_later_binding_is_refused,
+    refused("top not defined"),
+    "/test.gx" => "mod a; let top = 1; let result = a::x",
+    "/test/a.gx" => "use super::top;\nlet x = top"
+    ; FuseExpect::None
+);
+
+// Two explicit imports of one name are refused.
+run!(
+    two_imports_of_one_name_are_refused,
+    "{ use array::len; use str::len; len([1]) }",
+    refused("`len` is already imported here (from `array`); rename one");
+    FuseExpect::None
+);
+
+// An import colliding with a declaration of its scope is refused.
+run!(
+    an_import_colliding_with_a_declaration_is_refused,
+    "{ let len = 1; use array::len; len }",
+    refused("`len` is already defined in this scope; use `as` to rename");
+    FuseExpect::None
+);
+
+// A `pub use` is refused.
+run!(
+    pub_use_is_refused,
+    "{ pub use array::len; 1 }",
+    refused("re-exports (`pub use`) are not yet supported");
+    FuseExpect::None
+);
+
+// `super` above the root is refused.
+run!(
+    super_above_the_root_is_refused,
+    "{ use super::super::super::x; 1 }",
+    refused("`super` goes above the package root");
+    FuseExpect::None
+);
+
+// An interface's `use` is a private import, never a re-export.
+run!(
+    an_interface_use_is_not_a_reexport,
+    refused("undefined type m::U"),
+    "/test.gx" => "mod ta; mod m; let q: m::U = 1; let result = m::f(q)",
+    "/test/ta.gxi" => "type T = i64;",
+    "/test/ta.gx" => "let unused = 0",
+    "/test/m.gxi" => "use super::ta::T as U;\nval f: fn(x: U) -> U;",
+    "/test/m.gx" => "let f = |x: U| -> U x"
+    ; FuseExpect::None
+);
+
+// A path root consults modules only: a value named like a package
+// leaves the package's paths alone.
+run!(
+    a_value_named_like_a_package_leaves_its_paths,
+    "{ let array = 1; array::len([1, 2]) + array }",
+    is(Value::I64(3))
+);
+
 run!(
     glob_super_takes_the_innermost,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
         let x = 1;
         let result = {
@@ -992,7 +912,7 @@ run!(
 // is spliced into the body: one site, one import.
 run!(
     interface_use_renaming_its_root,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         mod m;
         let result = m::v
@@ -1106,7 +1026,7 @@ run!(
 // any variable do.
 run!(
     exported_val_takes_both_writes,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:0, i64:1, i64:100]",
+    prints("[i64:0, i64:1, i64:100]"),
     "/test.gx" => r#"
         mod m;
         let go = 1;

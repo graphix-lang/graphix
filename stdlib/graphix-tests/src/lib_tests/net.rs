@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use arcstr::literal;
 use graphix_package_core::{
     NetConfig, run,
-    testing::{self, Collect, FuseExpect, Mode, collect},
+    testing::{self, Collect, FuseExpect, Mode, collect, is, prints},
 };
 use netidx::subscriber::Value;
 use poolshark::local::LPooled;
@@ -63,15 +63,7 @@ const NET_WRITE0: &str = r#"
 }
 "#;
 
-run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(42), Value::I64(43)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(net_write0, NET_WRITE0, prints("[i64:42, i64:43]"); FuseExpect::None);
 
 const NET_WRITE1: &str = r#"
 {
@@ -178,7 +170,7 @@ run!(net_rpc_defaults, r#"{
     #f: |args: {a: i64, b: i64}| args.a + args.b);
   let r: i64 = sys::net::call(p, {a: 10})?;
   r
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(12))); FuseExpect::None);
+}"#, is(Value::I64(12)); FuseExpect::None);
 
 // A call whose arguments fail the cast is answered with the error and
 // never reaches the handler; the next call is served.
@@ -227,7 +219,7 @@ run!(net_rpc_latest_call_wins, r#"{
   p <- sys::time::timer(duration:50.ms, false) ~ "/local/rpc_fast";
   let r: i64 = sys::net::call(p, null)?;
   sys::time::after_idle(duration:600.ms, r)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::None);
+}"#, is(Value::I64(2)); FuseExpect::None);
 
 // A re-woken arm's subscribe re-establishes from the present path (the
 // path is a binding). The matcher wants a delivery, a sleep marker (-1),
@@ -707,7 +699,7 @@ run!(net_write_not_repeated_after_wake, r#"{
         false => never()
     };
     sys::time::after_idle(duration:400.ms, ready) ~ writes
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+}"#, is(Value::I64(1)); FuseExpect::None);
 
 // A write handler's argument and an rpc's are read from data: the check
 // refuses a function and a reference (an rpc's argument also a type it

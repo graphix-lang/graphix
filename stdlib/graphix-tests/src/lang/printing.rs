@@ -235,13 +235,7 @@ modes!(arm_entry_prints_a_constant);
 // arm's birth only, fused or not: a later entry fires its trigger only
 // through the scrutinee or the arm's binds, never through an untaken
 // nested arm, an argument a function ignores, or a callee's own constant.
-// CR claude for claude: [readability/low] The name says every time, but the fixture
-// pins one print per program (the constant prints at the arm's first entry only).
-// Rename it, e.g. arm_entry_prints_a_constant_at_birth_only. The inner `run_delta(code,
-// Mode::Interp)` re-runs the node-walk in every mode only to compare text. Pin each
-// program's exact output instead (the one dbg line, "hi\n") and drop the second run.
-// Found by reading; not run. (tests-lang-rest-b-05)
-async fn arm_entry_prints_every_time(mode: Mode) -> Result<()> {
+async fn arm_entry_prints_a_constant_at_birth_only(mode: Mode) -> Result<()> {
     for (code, prints) in [
         (
             r#"{
@@ -253,7 +247,8 @@ async fn arm_entry_prints_every_time(mode: Mode) -> Result<()> {
                 };
                 f(step % 2, 0)
             }"#,
-            1,
+            r#"line: 5, column: 46 dbg(select y { 0 => "zero", _ => "[x]" }): "zero"
+"#,
         ),
         (
             r#"{
@@ -263,15 +258,13 @@ async fn arm_entry_prints_every_time(mode: Mode) -> Result<()> {
                 let f = |s: i64| select s { 0 => p(s), _ => -1 };
                 f(step % 2)
             }"#,
-            1,
+            "hi\n",
         ),
     ] {
         let (_, out) = run_delta(code, mode).await?;
-        let (_, walked) = run_delta(code, Mode::Interp).await?;
-        assert_eq!(out, walked, "{code}");
-        assert_eq!(out.lines().count(), prints, "{code}\n{out}");
+        assert_eq!(out, prints, "{code}");
     }
     Ok(())
 }
 
-modes!(arm_entry_prints_every_time);
+modes!(arm_entry_prints_a_constant_at_birth_only);
