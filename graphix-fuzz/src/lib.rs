@@ -1124,6 +1124,7 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         "sys::net",
         "sys::process::spawn",
         "::tempdir",
+        "tempdir::",
         "::listener_addr",
         "::local_addr",
         "::peer_addr",
