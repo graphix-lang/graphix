@@ -4,7 +4,8 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, RefHist, RefPair, Type, contains::ContainsHist, setops::strictly_identical,
+        AndAc, FnType, RefHist, RefPair, Type, contains::ContainsHist,
+        setops::strictly_identical,
     },
 };
 use ahash::AHashSet;
@@ -22,6 +23,9 @@ use std::ops::{Deref, DerefMut};
 pub(super) struct SigPairs {
     pub(super) cells: IntMap<usize, Type>,
     deferred: Vec<(Type, Type)>,
+    /// Each function type paired, signature and implementation, whose
+    /// bounds are judged once every variable has paired.
+    pub(super) fns: Vec<(FnType, FnType)>,
 }
 
 /// The most members an open union's pairing searches over; a larger one
@@ -29,6 +33,23 @@ pub(super) struct SigPairs {
 const MAX_PAIRED_MEMBERS: usize = 6;
 
 impl SigPairs {
+    /// End a signature match: pair the deferred unions, then judge every
+    /// paired function type's bounds over the finished pairing.
+    pub(super) fn finish(
+        &mut self,
+        env: &Env,
+        hist: &mut RefHist<AHashSet<RefPair>>,
+    ) -> Result<()> {
+        self.settle(env, hist)?;
+        let mut i = 0;
+        while i < self.fns.len() {
+            let (sig, imp) = self.fns[i].clone();
+            sig.sig_bounds(env, &imp, self, hist)?;
+            i += 1;
+        }
+        self.settle(env, hist)
+    }
+
     /// Pair every deferred union: the first assignment of signature
     /// members to implementation members that every union, and the unions
     /// those pairings defer in turn, accept.
@@ -326,7 +347,7 @@ impl Type {
     pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
         let (mut pairs, mut hist) = (SigPairs::default(), RefHist::new());
         self.sig_matches_int(env, impl_type, &mut pairs, &mut hist)?;
-        pairs.settle(env, &mut hist)
+        pairs.finish(env, &mut hist)
     }
 
     pub(super) fn sig_matches_int(
@@ -383,12 +404,15 @@ impl Type {
                 if hist.contains(&key) {
                     return Ok(());
                 }
-                let t0 = t0.lookup_ref(env)?;
-                let t1 = t1.lookup_ref(env)?;
+                let (e0, e1) = (t0.lookup_ref(env)?, t1.lookup_ref(env)?);
                 hist.insert(key);
-                let r = t0.sig_matches_int(env, &t1, tvar_map, hist);
+                let r = e0.sig_matches_int(env, &e1, tvar_map, hist);
                 hist.remove(&key);
-                r
+                r.map_err(|e| {
+                    format_with_flags(PrintFlag::DerefTVars, || {
+                        e.context(format!("signature has {t0}, implementation has {t1}"))
+                    })
+                })
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
                 f0.sig_matches_int(env, f1, tvar_map, hist)?;

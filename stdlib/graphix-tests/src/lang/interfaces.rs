@@ -340,6 +340,73 @@ run!(
     "#
 ; FuseExpect::None);
 
+// An implementation's rank-2 parameter takes its quantifier at any type,
+// so it implements no signature whose parameter is one type a caller
+// picks.
+run!(
+    rank2_implementation_of_a_rank1_parameter_refused,
+    refused("the implementation's 'b is a quantifier its body may take at any type"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::f(|x: i64| x * 2)
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(g: fn(x: i64) -> i64) -> f64
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |g: fn<'b: Number>(x: 'b) -> 'b| -> f64 g(2.5)
+    "#
+; FuseExpect::None);
+
+// A function-typed parameter does not pair the signature's unions before
+// the parameters after it have paired their variables.
+run!(
+    union_pairing_waits_for_later_parameters,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::f(1, |n: i64| n, 1, "s")
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(x: ['a, 'b], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |x: ['c, 'd], g: fn(n: i64) -> i64, y: 'd, z: 'c| -> i64 0
+    "#
+; FuseExpect::Jit);
+
+// A throws mismatch names the types as written, and a bottom throws as
+// throwing nothing.
+run!(
+    throws_mismatch_names_nothing,
+    refused("in throws clause: the signature throws nothing, the implementation throws Error<ErrChain<`Zero>>"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::f(1)
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(x: i64) -> i64
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |x: i64| -> i64 select x { 0 => error(`Zero)?, n => n }
+    "#
+; FuseExpect::None);
+
+run!(
+    throws_mismatch_names_the_written_types,
+    refused("in throws clause: signature has ErrChain<`A>, implementation has ErrChain<`Zero>"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::f(1)
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(x: i64) -> i64 throws Error<ErrChain<`A>>
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |x: i64| -> i64 select x { 0 => error(`Zero)?, n => n }
+    "#
+; FuseExpect::None);
+
 // Error: the function returns the wrong type.
 run!(
     abstract_type_sig_mismatch,

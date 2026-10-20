@@ -1,11 +1,11 @@
 use crate::{
-    LambdaId,
+    LambdaId, PrintFlag,
     env::Env,
     expr::{
         ModPath,
         print::{PrettyBuf, PrettyDisplay},
     },
-    image,
+    format_with_flags, image,
     typ::{
         Mutability, TVar, Type,
         contains::{ContainsFlags, ContainsHist},
@@ -840,22 +840,27 @@ impl FnType {
         self.any_open_quantifier(|tv| tv.is_rigid())
     }
 
-    // CR claude for claude: [structure/low] This walk is written four times: here, in
-    // fresh_quantifiers, in open_quantifier_gates and in inner_quantifiers' Fn arm.
-    // Each is collect_tvars by name (which normalizes every conjunct), filtered to
-    // names in `self.quantifiers`, mapped through open_cell(). contains_int runs it
-    // twice per comparison, and a rule change has to be made in four places. Write one
-    // `open_quantifiers(&self, out)` that yields the open quantifier cells, and have
-    // the four callers iterate it. Found by reading; not run. (t-fntyp-05)
     fn any_open_quantifier(&self, also: impl Fn(&TVar) -> bool) -> bool {
+        let mut any = false;
+        self.open_quantifiers(|tv, _| any |= also(tv));
+        any
+    }
+
+    /// Each of the signature's own quantifiers whose cell is open, as the
+    /// signature names it and as its open cell.
+    fn open_quantifiers(&self, mut f: impl FnMut(&TVar, TVar)) {
         if self.quantifiers.is_empty() {
-            return false;
+            return;
         }
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut named);
-        named.iter().any(|(name, tv)| {
-            self.quantifiers.contains(name) && tv.open_cell().is_some() && also(tv)
-        })
+        for (name, tv) in named.iter() {
+            if self.quantifiers.contains(name)
+                && let Some(open) = tv.open_cell()
+            {
+                f(tv, open)
+            }
+        }
     }
 
     /// Map each of the signature's own open quantifiers to a fresh cell
@@ -866,21 +871,14 @@ impl FnType {
         known: &mut AHashMap<usize, TVar>,
         walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
     ) {
-        if self.quantifiers.is_empty() {
-            return;
-        }
-        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.collect_tvars(&mut named);
-        named.retain(|name, tv| {
-            let open = self.quantifiers.contains(name).then(|| tv.open_cell()).flatten();
-            open.map(|o| *tv = o).is_some()
-        });
-        for tv in named.values() {
+        let mut opens: LPooled<Vec<TVar>> = LPooled::take();
+        self.open_quantifiers(|_, open| opens.push(open));
+        for tv in opens.iter() {
             known
                 .entry(tv.cell_addr())
                 .or_insert_with(|| TVar::empty_named(tv.name.clone()));
         }
-        for tv in named.values() {
+        for tv in opens.iter() {
             let f = known[&tv.cell_addr()].clone();
             for c in tv.cell_constraints() {
                 f.add_cell_constraint(walk(&c, known));
@@ -925,17 +923,9 @@ impl FnType {
                     }
                 }
                 Type::Fn(ft) => {
-                    if !ft.quantifiers.is_empty() {
-                        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                        ft.collect_tvars(&mut named);
-                        for (name, tv) in named.drain() {
-                            if ft.quantifiers.contains(&name)
-                                && let Some(open) = tv.open_cell()
-                            {
-                                out.insert(open.cell_addr(), open);
-                            }
-                        }
-                    }
+                    ft.open_quantifiers(|_, open| {
+                        out.insert(open.cell_addr(), open);
+                    });
                     ft.for_each_part(&mut |t, _| go(t, out, seen))
                 }
                 t => t.for_each_child(&mut |c| go(c, out, seen)),
@@ -1184,16 +1174,7 @@ impl FnType {
     /// Rigid gates on the quantifiers no call has picked.
     fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        if self.quantifiers.is_empty() {
-            return gates;
-        }
-        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.collect_tvars(&mut named);
-        for (name, tv) in named.iter() {
-            if self.quantifiers.contains(name) && tv.open_cell().is_some() {
-                gates.push(tv.open_rigid())
-            }
-        }
+        self.open_quantifiers(|tv, _| gates.push(tv.open_rigid()));
         gates
     }
 
@@ -1236,12 +1217,9 @@ impl FnType {
     }
 
     pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<()> {
-        self.sig_matches_int(
-            env,
-            impl_fn,
-            &mut SigPairs::default(),
-            &mut super::RefHist::new(),
-        )
+        let (mut pairs, mut hist) = (SigPairs::default(), super::RefHist::new());
+        self.sig_matches_int(env, impl_fn, &mut pairs, &mut hist)?;
+        pairs.finish(env, &mut hist)
     }
 
     pub(super) fn sig_matches_int(
@@ -1324,7 +1302,7 @@ impl FnType {
         sig_rtype
             .sig_matches_int(env, impl_rtype, tvar_map, hist)
             .context("in return type")?;
-        // CR claude for claude: [readability/low] A throws mismatch reports a part of
+        // XCR claude for claude: [readability/low] A throws mismatch reports a part of
         // ErrChain's expansion that the user never wrote. For declared
         // `Error<ErrChain<`A>>` against implemented `Zero, it prints "signature has
         // [null, ErrChain<`A>], implementation has [null, ErrChain<`Zero>]". For a val
@@ -1334,10 +1312,43 @@ impl FnType {
         // nothing". probe:
         // design/review-2026-10-19/repro/tests-modules-image-interface-throws.sh
         // (tests-modules-image-06)
+        // 2026-10-19 claude: The Ref arm of sig_matches_inner adds the unexpanded pair
+        // as context to a failed expansion, and the throws pairing words a bottom side
+        // as throwing nothing. Pins: lang::interfaces::throws_mismatch_names_nothing,
+        // throws_mismatch_names_the_written_types.
+        let nothing = |t: &Type| matches!(t.deref_cloned(), Some(Type::Bottom));
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist)
+            .map_err(|e| {
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    match (nothing(sig_throws), nothing(impl_throws)) {
+                        (true, false) => anyhow::anyhow!(
+                            "the signature throws nothing, the implementation throws \
+                             {impl_throws}"
+                        ),
+                        (false, true) => anyhow::anyhow!(
+                            "the signature throws {sig_throws}, the implementation \
+                             throws nothing"
+                        ),
+                        _ => e,
+                    }
+                })
+            })
             .context("in throws clause")?;
-        // CR claude for claude: [bug/medium] This settle also runs for every nested fn
+        tvar_map.fns.push((self.clone(), impl_fn.clone()));
+        Ok(())
+    }
+
+    /// The bounds of a signature against its implementation's, once the
+    /// whole signature has paired its variables ([`SigPairs::finish`]).
+    pub(super) fn sig_bounds(
+        &self,
+        env: &Env,
+        impl_fn: &Self,
+        tvar_map: &mut SigPairs,
+        hist: &mut super::RefHist<AHashSet<super::RefPair>>,
+    ) -> Result<()> {
+        // XCR claude for claude: [bug/medium] This settle also runs for every nested fn
         // type (a fn-typed parameter reaches it through Type::sig_matches_inner's Fn
         // arm). It pairs the enclosing signature's deferred unions before the enclosing
         // signature's later parameters have paired their variables. `val f: fn(x: ['a,
@@ -1347,10 +1358,14 @@ impl FnType {
         // the root, in FnType::sig_matches and Type::sig_matches, and run the bound
         // checks that read the pairs after it. probe:
         // design/review-2026-10-19/repro/t-fntyp-nested-settle.sh (t-fntyp-04)
-        tvar_map.settle(env, hist)?;
         // Every declared bound must be among the impl cell's whole
         // conjunction, compared by meaning (refs are scoped
         // independently on each side).
+        // 2026-10-19 claude: FnType::sig_matches_int now only pairs structure and
+        // records the pair in SigPairs::fns; SigPairs::finish (from FnType::sig_matches
+        // and Type::sig_matches) settles the deferred unions once and then runs
+        // FnType::sig_bounds for every recorded pair. Pin:
+        // lang::interfaces::union_pairing_waits_for_later_parameters.
         let impl_tvs = sorted_tvars(impl_fn.sig_tvars().drain());
         // every cell the walk may have mapped: an unannotated parameter's
         // is bound, and the cells its binding holds carry the conjuncts
@@ -1447,15 +1462,33 @@ impl FnType {
                  does not declare"
             )
         };
+        // a quantifier of an implementation's function-typed part is any
+        // type its body likes, so it stands only for a quantifier of the
+        // signature's, never for a type a caller picks
+        let mut impl_quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        impl_fn.inner_quantifiers(&mut impl_quantifiers);
+        let mut sig_quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.inner_quantifiers(&mut sig_quantifiers);
         for (_, tv) in impl_cells.iter() {
-            match tvar_map.cells.get(&tv.cell_addr()) {
+            let paired = tvar_map.cells.get(&tv.cell_addr());
+            if impl_quantifiers.contains_key(&tv.cell_addr())
+                && let Some(sig_type) = paired
+                && !matches!(sig_type, Type::TVar(s) if sig_quantifiers.contains_key(&s.cell_addr()))
+            {
+                bail!(
+                    "the implementation's '{} is a quantifier its body may take at any \
+                     type, but the signature has {sig_type} there, which its caller picks",
+                    tv.name
+                )
+            }
+            match paired {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
                         declared(sig_tv, &impl_tc)?
                     }
                 }
-                // CR claude for claude: [bug/high] An implementation cell that is an
+                // XCR claude for claude: [bug/high] An implementation cell that is an
                 // open quantifier of a rank-2 formal (`g: fn<'b: Number>(x: 'b) -> 'b`)
                 // lands here when the signature gave that parameter a monomorphic type
                 // (`g: fn(x: i64) -> i64`). The arm accepts it because Number admits
@@ -1469,6 +1502,10 @@ impl FnType {
                 // Some(Type::TVar) arm, unless the paired signature variable is one of
                 // `self.quantifiers`. probe:
                 // design/review-2026-10-19/repro/t-fntyp-rank2-impl.sh (t-fntyp-02)
+                // 2026-10-19 claude: FnType::sig_bounds refuses an implementation cell
+                // that is a quantifier of a nested fn type (inner_quantifiers) unless
+                // it paired with a quantifier of the signature's nested fn types. Pin:
+                // lang::interfaces::rank2_implementation_of_a_rank1_parameter_refused.
                 Some(sig_type) => {
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside
