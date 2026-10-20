@@ -545,7 +545,8 @@ fn random_name() -> impl Strategy<Value = Name> {
 
 fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
     let leaf = prop_oneof![
-        value().prop_map(StructurePattern::literal),
+        (value(), str_form())
+            .prop_map(|(v, form)| StructurePattern::Literal(v, WrittenForm(form))),
         option::of(random_name()).prop_map(|name| match name {
             None => StructurePattern::Ignore,
             Some(name) => StructurePattern::Bind(name),
@@ -2649,6 +2650,56 @@ fn ts_list_closer_parses() {
         if let Some(e) = find_probe_error(s) {
             panic!("{s:?} failed: {e}");
         }
+    }
+}
+
+/// What the parser takes at a file's head, between its tokens and in a
+/// pattern, tree-sitter takes too.
+#[test]
+fn ts_accepts_what_the_parser_does() {
+    use tree_sitter_compat::find_probe_error;
+    const SRCS: &[&str] = &[
+        "#!/usr/bin/env graphix\nlet x = 1;\nx",
+        "\u{feff}#!/usr/bin/env graphix\nx",
+        "\u{feff}let x = 1;\nx",
+        "\u{feff}/// d\nval y: i64",
+        "val x: i64;\n  /// d\nval y: i64",
+        "val x: i64; // c\n/// d\nval y: i64",
+        "trait T {\n  /// m\n  val m: fn(self) -> i64;\n  /// n\n  val n: fn(self) -> i64\n}",
+        "select x { r\"a\" => 1, \"\"\"b\"\"\" => 2, r#\"c\"# => 3, _ => 4 }",
+        "use  array::map",
+        "use\n    array::map",
+        "mod m dynamic {\n  sandbox\n  whitelist  [core];\n  sig { val y: i64 };\n  source \"let y = 1\"\n}",
+        "a[\n  1\n]",
+        "a[1 ..\n 2\n]",
+        "a[\n  1..\n]",
+        "(1, 2,)",
+        "let (x, y,) = t",
+    ];
+    for s in SRCS {
+        if let Some(e) = find_probe_error(s) {
+            panic!("{s:?} failed: {e}");
+        }
+    }
+}
+
+/// What the parser refuses for its shape alone, tree-sitter refuses too.
+/// A fn type's duplicate argument names are beyond a context-free grammar.
+#[test]
+fn ts_refuses_what_the_parser_does() {
+    use tree_sitter_compat::find_probe_error;
+    const SRCS: &[&str] = &[
+        "(1,)",
+        "let t: (i64,) = (1, 2)",
+        "let (x,) = t",
+        "let (x) = t",
+        "val x: i64; /// d\nval y: i64",
+        "trait T {\n val m: fn(self) -> i64; /// d\n val n: fn(self) -> i64\n}",
+        "let x = 1;\u{feff}\nx",
+        "x;\n#!/usr/bin/env graphix",
+    ];
+    for s in SRCS {
+        assert!(find_probe_error(s).is_some(), "tree-sitter accepts {s:?}");
     }
 }
 

@@ -16,25 +16,6 @@ module.exports = grammar({
     $.attribute,
   ],
 
-  // CR claude for claude: [style/low] Several comments here and in grammar.js describe
-  // past misparses rather than the invariant they protect. Here: "static precedence
-  // resolved it toward the comparison ... errored" above this block, the `error:"[ x"`
-  // story at the RAW_STRING guard, and "`bytes:ricx…AO=` misparsed the moment `r`
-  // became a raw opener" in the non-raw `r` branch. In grammar.js: the _list_close
-  // externals note, use_path's "parsed as one ERROR", number's "stealing the
-  // identifier's first letter", and the "(2026-08-18)" dates on _binding_name and
-  // _field_name. Cut each to its invariant, e.g. "`>]` is one terminal, so a list's
-  // last element may end in any binary operator". Also: _typed_value's comment cites
-  // f64:inf/f64:NaN, which the parser refuses; drop the example. Found by reading; not
-  // run. (ide-tooling-07)
-  // 2026-10-19 claude: The block this CR's 'Here' means is the LIST_CLOSE branch of
-  // src/scanner.c's scan function. The CR sits in grammar.js because
-  // zed_grammar_rev_is_current pins scanner.c byte for byte to the rev in
-  // ide/editors/zed/extension.toml, so a comment there fails the gate.
-  // 2026-10-19 claude: grammar.js part done: the _list_close, use_path and number
-  // comments state their invariants, the dates and the f64:inf example are gone. The
-  // three scanner.c comments remain: cutting them changes src/scanner.c, which needs
-  // the zed rev bump and so a commit.
   externals: $ => [
     $._string_content,
     $._value_extension,  // greedy value chars after a literal in type ascription
@@ -45,6 +26,7 @@ module.exports = grammar({
                          // comparison `>`, so a list's last element may end in any
                          // binary operator (`[<1 != 2>]`)
     $.unit_extension,    // a unit after a literal in a non-bytes ascription (`500.ms`)
+    $.doc_comment,       // `///` to the end of a line it begins: never after an item
     $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
 
@@ -125,26 +107,23 @@ module.exports = grammar({
     //
     // Doc comments (`///`) attach to interface items and trait
     // methods only, as in the compiler.
-    // CR claude for claude: [bug/low] The parser skips a leading #! line
-    // (parser::shebang_len, used by RootFile::load and format_source), so a script
-    // starting with #!/usr/bin/env graphix runs, checks and formats. Here `#` is an
-    // ERROR at [0, 0], and every tree-sitter editor marks the first line of such a
-    // script. Wrap this choice as seq(optional($.shebang), choice(..)) with shebang: $
-    // => token(seq('#!', /.*/)), and give (shebang) a capture in highlights.scm.
-    // Checked in a scratch copy: it generates cleanly and changes nothing else in the
-    // corpus. probe: design/review-2026-10-19/repro/ide-tooling-shebang.sh
-    // (ide-tooling-04)
-    source_file: $ => choice(
-      seq(
-        optional($._expression),
-        repeat(seq(';', optional($._expression))),
-      ),
-      seq(
-        $.sig_item,
-        repeat(seq(';', $.sig_item)),
-        optional(';'),
+    source_file: $ => seq(
+      optional($.shebang),
+      choice(
+        seq(
+          optional($._expression),
+          repeat(seq(';', optional($._expression))),
+        ),
+        seq(
+          $.sig_item,
+          repeat(seq(';', $.sig_item)),
+          optional(';'),
+        ),
       ),
     ),
+
+    // a script's `#!` first line, which every reader of a program skips
+    shebang: $ => token(seq('#!', /.*/)),
 
     _expression: $ => choice(
       $.module,
@@ -168,20 +147,15 @@ module.exports = grammar({
     //   1. a bare `//` (empty comment terminating at EOL)
     //   2. `//` followed by a non-slash, non-newline char and any rest
     //
-    // The non-slash requirement on the third character is what stops
-    // line_comment from absorbing `///foo` — that lets doc_comment
-    // (which is in `rules`, not `extras`) win wherever it's reachable
-    // in the grammar via tree-sitter's longest-match rule. In contexts
-    // where doc_comment isn't reachable, `///foo` still parses as `//`
-    // (line comment) followed by `/foo` (an error) — matching the
-    // strict graphix parser, which rejects doc comments outside sig
-    // items.
+    // The non-slash third character keeps line_comment off `///foo`:
+    // the external doc_comment takes it where a doc is legal (before an
+    // interface item or a trait method, on a line of its own), and
+    // anywhere else it is `//` and then an error, as the graphix parser
+    // refuses it.
     line_comment: $ => token(choice(
       '//',
       seq('//', /[^\/\n]/, optional(/[^\n]*/)),
     )),
-
-    doc_comment: $ => token(seq('///', /.*/)),
 
     // Attributes
     //
@@ -552,23 +526,13 @@ module.exports = grammar({
     )),
 
     // Patterns
-    // CR claude for claude: [bug/medium] A raw (r"a") or template ("""a""") string is a
-    // legal select pattern: patternexp.rs string_pattern keeps its delimiters, and
-    // graphix fmt prints it back as written. This choice has value_string but neither
-    // raw_string nor triple_string, so tree-sitter makes the arm an ERROR and editors
-    // lose highlighting around it. Add $.raw_string and $.triple_string here. In a
-    // scratch copy that generates with no new conflict, and only this repro's ERROR
-    // leaves the corpus. The ts_expr/ts_pp proptests missed it because
-    // structure_pattern() in graphix-types/src/expr/test.rs builds literals with
-    // StructurePattern::literal (always Quoted); draw the WrittenForm from str_form()
-    // there. probe:
-    // design/review-2026-10-19/repro/ide-tooling-pattern-raw-template-string.sh
-    // (ide-tooling-01)
     structure_pattern: $ => choice(
       '_',
       $.type_ascription,
       $.literal,
       $.value_string,
+      $.raw_string,
+      $.triple_string,
       $.pattern_bind,
       $.tuple_pattern,
       $.array_pattern,
@@ -620,7 +584,7 @@ module.exports = grammar({
     tuple_pattern: $ => seq(
       optional(seq(field('all', $._binding_name), '@')),
       '(',
-      commaSep1($._pattern_alt),
+      commaSep2($._pattern_alt),
       ')',
     ),
 

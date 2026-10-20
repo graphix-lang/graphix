@@ -8,6 +8,7 @@ enum TokenType {
   TRIPLE_CONTENT,
   LIST_CLOSE,
   UNIT_EXTENSION,
+  DOC_COMMENT,
   ERROR_SENTINEL,
 };
 
@@ -104,66 +105,72 @@ bool tree_sitter_graphix_external_scanner_scan(
   // we know we're in error recovery — bail out.
   if (valid_symbols[ERROR_SENTINEL]) return false;
 
-  // The `>]` list closer as one terminal, distinct from the comparison
-  // `>`, so `[<1 != 2>]` never faces a shift/reduce choice on `>`
-  // (static precedence resolved it toward the comparison and any
-  // looser-than-comparison LAST element errored). Whitespace before
-  // the `>` is ordinary token separation and the internal ws skip
-  // never re-runs this scanner, so it is skipped here; adjacency is
-  // required only between `>` and `]` (the language rule). On `>` not
-  // followed by `]` the false return restores the lexer and the
-  // internal lexer reads the comparison.
-  if (valid_symbols[LIST_CLOSE]) {
-    bool skipped_ws = false;
+  // The tokens that may follow whitespace skip it here: externals run
+  // before the internal whitespace skip, which never re-runs this
+  // scanner. String content holds whitespace, so none is skipped where
+  // content is valid. A refusal restores the lexer, skipped whitespace
+  // included.
+  bool skipped_ws = false;
+  bool line_start = false;
+  uint32_t run = 0;
+  if ((valid_symbols[LIST_CLOSE] || valid_symbols[DOC_COMMENT] ||
+       valid_symbols[RAW_STRING]) &&
+      !valid_symbols[STRING_CONTENT] && !valid_symbols[TRIPLE_CONTENT]) {
     while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
            lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+      if (lexer->lookahead == '\n') {
+        line_start = true;
+        run = 0;
+      } else {
+        run++;
+      }
       lexer->advance(lexer, true);
       skipped_ws = true;
     }
-    if (lexer->lookahead == '>') {
-      lexer->advance(lexer, false);
-      if (lexer->lookahead == ']') {
-        lexer->advance(lexer, false);
-        lexer->mark_end(lexer);
-        lexer->result_symbol = LIST_CLOSE;
-        return true;
-      }
-      return false;
-    }
-    // Not the closer. The adjacency tokens must not see the chars
-    // after skipped whitespace as adjacent (the RAW block's rule);
-    // everything else — the raw-string probe included, which skips
-    // its own whitespace — falls through unharmed.
-    if (skipped_ws &&
-        (valid_symbols[VALUE_EXTENSION] || valid_symbols[BARE_VALUE])) {
-      return false;
-    }
   }
 
-  // The raw-string probe must not run while a string-content token is
-  // valid: content and RAW_STRING are co-valid only in the merged
-  // string/value_string body state after '[', where the language says
-  // whitespace and a bare `r` ARE content (ascribed and pattern strings
-  // never interpolate) — and every refusal path below returns false,
-  // which starves the content scan entirely (`error:"[ x"` lexed the x
-  // as an identifier and the whole value_string errored). The genuine
-  // interpolation reading (struct fields, plain strings) lives in its
-  // own GLR version whose state has no content token valid.
+  // The `>]` list closer is one terminal, distinct from the comparison
+  // `>`, so a list's last element may end in any binary operator.
+  // Adjacency is required only between `>` and `]`. On a `>` not
+  // followed by `]` the internal lexer reads the comparison.
+  if (valid_symbols[LIST_CLOSE] && lexer->lookahead == '>') {
+    lexer->advance(lexer, false);
+    if (lexer->lookahead == ']') {
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+      lexer->result_symbol = LIST_CLOSE;
+      return true;
+    }
+    return false;
+  }
+
+  // `///` to the end of its line, only on a line of its own. A leading
+  // byte-order mark, which the lexer skips, still counts as a column,
+  // so one column more than the whitespace is a line start too.
+  if (valid_symbols[DOC_COMMENT] && lexer->lookahead == '/') {
+    if (!line_start) line_start = lexer->get_column(lexer) <= run + 1;
+    for (int i = 0; i < 3; i++) {
+      if (lexer->lookahead != '/') return false;
+      lexer->advance(lexer, false);
+    }
+    if (!line_start) return false;
+    while (!lexer->eof(lexer) && lexer->lookahead != '\n') {
+      lexer->advance(lexer, false);
+    }
+    lexer->mark_end(lexer);
+    lexer->result_symbol = DOC_COMMENT;
+    return true;
+  }
+
+  // Where string content is valid, whitespace and a bare `r` are
+  // content (ascribed and pattern strings never interpolate), so the
+  // raw-string probe stays out of the content scan.
   if (valid_symbols[RAW_STRING] &&
       !valid_symbols[STRING_CONTENT] && !valid_symbols[TRIPLE_CONTENT]) {
     // r"..." with 0..N hashes: r#"..."#, r##"..."##, ... Content is
     // VERBATIM (no escapes); it ends at the FIRST '"' followed by the
-    // opener's hash count. Returning false restores the lexer
-    // (including skipped whitespace), so an identifier starting with
-    // 'r' falls through to the internal lexer. Externals run BEFORE
-    // whitespace skipping, so skip it here or the probe only ever
-    // sees the space in `= r"…"`.
-    bool skipped_ws = false;
-    while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
-           lexer->lookahead == '\n' || lexer->lookahead == '\r') {
-      lexer->advance(lexer, true);
-      skipped_ws = true;
-    }
+    // opener's hash count. An identifier starting with 'r' falls
+    // through to the internal lexer.
     if (lexer->lookahead == 'r') {
       lexer->advance(lexer, false);
       if (lexer->lookahead == '#' || lexer->lookahead == '"') {
@@ -195,11 +202,9 @@ bool tree_sitter_graphix_external_scanner_scan(
         }
         return false;
       }
-      // A non-raw `r`: the consumed char is a valid PREFIX of the
-      // value-extension and bare-value tokens, so continue as those
-      // when they're valid here (returning false instead would kill
-      // them — `bytes:ricx…AO=` misparsed the moment `r` became a raw
-      // opener). Adjacency tokens never follow skipped whitespace.
+      // A non-raw `r` is a valid prefix of the value-extension and
+      // bare-value tokens: continue as those where they are valid.
+      // Adjacency tokens never follow skipped whitespace.
       if (!skipped_ws && valid_symbols[VALUE_EXTENSION]) {
         lexer->result_symbol = VALUE_EXTENSION;
         lexer->mark_end(lexer);
@@ -211,14 +216,11 @@ bool tree_sitter_graphix_external_scanner_scan(
       }
       return false;
     }
-    if (skipped_ws) {
-      // Whitespace consumed: the adjacency tokens below would misread
-      // the post-whitespace char as adjacent. Refuse — exactly what
-      // they did when they saw the whitespace themselves.
-      return false;
-    }
-    // No whitespace, not `r` — fall through to the other symbols.
   }
+
+  // The tokens below are adjacent to what precedes them, so none
+  // follows skipped whitespace.
+  if (skipped_ws) return false;
 
   if (valid_symbols[UNIT_EXTENSION] && scan_unit_extension(lexer)) {
     return true;
