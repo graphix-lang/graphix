@@ -2060,7 +2060,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     }
 
     /// `v`, a value of `t`, with each reference a comparison meets
-    /// replaced by what it names, `[root, step..]` (a reference's value
+    /// replaced by what it names, `[&root, step..]` (a reference's value
     /// is its own cell): equal results mean equal values, references
     /// equal when they name one place.
     pub fn ref_targets(&self, t: &Type, v: &Value) -> Value {
@@ -2073,8 +2073,10 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                     Step::Field(f) => Value::String(f.clone()),
                     Step::Key(k) => k.clone(),
                 });
-                let target = std::iter::once(Value::U64(root.inner())).chain(steps);
-                // CR claude for claude: [bug/low] The comparison form of a reference is
+                // the root as a reference, which no data carries: the form
+                // equals no array of numbers
+                let target = std::iter::once(reference::reference(root)).chain(steps);
+                // XCR claude for claude: [bug/low] The comparison form of a reference is
                 // an unmarked array [U64(root), steps..], the runtime form of
                 // Array<u64>. Under a union [&i64, Array<u64>], which kind markers made
                 // legal, `&x == [root id]` is true. A reference must never equal an
@@ -2083,6 +2085,11 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                 // path), as rep's markers do for kinds. probe:
                 // design/review-2026-10-19/repro/t-rep-ref-eq-array-collision.gx
                 // (t-rep-04)
+                // 2026-10-19 claude: ref_targets writes the root as a reference
+                // (reference::reference(root)), a Rust-registered abstract no data
+                // carries, so a reference's comparison form equals no array of numbers.
+                // The probe prints []. Pin:
+                // lang::byref::reference_never_equals_an_array.
                 Value::Array(ValArray::from_iter(target))
             }
             None => r.clone(),

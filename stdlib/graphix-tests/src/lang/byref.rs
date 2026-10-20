@@ -818,3 +818,15 @@ run!(mut_ref_to_a_rank2_parameter, r#"{
   let app = |g: fn<'b: Any>(y: 'b) -> 'b| { let h = &mut g; (*h)(1) };
   app(|x| x)
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+
+// A reference never equals an array of numbers, its root's bind id
+// among them: its comparison form holds the root as a reference.
+run!(reference_never_equals_an_array, r#"{
+  let x = 1;
+  let a: [&i64, Array<u64>] = &x;
+  let base = cast<u64>(4611686018427387904)$;
+  array::len(array::filter(array::init(100000, |k| k), |k| {
+    let b: [&i64, Array<u64>] = [base + cast<u64>(k)$];
+    a == b
+  }))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
