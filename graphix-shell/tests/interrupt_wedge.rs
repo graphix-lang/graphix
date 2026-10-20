@@ -72,6 +72,15 @@ fn signal_frees_process(
     fs::write(&path, program).expect("write program");
     let out = dir.join("out");
     let mut child = spawn(&path, fs::File::create(&out).expect("output file"), no_fusion);
+    // the later-cycle wedge starts after its one print, however long the
+    // start took: count from it
+    if program == LATER_CYCLE_WEDGE {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while fs::metadata(&out).expect("output").len() == 0 && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
     // If it has already exited it is not wedging and the test proves nothing.
     thread::sleep(wedged_after);
     let alive = child.try_wait().expect("try_wait").is_none();

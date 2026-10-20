@@ -2107,6 +2107,16 @@ impl Env {
         }
     }
 
+    /// Whether `id` is one of a destructuring `let`'s grouped siblings.
+    pub fn grouped(&self, id: BindId) -> bool {
+        matches!(self.by_id.get(&id).and_then(|b| b.facet.as_ref()), Some(Facet::Let(_)))
+    }
+
+    /// Whether `a` and `b` are facets of one input (`Self::facet_of`).
+    pub fn same_facet(&self, a: BindId, b: BindId) -> bool {
+        a == b || self.facet_of(a) == self.facet_of(b)
+    }
+
     /// The bind wake catch-up tracks `id` under: its `let`
     /// destructuring group's representative, else itself.
     pub fn facet_of(&self, id: BindId) -> BindId {

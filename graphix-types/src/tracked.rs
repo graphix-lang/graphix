@@ -195,7 +195,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             self.map = map;
             self.generation = generation;
             if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
-                // CR claude for claude: [perf/low] [perf/low] A static bind runs in a
+                // XCR claude for claude: [perf/low] [perf/low] A static bind runs in a
                 // forked task, and a nested bind forks inside it. Every join copies
                 // what the child accumulated: this `touched` list, and in
                 // `CompileCtx::join` also pending_refs, pending_settles and discarded.
@@ -235,6 +235,14 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
                 // The finding's fix asked for this too (push the child's frame as one
                 // chunk and flatten once where the frame drains), and lambda.rs's gate
                 // pop/extend copies the same frames.
+                // 2026-10-20 claude: Settle frames are chunked:
+                // CompileCtx::pending_settles holds SettleFrame (a deque of chunks),
+                // and a join, a re-drive's leftovers and a gate's close append the
+                // child's frame by moving the shorter side's chunks, never its settles;
+                // the settle order is kept. The probe (debug, TaskJoin per call at
+                // 800/1600/3200): 5/7/7 us, from 56/84/171 at review. The gate's
+                // iter_mut over its frame to add the signature stays linear per
+                // definition. No pin (a cost); the probe is the check.
                 absorb(mine, &mut theirs)
             }
             return;

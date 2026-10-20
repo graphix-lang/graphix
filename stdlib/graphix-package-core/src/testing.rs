@@ -179,8 +179,10 @@ impl Mode {
         matches!(self, Mode::Interp | Mode::Par | Mode::Unpruned)
     }
 
-    /// Whether the runtime skips clean boundaries, and audits the skips.
-    // CR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
+    /// Whether the runtime skips clean boundaries, and audits the skips:
+    /// `Interp` prunes for real (what `Unpruned` and the fuzzer's
+    /// `Pair::Prune` compare against), `Par` audits every skip.
+    // XCR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
     // audit off, and Mode::Unpruned is not in Mode::ALL. So the gate never checks that
     // pruning changes nothing; only lang::prune's walk count touches it. A missed mark
     // that alters an intermediate cycle passes every fixture: the standing-write hole
@@ -212,12 +214,16 @@ impl Mode {
     // (prune.rs:82-84, 134, 157, 210), and with Interp now auditing (walking every
     // clean boundary) those value comparisons no longer exercise a pruned node-walk;
     // only the walk counts (audit does not call note_boundary) still reflect pruning.
+    // 2026-10-20 claude: Mode::prune now audits only Par; Interp prunes for real, so
+    // the fuzzer's Pair::Prune (Interp against Unpruned) and lang::prune's value
+    // comparisons exercise a pruned node-walk again, and run! keeps an audited mode.
+    // run_delta reports boundaries walked and skipped. Fails if undone: lang::prune
+    // ticks_skip_the_idle_map* (Mode::Interp must skip at least 100 boundaries; under
+    // Audit it skips none).
     pub fn prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
-            Mode::Interp | Mode::Par if std::env::var_os("GRAPHIX_PRUNE").is_none() => {
-                PruneMode::Audit
-            }
+            Mode::Par if std::env::var_os("GRAPHIX_PRUNE").is_none() => PruneMode::Audit,
             _ => PruneMode::from_env(),
         }
     }

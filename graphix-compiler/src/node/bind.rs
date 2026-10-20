@@ -323,7 +323,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // but for one something writes, which fires alone, its own facet
         let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
         pattern.ids(&mut |id| siblings.push(id));
-        // CR claude for claude: [bug/high] The facet grouping is decided here from the
+        // XCR claude for claude: [bug/high] The facet grouping is decided here from the
         // targets known when the let compiles. A sibling first written from another
         // module (`m::a <- ..` or `&mut m::a`: the module compiles before the
         // importer's writers) or by a later REPL input stays grouped with its siblings.
@@ -356,6 +356,17 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // it was a connect target at let compile is its own rep, so every later connect
         // compile of it rescans all of env.by_id in split_facet; return early when the
         // binding is alone in its group.
+        // 2026-10-20 claude: TrackedFires now keys its fire bits by binding, not by
+        // group: a group fire sets every sibling's bit, and consuming one (an arm's
+        // catch-up, a pattern facet, a seq step's entry, a live read by an evaluated
+        // arm) spends its siblings' bits through Env::same_facet read at that moment.
+        // So a sibling a later compile splits off (Env::split_facet) fires alone in
+        // live trackers at once, with no refresh. Fails if undone:
+        // lang::modules::sibling_first_written_by_a_later_input_fires_alone (REPL: a <-
+        // 5 while the arm sleeps; the wake must give (5, 1), the grouped tracker gives
+        // (5, 2)). Gate, regress 552/0/0/0 and netidx-admin 45 green; a wake catch-up
+        // change, so it needs the soak. The split_facet rescan the review noted for a
+        // lone sibling stays.
         if siblings.len() > 1 {
             let rep = siblings.iter().find(|id| !ctx.connect_targets.contains(*id));
             let rep = rep.copied();

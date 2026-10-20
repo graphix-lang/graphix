@@ -28,8 +28,8 @@ pub(super) struct Delta {
     pub verdicts: u64,
     /// Fused-kernel and JIT invocations of the fixture's own program.
     pub invocations: (u64, u64),
-    /// Prune boundaries walked.
-    pub boundaries: u64,
+    /// Prune boundaries walked and skipped.
+    pub boundaries: (u64, u64),
     /// The regions the build fused.
     pub regions: usize,
 }
@@ -73,7 +73,7 @@ pub(super) async fn run_delta_with(
     let control = ctx.rt.control();
     let (forks, build_forks) = (control.forks(), control.build_forks());
     let (verdicts, invocations) = (control.verdicts(), control.invocations());
-    let (boundaries, _) = control.boundaries();
+    let boundaries = control.boundaries();
     ctx.shutdown().await;
     Ok(Delta {
         values,

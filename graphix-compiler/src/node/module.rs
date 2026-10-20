@@ -1109,7 +1109,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         // the body is a program of its own: top-level cells, and a check
         // that settles what it deferred before it elaborates
         let _level = AtLevel::enter(Level::TOP);
-        ctx.pending_settles.push(Vec::new());
+        ctx.pending_settles.push(crate::SettleFrame::default());
         let res = self.compile_inner(ctx, &exprs).and_then(|()| {
             crate::check_pending_imports(ctx)?;
             self.nodes.iter().try_for_each(|n| crate::analysis::analyze(n, ctx).map(drop))

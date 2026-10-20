@@ -1280,6 +1280,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.static_target.as_ref()
     }
 
+    /// Whether this site's callee was bound at compile time and no rebind
+    /// replaces it.
+    pub(crate) fn bound_statically(&self) -> bool {
+        matches!(self.callee, Callee::Static { .. })
+    }
+
     pub(crate) fn is_recursive_edge(&self) -> bool {
         self.recursive_edge.load(Relaxed)
     }
@@ -3338,10 +3344,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         // A settle frame for this site's re-drives; leftovers merge up and
         // drain only after this site's writers have run.
-        ctx.pending_settles.push(Vec::new());
+        ctx.pending_settles.push(crate::SettleFrame::default());
         let res = self.typecheck1_resolve(ctx);
         let leftover = ctx.pending_settles.pop().expect("settle frame");
-        ctx.pending_settles.last_mut().expect("root settle frame").extend(leftover);
+        ctx.pending_settles.last_mut().expect("root settle frame").append(leftover);
         if let Some(lowered) = res? {
             return Ok(Some(lowered));
         }

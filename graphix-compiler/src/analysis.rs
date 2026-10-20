@@ -1472,10 +1472,10 @@ fn own_access<R: Rt, E: UserEvent>(
             {
                 return callees.push(t.instance);
             }
+            let current = current.is_some_and(|c| std::ptr::eq(c, x));
             match cs.resolved_apply() {
                 Some(ApplyView::Lambda(g))
-                    if current.is_some_and(|c| std::ptr::eq(c, x))
-                        && graph.instances.contains_key(&g.instance_id()) =>
+                    if current && graph.instances.contains_key(&g.instance_id()) =>
                 {
                     return callees.push(g.instance_id());
                 }
@@ -1483,7 +1483,7 @@ fn own_access<R: Rt, E: UserEvent>(
                     s.ordered = true;
                     return s.opaque();
                 }
-                Some(ApplyView::BuiltIn(name)) => {
+                Some(ApplyView::BuiltIn(name)) if current || cs.bound_statically() => {
                     s.ordered |= ctx.builtin_ordered(name);
                     if builtin_reaches_out(cs, ctx) {
                         if gxdbg_seqplan() {
@@ -1868,7 +1868,7 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// one, to ask again once it is bound. A call site decides its arguments
 /// again at each bind (`CallSite::clear_prepared_bind`), a collection its
 /// slots once they are bound to a new callback (`update_slots`).
-// CR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
+// XCR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
 // to a pure function outlives the call's rebind: local_summary counts a call with no
 // static target as its current instance, and ForkSite::decide_siblings keeps the answer
 // forever. Only a call's own arguments and a slot site decide again at a rebind, so a
@@ -1899,6 +1899,11 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 // target or is the slot site's current call; otherwise opaque. Pin
 // rebound_dynamic_calls_stay_ordered covers only a lambda-to-lambda rebind; add the
 // builtin case.
+// 2026-10-20 claude: own_access counts a builtin call only when the site is bound
+// statically (CallSite::bound_statically) or is the slot site's current call; a call
+// through a binding that holds a builtin now is opaque, as a lambda's is.
+// rebound_dynamic_calls_stay_ordered runs the lambda and the 'once' rebind both; with
+// the guard removed the 'once' case fails (field order 44 before 43 under Force).
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,

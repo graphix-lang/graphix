@@ -8,8 +8,9 @@ use graphix_package_core::testing::{Mode, data};
 use netidx::publisher::Value;
 use std::time::Duration;
 
-/// Every update of `code`'s result and the boundaries walked, in `mode`.
-async fn walks(code: &str, mode: Mode) -> Result<(Vec<Value>, u64)> {
+/// Every update of `code`'s result and the boundaries walked and skipped,
+/// in `mode`.
+async fn walks(code: &str, mode: Mode) -> Result<(Vec<Value>, (u64, u64))> {
     let d = run_delta_with(code, mode, |_| (), Duration::from_millis(300)).await?;
     Ok((d.values, d.boundaries))
 }
@@ -62,9 +63,9 @@ fn idle_map_in_an_instance(size: usize) -> String {
 // thousand more slots cost are their first ones, where unpruned every
 // tick walks them all again.
 async fn ticks_skip_the_idle_map(program: fn(usize) -> String) -> Result<()> {
-    let (small, small_walks) = walks(&program(10), Mode::Interp).await?;
-    let (big, big_walks) = walks(&program(1010), Mode::Interp).await?;
-    let (unpruned, unpruned_walks) = walks(&program(1010), Mode::Unpruned).await?;
+    let (small, (small_walks, _)) = walks(&program(10), Mode::Interp).await?;
+    let (big, (big_walks, big_skips)) = walks(&program(1010), Mode::Interp).await?;
+    let (unpruned, (unpruned_walks, _)) = walks(&program(1010), Mode::Unpruned).await?;
     let expected: Vec<Value> =
         (0..=100).map(|n| Value::from(vec![Value::I64(n), Value::I64(1010)])).collect();
     assert_eq!(big, expected);
@@ -78,6 +79,7 @@ async fn ticks_skip_the_idle_map(program: fn(usize) -> String) -> Result<()> {
         unpruned_walks - small_walks >= 100 * 1000,
         "unpruned: {unpruned_walks} walks at 1010 slots"
     );
+    assert!(big_skips >= 100, "Mode::Interp skipped {big_skips} boundaries");
     Ok(())
 }
 

@@ -219,6 +219,9 @@ Then rewrite this section and "The slab" to the build. Found by reading; not run
 GRAPHIX_PRUNE is unset (the for-claude x-prune-03 / c-prune-wake-03 asked for it;
 graphix-tests passed whole under audit first). The section's unbuilt names
 (GRAPHIX_NO_PRUNE, GRAPHIX_PRUNE_AUDIT, boundaries_walked, the slab) are untouched. -->
+<!-- 2026-10-20 claude: The 10-19 note is stale: run!'s Par mode alone runs under
+PruneMode::Audit now; Interp prunes for real, the mode Unpruned and the fuzzer's
+Pair::Prune compare against (x-prune-03). -->
 - **`run!`** runs pruned (the default); the audit runs in the plain
   gate for the `lang` and `lib_tests` fixtures (a test helper sets it),
   so the gate itself hunts missing marks.

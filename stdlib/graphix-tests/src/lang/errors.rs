@@ -577,13 +577,29 @@ const ARM_INPUT_RAISE_NODE_WALKS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let n = 0;
-  let v = { catch(e) n <- e ~ n + 1; #[native] select x { 2 => error(`E(x))?, _ => x } };
+  let v: i64 = { catch(e) n <- e ~ n + 1; #[native] select x { 2 => error(`E(x))?, _ => x } };
   select count(x) { 4 => n, _ => never() }
 }
 "#;
 
 run!(arm_input_raise_node_walks, ARM_INPUT_RAISE_NODE_WALKS,
-    refused("did not fully fuse to native code"); FuseExpect::None; jit_only);
+    refused("fire tracker — arm entry is the node-walk's"); FuseExpect::None; jit_only);
+
+// In a function body the select is tried twice, at the definition's open
+// type and at the instance's i64: #[native] names every failure of the
+// source, the arm-raise blocker among them.
+const ARM_INPUT_RAISE_IN_A_BODY: &str = r#"
+{
+  let n = 0;
+  let f = |x: i64| { catch(e) n <- e ~ n + 1; #[native] select x { 2 => error(`E(x))?, _ => x } };
+  let x = array::iter([1, 2, 3, 4]);
+  let v = f(x);
+  select count(x) { 4 => n, _ => never() }
+}
+"#;
+
+run!(arm_input_raise_in_a_body, ARM_INPUT_RAISE_IN_A_BODY,
+    refused("fire tracker — arm entry is the node-walk's"); FuseExpect::None; jit_only);
 
 // `$` over a nullable waits out the null, and says nothing about it.
 const OR_NEVER_NULL: &str = r#"

@@ -71,7 +71,7 @@ use smallvec::SmallVec;
 use std::{
     any::Any,
     cell::Cell,
-    collections::hash_map::Entry,
+    collections::{VecDeque, hash_map::Entry},
     fmt::Debug,
     mem,
     sync::{
@@ -1061,7 +1061,7 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
     // parts fused is residue for its own reason.
     let before = report.len();
     fusion::for_each_node(node, &mut |n| {
-        // CR claude for claude: [bug/medium] failure_for_source returns the last
+        // XCR claude for claude: [bug/medium] failure_for_source returns the last
         // failure recorded for a source, which need not come from this node's attempt.
         // For a handler-ful `?` under a select arm, the select records the arm-raise
         // blocker and then "a region of type _ has no kernel return" from a second
@@ -1098,6 +1098,12 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
         // are i64-or-bottom, which is itself worth a look. Add a pin over the probe's
         // function-body shape asserting both lines, and tighten
         // arm_input_raise_node_walks with the annotation.
+        // 2026-10-20 claude: Pinned: lang::errors::arm_input_raise_node_walks
+        // annotates v: i64 and asserts the arm-raise blocker text, and
+        // lang::errors::arm_input_raise_in_a_body (the probe's function-body shape,
+        // two attempts) asserts it too, so reporting only the last failure fails it.
+        // The unannotated select's open type is the ok type of error(..)? over an
+        // error-only value: a free cell, not a checker miss.
         let mut failures = ctx.fusion.stats.failures_for_source(n.spec()).peekable();
         if failures.peek().is_none() {
             return;
@@ -1471,7 +1477,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// statement boundaries drain it, so a settle runs only after every
     /// writer in its scope. A re-drive's leftovers merge up to the
     /// parent frame.
-    pub(crate) pending_settles: Vec<Vec<PendingSettle>>,
+    pub(crate) pending_settles: Vec<SettleFrame>,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// by `check_pending_imports`, from `compile_top` and a module's load.
@@ -1641,7 +1647,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             defaults_in_check: self.defaults_in_check.clone(),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
-            pending_settles: vec![Vec::new()],
+            pending_settles: vec![SettleFrame::default()],
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
             def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -1710,7 +1716,9 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         self.builtin_bindings.join(builtin_bindings);
         self.fn_forward_resolutions.join(fn_forward_resolutions);
         let frame = self.pending_settles.last_mut().expect("root settle frame");
-        frame.extend(pending_settles.into_iter().flatten());
+        for later in pending_settles {
+            frame.append(later)
+        }
         self.pending_imports.extend(pending_imports);
         self.pending_names.extend(pending_names);
         if !Arc::ptr_eq(&self.def_assertions, &def_assertions) {
@@ -2014,7 +2022,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 defaults_in_check: SmallVec::new(),
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
-                pending_settles: vec![Vec::new()],
+                pending_settles: vec![SettleFrame::default()],
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
                 def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -2306,7 +2314,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         self.pending_imports.clear();
         self.pending_names.clear();
         self.pending_settles.clear();
-        self.pending_settles.push(Vec::new());
+        self.pending_settles.push(SettleFrame::default());
         self.fusion.top_id = Some(top_id);
     }
     env_restore_methods!();
@@ -2365,11 +2373,49 @@ pub(crate) enum Discerned {
     Bound(typ::TVar, Type),
 }
 
+/// The settles a check deferred, in the order they settle, held as
+/// chunks so a join moves the shorter side's chunks, never the settles.
+#[derive(Default)]
+pub(crate) struct SettleFrame(VecDeque<Vec<PendingSettle>>);
+
+impl SettleFrame {
+    pub(crate) fn push(&mut self, settle: PendingSettle) {
+        match self.0.back_mut() {
+            Some(chunk) => chunk.push(settle),
+            None => self.0.push_back(vec![settle]),
+        }
+    }
+
+    /// `later`'s settles after this frame's.
+    pub(crate) fn append(&mut self, mut later: SettleFrame) {
+        if self.0.len() < later.0.len() {
+            mem::swap(self, &mut later);
+            while let Some(chunk) = later.0.pop_back() {
+                self.0.push_front(chunk)
+            }
+        } else {
+            self.0.extend(later.0)
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.iter().all(|chunk| chunk.is_empty())
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &PendingSettle> {
+        self.0.iter().flatten()
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut PendingSettle> {
+        self.0.iter_mut().flatten()
+    }
+}
+
 impl PendingSettle {
     /// Run every site settle of `frame`, then every cell settle, then
     /// every rule judged over the settled cells.
     pub(crate) fn drain(
-        frame: &[PendingSettle],
+        frame: &SettleFrame,
         env: &Env,
         mut on_err: impl FnMut(&Arc<Expr>, anyhow::Error) -> Result<()>,
     ) -> Result<()> {
@@ -2901,7 +2947,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     {
         let e = resite_pending_name(ctx, e);
         ctx.pending_settles.clear();
-        ctx.pending_settles.push(Vec::new());
+        ctx.pending_settles.push(SettleFrame::default());
         ctx.pending_names.clear();
         return Err(e);
     }
@@ -2915,7 +2961,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     let p = profile::phase(Phase::Typecheck1);
     if let Err(e) = node.typecheck1(ctx) {
         ctx.pending_settles.clear();
-        ctx.pending_settles.push(Vec::new());
+        ctx.pending_settles.push(SettleFrame::default());
         return Err(e);
     }
     drop(p);

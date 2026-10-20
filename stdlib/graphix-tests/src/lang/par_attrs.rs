@@ -503,24 +503,29 @@ async fn callee_reference_is_a_publication() -> Result<()> {
 
 // A call with no static target may call something else at its next bind,
 // so siblings that make one are not independent: once `h` calls the
-// queuefn wrapper the queue still sees the fields' calls in order.
+// queuefn wrapper the queue still sees the fields' calls in order, whether
+// `h` was a lambda or a builtin before.
 #[tokio::test(flavor = "current_thread")]
 async fn rebound_dynamic_calls_stay_ordered() -> Result<()> {
-    let code = r#"{
+    for g1 in ["|x: i64| -> i64 x", "once"] {
+        let code = format!(
+            r#"{{
         let n = 0;
-        n <- select n { k if k < 8 => k + 1, _ => never() };
+        n <- select n {{ k if k < 8 => k + 1, _ => never() }};
         let got: Array<i64> = [];
-        let q = queuefn(#trigger: n, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
-        let g1 = |x: i64| -> i64 x;
+        let q = queuefn(#trigger: n, |x: i64| -> i64 {{ got <- x ~ array::push(got, x); x }});
+        let g1 = {g1};
         let g2 = |x: i64| -> i64 q(x);
-        let h = select n { k if k < 3 => g1, _ => g2 };
+        let h = select n {{ k if k < 3 => g1, _ => g2 }};
         let t = (h(n * 10 + 1), h(n * 10 + 2), h(n * 10 + 3), h(n * 10 + 4));
-        select n { 8 => got, _ => never() }
-    }"#;
-    let serial = run_par(code, ParMode::Off).await?;
-    for _ in 0..4 {
-        let forked = run_par(code, ParMode::Force).await?;
-        assert_eq!(forked.values, serial.values);
+        select n {{ 8 => got, _ => never() }}
+    }}"#
+        );
+        let serial = run_par(&code, ParMode::Off).await?;
+        for _ in 0..4 {
+            let forked = run_par(&code, ParMode::Force).await?;
+            assert_eq!(forked.values, serial.values, "g1 = {g1}");
+        }
     }
     Ok(())
 }

@@ -1832,7 +1832,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
             .collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
-        ctx.pending_settles.push(Vec::new());
+        ctx.pending_settles.push(crate::SettleFrame::default());
         Self {
             def: def.id,
             depth: def.level.depth(),
@@ -1880,7 +1880,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
                 spec: Arc::new(spec.clone()),
             });
         }
-        ctx.pending_settles.last_mut().expect("root settle frame").extend(frame);
+        ctx.pending_settles.last_mut().expect("root settle frame").append(frame);
         ctx.rec_defs.remove(&self.def);
         ctx.env.by_id.remove(&self.faux_id);
         self.rigid.clear();

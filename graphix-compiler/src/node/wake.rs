@@ -18,11 +18,11 @@ use std::mem;
 /// are not tracked. Survives sleep.
 #[derive(Debug, Default)]
 pub(crate) struct TrackedFires {
-    /// Per arm: the body's free refs, keyed by the input they are
-    /// tracked under (a destructuring `let`'s siblings share their
-    /// group's representative, `Env::facet_of`). Refreshed at each
-    /// deselect, when the arm's subtree is fully materialized.
-    per_arm: Vec<IntMap<BindId, SmallVec<[BindId; 2]>>>,
+    /// Per arm: the body's free refs. Refreshed at each deselect, when
+    /// the arm's subtree is fully materialized. A destructuring `let`'s
+    /// siblings are facets of one input (`Env::facet_of`, read when a bit
+    /// is consumed, so a sibling a later compile splits off fires alone).
+    per_arm: Vec<IntSet<BindId>>,
     /// Per arm: the inputs the pattern binds the body reads are facets
     /// of. Reading a facet consumes the input's fire; the facet itself
     /// is never delivered.
@@ -51,15 +51,17 @@ impl TrackedFires {
     fn arm_refs(
         env: &Env,
         r: &Refs,
-        inputs: &mut IntMap<BindId, SmallVec<[BindId; 2]>>,
+        inputs: &mut IntSet<BindId>,
         consumes: &mut IntSet<BindId>,
     ) {
         inputs.clear();
         consumes.clear();
         for id in r.refed.difference(&r.bound).copied() {
             match env.pattern_inputs(id) {
-                None => inputs.entry(env.facet_of(id)).or_default().push(id),
-                Some(ids) => consumes.extend(ids.iter().map(|id| env.facet_of(*id))),
+                None => {
+                    inputs.insert(id);
+                }
+                Some(ids) => consumes.extend(ids.iter().copied()),
             }
         }
     }
@@ -88,7 +90,7 @@ impl TrackedFires {
         mut fill: impl FnMut(usize, &mut Refs),
     ) -> Self {
         let mut t = TrackedFires {
-            per_arm: (0..n).map(|_| IntMap::default()).collect(),
+            per_arm: (0..n).map(|_| IntSet::default()).collect(),
             consumes: (0..n).map(|_| IntSet::default()).collect(),
             all: IntMap::default(),
             pending: IntSet::default(),
@@ -100,7 +102,7 @@ impl TrackedFires {
             fill(i, &mut r);
             Self::arm_refs(env, &r, &mut t.per_arm[i], &mut t.consumes[i]);
         }
-        for id in t.per_arm.iter().flat_map(|m| m.keys()) {
+        for id in t.per_arm.iter().flatten() {
             *t.all.entry(*id).or_default() += 1;
         }
         t
@@ -137,7 +139,7 @@ impl TrackedFires {
     // change. Gating on rebuilds plus a per-arm count of the Deref retargets under it
     // would do; it wants a pin of a woken arm whose reference moved while it slept.
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
-        let Self { per_arm, consumes, all, pending, carried, ran: _ } = self;
+        let Self { per_arm, consumes, all, pending, carried, .. } = self;
         let mut r = Refs::default();
         fill(&mut r);
         let old = mem::take(&mut per_arm[i]);
@@ -174,13 +176,13 @@ impl TrackedFires {
         // each update) would be answered by the same per-node dirty bits as Eric's walk
         // pruning on x-perf-runtime-01: an arm's tracked input that nothing set stays
         // clean. Readdressed to Eric with x-alloc-06 so the design is made once.
-        for id in per_arm[i].keys() {
-            if !old.contains_key(id) {
+        for id in per_arm[i].iter() {
+            if !old.contains(id) {
                 *all.entry(*id).or_default() += 1;
             }
         }
-        for id in old.keys() {
-            if !per_arm[i].contains_key(id)
+        for id in old.iter() {
+            if !per_arm[i].contains(id)
                 && let Some(n) = all.get_mut(id)
             {
                 *n -= 1;
@@ -207,12 +209,11 @@ impl TrackedFires {
         }
         let mut r = Refs::without_callees();
         fill(&mut r);
-        let (mut inputs, mut consumed) = (IntMap::default(), IntSet::default());
+        let (mut inputs, mut consumed) = (IntSet::default(), IntSet::default());
         Self::arm_refs(env, &r, &mut inputs, &mut consumed);
         let Self { per_arm, consumes, all, pending, .. } = self;
-        for (id, ids) in inputs {
-            if let std::collections::hash_map::Entry::Vacant(e) = per_arm[i].entry(id) {
-                e.insert(ids);
+        for id in inputs {
+            if per_arm[i].insert(id) {
                 *all.entry(id).or_default() += 1;
                 pending.remove(&id);
             }
@@ -258,9 +259,17 @@ impl TrackedFires {
         // belongs to no dirty arm, so GRAPHIX_PRUNE=audit and the fuzzer's Pair::Prune
         // check it. Gain to expect: x-perf-runtime-05.py (d) puts the scan at about
         // 0.22 ms a cycle for 1600 idle arms, nothing measurable at a handful.
+        let env = &ctx.env;
+        let seen = |id: &BindId| {
+            evaluated.iter().any(|i| {
+                per_arm[*i].contains(id)
+                    || env.grouped(*id)
+                        && per_arm[*i].iter().any(|o| env.same_facet(*o, *id))
+            })
+        };
         for id in all.keys() {
             let carry = carried.is_some_and(|c| c.contains(id));
-            if (carry || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
+            if (carry || !seen(id))
                 && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
                 && tv.tag().is_fired()
             {
@@ -271,16 +280,15 @@ impl TrackedFires {
     }
 
     /// Arm `i` is entered: the carried fires it reads are its entry's.
-    pub(crate) fn enter(&mut self, i: usize) {
+    pub(crate) fn enter(&mut self, env: &Env, i: usize) {
         let Some(set) = self.per_arm.get(i) else { return };
         let Self { carried, pending, .. } = self;
-        carried.retain(|id| {
-            let read = set.contains_key(id);
-            if read {
-                pending.insert(*id);
-            }
-            !read
-        });
+        let read: SmallVec<[BindId; 4]> =
+            carried.iter().filter(|id| set.contains(id)).copied().collect();
+        for id in read {
+            consume(env, carried, id);
+            pending.insert(id);
+        }
     }
 
     /// Consume the bits arm `i` reads, injecting one catch-up FIRED
@@ -297,31 +305,32 @@ impl TrackedFires {
         if self.pending.is_empty() {
             return injected;
         }
-        if let Some(consumed) = self.consumes.get(i) {
+        let Self { per_arm, consumes, pending, .. } = self;
+        if let Some(consumed) = consumes.get(i) {
             for id in consumed.iter() {
-                self.pending.remove(id);
+                consume(&ctx.env, pending, *id);
             }
         }
-        let Some(set) = self.per_arm.get(i) else { return injected };
-        let keys: SmallVec<[BindId; 8]> =
-            self.pending.iter().filter(|id| set.contains_key(id)).copied().collect();
-        for key in keys {
-            self.pending.remove(&key);
-            for id in set[&key].iter().copied() {
-                let standing = match read_var(ctx, &id) {
-                    // a live fire delivers itself
-                    Some(VarRead::Delivered(tv)) if tv.tag().triggers() => None,
-                    Some(VarRead::Delivered(tv) | VarRead::Standing(tv))
-                        if !tv.tag().is_bottom() =>
-                    {
-                        Some(tv.value_cloned())
-                    }
-                    _ => None,
-                };
-                if let Some(v) = standing {
-                    let prior = ctx.event.variables.put(id, TagValue::fired(v));
-                    injected.push((id, prior));
+        let Some(set) = per_arm.get(i) else { return injected };
+        let read: SmallVec<[BindId; 8]> =
+            pending.iter().filter(|id| set.contains(id)).copied().collect();
+        for id in read.iter() {
+            consume(&ctx.env, pending, *id);
+        }
+        for id in read {
+            let standing = match read_var(ctx, &id) {
+                // a live fire delivers itself
+                Some(VarRead::Delivered(tv)) if tv.tag().triggers() => None,
+                Some(VarRead::Delivered(tv) | VarRead::Standing(tv))
+                    if !tv.tag().is_bottom() =>
+                {
+                    Some(tv.value_cloned())
                 }
+                _ => None,
+            };
+            if let Some(v) = standing {
+                let prior = ctx.event.variables.put(id, TagValue::fired(v));
+                injected.push((id, prior));
             }
         }
         injected
@@ -331,5 +340,14 @@ impl TrackedFires {
         for (id, prior) in injected {
             event.variables.put_back(id, prior)
         }
+    }
+}
+
+/// Spend `id`'s bit in `bits`, and its siblings': a destructuring `let`'s
+/// siblings are facets of one input.
+fn consume(env: &Env, bits: &mut IntSet<BindId>, id: BindId) {
+    bits.remove(&id);
+    if env.grouped(id) {
+        bits.retain(|o| !env.same_facet(*o, id))
     }
 }

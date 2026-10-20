@@ -1250,6 +1250,51 @@ run!(
         let (a, b) = (1, 2)
     "#; FuseExpect::Jit);
 
+// A sibling a later REPL input first writes, while the arm reading both
+// siblings sleeps, leaves the group in the live select too: the wake
+// catches `a` up and not `b`.
+#[tokio::test(flavor = "current_thread")]
+async fn sibling_first_written_by_a_later_input_fires_alone() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::{data, init};
+    use graphix_rt::GXEvent;
+    use tokio::{sync::mpsc, time};
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let probe = ctx
+        .rt
+        .compile(ArcStr::from(
+            "let (a, b) = (1, 2);
+             let gate = true;
+             select gate { true => (a, count(b)), false => (-1, -1) }",
+        ))
+        .await?;
+    let id = probe.exprs.last().expect("the select").id;
+    let mut held = vec![];
+    let deadline = time::Instant::now() + time::Duration::from_secs(10);
+    let mut next = async || -> Result<String> {
+        loop {
+            let batch = time::timeout_at(deadline, rx.recv()).await;
+            let Ok(Some(batch)) = batch else { anyhow::bail!("the probe went quiet") };
+            for ev in batch.iter() {
+                if let GXEvent::Updated(eid, v) = ev
+                    && *eid == id
+                {
+                    return Ok(data(v.clone()).to_string());
+                }
+            }
+        }
+    };
+    assert_eq!(next().await?, "[i64:1, i64:1]");
+    held.push(ctx.rt.compile(ArcStr::from("gate <- false")).await?);
+    assert_eq!(next().await?, "[i64:-1, i64:-1]");
+    held.push(ctx.rt.compile(ArcStr::from("a <- 5")).await?);
+    time::sleep(time::Duration::from_millis(200)).await;
+    held.push(ctx.rt.compile(ArcStr::from("gate <- true")).await?);
+    assert_eq!(next().await?, "[i64:5, i64:1]");
+    Ok(())
+}
+
 // A module with an interface raises to an ascribed catch outside it: the
 // ascription covers the raise, so the module's check writes nothing.
 run!(

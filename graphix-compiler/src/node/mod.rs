@@ -1342,7 +1342,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     ctx: &mut CompileCtx<R, E>,
     f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<T>,
 ) -> Result<T> {
-    ctx.pending_settles.push(Vec::new());
+    ctx.pending_settles.push(crate::SettleFrame::default());
     let names = ctx.pending_names.len();
     let _task = InTask::enter(new_task());
     let res = {

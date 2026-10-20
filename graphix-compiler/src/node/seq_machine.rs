@@ -128,7 +128,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
             for n in steps.iter().flat_map(|s| s.nodes.iter()) {
                 if let NodeView::Bind(b) = n.view() {
                     b.pattern.ids(&mut |id| {
-                        lets.insert(ctx.env.facet_of(id));
+                        lets.insert(id);
                     });
                 }
             }
@@ -343,7 +343,7 @@ fn evaluate<R: Rt, E: UserEvent>(
     let view = if entered { View::Step } else { View::Cycle };
     ctx.under(view, |ctx| {
         if entered {
-            tracked.enter(k)
+            tracked.enter(&ctx.env, k)
         }
         let injected = tracked.deliver(ctx, k);
         let mut done = false;
