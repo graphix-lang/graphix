@@ -66,25 +66,24 @@ async fn missing_items_are_refused() -> Result<()> {
     Ok(())
 }
 
-// A script's own type, trait or impl that contradicts its interface is
-// refused, as a module's is.
+// A script's own definition of a type or trait its interface defines is
+// refused, as a module's is, and so is an impl that contradicts it.
 #[tokio::test(flavor = "multi_thread")]
 async fn contradicting_definitions_are_refused() -> Result<()> {
     let cases = [
         (
             "type T = string;\nlet x: T = \"a\";\nx\n",
             "type T = i64;\nval x: T;\n",
-            "signature mismatch in T, expected type T = i64, found type T = string",
+            "T is defined by its interface; delete this definition",
         ),
         (
             "trait Show { val show: fn(self) -> string };\n\
              impl Show for i64 { let show = |x| \"s[x]\" };\nShow::show(3)\n",
             "trait Show { val show: fn(self) -> i64 };\nimpl Show for i64;\n",
-            "trait Show is declared by the interface as",
+            "trait Show is declared by its interface; delete this definition",
         ),
         (
-            "trait Show { val show: fn(self) -> string };\n\
-             impl Show for i64 { let show = |x| \"int [x]\" };\n\
+            "impl Show for i64 { let show = |x| \"int [x]\" };\n\
              impl<'a> Show for Array<'a> { let show = |xs| \"arr\" };\nShow::show([1])\n",
             "trait Show { val show: fn(self) -> string };\n\
              impl<'a: Show> Show for Array<'a>;\n",

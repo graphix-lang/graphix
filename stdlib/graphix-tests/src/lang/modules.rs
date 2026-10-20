@@ -1005,7 +1005,6 @@ type A = Abstract<i64>;
 val v: A;
 "#,
 "/test/a.gx" => r#"
-type A = Abstract<i64>;
 let v = A(1);
 impl super::Show for A { let show = |a| "a[a.0]" }
 "#,
@@ -1014,7 +1013,6 @@ type B = Abstract<i64>;
 val v: B;
 "#,
 "/test/b.gx" => r#"
-type B = Abstract<i64>;
 let v = B(2);
 impl super::Show for B { let show = |b| "b[b.0]" }
 "#
@@ -1051,7 +1049,7 @@ run!(
         let result = #[native] a::Show::show(b::mk(1))
     "#,
     "/test/a.gxi" => r#"trait Show { val show: fn(self) -> string = |s| "dflt" };"#,
-    "/test/a.gx" => r#"trait Show { val show: fn(self) -> string = |s| "dflt" }"#,
+    "/test/a.gx" => "",
     "/test/b.gxi" => "use super::a::Show; type T; val mk: fn(x: i64) -> T; impl Show for T;",
     "/test/b.gx" => "use super::a::Show; type T = Abstract<i64>; let mk = |x| T(x); impl Show for T"
 ; FuseExpect::Jit);
@@ -1314,8 +1312,8 @@ run!(
         let y = f(2)
     "#; FuseExpect::Jit);
 
-// An interface typedef naming a trait-typed parameter agrees with the
-// identical implementation.
+// An interface typedef naming a trait-typed parameter serves its
+// implementation.
 run!(
     interface_typedef_with_a_trait_parameter,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "3"),
@@ -1328,7 +1326,6 @@ run!(
         val apply: fn(f: F, x: i64) -> string
     "#,
     "/test/m.gx" => r#"
-        type F = fn(x: Display) -> string;
         let apply = |f: F, x: i64| -> string f(x)
     "#; FuseExpect::None);
 
@@ -1346,7 +1343,6 @@ run!(
         val f: fn(x: T<[i64, 'b]>) -> i64
     "#,
     "/test/m.gx" => r#"
-        type T<'a: Discernible> = Array<'a>;
         let f = |x: T<[i64, 'b]>| -> i64 array::len(x)
     "#; FuseExpect::Jit);
 
@@ -1364,7 +1360,6 @@ run!(
         val apply: fn(x: i64) -> string
     "#,
     "/test/m.gx" => r#"
-        type F = Abstract<fn(x: Display) -> string>;
         let apply = |x: i64| -> string {
             let f = F(|y| "[y]");
             let g = f.0;

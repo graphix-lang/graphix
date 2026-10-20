@@ -416,152 +416,91 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
-/// An implementation's definition `td` of a type its interface declares
-/// as `sig_td` (scoped, its parameters too) agrees with it: a hidden type
-/// is an abstract with the declared parameters, any other one the same
-/// type.
-fn check_typedef_decl<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+/// A type or trait the interface `si` declares is the implementation's
+/// already, spliced into its body from the interface: the body's own
+/// definition of one is refused, but for a hidden type's, an abstract with
+/// the declared parameters.
+fn check_redefinition<R: Rt, E: UserEvent>(
     scope: &ModPath,
-    sig_td: &TypeDefExpr,
-    td: &TypeDefExpr,
+    si: &crate::expr::SigItem,
+    nodes: &[Node<R, E>],
 ) -> Result<()> {
-    let impl_params = scope_params(&td.params, scope);
-    if let TypeDefBody::Abstract(None) = &sig_td.body {
-        for (tv0, con0) in impl_params.iter() {
-            match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
-                Some((_, con1)) if con0 != con1 => {
-                    let con0 = match con0 {
-                        None => "missing",
-                        Some(t) => &format_compact!("{t}"),
-                    };
-                    let con1 = match con1 {
-                        None => "missing",
-                        Some(t) => &format_compact!("{t}"),
-                    };
-                    bail!(
-                        "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
-                        td.name,
-                        tv0.name
-                    )
-                }
-                None => bail!(
-                    "signature mismatch in {}, missing parameter {}",
-                    sig_td.name,
-                    tv0.name
-                ),
-                Some(_) => (),
+    // a spliced item shares the interface item's origin
+    let own = |name: &dyn Fn(&ExprKind) -> bool| {
+        nodes
+            .iter()
+            .map(|n| n.spec())
+            .find(|e| !Arc::ptr_eq(&e.ori, &si.ori) && name(&e.kind))
+    };
+    match &si.kind {
+        SigKind::Trait(t) => {
+            let named =
+                |k: &ExprKind| matches!(k, ExprKind::Trait(t2) if t2.name == t.name);
+            if let Some(e) = own(&named) {
+                return Err(anyhow!(
+                    "trait {} is declared by its interface; delete this definition",
+                    t.name
+                )
+                .at(e));
             }
         }
-        if !matches!(&td.body, TypeDefBody::Abstract(_)) {
-            bail!(
-                "{} is hidden by the interface, so its definition must be \
-                 `type {} = Abstract<..>` (a Rust-backed type declares \
-                 `type {};`)",
-                td.name,
-                td.name,
-                td.name
-            )
+        SigKind::TypeDef(sig_td) => {
+            let named = |k: &ExprKind| matches!(k, ExprKind::TypeDef(td) if td.name == sig_td.name);
+            let Some(e) = own(&named) else { return Ok(()) };
+            let ExprKind::TypeDef(td) = &e.kind else { unreachable!() };
+            check_hidden_typedef(scope, sig_td, td).at(e)?
         }
-        return Ok(());
-    }
-    let impl_body = match &td.body {
-        TypeDefBody::Alias(t) => {
-            TypeDefBody::Alias(t.scope_refs(scope).rewrite_trait_args(&ctx.env)?)
-        }
-        TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
-            rep.as_ref()
-                .map(|r| r.scope_refs(scope).rewrite_trait_args(&ctx.env))
-                .transpose()?,
-        ),
-    };
-    // a ground union has several normal forms: one type is one by
-    // mutual containment
-    let one_type = |t0: &Type, t1: &Type| {
-        let f = BitFlags::empty();
-        !t0.has_unbound()
-            && !t1.has_unbound()
-            && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
-            && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
-    };
-    // XCR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
-    // body is the interface's registered typedef, which Env::deftype already passed
-    // through rewrite_trait_args. impl_body here only went through scope_refs. A fn
-    // type with a trait-typed parameter (`type F = fn(x: Display) -> string`) therefore
-    // never compares equal, and one_type refuses it because the rewrite left an open
-    // quantifier. An interface and implementation with the identical line are refused
-    // with "signature mismatch in F, expected .. found .." printing the same text
-    // twice. Fix: rewrite impl_body with rewrite_trait_args(&ctx.env) as deftype does,
-    // or compare the two registered definitions. probe:
-    // design/review-2026-10-19/repro/t-typ-mod-sig-trait-param-typedef.sh
-    // (t-typ-mod-02)
-    // 2026-10-19 claude: check_typedef_decl rewrites the implementation's alias body
-    // with rewrite_trait_args, as Env::deftype rewrote the interface's; the probe's
-    // check passes. Pin: lang::modules::interface_typedef_with_a_trait_parameter.
-    // 2026-10-20 claude: XCR review: Only the Alias arm of impl_body is rewritten with
-    // rewrite_trait_args; the Abstract arm still only scope_refs its rep, while
-    // Env::deftype (env.rs, the Abstract rep branch) rewrites the interface's rep too.
-    // So an interface and implementation that both write 'type F = Abstract<fn(x:
-    // Display) -> string>;' are still refused by the current debug graphix --check:
-    // 'signature mismatch in F, expected type F = Abstract<fn(x: Display) -> string>,
-    // found type F = Abstract<fn(x: Display) -> string>' (the alias form now passes).
-    // Rewrite the Abstract rep the same way, and pin the abstract-rep twin of
-    // interface_typedef_with_a_trait_parameter.
-    // 2026-10-20 claude: check_typedef_decl rewrites the Abstract rep with
-    // rewrite_trait_args too, and compares two reps by one_type as it does two aliases.
-    // Pin: lang::modules::interface_abstract_typedef_with_a_trait_parameter (the
-    // pre-fix binary refuses it with 'signature mismatch in F'). The doubled text was
-    // the expected and found sides printing alike, not a second print: a genuine
-    // mismatch prints once.
-    let same_body = sig_td.body == impl_body
-        || match (&sig_td.body, &impl_body) {
-            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1))
-            | (TypeDefBody::Abstract(Some(t0)), TypeDefBody::Abstract(Some(t1))) => {
-                one_type(t0, t1)
-            }
-            _ => false,
-        };
-    if sig_td.name != td.name || sig_td.params != impl_params || !same_body {
-        bail!("signature mismatch in {}, expected {}, found {}", td.name, sig_td, td)
+        _ => (),
     }
     Ok(())
 }
 
-/// The implementation's own re-declarations of a trait its interface
-/// declares as `t` agree with it.
-fn check_trait_decl<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+/// The implementation's definition `td` of a type the interface declares
+/// as `sig_td`: the interface hides it, and `td` is an abstract with the
+/// declared parameters.
+fn check_hidden_typedef(
     scope: &ModPath,
-    si: &crate::expr::SigItem,
-    t: &crate::expr::TraitExpr,
-    nodes: &[Node<R, E>],
+    sig_td: &TypeDefExpr,
+    td: &TypeDefExpr,
 ) -> Result<()> {
-    let ori = si.ori.clone();
-    let tref = traits::trait_ref(scope, &t.name, si.pos, &ori);
-    let method =
-        |m: &crate::expr::TraitMethod| traits::method_sig(&ctx.env, &m.typ, &tref, scope);
-    for n in nodes {
-        if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
-            && t2.name == t.name
-        {
-            let agree = t2.methods.len() == t.methods.len()
-                && t2.methods.iter().zip(t.methods.iter()).all(|(a, b)| {
-                    a.name == b.name
-                        && a.self_index == b.self_index
-                        && a.default.is_some() == b.default.is_some()
-                        && match (method(b), method(a)) {
-                            (Ok(b), Ok(a)) => b.sig_matches(&ctx.env, &a).is_ok(),
-                            _ => false,
-                        }
-                });
-            if !agree {
+    if !matches!(&sig_td.body, TypeDefBody::Abstract(None)) {
+        bail!("{} is defined by its interface; delete this definition", td.name)
+    }
+    let sig_params = scope_params(&sig_td.params, scope);
+    for (tv0, con0) in scope_params(&td.params, scope).iter() {
+        match sig_params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
+            Some((_, con1)) if con0 != con1 => {
+                let con0 = match con0 {
+                    None => "missing",
+                    Some(t) => &format_compact!("{t}"),
+                };
+                let con1 = match con1 {
+                    None => "missing",
+                    Some(t) => &format_compact!("{t}"),
+                };
                 bail!(
-                    "trait {} is declared by the interface as {t}; the \
-                     implementation's {t2} does not match",
-                    t.name
+                    "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
+                    td.name,
+                    tv0.name
                 )
             }
+            None => bail!(
+                "signature mismatch in {}, missing parameter {}",
+                sig_td.name,
+                tv0.name
+            ),
+            Some(_) => (),
         }
+    }
+    if !matches!(&td.body, TypeDefBody::Abstract(_)) {
+        bail!(
+            "{} is hidden by the interface, so its definition must be \
+             `type {} = Abstract<..>` (a Rust-backed type declares \
+             `type {};`)",
+            td.name,
+            td.name,
+            td.name
+        )
     }
     Ok(())
 }
@@ -576,11 +515,10 @@ fn check_sig<R: Rt, E: UserEvent>(
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
-    body_env: &Env,
 ) -> Result<()> {
     let _profile = profile::phase(Phase::ModuleSignature);
     let first_proxy = proxy.len();
-    if let Err(e) = check_sig_items(ctx, proxy, scope, sig, nodes, body_env) {
+    if let Err(e) = check_sig_items(ctx, proxy, scope, sig, nodes) {
         proxy.truncate(first_proxy);
         return Err(e);
     }
@@ -597,10 +535,13 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
-    body_env: &Env,
 ) -> Result<()> {
+    // the interface's types and traits first: a val's type names them
+    for si in sig.items.iter() {
+        check_redefinition(&scope.lexical, si, nodes)
+            .map_err(|e| e.context(ParserContext { ori: si.ori.clone(), pos: si.pos }))?;
+    }
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
-    let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     // a name a later `let` shadows is not the one the interface exports
     let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
     for n in nodes {
@@ -655,39 +596,6 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                         });
                     }
                     has_bind.insert(name);
-                }
-            }
-            if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
-                && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
-                && let Some(sig_td) = defs.get(&CompactString::from(td.name.as_str()))
-            {
-                let exported = sig_td.clone();
-                let sig_td = TypeDefExpr {
-                    name: td.name.clone(),
-                    params: sig_td.params().clone(),
-                    body: match (sig_td.typ(), &sig_td.rep) {
-                        (Type::Abstract { .. }, rep) => {
-                            TypeDefBody::Abstract(rep.clone())
-                        }
-                        (typ, _) => TypeDefBody::Alias(typ.clone()),
-                    },
-                };
-                check_typedef_decl(ctx, &scope.lexical, &sig_td, td)?;
-                match &sig_td.body {
-                    TypeDefBody::Abstract(None) => {
-                        defined_abstracts.insert(td.name.name.clone());
-                    }
-                    // one type: a reference to the interface's is one to the
-                    // implementation's wherever identity decides
-                    _ => {
-                        if let Some(body_td) = body_env
-                            .typedefs
-                            .get(&scope.lexical)
-                            .and_then(|m| m.get(&CompactString::from(td.name.as_str())))
-                        {
-                            exported.link_same(body_td)
-                        }
-                    }
                 }
             }
             Ok(())
@@ -762,24 +670,10 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                     }
                 }
             }
-            SigKind::Trait(t) => {
-                check_trait_decl(ctx, &scope.lexical, si, t, nodes)?;
-                false
-            }
-            SigKind::TypeDef(TypeDefExpr {
-                name,
-                body: TypeDefBody::Abstract(None),
-                ..
-            }) if !defined_abstracts.contains(&name.name) => {
-                bail!(
-                    "{name} is hidden by the interface, so the implementation must \
-                     define it: `type {name} = Abstract<..>`, or `type {name};` for \
-                     a Rust-backed type"
-                )
-            }
-            SigKind::Module(_)
-            | SigKind::Use { .. }
-            | SigKind::TypeDef(TypeDefExpr { .. }) => false,
+            SigKind::Trait(_)
+            | SigKind::TypeDef(_)
+            | SigKind::Module(_)
+            | SigKind::Use { .. } => false,
         }) })()
         .map_err(at)?;
         if missing {
@@ -880,28 +774,8 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                     },
                 )?;
             }
-            SigKind::TypeDef(sig_td) => {
-                let defined = nodes.iter().find_map(|n| match &n.spec().kind {
-                    ExprKind::TypeDef(td) if td.name == sig_td.name => Some(td),
-                    _ => None,
-                });
-                if let Some(td) = defined {
-                    let body = match &sig_td.body {
-                        TypeDefBody::Alias(t) => TypeDefBody::Alias(t.scope_refs(scope)),
-                        TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
-                            rep.as_ref().map(|r| r.scope_refs(scope)),
-                        ),
-                    };
-                    let scoped = TypeDefExpr {
-                        name: sig_td.name.clone(),
-                        params: scope_params(&sig_td.params, scope),
-                        body,
-                    };
-                    check_typedef_decl(ctx, scope, &scoped, td).map_err(at)?
-                }
-            }
-            SigKind::Trait(t) => {
-                check_trait_decl(ctx, scope, si, t, nodes).map_err(at)?
+            SigKind::TypeDef(_) | SigKind::Trait(_) => {
+                check_redefinition(scope, si, nodes).map_err(at)?
             }
             SigKind::Module(_) | SigKind::Use { .. } => (),
         }
@@ -1190,9 +1064,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             super::typecheck0_statements(ctx, nodes, catches, false)
         })?;
         match body {
-            Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, nodes, env),
+            Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, nodes),
             Body::Dynamic { sig_env, .. } => ctx.with_restored_mut(sig_env, |ctx| {
-                check_sig(ctx, *top_id, proxy, scope, sig, nodes, env)
+                check_sig(ctx, *top_id, proxy, scope, sig, nodes)
             }),
         }
     }

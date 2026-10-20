@@ -1952,8 +1952,6 @@ type Box<'a> = Abstract<'a>;
 impl<'a> Conv for Box<'a>;
 "#,
     "/test/m.gx" => r#"
-trait Conv { val conv: fn(self, x: 'a) -> 'a };
-type Box<'a> = Abstract<'a>;
 impl<'a> Conv for Box<'a> { let conv = |b, x| x };
 "#
     ; FuseExpect::Jit

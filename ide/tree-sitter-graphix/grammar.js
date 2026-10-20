@@ -1024,6 +1024,19 @@ module.exports = grammar({
       '"',
     ),
 
+    // CR claude for claude: [bug/low] A typed value literal whose string holds '['
+    // followed by '/' does not parse here, though the Graphix parser takes it: a
+    // generated program holding '&mut error:"[/..."' gave 'tree-sitter: ERROR at
+    // 3:13: "/"' at the '/'. Likely the literal '[' sends the parse down the
+    // interpolation branch, where '/' starts nothing, and the value_string branch
+    // does not recover (not confirmed). Found by the randomized
+    // graphix-types expr::test::tree_sitter_compat::ts_pp (shrunk case
+    // ByRef(Shared, Constant(Error(String("[/"))))); ts_expr fails on it too. To
+    // replay it, add 'cc 011f0989467e51c482c192ec755248ebadb93a9fa37e92c1407e4b1103ba9554'
+    // to graphix-types/proptest-regressions/expr/test.txt, and commit that line
+    // with the fix. After a fix, regenerate parser.c and bump the zed rev
+    // (zed_grammar_rev_is_current). (ts-value-string-01)
+
     // Non-interpolating string for value contexts (e.g., error:"[", bytes:"...").
     // Uses the SAME external content token as string (so the lexer produces one
     // token that both GLR branches can accept). The difference: value_string

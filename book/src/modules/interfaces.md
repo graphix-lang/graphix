@@ -116,7 +116,7 @@ let internal_helper = |x| x * 2
 ```
 
 Note that the `Constants` type is defined in the interface and automatically
-available in the implementation - it doesn't need to be repeated. Also,
+available in the implementation - defining it again there is an error. Also,
 `internal_helper` is not in the interface, so it is not accessible to users of
 the module.
 
@@ -134,9 +134,11 @@ Calling `math::internal_helper(5)` here would be an error: it is not exported.
 
 When a module has an interface file:
 
-1. **Type definitions, `mod` statements, and `use` statements** declared in the
-   interface automatically apply to the implementation. You do not need to
-   duplicate them in the `.gx` file.
+1. **Type definitions, traits, `mod` statements, and `use` statements**
+   declared in the interface automatically apply to the implementation. A
+   type or trait the interface defines must not be defined again in the `.gx`
+   file. The one exception is a type the interface hides (`type T;`): the
+   implementation defines it, as `type T = Abstract<..>`.
 
 2. **Value declarations (`val`)** specify what bindings must exist in the
    implementation with matching types.

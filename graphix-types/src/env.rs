@@ -138,13 +138,6 @@ pub struct TypeDef {
 }
 
 impl TypeDef {
-    /// Record that this definition and `other` are one type (an
-    /// interface's alias and its implementation's): a reference to either
-    /// is then one definition wherever identity decides.
-    pub fn link_same(&self, other: &TypeDef) {
-        self.def.link_same(&other.def)
-    }
-
     pub fn params(&self) -> &Arc<[(TVar, Option<Type>)]> {
         self.def.params()
     }

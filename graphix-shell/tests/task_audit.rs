@@ -16,7 +16,7 @@ fn a_cold_check_writes_no_foreign_variable() {
     .expect("write gxi");
     fs::write(
         dir.path().join("m.gx"),
-        "type P<'a> = ['a, Array<'a>];\ntype Q<'b> = {x: 'b, y: 'b};\nlet q: Q<i64> = {x: 1, y: 2};\nlet v: P<i64> = q.x\n",
+        "type Q<'b> = {x: 'b, y: 'b};\nlet q: Q<i64> = {x: 1, y: 2};\nlet v: P<i64> = q.x\n",
     )
     .expect("write gx");
     let args = ["--no-cache", "--check"];

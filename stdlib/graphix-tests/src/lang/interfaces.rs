@@ -1101,29 +1101,11 @@ async fn interface_error_is_placed() -> Result<()> {
     Ok(())
 }
 
-// An implementation's re-declaration of an interface trait agrees with
-// it by meaning, not by spelling.
+// A trait the interface declares is the implementation's already: a
+// definition of it there is refused, identical or not.
 run!(
-    interface_trait_redeclared_with_renamed_tvar,
-    is(Value::I64(7)),
-    "/test.gx" => r#"
-        mod inner;
-        let result = inner::Pick::pick(1, 7)
-    "#,
-    "/test/inner.gxi" => r#"
-        trait Pick { val pick: fn(self, x: 'a) -> 'a };
-        impl Pick for i64
-    "#,
-    "/test/inner.gx" => r#"
-        trait Pick { val pick: fn(self, y: 'b) -> 'b };
-        impl Pick for i64 { let pick = |s, y| y }
-    "#
-; FuseExpect::Jit);
-
-// ... and a re-declaration that means something else is refused.
-run!(
-    interface_trait_redeclared_differently,
-    refused("does not match"),
+    interface_trait_redefined_refused,
+    refused("trait Show is declared by its interface; delete this definition"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -1132,7 +1114,7 @@ run!(
         trait Show { val show: fn(self) -> string }
     "#,
     "/test/inner.gx" => r#"
-        trait Show { val show: fn(self) -> i64 }
+        trait Show { val show: fn(self) -> string }
     "#
 ; FuseExpect::None);
 
@@ -1169,24 +1151,25 @@ run!(
         let f = |x: 'c, y: 'c| -> 'c y
     "#; FuseExpect::None);
 
-// A union has several normal forms: an implementation that writes or
-// infers the same members in another order is the same type.
+// So is a type the interface defines.
 run!(
-    typedef_union_in_another_order,
-    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::Bool(true)]),
+    interface_typedef_redefined_refused,
+    refused("T is defined by its interface; delete this definition"),
     "/test.gx" => r#"
         mod m;
         let result = m::x
     "#,
     "/test/m.gxi" => r#"
-        type T = [(i64, bool), (string, bool), (i64, f64)];
+        type T = [i64, string];
         val x: T
     "#,
     "/test/m.gx" => r#"
-        type T = [(i64, f64), (i64, bool), (string, bool)];
-        let x: T = (1, true)
-    "#; FuseExpect::Jit);
+        type T = [i64, string];
+        let x: T = 1
+    "#; FuseExpect::None);
 
+// A union has several normal forms: an implementation that infers the
+// same members in another order is the same type.
 run!(
     val_union_inferred_in_another_order,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::Bool(true)]),

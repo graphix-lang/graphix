@@ -1695,7 +1695,7 @@ impl Type {
         row: &Type,
         seen: &mut AHashMap<(usize, usize), bool>,
     ) -> bool {
-        let mut each =
+        let each =
             |a: &[Type], b: &[Type], seen: &mut AHashMap<(usize, usize), bool>| match a
                 .len()
                 == b.len()

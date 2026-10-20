@@ -156,8 +156,11 @@ block, past the expression that holds it. A dynamic `mod` stays an expression wi
 
 ### Interfaces
 
-Unchanged in role: `use`, `type` and `mod` in the `.gxi` apply to the
-`.gx` automatically (requiring duplication is ceremony). A private
+Unchanged in role: `use`, `type`, `trait` and `mod` in the `.gxi` apply
+to the `.gx` automatically (requiring duplication is ceremony), spliced
+into its body. The `.gx` may not define a type or trait its interface
+defines: only a hidden type (`type T;`) takes a definition there, an
+abstract with the declared parameters (`module.rs::check_redefinition`). A private
 item is visible to the defining module and its descendants, uniformly
 for values and types — a private type in a public lambda's body is the
 module's own business when the body is instance-elaborated elsewhere.

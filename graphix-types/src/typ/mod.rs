@@ -546,10 +546,6 @@ pub struct ResolvedRef {
     ori: Arc<Origin>,
     params: Arc<[(TVar, Option<Type>)]>,
     typ: Type,
-    /// The definition this one was proven to be (an interface's typedef,
-    /// its implementation's), whose identity it takes while it lives:
-    /// written once by the module's signature check, and imaged.
-    same_as: std::sync::OnceLock<Weak<ResolvedRef>>,
 }
 
 impl ResolvedRef {
@@ -586,7 +582,7 @@ impl ResolvedRef {
         params: Arc<[(TVar, Option<Type>)]>,
         typ: Type,
     ) -> Self {
-        Self { canonical_scope, pos, ori, params, typ, same_as: Default::default() }
+        Self { canonical_scope, pos, ori, params, typ }
     }
 
     pub(crate) fn pos(&self) -> SourcePosition {
@@ -622,20 +618,9 @@ impl ResolvedRef {
     }
 
     /// The definition's identity: every cell filled from one `TypeDef`
-    /// shares its params allocation, and one proven the same definition
-    /// as another takes that one's.
+    /// shares its params allocation.
     pub(crate) fn def_key(&self) -> usize {
-        match self.same_as.get().and_then(Weak::upgrade) {
-            Some(r) => r.def_key(),
-            None => Arc::as_ptr(&self.params) as *const () as usize,
-        }
-    }
-
-    /// Make this definition's identity `other`'s: the two are one type.
-    pub(crate) fn link_same(&self, other: &std::sync::Arc<ResolvedRef>) {
-        if !std::ptr::eq(self, &**other) {
-            let _ = self.same_as.set(std::sync::Arc::downgrade(other));
-        }
+        Arc::as_ptr(&self.params) as *const () as usize
     }
 
     #[doc(hidden)]
@@ -677,34 +662,22 @@ pub(crate) fn resolved_encode(
     r: &ResolvedRef,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
-    let ResolvedRef { canonical_scope, pos, ori, params, typ, same_as } = r;
+    let ResolvedRef { canonical_scope, pos, ori, params, typ } = r;
     canonical_scope.encode(buf)?;
     image::pos_encode(pos, buf)?;
     image::origin_encode(ori, buf)?;
     params.encode(buf)?;
-    typ.encode(buf)?;
-    match same_as.get().and_then(Weak::upgrade) {
-        None => false.encode(buf),
-        Some(r) => {
-            true.encode(buf)?;
-            image::resolved_encode(&r, buf)
-        }
-    }
+    typ.encode(buf)
 }
 
 pub(crate) fn resolved_decode(buf: &mut impl Buf) -> Result<ResolvedRef, PackError> {
-    let r = ResolvedRef {
+    Ok(ResolvedRef {
         canonical_scope: PackTrait::decode(buf)?,
         pos: image::pos_decode(buf)?,
         ori: image::origin_decode(buf)?,
         params: PackTrait::decode(buf)?,
         typ: PackTrait::decode(buf)?,
-        same_as: Default::default(),
-    };
-    if bool::decode(buf)? {
-        let _ = r.same_as.set(image::resolved_decode_weak(buf)?);
-    }
-    Ok(r)
+    })
 }
 
 /// The syntax codec writes the name and parameters and mints a fresh
@@ -2620,7 +2593,6 @@ impl Type {
                     ori: _,
                     params: def_params,
                     typ: def_typ,
-                    same_as: _,
                 } = &*resolved;
                 if def_params.len() != params.len() {
                     bail!("{} expects {} type parameters", name, def_params.len());
