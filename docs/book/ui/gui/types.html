@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -180,19 +180,7 @@
 <h3 id="length"><a class="header" href="#length">Length</a></h3>
 <p>Controls how a widget is sized along a single axis:</p>
 <pre><code class="language-graphix">type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
-</code></pre>
-<ul>
-<li><code>`Fill</code> – expand to fill all available space.</li>
-<li><code>`FillPortion(n)</code> – fill proportionally. Two widgets with <code>FillPortion(1)</code> and <code>FillPortion(2)</code> split space 1:2.</li>
-<li><code>`Shrink</code> – take only as much space as the content needs.</li>
-<li><code>`Fixed(px)</code> – exact size in logical pixels.</li>
-</ul>
-<p>Most layout widgets accept <code>#width</code> and <code>#height</code> parameters of type <code>&amp;Length</code>:</p>
-<pre><code class="language-graphix ignore">column(
-  #width: &amp;`Fill,
-  #height: &amp;`Fixed(300.0),
-  &amp;[...]
-)
+
 </code></pre>
 <h3 id="padding"><a class="header" href="#padding">Padding</a></h3>
 <p>Controls spacing between a widget’s border and its content:</p>
@@ -201,6 +189,7 @@
   `Axis({x: f64, y: f64}),
   `Each({top: f64, right: f64, bottom: f64, left: f64})
 ];
+
 </code></pre>
 <ul>
 <li><code>`All(px)</code> – uniform padding on all sides.</li>
@@ -220,13 +209,13 @@ container(
 <h3 id="size"><a class="header" href="#size">Size</a></h3>
 <p>A width/height pair used for window dimensions:</p>
 <pre><code class="language-graphix">type Size = { width: f64, height: f64 };
-</code></pre>
-<pre><code class="language-graphix">window(#size: &amp;mut { width: 1024.0, height: 768.0 }, &amp;content)
+
 </code></pre>
 <h3 id="halign-and-valign"><a class="header" href="#halign-and-valign">HAlign and VAlign</a></h3>
 <p>Horizontal and vertical alignment for positioning content within a container:</p>
 <pre><code class="language-graphix">type HAlign = [`Left, `Center, `Right];
 type VAlign = [`Top, `Center, `Bottom];
+
 </code></pre>
 <pre><code class="language-graphix">column(
   #halign: &amp;`Center,
@@ -261,6 +250,7 @@ type FontWeight = [
 ];
 type FontStyle = [`Normal, `Italic, `Oblique];
 type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
+
 </code></pre>
 <ul>
 <li><code>FontFamily</code> selects the font. <code>`Name(string)</code> allows loading a specific named font.</li>
@@ -276,68 +266,16 @@ type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 <h3 id="scrolldirection"><a class="header" href="#scrolldirection">ScrollDirection</a></h3>
 <p>Controls which axes a scrollable widget allows scrolling on:</p>
 <pre><code class="language-graphix">type ScrollDirection = [`Vertical, `Horizontal, `Both];
-</code></pre>
-<pre><code class="language-graphix">scrollable(#direction: &amp;`Both, &amp;content)
+
 </code></pre>
 <h3 id="tooltipposition"><a class="header" href="#tooltipposition">TooltipPosition</a></h3>
 <p>Controls where a tooltip appears relative to its target widget:</p>
 <pre><code class="language-graphix">type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
-</code></pre>
-<pre><code class="language-graphix">tooltip(
-  #position: &amp;`Top,
-  #tip: &amp;text(&amp;"Tooltip text"),
-  &amp;button(&amp;text(&amp;"Hover me"))
-)
+
 </code></pre>
 <h3 id="contentfit"><a class="header" href="#contentfit">ContentFit</a></h3>
 <p>Controls how an image or SVG is scaled within its bounds:</p>
 <pre><code class="language-graphix">type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
-</code></pre>
-<ul>
-<li><code>`Fill</code> – stretch to fill the bounds exactly (may distort).</li>
-<li><code>`Contain</code> – scale to fit within bounds, preserving aspect ratio.</li>
-<li><code>`Cover</code> – scale to cover bounds, preserving aspect ratio (may crop).</li>
-<li><code>`None</code> – no scaling, display at original size.</li>
-<li><code>`ScaleDown</code> – like <code>`Contain</code> but never scales up.</li>
-</ul>
-<h2 id="the-widget-type"><a class="header" href="#the-widget-type">The Widget Type</a></h2>
-<p><code>Widget</code> is a union of all individual widget types. Most widget constructor functions return <code>Widget</code>, which means you can freely mix different widget types in arrays and containers:</p>
-<pre><code class="language-graphix">/// Widget types (content within a window)
-type Widget = [
-  `Button(button::Button),
-  `Canvas(canvas::Canvas),
-  `Chart(chart::Chart),
-  `Checkbox(checkbox::Checkbox),
-  `Column(column::Column),
-  `ComboBox(combo_box::ComboBox),
-  `ContextMenu(menu::ContextMenu),
-  `Container(container::Container),
-  `Grid(grid::Grid),
-  `HorizontalRule(rule::HorizontalRule),
-  `Image(image::Image),
-  `KeyboardArea(keyboard_area::KeyboardArea),
-  `Markdown(markdown::Markdown),
-  `MenuBar(menu::MenuBar),
-  `MouseArea(mouse_area::MouseArea),
-  `PickList(pick_list::PickList),
-  `ProgressBar(progress_bar::ProgressBar),
-  `QrCode(qr_code::QrCode),
-  `Radio(radio::Radio),
-  `Row(row::Row),
-  `Scrollable(scrollable::Scrollable),
-  `Slider(slider::Slider),
-  `Space(space::Space),
-  `Stack(stack::Stack),
-  `Table(table::Table),
-  `Text(text::Text),
-  `TextEditor(text_editor::TextEditor),
-  `TextInput(text_input::TextInput),
-  `Toggler(toggler::Toggler),
-  `Tooltip(tooltip::Tooltip),
-  `VerticalRule(rule::VerticalRule),
-  `VerticalSlider(vertical_slider::VerticalSlider),
-  `DataTable(data_table::DataTable)
-];
 
 </code></pre>
 <p>You do not normally construct <code>Widget</code> variants directly. Each widget module exports a constructor function (e.g., <code>gui::text::text(...)</code>, <code>gui::button::button(...)</code>) that returns <code>Widget</code>. This means a column’s children array has type <code>Array&lt;Widget&gt;</code> and can contain any mix of widgets:</p>

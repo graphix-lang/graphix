@@ -1,6 +1,7 @@
 ; -- Comments -------------------------------------------------------
 (line_comment) @comment.line
 (doc_comment) @comment.block.documentation
+(shebang) @keyword.directive
 
 ; -- Attributes -----------------------------------------------------
 ; The brackets and the name color as one unit; an argument inside them

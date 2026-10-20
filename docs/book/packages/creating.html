@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -182,18 +182,6 @@
 <p>Or specify a directory:</p>
 <pre><code>graphix package create mylib --dir ~/projects
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] The tree below leaves out build.rs, which
-`create_package` writes, and the page never says a package needs it or the
-`graphix-ast-pack` build-dependency. `defpackage!` includes `$OUT_DIR/graphix_ast.pack`,
-which only that build script produces, so a crate set up from this page fails with a
-bare "OUT_DIR not defined". `graphix_derive::check_invariants` does not check for it
-either. Fix: list build.rs, show `graphix_ast_pack::emit()` and the build-dependency
-here, and have `check_invariants` panic with that instruction when the build script or
-the build-dependency is missing. Found by reading; not run. (book-modules-udt-05) -->
-<!-- 2026-10-19 claude: The page now lists build.rs and has a build.rs subsection
-(graphix_ast_pack::emit, the graphix-ast-pack build-dependency, the OUT_DIR failure).
-Still owed: graphix_derive::check_invariants refusing a package without the build script
-or the build-dependency, a Rust change outside the docs pass. -->
 <p>This creates a <code>graphix-package-mylib</code> directory with the following structure:</p>
 <pre><code>graphix-package-mylib/
   Cargo.toml
@@ -240,9 +228,9 @@ package’s Graphix source into a pre-parsed blob at build time:</p>
 <pre><code class="language-toml">[build-dependencies]
 graphix-ast-pack = "0.9.0"
 </code></pre>
-<p><code>defpackage!</code> includes the blob (<code>$OUT_DIR/graphix_ast.pack</code>), so a
-package without the build script fails to compile with “OUT_DIR not
-defined”.</p>
+<p><code>defpackage!</code> includes the blob (<code>$OUT_DIR/graphix_ast.pack</code>), so it
+refuses a package that lacks the build script or the build-dependency,
+with an error that says to add them.</p>
 <h3 id="srcgraphix--graphix-source-modules"><a class="header" href="#srcgraphix--graphix-source-modules"><code>src/graphix/</code> – Graphix Source Modules</a></h3>
 <p>Graphix source files in <code>src/graphix/</code> are automatically included in the
 package. These files provide the Graphix-level API for your package. The

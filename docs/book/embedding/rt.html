@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -337,7 +337,7 @@ callable’s <code>answer</code> id:</p>
 </span><span class="boring">fn main() {
 </span>f.call_answered(netidx_value::ValArray::from_iter_exact(
     [Value::from(1), Value::from(2), Value::from(3)]
-)).await?;
+))?;
 'answer: loop {
     let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
     for ev in batch.drain(..) {

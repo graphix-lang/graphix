@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -5732,11 +5732,8 @@ val fract: fn(x: f64) -&gt; f64;
 /// Absolute value.
 val abs: fn(x: f64) -&gt; f64;
 
-// CR claude for claude: [doc-drift/low] The doc promises -1.0, 0.0 or 1.0. The builtin
-// is f64::signum: signum(0.0) is 1 and signum(-0.0) is -1, never 0. Document the zero
-// cases, or return 0.0 for zero if that is the intent. probe:
-// design/review-2026-10-19/repro/gx-stdlib-signum-zero.gx (gx-stdlib-05)
-/// Sign: -1.0, 0.0, or 1.0. NaN if `x` is NaN.
+/// Sign: 1.0 when `x` is positive or `0.0`, -1.0 when it is negative or
+/// `-0.0`. NaN if `x` is NaN.
 val signum: fn(x: f64) -&gt; f64;
 
 /// `x` with the sign of `y`.
@@ -5850,27 +5847,20 @@ val zip: fn(a: ['a, null], b: ['b, null]) -&gt; [('a, 'b), null];
 /// null input yields (null, null).
 val unzip: fn(p: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
 
-// CR claude for claude: [doc-drift/low] This doc ('invoked at most once per update of
-// v', 'fire-and-forget, no queueing', 'the new input supersedes the pending one')
-// describes the deleted OptHof builtin. opt.gx now implements map as `select v { null
-// as _ =&gt; null, x =&gt; f(x) }`, so it has f's cadence. A slow async f answers both inputs
-// in order, and f fires whenever what it reads fires. flat_map, filter, is_some_and and
-// is_none_or point to the same text. State the select semantics instead. probe:
-// design/review-2026-10-19/repro/gx-stdlib-opt-map-supersede.sh (gx-stdlib-04)
 /// map(v, f): apply f to the inner value if v is non-null, otherwise
-/// return null. f is invoked at most once per update of v — fire-and-
-/// forget, no queueing. If v updates again before f produces a result,
-/// the new input supersedes the pending one.
+/// return null. It is `select v { null as _ =&gt; null, x =&gt; f(x) }`, so it
+/// fires as f does: f answers every non-null input (a slow async f
+/// answers each in order), and fires again whenever what f reads fires.
 val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; ['b, null] throws 'e;
 
 /// flat_map(v, f): apply f to the inner value if v is non-null,
 /// otherwise return null. f's own optional result is forwarded
-/// unchanged. Same fire-and-forget semantics as map.
+/// unchanged. It fires as map does.
 val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null] throws 'e) -&gt; ['b, null] throws 'e;
 
 /// filter(v, pred): if v is non-null and pred(v) is true, emit v.
-/// Otherwise (v is null, or pred is false) emit null. Same fire-and-
-/// forget semantics as map.
+/// Otherwise (v is null, or pred is false) emit null. It fires as map
+/// does.
 ///
 /// Caveat for reactive predicates: when pred takes more than one cycle
 /// to produce its bool, the emitted value is the *current* input, not
@@ -5894,13 +5884,13 @@ val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null] throws 'e) -&gt; ['a, nu
 val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e throws 'x) -&gt; Result&lt;'a, 'e&gt; throws 'x;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
-/// false when v is null or pred is false. Fire-and-forget like map —
-/// for non-null v, no output is produced until pred fires.
+/// false when v is null or pred is false. It fires as map does: for a
+/// non-null v, no output is produced until pred fires.
 val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e;
 
 /// is_none_or(v, pred): true when v is null or pred(v) is true, false
-/// when v is non-null and pred is false. Fire-and-forget like map —
-/// for non-null v, no output is produced until pred fires.
+/// when v is non-null and pred is false. It fires as map does: for a
+/// non-null v, no output is produced until pred fires.
 val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -6141,16 +6131,12 @@ val split: fn(#pat: string, s: string) -&gt; Array&lt;string&gt;;
 /// reverse split the string by the specified #pat and return an array of each part
 val rsplit: fn(#pat: string, s: string) -&gt; Array&lt;string&gt;;
 
-// CR claude for claude: [doc-drift/low] splitn returns at most #n PARTS (#n - 1
-// splits): #n: 1 returns the whole string unsplit. rsplitn returns its parts from the
-// end, in reverse order. Both docs say 'at most #n times'; say 'into at most #n parts'
-// as splitn_escaped's doc does, and state rsplitn's order. (collections-str-08)
-/// split the string at most #n times by the specified #pat and return an array of
-/// each part
+/// split the string by the specified #pat into at most #n parts (#n: 1 is the whole
+/// string) and return an array of each part
 val splitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
-/// reverse split the string at most #n times by the specified #pat and return an array of
-/// each part
+/// split the string from its end by the specified #pat into at most #n parts and return
+/// an array of each part, the last part first
 val rsplitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
@@ -6280,7 +6266,7 @@ val args: fn() -&gt; Array&lt;string&gt;;
 val join_path: fn(path: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 
 /// flush stdout/stderr and terminate the process with the given exit
-/// code. The return type is fully polymorphic because the call never
+/// code; a code outside 0..=255 exits with 1. The return type is fully polymorphic because the call never
 /// actually returns; it fires when its argument produces a value, so
 /// you can use it as the trailing expression of a program to make it
 /// exit deterministically on completion.
@@ -6348,13 +6334,19 @@ trait Read {
         }
     };
 
-    // CR claude for claude: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
+    // CR claude for eric: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
     // copies everything read so far, so a Graphix-defined stream reads in time
     // quadratic in its length: 64 MB took 3.8 s against 1.3 s for 32 MB. read_exact's
     // default does the same. Push the chunks onto an Array&lt;bytes&gt; and `buffer::concat`
     // it once at the end. For read_exact, keep a running length beside the array.
     // probe: design/review-2026-10-19/repro/gx-stdlib-read-all-quadratic.sh
     // (gx-stdlib-07)
+    // 2026-10-19 claude: Not done: the Graphix default bodies in sys's io.gxi reach
+    // only core (sys depends on no array or list package), and core has no array or
+    // list append, so the chunks cannot be pushed onto an Array&lt;bytes&gt; here. A fix
+    // needs one of: sys depending on graphix-package-array for array::push, a core
+    // builtin that appends to an Array, or a recursive chunk list flattened at the end.
+    // Each is a dependency or surface choice.
     /// Read the stream to its end and return everything it produced as
     /// one value. Reads re-arm themselves until the stream ends, so a
     /// stream that never ends (a socket the peer holds open) never
@@ -6977,15 +6969,9 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
-// CR claude for claude: [doc-drift/medium] The doc says a wake writes the standing
-// value again. It does not: a wake re-attaches to the path and writes only when the
-// value (or the path) fires, which lib_tests::net::net_write_not_repeated_after_wake
-// pins and the wake-is-a-resume rule requires. An arm that sleeps and wakes with an
-// unchanged value produces 1 write, not 2. Change the doc to say that. probe:
-// design/review-2026-10-19/repro/gx-stdlib-net-write-wake.gx Also reported as
-// (tests-lib-b2-03), (sys-net-06). (gx-stdlib-03)
-/// Write the value to the specified path. When its arm wakes, write the
-/// standing value again.
+/// Write the value to the specified path. When its arm wakes, the write
+/// attaches to the path again and writes only when the value or the path
+/// fires.
 val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
@@ -7002,7 +6988,7 @@ val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&
 /// Each call runs an instance of f of its own and is answered by its first
 /// value, or by the error it raises. A call runs to its answer whether or not
 /// the caller is still waiting; one f never answers holds the call.
-val rpc: fn&lt;'spec: Data, 'result: Data&gt;(
+val rpc: fn&lt;'spec: Data, 'result: Data, 'args: Concrete + Data&gt;(
     #path:string,
     #doc:string,
     #spec:'spec,
@@ -7015,8 +7001,10 @@ val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `L
 /// list the table under the specified path.
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-/// Publish the specifed value at the specified path.
-val publish: fn&lt;'v: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+/// Publish the specifed value at the specified path. A write to it is cast
+/// to #on_write's argument type, and a value that does not cast answers the
+/// writer with the cast's error.
+val publish: fn&lt;'v: Data, 'a: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers-and-time-arithmetic"><a class="header" href="#systime---timers-and-time-arithmetic">sys::time - Timers and Time Arithmetic</a></h1>
@@ -8115,6 +8103,7 @@ modifiers. Most widgets accept style parameters to customize their appearance.</
   `Rgb({ r: i64, g: i64, b: i64 }),
   `Indexed(i64)
 ];
+
 </code></pre>
 <p>Use <code>Reset</code> to return to the terminal’s default color. Use <code>Rgb</code> for 24-bit true
 color, or <code>Indexed</code> for 256-color palette indices.</p>
@@ -8131,6 +8120,7 @@ color, or <code>Indexed</code> for 256-color palette indices.</p>
   `Hidden,
   `CrossedOut
 ];
+
 </code></pre>
 <h2 id="the-style-type"><a class="header" href="#the-style-type">The Style Type</a></h2>
 <p>A <code>Style</code> combines foreground color, background color, underline color, and
@@ -8142,6 +8132,7 @@ modifiers:</p>
   add_modifier: [Array&lt;Modifier&gt;, null],
   sub_modifier: [Array&lt;Modifier&gt;, null]
 };
+
 </code></pre>
 <h2 id="creating-styles"><a class="header" href="#creating-styles">Creating Styles</a></h2>
 <p>Use the <code>tui::style</code> function to create styles. All parameters are optional:</p>
@@ -8152,6 +8143,7 @@ modifiers:</p>
   ?#add_modifier: [Array&lt;Modifier&gt;, null],
   ?#sub_modifier: [Array&lt;Modifier&gt;, null]
 ) -&gt; Style;
+
 </code></pre>
 <p>Examples:</p>
 <pre><code class="language-graphix">// Red foreground
@@ -8172,18 +8164,6 @@ tui::style()
 <h2 id="spans-and-lines"><a class="header" href="#spans-and-lines">Spans and Lines</a></h2>
 <p>Styles are commonly used with <code>Span</code> and <code>Line</code> types to create styled text.</p>
 <h3 id="spans"><a class="header" href="#spans">Spans</a></h3>
-<!-- CR claude for claude: [structure/low] The type blocks on this page are hand copies
-of tui/mod.gxi and have drifted. `val span` takes `content: string` in the gxi, not `s`,
-and `val line` takes `spans`, not `v`. input.md copies input_handler.gxi the same way,
-and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
-(MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
-and `{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
-reading; not run. (book-ui-b-05) -->
-<!-- 2026-10-19 claude: The two drifted names are fixed by hand (span's content, line's
-spans), and every type line on this page and in input.md now matches its gxi line for
-line. Still owed: ANCHOR markers in stdlib/graphix-package-tui/src/graphix/mod.gxi and
-input_handler.gxi (outside the docs pass) so these blocks become includes; input.md's
-copy still lacks KeyEventState, MediaKeyCode and ModifierKeyCode until then. -->
 <p>A <code>Span</code> is a piece of text with a single style:</p>
 <pre><code class="language-graphix">type Span = {
   style: Style,
@@ -8191,6 +8171,7 @@ copy still lacks KeyEventState, MediaKeyCode and ModifierKeyCode until then. -->
 };
 
 val span: fn(?#style: Style, content: string) -&gt; Span;
+
 </code></pre>
 <p>Example:</p>
 <pre><code class="language-graphix">// Create a red "Error:" span
@@ -8214,6 +8195,7 @@ type Line = {
 };
 
 val line: fn(?#style: Style, ?#alignment: [Alignment, null], spans: [Array&lt;Span&gt;, string]) -&gt; Line;
+
 </code></pre>
 <p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
 simple string (which will use the line’s style).</p>
@@ -9741,6 +9723,7 @@ before they propagate further.</p>
   `Paste(string),
   `Resize(i64, i64)
 ];
+
 </code></pre>
 <ul>
 <li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes (enabled while the display runs, independently of mouse input)</li>
@@ -9757,6 +9740,13 @@ before they propagate further.</p>
   modifiers: Array&lt;KeyModifier&gt;,
   state: Array&lt;KeyEventState&gt;
 };
+
+type KeyEventState = [
+  `Keypad,
+  `CapsLock,
+  `NumLock
+];
+
 </code></pre>
 <h3 id="key-codes"><a class="header" href="#key-codes">Key Codes</a></h3>
 <pre><code class="language-graphix">type KeyCode = [
@@ -9788,6 +9778,40 @@ before they propagate further.</p>
   `Media(MediaKeyCode),
   `Modifier(ModifierKeyCode)
 ];
+
+type MediaKeyCode = [
+  `Play,
+  `Pause,
+  `PlayPause,
+  `Reverse,
+  `Stop,
+  `FastForward,
+  `Rewind,
+  `TrackNext,
+  `TrackPrevious,
+  `Record,
+  `LowerVolume,
+  `RaiseVolume,
+  `MuteVolume
+];
+
+type ModifierKeyCode = [
+  `LeftShift,
+  `LeftControl,
+  `LeftAlt,
+  `LeftSuper,
+  `LeftHyper,
+  `LeftMeta,
+  `RightShift,
+  `RightControl,
+  `RightAlt,
+  `RightSuper,
+  `RightHyper,
+  `RightMeta,
+  `IsoLevel3Shift,
+  `IsoLevel5Shift
+];
+
 </code></pre>
 <p>Character keys use <code>Char(string)</code>, e.g., <code>Char("a")</code> or <code>Char("A")</code>.
 Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
@@ -9797,6 +9821,7 @@ Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
   `Repeat,
   `Release
 ];
+
 </code></pre>
 <p>Most applications only care about <code>Press</code> events, and must say so: a
 terminal that reports releases (the Windows console does) delivers two
@@ -9827,6 +9852,7 @@ other):</p>
   `Hyper,
   `Meta
 ];
+
 </code></pre>
 <p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
 <h2 id="ending-the-program"><a class="header" href="#ending-the-program">Ending the Program</a></h2>
@@ -9859,12 +9885,11 @@ the level with the program’s exit:</p>
 <pre><code class="language-graphix">tui::mouse &lt;- true
 </code></pre>
 <p>Mouse events contain position and action information:</p>
-<pre><code class="language-graphix">type MouseEvent = {
-  column: i64,
-  kind: MouseEventKind,
-  modifiers: Array&lt;KeyModifier&gt;,
-  row: i64
-};
+<pre><code class="language-graphix">type MouseButton = [
+  `Left,
+  `Right,
+  `Middle
+];
 
 type MouseEventKind = [
   `Down(MouseButton),
@@ -9877,11 +9902,13 @@ type MouseEventKind = [
   `ScrollRight
 ];
 
-type MouseButton = [
-  `Left,
-  `Right,
-  `Middle
-];
+type MouseEvent = {
+  column: i64,
+  kind: MouseEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  row: i64
+};
+
 </code></pre>
 <h2 id="creating-input-handlers"><a class="header" href="#creating-input-handlers">Creating Input Handlers</a></h2>
 <p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>
@@ -10846,7 +10873,7 @@ input_handler(
 <p><img src="ui/tui/media/scroll_paragraph.gif" alt="Scrollable Paragraph"></p>
 <h3 id="scrollable-list"><a class="header" href="#scrollable-list">Scrollable List</a></h3>
 <pre><code class="language-graphix">use tui::{
-  line,
+  Size, line, style,
   input_handler::{Event, input_handler, on_press},
   list::list,
   scrollbar::scrollbar
@@ -10856,15 +10883,8 @@ let items = array::init(30, |i| line("Item [i + 1]"));
 let last = array::len(items) - 1;
 let selected = 0;
 let scroll_pos = 0;
-// CR claude for claude: [bug/medium] `visible` is a constant, but ratatui scrolls the
-// list by its real height. Below 10 rows the list moves while the thumb stays put.
-// Above 10 rows the example scrolls although the selection fits. The list also sets no
-// highlight, so the selection cannot be seen. Fix: `let size: Size = never(); let
-// visible = size.height;`, pass `#size: &amp;mut size` to the scrollbar, and add
-// `#highlight_style` to the list. Then fix scroll_list_follows_the_selection in
-// examples_test, which pins the over-scroll at 24 rows. probe:
-// design/review-2026-10-19/repro/examples-tui-list-overscroll.sh (examples-tui-02)
-let visible = 10;
+let size: Size = never();
+let visible = size.height;
 
 // Auto-scroll to keep selection visible
 scroll_pos &lt;- select selected {
@@ -10891,7 +10911,9 @@ input_handler(
         #position: &amp;scroll_pos,
         #content_length: &amp;array::len(items),
         #viewport_length: &amp;visible,
+        #size: &amp;mut size,
         &amp;list(
+            #highlight_style: &amp;style(#fg: `Black, #bg: `Yellow),
             #scroll: &amp;scroll_pos,
             #selected: &amp;selected,
             &amp;items
@@ -11600,19 +11622,7 @@ mod icon;
 <h3 id="length"><a class="header" href="#length">Length</a></h3>
 <p>Controls how a widget is sized along a single axis:</p>
 <pre><code class="language-graphix">type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
-</code></pre>
-<ul>
-<li><code>`Fill</code> – expand to fill all available space.</li>
-<li><code>`FillPortion(n)</code> – fill proportionally. Two widgets with <code>FillPortion(1)</code> and <code>FillPortion(2)</code> split space 1:2.</li>
-<li><code>`Shrink</code> – take only as much space as the content needs.</li>
-<li><code>`Fixed(px)</code> – exact size in logical pixels.</li>
-</ul>
-<p>Most layout widgets accept <code>#width</code> and <code>#height</code> parameters of type <code>&amp;Length</code>:</p>
-<pre><code class="language-graphix ignore">column(
-  #width: &amp;`Fill,
-  #height: &amp;`Fixed(300.0),
-  &amp;[...]
-)
+
 </code></pre>
 <h3 id="padding"><a class="header" href="#padding">Padding</a></h3>
 <p>Controls spacing between a widget’s border and its content:</p>
@@ -11621,6 +11631,7 @@ mod icon;
   `Axis({x: f64, y: f64}),
   `Each({top: f64, right: f64, bottom: f64, left: f64})
 ];
+
 </code></pre>
 <ul>
 <li><code>`All(px)</code> – uniform padding on all sides.</li>
@@ -11640,13 +11651,13 @@ container(
 <h3 id="size"><a class="header" href="#size">Size</a></h3>
 <p>A width/height pair used for window dimensions:</p>
 <pre><code class="language-graphix">type Size = { width: f64, height: f64 };
-</code></pre>
-<pre><code class="language-graphix">window(#size: &amp;mut { width: 1024.0, height: 768.0 }, &amp;content)
+
 </code></pre>
 <h3 id="halign-and-valign"><a class="header" href="#halign-and-valign">HAlign and VAlign</a></h3>
 <p>Horizontal and vertical alignment for positioning content within a container:</p>
 <pre><code class="language-graphix">type HAlign = [`Left, `Center, `Right];
 type VAlign = [`Top, `Center, `Bottom];
+
 </code></pre>
 <pre><code class="language-graphix">column(
   #halign: &amp;`Center,
@@ -11681,6 +11692,7 @@ type FontWeight = [
 ];
 type FontStyle = [`Normal, `Italic, `Oblique];
 type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
+
 </code></pre>
 <ul>
 <li><code>FontFamily</code> selects the font. <code>`Name(string)</code> allows loading a specific named font.</li>
@@ -11696,68 +11708,16 @@ type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 <h3 id="scrolldirection"><a class="header" href="#scrolldirection">ScrollDirection</a></h3>
 <p>Controls which axes a scrollable widget allows scrolling on:</p>
 <pre><code class="language-graphix">type ScrollDirection = [`Vertical, `Horizontal, `Both];
-</code></pre>
-<pre><code class="language-graphix">scrollable(#direction: &amp;`Both, &amp;content)
+
 </code></pre>
 <h3 id="tooltipposition"><a class="header" href="#tooltipposition">TooltipPosition</a></h3>
 <p>Controls where a tooltip appears relative to its target widget:</p>
 <pre><code class="language-graphix">type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
-</code></pre>
-<pre><code class="language-graphix">tooltip(
-  #position: &amp;`Top,
-  #tip: &amp;text(&amp;"Tooltip text"),
-  &amp;button(&amp;text(&amp;"Hover me"))
-)
+
 </code></pre>
 <h3 id="contentfit"><a class="header" href="#contentfit">ContentFit</a></h3>
 <p>Controls how an image or SVG is scaled within its bounds:</p>
 <pre><code class="language-graphix">type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
-</code></pre>
-<ul>
-<li><code>`Fill</code> – stretch to fill the bounds exactly (may distort).</li>
-<li><code>`Contain</code> – scale to fit within bounds, preserving aspect ratio.</li>
-<li><code>`Cover</code> – scale to cover bounds, preserving aspect ratio (may crop).</li>
-<li><code>`None</code> – no scaling, display at original size.</li>
-<li><code>`ScaleDown</code> – like <code>`Contain</code> but never scales up.</li>
-</ul>
-<h2 id="the-widget-type"><a class="header" href="#the-widget-type">The Widget Type</a></h2>
-<p><code>Widget</code> is a union of all individual widget types. Most widget constructor functions return <code>Widget</code>, which means you can freely mix different widget types in arrays and containers:</p>
-<pre><code class="language-graphix">/// Widget types (content within a window)
-type Widget = [
-  `Button(button::Button),
-  `Canvas(canvas::Canvas),
-  `Chart(chart::Chart),
-  `Checkbox(checkbox::Checkbox),
-  `Column(column::Column),
-  `ComboBox(combo_box::ComboBox),
-  `ContextMenu(menu::ContextMenu),
-  `Container(container::Container),
-  `Grid(grid::Grid),
-  `HorizontalRule(rule::HorizontalRule),
-  `Image(image::Image),
-  `KeyboardArea(keyboard_area::KeyboardArea),
-  `Markdown(markdown::Markdown),
-  `MenuBar(menu::MenuBar),
-  `MouseArea(mouse_area::MouseArea),
-  `PickList(pick_list::PickList),
-  `ProgressBar(progress_bar::ProgressBar),
-  `QrCode(qr_code::QrCode),
-  `Radio(radio::Radio),
-  `Row(row::Row),
-  `Scrollable(scrollable::Scrollable),
-  `Slider(slider::Slider),
-  `Space(space::Space),
-  `Stack(stack::Stack),
-  `Table(table::Table),
-  `Text(text::Text),
-  `TextEditor(text_editor::TextEditor),
-  `TextInput(text_input::TextInput),
-  `Toggler(toggler::Toggler),
-  `Tooltip(tooltip::Tooltip),
-  `VerticalRule(rule::VerticalRule),
-  `VerticalSlider(vertical_slider::VerticalSlider),
-  `DataTable(data_table::DataTable)
-];
 
 </code></pre>
 <p>You do not normally construct <code>Widget</code> variants directly. Each widget module exports a constructor function (e.g., <code>gui::text::text(...)</code>, <code>gui::button::button(...)</code>) that returns <code>Widget</code>. This means a column’s children array has type <code>Array&lt;Widget&gt;</code> and can contain any mix of widgets:</p>
@@ -11778,11 +11738,6 @@ column(
 <h1 id="theming-1"><a class="header" href="#theming-1">Theming</a></h1>
 <p>Every GUI window accepts a <code>#theme</code> parameter that controls the visual appearance of all widgets inside it. Graphix provides 22 built-in themes, plus two mechanisms for full customization: custom palettes and custom stylesheets.</p>
 <h2 id="built-in-themes"><a class="header" href="#built-in-themes">Built-in Themes</a></h2>
-<!-- CR claude for claude: [structure/low] This page, and types.md, copy about 150 lines
-of type and builder definitions from gui's mod.gxi and style.gxi by hand. The book test
-only parses fences, so the first renamed field or new theme diverges silently. Fix: mark
-each definition with `// ANCHOR: <name>` in the gxi and `{{#include}}` it, as types.md
-already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
 <p>The <code>Theme</code> type enumerates all available themes:</p>
 <pre><code class="language-graphix">type Theme = [
   `Light,
@@ -11810,6 +11765,7 @@ already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
   `Custom(StyleSheet),
   `CustomPalette(Palette)
 ];
+
 </code></pre>
 <p>Apply a theme by passing it to the <code>window</code> function:</p>
 <pre><code class="language-graphix">window(#theme: &amp;`CatppuccinMocha, &amp;content)
@@ -11833,6 +11789,7 @@ window(#theme: &amp;theme, &amp;content)
   text: Color,
   warning: Color
 };
+
 </code></pre>
 <p>The palette defines the core colors from which iced derives all widget styles automatically:</p>
 <ul>
@@ -11889,7 +11846,8 @@ let col = column(
 <p><img src="ui/gui/media/custom_palette.png" alt="Custom Palette"></p>
 <h2 id="custom-stylesheets"><a class="header" href="#custom-stylesheets">Custom Stylesheets</a></h2>
 <p>For full control over individual widget appearances, use <code>`Custom(StyleSheet)</code>. A stylesheet combines a palette with optional per-widget style overrides:</p>
-<pre><code class="language-graphix">type StyleSheet = {
+<pre><code class="language-graphix">/// Full custom theme with optional per-widget style overrides
+type StyleSheet = {
   button: [ButtonStyle, null],
   checkbox: [CheckboxStyle, null],
   container: [ContainerStyle, null],
@@ -11905,11 +11863,14 @@ let col = column(
   text_input: [TextInputStyle, null],
   toggler: [TogglerStyle, null]
 };
+
 </code></pre>
 <p>Every widget style field is optional (union with <code>null</code>). When <code>null</code>, the widget inherits its style from the palette automatically.</p>
 <h3 id="the-stylesheet-builder"><a class="header" href="#the-stylesheet-builder">The <code>stylesheet</code> Builder</a></h3>
 <p>Use the <code>stylesheet</code> function to construct a <code>StyleSheet</code> without filling in every field manually. Only <code>#palette</code> is required; all widget style parameters default to <code>null</code>:</p>
-<pre><code class="language-graphix">val stylesheet: fn(
+<pre><code class="language-graphix">/// Build a full custom theme from a palette and optional per-widget styles.
+/// Omitted widget styles default to the theme's built-in palette-derived style.
+val stylesheet: fn(
   #palette: Palette,
   ?#button: [ButtonStyle, null],
   ?#checkbox: [CheckboxStyle, null],
@@ -11925,6 +11886,7 @@ let col = column(
   ?#text_input: [TextInputStyle, null],
   ?#toggler: [TogglerStyle, null]
 ) -&gt; StyleSheet;
+
 </code></pre>
 <p>Example with a custom palette and button override:</p>
 <pre><code class="language-graphix">use gui::{
@@ -12030,7 +11992,9 @@ let dark_mode = true;
 <h2 id="per-widget-style-types"><a class="header" href="#per-widget-style-types">Per-Widget Style Types</a></h2>
 <p>Each widget style type is a struct where every field is optional (<code>[T, null]</code>). A <code>null</code> field means “inherit from the theme palette.” The GUI module provides both the types and corresponding builder functions.</p>
 <h3 id="buttonstyle"><a class="header" href="#buttonstyle">ButtonStyle</a></h3>
-<pre><code class="language-graphix">type ButtonStyle = {
+<pre><code class="language-graphix">/// Per-widget style types for custom theming.
+/// All fields are optional — null fields inherit the theme default.
+type ButtonStyle = {
   background: [Color, null],
   border_color: [Color, null],
   border_radius: [f64, null],
@@ -12038,6 +12002,7 @@ let dark_mode = true;
   text_color: [Color, null]
 };
 
+/// Build a ButtonStyle with optional overrides
 val button_style: fn(
   ?#background: [Color, null],
   ?#border_color: [Color, null],
@@ -12045,6 +12010,7 @@ val button_style: fn(
   ?#border_width: [f64, null],
   ?#text_color: [Color, null]
 ) -&gt; ButtonStyle;
+
 </code></pre>
 <h3 id="textinputstyle"><a class="header" href="#textinputstyle">TextInputStyle</a></h3>
 <pre><code class="language-graphix">type TextInputStyle = {
@@ -12058,6 +12024,7 @@ val button_style: fn(
   value_color: [Color, null]
 };
 
+/// Build a TextInputStyle with optional overrides
 val text_input_style: fn(
   ?#background: [Color, null],
   ?#border_color: [Color, null],
@@ -12068,6 +12035,7 @@ val text_input_style: fn(
   ?#selection_color: [Color, null],
   ?#value_color: [Color, null]
 ) -&gt; TextInputStyle;
+
 </code></pre>
 <h3 id="sliderstyle"><a class="header" href="#sliderstyle">SliderStyle</a></h3>
 <pre><code class="language-graphix">type SliderStyle = {
@@ -12080,6 +12048,7 @@ val text_input_style: fn(
   rail_width: [f64, null]
 };
 
+/// Build a SliderStyle with optional overrides
 val slider_style: fn(
   ?#handle_border_color: [Color, null],
   ?#handle_border_width: [f64, null],
@@ -12089,6 +12058,7 @@ val slider_style: fn(
   ?#rail_fill_color: [Color, null],
   ?#rail_width: [f64, null]
 ) -&gt; SliderStyle;
+
 </code></pre>
 <h3 id="other-widget-styles"><a class="header" href="#other-widget-styles">Other Widget Styles</a></h3>
 <p>The remaining widget style types follow the same pattern – a struct of optional fields with a corresponding builder function:</p>
@@ -12128,7 +12098,7 @@ type Text = {
   valign: &amp;VAlign
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -12277,7 +12247,7 @@ type TextInput = {
   font: &amp;[Font, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_input: fn(
   ?#placeholder: &amp;string,
   ?#on_input: [fn(s: string) -&gt; Any, null],
@@ -12348,7 +12318,7 @@ type TextEditor = {
   size: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_editor: fn(
   ?#placeholder: &amp;string,
   ?#on_edit: [fn(s: string) -&gt; Any, null],
@@ -12420,12 +12390,7 @@ type Checkbox = {
   spacing: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
-// CR claude for claude: [doc-drift/low] The size rule above this val is a `//` comment,
-// so the LSP hover and the docs never show it. The same holds in markdown.gxi,
-// radio.gxi, text.gxi, text_editor.gxi, text_input.gxi, toggler.gxi and canvas.gxi
-// (above `type CanvasShape`). chart.gxi writes the same rule as `///`. Make all eight
-// `///` docs. Found by reading; not run. (gx-ui-05)
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],
@@ -12490,7 +12455,7 @@ type Toggler = {
   spacing: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val toggler: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],
@@ -12555,7 +12520,7 @@ type Radio = {
   spacing: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;['a, null],
@@ -12647,14 +12612,7 @@ val slider: fn(
 <ul>
 <li><strong><code>#min</code></strong> – Minimum value of the range. Defaults to <code>0.0</code>.</li>
 <li><strong><code>#max</code></strong> – Maximum value of the range. Defaults to <code>100.0</code>.</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/low] Wrong for a stepped slider. A drag snaps to
-#min plus a multiple of #step (iced's locate), not to multiples of #step. With a step,
-Up/Down and Ctrl+wheel move one step (iced's increment); only a continuous slider goes
-through SliderInput, which moves one percent. Rewrite after the slider.rs lattice fix.
-Found by reading; not run. (gui-widgets-b-04) -->
-<ul>
-<li><strong><code>#step</code></strong> – Snap increment. When set, the slider snaps to multiples of this value. <code>null</code> means continuous dragging. With the pointer over the track, Up/Down arrows and Ctrl+wheel move by one percent of the range.</li>
+<li><strong><code>#step</code></strong> – Snap increment. When set, every value the slider sends is <code>#min</code> plus a whole number of steps, never past <code>#max</code>, and with the pointer over the track Up/Down arrows and Ctrl+wheel move one step. <code>null</code> means continuous dragging, and then Up/Down and Ctrl+wheel move by one percent of the range.</li>
 <li><strong><code>#on_change</code></strong> – Callback invoked as the handle is dragged. Receives the current <code>f64</code> value. Typically: <code>#on_change: |v| volume &lt;- v</code>.</li>
 <li><strong><code>#on_release</code></strong> – Callback invoked when the user releases the handle. Receives <code>null</code>. Useful for committing a value only after the user finishes adjusting.</li>
 <li><strong><code>#width</code></strong> – Width of the slider track. Accepts <code>Length</code> values. Defaults to <code>`Fill</code>.</li>
@@ -13422,7 +13380,7 @@ type PathSegment = [
   `Close
 ];
 
-// A Text shape's size must be finite, positive and at most 4096 pixels.
+/// A Text shape's size must be finite, positive and at most 4096 pixels.
 type CanvasShape = [
   `Line({ from: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
   `Circle({ center: {x: f64, y: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
@@ -15077,7 +15035,7 @@ type Markdown = {
   width: &amp;Length
 };
 
-// A non-null #text_size must be finite, positive and at most 4096 pixels.
+/// A non-null #text_size must be finite, positive and at most 4096 pixels.
 val markdown: fn(
   ?#on_link: [fn(url: string) -&gt; Any, null],
   ?#spacing: &amp;[f64, null],
@@ -16775,18 +16733,6 @@ roughly the same time as compiling any Rust project of similar size.</p>
 <p>Or specify a directory:</p>
 <pre><code>graphix package create mylib --dir ~/projects
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] The tree below leaves out build.rs, which
-`create_package` writes, and the page never says a package needs it or the
-`graphix-ast-pack` build-dependency. `defpackage!` includes `$OUT_DIR/graphix_ast.pack`,
-which only that build script produces, so a crate set up from this page fails with a
-bare "OUT_DIR not defined". `graphix_derive::check_invariants` does not check for it
-either. Fix: list build.rs, show `graphix_ast_pack::emit()` and the build-dependency
-here, and have `check_invariants` panic with that instruction when the build script or
-the build-dependency is missing. Found by reading; not run. (book-modules-udt-05) -->
-<!-- 2026-10-19 claude: The page now lists build.rs and has a build.rs subsection
-(graphix_ast_pack::emit, the graphix-ast-pack build-dependency, the OUT_DIR failure).
-Still owed: graphix_derive::check_invariants refusing a package without the build script
-or the build-dependency, a Rust change outside the docs pass. -->
 <p>This creates a <code>graphix-package-mylib</code> directory with the following structure:</p>
 <pre><code>graphix-package-mylib/
   Cargo.toml
@@ -16833,9 +16779,9 @@ package’s Graphix source into a pre-parsed blob at build time:</p>
 <pre><code class="language-toml">[build-dependencies]
 graphix-ast-pack = "0.9.0"
 </code></pre>
-<p><code>defpackage!</code> includes the blob (<code>$OUT_DIR/graphix_ast.pack</code>), so a
-package without the build script fails to compile with “OUT_DIR not
-defined”.</p>
+<p><code>defpackage!</code> includes the blob (<code>$OUT_DIR/graphix_ast.pack</code>), so it
+refuses a package that lacks the build script or the build-dependency,
+with an error that says to add them.</p>
 <h3 id="srcgraphix--graphix-source-modules"><a class="header" href="#srcgraphix--graphix-source-modules"><code>src/graphix/</code> – Graphix Source Modules</a></h3>
 <p>Graphix source files in <code>src/graphix/</code> are automatically included in the
 package. These files provide the Graphix-level API for your package. The
@@ -17777,7 +17723,7 @@ callable’s <code>answer</code> id:</p>
 </span><span class="boring">fn main() {
 </span>f.call_answered(netidx_value::ValArray::from_iter_exact(
     [Value::from(1), Value::from(2), Value::from(3)]
-)).await?;
+))?;
 'answer: loop {
     let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
     for ev in batch.drain(..) {

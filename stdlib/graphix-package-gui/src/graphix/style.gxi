@@ -1,4 +1,5 @@
 use super::Color;
+// ANCHOR: palette
 type Palette = {
   background: Color,
   danger: Color,
@@ -8,6 +9,8 @@ type Palette = {
   warning: Color
 };
 
+// ANCHOR_END: palette
+// ANCHOR: button_style_type
 /// Per-widget style types for custom theming.
 /// All fields are optional — null fields inherit the theme default.
 type ButtonStyle = {
@@ -18,6 +21,7 @@ type ButtonStyle = {
   text_color: [Color, null]
 };
 
+// ANCHOR_END: button_style_type
 type CheckboxStyle = {
   accent: [Color, null],
   background: [Color, null],
@@ -82,6 +86,7 @@ type ScrollableStyle = {
   scroller_color: [Color, null]
 };
 
+// ANCHOR: slider_style_type
 type SliderStyle = {
   handle_border_color: [Color, null],
   handle_border_width: [f64, null],
@@ -92,6 +97,7 @@ type SliderStyle = {
   rail_width: [f64, null]
 };
 
+// ANCHOR_END: slider_style_type
 type TextEditorStyle = {
   background: [Color, null],
   border_color: [Color, null],
@@ -102,6 +108,7 @@ type TextEditorStyle = {
   value_color: [Color, null]
 };
 
+// ANCHOR: text_input_style_type
 type TextInputStyle = {
   background: [Color, null],
   border_color: [Color, null],
@@ -113,6 +120,7 @@ type TextInputStyle = {
   value_color: [Color, null]
 };
 
+// ANCHOR_END: text_input_style_type
 type TogglerStyle = {
   background: [Color, null],
   background_border_color: [Color, null],
@@ -122,6 +130,48 @@ type TogglerStyle = {
   text_color: [Color, null]
 };
 
+// ANCHOR: stylesheet_type
+/// Full custom theme with optional per-widget style overrides
+type StyleSheet = {
+  button: [ButtonStyle, null],
+  checkbox: [CheckboxStyle, null],
+  container: [ContainerStyle, null],
+  menu: [MenuStyle, null],
+  palette: Palette,
+  pick_list: [PickListStyle, null],
+  progress_bar: [ProgressBarStyle, null],
+  radio: [RadioStyle, null],
+  rule: [RuleStyle, null],
+  scrollable: [ScrollableStyle, null],
+  slider: [SliderStyle, null],
+  text_editor: [TextEditorStyle, null],
+  text_input: [TextInputStyle, null],
+  toggler: [TogglerStyle, null]
+};
+
+// ANCHOR_END: stylesheet_type
+// ANCHOR: stylesheet
+/// Build a full custom theme from a palette and optional per-widget styles.
+/// Omitted widget styles default to the theme's built-in palette-derived style.
+val stylesheet: fn(
+  #palette: Palette,
+  ?#button: [ButtonStyle, null],
+  ?#checkbox: [CheckboxStyle, null],
+  ?#container: [ContainerStyle, null],
+  ?#menu: [MenuStyle, null],
+  ?#pick_list: [PickListStyle, null],
+  ?#progress_bar: [ProgressBarStyle, null],
+  ?#radio: [RadioStyle, null],
+  ?#rule: [RuleStyle, null],
+  ?#scrollable: [ScrollableStyle, null],
+  ?#slider: [SliderStyle, null],
+  ?#text_editor: [TextEditorStyle, null],
+  ?#text_input: [TextInputStyle, null],
+  ?#toggler: [TogglerStyle, null]
+) -> StyleSheet;
+
+// ANCHOR_END: stylesheet
+// ANCHOR: button_style
 /// Build a ButtonStyle with optional overrides
 val button_style: fn(
   ?#background: [Color, null],
@@ -131,6 +181,7 @@ val button_style: fn(
   ?#text_color: [Color, null]
 ) -> ButtonStyle;
 
+// ANCHOR_END: button_style
 /// Build a CheckboxStyle with optional overrides
 val checkbox_style: fn(
   ?#accent: [Color, null],
@@ -205,6 +256,7 @@ val scrollable_style: fn(
   ?#scroller_color: [Color, null]
 ) -> ScrollableStyle;
 
+// ANCHOR: slider_style
 /// Build a SliderStyle with optional overrides
 val slider_style: fn(
   ?#handle_border_color: [Color, null],
@@ -216,6 +268,7 @@ val slider_style: fn(
   ?#rail_width: [f64, null]
 ) -> SliderStyle;
 
+// ANCHOR_END: slider_style
 /// Build a TextEditorStyle with optional overrides
 val text_editor_style: fn(
   ?#background: [Color, null],
@@ -227,6 +280,7 @@ val text_editor_style: fn(
   ?#value_color: [Color, null]
 ) -> TextEditorStyle;
 
+// ANCHOR: text_input_style
 /// Build a TextInputStyle with optional overrides
 val text_input_style: fn(
   ?#background: [Color, null],
@@ -239,6 +293,7 @@ val text_input_style: fn(
   ?#value_color: [Color, null]
 ) -> TextInputStyle;
 
+// ANCHOR_END: text_input_style
 /// Build a TogglerStyle with optional overrides
 val toggler_style: fn(
   ?#background: [Color, null],
@@ -248,40 +303,3 @@ val toggler_style: fn(
   ?#foreground_border_color: [Color, null],
   ?#text_color: [Color, null]
 ) -> TogglerStyle;
-
-/// Full custom theme with optional per-widget style overrides
-type StyleSheet = {
-  button: [ButtonStyle, null],
-  checkbox: [CheckboxStyle, null],
-  container: [ContainerStyle, null],
-  menu: [MenuStyle, null],
-  palette: Palette,
-  pick_list: [PickListStyle, null],
-  progress_bar: [ProgressBarStyle, null],
-  radio: [RadioStyle, null],
-  rule: [RuleStyle, null],
-  scrollable: [ScrollableStyle, null],
-  slider: [SliderStyle, null],
-  text_editor: [TextEditorStyle, null],
-  text_input: [TextInputStyle, null],
-  toggler: [TogglerStyle, null]
-};
-
-/// Build a full custom theme from a palette and optional per-widget styles.
-/// Omitted widget styles default to the theme's built-in palette-derived style.
-val stylesheet: fn(
-  #palette: Palette,
-  ?#button: [ButtonStyle, null],
-  ?#checkbox: [CheckboxStyle, null],
-  ?#container: [ContainerStyle, null],
-  ?#menu: [MenuStyle, null],
-  ?#pick_list: [PickListStyle, null],
-  ?#progress_bar: [ProgressBarStyle, null],
-  ?#radio: [RadioStyle, null],
-  ?#rule: [RuleStyle, null],
-  ?#scrollable: [ScrollableStyle, null],
-  ?#slider: [SliderStyle, null],
-  ?#text_editor: [TextEditorStyle, null],
-  ?#text_input: [TextInputStyle, null],
-  ?#toggler: [TogglerStyle, null]
-) -> StyleSheet;

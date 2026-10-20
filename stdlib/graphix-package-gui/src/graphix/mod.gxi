@@ -37,29 +37,56 @@ type Widget = [
 ];
 
 // ANCHOR_END: widget
+// ANCHOR: length
 type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
-type Padding = [`All(f64), `Axis({x: f64, y: f64}), `Each({top: f64, right: f64, bottom: f64, left: f64})];
+
+// ANCHOR_END: length
+// ANCHOR: padding
+type Padding = [
+  `All(f64),
+  `Axis({x: f64, y: f64}),
+  `Each({top: f64, right: f64, bottom: f64, left: f64})
+];
+
+// ANCHOR_END: padding
+// ANCHOR: size
 type Size = { width: f64, height: f64 };
+
+// ANCHOR_END: size
+// ANCHOR: align
 type HAlign = [`Left, `Center, `Right];
 type VAlign = [`Top, `Center, `Bottom];
+
+// ANCHOR_END: align
 type Color;
 
 /// Create a color with components in [0, 1]
 val color: fn(?#r: f64, ?#g: f64, ?#b: f64, ?#a: f64) -> [Color, Error<`InvalidColor(string)>];
+use self::style::{Palette, StyleSheet};
+
+// ANCHOR: font
 type FontFamily = [`SansSerif, `Serif, `Monospace, `Name(string)];
 type FontWeight = [
   `Thin, `ExtraLight, `Light, `Normal, `Medium,
   `SemiBold, `Bold, `ExtraBold, `Black
 ];
-use self::style::{Palette, StyleSheet};
-
 type FontStyle = [`Normal, `Italic, `Oblique];
 type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 
+// ANCHOR_END: font
+// ANCHOR: scroll_direction
 type ScrollDirection = [`Vertical, `Horizontal, `Both];
+
+// ANCHOR_END: scroll_direction
+// ANCHOR: tooltip_position
 type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
+
+// ANCHOR_END: tooltip_position
+// ANCHOR: content_fit
 type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
 
+// ANCHOR_END: content_fit
+// ANCHOR: theme
 type Theme = [
   `Light,
   `Dark,
@@ -87,6 +114,7 @@ type Theme = [
   `CustomPalette(Palette)
 ];
 
+// ANCHOR_END: theme
 type ImageSource = [string, `Bytes(bytes), `Svg(string), `Rgba({width: u32, height: u32, pixels: bytes})];
 
 // ANCHOR: window

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -188,6 +188,7 @@ before they propagate further.</p>
   `Paste(string),
   `Resize(i64, i64)
 ];
+
 </code></pre>
 <ul>
 <li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes (enabled while the display runs, independently of mouse input)</li>
@@ -204,6 +205,13 @@ before they propagate further.</p>
   modifiers: Array&lt;KeyModifier&gt;,
   state: Array&lt;KeyEventState&gt;
 };
+
+type KeyEventState = [
+  `Keypad,
+  `CapsLock,
+  `NumLock
+];
+
 </code></pre>
 <h3 id="key-codes"><a class="header" href="#key-codes">Key Codes</a></h3>
 <pre><code class="language-graphix">type KeyCode = [
@@ -235,6 +243,40 @@ before they propagate further.</p>
   `Media(MediaKeyCode),
   `Modifier(ModifierKeyCode)
 ];
+
+type MediaKeyCode = [
+  `Play,
+  `Pause,
+  `PlayPause,
+  `Reverse,
+  `Stop,
+  `FastForward,
+  `Rewind,
+  `TrackNext,
+  `TrackPrevious,
+  `Record,
+  `LowerVolume,
+  `RaiseVolume,
+  `MuteVolume
+];
+
+type ModifierKeyCode = [
+  `LeftShift,
+  `LeftControl,
+  `LeftAlt,
+  `LeftSuper,
+  `LeftHyper,
+  `LeftMeta,
+  `RightShift,
+  `RightControl,
+  `RightAlt,
+  `RightSuper,
+  `RightHyper,
+  `RightMeta,
+  `IsoLevel3Shift,
+  `IsoLevel5Shift
+];
+
 </code></pre>
 <p>Character keys use <code>Char(string)</code>, e.g., <code>Char("a")</code> or <code>Char("A")</code>.
 Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
@@ -244,6 +286,7 @@ Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
   `Repeat,
   `Release
 ];
+
 </code></pre>
 <p>Most applications only care about <code>Press</code> events, and must say so: a
 terminal that reports releases (the Windows console does) delivers two
@@ -274,6 +317,7 @@ other):</p>
   `Hyper,
   `Meta
 ];
+
 </code></pre>
 <p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
 <h2 id="ending-the-program"><a class="header" href="#ending-the-program">Ending the Program</a></h2>
@@ -306,12 +350,11 @@ the level with the program’s exit:</p>
 <pre><code class="language-graphix">tui::mouse &lt;- true
 </code></pre>
 <p>Mouse events contain position and action information:</p>
-<pre><code class="language-graphix">type MouseEvent = {
-  column: i64,
-  kind: MouseEventKind,
-  modifiers: Array&lt;KeyModifier&gt;,
-  row: i64
-};
+<pre><code class="language-graphix">type MouseButton = [
+  `Left,
+  `Right,
+  `Middle
+];
 
 type MouseEventKind = [
   `Down(MouseButton),
@@ -324,11 +367,13 @@ type MouseEventKind = [
   `ScrollRight
 ];
 
-type MouseButton = [
-  `Left,
-  `Right,
-  `Middle
-];
+type MouseEvent = {
+  column: i64,
+  kind: MouseEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  row: i64
+};
+
 </code></pre>
 <h2 id="creating-input-handlers"><a class="header" href="#creating-input-handlers">Creating Input Handlers</a></h2>
 <p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>

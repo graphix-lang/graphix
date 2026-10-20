@@ -2593,3 +2593,50 @@ fn a_suffix_reports_its_own_failure() {
     let msg = parse_program("let a = [1];\nlet y = a[#x];\ny");
     assert!(msg.contains("line: 2, column: 11"), "{msg}");
 }
+
+/// The regex highlighters keep their own keyword lists: each names every
+/// construct keyword and the contextual ones the grammar reads as keywords.
+#[test]
+fn editor_keyword_lists_name_every_keyword() {
+    fn between<'a>(src: &'a str, open: &str, close: &str) -> &'a str {
+        let start = src.find(open).unwrap_or_else(|| panic!("no {open:?}")) + open.len();
+        &src[start..start + src[start..].find(close).unwrap()]
+    }
+    let emacs = include_str!("../../../../ide/editors/emacs/graphix-mode.el");
+    let vim = include_str!("../../../../ide/editors/vim/syntax/graphix.vim");
+    let vscode =
+        include_str!("../../../../ide/editors/vscode/syntaxes/graphix.tmLanguage.json");
+    let vscode_words: Vec<&str> = between(vscode, "\"keywords\": {", "\"constants\"")
+        .split("\\\\b(")
+        .skip(1)
+        .flat_map(|g| g[..g.find(")\\\\b").unwrap()].split('|'))
+        .collect();
+    let lists: [(&str, Vec<&str>); 3] = [
+        (
+            "graphix-mode.el",
+            between(emacs, "(let ((keywords '(", ")")
+                .split_whitespace()
+                .map(|w| w.trim_matches('"'))
+                .collect(),
+        ),
+        (
+            "graphix.vim",
+            between(vim, "syntax keyword graphixKeyword ", "\n")
+                .split_whitespace()
+                .collect(),
+        ),
+        ("graphix.tmLanguage.json", vscode_words),
+    ];
+    let contextual = ["val", "with", "as", "throws", "for", "abort", "flush"];
+    let construct = KEYWORDS
+        .iter()
+        .filter_map(|(w, k)| matches!(k, Keyword::Construct).then_some(*w));
+    for w in construct.chain(contextual) {
+        for (file, words) in &lists {
+            assert!(
+                words.contains(&w),
+                "{file} does not name the keyword {w}: {words:?}"
+            );
+        }
+    }
+}
