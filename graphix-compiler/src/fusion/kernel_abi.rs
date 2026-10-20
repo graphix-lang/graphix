@@ -19,6 +19,8 @@ use netidx_core::pack::{Pack as PackTrait, PackError};
 use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
+use std::cell::RefCell;
 use triomphe::Arc;
 
 /// The primitive types a kernel holds in a register: the numerics and bool.
@@ -379,6 +381,11 @@ pub(crate) struct Seen<'a> {
     fp: u64,
     len: usize,
     prev: Option<&'a Seen<'a>>,
+    /// The refs a freeze expanded directly below this one and what they
+    /// froze to: a ref's freeze depends only on it and the path, so a
+    /// sibling occurrence takes it, and a definition naming the next
+    /// twice freezes in linear time, not 2^depth.
+    frozen: RefCell<SmallVec<[(u64, Arc<TypeRef>, Type); 2]>>,
 }
 
 /// Fingerprint of an expansion key; a collision only costs a
@@ -395,7 +402,7 @@ pub(crate) fn expand_key_fp(key: &TypeRef) -> u64 {
 impl<'a> Seen<'a> {
     pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: Arc<TypeRef>) -> Self {
         let fp = expand_key_fp(&key);
-        Self { key, fp, len: Self::len(prev) + 1, prev }
+        Self { key, fp, len: Self::len(prev) + 1, prev, frozen: RefCell::default() }
     }
 
     /// The occurrence of `key` on the path. Keys compare cell-blind, so
@@ -660,7 +667,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
             // A recurring ref becomes the opaque leaf, built on the outer
             // (cell-filled) occurrence with its params frozen so the
             // leaf stays TVar-free.
-            // CR claude for claude: [perf/medium] Each occurrence of a ref is expanded
+            // XCR claude for claude: [perf/medium] Each occurrence of a ref is expanded
             // and frozen again, so a typedef chain where each names the next twice (T_i
             // = [null, (T_i+1, T_i+1)]) costs 2^n per freeze. A 22-level chain takes
             // 15.7 s to start with fusion on and 0.12 s with --no-fusion, all of it in
@@ -670,6 +677,14 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
             // the current path. probe:
             // design/review-2026-10-19/repro/x-rerun-3-freeze-dag-exponential.gx
             // (x-rerun-3-02)
+            // 2026-10-19 claude: Each Seen node keeps the refs a freeze expanded
+            // directly below it and their frozen types; a sibling occurrence of the
+            // same ref (same path, so the same cuts) takes the result. The repro (21
+            // levels, recursive) runs in 0.15 s fused (was 8.7 s at 20). Pin:
+            // graphix-tests --test fusion_review typedef_dag_freezes_in_linear_time (41
+            // levels; not checked against the old build, which would take 2^40).
+            // abi_kind_d and lowering's expand walk expand refs by the same Seen and
+            // were not changed: abi_kind reads the top level only.
             Type::Ref(tr) => {
                 if let Some(outer) = Seen::find(seen, tr) {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
@@ -682,9 +697,23 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
                     return Err(NonCanonical);
                 }
+                let fp = expand_key_fp(tr);
+                if let Some(parent) = seen
+                    && let Some((_, _, t)) = parent
+                        .frozen
+                        .borrow()
+                        .iter()
+                        .find(|(f, k, _)| *f == fp && **k == **tr)
+                {
+                    return Ok(t.clone());
+                }
                 let expanded = tr.expand_cell().ok_or(Unresolved)?;
                 let node = Seen::push(seen, tr.clone());
-                freeze_for_abi_d(&expanded, Some(&node))
+                let t = freeze_for_abi_d(&expanded, Some(&node))?;
+                if let Some(parent) = seen {
+                    parent.frozen.borrow_mut().push((fp, tr.clone(), t.clone()));
+                }
+                Ok(t)
             }
             _ => Err(Unsupported),
         }

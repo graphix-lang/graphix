@@ -7,13 +7,13 @@
 
 use crate::{
     ApplyView, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, Rt, UserEvent,
+    analysis::RegionFacts,
     expr::ExprId,
     fusion::{
         FusedKernel, collect_region_inputs, emit::WrappedKernel, for_each_reachable_node,
         kernel_abi::KernelSig,
     },
     image::{self, ImageBuf},
-    node::genn,
     typ::Type,
 };
 use anyhow::Result;
@@ -81,6 +81,7 @@ pub(crate) struct SharedRegion {
     root: ExprId,
     kernel: Arc<KernelSig>,
     jit: WrappedKernel,
+    facts: RegionFacts,
     print: RegionPrint,
 }
 
@@ -125,6 +126,7 @@ pub(crate) fn record<R: Rt, E: UserEvent>(
             root: node.spec().id,
             kernel: k.kernel().clone(),
             jit: k.jit().clone(),
+            facts: k.facts(),
             print: RegionPrint::of(node),
         });
     attempts.push(entry)
@@ -175,25 +177,13 @@ pub(crate) fn reuse<R: Rt, E: UserEvent>(
     let Some(redirects) = entry.print.redirects(&RegionPrint::of(node)) else {
         return refused("its callees or raises differ");
     };
-    let top = ctx.fusion.top_id.unwrap_or(node.spec().id);
-    // CR claude for claude: [structure/low] This repeats build_region's tail: the
-    // feeder top, a genn::reference per input, FusedKernel::new. It also reruns
-    // analysis::region_facts for every slot, though the prototype's kernel has the same
-    // facts. Keep `facts` in SharedRegion (RegionFacts is Copy) and have one
-    // fusion/mod.rs function build the kernel node for both paths, so the
-    // feeder-registration rule lives in one place. Found by reading; not run.
-    // (f-kernel-06)
-    let feeders: Box<[Node<R, E>]> = inputs
-        .iter()
-        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), top))
-        .collect();
-    let mut fused = FusedKernel::new(
-        node.spec().clone(),
-        node.typ().clone(),
-        crate::analysis::region_facts(node, ctx),
+    let mut fused = super::kernel_node(
+        ctx,
+        node,
+        entry.facts,
+        &inputs,
         entry.kernel.clone(),
         entry.jit.clone(),
-        feeders,
     );
     if !redirects.is_empty() {
         let k = fused.downcast_mut::<FusedKernel<R, E>>().expect("a kernel");
@@ -266,6 +256,7 @@ impl SlotShare {
             };
             buf.put_u8(1);
             e.root.encode(buf)?;
+            e.facts.encode(buf)?;
             e.jit.image_encode(buf)?;
             e.print.callees.encode(buf)?;
             encode_varint(e.print.raises.len() as u64, buf);
@@ -292,6 +283,7 @@ impl SlotShare {
                 continue;
             }
             let root = ExprId::decode(buf)?;
+            let facts = RegionFacts::decode(buf)?;
             let (jit, kernel) = WrappedKernel::image_decode(&ctx.fusion, buf)?;
             let callees = Pack::decode(buf)?;
             let nraises = decode_varint(buf)? as usize;
@@ -301,7 +293,7 @@ impl SlotShare {
                 raises.push((h, ExprId::decode(buf)?, ExprId::decode(buf)?));
             }
             let print = RegionPrint { callees, raises };
-            table.push(Some(SharedRegion { root, kernel, jit, print }));
+            table.push(Some(SharedRegion { root, kernel, jit, facts, print }));
         }
         Ok(Self { table: Arc::new(table), base })
     }

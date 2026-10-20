@@ -1436,6 +1436,26 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     Ok(fused)
 }
 
+/// The node of the region `node` fused into `kernel`, over a feeder per
+/// input. Feeders register under the real top id: `Rt::ref_var` is keyed
+/// `(BindId, top_id)`, and the region's interior id would strand the top
+/// expression at ref count zero.
+pub(crate) fn kernel_node<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    node: &Node<R, E>,
+    facts: crate::analysis::RegionFacts,
+    inputs: &[FreeVarInput],
+    kernel: Arc<KernelSig>,
+    jit: emit::WrappedKernel,
+) -> Node<R, E> {
+    let top = ctx.fusion.top_id.unwrap_or(node.spec().id);
+    let feeders: Box<[Node<R, E>]> = inputs
+        .iter()
+        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), top))
+        .collect();
+    FusedKernel::new(node.spec().clone(), node.typ().clone(), facts, kernel, jit, feeders)
+}
+
 fn build_region<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &mut CompileCtx<R, E>,
@@ -1518,22 +1538,8 @@ fn build_region<R: Rt, E: UserEvent>(
             return refuse(ctx, blocker.unwrap_or_else(|| node.spec()), &why);
         }
     };
-    // Feeders register under the real top id: `Rt::ref_var` is keyed
-    // `(BindId, top_id)`, and the region's interior id would strand the
-    // top expression at ref count zero.
-    let feeder_top = ctx.fusion.top_id.unwrap_or(source_id);
-    let feeders: Box<[Node<R, E>]> = inputs
-        .iter()
-        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
-        .collect();
-    let n = FusedKernel::new(
-        node.spec().clone(),
-        node.typ().clone(),
-        crate::analysis::region_facts(node, ctx),
-        kernel,
-        wrapped,
-        feeders,
-    );
+    let facts = crate::analysis::region_facts(node, ctx);
+    let n = kernel_node(ctx, node, facts, &inputs, kernel, wrapped);
     log::debug!(
         "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
         inputs.len()

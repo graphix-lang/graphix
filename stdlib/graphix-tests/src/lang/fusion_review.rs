@@ -380,3 +380,15 @@ run!(checked_int_arith_inline, r#"
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == CHECKED_INT_ARITH); FuseExpect::Jit);
 
 const CHECKED_INT_ARITH: &str = r#"[[i8:127, i8:73, error:["ArithError", "attempt to multiply with overflow"], i8:3, i8:19], [error:["ArithError", "attempt to add with overflow"], i8:-127, error:["ArithError", "attempt to multiply with overflow"], error:["ArithError", "attempt to divide with overflow"], i8:0], [error:["ArithError", "attempt to add with overflow"], u16:65533, error:["ArithError", "attempt to multiply with overflow"], u16:32767, u16:1], [error:["ArithError", "attempt to add with overflow"], i64:9223372036854775806, i64:9223372036854775807, i64:9223372036854775807, i64:0], [i64:6074001000, i64:0, error:["ArithError", "attempt to multiply with overflow"], i64:1, i64:0], [u64:3, error:["ArithError", "attempt to subtract with overflow"], u64:2, u64:0, u64:1], [u64:9, u64:9, u64:0, error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"]]]"#;
+
+// A typedef naming the next twice freezes once per level, not 2^depth.
+run!(typedef_dag_freezes_in_linear_time, {
+    use std::fmt::Write;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    src.push_str("{\n");
+    for i in 0..40 {
+        writeln!(src, "type T{i} = [null, (T{}, T{})];", i + 1, i + 1).unwrap();
+    }
+    src.push_str("type T40 = [null, (T0, T0)];\nlet v: T0 = null;\nv }");
+    arcstr::ArcStr::from(src.as_str())
+}, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
