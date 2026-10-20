@@ -615,6 +615,13 @@ impl Reach {
         // settle's refusal is the one reported. probe:
         // design/review-2026-10-19/repro/x-rerun-6-unreachable-arm-open-member.gx
         // (x-rerun-6-04)
+        // 2026-10-20 claude: Tried twice (2026-10-20): matches_every refusing wildcard
+        // status while a member is undecided, and Reach::cover keeping undecided
+        // members out of the diff. Neither changes the probe: by the time coverage
+        // runs, the first arm narrowing has bound the open member to its tuple, so the
+        // union is one member and the arm covers it. The fix belongs where the arm
+        // narrows (it must leave an open member open for the settle to judge), which
+        // is typing work.
         if checking && (self.wildcard || self.atype == empty) {
             bailat!(
                 site,
