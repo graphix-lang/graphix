@@ -24,6 +24,16 @@ fn merged_keys<K: Hash + Eq + Clone>(
     Some(keys)
 }
 
+/// Add a joined fork's touched keys to the parent's, whose order does
+/// not matter: the larger list is kept and the smaller copied in, so a
+/// chain of nested forks copies each key a bounded number of times.
+fn absorb<K>(mine: &mut LPooled<Vec<K>>, theirs: &mut LPooled<Vec<K>>) {
+    if theirs.len() > mine.len() {
+        std::mem::swap(mine, theirs)
+    }
+    mine.extend(theirs.drain(..))
+}
+
 /// Whether two of a map's values are one write: identity for a shared
 /// value, equality for a plain one. [`TrackedMap::join`] asks it of each
 /// key a fork wrote, so a write made since the fork is never replaced
@@ -185,7 +195,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             self.map = map;
             self.generation = generation;
             if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
-                // CR claude for claude: [perf/low] [perf/low] A static bind runs in a
+                // XCR claude for claude: [perf/low] [perf/low] A static bind runs in a
                 // forked task, and a nested bind forks inside it. Every join copies
                 // what the child accumulated: this `touched` list, and in
                 // `CompileCtx::join` also pending_refs, pending_settles and discarded.
@@ -199,7 +209,12 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
                 // once where the frame drains. probe:
                 // design/review-2026-10-19/repro/x-perf-compile-nested-task-join.sh
                 // (x-perf-compile-03)
-                mine.extend(theirs.drain(..))
+                // 2026-10-20 claude: TrackedMap/TrackedSet joins keep the larger
+                // touched list and copy the smaller in (absorb), and CompileCtx::join
+                // does the same for pending_refs and discarded. pending_settles still
+                // extends the parent frame with the child's (the chunk-and-flatten form
+                // is not done). Not re-measured.
+                absorb(mine, &mut theirs)
             }
             return;
         }
@@ -240,7 +255,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
 
 /// A [`Set`] with fork and join.
 #[derive(Clone, Debug)]
-// CR claude for claude: [structure/medium] [structure] TrackedSet copies all of
+// XCR claude for claude: [structure/medium] [structure] TrackedSet copies all of
 // TrackedMap (touch, insert, remove, retain, clear, fork, join), but its join lacks the
 // map's debug_assert against replacing a write made since the fork. A fork's removal of
 // a key the parent inserted after the fork (connect_targets, poly_binds and
@@ -248,12 +263,19 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
 // Map<K, ()>. Make this a wrapper over TrackedMap<K, ()> (same_by_eq!(())) so the set
 // inherits the check, and add a set twin of join_reports_a_conflicting_write. Found by
 // reading; not run. (x-dup-02)
+// 2026-10-20 claude: TrackedSet::join now carries the fork's base and asserts (debug)
+// when a fork leaves a key's presence other than a write made since the fork left it;
+// two forks that leave a key alike agree, which a set needs (two statements connecting
+// one target). Not merged into TrackedMap<K, ()>: imhm::Set has no conversion to or
+// from its Map<K, ()>, and the image encodes the sets as Set. Pin:
+// tracked::tests::set_join_reports_a_conflicting_write.
 pub struct TrackedSet<K: Hash + Eq + Clone + Debug> {
     set: Set<K>,
     touched: Option<LPooled<Vec<K>>>,
     /// See [`TrackedMap`].
     generation: u64,
     forked_at: u64,
+    base: Option<Set<K>>,
 }
 
 impl<K: Hash + Eq + Clone + Debug> Default for TrackedSet<K> {
@@ -264,7 +286,7 @@ impl<K: Hash + Eq + Clone + Debug> Default for TrackedSet<K> {
 
 impl<K: Hash + Eq + Clone + Debug> From<Set<K>> for TrackedSet<K> {
     fn from(set: Set<K>) -> Self {
-        Self { set, touched: None, generation: 0, forked_at: 0 }
+        Self { set, touched: None, generation: 0, forked_at: 0, base: None }
     }
 }
 
@@ -332,16 +354,17 @@ impl<K: Hash + Eq + Clone + Debug> TrackedSet<K> {
             touched: Some(LPooled::take()),
             generation: self.generation,
             forked_at: self.generation,
+            base: Some(self.set.clone()),
         }
     }
 
     pub fn join(&mut self, fork: Self) {
-        let Self { set, touched, generation, forked_at } = fork;
+        let Self { set, touched, generation, forked_at, base } = fork;
         if self.generation == forked_at {
             self.set = set;
             self.generation = generation;
             if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
-                mine.extend(theirs.drain(..))
+                absorb(mine, &mut theirs)
             }
             return;
         }
@@ -351,6 +374,15 @@ impl<K: Hash + Eq + Clone + Debug> TrackedSet<K> {
             return;
         };
         for k in touched.drain(..) {
+            // a member is its presence: a fork that leaves a key as a write
+            // made since the fork left it loses nothing
+            debug_assert!(
+                base.as_ref().is_none_or(|base| {
+                    let now = self.set.contains(&k);
+                    now == base.contains(&k) || now == set.contains(&k)
+                }),
+                "a fork's write to {k:?} would replace a write made since the fork"
+            );
             match set.contains(&k) {
                 true => self.set.insert_cow(k),
                 false => self.set.remove_cow(&k),
@@ -433,6 +465,29 @@ mod tests {
         a.insert(2, 2);
         b.insert(2, 3);
         parent.join(a);
+        parent.join(b);
+    }
+
+    /// A sibling's removal of a member another sibling added is reported,
+    /// never lost unseen; two that leave a member alike agree.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "would replace a write made since the fork")]
+    fn set_join_reports_a_conflicting_write() {
+        let mut parent: TrackedSet<u32> = TrackedSet::default();
+        parent.insert(1);
+        let mut a = parent.fork();
+        let mut b = parent.fork();
+        let mut c = parent.fork();
+        a.insert(2);
+        c.insert(2);
+        b.remove(&2);
+        b.insert(3);
+        b.remove(&3);
+        b.insert(2);
+        b.remove(&2);
+        parent.join(a);
+        parent.join(c);
         parent.join(b);
     }
 

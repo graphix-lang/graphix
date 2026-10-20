@@ -1650,8 +1650,17 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         self.attr_census.lock().extend(attr_census.into_inner());
         self.attr_dispatched.lock().extend(attr_dispatched.into_inner());
         self.attr_absorbed.lock().extend(attr_absorbed.into_inner());
+        // neither order matters: the larger side is kept and the smaller
+        // merged in, so nested forks copy each entry a bounded number of times
+        let (mut pending_refs, mut discarded) = (pending_refs, discarded);
+        if pending_refs.len() > self.pending_refs.len() {
+            mem::swap(&mut pending_refs, &mut self.pending_refs);
+        }
         for (k, n) in pending_refs {
             *self.pending_refs.entry(k).or_default() += n;
+        }
+        if discarded.len() > self.discarded.len() {
+            mem::swap(&mut discarded, &mut self.discarded);
         }
         self.discarded.extend(discarded);
         profile.join();

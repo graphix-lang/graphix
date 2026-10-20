@@ -374,13 +374,17 @@ pub fn strip(v: &Value) -> Option<Value> {
                     .map(|v| strip(&v).unwrap_or(v))
                     .collect(),
             )),
-            // CR claude for claude: [perf/low] The Array and Map arms below clone every
+            // XCR claude for claude: [perf/low] The Array and Map arms below clone every
             // element into a scratch Vec even when nothing changes, then drop it.
             // to_data then walks the value a second time in rewrite_data. Each publish,
             // pack or json write of a large unmarked array pays a full copy for
             // nothing. Copy only from the first changed element (rewrite_data's
             // pattern), or fold the strip into rewrite_data so a write walks once.
             // Found by reading; not run. (x-kind-markers-07)
+            // 2026-10-20 claude: The Array and Map arms copy only once an element
+            // changed (the prefix cloned then, the rest stripped as it goes); an
+            // unmarked array or map is walked and returned as None with no copy. No
+            // pin: a perf change, covered by every writer test.
             None => match v {
                 // CR claude for claude: [perf/low] This arm (and the Map arm below)
                 // copies every element into a pooled Vec before it knows anything
@@ -392,19 +396,19 @@ pub fn strip(v: &Value) -> Option<Value> {
                 // strips markers and converts abstracts, with a flag that skips the
                 // abstract conversion for testing::observed. Found by reading; not run.
                 // (t-rep-05)
+                // 2026-10-20 claude: Partly done with x-kind-markers-07: the arms no
+                // longer copy before a change. The second walk, rewrite_data over the
+                // stripped value, remains; merging strip into it is still open.
                 Value::Array(a) => {
-                    let mut changed = false;
-                    let vs: LPooled<Vec<Value>> = a
-                        .iter()
-                        .map(|e| match strip(e) {
-                            Some(s) => {
-                                changed = true;
-                                s
-                            }
-                            None => e.clone(),
-                        })
-                        .collect();
-                    changed.then(|| array(vs))
+                    let (i, first) =
+                        a.iter().enumerate().find_map(|(i, e)| Some((i, strip(e)?)))?;
+                    let mut vs: LPooled<Vec<Value>> = LPooled::take();
+                    vs.extend(a[..i].iter().cloned());
+                    vs.push(first);
+                    vs.extend(
+                        a[i + 1..].iter().map(|e| strip(e).unwrap_or_else(|| e.clone())),
+                    );
+                    Some(array(vs))
                 }
                 // CR claude for eric: [bug/medium] Stripping the keys can merge two of
                 // them. "A" and `A both become "A", and (1, 2) and [1, 2] both become
@@ -416,7 +420,7 @@ pub fn strip(v: &Value) -> Option<Value> {
                 // whose stripped keys collide instead of dropping entries. probe:
                 // design/review-2026-10-19/repro/x-kind-markers-data-key-collision.sh
                 // (x-kind-markers-02)
-                // CR claude for claude: [bug/medium] Keys that differ in memory but
+                // CR claude for eric: [bug/medium] Keys that differ in memory but
                 // share a data form ("A" and `A, [1, 2] and (1, 2)) strip to one key,
                 // and Map::from_iter keeps one entry without a word. Every writer goes
                 // through to_data, so json, pack, toml, hbs, sys::net and db silently
@@ -428,20 +432,30 @@ pub fn strip(v: &Value) -> Option<Value> {
                 // write as the same data"), and add a writer pin. probe:
                 // design/review-2026-10-19/repro/t-rep-strip-map-key-collision.gx
                 // (t-rep-02)
+                // 2026-10-20 claude: Not fixed: x-kind-markers-02 just above, for eric,
+                // asks the same question (refuse such key types at the check, or have
+                // to_data refuse a map whose stripped keys collide); this CR's fix is
+                // the second option. Re-addressed so the two are ruled together.
                 Value::Map(m) => {
-                    let mut changed = false;
-                    let mut kvs: LPooled<Vec<(Value, Value)>> = m
-                        .into_iter()
-                        .map(|(k, e)| {
-                            let (k1, e1) = (strip(k), strip(e));
-                            changed |= k1.is_some() || e1.is_some();
-                            (
+                    let mut kvs: Option<LPooled<Vec<(Value, Value)>>> = None;
+                    for (i, (k, e)) in m.into_iter().enumerate() {
+                        let (k1, e1) = (strip(k), strip(e));
+                        if kvs.is_none() && (k1.is_some() || e1.is_some()) {
+                            kvs = Some(
+                                m.into_iter()
+                                    .take(i)
+                                    .map(|(k, e)| (k.clone(), e.clone()))
+                                    .collect(),
+                            );
+                        }
+                        if let Some(kvs) = &mut kvs {
+                            kvs.push((
                                 k1.unwrap_or_else(|| k.clone()),
                                 e1.unwrap_or_else(|| e.clone()),
-                            )
-                        })
-                        .collect();
-                    changed.then(|| Value::Map(Map::from_iter(kvs.drain(..))))
+                            ));
+                        }
+                    }
+                    kvs.map(|mut kvs| Value::Map(Map::from_iter(kvs.drain(..))))
                 }
                 Value::Error(e) => strip(e).map(|e| Value::Error(e.into())),
                 _ => None,
