@@ -165,6 +165,15 @@ pub(super) fn emit_outlined(
 // locals the iteration reads are stored and bound). Still open:
 // call::emit_pending_abort rungs use_var every owned local, so every abort exit
 // passes all of them as block arguments.
+// 2026-10-20 claude: Measured the abort-rung half after the frame fix: in the chain
+// probe block params grow as n^2 (41k/162k/645k at n=200/400/800) while
+// instructions grow linearly (82 per loop), and the Cranelift backend on the one
+// large kernel takes 0.41/1.96/7.0 s at n=800/1600/3200 (1.25/4.7 s at 1600/3200
+// with the verifier off; opt_level none does not help), the end-to-end run
+// 1.0/3.5/11.2 s. The fix stands as written, with one hazard: a tail loop redefines
+// its formals variables every iteration (body.rs, the staged def_vars before the
+// jump to the head), so a spill slot must be written at every def_var of an owned
+// local, not only at bind_local, or a rung drops a stale value.
 // XCR claude for claude: [perf/low] Every outlined loop stores every local in scope
 // into the frame, and emit_chunk loads every one back, whether the loop's body
 // reads it or not. A chain of n array::map lets in one function emits about n^2/2
