@@ -2248,6 +2248,9 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 // the union read prefer the member that reads unmarked data exactly (tuple of that
 // arity, then struct, then array). Then fix the doc that loses. probe:
 // design/review-2026-10-19/repro/t-rep-union-data-roundtrip.gx (t-rep-01)
+// 2026-10-20 claude: json::read reproduces it as well: {"a":1} read into [{a: i64},
+// Array<(string, i64)>] selects the Array member and prints array [("a", 1)] (found by
+// the stdlib fix agent, re-run on main 2026-10-20).
 fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         None | Some(Type::Bottom) => true,
