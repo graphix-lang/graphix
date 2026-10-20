@@ -29,16 +29,15 @@ use super::{
         is_tainted, propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{
-        BodyCx, TailRebind, emit_kernel_return, emit_return_from_node,
+        BodyCx, TailRebind, emit_into_slot, emit_kernel_return, emit_return_from_node,
         emit_tail_rebind_jump, ensure_owned_composite_src, ensure_owned_value_src,
         node_composite_source,
     },
     call::{CompositeSource, emit_drop_local, emit_owned_drop, owned_drop_kind},
     nodes::{
-        emit_bottom_placeholder, emit_bottom_placeholder_of_kind,
-        narrow_value_to_composite, widen_result_to_value,
+        emit_bottom_placeholder, emit_bottom_placeholder_of_kind, widen_result_to_value,
     },
-    scalar::{cast_u64_to_prim, scalar_to_payload_i64},
+    scalar::cast_u64_to_prim,
     select::{classify_select_scrutinee, emit_let_binds, emit_select_arms},
 };
 
@@ -339,27 +338,13 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         let arg = cs
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
-        let cv = arg.emit_clif(cx)?;
-        // a scalar fed to a value-shaped slot is widened to the Value
-        // encoding, which owns nothing
-        let value_slot =
-            LocalKind::of_param(&cx.ctx.tail.call_slots[slot].kind) == LocalKind::Value;
-        let (val, source) = match kernel_abi::abi_kind(arg.typ()) {
-            Some(AbiKind::Scalar(p)) if value_slot => (
-                CompiledExpr::new(cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload)),
-                CompositeSource::Owned,
-            ),
-            _ => {
-                let source = node_composite_source(arg);
-                if let Some(k) = kernel_abi::abi_kind(arg.typ())
-                    .and_then(|k| owned_drop_kind(k, source))
-                {
-                    cx.hold(k, cv);
-                    held += 1;
-                }
-                (cv, source)
-            }
-        };
+        let kind = LocalKind::of_param(&cx.ctx.tail.call_slots[slot].kind);
+        let s = emit_into_slot(cx, arg, kind)?;
+        if let Some(k) = s.owns {
+            cx.hold(k, s.cv);
+            held += 1;
+        }
+        let (val, source) = (s.cv, s.source);
         rebinds.push(TailRebind { slot, val, source });
     }
     super::call::release_owned(cx, held);
@@ -395,20 +380,9 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             );
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let source = node_composite_source(value);
-            let cv = match cx.node_kind(value.typ()) {
-                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                    let cv = value.emit_clif(cx)?;
-                    let (disc, payload) =
-                        ensure_owned_value_src(cx, source, cv.disc, cv.payload)?;
-                    narrow_value_to_composite(cx, CompiledExpr::new(disc, payload))?
-                }
-                _ => {
-                    let cv = value.emit_clif(cx)?;
-                    let owned = ensure_owned_composite_src(cx, source, cv.payload)?;
-                    CompiledExpr::new(cv.disc, owned)
-                }
-            };
+            let s = emit_into_slot(cx, value, LocalKind::Composite)?;
+            let owned = ensure_owned_composite_src(cx, s.source, s.cv.payload)?;
+            let cv = CompiledExpr::new(s.cv.disc, owned);
             bind_local(
                 cx,
                 name.clone(),

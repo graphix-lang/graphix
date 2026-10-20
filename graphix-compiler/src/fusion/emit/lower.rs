@@ -35,29 +35,36 @@ use triomphe::Arc;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
-    body::{BodyCx, BodyRole, BodySource, emit_interrupt_check, param_id},
+    body::{BodyCx, BodyRole, BodySource, emit_interrupt_check_every, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
     record::EmitConst,
 };
 
+/// A kernel a body calls: its body, the spill thunk a call takes when
+/// the remaining stack is inside the red zone, and whether a call checks
+/// the stack (`jit::CHECK_EVERY`).
+#[derive(Clone, Copy)]
+pub(super) struct KernelFns<F> {
+    pub(super) body: F,
+    pub(super) thunk: F,
+    pub(super) checked: bool,
+}
+
 /// The kernels a body calls, as the function being built names them,
 /// and by their ids, for another function of the body to import.
 pub(super) struct Callees<'a> {
-    pub(super) refs: &'a BTreeMap<KernelKey, FuncRef>,
-    pub(super) ids: &'a BTreeMap<KernelKey, FuncId>,
+    pub(super) refs: &'a BTreeMap<KernelKey, KernelFns<FuncRef>>,
+    pub(super) ids: &'a BTreeMap<KernelKey, KernelFns<FuncId>>,
     pub(super) self_call: Option<OwnCall<'a>>,
 }
 
-/// A self-recursive body's call of itself: the self binding, the
-/// kernel's own call descriptor and the spill thunk a self-call takes
-/// when the remaining stack is inside the red zone.
+/// A self-recursive body's call of itself: the self binding and the
+/// kernel's own call descriptor.
 #[derive(Clone, Copy)]
 pub(crate) struct OwnCall<'a> {
     pub(crate) bind: BindId,
     pub(crate) info: &'a LambdaCallInfo,
-    pub(super) thunk: FuncRef,
-    pub(super) thunk_id: FuncId,
 }
 
 pub(super) fn compile_into_function<'a>(
@@ -80,7 +87,7 @@ pub(super) fn compile_into_function<'a>(
     let mut initial_vals: LPooled<Vec<ClifValue>> = LPooled::take();
     initial_vals.extend_from_slice(b.block_params(entry));
     // Under a wake view init is not genuine: consumers read `init & !wake`.
-    let CtxWord { init: init_flag, wake: wake_flag } =
+    let CtxWord { born: born_flag, wake: wake_flag } =
         CtxWord::decode(b, initial_vals[0]);
     let helper_refs = HelperRefs::new(helper_ids, names);
     let state_ptr = initial_vals[1];
@@ -88,7 +95,7 @@ pub(super) fn compile_into_function<'a>(
     if crate::dbgenv::gxdbg_callret() {
         use crate::fusion::emit_helpers::CallRetTag;
         let t = b.ins().iconst(types::I64, CallRetTag::InitFlag as i64);
-        helper_refs.call(b, "graphix_dbg_disc", &[t, init_flag])?;
+        helper_refs.call(b, "graphix_dbg_disc", &[t, born_flag])?;
     }
     // Wire slot 2: the callee's per-call-site block; 0 for parents and
     // bodies that claim no site words.
@@ -138,25 +145,30 @@ pub(super) fn compile_into_function<'a>(
         v
     };
 
+    // the tail loop's head and its iteration count, which paces its
+    // interrupt polls
     let loop_head = if kernel.has_tail_loop {
+        let iters = b.declare_var(types::I64);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.def_var(iters, zero);
         // Sealed after the body: each TailCall adds a predecessor.
         let head = b.create_block();
         b.ins().jump(head, &[]);
         b.switch_to_block(head);
-        Some(head)
+        Some((head, iters))
     } else {
         None
     };
 
     let lower = LowerCtx {
         tail: TailCtx {
-            loop_head,
+            loop_head: loop_head.map(|(head, _)| head),
             param_mark,
             call_slots: &kernel.params,
             params: spec.params,
             tail_scrut_stale_acc,
         },
-        init_flag,
+        born_flag,
         wake_flag,
         callee_refs: callees.refs,
         callee_ids: callees.ids,
@@ -190,21 +202,15 @@ pub(super) fn compile_into_function<'a>(
         callee_layouts,
     };
     // A wedged native loop aborts on interrupt; the kernel keeps its last result.
-    // CR claude for claude: [perf/low] The tail loop's head calls `graphix_interrupted`
-    // (an out-of-line helper: a TLS read plus an atomic load) on every iteration. In
-    // the CLIF of `sum(n - 1, acc + n)`, `call fn2()` sits at the loop head beside
-    // about 30 ALU instructions, and 50M iterations take about 178 ms. Scaffold loops
-    // poll every POLL_EVERY slots through `emit_interrupt_check_every`. Carry an
-    // iteration counter Variable from the entry block and poll only when it crosses a
-    // multiple of POLL_EVERY, so the native loop pays the helper once per 64
-    // iterations. probe: GRAPHIX_DUMP_CLIF=1 on a two-formal sum loop; not A/B timed.
-    // (f-call-flow-03)
-    if loop_head.is_some() {
-        emit_interrupt_check(b, &mut env, &lower)?;
+    if let Some((_, iters)) = loop_head {
+        let i = b.use_var(iters);
+        let next = b.ins().iadd_imm(i, 1);
+        b.def_var(iters, next);
+        emit_interrupt_check_every(b, &mut env, &lower, i)?;
     }
     body.hook.emit(b, &mut env, &lower)?;
 
-    if let Some(head) = loop_head {
+    if let Some((head, _)) = loop_head {
         b.seal_block(head);
     }
 
@@ -298,22 +304,22 @@ pub(crate) struct SiteLayout {
 /// The context word (wire slot 0) as its two 0/1 flags.
 #[derive(Clone, Copy)]
 pub(super) struct CtxWord {
-    pub(super) init: ClifValue,
+    pub(super) born: ClifValue,
     pub(super) wake: ClifValue,
 }
 
 impl CtxWord {
     pub(super) fn decode(b: &mut FunctionBuilder, word: ClifValue) -> Self {
-        let init = b.ins().band_imm(word, kernel_abi::CTX_INIT);
+        let born = b.ins().band_imm(word, kernel_abi::CTX_BORN);
         let w = b.ins().band_imm(word, kernel_abi::CTX_WAKE);
         let wake = b.ins().ushr_imm(w, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
-        Self { init, wake }
+        Self { born, wake }
     }
 
     pub(super) fn encode(self, b: &mut FunctionBuilder) -> ClifValue {
         let wake =
             b.ins().ishl_imm(self.wake, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
-        b.ins().bor(self.init, wake)
+        b.ins().bor(self.born, wake)
     }
 }
 
@@ -502,7 +508,7 @@ pub(crate) struct LowerCtx<'a> {
     /// See [`TailCtx`].
     pub(super) tail: TailCtx<'a>,
     /// Wire slot 0 bit 0: 1 on the kernel's init cycle.
-    pub(super) init_flag: ClifValue,
+    pub(super) born_flag: ClifValue,
     /// Wire slot 0 bit 1: a wake view, under which init is not genuine
     /// (`init & !wake`).
     pub(super) wake_flag: ClifValue,
@@ -520,11 +526,12 @@ pub(crate) struct LowerCtx<'a> {
     /// The frame `close_slot_tables` just popped, for the loop exit's
     /// `emit_slot_truncates`.
     pub(super) closed_frame: RefCell<Option<ClosedFrame>>,
-    /// Callee kernel identity (`kernel_key`) → `FuncRef`, declared in
-    /// the current function before the FunctionBuilder is built.
-    pub(super) callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
+    /// Callee kernel identity (`kernel_key`) → its body and thunk,
+    /// declared in the current function before the FunctionBuilder is
+    /// built.
+    pub(super) callee_refs: &'a BTreeMap<KernelKey, KernelFns<FuncRef>>,
     /// The callees by id, for a chunk to import.
-    pub(super) callee_ids: &'a BTreeMap<KernelKey, FuncId>,
+    pub(super) callee_ids: &'a BTreeMap<KernelKey, KernelFns<FuncId>>,
     pub(super) helper_ids: &'a HelperFuncIds,
     /// `FuncRef`s for the runtime helpers, by helper name.
     pub(super) helper_refs: HelperRefs<'a>,

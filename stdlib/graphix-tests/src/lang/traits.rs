@@ -1964,6 +1964,57 @@ run!(dispatch_on_a_never_produced_self_is_bottom, r#"{
     any(Show::show(a[0]$), "none")
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "none"); FuseExpect::Jit);
 
+// A core-trait impl runs only on values that exist: a kernel compares,
+// orders, renders and keys an abstract value built over a late input
+// only once the input has produced.
+const HOOKS_ON_LATE_INPUT: &str = r#"{
+    type K = Abstract<i64>;
+    impl Eq for K { let eq = |a, b| { println("eq [a.0] [b.0]"); a.0 == b.0 } };
+    impl Ord for K {
+        let cmp = |a, b| {
+            println("cmp [a.0] [b.0]");
+            select (a.0, b.0) {
+                (x, y) if x < y => `Less,
+                (x, y) if x > y => `Greater,
+                _ => `Equal
+            }
+        }
+    };
+    impl Display for K { let fmt = |k| { println("fmt [k.0]"); "K[k.0]" } };
+    let clock = array::iter([1, 2]);
+    (
+        #[native] (K(clock) == K(1)),
+        #[native] (K(clock) < K(2)),
+        #[native] "[K(clock)]",
+        #[native] map::len({K(clock) => 1, K(5) => 2})
+    )
+}"#;
+
+async fn hooks_on_late_input(mode: Mode) -> Result<()> {
+    let (values, out) =
+        super::dense_deltas::run_delta_fused(HOOKS_ON_LATE_INPUT, mode, FuseExpect::Jit)
+            .await?;
+    let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(
+        values,
+        [r#"[true, true, "K1", i64:2]"#, r#"[false, false, "K2", i64:2]"#],
+        "{mode:?}"
+    );
+    let mut lines: Vec<&str> = out.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "cmp 1 2", "cmp 2 2", "cmp 5 1", "cmp 5 1", "cmp 5 2", "cmp 5 2", "eq 1 1",
+            "eq 2 1", "fmt 1", "fmt 2"
+        ],
+        "{mode:?}: {out}"
+    );
+    Ok(())
+}
+
+modes!(hooks_on_late_input);
+
 // A core trait a dynamic module implements follows its reloads: a
 // hook site built before a reload is rebuilt after it.
 run!(

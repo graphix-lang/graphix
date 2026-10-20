@@ -3,15 +3,14 @@
 //! `graphix_par_loop` runs in order or forked (`fusion::par_loop`,
 //! `design/parallel_eval.md` §10).
 
-use super::lower::OwnCall;
 use super::{
     abi::{JitEnv, STALE, ValueVar, local_payload_ty},
     body::{BodyCx, emit_kernel_abort},
     call::{BufKind, close_buf, open_buf},
     jit::{ChunkFn, chunk_signature},
     lower::{
-        Channel, ClosedFrame, CtxWord, HelperRefs, LowerCtx, SlotTable, SlotTableFrame,
-        StateChannel, TailCtx, TruncRec,
+        Channel, ClosedFrame, CtxWord, HelperRefs, KernelFns, LowerCtx, SlotTable,
+        SlotTableFrame, StateChannel, TailCtx, TruncRec,
     },
     record::KernelConst,
     scaffold::{Accs, Iteration, LoopFrame, Sink, SinkKind, Slots, Sunk, open_sink},
@@ -102,7 +101,7 @@ pub(super) fn emit_outlined(
         cx.env.locals.iter().map(|l| l.words).collect();
     let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
     let ctx_word =
-        CtxWord { init: cx.ctx.init_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
+        CtxWord { born: cx.ctx.born_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
     let header = [
         ctx_word,
         cx.state_ptr(),
@@ -267,19 +266,20 @@ fn emit_chunk(
         b.def_var(words.payload, payload);
         env.bind(l.name.clone(), words, l.kind, l.bind_id);
     }
-    let CtxWord { init: init_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
+    let CtxWord { born: born_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
     let tail_scrut_stale_acc = b.declare_var(types::I64);
     let stale = b.ins().iconst(types::I64, STALE);
     b.def_var(tail_scrut_stale_acc, stale);
-    let callee_refs: BTreeMap<KernelKey, FuncRef> = p
+    let callee_refs: BTreeMap<KernelKey, KernelFns<FuncRef>> = p
         .callee_ids
         .iter()
-        .map(|(k, fid)| (*k, names.borrow().import_func(*fid, b.func)))
+        .map(|(k, ids)| {
+            let names = names.borrow();
+            let body = names.import_func(ids.body, b.func);
+            let thunk = names.import_func(ids.thunk, b.func);
+            (*k, KernelFns { body, thunk, checked: ids.checked })
+        })
         .collect();
-    let self_call = p.self_call.map(|own| OwnCall {
-        thunk: names.borrow().import_func(own.thunk_id, b.func),
-        ..own
-    });
     let consts = RefCell::new(Vec::new());
     let ctx = LowerCtx {
         tail: TailCtx {
@@ -289,7 +289,7 @@ fn emit_chunk(
             params: &[],
             tail_scrut_stale_acc,
         },
-        init_flag,
+        born_flag,
         wake_flag,
         claims: p.claims,
         state: continued(&p.state, state),
@@ -316,7 +316,7 @@ fn emit_chunk(
         ladder: RefCell::default(),
         builtin_apply_sites: p.builtin_apply_sites,
         lambda_call_sites: p.lambda_call_sites,
-        self_call,
+        self_call: p.self_call,
         type_env: p.type_env,
     };
     let mut ccx = BodyCx { b: &mut b, env: &mut env, ctx: &ctx };

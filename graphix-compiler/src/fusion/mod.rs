@@ -50,6 +50,47 @@ use std::{
 };
 use triomphe::Arc;
 
+/// A type in a refusal's reason: its first [`Brief::BYTES`] as printed,
+/// tvars dereferenced. A type that shares its parts prints as a tree,
+/// 2^depth long, and the printer stops at the first write refused.
+pub(crate) struct Brief<'a>(pub(crate) &'a Type);
+
+impl Brief<'_> {
+    pub(crate) const BYTES: usize = 512;
+}
+
+impl std::fmt::Display for Brief<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct Capped<'a, 'b> {
+            f: &'a mut std::fmt::Formatter<'b>,
+            left: usize,
+        }
+        impl std::fmt::Write for Capped<'_, '_> {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                if s.len() <= self.left {
+                    self.left -= s.len();
+                    return self.f.write_str(s);
+                }
+                let mut end = self.left;
+                while !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                self.left = 0;
+                self.f.write_str(&s[..end])?;
+                Err(std::fmt::Error)
+            }
+        }
+        let mut capped = Capped { f, left: Self::BYTES };
+        let typ = self.0;
+        match format_with_flags(PrintFlag::DerefTVars, || {
+            std::fmt::Write::write_fmt(&mut capped, format_args!("{typ}"))
+        }) {
+            Err(_) if capped.left == 0 => capped.f.write_str("…"),
+            r => r,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct FusionSource {
     origin: triomphe::Arc<Origin>,
@@ -796,6 +837,24 @@ pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
     }
 }
 
+/// A `?` under a handler.
+pub(crate) fn raises_to_handler<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
+    matches!(n.view(), NodeView::Qop(q) if q.handler().is_some())
+}
+
+/// Whether evaluating `node` can raise to a handler: a `?` under one
+/// that it reaches through statically resolved calls, or a call with no
+/// static target, whose body no walk sees.
+pub(crate) fn may_raise_to_handler<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut any = false;
+    for_each_reachable_node(node, &mut |n| {
+        any |= raises_to_handler(n)
+            || matches!(n.view(), NodeView::CallSite(cs)
+                if matches!(cs.resolved_apply(), None | Some(ApplyView::Opaque)))
+    });
+    any
+}
+
 /// The callee of one statically-resolved lambda call site in a region
 /// being compiled, recorded by [`discover_lambda_calls`] and consumed by
 /// `CallSite::emit_clif` to emit a CLIF `call` against it: the cached
@@ -1024,7 +1083,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     // A feeder runs before the kernel, so a fed argument's raise would
     // reach its handler ahead of a fused earlier argument's: then nothing
     // is fed.
-    // CR claude for claude: [bug/medium] This test sees a raise only through statically
+    // XCR claude for claude: [bug/medium] This test sees a raise only through statically
     // resolved lambdas, so a fed argument that raises through a dynamic call (a
     // select-chosen function value) counts as raise-free. It is then fed, and its raise
     // reaches the handler before an earlier fused argument's: `f((n /? 0)?,
@@ -1034,13 +1093,15 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     // closure. probe:
     // design/review-2026-10-19/repro/f-mod-lowering-fed-arg-dynamic-raise.gx
     // (f-mod-lowering-03)
-    let raises = |n: &Node<R, E>| {
-        let mut any = false;
-        for_each_reachable_node(n, &mut |n| {
-            any |= matches!(n.view(), NodeView::Qop(q) if q.handler().is_some())
-        });
-        any
-    };
+    // 2026-10-19 claude: fusion::may_raise_to_handler counts a call with no static
+    // target (resolved_apply None or Opaque) as raising; try_fuse_feeding_args uses it.
+    // arm_raise_blocker shares fusion::raises_to_handler for the Qop test but not the
+    // dynamic-call clause: its root is a region being fused, which a dynamic call never
+    // is, and a let rec self-call has no resolved apply, so the clause refused every
+    // self-recursive kernel with a raise. analysis::region_facts' own raises route is
+    // untouched. Pin: graphix-tests --test fusion_review
+    // fed_arg_raising_through_a_dynamic_call (the review binary logs [fed, fused]
+    // fused).
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
     for arg in cs.args.values_mut() {
         let feed = arg.node.as_mut().is_some_and(|node| {
@@ -1053,7 +1114,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     let mut fused_raise = false;
     for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
         let Some(node) = arg.node.as_ref() else { continue };
-        match (*feed, raises(node)) {
+        match (*feed, may_raise_to_handler(node)) {
             (true, true) if fused_raise => return Ok(None),
             (false, true) => fused_raise = true,
             _ => (),
@@ -1245,8 +1306,6 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     first(results.drain(..).find_map(|(i, r)| r.err().map(|e| (i, e))))
 }
 
-/// Does the subtree call a lambda or run a collection operation, the
-/// computations that can loop?
 /// A part `#[native]` decorates is a region of its own, as a `let`
 /// initializer is, whatever it calls.
 fn asserted_native<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
@@ -1255,6 +1314,8 @@ fn asserted_native<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     attrs.iter().any(|a| a.name == native)
 }
 
+/// Does the subtree call a lambda or run a collection operation, the
+/// computations that can loop?
 fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     fn walk<R: Rt, E: UserEvent>(n: &Node<R, E>, calls: &mut bool) {
         *calls = match n.view() {
@@ -1343,7 +1404,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             })
             .ok();
         }
-        // CR claude for claude: [bug/high] f-mod-lowering-02 has regressed and is now
+        // XCR claude for claude: [bug/high] f-mod-lowering-02 has regressed and is now
         // worse. This reason prints the region's whole type, and the printer walks the
         // type as a tree. A type that shares its parts (`let x2 = `A(x1, x1)`, or `(x1,
         // x1)`) prints at 9*2^n bytes, even when unfolds_past has already judged the
@@ -1355,9 +1416,15 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         // Then pin a shared tuple chain through try_fuse. probe:
         // design/review-2026-10-19/repro/x-rerun-2-variant-dag-refusal-oom.gx
         // (x-rerun-2-01)
-        let reason = format_with_flags(PrintFlag::DerefTVars, || {
-            format_compact!("a region of type {} has no kernel return", node.typ())
-        });
+        // 2026-10-19 claude: A refusal renders a type through fusion::Brief: the
+        // printer writes into a sink that refuses past 512 bytes, so a type that shares
+        // its parts stops at its prefix (here and in lowering::frozen_or_blocked). Pin:
+        // lowering::tests::shared_type_reason_is_bounded (60-level shared variant and
+        // tuple chains). The repro prints 1 in under a second fused.
+        let reason = format_compact!(
+            "a region of type {} has no kernel return",
+            Brief(node.typ())
+        );
         return refuse(ctx, node.spec(), &reason);
     };
     drop(phase);
@@ -1367,6 +1434,26 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let mut fused = build_region(node, ctx, return_type)?;
     share::record(ctx, node, fused.as_mut());
     Ok(fused)
+}
+
+/// The node of the region `node` fused into `kernel`, over a feeder per
+/// input. Feeders register under the real top id: `Rt::ref_var` is keyed
+/// `(BindId, top_id)`, and the region's interior id would strand the top
+/// expression at ref count zero.
+pub(crate) fn kernel_node<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    node: &Node<R, E>,
+    facts: crate::analysis::RegionFacts,
+    inputs: &[FreeVarInput],
+    kernel: Arc<KernelSig>,
+    jit: emit::WrappedKernel,
+) -> Node<R, E> {
+    let top = ctx.fusion.top_id.unwrap_or(node.spec().id);
+    let feeders: Box<[Node<R, E>]> = inputs
+        .iter()
+        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), top))
+        .collect();
+    FusedKernel::new(node.spec().clone(), node.typ().clone(), facts, kernel, jit, feeders)
 }
 
 fn build_region<R: Rt, E: UserEvent>(
@@ -1451,22 +1538,8 @@ fn build_region<R: Rt, E: UserEvent>(
             return refuse(ctx, blocker.unwrap_or_else(|| node.spec()), &why);
         }
     };
-    // Feeders register under the real top id: `Rt::ref_var` is keyed
-    // `(BindId, top_id)`, and the region's interior id would strand the
-    // top expression at ref count zero.
-    let feeder_top = ctx.fusion.top_id.unwrap_or(source_id);
-    let feeders: Box<[Node<R, E>]> = inputs
-        .iter()
-        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
-        .collect();
-    let n = FusedKernel::new(
-        node.spec().clone(),
-        node.typ().clone(),
-        crate::analysis::region_facts(node, ctx),
-        kernel,
-        wrapped,
-        feeders,
-    );
+    let facts = crate::analysis::region_facts(node, ctx);
+    let n = kernel_node(ctx, node, facts, &inputs, kernel, wrapped);
     log::debug!(
         "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
         inputs.len()
@@ -1574,15 +1647,7 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
     }
 }
 
-/// A region root must emit a value. Declarations stay in the graph;
-/// a bare binding read forwards an input and a constant holds its value,
-/// neither computing anything.
 /// Whether `node`, under any parentheses, is a constant.
-// CR claude for claude: [readability/low] The first paragraph of this doc ('A region
-// root must emit a value...') describes region_is_candidate, not is_constant. Likewise,
-// the first line of asserted_native's doc ('Does the subtree call a lambda or run a
-// collection operation...') belongs to calls_a_function. Move each paragraph onto the
-// function it describes. Found by reading; not run. (f-mod-lowering-04)
 pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {
@@ -1594,6 +1659,9 @@ pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     }
 }
 
+/// A region root must emit a value. Declarations stay in the graph;
+/// a bare binding read forwards an input and a constant holds its value,
+/// neither computing anything.
 pub(crate) fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {

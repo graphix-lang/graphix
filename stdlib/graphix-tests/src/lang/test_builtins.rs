@@ -59,9 +59,18 @@ async fn rust_panics_in_a_kernel(mode: Mode) -> Result<()> {
         let boom = |x: i64| -> i64 'test_panic_at_13;
         type K = Abstract<i64>;
         impl Eq for K { let eq = |a, b| boom(a.0) == boom(b.0) };
+        impl Ord for K {
+            let cmp = |a, b| select boom(a.0) < boom(b.0) { true => `Less, false => `Greater }
+        };
+        impl Display for K { let fmt = |k| "[boom(k.0)]" };
         let n = 10;
         n <- select n { k if k < 20 => k + 1, _ => never() };"#;
-    for body in ["#[native] (boom(n) + 1)", "#[native] ([K(n)] == [K(1)])"] {
+    for body in [
+        "#[native] (boom(n) + 1)",
+        "#[native] ([K(n)] == [K(1)])",
+        "#[native] map::len({K(n) => 1, K(1) => 2})",
+        "#[native] str::len(\"[K(n)]\")",
+    ] {
         let r = run(&format!("{{ {head} {body} }}"), mode).await;
         match r {
             Err(e) if e.to_string().contains("the runtime died") => (),

@@ -12,6 +12,7 @@ use crate::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
     },
+    node::pattern::StructPatternNode,
     tval::TAG_MASK,
     typ::Type,
 };
@@ -96,6 +97,9 @@ pub(crate) struct HofElem<'a> {
     /// single-name callbacks; only valid on a composite element
     /// ([`bind_elem`] Errs otherwise).
     pub leaves: &'a [Leaf],
+    /// A destructure past a flat tuple, bound as a `let` binds it; only
+    /// on a composite element.
+    pub pattern: Option<&'a StructPatternNode>,
 }
 
 /// The owned locals one iteration bound; each is an env local, so a
@@ -202,7 +206,8 @@ fn bind_elem(
         kernel_abi::abi_kind(elem.typ).and_then(LocalKind::of).ok_or_else(|| {
             anyhow!("HOF element shape not supported by the JIT loop scaffolds")
         })?;
-    if !elem.leaves.is_empty() && kind != LocalKind::Composite {
+    if (!elem.leaves.is_empty() || elem.pattern.is_some()) && kind != LocalKind::Composite
+    {
         return Err(anyhow!(
             "destructure leaves on a non-composite HOF element — caller bug"
         ));
@@ -210,11 +215,35 @@ fn bind_elem(
     let (d, p) = read_elem(cx, arr_ptr, i_now, kind)?;
     let d = elem_disc(cx, d, src_disc);
     let vv = bind_local(cx, elem.name.clone(), d, p, kind, elem.id);
-    let leaves = match kind {
+    let mut leaves = match kind {
         LocalKind::Composite => bind_leaves(cx, p, src_disc, TAINT | STALE, elem.leaves)?,
         _ => OwnedLocals::new(),
     };
+    if let Some(pattern) = elem.pattern {
+        bind_pattern(cx, pattern, elem.typ, d, p, &mut leaves)?;
+    }
     Ok(Bound { elem: (kind, vv), leaves })
+}
+
+/// Bind `pattern`'s names over the composite `(disc, ptr)` of type
+/// `typ`, as a `let` destructure binds them, adding the owned ones to
+/// `owned` for dropping.
+fn bind_pattern(
+    cx: &mut BodyCx,
+    pattern: &StructPatternNode,
+    typ: &Type,
+    disc: ClifValue,
+    ptr: ClifValue,
+    owned: &mut OwnedLocals,
+) -> Result<()> {
+    let mark = cx.env.mark();
+    super::select::emit_composite_binds(cx, pattern, typ, disc, ptr)?;
+    for (kind, vv) in cx.env.locals_above(mark) {
+        if !matches!(kind, LocalKind::Scalar(_)) {
+            owned.push((kind, vv));
+        }
+    }
+    Ok(())
 }
 
 /// `len = valarray_len(arr_ptr)`.
@@ -311,7 +340,7 @@ impl LoopFrame {
         let new =
             cx.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, self.i, self.entered);
         let new = cx.b.ins().uextend(types::I64, new);
-        let init = cx.init_flag();
+        let init = cx.born_flag();
         let init = cx.b.ins().bor(init, new);
         let standing = {
             let born = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
@@ -321,7 +350,7 @@ impl LoopFrame {
             let keep = cx.b.ins().iconst(types::I64, -1);
             cx.b.ins().select(genuine, clear, keep)
         };
-        cx.env.slot = Some(SlotView { init, new, standing, mark: cx.env.mark() });
+        cx.env.slot = Some(SlotView { born: init, new, standing, mark: cx.env.mark() });
         let r = bind(cx, self.i).and_then(|bound| {
             emit_interrupt_check_every(cx.b, cx.env, cx.ctx, self.i)?;
             Ok((bound, body(cx)?))
@@ -516,7 +545,7 @@ impl SlotFlags {
         };
         let fired_word = cx.b.ins().band_imm(acc, FIRE_TEST);
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
-        let stale = self.exact_stale(cx, self.word, fired_word, src_word, src_taint);
+        let stale = self.exact_stale(cx, fired_word, src_word, src_taint);
         // A fresh-tainted source is an event none of the firing terms
         // can see (no resize, quiet slots, not empty): fire it here.
         let tainted = cx.b.ins().icmp_imm(IntCC::NotEqual, src_taint, 0);
@@ -529,24 +558,17 @@ impl SlotFlags {
     }
 
     /// The exact firing rule's STALE contribution: fires iff resized, a
-    /// slot fired, or the source fired empty, against the prev-length
-    /// word at `addr` (stored `len + 1`; 0 = no previous observation);
-    /// and whether the source's fire is one that made it.
-    // CR claude for claude: [doc-drift/low] The doc's last clause ("and whether the
-    // source's fire is one that made it") describes a second return value that went
-    // away with the WAKE bit. The function returns one value, and the doc leaves out
-    // the PassThrough term (filter/find fire on any source fire). `addr` is always
-    // self.word. Fix the doc and drop the parameter. Found by reading; not run.
-    // (f-scaffold-body-04)
+    /// slot fired, or the source fired empty (a pass-through loop, filter
+    /// or find: the source fired at all), against the prev-length word
+    /// (stored `len + 1`; 0 = no previous observation).
     fn exact_stale(
         &self,
         cx: &mut BodyCx,
-        addr: ClifValue,
         fired_word: ClifValue,
         src_word: ClifValue,
         src_taint: ClifValue,
     ) -> ClifValue {
-        let len = self.len;
+        let (len, addr) = (self.len, self.word);
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let lenp1 = cx.b.ins().iadd_imm(len, 1);
         let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
@@ -1055,7 +1077,14 @@ pub(crate) enum FoldAcc<'a> {
     /// iteration the body's result is made owned per `body_src` and the
     /// old acc dropped. `leaves` are the acc pattern's destructure
     /// leaves, re-read off the current acc each iteration.
-    Composite { init_src: CompositeSource, body_src: CompositeSource, leaves: &'a [Leaf] },
+    Composite {
+        init_src: CompositeSource,
+        body_src: CompositeSource,
+        leaves: &'a [Leaf],
+        /// The acc parameter's destructure past a flat tuple, over the
+        /// acc's frozen type.
+        pattern: Option<(&'a StructPatternNode, &'a Type)>,
+    },
     /// An owned `ArcStr`. String reads always clone, so results are
     /// already owned; the old acc still drops when replaced.
     Str,
@@ -1066,7 +1095,7 @@ pub(crate) enum FoldAcc<'a> {
 }
 
 impl FoldAcc<'_> {
-    fn local_kind(&self) -> LocalKind {
+    pub(super) fn local_kind(&self) -> LocalKind {
         match self {
             FoldAcc::Scalar(p) => LocalKind::Scalar(*p),
             FoldAcc::Composite { .. } => LocalKind::Composite,
@@ -1177,26 +1206,19 @@ where
     let ((bound, acc_leaves), new_acc) = lp.run(
         cx,
         |cx, i| {
-            // a new slot's acc is delivered: the chain as it stands, fired
-            // CR claude for claude: [structure/low] This block (a new slot's acc is
-            // delivered fired) is repeated verbatim in emit_fold_fields_loop over
-            // `carry`. A change to the rule in one fold shape would silently miss the
-            // other. Extract one helper over the disc Variable and call it from both
-            // bind closures. Found by reading; not run. (f-scaffold-body-06)
-            if let Some(s) = cx.env.slot {
-                let d = cx.b.use_var(acc_disc_var);
-                let fired = cx.b.ins().band_imm(d, !STALE);
-                let new = cx.b.ins().icmp_imm(IntCC::NotEqual, s.new, 0);
-                let d = cx.b.ins().select(new, fired, d);
-                cx.b.def_var(acc_disc_var, d);
-            }
+            deliver_acc_to_new_slot(cx, acc_disc_var);
             cx.env.bind(acc_name.clone(), acc_vv, kind, acc_id);
             let bound = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
             let acc_leaves = match &acc {
-                FoldAcc::Composite { leaves, .. } if !leaves.is_empty() => {
+                FoldAcc::Composite { leaves, pattern, .. } => {
                     let acc_ptr = cx.b.use_var(acc_var);
                     let acc_disc = cx.b.use_var(acc_disc_var);
-                    bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?
+                    let mut owned =
+                        bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?;
+                    if let Some((pattern, typ)) = pattern {
+                        bind_pattern(cx, pattern, typ, acc_disc, acc_ptr, &mut owned)?;
+                    }
+                    owned
                 }
                 _ => OwnedLocals::new(),
             };
@@ -1226,10 +1248,18 @@ where
     Ok((CompiledExpr::new(disc, payload), flags))
 }
 
-/// [`emit_fold_loop`] for an acc that is a tuple of scalars, carried as
-/// one register per field: each iteration binds the fields as locals the
-/// acc's field reads take (`JitEnv::unpack`), `fields` emits the body's
-/// fields, and the tuple is built once, after the loop.
+/// A new slot's acc is delivered: the chain as it stands, fired. `disc`
+/// is the acc's carried disc.
+fn deliver_acc_to_new_slot(cx: &mut BodyCx, disc: Variable) {
+    if let Some(s) = cx.env.slot {
+        let d = cx.b.use_var(disc);
+        let fired = cx.b.ins().band_imm(d, !STALE);
+        let new = cx.b.ins().icmp_imm(IntCC::NotEqual, s.new, 0);
+        let d = cx.b.ins().select(new, fired, d);
+        cx.b.def_var(disc, d);
+    }
+}
+
 /// How a fold's callback names an acc it carries field by field.
 pub(crate) enum AccNames {
     /// One name, read field by field (`p.0`).
@@ -1238,10 +1268,10 @@ pub(crate) enum AccNames {
     Fields(Vec<(BindId, usize)>),
 }
 
-// CR claude for claude: [readability/low] This function's doc ("[`emit_fold_loop`] for
-// an acc that is a tuple of scalars ...") sits above `enum AccNames`, stacked on
-// AccNames' own doc line. So AccNames hovers as a loop emitter and this function has no
-// doc. Move those four lines down here. Found by reading; not run. (f-scaffold-body-05)
+/// [`emit_fold_loop`] for an acc that is a tuple of scalars, carried as
+/// one register per field: each iteration binds the fields as locals the
+/// acc's field reads take (`JitEnv::unpack`), `fields` emits the body's
+/// fields, and the tuple is built once, after the loop.
 pub(crate) fn emit_fold_fields_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
@@ -1293,14 +1323,7 @@ where
     let (bound, new_fields) = lp.run(
         cx,
         |cx, i| {
-            // a new slot's acc is delivered: the chain as it stands, fired
-            if let Some(s) = cx.env.slot {
-                let d = cx.b.use_var(carry);
-                let fired = cx.b.ins().band_imm(d, !STALE);
-                let new = cx.b.ins().icmp_imm(IntCC::NotEqual, s.new, 0);
-                let d = cx.b.ins().select(new, fired, d);
-                cx.b.def_var(carry, d);
-            }
+            deliver_acc_to_new_slot(cx, carry);
             let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
             for (k, (p, v)) in prims.iter().zip(vars.iter()).enumerate() {
                 let id = match acc_names {

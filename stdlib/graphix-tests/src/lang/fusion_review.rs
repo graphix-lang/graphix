@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx_value::Value;
 
 // A callee first dispatched late, under an arm, prints its constant at
@@ -201,3 +204,209 @@ run!(select_variant_composite_whole_bind, r#"
     #[native] (f(`Some("payload")), f(`No))
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if **a == [Value::Bool(true), Value::Bool(false)]); FuseExpect::Jit);
+
+// A chain of distinct functions nests kernel frames as deep as the
+// program is long; each call checks the stack as a self-call does.
+run!(cross_kernel_chain_stack_space, {
+    use std::fmt::Write;
+    const N: usize = 500;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    src.push_str("{\n");
+    for i in 0..N {
+        writeln!(src, "let v{i} = {i};").unwrap();
+    }
+    writeln!(src, "let f{N} = |x: i64| -> i64 x;").unwrap();
+    for i in (0..N).rev() {
+        writeln!(src, "let f{i} = |x: i64| -> i64 f{}(x) + v{i};", i + 1).unwrap();
+    }
+    src.push_str("#[native] f0(1) }");
+    arcstr::ArcStr::from(src.as_str())
+}, |v: Result<&Value>| matches!(v, Ok(Value::I64(124751))); FuseExpect::Jit);
+
+// A value-shaped production, bottom included, entering a composite
+// slot: an argument, a composite return, a tail loop's rebind and a
+// fold's accumulator.
+run!(value_into_composite_slot, r#"
+{
+    let f = |a: Array<[i64, string]>| -> i64 array::len(a);
+    let g = |k: i64| f(select k { 0 => [1], 1 => ["x", "y"], _ => never() });
+    let h = |k: i64| -> Array<[i64, string]> select k { 0 => [1], 1 => ["x", "y"], _ => never() };
+    let rec t = |a: Array<[i64, string]>, k: i64| -> i64 select k {
+        0 => array::len(a),
+        k => t(select 6 / (k - 3) { 1 => [1], _ => ["x", "y"] }, k - 1)
+    };
+    let fl = |k: i64| {
+        let init: Array<[i64, string]> = [];
+        array::len(array::fold([k, k], init, |acc, x| select x { 0 => [1], 1 => ["x", "y"], _ => never() }))
+    };
+    (
+        any(#[native] g(2), 7),
+        any(#[native] array::len(h(2)), 7),
+        #[native] t([], 4),
+        any(#[native] fl(2), 7),
+        #[native] (g(0), g(1), array::len(h(1)), t([], 2), fl(1))
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:7, i64:7, i64:2, i64:7, [i64:1, i64:2, i64:2, i64:2, i64:2]]"); FuseExpect::Jit);
+
+// A kernel evaluates a call's arguments in the order they are written,
+// as the node-walk does, so their raises reach the handler in that order.
+run!(labeled_args_raise_in_written_order, r#"
+{
+    let f = |#a: i64, #b: i64, c: i64| a + b + c;
+    let log: Array<string> = [];
+    let n = 1;
+    let r = {
+        catch(e) log <- e ~ array::push(log, select "[e]" {
+            s if str::contains(#part: "remainder", s) => "b",
+            _ => "a"
+        });
+        #[native] f(#b: (n %? 0)?, #a: (n /? 0)?, n)
+    };
+    sys::time::after_idle(duration:10.ms, log)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["b", "a"]"#); FuseExpect::Jit);
+
+// An argument that raises through a call with no static target is not
+// fed to a kernel ahead of an earlier argument that raises in it.
+run!(fed_arg_raising_through_a_dynamic_call, r#"
+{
+    let f = |a: i64, b: i64| a + b;
+    let n = 1;
+    let g = select n {
+        0 => |x: i64| -> i64 (x %? 0)?,
+        _ => |x: i64| -> i64 (x %? 0)?
+    };
+    let log: Array<string> = [];
+    let r = {
+        catch(e) log <- e ~ array::push(log, select "[e]" {
+            s if str::contains(#part: "remainder", s) => "fed",
+            _ => "fused"
+        });
+        f((n /? 0)?, count(g(n)))
+    };
+    sys::time::after_idle(duration:10.ms, log)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["fused", "fed"]"#); FuseExpect::Jit);
+
+// Select shapes that fuse: a literal of any type or a bind-free
+// or-pattern at an element or payload position (t*), a composite pattern
+// over an option of a composite (o*), an or-arm whose shared name binds
+// at different kinds (w*), a type test of the scrutinee's own type (y*).
+run!(select_leaves_options_or_kinds_and_own_type_tests, r#"
+{
+  let t0 = |a: (string, i64)| -> i64 #[native] select a { ("a", n) => n, _ => 0 };
+  let t1 = |a: Array<string>| -> i64 #[native] select a { ["a", ..] => 1, _ => 0 };
+  let t2 = |a: Array<[i64, null]>| -> i64 #[native] select a { [1, ..] => 5, [null, ..] => 6, _ => 0 };
+  let t3 = |v: (bool, [`A, `B])| -> i64 #[native] select v { (true, `A | `B) => 1, (false, _) => 2 };
+  let t4 = |a: Array<i64>| #[native] select a { [x, 1 | 2] => x, _ => 0 };
+  let t5 = |v: [`A(i64), `B]| #[native] select v { `A(1 | 2) => "y", _ => "n" };
+  let t6 = |s: [string, null], n: i64| #[native] select (s, n) { (null, _) => 0, (_, m) => m };
+  let t7 = |s: [i64, null], n: i64| #[native] select (s, n) { (0, _) => 0, (_, m) => m };
+  let t8 = |v: [`A([i64, null]), `B]| #[native] select v { `A(null) => "null", `A(_) => "some", `B => "b" };
+  let o0 = |a: [Array<string>, null]| #[native] select a {
+      null as _ => -1,
+      [s, rest..] => str::len(s) + array::len(rest),
+      [] => 0
+  };
+  let o1 = |t: [(i64, i64), null]| #[native] select t { null as _ => 0, (x, y) => x + y };
+  let o2 = |v: [{x: i64, y: i64}, null]| #[native] select v { null as _ => -1, {x, y} => x + y };
+  let o3 = |v: [(i64, i64), null]| #[native] select v { (i64, i64) as (x, y) => x * y, null as _ => -2 };
+  let w0 = |v: [`A(i64), `B(f64), `C]| #[native] select v { `A(x) | `B(x) => "[x]", `C => "c" };
+  let w1 = |v: [`A(i64), `B(string), `C]| #[native] select v { `A(x) | `B(x) => "[x]", `C => "c" };
+  let y0 = |a: Array<i64>| #[native] select a { Array<i64> as [h, ..] => h, _ => 0 };
+  let y1 = |t: (i64, string)| #[native] select t { (i64, string) as (n, _) => n };
+  let y2 = |s: string| #[native] select s { string as x => str::len(x) };
+  (
+    (t0(("a", 2)), t0(("b", 2)), t1(["a"]), t1(["b"]), t2([1]), t2([null]), t2([2])),
+    (t3((true, `B)), t3((false, `A)), t4([3, 2]), t4([3, 4]), t5(`A(2)), t5(`A(3)), t5(`B)),
+    (t6(null, 2), t6("x", 3), t7(0, 4), t7(null, 4), t7(5, 6), t8(`A(null)), t8(`A(1)), t8(`B)),
+    (o0(null), o0(["ab", "c"]), o0([]), o1(null), o1((1, 2)), o2({x: 3, y: 4}), o2(null), o3((2, 5)), o3(null)),
+    (w0(`A(1)), w0(`B(2.5)), w1(`B("s")), w1(`A(4)), w0(`C)),
+    (y0([7]), y0([]), y1((2, "x")), y2("abc"))
+  )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[[i64:2, i64:0, i64:1, i64:0, i64:5, i64:6, i64:0], [i64:1, i64:2, i64:3, i64:0, "y", "n", "n"], [i64:0, i64:3, i64:0, i64:4, i64:6, "null", "some", "b"], [i64:-1, i64:3, i64:0, i64:0, i64:3, i64:7, i64:-1, i64:10, i64:-2], ["1", "2.5", "s", "4", "c"], [i64:7, i64:0, i64:2, i64:3]]"#); FuseExpect::Jit);
+
+// A narrow MIN / -1 in a kernel is bottom at its own width's minimum, as
+// in the node-walk; a check against i64::MIN alone would trap.
+run!(narrow_min_div_minus_one_is_bottom, r#"
+{
+    let d8 = |a: i8, b: i8| a / b;
+    let d16 = |a: i16, b: i16| a / b;
+    let d32 = |a: i32, b: i32| a / b;
+    (
+        any(#[native] d8(i8:-128, i8:-1), i8:7),
+        any(#[native] d16(i16:-32768, i16:-1), i16:7),
+        any(#[native] d32(i32:-2147483648, i32:-1), i32:7),
+        #[native] d8(i8:-128, i8:2)
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i8:7, i16:7, i32:7, i8:-64]"); FuseExpect::Jit);
+
+// A collection callback whose formal destructures past a flat tuple (a
+// struct, a nested tuple, a fold accumulator) binds its names as a `let`
+// destructure does, in a fused loop.
+run!(destructured_callback_formals_fuse, r#"
+{
+    let rows = [{a: "x", b: 2}, {a: "yy", b: 4}];
+    let nested = [(("p", 2), 5), (("qq", 4), 6)];
+    (
+        #[native] array::map(rows, |{a, b}| str::len(a) + b),
+        #[native] array::map(nested, |((a, b), c)| str::len(a) + b + c),
+        #[native] array::fold(["a", "bb", "ccc"], (("", 1), 2), |((n, m), k), x| (("[n][x]", m + 1), k)),
+        #[native] array::filter(rows, |{a, b}| str::len(a) + b > 4)
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == DESTRUCTURED_FORMALS); FuseExpect::Jit);
+
+const DESTRUCTURED_FORMALS: &str = r#"[[i64:3, i64:6], [i64:8, i64:12], [["abbccc", i64:4], i64:2], [[["a", "yy"], ["b", i64:4]]]]"#;
+
+// A native tail loop polls the interrupt every 64 iterations, its first
+// included: a long one still runs to its answer.
+run!(native_tail_loop_polls_by_count, r#"
+{
+    let rec sum = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => sum(n - 1, acc + n) };
+    #[native] sum(100000, 0)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5000050000))); FuseExpect::Jit);
+
+// Checked integer arithmetic fuses inline and fails as the node-walk
+// does, at every width.
+run!(checked_int_arith_inline, r#"
+{
+    let ck = |a: i8, b: i8| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    let ck16 = |a: u16, b: u16| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    let ck64 = |a: i64, b: i64| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    let cku64 = |a: u64, b: u64| (a +? b, a -? b, a *? b, a /? b, a %? b);
+    (
+        #[native] ck(i8:100, i8:27), #[native] ck(i8:-128, i8:-1),
+        #[native] ck16(u16:65535, u16:2), #[native] ck64(9223372036854775807, 1),
+        #[native] ck64(3037000500, 3037000500), #[native] cku64(u64:1, u64:2),
+        #[native] cku64(u64:9, u64:0)
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == CHECKED_INT_ARITH); FuseExpect::Jit);
+
+const CHECKED_INT_ARITH: &str = r#"[[i8:127, i8:73, error:["ArithError", "attempt to multiply with overflow"], i8:3, i8:19], [error:["ArithError", "attempt to add with overflow"], i8:-127, error:["ArithError", "attempt to multiply with overflow"], error:["ArithError", "attempt to divide with overflow"], i8:0], [error:["ArithError", "attempt to add with overflow"], u16:65533, error:["ArithError", "attempt to multiply with overflow"], u16:32767, u16:1], [error:["ArithError", "attempt to add with overflow"], i64:9223372036854775806, i64:9223372036854775807, i64:9223372036854775807, i64:0], [i64:6074001000, i64:0, error:["ArithError", "attempt to multiply with overflow"], i64:1, i64:0], [u64:3, error:["ArithError", "attempt to subtract with overflow"], u64:2, u64:0, u64:1], [u64:9, u64:9, u64:0, error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"]]]"#;
+
+// A typedef naming the next twice freezes once per level, not 2^depth.
+run!(typedef_dag_freezes_in_linear_time, {
+    use std::fmt::Write;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    src.push_str("{\n");
+    for i in 0..40 {
+        writeln!(src, "type T{i} = [null, (T{}, T{})];", i + 1, i + 1).unwrap();
+    }
+    src.push_str("type T40 = [null, (T0, T0)];\nlet v: T0 = null;\nv }");
+    arcstr::ArcStr::from(src.as_str())
+}, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
+
+// An unguarded arm the guard prologue tested hands its condition and binds
+// to the chain, which reads them where it takes the arm.
+run!(prologue_unguarded_arm_binds_reach_the_chain, r#"
+{
+    let f = |v: [`A(i64), `B(i64)], k: i64| select v { `A(x) => x, `B(y) if y > k => y * 10, `B(y) => y };
+    (#[native] f(`A(1), 0), #[native] f(`B(5), 2), #[native] f(`B(1), 2))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:50, i64:1]"); FuseExpect::Jit);

@@ -134,10 +134,13 @@ cell for the rest).
   `emit_structure_cond` against its member of the arm's raw inferred
   Set); the FIRST match materializes ITS binds through the ordinary
   `install_arm_binds` into a temporary env scope and forwards the
-  values (ownership transferred) to ONE `done` block, whose params bind
-  the arm's canonical locals once under the shared BindIds. The layout
-  (sorted ids + kinds, from alternative 0) is total by same-binds; a
-  mismatch Errs (de-fuse), never miscompiles. The guard prologue uses
+  values (ownership transferred), through a block of its own, to ONE
+  `done` block, whose params bind the arm's canonical locals once under
+  the shared BindIds. The layout's ids are total by same-binds (a
+  mismatch Errs, de-fuse, never miscompiles); each id takes its
+  alternatives' common kind, or a Value where they differ (the shared
+  name's type is the union of theirs), and an alternative's block widens
+  its scalar to the Value words. The guard prologue uses
   the same chain with no fail target: the no-match path feeds `done`
   with matched=0 and tainted drop-safe placeholders, so the guard still
   evaluates every invocation; the take chain passes the arm's fail
@@ -146,7 +149,10 @@ cell for the rest).
   binds on every edge. Explicit type predicates on or-arms refuse
   (`[T, U] as v` covers type alternation). Refusal residue is whatever
   an alternative's own shape refuses — the single-arm vocabulary, per
-  alternative.
+  alternative. An or-pattern at an element or a variant payload that
+  binds nothing ORs its alternatives' tests of the element's borrowed
+  Value words in one block (their reads are total); one that binds
+  refuses.
 
 ## Open
 
