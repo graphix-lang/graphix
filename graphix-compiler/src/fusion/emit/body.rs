@@ -473,7 +473,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         src_disc: ClifValue,
         idx_var: Variable,
     ) -> Result<()> {
-        let (tables, pending) = self.claim_slot_tables(sites, len, src_disc)?;
+        let tables = self.claim_slot_tables(sites, len, src_disc)?;
         let depth = self.env.loop_depth + 1;
         self.ctx.slot_tables.borrow_mut().push(SlotTableFrame {
             depth,
@@ -481,19 +481,42 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             len,
             src_disc,
             tables,
-            pending,
+            pending: Vec::new(),
         });
         Ok(())
     }
 
+    // XCR claude for claude: [perf/low] This record lands in the new frame's own
+    // pending list, so emit_slot_truncates re-ensures the leaf in the loop's
+    // exit block with the same len and valid the preheader just used: n_dirs +
+    // 1 no-op helper calls per state site per loop run (per outer slot when
+    // nested). The record only matters at the enclosing loops' exits, whose
+    // zero-length epochs skip this preheader. The callee_table record below has
+    // the same problem, and emit_outlined repeats the leaf ensure too. Append
+    // both to the enclosing frame's pending (drop them at depth 0), and keep
+    // claim_callee_block's in-body fallback records in the current frame.
+    // probe: design/review-2026-10-19/repro/f-scaffold-body-exit-reensure.gx
+    // (dumped CLIF shows two graphix_slot_state_table calls with identical
+    // arguments) (f-scaffold-body-02)
+    // 2026-10-20 claude: claim_slot_tables appends its records to the enclosing
+    // frame pending (none at depth 0) instead of its own frame, so a loop no
+    // longer re-ensures its own leaf at its exit, and an outlined loop does not
+    // either (emit_chunk and emit_range lost the seed parameter). The probe
+    // kernel now has one graphix_slot_state_table call (the preheader). A
+    // missed truncation would show in the kernel interior memory pins
+    // (lang::kernel_state, collection slot fixtures); graphix-tests 9636 green
+    // and regress 552/0/0/0.
     /// The claims of [`Self::open_slot_tables`] for a loop at the next
-    /// depth: its sites' tables and its truncate records.
+    /// depth: its sites' tables. Their truncate records go to the
+    /// enclosing loop's frame: the preheader sizes the tables each run,
+    /// and an enclosing level's zero-length epoch, which skips it, is
+    /// truncated at that level's exit.
     pub(crate) fn claim_slot_tables(
         &mut self,
         sites: &[ExprId],
         len: ClifValue,
         src_disc: ClifValue,
-    ) -> Result<(Vec<SlotTable>, Vec<TruncRec>)> {
+    ) -> Result<Vec<SlotTable>> {
         debug_assert!(
             self.ctx.closed_frame.borrow().is_none(),
             "a closed frame's slot truncates were never emitted"
@@ -511,24 +534,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         };
         let n_dirs = enclosing.len();
         let mut tables = Vec::new();
-        // Records for the exit re-ensures: they propagate outward so
-        // every enclosing level truncates on its exit, since an outer
-        // len-0 epoch skips this preheader entirely.
         let mut pending: Vec<TruncRec> = Vec::new();
         for id in sites {
             let (anchor, word) = self.claim_anchor(n_dirs as u32, None);
-            // CR claude for claude: [perf/low] This record lands in the new frame's own
-            // pending list, so emit_slot_truncates re-ensures the leaf in the loop's
-            // exit block with the same len and valid the preheader just used: n_dirs +
-            // 1 no-op helper calls per state site per loop run (per outer slot when
-            // nested). The record only matters at the enclosing loops' exits, whose
-            // zero-length epochs skip this preheader. The callee_table record below has
-            // the same problem, and emit_outlined repeats the leaf ensure too. Append
-            // both to the enclosing frame's pending (drop them at depth 0), and keep
-            // claim_callee_block's in-body fallback records in the current frame.
-            // probe: design/review-2026-10-19/repro/f-scaffold-body-exit-reensure.gx
-            // (dumped CLIF shows two graphix_slot_state_table calls with identical
-            // arguments) (f-scaffold-body-02)
             pending.push(TruncRec {
                 anchor,
                 n_dirs: n_dirs as u32,
@@ -566,7 +574,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 });
             }
         }
-        Ok((tables, pending))
+        if let Some(f) = self.ctx.slot_tables.borrow_mut().last_mut() {
+            f.pending.extend(pending);
+        }
+        Ok(tables)
     }
 
     /// Walk one directory level per entry of `dirs` (an enclosing
