@@ -845,6 +845,24 @@ run!(
         t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
     "#; FuseExpect::Jit);
 
+// A seqq abort clause that spells the trigger's variable another way
+// reads the run's request, never the variable live: the first run is
+// not aborted when the variable moves on.
+run!(seqq_abort_reads_the_request_by_any_spelling,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => r#"
+        mod m;
+        use m::t;
+        let result = seqq t; abort(select m::t { 3 => true, _ => never() }) {
+            let w = sys::time::timer(duration:70.ms, false);
+            m::t
+        }
+    "#,
+    "/test/m.gx" => r#"
+        let t = 0;
+        t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
+    "#);
+
 // A read that spells the trigger's variable another way (`use m::t;
 // seq t { .. m::t .. }`) is snapshotted too.
 run!(trigger_read_by_another_spelling_is_snapshotted,

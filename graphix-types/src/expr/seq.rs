@@ -60,9 +60,9 @@ type Names = AHashMap<ArcStr, Redirect>;
 enum Rewrite<'a> {
     Bindings,
     /// A `seqq` body's reads become the request's captures. An `until`
-    /// stays live, except for the trigger's name (the payload): a run
-    /// waits on its own request.
-    Captures(Option<&'a str>),
+    /// stays live, except for the trigger's spellings (the payload): a
+    /// run waits on its own request.
+    Captures(&'a [ArcStr]),
     Issue(Issue<'a>),
 }
 
@@ -187,15 +187,16 @@ fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
     Ok(block(pos, [let_bind(pos, &name, typ.clone(), value.clone()), queued]))
 }
 
-/// The other spellings the body and abort clause read the trigger's
-/// variable by (`use m::t; seq t { .. m::t .. }`), keyed as reads are.
+/// The other spellings the body, abort and flush clauses read the
+/// trigger's variable by (`use m::t; seq t { .. m::t .. }`), keyed as
+/// reads are.
 fn trigger_aliases(seq: &Parts, env: &Env, scope: &ModPath) -> SmallVec<[ArcStr; 2]> {
     let mut out: SmallVec<[ArcStr; 2]> = SmallVec::new();
     let Some(SeqTrigger::Expr(e)) = seq.trigger else { return out };
     let ExprKind::Ref { name } = &e.kind else { return out };
     let Ok(Some((_, b))) = env.lookup_bind(scope, name) else { return out };
     let (id, key) = (b.id, ref_key(name));
-    let stmts = seq.body.iter().chain(seq.abort);
+    let stmts = seq.body.iter().chain(seq.abort).chain(seq.flush);
     for s in stmts {
         s.fold((), &mut |(), e| {
             if let ExprKind::Ref { name: n } = &e.kind
@@ -230,7 +231,7 @@ fn trigger_snapshot(
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
             // the abort clause reads the run's trigger too
-            // CR claude for claude: [bug/medium] Only a trigger spelled as a simple
+            // XCR claude for claude: [bug/medium] Only a trigger spelled as a simple
             // name is snapshotted, and only reads with that exact spelling are
             // redirected. So `seq m::t { .. m::t .. }`, or `use m::t; seq t { .. m::t
             // .. }`, reads the variable live: a busy-dropped trigger changes what the
@@ -253,6 +254,13 @@ fn trigger_snapshot(
             // cell. Pin: lang::seq::trigger_read_by_another_spelling_is_snapshotted.
             // Left: desugar_queued trigger_name (seqq until and its abort/flush
             // clauses) still keys by spelling.
+            // 2026-10-20 claude: seqq done: desugar_queued recognizes the trigger by
+            // every spelling that resolves to its binding (ref_key of the trigger plus
+            // trigger_aliases, which now also walks the flush clause), so the abort and
+            // flush clauses read the run request and an until waits on it whatever the
+            // spelling (Rewrite::Captures carries the spellings). Pin:
+            // lang::seq::seqq_abort_reads_the_request_by_any_spelling (fails with the
+            // aliases dropped). netidx-admin 45 green.
             let reads = |n: &str| {
                 reads_name(body, n)
                     || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), n))
@@ -1252,7 +1260,14 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     let activation = format_compact!("seqqactivation{id}");
     let input = format_compact!("seqqinput{id}");
     let result = format_compact!("seqqresult{id}");
-    let trigger_name = trigger.and_then(|t| simple_ref_name(t.expr()));
+    // every spelling of the trigger's variable is the run's request
+    let trigger_names: SmallVec<[ArcStr; 2]> = match trigger.map(|t| &t.expr().kind) {
+        Some(ExprKind::Ref { name }) => std::iter::once(ArcStr::from(ref_key(name)))
+            .chain(trigger_aliases(seq, env, scope))
+            .collect(),
+        _ => SmallVec::new(),
+    };
+    let is_trigger = |n: &str| trigger_names.iter().any(|t| t.as_str() == n);
     let mut captures = body.iter().fold(
         LPooled::<IndexMap<ArcStr, (Expr, ArcStr, BindId)>>::take(),
         |caps, stmt| {
@@ -1317,7 +1332,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // a run reads its own request: the trigger's name is never live
     let live_ids: LPooled<AHashSet<BindId>> = captures
         .iter()
-        .filter(|(n, _)| trigger_name.as_ref() != Some(*n))
+        .filter(|(n, _)| !is_trigger(n))
         .filter_map(|(_, (_, c, id))| live_cells.contains(c).then_some(*id))
         .collect();
     let snapshots: LPooled<Names> = captures
@@ -1325,8 +1340,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         .filter(|(_, (_, _, id))| !live_ids.contains(id))
         .map(|(n, (_, c, _))| (n.clone(), Redirect::Snapshot(c.clone())))
         .collect();
-    let body =
-        rewrite_stmts(body, &snapshots, Rewrite::Captures(trigger_name.as_deref()));
+    let body = rewrite_stmts(body, &snapshots, Rewrite::Captures(&trigger_names));
     let used = body.iter().fold(LPooled::<AHashSet<ArcStr>>::take(), |u, stmt| {
         stmt.fold(u, &mut |mut u, e| {
             if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
@@ -1354,7 +1368,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // a flush that reads the run's request reads what the queue produces,
     // so the queue cannot read the flush in the same cycle
     let flush_reads_request = flush.is_some_and(|f| {
-        trigger_name.as_ref().is_some_and(|n| reads_name(std::slice::from_ref(f), n))
+        trigger_names.iter().any(|n| reads_name(std::slice::from_ref(f), n))
     });
     if flush_reads_request {
         prelude.push(let_bind(pos, &flushed, None, never(pos)));
@@ -1379,7 +1393,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.push(r#ref(pos, &request));
     for (name, (expr, _, _)) in captures.iter() {
-        if trigger_name.as_ref() != Some(name) {
+        if !is_trigger(name) {
             args.push(expr.clone());
         }
     }
@@ -1436,7 +1450,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
     let mut field = 0;
     for (var, (live, name, _)) in captures.iter() {
-        let capture = if trigger_name.as_ref() == Some(var) {
+        let capture = if is_trigger(var) {
             dequeued_request()
         } else {
             field += 1;
@@ -1455,8 +1469,11 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // an abort or flush event reads everything live but the trigger's
     // name, which is the request this run dequeued
     let mut run_names: LPooled<Names> = LPooled::take();
-    if let Some(n) = &trigger_name {
-        run_names.insert(n.clone(), Redirect::Snapshot(ArcStr::from(dequeued.as_str())));
+    if !trigger_names.is_empty() {
+        for n in &trigger_names {
+            run_names
+                .insert(n.clone(), Redirect::Snapshot(ArcStr::from(dequeued.as_str())));
+        }
         if abort.is_some() || flush.is_some() {
             qlets.push(let_bind(pos, &dequeued, None, dequeued_request()));
         }
@@ -1804,12 +1821,15 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
     let rewrite = |e: &Expr, map: &Names| rewrite_with(e, map, mode);
     let kind = match &e.kind {
         ExprKind::Until(x) if matches!(mode, Rewrite::Captures(_)) => {
-            let Rewrite::Captures(Some(trigger)) = mode else { return e.clone() };
-            let Some((name, capture)) = map.get_key_value(trigger) else {
+            let Rewrite::Captures(trigger) = mode else { unreachable!() };
+            let request: LPooled<Names> = trigger
+                .iter()
+                .filter_map(|t| map.get_key_value(t))
+                .map(|(n, c)| (n.clone(), c.clone()))
+                .collect();
+            if request.is_empty() {
                 return e.clone();
-            };
-            let mut request: LPooled<Names> = LPooled::take();
-            request.insert(name.clone(), capture.clone());
+            }
             ExprKind::Until(Arc::new(rewrite(x, &request)))
         }
         ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, map) },
