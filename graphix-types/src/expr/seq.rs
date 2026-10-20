@@ -1625,14 +1625,27 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let issued = format_compact!("seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
-    // CR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
+    // XCR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
     // carries pc, whose type is the set of all step labels. Each call site therefore
     // costs the check O(steps): 250/500/1000 call steps check in 0.25/1.07/7.1 s
     // (debug), against 0.07/0.10/0.13 s for constant writes. The tuple only needs an
     // entry clock: `pc ~! true` (still a free read of pc, typed bool) in place of pc
     // keeps the type constant-size. probe:
     // design/review-2026-10-19/repro/t-seq-issue-tuple-check-cost.sh (t-seq-06)
-    args.push(r#ref(pos, pc));
+    // the entry clock, `pc ~! true`: a bool, whatever the step labels
+    // 2026-10-19 claude: An issue tuple, and the snapshot's any(..), carry the entry
+    // clock pc ~! true (a bool) in place of pc. 1000 call steps check in 0.2 s (was
+    // 8.8 s, debug). Pin: graphix-shell/tests/deep_nesting.rs
+    // seq_call_steps_check_in_linear_time (2000 steps within 15 s).
+    let entry = || {
+        ExprKind::BinOp {
+            op: BinOp::StrictSample,
+            lhs: Arc::new(r#ref(pos, pc)),
+            rhs: Arc::new(boolean(pos, true)),
+        }
+        .to_expr(pos)
+    };
+    args.push(entry());
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a
         // name bare, a lambda literal sampled at entry
@@ -1665,7 +1678,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let snapshot = ExprKind::BinOp {
         op: BinOp::StrictSample,
         lhs: Arc::new(
-            ExprKind::Any { args: Arc::from_iter([r#ref(pos, pc), ready]) }.to_expr(pos),
+            ExprKind::Any { args: Arc::from_iter([entry(), ready]) }.to_expr(pos),
         ),
         rhs: Arc::new(r#ref(pos, &input)),
     }
