@@ -2647,7 +2647,7 @@ impl Type {
                                 tv.add_cell_constraint(constraint)
                             }
                         }
-                        // CR claude for claude: [bug/medium] A bound checked against an
+                        // XCR claude for claude: [bug/medium] A bound checked against an
                         // argument that is not a bare cell is checked only as the
                         // argument stands: the open members of a union argument never
                         // get it, as require_bounds gives them when a cell binds. So
@@ -2684,6 +2684,15 @@ impl Type {
                         // the tree but not of user programs. param_bounds_of should mirror
                         // every bound require_bounds hands on, with a pin for a non-NoError
                         // bound.
+                        // 2026-10-20 claude: One rule: tvar::handed_bounds yields each
+                        // conjunct a bound hands an open cell of its argument; require_bounds
+                        // adds them, and fntyp.rs param_bounds_of collects them for every
+                        // bound a typedef parameter carries on a non-cell argument, not
+                        // NoError alone. The require_* walks take the sink; op.rs and map.rs
+                        // call require_bounds. Pin:
+                        // lang::modules::interface_typedef_bound_reaches_open_members (T<'a:
+                        // Discernible> at T<[i64, 'b]>; the pre-fix binary refuses it with
+                        // 'requires 'b: Discernible, which the signature does not declare').
                         _ if commit => {
                             constraint.check_contains(env, arg)?;
                             tvar::require_bounds(std::slice::from_ref(&constraint), arg)

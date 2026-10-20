@@ -229,3 +229,16 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:3, i64:4]")
 );
+
+// The same under seqq: the parameter is not captured into the request.
+run!(
+    unannotated_fn_param_not_captured_by_seqq,
+    r#"{
+  let apply = |f, t| seqq t {
+    let y = #[native] array::map([1, 2, 3], f);
+    y
+  };
+  apply(|x: i64| x + 1, 1)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:3, i64:4]")
+);

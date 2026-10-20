@@ -819,6 +819,13 @@ run!(mut_ref_to_a_rank2_parameter, r#"{
   app(|x| x)
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
 
+// So is a lambda literal's parameter checked against a rank-2 formal:
+// its type is the quantifier itself.
+run!(mut_ref_to_a_rank2_argument_parameter, r#"{
+  let app = |g: fn<'b: Any>(y: 'b) -> 'b| g(1);
+  app(|y| { let r = &mut y; y })
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
 // A reference never equals an array of numbers, its root's bind id
 // among them: its comparison form holds the root as a reference.
 run!(reference_never_equals_an_array, r#"{

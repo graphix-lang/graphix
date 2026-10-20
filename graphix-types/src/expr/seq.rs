@@ -522,27 +522,7 @@ fn fn_names(
             },
             ExprKind::Apply(a) => {
                 args.extend(a.args.iter().filter_map(|(_, a)| simple_ref_name(a)));
-                // an argument at a parameter the callee declares a function is
-                // one, whatever the check will make of its own binding
-                if let ExprKind::Ref { name } = &a.function.kind
-                    && let Ok(Some((_, b))) = env.lookup_bind(scope, name)
-                    && let Some(Type::Fn(ref ft)) = b.typ.deref_cloned()
-                {
-                    let mut positional = ft.args.iter().filter(|f| f.is_positional());
-                    for (label, arg) in a.args.iter() {
-                        let formal = match label {
-                            Some(l) => ft.args.iter().find(|f| f.label() == Some(l)),
-                            None => positional.next(),
-                        };
-                        if let Some(n) = simple_ref_name(arg)
-                            && formal.is_some_and(|f| {
-                                f.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
-                            })
-                        {
-                            lambdas.insert(n);
-                        }
-                    }
-                }
+                fn_position_args(a, env, scope, &mut lambdas);
             }
             ExprKind::Select(se) => se.arms.iter().for_each(|(p, _)| {
                 p.structure_predicate.with_names(&mut |n| {
@@ -575,8 +555,36 @@ fn fn_names(
     args
 }
 
+/// The names `a` passes where its callee, resolved now, declares a
+/// function: each is one, whatever the check will make of its own binding.
+fn fn_position_args(
+    a: &ApplyExpr,
+    env: &Env,
+    scope: &ModPath,
+    out: &mut AHashSet<ArcStr>,
+) {
+    if let ExprKind::Ref { name } = &a.function.kind
+        && let Ok(Some((_, b))) = env.lookup_bind(scope, name)
+        && let Some(Type::Fn(ref ft)) = b.typ.deref_cloned()
+    {
+        let mut positional = ft.args.iter().filter(|f| f.is_positional());
+        for (label, arg) in a.args.iter() {
+            let formal = match label {
+                Some(l) => ft.args.iter().find(|f| f.label() == Some(l)),
+                None => positional.next(),
+            };
+            if let Some(n) = simple_ref_name(arg)
+                && formal
+                    .is_some_and(|f| f.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))))
+            {
+                out.insert(n);
+            }
+        }
+    }
+}
+
 /// Whether a binding is a function: a trait method, or of a function type.
-// CR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
+// XCR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
 // false for an unannotated function parameter. fn_names then moves such a parameter
 // into the issue tuple, and desugar_queued captures it into the request, so
 // `array::map(xs, f)` in a seq inside `|f, t| ..` cannot resolve its callback and
@@ -600,6 +608,11 @@ fn fn_names(
 // expression did not fully fuse', while the same with 'f: fn(x: i64) -> i64' fuses. The
 // finding named the desugar_queued capture path explicitly; the pin
 // unannotated_fn_param_issued_bare covers only seq.
+// 2026-10-20 claude: desugar_queued no longer captures a name passed where the callee
+// declares a function (fn_position_args, shared with fn_names), so it stays bare for
+// fn_names over the rewritten body. Pin:
+// lang::seq_calls::unannotated_fn_param_not_captured_by_seqq (#[native]; the pre-fix
+// binary refuses it with '#[native] expression did not fully fuse').
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -1214,6 +1227,14 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         _ => SmallVec::new(),
     };
     let is_trigger = |n: &str| trigger_names.iter().any(|t| t.as_str() == n);
+    let fn_args = body.iter().fold(LPooled::<AHashSet<ArcStr>>::take(), |args, stmt| {
+        stmt.fold(args, &mut |mut args, e| {
+            if let ExprKind::Apply(a) = &e.kind {
+                fn_position_args(a, env, scope, &mut args);
+            }
+            args
+        })
+    });
     let mut captures = body.iter().fold(
         LPooled::<IndexMap<ArcStr, (Expr, ArcStr, BindId)>>::take(),
         |caps, stmt| {
@@ -1234,6 +1255,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                 | ExprKind::Connect { name, deref: true, .. } = &e.kind
                     && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
                     && !is_function(env, bind)
+                    && !simple_name(name).is_some_and(|n| fn_args.contains(n))
                 {
                     let n = caps.len();
                     caps.entry(ArcStr::from(

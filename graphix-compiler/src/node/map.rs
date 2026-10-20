@@ -18,7 +18,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{NakedPrefix, Type},
+    typ::{NakedPrefix, Type, tvar::require_bounds},
     wrap,
 };
 use anyhow::Result;
@@ -158,7 +158,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             vts.push(v.typ());
         }
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
-        ktype.require_compared(&Type::Ordered);
+        require_bounds(&[Type::Ordered], &ktype);
         // CR claude for eric: [perf/low] The chain fix that SeqLit::typecheck0_with
         // got (one element is its own union; the unshared cell binds with no occurs
         // walk) is missing from this copy of the same code. Here a let chain `x_i = {1

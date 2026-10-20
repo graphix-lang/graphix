@@ -7,7 +7,7 @@ use crate::{
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Type, TypeRef, params_size,
+        AbstractId, TVar, Type, TypeRef, params_size,
         setops::union_identical,
         tval::{NakedPrefix, has_form, member_of},
     },
@@ -2048,14 +2048,18 @@ impl Type {
 
     /// Hand `bound` (`Discernible` or `Ordered`) to every open cell a
     /// comparison of this type reaches.
-    pub fn require_compared(&self, bound: &Type) {
+    pub(crate) fn require_compared(
+        &self,
+        bound: &Type,
+        hand: &mut dyn FnMut(&TVar, Type),
+    ) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_compared(bound),
-                None => tv.add_cell_constraint(bound.clone()),
+                Some(b) => b.require_compared(bound, hand),
+                None => hand(tv, bound.clone()),
             },
             Type::ByRef(..) | Type::Fn(_) | Type::Abstract { .. } => (),
-            t => t.for_each_child(&mut |c| c.require_compared(bound)),
+            t => t.for_each_child(&mut |c| c.require_compared(bound, hand)),
         })
     }
 }

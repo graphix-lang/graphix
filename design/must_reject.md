@@ -106,8 +106,9 @@ widest-argument rule refuses when no argument's type contains all the
 others, and a variable a callback or reference holds keeps the first
 argument's type, so both paths refuse (`callsite.rs::Widening`). Skip:
 labeled defaults, variadic positions, a parameter typed `Any`, a first
-argument whose type its uses decide (a `let` over `never()`: the call
-decides it, so it meets nothing). Built:
+argument whose type its uses decide (a `let` over `never()`, or a value
+holding one, `[n]`: the call decides it after every other argument, so
+it meets nothing). Built:
 (b), two positionals of one variable, the first a concrete primitive,
 right site the call; (a) is family 4's argument case.
 

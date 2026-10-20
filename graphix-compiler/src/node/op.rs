@@ -16,7 +16,7 @@ use crate::{
     },
     node::error::{diagnostic_site, report_failure},
     stack::ensure_sufficient,
-    typ::{ContainsFlags, Type},
+    typ::{ContainsFlags, Type, tvar::require_bounds},
     wrap,
 };
 use anyhow::{Context, Result, bail};
@@ -317,7 +317,7 @@ macro_rules! compare_op {
                             true => Type::Ordered,
                             false => Type::Discernible,
                         };
-                        t.require_compared(&bound);
+                        require_bounds(std::slice::from_ref(&bound), &t);
                         let judgment = crate::PendingSettle::Discernible {
                             typ: t.clone(),
                             what: crate::Discerned::Compared { ordered: $ordered },

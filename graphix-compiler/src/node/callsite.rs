@@ -558,14 +558,25 @@ fn fill_omitted<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Check a call's argument node against its formal's type `typ`: false
-/// when the argument's type does not fit the formal as it stands.
+/// How a call's argument met its formal.
+enum ArgFit {
+    Fits,
+    /// It does not fit the formal as it stands.
+    Misfit,
+    /// It holds a cell nothing has decided, and the formal asked it to
+    /// wait: checked now it would take what the formal holds so far.
+    Open,
+}
+
+/// Check a call's argument node against its formal's type `typ`; an
+/// argument holding an undecided cell is [`ArgFit::Open`] when `waits`.
 fn typecheck_arg<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     typ: &Type,
     hint: Option<&Type>,
+    waits: bool,
     n: &mut Node<R, E>,
-) -> Result<bool> {
+) -> Result<ArgFit> {
     // A reference instantiates its signature in its own typecheck0,
     // which must precede the pre-unify.
     if matches!(n.view(), NodeView::Ref(_)) {
@@ -575,7 +586,13 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
         None => {
             Type::pre_unify_arg(&ctx.env, hint.unwrap_or(typ), n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
-            typ.contains(&ctx.env, n.typ())
+            Ok(if waits && n.typ().has_free() {
+                ArgFit::Open
+            } else if typ.contains(&ctx.env, n.typ())? {
+                ArgFit::Fits
+            } else {
+                ArgFit::Misfit
+            })
         }
         // CR claude for eric: [bug/high] A rank-2 quantifier is rigid here, yet the
         // argument's body still adds bounds to it. `x * x` adds Singleton, `x < y` adds
@@ -617,7 +634,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             for t in free.iter() {
                 wrap!(n, escapes_through(&formal, t))?;
             }
-            Ok(true)
+            Ok(ArgFit::Fits)
         }
     }
 }
@@ -944,38 +961,37 @@ impl Widening {
             .then(|| Self::open(formal, cells).0)
     }
 
-    /// Whether the argument `n` for `key`, a reference to a cell nothing
-    /// has decided, waits for the end of the argument loop: checked now it
-    /// would take what a widenable variable of `formal` holds so far, not
-    /// the widest argument's type.
-    fn defers_open<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        def: &Type,
-        inst: &FnType,
-        key: &ArgKey,
-        formal: &Type,
-        n: &mut Node<R, E>,
-    ) -> Result<bool> {
-        if !self.fresh || !matches!(n.view(), NodeView::Ref(_)) {
-            return Ok(false);
-        }
-        wrap!(n, n.typecheck0(ctx))?;
-        let undecided = match n.typ() {
-            Type::TVar(tv) => !tv.is_rigid() && n.typ().with_deref(|t| t.is_none()),
-            _ => false,
-        };
-        if !undecided {
-            return Ok(false);
+    /// Whether an argument at `formal` holding a cell nothing has decided
+    /// waits for the end of the argument loop: `formal` holds a widenable
+    /// variable, which the argument would take as it stands so far, not
+    /// as the widest argument settles it.
+    fn waits(&mut self, def: &Type, inst: &FnType, formal: &Type) -> bool {
+        if !self.fresh {
+            return false;
         }
         let cells = Self::cells(&mut self.cells, def, inst);
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         formal.collect_tvars(&mut held);
-        if !held.keys().any(|name| cells.contains_key(name)) {
-            return Ok(false);
+        held.keys().any(|name| cells.contains_key(name))
+    }
+
+    /// The argument for `key` met `formal`: widen, wait, or the mismatch
+    /// error.
+    fn fit<R: Rt, E: UserEvent>(
+        &mut self,
+        env: &Env,
+        def: &Type,
+        inst: &FnType,
+        key: &ArgKey,
+        formal: &Type,
+        n: &Node<R, E>,
+        fit: ArgFit,
+    ) -> Result<()> {
+        match fit {
+            ArgFit::Fits => Ok(()),
+            ArgFit::Open => Ok(self.deferred.push((key.clone(), formal.clone()))),
+            ArgFit::Misfit => self.misfit(env, def, inst, key, formal, n),
         }
-        self.deferred.push((key.clone(), formal.clone()));
-        Ok(true)
     }
 
     /// The argument `n` for `key` did not fit `formal`: widen, defer, or
@@ -3150,7 +3166,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.ftype.as_ref().unwrap()
             }
         };
-        // CR claude for claude: [bug/medium] Widening is not order-independent for an
+        // XCR claude for claude: [bug/medium] Widening is not order-independent for an
         // argument whose own type is an open cell. That argument is checked against
         // whatever the site's cell holds at that moment, and binds its own cell to it.
         // A later wider argument widens only the site's cell. With `pick(x: 'a, y: 'a,
@@ -3179,30 +3195,30 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // bare reference. Generalize the deferral test (n.typ() has an unbound
         // non-rigid cell at a formal holding a widenable variable) and pin the nested
         // case.
+        // 2026-10-20 claude: typecheck_arg now reports an argument holding any
+        // undecided non-rigid cell (Type::has_free, not only a bare Ref) as
+        // ArgFit::Open when its formal holds a widenable variable (Widening::waits),
+        // and Widening::fit defers it to the pass after every concrete argument
+        // widened; the varargs loop takes the same rule. Pin:
+        // lang::functions::widening_waits_for_a_nested_open_argument (pick([i64:1],
+        // [z], [v]); the pre-fix binary refuses it with 'i64 does not contain null'),
+        // beside widening_waits_for_an_open_argument. must_reject.md family 3's skip
+        // names a value holding such a cell.
         let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
-                if widening.defers_open(
-                    ctx,
+                let waits = widening.waits(self.fnode.typ(), ftype, &farg.typ);
+                let hint = widening.hint(self.fnode.typ(), ftype, &farg.typ);
+                let fit = typecheck_arg(ctx, &farg.typ, hint.as_ref(), waits, n)?;
+                widening.fit(
+                    &ctx.env,
                     self.fnode.typ(),
                     ftype,
                     &key,
                     &farg.typ,
                     n,
-                )? {
-                    continue;
-                }
-                let hint = widening.hint(self.fnode.typ(), ftype, &farg.typ);
-                if !typecheck_arg(ctx, &farg.typ, hint.as_ref(), n)? {
-                    widening.misfit(
-                        &ctx.env,
-                        self.fnode.typ(),
-                        ftype,
-                        &key,
-                        &farg.typ,
-                        n,
-                    )?;
-                }
+                    fit,
+                )?;
             }
         }
         if let Some(typ) = &ftype.vargs {
@@ -3210,17 +3226,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             for key in ArgKey::variadic(positional) {
                 let Some(arg) = self.args.get_mut(&key) else { break };
                 if let Some(n) = arg.node.as_mut() {
+                    let waits = widening.waits(self.fnode.typ(), ftype, typ);
                     let hint = widening.hint(self.fnode.typ(), ftype, typ);
-                    if !typecheck_arg(ctx, typ, hint.as_ref(), n)? {
-                        widening.misfit(
-                            &ctx.env,
-                            self.fnode.typ(),
-                            ftype,
-                            &key,
-                            typ,
-                            n,
-                        )?;
-                    }
+                    let fit = typecheck_arg(ctx, typ, hint.as_ref(), waits, n)?;
+                    widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
             }
         }
