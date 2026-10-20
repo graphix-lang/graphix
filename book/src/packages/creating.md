@@ -14,18 +14,6 @@ Or specify a directory:
 graphix package create mylib --dir ~/projects
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] The tree below leaves out build.rs, which
-`create_package` writes, and the page never says a package needs it or the
-`graphix-ast-pack` build-dependency. `defpackage!` includes `$OUT_DIR/graphix_ast.pack`,
-which only that build script produces, so a crate set up from this page fails with a
-bare "OUT_DIR not defined". `graphix_derive::check_invariants` does not check for it
-either. Fix: list build.rs, show `graphix_ast_pack::emit()` and the build-dependency
-here, and have `check_invariants` panic with that instruction when the build script or
-the build-dependency is missing. Found by reading; not run. (book-modules-udt-05) -->
-<!-- 2026-10-19 claude: The page now lists build.rs and has a build.rs subsection
-(graphix_ast_pack::emit, the graphix-ast-pack build-dependency, the OUT_DIR failure).
-Still owed: graphix_derive::check_invariants refusing a package without the build script
-or the build-dependency, a Rust change outside the docs pass. -->
 This creates a `graphix-package-mylib` directory with the following structure:
 
 ```
@@ -86,9 +74,9 @@ with `graphix-ast-pack` as its build-dependency in `Cargo.toml`:
 graphix-ast-pack = "0.9.0"
 ```
 
-`defpackage!` includes the blob (`$OUT_DIR/graphix_ast.pack`), so a
-package without the build script fails to compile with "OUT_DIR not
-defined".
+`defpackage!` includes the blob (`$OUT_DIR/graphix_ast.pack`), so it
+refuses a package that lacks the build script or the build-dependency,
+with an error that says to add them.
 
 ### `src/graphix/` -- Graphix Source Modules
 
