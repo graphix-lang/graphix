@@ -6,7 +6,9 @@ use crate::{
     ExecCtx, Node, Rt, UserEvent, analysis,
     branch::{eval_pool, pool_idle, saturated},
 };
+use bytes::{Buf, BufMut};
 use graphix_types::stack::ParMode;
+use netidx_core::pack::{Pack, PackError};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
@@ -445,6 +447,19 @@ impl ForkSite {
         children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ) {
         self.1.decide(ctx, n, children)
+    }
+
+    /// The site's verdict, which an image carries: a warm start's first
+    /// cycle decides as the cold compile's analysis did.
+    pub(crate) fn image_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        self.1.decided.get().copied().encode(buf)
+    }
+
+    /// A fresh site holding the verdict [`Self::image_encode`] wrote.
+    pub(crate) fn image_decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let site = Self::default();
+        site.1.decided_by_analysis(Option::<bool>::decode(buf)?);
+        Ok(site)
     }
 
     /// What this update does with the site's `n` children.

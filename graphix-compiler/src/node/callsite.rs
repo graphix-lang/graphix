@@ -2745,8 +2745,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let flags = image::flags_decode(buf)?;
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
+        let fork = ForkSite::image_decode(buf)?;
         let mut site =
             Self::unbound(spec, ftype, rtype, fnode, args, scope, flags, top_id);
+        site.fork = fork;
         site.arg_refs = arg_refs;
         site.callee = callee;
         site.static_target = static_target;
@@ -2989,7 +2991,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.recursive_edge.load(Relaxed).encode(buf)?;
         image::flags_encode(self.flags, buf)?;
         image::scope_encode(&self.scope, buf)?;
-        self.top_id.encode(buf)
+        self.top_id.encode(buf)?;
+        self.fork.image_encode(buf)
     }
 
     pub(crate) fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {

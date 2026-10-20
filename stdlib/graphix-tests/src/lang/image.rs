@@ -590,11 +590,11 @@ async fn program_image_restores_nested_fork_control() -> Result<()> {
     Ok(())
 }
 
-/// A fork point whose callees a warm start has not decoded yet decides
-/// its siblings once they are bound: the tuple forks at every cycle after
-/// the first, as it does cold.
+/// A fork point's verdict rides the image: a warm start's tuple, whose
+/// callees are not decoded yet, forks from its first cycle, as it does
+/// cold.
 #[tokio::test]
-async fn warm_fork_point_decides_once_its_callees_bind() -> Result<()> {
+async fn warm_fork_point_keeps_its_verdict() -> Result<()> {
     let program = r#"
         let f = |n: i64| n * 2;
         let g = |n: i64| n + 1;
@@ -610,11 +610,7 @@ async fn warm_fork_point_decides_once_its_callees_bind() -> Result<()> {
         session(program, Some(image), ParMode::Force).await?;
     assert!(restored, "the warm runtime compiled cold");
     assert_eq!(cold_values, warm_values);
-    // the warm tuple runs its first cycle in order; image-fork-01 is one more
-    assert!(
-        warm_forks + 2 >= cold_forks,
-        "the warm tuple stopped forking: {warm_forks} warm, {cold_forks} cold"
-    );
+    assert_eq!(warm_forks, cold_forks, "the warm tuple forked apart from the cold one");
     Ok(())
 }
 

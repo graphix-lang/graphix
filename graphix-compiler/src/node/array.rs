@@ -523,7 +523,12 @@ pub struct SeqLit<R: Rt, E: UserEvent, K: SeqKind> {
 }
 
 impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
-    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        n: Box<[Node<R, E>]>,
+        fork: crate::cost::ForkSite,
+    ) -> Node<R, E> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -531,7 +536,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
             n,
             resident: TagValue::phantom(),
             kind: PhantomData,
-            fork: Default::default(),
+            fork,
         })
     }
 
@@ -547,7 +552,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
-        Ok(Self::with(spec, K::typ(Type::empty_tvar()), n))
+        Ok(Self::with(spec, K::typ(Type::empty_tvar()), n, Default::default()))
     }
 
     pub(crate) fn image_decode(
@@ -557,7 +562,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Self::with(spec, typ, n))
+        Ok(Self::with(spec, typ, n, crate::cost::ForkSite::image_decode(buf)?))
     }
 }
 
@@ -574,7 +579,8 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         put_tag(if K::LIST { NodeTag::ListLit } else { NodeTag::Array }, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        encode_nodes(&self.n, buf)
+        encode_nodes(&self.n, buf)?;
+        self.fork.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {

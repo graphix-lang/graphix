@@ -1805,7 +1805,7 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
 ) -> Option<bool> {
-    // CR claude for claude: [perf/medium] Every fork site that is not a block (an
+    // XCR claude for claude: [perf/medium] Every fork site that is not a block (an
     // operator's operands, a call's arguments, a constructor's fields, a collection's
     // slots) runs `independent` at its first update. Each run rebuilds
     // `collect_static_graph_of` and `instance_summaries` over everything reachable
@@ -1865,6 +1865,15 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // lang::image::warm_fork_point_decides_once_its_callees_bind still describes that
     // first cycle. Imaging ForkSite's verdict in each fork-point node's codec closes
     // it.
+    // 2026-10-20 claude: The verdict rides the image now: ForkSite::image_encode /
+    // image_decode in the codec of every fork-point node the analysis decides (struct,
+    // tuple, variant, array and list literals, map literal, string interpolation,
+    // binary operators, call sites; a kernel's feeder site is built after the analysis
+    // and stays run-time), image format 70. A warm start's first cycle forks as the
+    // cold one: design/review-2026-10-12/repro/c-analysis-branch-04.sh prints g before
+    // f warm (f first before). Pin: lang::image::warm_fork_point_keeps_its_verdict
+    // (was warm_fork_point_decides_once_its_callees_bind), warm forks now equal to
+    // cold under Force, where it allowed two fewer.
     if !two_work(children.clone()) {
         return Some(true);
     }

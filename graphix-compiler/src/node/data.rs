@@ -144,7 +144,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
-            fork: Default::default(),
+            fork: ForkSite::image_decode(buf)?,
         }))
     }
 }
@@ -155,7 +155,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         image::slice_encode(&self.names, buf)?;
-        encode_nodes(&self.n, buf)
+        encode_nodes(&self.n, buf)?;
+        self.fork.image_encode(buf)
     }
 
     composite_plumbing!(Struct);
@@ -542,7 +543,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
-            fork: Default::default(),
+            fork: ForkSite::image_decode(buf)?,
         }))
     }
 }
@@ -552,7 +553,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         put_tag(NodeTag::Tuple, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        encode_nodes(&self.n, buf)
+        encode_nodes(&self.n, buf)?;
+        self.fork.image_encode(buf)
     }
     composite_plumbing!(Tuple);
 
@@ -626,7 +628,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
-            fork: Default::default(),
+            fork: ForkSite::image_decode(buf)?,
         }))
     }
 }
@@ -637,7 +639,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         self.tag.encode(buf)?;
-        encode_nodes(&self.n, buf)
+        encode_nodes(&self.n, buf)?;
+        self.fork.image_encode(buf)
     }
     composite_plumbing!(Variant);
 

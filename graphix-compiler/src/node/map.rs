@@ -56,14 +56,19 @@ pub struct Map<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
-    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        n: Box<[Node<R, E>]>,
+        fork: ForkSite,
+    ) -> Node<R, E> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
             typ,
             n,
             resident: TagValue::phantom(),
-            fork: ForkSite::default(),
+            fork,
         })
     }
 
@@ -85,7 +90,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             values.push(decode_node(ctx, buf)?);
         }
         keys.extend(values);
-        Ok(Self::with(spec, typ, keys.into_boxed_slice()))
+        Ok(Self::with(spec, typ, keys.into_boxed_slice(), ForkSite::image_decode(buf)?))
     }
 
     pub(crate) fn compile(
@@ -106,7 +111,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Self::with(spec, typ, n))
+        Ok(Self::with(spec, typ, n, ForkSite::default()))
     }
 }
 
@@ -121,7 +126,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
             k.image_encode(buf)?;
             v.image_encode(buf)?;
         }
-        Ok(())
+        self.fork.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {

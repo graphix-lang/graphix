@@ -88,7 +88,7 @@ macro_rules! binary_node {
             ) -> Result<Node<R, E>> {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
-                Ok(Self::node(spec, $typ, lhs, rhs))
+                Ok(Self::node(spec, $typ, lhs, rhs, Default::default()))
             }
 
             pub(crate) fn image_decode(
@@ -99,10 +99,17 @@ macro_rules! binary_node {
                 let typ = Type::decode(buf)?;
                 let lhs = decode_node(ctx, buf)?;
                 let rhs = decode_node(ctx, buf)?;
-                Ok(Self::node(spec, typ, lhs, rhs))
+                let fork = crate::cost::ForkSite::image_decode(buf)?;
+                Ok(Self::node(spec, typ, lhs, rhs, fork))
             }
 
-            fn node(spec: Arc<Expr>, typ: Type, lhs: Node<R, E>, rhs: Node<R, E>) -> Node<R, E> {
+            fn node(
+                spec: Arc<Expr>,
+                typ: Type,
+                lhs: Node<R, E>,
+                rhs: Node<R, E>,
+                fork: crate::cost::ForkSite,
+            ) -> Node<R, E> {
                 Node::new(Self {
                     spec,
                     typ,
@@ -110,7 +117,7 @@ macro_rules! binary_node {
                     rhs,
                     resident: TagValue::phantom(),
                     slept: WakeBit::default(),
-                    fork: Default::default(),
+                    fork,
                     $(state: <$state>::default(),)?
                 })
             }
@@ -122,7 +129,8 @@ macro_rules! binary_node {
                 self.spec.encode(buf)?;
                 self.typ.encode(buf)?;
                 self.lhs.image_encode(buf)?;
-                self.rhs.image_encode(buf)
+                self.rhs.image_encode(buf)?;
+                self.fork.image_encode(buf)
             }
 
             fn spec(&self) -> &Expr {

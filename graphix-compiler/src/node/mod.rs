@@ -1604,7 +1604,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             args,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
-            fork: Default::default(),
+            fork: ForkSite::image_decode(buf)?,
         }))
     }
 
@@ -1648,7 +1648,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         image::slice_encode(&self.typs, buf)?;
-        encode_nodes(&self.args, buf)
+        encode_nodes(&self.args, buf)?;
+        self.fork.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
