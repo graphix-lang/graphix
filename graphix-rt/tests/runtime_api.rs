@@ -194,3 +194,40 @@ async fn a_wrong_typed_set_deref_is_refused() -> Result<()> {
     assert_eq!(produced(&mut rx, sid).await, vec![st]);
     Ok(())
 }
+
+/// A write through a `Ref` lands though the `Ref` drops before the write
+/// is applied: the drop deletes the reference node, never the write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_through_a_dropped_ref_lands() -> Result<()> {
+    let (gx, mut rx) = start(BitFlags::empty()).await?;
+    let m = gx.compile(literal!("let x: i64 = 0; x")).await?;
+    let out = m.exprs.last().context("no result")?.id;
+    produced(&mut rx, out).await;
+    let env = gx.get_env().await?;
+    let bid =
+        gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["x"])).await?.bid;
+    for i in 1..=300i64 {
+        let mut r = gx.compile_ref(bid).await?;
+        r.set(i)?;
+        drop(r);
+        let arrived = timeout(Duration::from_secs(5), async {
+            loop {
+                let Some(mut b) = rx.recv().await else { return false };
+                for e in b.drain(..) {
+                    if let GXEvent::Updated(id, Value::I64(n)) = e
+                        && id == out
+                        && n == i
+                    {
+                        return true;
+                    }
+                }
+            }
+        })
+        .await;
+        assert!(
+            matches!(arrived, Ok(true)),
+            "the write of {i} through a dropped ref was lost"
+        );
+    }
+    Ok(())
+}
