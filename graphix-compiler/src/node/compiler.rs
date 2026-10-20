@@ -533,8 +533,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                 }
                 Ok(lowered)
             };
-            let lowered =
-                lowering(ctx, spec, &scope.lexical, |ctx| lower(ctx).map(Some))?;
+            let lowered = lowering(ctx, spec, |ctx| lower(ctx).map(Some))?;
             compile(ctx, flags, lowered.expect("a seq always lowers"), scope, top_id)
         }
         ExprKind::Until(_) => {
@@ -599,11 +598,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
 pub(super) fn lowering<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     spec: &Expr,
-    scope: &ModPath,
     lower: impl FnOnce(&CompileCtx<R, E>) -> Result<Option<Expr>>,
 ) -> Result<Option<Expr>> {
     let Some(share) = ctx.body.as_ref().map(|b| &b.share) else { return lower(ctx) };
-    let key = (spec.id, scope.clone());
+    let key = spec.id;
     if let Some(e) = share.lock().lowerings.get(&key) {
         return Ok(Some(e.clone()));
     }

@@ -11,20 +11,16 @@ use super::{
 use crate::{
     ExecCtx, LambdaId, Rt, UserEvent,
     effects::LambdaFacts,
-    expr::{Arg, Expr, ExprId, ModPath},
+    expr::{Arg, Expr, ExprId},
     node::lambda::{
         BodyShare, BodyShared, DefBody, DefOrigin, LambdaDef, make_init, tables_decode,
         tables_encode,
     },
     typ::FnType,
 };
-use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use graphix_types::{MINT_BASE, block_component};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
-use netidx_core::path::Path;
 use parking_lot::Mutex;
-use smallvec::SmallVec;
 use triomphe::Arc;
 
 fn body_encode(body: &DefBody, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -56,10 +52,7 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
     }
 }
 
-/// A lexical scope whose generated block components name expressions by
-/// id (`#fn<id>`): each such id is written as an `ExprId`, so it relocates
-/// with the expressions it names.
-// CR claude for claude: [risk/medium] Two kinds of component that name an ExprId are
+// XCR claude for claude: [risk/medium] Two kinds of component that name an ExprId are
 // written here as plain text, and that text goes stale when the next restore relocates
 // the ids. (1) A seq's try/with scope is `#seq{i}_<id>` (seq_machine.rs). Splitting at
 // the first digit gives the number `{i}_<id>`, which does not parse. (2) Every id that
@@ -72,7 +65,14 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
 // trailing digits, and choose by kind, not by magnitude: give module.rs's `#impl<item
 // index>` its own kind and relocate every ExprId-kind component. Found by reading; not
 // run (the miss gives right answers, so a run cannot show it). (t-expr-core-02)
-// CR claude for claude: [perf/medium] A lowering key written here is never found again
+// 2026-10-19 claude: Lowerings are keyed by ExprId alone (one definition body compiles
+// each expression under one scope), so no scope text is written or relocated:
+// image/defs.rs's lexical_relocating codec is gone. The c-image-block-lowering probe
+// now checks warm as cold (~45 us both). REGISTRATION_FORMAT 76. Pin:
+// lang::image::a_block_function_keeps_its_lowering_warm (cold and warm hold equal
+// lowerings; the review's equivalent cargo test showed one extra warm; this pin was not
+// run against the old build).
+// XCR claude for claude: [perf/medium] A lowering key written here is never found again
 // for a nested definition. This relocates every `#kind<n>` in the key, but `make_init`
 // rebuilds the key's prefix from the definition's `scope`, which `scope_encode` writes
 // as verbatim text in the writer's spelling. So any definition whose scope holds a
@@ -85,7 +85,14 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
 // components by membership in the image's id spans, and pin it with a warm image test
 // that asserts no new lowering at a runtime bind. probe:
 // design/review-2026-10-19/repro/x-image-nested-lowering-miss.gx (x-image-03)
-// CR claude for claude: [bug/medium] A lowering key's scope is relocated here, but only
+// 2026-10-19 claude: Lowerings are keyed by ExprId alone (one definition body compiles
+// each expression under one scope), so no scope text is written or relocated:
+// image/defs.rs's lexical_relocating codec is gone. The c-image-block-lowering probe
+// now checks warm as cold (~45 us both). REGISTRATION_FORMAT 76. Pin:
+// lang::image::a_block_function_keeps_its_lowering_warm (cold and warm hold equal
+// lowerings; the review's equivalent cargo test showed one extra warm; this pin was not
+// run against the old build).
+// XCR claude for claude: [bug/medium] A lowering key's scope is relocated here, but only
 // its `#kind<n>` components with n >= MINT_BASE, while the definition's own scope
 // (scope_encode) stays verbatim. The run-time lookup in node::compiler::lowering builds
 // its scope from that verbatim text plus relocated ids, so after a warm start it misses
@@ -101,61 +108,21 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
 // it with a cold/warm lowerings_len test. probe:
 // design/review-2026-10-19/repro/c-image-block-lowering.sh,
 // c-image-block-fn-lowerings.rs, c-image-chained-lowerings.rs (c-image-01)
-fn lexical_relocating_encode(
-    p: &ModPath,
-    buf: &mut impl BufMut,
-) -> Result<(), PackError> {
-    let parts: SmallVec<[&str; 8]> = Path::parts(&p.0).collect();
-    encode_varint(parts.len() as u64, buf);
-    for part in parts {
-        let id = part
-            .strip_prefix('#')
-            .and_then(|k| k.find(|c: char| c.is_ascii_digit()).map(|i| k.split_at(i)))
-            .and_then(|(kind, n)| Some((kind, n.parse::<u64>().ok()?)))
-            .filter(|(_, n)| *n >= MINT_BASE);
-        match id {
-            Some((kind, n)) => {
-                buf.put_u8(1);
-                ArcStr::from(kind).encode(buf)?;
-                ExprId::from_inner(n).encode(buf)?
-            }
-            None => {
-                buf.put_u8(0);
-                ArcStr::from(part).encode(buf)?
-            }
-        }
-    }
-    Ok(())
-}
-
-fn lexical_relocating_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
-    let mut p = Path::root();
-    for _ in 0..decode_varint(buf)? {
-        if !buf.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        p = match buf.get_u8() {
-            0 => p.append(&*<ArcStr as Pack>::decode(buf)?),
-            1 => {
-                let kind: ArcStr = Pack::decode(buf)?;
-                let id = ExprId::decode(buf)?;
-                p.append(block_component(&kind, id.inner()).as_str())
-            }
-            _ => return Err(PackError::UnknownTag),
-        };
-    }
-    Ok(ModPath(p))
-}
-
+// 2026-10-19 claude: Lowerings are keyed by ExprId alone (one definition body compiles
+// each expression under one scope), so no scope text is written or relocated:
+// image/defs.rs's lexical_relocating codec is gone. The c-image-block-lowering probe
+// now checks warm as cold (~45 us both). REGISTRATION_FORMAT 76. Pin:
+// lang::image::a_block_function_keeps_its_lowering_warm (cold and warm hold equal
+// lowerings; the review's equivalent cargo test showed one extra warm; this pin was not
+// run against the old build).
 /// What a definition's compiles share: its lowerings (whose ids
 /// its check table has rows for), the check's specs and its lambda
 /// literals' shares.
 fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackError> {
     let BodyShared { lowerings, specs, literals } = shared;
     encode_varint(lowerings.len() as u64, buf);
-    for ((id, scope), e) in lowerings.iter() {
+    for (id, e) in lowerings.iter() {
         id.encode(buf)?;
-        lexical_relocating_encode(scope, buf)?;
         e.encode(buf)?;
     }
     encode_varint(specs.len() as u64, buf);
@@ -175,8 +142,7 @@ fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
     let mut shared = BodyShared::default();
     for _ in 0..decode_varint(buf)? {
         let id = ExprId::decode(buf)?;
-        let scope = lexical_relocating_decode(buf)?;
-        shared.lowerings.insert((id, scope), Expr::decode(buf)?);
+        shared.lowerings.insert(id, Expr::decode(buf)?);
     }
     for _ in 0..decode_varint(buf)? {
         let id = ExprId::decode(buf)?;

@@ -510,8 +510,9 @@ pub type BodyShare = SArc<Mutex<BodyShared>>;
 #[derive(Debug, Default)]
 pub struct BodyShared {
     /// Each expression the body rewrites (a seq's machine, a trait
-    /// method's eta expansion), by expression and lexical scope.
-    pub(crate) lowerings: AHashMap<(ExprId, ModPath), Expr>,
+    /// method's eta expansion), by expression: one body compiles each
+    /// under one scope.
+    pub(crate) lowerings: AHashMap<ExprId, Expr>,
     /// The specs the definition's check put in an `Arc`, by expression:
     /// an instance's node takes the check's (`CompileCtx::shared_spec`).
     pub(crate) specs: AHashMap<ExprId, Arc<Expr>>,

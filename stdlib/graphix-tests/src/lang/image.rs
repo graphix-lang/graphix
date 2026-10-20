@@ -328,11 +328,19 @@ enum Run {
 
 /// One run of `program`, compiled cold, or restored from `image` alone
 /// when given; the cold run also hands back the program image it wrote.
-async fn session(
-    program: &str,
+/// What one session ran and kept.
+struct Session {
+    program: CompRes<NoExt>,
+    values: Vec<Value>,
+    /// The program image a cold run wrote.
     image: Option<Bytes>,
-    par: ParMode,
-) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
+    restored: bool,
+    forks: u64,
+    /// The seq and eta lowerings the definitions hold once it settled.
+    lowerings: usize,
+}
+
+async fn session(program: &str, image: Option<Bytes>, par: ParMode) -> Result<Session> {
     let run = match image {
         None => Run::Cold,
         Some(image) => Run::Warm(image),
@@ -346,7 +354,7 @@ async fn session_with(
     run: Run,
     par: ParMode,
     budget: Option<u64>,
-) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
+) -> Result<Session> {
     let (tx, mut rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
@@ -379,10 +387,17 @@ async fn session_with(
     };
     let compiled = ctx.rt.program().await?.expect("the program compiled or restored");
     let values = first_values(&mut rx).await;
-    let restored = ctx.rt.env_stats().await?.restored;
+    let stats = ctx.rt.env_stats().await?;
     let forks = ctx.rt.control().forks();
     ctx.shutdown().await;
-    Ok((compiled, values, written, restored, forks))
+    Ok(Session {
+        program: compiled,
+        values,
+        image: written,
+        restored: stats.restored,
+        forks,
+        lowerings: stats.lowerings_len,
+    })
 }
 
 /// `program` compiled cold, writing its image, and restored from it:
@@ -390,10 +405,10 @@ async fn session_with(
 async fn cold_and_warm(
     program: &str,
 ) -> Result<((CompRes<NoExt>, Vec<Value>), (CompRes<NoExt>, Vec<Value>))> {
-    let (cold_program, cold_values, image, _, _) =
+    let Session { program: cold_program, values: cold_values, image, .. } =
         session(program, None, ParMode::from_env()).await?;
     let image = image.expect("the cold run wrote its image");
-    let (warm_program, warm_values, _, restored, _) =
+    let Session { program: warm_program, values: warm_values, restored, .. } =
         session(program, Some(image), ParMode::from_env()).await?;
     assert!(restored, "the warm runtime compiled cold");
     Ok(((cold_program, cold_values), (warm_program, warm_values)))
@@ -526,11 +541,21 @@ async fn program_image_restores_fork_control() -> Result<()> {
         let s = array::fold(double([1, 2, 3]), 0, |a, b| a + b);
         #[parallel] (double([s]), triple([4, 5]))
     "#;
-    let (cold_program, cold_values, image, _, cold_forks) =
-        session(program, None, ParMode::Auto).await?;
+    let Session {
+        program: cold_program,
+        values: cold_values,
+        image,
+        forks: cold_forks,
+        ..
+    } = session(program, None, ParMode::Auto).await?;
     let image = image.expect("the cold run wrote its image");
-    let (warm_program, warm_values, _, restored, warm_forks) =
-        session(program, Some(image), ParMode::Auto).await?;
+    let Session {
+        program: warm_program,
+        values: warm_values,
+        restored,
+        forks: warm_forks,
+        ..
+    } = session(program, Some(image), ParMode::Auto).await?;
     assert!(restored, "the warm runtime compiled cold");
     let last = cold_values.last().expect("the program produced its tuple");
     assert_eq!(format!("{last}"), "[[i64:24], [i64:12, i64:15]]");
@@ -562,10 +587,10 @@ async fn program_image_restores_serial() -> Result<()> {
     let body = "(array::map([1, 2, 3], |x| x * 2), array::map([4, 5], |x| x + 1))";
     let mut forks = Vec::new();
     for program in [format!("#[serial]\n{body}"), body.to_string()] {
-        let (_, cold_values, image, _, cold) =
+        let Session { values: cold_values, image, forks: cold, .. } =
             session(&program, None, ParMode::Force).await?;
         let image = image.expect("the cold run wrote its image");
-        let (_, warm_values, _, restored, warm) =
+        let Session { values: warm_values, restored, forks: warm, .. } =
             session(&program, Some(image), ParMode::Force).await?;
         assert!(restored, "the warm runtime compiled cold");
         assert_eq!(cold_values, warm_values);
@@ -593,10 +618,10 @@ async fn program_image_restores_nested_fork_control() -> Result<()> {
         };
         f(array::init(n * 20, |i| i))
     "#;
-    let (_, cold_values, image, _, cold_forks) =
+    let Session { values: cold_values, image, forks: cold_forks, .. } =
         session(program, None, ParMode::Auto).await?;
     let image = image.expect("the cold run wrote its image");
-    let (_, warm_values, _, restored, warm_forks) =
+    let Session { values: warm_values, restored, forks: warm_forks, .. } =
         session(program, Some(image), ParMode::Auto).await?;
     assert!(restored, "the warm runtime compiled cold");
     assert_eq!(cold_values, warm_values);
@@ -618,10 +643,10 @@ async fn warm_fork_point_decides_once_its_callees_bind() -> Result<()> {
         k <- r ~ select k { k if k < 6 => k + 1, _ => never() };
         r
     "#;
-    let (_, cold_values, image, _, cold_forks) =
+    let Session { values: cold_values, image, forks: cold_forks, .. } =
         session(program, None, ParMode::Force).await?;
     let image = image.expect("the cold run wrote its image");
-    let (_, warm_values, _, restored, warm_forks) =
+    let Session { values: warm_values, restored, forks: warm_forks, .. } =
         session(program, Some(image), ParMode::Force).await?;
     assert!(restored, "the warm runtime compiled cold");
     assert_eq!(cold_values, warm_values);
@@ -648,10 +673,10 @@ async fn warm_start_charges_the_budget_as_cold() -> Result<()> {
          (f(depth), {})\n",
         sum.join(" + ")
     );
-    let (_, cold, image, _, _) =
+    let Session { values: cold, image, .. } =
         session_with(&program, Run::Cold, ParMode::Off, Some(30)).await?;
     let image = image.expect("the cold run wrote its image");
-    let (_, warm, _, restored, _) =
+    let Session { values: warm, restored, .. } =
         session_with(&program, Run::Warm(image), ParMode::Off, Some(30)).await?;
     assert!(restored, "the warm runtime compiled cold");
     assert_eq!(cold.len(), 4, "the cold run fits the budget: {cold:?}");
@@ -663,12 +688,12 @@ async fn warm_start_charges_the_budget_as_cold() -> Result<()> {
 /// it is read, so the session runs cold rather than fail a first call.
 #[tokio::test]
 async fn an_instance_outside_the_heap_is_refused() -> Result<()> {
-    let (_, cold_values, image, _, _) =
+    let Session { values: cold_values, image, .. } =
         session(PROGRAM, None, ParMode::from_env()).await?;
     let image = image.expect("the cold run wrote its image");
     let past_the_end = image.len() as u64 + 1000;
     let bad = with_first_instance_at(&image, past_the_end);
-    let (_, values, _, restored, _) =
+    let Session { values, restored, .. } =
         session_with(PROGRAM, Run::WarmOrCold(bad), ParMode::from_env(), None).await?;
     assert!(!restored, "an image with an instance past its end restored");
     assert_eq!(cold_values, values);
@@ -1062,5 +1087,24 @@ async fn a_recursive_kernel_chain_images_its_layouts_once() -> Result<()> {
     let short = fused_program_image(&chain(8)).await?.len();
     let long = fused_program_image(&chain(12)).await?.len();
     assert!(long - short < 256 * 1024, "8 links: {short} bytes, 12 links: {long} bytes");
+    Ok(())
+}
+
+/// A function defined in a block keeps its seq's lowering across a
+/// restore: lowerings are keyed by expression alone, so a run-time
+/// instance after a warm start finds the restored one and adds none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_block_function_keeps_its_lowering_warm() -> Result<()> {
+    const PROGRAM: &str = "{ let g = |x: i64| -> i64 seq x { let a = x + 1; a * 2 }; \
+                           let n = 1; select n { k if k < 4 => n <- k + 1, _ => never() }; \
+                           array::map(array::init(n, |i| i), |x| g(x)) }";
+    let Session { values: cold_values, image, lowerings: cold, .. } =
+        session(PROGRAM, None, ParMode::from_env()).await?;
+    let image = image.expect("the cold run wrote its image");
+    let Session { values: warm_values, restored, lowerings: warm, .. } =
+        session(PROGRAM, Some(image), ParMode::from_env()).await?;
+    assert!(restored, "the warm runtime compiled cold");
+    assert_eq!(cold_values, warm_values);
+    assert_eq!(cold, warm, "the warm run lowered again");
     Ok(())
 }

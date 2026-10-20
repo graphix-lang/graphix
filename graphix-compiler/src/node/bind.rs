@@ -902,10 +902,9 @@ impl Ref {
                     )
                 }
                 if let Some(flags) = value
-                    && let Some(eta) =
-                        super::compiler::lowering(ctx, &spec, &scope.lexical, |ctx| {
-                            super::compiler::eta_dispatcher(ctx, &spec, name, bind)
-                        })?
+                    && let Some(eta) = super::compiler::lowering(ctx, &spec, |ctx| {
+                        super::compiler::eta_dispatcher(ctx, &spec, name, bind)
+                    })?
                 {
                     return compile(ctx, flags, eta, scope, top_id);
                 }
