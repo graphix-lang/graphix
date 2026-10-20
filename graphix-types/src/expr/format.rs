@@ -1379,6 +1379,23 @@ mod tests {
         stable(Program, &src);
     }
 
+    // the closer, a postfix suffix and the separator that follow a layout
+    // on its last line are kept free: an index whose call fits flat only
+    // without them breaks
+    #[test]
+    fn a_postfix_chain_keeps_its_tail_free() {
+        use SourceKind::Program;
+        for width in 50..=70 {
+            let cfg = FormatConfig { width, ..FormatConfig::default() };
+            let src = "let f = |s, v, cs, c| {\n    let col = s.columns[slot_item(v.x, cs, c)]$;\n    col\n};\nf";
+            fits(&format_source(Program, src, &cfg).unwrap(), width);
+        }
+        stable(
+            SourceKind::Program,
+            "let f = |s, v, cs, c| {\n    let col = s.columns[slot_item(v.x, cs, c)]$;\n    col\n};\nf",
+        );
+    }
+
     // an index, a key, a slice's bounds and an update's source are laid
     // out where they do not fit flat or hold a comment
     #[test]

@@ -236,7 +236,7 @@ fn pretty_print_exprs(
         return Ok(());
     }
     writeln!(buf, "{open}")?;
-    buf.nested(|buf| pretty_items(buf, exprs, sep))?;
+    buf.without_tail(|buf| buf.nested(|buf| pretty_items(buf, exprs, sep)))?;
     writeln!(buf, "{close}")
 }
 
@@ -469,7 +469,7 @@ fn hug_parens(
         buf.rollback(start);
         return Ok(false);
     }
-    e.fmt_pretty(buf)?;
+    buf.with_tail(close.chars().count(), |buf| e.fmt_pretty(buf))?;
     buf.kill_newline();
     writeln!(buf, "{close}")?;
     Ok(true)
@@ -643,17 +643,43 @@ pub struct PrettyBuf {
     /// what `nested` adds to `indent`
     step: usize,
     limit: usize,
+    /// The width a postfix chain writes after the layout in progress, on
+    /// its last line: what that line's fit checks keep free.
+    tail: usize,
     buf: LPooled<String>,
 }
 
 impl PrettyBuf {
     pub fn new(cfg: FormatConfig) -> Self {
-        Self { indent: 0, step: cfg.indent, limit: cfg.width, buf: LPooled::take() }
+        Self {
+            indent: 0,
+            step: cfg.indent,
+            limit: cfg.width,
+            tail: 0,
+            buf: LPooled::take(),
+        }
     }
 
     /// Run `f` one level of nesting deeper.
     pub fn nested<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
         self.with_indent(self.step, f)
+    }
+
+    /// Run `f` with `n` more columns following its last line.
+    fn with_tail<R, F: FnOnce(&mut Self) -> R>(&mut self, n: usize, f: F) -> R {
+        self.tail += n;
+        let r = f(self);
+        self.tail -= n;
+        r
+    }
+
+    /// Run `f` over lines that end before the last one: nothing follows
+    /// them.
+    fn without_tail<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
+        let tail = std::mem::take(&mut self.tail);
+        let r = f(self);
+        self.tail = tail;
+        r
     }
 
     fn at_line_start(&self) -> bool {
@@ -779,7 +805,7 @@ pub trait PrettyDisplay: fmt::Display {
         // Best-effort: a multi-line string overcounts and a long token can
         // exceed any limit. The newline counts as the column kept for the
         // `;` or `,` that follows.
-        let room = buf.limit.saturating_sub(buf.col());
+        let room = buf.limit.saturating_sub(buf.col() + buf.tail);
         let mut w = Room { buf, room, over: false };
         match writeln!(w, "{}", self) {
             Ok(()) => Ok(true),
@@ -1798,7 +1824,7 @@ impl PrettyDisplay for SelectExpr {
 
 /// `e`, then `suffix` on the line `e` ends on: flat when both fit, else
 /// `e` laid out over lines.
-// CR claude for claude: [bug/low] The text that follows a layout on its last line is
+// XCR claude for claude: [bug/low] The text that follows a layout on its last line is
 // not reserved when the inner part is measured. fmt_flat keeps one column (the `;` or
 // `,`), but a hug's closer, this suffix and the separator after them add up:
 // browser.gx's `let col = structure.columns[slot_item(viewport.x, col_slots, c)]$;`
@@ -1808,6 +1834,12 @@ impl PrettyDisplay for SelectExpr {
 // break resets to the separator's one column) and have fmt_flat and the hug fit checks
 // subtract it. Found while fixing (x-formatter-02); probe: gxfmt
 // stdlib/graphix-package-tui/src/graphix/browser.gx, line 140. (wt-parse-01)
+// 2026-10-20 claude: PrettyBuf carries a tail: pretty_then adds its suffix while the
+// source lays out, hug_parens its closer; fmt_flat, the flat check of pretty_then and
+// pretty_lookup flat index keep it free; the items of a list laid out over lines run
+// without it (they end before the last line). The corpus harness over 1893 .gx/.gxi
+// files in both repos: 0 bad. Pin: format.rs a_postfix_chain_keeps_its_tail_free
+// (widths 50..=70).
 fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
     if decorated(e) {
         e.fmt_pretty(buf)?
@@ -1815,11 +1847,12 @@ fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
         let start = buf.mark();
         let col = buf.col();
         write!(buf, "{}{suffix}", Bare(e))?;
-        if col + buf.width_since(start) <= buf.limit {
+        if col + buf.width_since(start) + buf.tail <= buf.limit {
             return writeln!(buf);
         }
         buf.rollback(start);
-        Bare(e).fmt_pretty_inner(buf)?
+        let width = suffix.chars().count();
+        buf.with_tail(width, |buf| Bare(e).fmt_pretty_inner(buf))?
     }
     buf.kill_newline();
     writeln!(buf, "{suffix}")
@@ -1893,7 +1926,7 @@ fn pretty_lookup(
     if !decorated(i) {
         let start = buf.mark();
         write!(buf, "{open}{i}{close}")?;
-        if buf.col() < buf.limit {
+        if buf.col() + buf.tail < buf.limit {
             return writeln!(buf);
         }
         buf.rollback(start)
