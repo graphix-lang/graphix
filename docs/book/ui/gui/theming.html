@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -177,11 +177,6 @@
                         <h1 id="theming"><a class="header" href="#theming">Theming</a></h1>
 <p>Every GUI window accepts a <code>#theme</code> parameter that controls the visual appearance of all widgets inside it. Graphix provides 22 built-in themes, plus two mechanisms for full customization: custom palettes and custom stylesheets.</p>
 <h2 id="built-in-themes"><a class="header" href="#built-in-themes">Built-in Themes</a></h2>
-<!-- CR claude for claude: [structure/low] This page, and types.md, copy about 150 lines
-of type and builder definitions from gui's mod.gxi and style.gxi by hand. The book test
-only parses fences, so the first renamed field or new theme diverges silently. Fix: mark
-each definition with `// ANCHOR: <name>` in the gxi and `{{#include}}` it, as types.md
-already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
 <p>The <code>Theme</code> type enumerates all available themes:</p>
 <pre><code class="language-graphix">type Theme = [
   `Light,
@@ -209,6 +204,7 @@ already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
   `Custom(StyleSheet),
   `CustomPalette(Palette)
 ];
+
 </code></pre>
 <p>Apply a theme by passing it to the <code>window</code> function:</p>
 <pre><code class="language-graphix">window(#theme: &amp;`CatppuccinMocha, &amp;content)
@@ -232,6 +228,7 @@ window(#theme: &amp;theme, &amp;content)
   text: Color,
   warning: Color
 };
+
 </code></pre>
 <p>The palette defines the core colors from which iced derives all widget styles automatically:</p>
 <ul>
@@ -288,7 +285,8 @@ let col = column(
 <p><img src="media/custom_palette.png" alt="Custom Palette"></p>
 <h2 id="custom-stylesheets"><a class="header" href="#custom-stylesheets">Custom Stylesheets</a></h2>
 <p>For full control over individual widget appearances, use <code>`Custom(StyleSheet)</code>. A stylesheet combines a palette with optional per-widget style overrides:</p>
-<pre><code class="language-graphix">type StyleSheet = {
+<pre><code class="language-graphix">/// Full custom theme with optional per-widget style overrides
+type StyleSheet = {
   button: [ButtonStyle, null],
   checkbox: [CheckboxStyle, null],
   container: [ContainerStyle, null],
@@ -304,11 +302,14 @@ let col = column(
   text_input: [TextInputStyle, null],
   toggler: [TogglerStyle, null]
 };
+
 </code></pre>
 <p>Every widget style field is optional (union with <code>null</code>). When <code>null</code>, the widget inherits its style from the palette automatically.</p>
 <h3 id="the-stylesheet-builder"><a class="header" href="#the-stylesheet-builder">The <code>stylesheet</code> Builder</a></h3>
 <p>Use the <code>stylesheet</code> function to construct a <code>StyleSheet</code> without filling in every field manually. Only <code>#palette</code> is required; all widget style parameters default to <code>null</code>:</p>
-<pre><code class="language-graphix">val stylesheet: fn(
+<pre><code class="language-graphix">/// Build a full custom theme from a palette and optional per-widget styles.
+/// Omitted widget styles default to the theme's built-in palette-derived style.
+val stylesheet: fn(
   #palette: Palette,
   ?#button: [ButtonStyle, null],
   ?#checkbox: [CheckboxStyle, null],
@@ -324,6 +325,7 @@ let col = column(
   ?#text_input: [TextInputStyle, null],
   ?#toggler: [TogglerStyle, null]
 ) -&gt; StyleSheet;
+
 </code></pre>
 <p>Example with a custom palette and button override:</p>
 <pre><code class="language-graphix">use gui::{
@@ -429,7 +431,9 @@ let dark_mode = true;
 <h2 id="per-widget-style-types"><a class="header" href="#per-widget-style-types">Per-Widget Style Types</a></h2>
 <p>Each widget style type is a struct where every field is optional (<code>[T, null]</code>). A <code>null</code> field means “inherit from the theme palette.” The GUI module provides both the types and corresponding builder functions.</p>
 <h3 id="buttonstyle"><a class="header" href="#buttonstyle">ButtonStyle</a></h3>
-<pre><code class="language-graphix">type ButtonStyle = {
+<pre><code class="language-graphix">/// Per-widget style types for custom theming.
+/// All fields are optional — null fields inherit the theme default.
+type ButtonStyle = {
   background: [Color, null],
   border_color: [Color, null],
   border_radius: [f64, null],
@@ -437,6 +441,7 @@ let dark_mode = true;
   text_color: [Color, null]
 };
 
+/// Build a ButtonStyle with optional overrides
 val button_style: fn(
   ?#background: [Color, null],
   ?#border_color: [Color, null],
@@ -444,6 +449,7 @@ val button_style: fn(
   ?#border_width: [f64, null],
   ?#text_color: [Color, null]
 ) -&gt; ButtonStyle;
+
 </code></pre>
 <h3 id="textinputstyle"><a class="header" href="#textinputstyle">TextInputStyle</a></h3>
 <pre><code class="language-graphix">type TextInputStyle = {
@@ -457,6 +463,7 @@ val button_style: fn(
   value_color: [Color, null]
 };
 
+/// Build a TextInputStyle with optional overrides
 val text_input_style: fn(
   ?#background: [Color, null],
   ?#border_color: [Color, null],
@@ -467,6 +474,7 @@ val text_input_style: fn(
   ?#selection_color: [Color, null],
   ?#value_color: [Color, null]
 ) -&gt; TextInputStyle;
+
 </code></pre>
 <h3 id="sliderstyle"><a class="header" href="#sliderstyle">SliderStyle</a></h3>
 <pre><code class="language-graphix">type SliderStyle = {
@@ -479,6 +487,7 @@ val text_input_style: fn(
   rail_width: [f64, null]
 };
 
+/// Build a SliderStyle with optional overrides
 val slider_style: fn(
   ?#handle_border_color: [Color, null],
   ?#handle_border_width: [f64, null],
@@ -488,6 +497,7 @@ val slider_style: fn(
   ?#rail_fill_color: [Color, null],
   ?#rail_width: [f64, null]
 ) -&gt; SliderStyle;
+
 </code></pre>
 <h3 id="other-widget-styles"><a class="header" href="#other-widget-styles">Other Widget Styles</a></h3>
 <p>The remaining widget style types follow the same pattern – a struct of optional fields with a corresponding builder function:</p>

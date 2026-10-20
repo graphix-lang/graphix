@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -188,12 +188,7 @@ type Checkbox = {
   spacing: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
-// CR claude for claude: [doc-drift/low] The size rule above this val is a `//` comment,
-// so the LSP hover and the docs never show it. The same holds in markdown.gxi,
-// radio.gxi, text.gxi, text_editor.gxi, text_input.gxi, toggler.gxi and canvas.gxi
-// (above `type CanvasShape`). chart.gxi writes the same rule as `///`. Make all eight
-// `///` docs. Found by reading; not run. (gx-ui-05)
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],

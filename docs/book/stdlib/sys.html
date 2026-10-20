@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -216,7 +216,7 @@ val args: fn() -&gt; Array&lt;string&gt;;
 val join_path: fn(path: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 
 /// flush stdout/stderr and terminate the process with the given exit
-/// code. The return type is fully polymorphic because the call never
+/// code; a code outside 0..=255 exits with 1. The return type is fully polymorphic because the call never
 /// actually returns; it fires when its argument produces a value, so
 /// you can use it as the trailing expression of a program to make it
 /// exit deterministically on completion.
