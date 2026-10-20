@@ -844,3 +844,20 @@ run!(
         let t = 0;
         t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
     "#; FuseExpect::Jit);
+
+// A read that spells the trigger's variable another way (`use m::t;
+// seq t { .. m::t .. }`) is snapshotted too.
+run!(trigger_read_by_another_spelling_is_snapshotted,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "started 0"),
+    "/test.gx" => r#"
+        mod m;
+        use m::t;
+        let result = seq t {
+            let w = sys::time::timer(duration:70.ms, false);
+            "started [m::t]"
+        }
+    "#,
+    "/test/m.gx" => r#"
+        let t = 0;
+        t <- select t { k if k < 4 => (k ~ t) + 1, _ => never() }
+    "#; FuseExpect::Jit);

@@ -134,7 +134,8 @@ pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         (SeqKind::Queued { .. }, Some(SeqTrigger::Bind(b))) => desugar_let(&seq, b),
         (SeqKind::Queued { .. }, _) => desugar_queued(&seq, env, scope),
         (SeqKind::Plain, _) => {
-            desugar_plain(&seq, None, &fn_names(body, seq.trigger, env, scope))
+            let aliases = trigger_aliases(&seq, env, scope);
+            desugar_plain(&seq, None, &fn_names(body, seq.trigger, env, scope), &aliases)
         }
     }
 }
@@ -186,6 +187,30 @@ fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
     Ok(block(pos, [let_bind(pos, &name, typ.clone(), value.clone()), queued]))
 }
 
+/// The other spellings the body and abort clause read the trigger's
+/// variable by (`use m::t; seq t { .. m::t .. }`), keyed as reads are.
+fn trigger_aliases(seq: &Parts, env: &Env, scope: &ModPath) -> SmallVec<[ArcStr; 2]> {
+    let mut out: SmallVec<[ArcStr; 2]> = SmallVec::new();
+    let Some(SeqTrigger::Expr(e)) = seq.trigger else { return out };
+    let ExprKind::Ref { name } = &e.kind else { return out };
+    let Ok(Some((_, b))) = env.lookup_bind(scope, name) else { return out };
+    let (id, key) = (b.id, ref_key(name));
+    let stmts = seq.body.iter().chain(seq.abort);
+    for s in stmts {
+        s.fold((), &mut |(), e| {
+            if let ExprKind::Ref { name: n } = &e.kind
+                && ref_key(n) != key
+                && !out.iter().any(|o| o.as_str() == ref_key(n))
+                && let Ok(Some((_, other))) = env.lookup_bind(scope, n)
+                && other.id == id
+            {
+                out.push(ArcStr::from(ref_key(n)))
+            }
+        })
+    }
+    out
+}
+
 /// The trigger a machine filters, and the run's snapshot of it: the cell
 /// declarations, the writes the start event makes into them, and the
 /// body's names for them. A bare variable's reads see the value the run
@@ -196,6 +221,7 @@ fn trigger_snapshot(
     decls: &mut SmallVec<[Expr; 2]>,
     writes: &mut SmallVec<[Expr; 2]>,
     visible: &mut Names,
+    aliases: &[ArcStr],
 ) -> Result<Expr> {
     let Parts { spec, trigger, body, .. } = *seq;
     let (pos, id) = (spec.pos, spec.id.inner());
@@ -221,14 +247,26 @@ fn trigger_snapshot(
             // differently from the trigger (use m::t; seq t { .. m::t .. }) and
             // desugar_queued's trigger_name still key by spelling; both need the
             // binding the trigger resolves to, which the lowering does not have.
+            // 2026-10-20 claude: Plain seq done: trigger_aliases resolves every
+            // spelling the body and abort clause read the trigger binding by (use m::t;
+            // seq t { .. m::t .. }), and the snapshot redirects them all to its one
+            // cell. Pin: lang::seq::trigger_read_by_another_spelling_is_snapshotted.
+            // Left: desugar_queued trigger_name (seqq until and its abort/flush
+            // clauses) still keys by spelling.
+            let reads = |n: &str| {
+                reads_name(body, n)
+                    || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), n))
+            };
             if let ExprKind::Ref { name } = &e.kind
                 && let n = ArcStr::from(ref_key(name))
-                && (reads_name(body, &n)
-                    || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), &n)))
+                && (reads(&n) || aliases.iter().any(|a| reads(a)))
             {
                 let c = cell(&n.replace('/', "_"));
                 decls.push(let_bind(e.pos, &c, None, never(e.pos)));
                 writes.push(connect(pos, &c, r#ref(pos, go)));
+                for a in aliases {
+                    visible.insert(a.clone(), Redirect::Snapshot(c.clone()));
+                }
                 visible.insert(n, Redirect::Snapshot(c));
             }
             Ok((**e).clone())
@@ -270,6 +308,7 @@ fn desugar_plain(
     seq: &Parts,
     queue: Option<Queue>,
     fns: &AHashSet<ArcStr>,
+    aliases: &[ArcStr],
 ) -> Result<Expr> {
     let Parts { spec, abort, flush, body, .. } = *seq;
     let manual = abort.is_some() || flush.is_some();
@@ -300,6 +339,7 @@ fn desugar_plain(
         &mut snapshot_decls,
         &mut snapshot_writes,
         &mut visible,
+        aliases,
     )?;
     let err_bind = literal!("e");
     let catch_node = {
@@ -1441,7 +1481,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         pos,
         &result,
         None,
-        desugar_plain(&machine, Some(queue), &fns)?,
+        desugar_plain(&machine, Some(queue), &fns, &[])?,
     ));
     prelude.push(connect(
         pos,
