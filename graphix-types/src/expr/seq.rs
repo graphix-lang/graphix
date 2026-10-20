@@ -1494,7 +1494,10 @@ fn scope(names: &Names) -> LPooled<Names> {
 fn issue_expr(e: &Expr, map: &Names, issue: Issue) -> Expr {
     let issued = has_call(e);
     let e = rewrite_with(e, map, Rewrite::Issue(issue));
-    guard(if issued { e } else { entry_fire(e, issue.pc) })
+    match &e.kind {
+        ExprKind::SeqGuard(_) => e,
+        _ => guard(if issued { e } else { entry_fire(e, issue.pc) }),
+    }
 }
 
 /// `e` fired at entry with its standing value, then tracked: `any(pc
@@ -1722,7 +1725,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         // the trigger is the outer step's, issued with it; the clauses
         // and the body belong to the inner machine's own runs
-        // CR claude for claude: [bug/high] Under Rewrite::Issue a nested seq is rebuilt
+        // XCR claude for claude: [bug/high] Under Rewrite::Issue a nested seq is rebuilt
         // here with no completion guard, unlike issue_call's guarded call. Inside a
         // select arm, an operand, a call argument or a tuple, the step fires at entry
         // with the nested seq's standing result from the previous run and completes on
@@ -1735,6 +1738,12 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         // when the mode is Issue, and pin the arm and call-argument forms. probe:
         // design/review-2026-10-19/repro/tests-seq-nested-seq-in-expr-stale.gx
         // (tests-seq-01)
+        // 2026-10-19 claude: Under Rewrite::Issue a nested seq is rebuilt inside a
+        // SeqGuard, so its step completes only on this run's production; issue_expr
+        // adds no second guard around one. The probe prints inner 0 / 0 / inner 100 /
+        // 100. Pin: lang::seq::seq_nested_reentry_in_expr (arm, operand and call
+        // argument; the review binary answers 12, this 144). Needs a soak (seq
+        // semantics).
         ExprKind::Seq(s) => {
             let SeqExpr { kind, trigger, abort, body } = &**s;
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));
@@ -1754,7 +1763,12 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 }
             };
             let body = rewrite_stmts(body, &inner, mode.deferred());
-            ExprKind::Seq(Arc::new(SeqExpr { kind, trigger, abort, body }))
+            let seq = ExprKind::Seq(Arc::new(SeqExpr { kind, trigger, abort, body }));
+            // issued with its step, it answers only once this run's fires
+            match mode {
+                Rewrite::Issue(_) => ExprKind::SeqGuard(Arc::new(seq.to_expr(e.pos))),
+                _ => seq,
+            }
         }
         ExprKind::Qop { arg: x, written } => {
             let original = written.clone().unwrap_or_else(|| x.clone());

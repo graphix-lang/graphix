@@ -465,6 +465,28 @@ run!(seq_nested_reentry, SEQ_NESTED_REENTRY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(121)))
 }; FuseExpect::Jit);
 
+// The same with the nested seq inside a select arm, an operand and a
+// call argument of its step: each waits for its run's result.
+const SEQ_NESTED_REENTRY_IN_EXPR: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 30 => s + 1, _ => never() };
+  let go = select step { 1 | 12 => step, _ => never() };
+  let id = |x: i64| x;
+  let out = seq go {
+    let a = select go { 0 => 0, _ => seq { let a = go; a * 10 } };
+    let b = seq { let b = go; b } + 0;
+    let c = id(seq { let c = go; c });
+    a + b + c
+  };
+  select step { 30 => out, _ => never() }
+}
+"#;
+
+run!(seq_nested_reentry_in_expr, SEQ_NESTED_REENTRY_IN_EXPR, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(144)))
+}; FuseExpect::Jit);
+
 // A block's lets are its own; the statement after it reads the outer x.
 const SEQ_BLOCK_LET_LOCAL: &str = r#"
 {
