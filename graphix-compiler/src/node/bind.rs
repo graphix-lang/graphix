@@ -940,7 +940,7 @@ impl Ref {
     ) -> Arc<FnType> {
         let rec_knot = !ctx.rec_defs.is_empty()
             && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-        if rec_knot || ctx.def_gate_params.contains(&self.id) {
+        if rec_knot || ctx.def_gate_params.contains_key(&self.id) {
             return ft;
         }
         match ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id)) {

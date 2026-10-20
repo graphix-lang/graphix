@@ -151,6 +151,15 @@ impl fmt::Display for ArgKey {
     }
 }
 
+/// What an instance registers for its body's check: its fn-typed formals
+/// bound to the lambdas its arguments are, and keyed by definition and
+/// position (`CompileCtx::instance_fn_params`), with what each key held.
+#[derive(Default)]
+struct FnParams {
+    binds: LPooled<Vec<BindId>>,
+    formals: SmallVec<[((LambdaId, u32), Option<BindId>); 4]>,
+}
+
 /// The call's argument nodes, keyed for signature lookups and iterating
 /// in source order: the written arguments, then the defaults a bind
 /// added. A forked update merges its parts in that order.
@@ -2012,7 +2021,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // Fn-typed args are registered under the instance's param
         // BindIds for the whole body typecheck (`register_fn_params`).
-        let param_binds = self.register_fn_params(ctx, &instance_ftype);
+        let param_binds = self.register_fn_params(ctx, &instance_ftype, def.id);
         if let Some(instance) = instance {
             ctx.push_resolving(
                 def.id,
@@ -2184,22 +2193,26 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &self,
         ctx: &mut CompileCtx<R, E>,
         ftype: &FnType,
-    ) -> LPooled<Vec<BindId>> {
-        let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
+        lid: LambdaId,
+    ) -> FnParams {
+        let mut params = FnParams::default();
         let apply = match self.callee.apply() {
             Some(a) => a,
-            None => return param_binds,
+            None => return params,
         };
         let ApplyView::Lambda(g) = apply.view() else {
-            return param_binds;
+            return params;
         };
         let formals =
             ftype.args.iter().zip(g.args()).zip(ArgKey::of_formals(&ftype.args));
-        for ((farg, pat), key) in formals {
+        for (i, ((farg, pat), key)) in formals.enumerate() {
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
                 continue;
             }
             let Some(id) = pat.single_bind_id() else { continue };
+            let k = (lid, i as u32);
+            params.formals.push((k, ctx.instance_fn_params.insert(k, id)));
+            let param_binds = &mut params.binds;
             let Some(arg_node) = self.arg(&key) else { continue };
             match arg_node.view() {
                 _ if let Some(l) = lambda_literal(arg_node) => {
@@ -2225,17 +2238,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 _ => {}
             }
         }
-        param_binds
+        params
     }
 
     /// Undo [`Self::register_fn_params`]; the `fn_forward_resolutions`
     /// snapshot stays for the kernel cache fingerprint.
-    fn unregister_fn_params(
-        ctx: &mut CompileCtx<R, E>,
-        mut param_binds: LPooled<Vec<BindId>>,
-    ) {
-        for id in param_binds.drain(..) {
+    fn unregister_fn_params(ctx: &mut CompileCtx<R, E>, mut params: FnParams) {
+        for id in params.binds.drain(..) {
             ctx.bind_to_lambda.remove(&id);
+        }
+        for (k, prev) in params.formals.drain(..).rev() {
+            match prev {
+                Some(id) => ctx.instance_fn_params.insert(k, id),
+                None => ctx.instance_fn_params.remove(&k),
+            };
         }
     }
 
@@ -3055,7 +3071,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 let is_param_knot = !ctx.def_gate_params.is_empty()
                     && matches!(
                         self.fnode.view(),
-                        NodeView::Ref(r) if ctx.def_gate_params.contains(&r.id)
+                        NodeView::Ref(r) if ctx.def_gate_params.contains_key(&r.id)
                     );
                 let ftype = if let Some(active) = active_ftype {
                     active

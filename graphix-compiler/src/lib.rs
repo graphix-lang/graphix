@@ -1430,10 +1430,14 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// self-call inside such a body unifies against the def's own
     /// ftype cells (monomorphic recursion), not a freshening.
     pub(crate) rec_defs: nohash::IntSet<LambdaId>,
-    /// The fn-typed parameter BindIds of the defs being body-checked: a
-    /// call through one unifies against the param's own declared cells,
-    /// so `f(v)` types as the def's rigid 'b.
-    pub(crate) def_gate_params: nohash::IntSet<BindId>,
+    /// The fn-typed parameter BindIds of the defs being body-checked, with
+    /// their definition and position: a call through one unifies against
+    /// the param's own declared cells, so `f(v)` types as the def's rigid 'b.
+    pub(crate) def_gate_params: nohash::IntMap<BindId, (LambdaId, u32)>,
+    /// The fn-typed formals of the instances whose bodies are being
+    /// checked, by definition and position: what an instance-defined
+    /// literal's recorded parameter calls name (`DefTable`).
+    pub(crate) instance_fn_params: AHashMap<(LambdaId, u32), BindId>,
     /// Def-gate nesting depth; a nested gate's cells are still
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
@@ -1620,6 +1624,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             builtin_bindings: self.builtin_bindings.fork(),
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
+            instance_fn_params: self.instance_fn_params.clone(),
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             defaults_in_check: self.defaults_in_check.clone(),
@@ -1665,6 +1670,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,
+            instance_fn_params: _,
             def_gate_depth: _,
             resolving_lambdas: _,
             defaults_in_check: _,
@@ -1945,7 +1951,8 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 written_lets: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
-                def_gate_params: nohash::IntSet::default(),
+                def_gate_params: nohash::IntMap::default(),
+                instance_fn_params: AHashMap::default(),
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(Resolving::default()),
                 defaults_in_check: SmallVec::new(),
@@ -3148,6 +3155,7 @@ impl Saved {
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,
+            instance_fn_params: _,
             def_gate_depth: _,
             resolving_lambdas: _,
             defaults_in_check: _,

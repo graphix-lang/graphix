@@ -574,7 +574,7 @@ pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
         if own(id) {
             calls.own = true;
             true
-        } else if ctx.def_gate_params.contains(&id) {
+        } else if ctx.def_gate_params.contains_key(&id) {
             if !calls.captured.contains(&id) {
                 calls.captured.push(id)
             }

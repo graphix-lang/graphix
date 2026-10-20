@@ -342,3 +342,17 @@ const SYNC_ON_ASYNC_LITERAL_CALL: &str = r#"
 "#;
 
 run!(sync_on_async_literal_call, SYNC_ON_ASYNC_LITERAL_CALL, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
+// A literal an instance defines keeps the enclosing parameters it calls:
+// a builtin handed `|x| f(x)` is judged with the instance's `f`.
+const CAPTURED_PARAM_CALL: &str = r#"
+{
+  let g = |v: i64, f: fn(x: i64) -> bool| filter(v, |x| f(x));
+  #[ATTR]
+  let h = |v: i64| g(v, |x| sys::time::after_idle(duration:1.ms, x) > 0);
+  h(1)
+}
+"#;
+
+run!(captured_param_call_sync_refused, &CAPTURED_PARAM_CALL.replace("ATTR", "sync"), refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+run!(captured_param_call_async_accepted, &CAPTURED_PARAM_CALL.replace("ATTR", "async"), |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);

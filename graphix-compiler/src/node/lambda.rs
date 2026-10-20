@@ -71,6 +71,11 @@ pub struct DefTable {
     /// The body's own effect facts (`analysis::def_body_facts`), which
     /// every definition this table types starts from.
     facts: LambdaFacts,
+    /// The body's calls through its own parameters, and the enclosing
+    /// definitions' parameters it calls, by definition and position, which
+    /// an instance resolves to its own formals (`ParamCalls`).
+    calls_own: bool,
+    calls_captured: Box<[(LambdaId, u32)]>,
 }
 
 /// One instance's cell map, shared with the lambdas its body defines:
@@ -140,8 +145,10 @@ impl DefTable {
         env: &Env,
         checked: &Env,
         facts: LambdaFacts,
+        calls_own: bool,
+        calls_captured: Box<[(LambdaId, u32)]>,
     ) -> Self {
-        let mut table = Self { facts, ..Self::default() };
+        let mut table = Self { facts, calls_own, calls_captured, ..Self::default() };
         let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
         fusion::for_each_node(body, &mut |n| {
             let id = n.spec().id;
@@ -233,6 +240,8 @@ impl DefTable {
                     .collect(),
                 typedefs: vec![],
                 facts: self.facts,
+                calls_own: self.calls_own,
+                calls_captured: self.calls_captured.clone(),
             };
             table.own_typedefs();
             table
@@ -277,7 +286,14 @@ impl DefTable {
                 for r in table.typedefs.iter() {
                     image::resolved_encode(r, buf)?;
                 }
-                table.facts.encode(buf)
+                table.facts.encode(buf)?;
+                table.calls_own.encode(buf)?;
+                encode_varint(table.calls_captured.len() as u64, buf);
+                for (lid, i) in table.calls_captured.iter() {
+                    lid.encode(buf)?;
+                    i.encode(buf)?;
+                }
+                Ok(())
             },
         )
     }
@@ -315,7 +331,21 @@ impl DefTable {
                     .map(|_| image::resolved_decode(sub))
                     .collect::<Result<Vec<_>, _>>()?;
                 let facts = LambdaFacts::decode(sub)?;
-                Ok(SArc::new(DefTable { types, ftypes, aux, lambdas, typedefs, facts }))
+                let calls_own = bool::decode(sub)?;
+                let n = image::count_decode(sub)?;
+                let calls_captured = (0..n)
+                    .map(|_| Ok((LambdaId::decode(sub)?, u32::decode(sub)?)))
+                    .collect::<Result<_, _>>()?;
+                Ok(SArc::new(DefTable {
+                    types,
+                    ftypes,
+                    aux,
+                    lambdas,
+                    typedefs,
+                    facts,
+                    calls_own,
+                    calls_captured,
+                }))
             },
             |b| Self::image_decode(b),
         )
@@ -1983,11 +2013,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             // against the param's own declared cells (`CompileCtx::def_gate_params`)
             let mut param_knot: LPooled<Vec<BindId>> = LPooled::take();
             if let ApplyView::Lambda(g) = f.view() {
-                for (pat, at) in g.args().iter().zip(ftyp.args.iter()) {
+                for (i, (pat, at)) in g.args().iter().zip(ftyp.args.iter()).enumerate() {
                     if at.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
                         && let Some(id) = pat.single_bind_id()
                     {
-                        ctx.def_gate_params.insert(id);
+                        ctx.def_gate_params.insert(id, (def.id, i as u32));
                         param_knot.push(id);
                     }
                 }
@@ -2001,8 +2031,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             {
                 let (facts, calls) = crate::analysis::def_body_facts(g, ctx);
                 def.join_facts(facts);
+                let captured = calls
+                    .captured
+                    .iter()
+                    .filter_map(|id| ctx.def_gate_params.get(id).copied())
+                    .collect();
+                let table = SArc::new(DefTable::record(
+                    &g.body, &g.env, &ctx.env, facts, calls.own, captured,
+                ));
                 *def.param_calls.lock() = calls;
-                let table = SArc::new(DefTable::record(&g.body, &g.env, &ctx.env, facts));
                 def.table.set(Tables { table, outer: None });
             }
             ctx.discard_apply(f);
@@ -2057,7 +2094,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
-        // CR claude for claude: [bug/medium] An instance-defined literal takes its
+        // XCR claude for claude: [bug/medium] An instance-defined literal takes its
         // table's facts here, but its ParamCalls stay default. DefTable records `facts`
         // and not the ParamCalls that Lambda::typecheck0 stores from
         // analysis::def_body_facts. So analysis::callback_facts finds no captured fn
@@ -2069,6 +2106,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // def.param_calls here. Remap `captured` (the def check's formal ids) to this
         // instance's formals, for example by recording formals by position. probe:
         // design/review-2026-10-19/repro/c-lambda-instance-param-calls.sh (c-lambda-01)
+        // 2026-10-19 claude: DefTable carries the body's parameter calls: its own, and
+        // the enclosing definitions' fn parameters it calls by (definition, position),
+        // taken from CompileCtx::def_gate_params (now a map to that key). An instance's
+        // call site registers its fn-typed formals by the same key
+        // (CompileCtx::instance_fn_params, restored at unregister), and an
+        // instance-defined literal resolves its captured calls through it.
+        // REGISTRATION_FORMAT 70 -> 71. The repro now refuses #[sync] and accepts
+        // #[async] with and without GRAPHIX_NO_SUBST. Pins:
+        // lang::attributes::captured_param_call_sync_refused,
+        // captured_param_call_async_accepted.
+        let captured = tables
+            .table
+            .calls_captured
+            .iter()
+            .filter_map(|k| ctx.instance_fn_params.get(k).copied())
+            .collect();
+        *def.param_calls.lock() = ParamCalls { own: tables.table.calls_own, captured };
         def.join_facts(tables.table.facts);
         def.table.set(tables);
         Ok(())
