@@ -72,6 +72,10 @@ pub enum CFlag {
     /// entry, and its definition check does not warn of their constants.
     /// A lambda's body compiles without it.
     SeqStep,
+    /// A seq's `abort(..)` or `flush(..)` event select: every entry of its
+    /// arm is the arm's birth, as each run's entry of a step is. Its arms
+    /// compile without it.
+    RunEvent,
 }
 
 /// Sets a thread-local `Cell` for a scope and puts the previous value

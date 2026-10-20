@@ -1179,8 +1179,9 @@ cycle, across workers; the compiler never pins threads.
   included, is live (`SeqCapture`). `seq t; abort(e) { .. }` ends the run when
   `e` fires: silent, past any `try`, and it wins the cycle it fires in
   (the compiler-only `SeqAbort` node fails the machine's guards before
-  the machine updates); `e` is an initial step, asleep between runs, and
-  only its fires after the entry cycle count. `flush(e)` (`seqq` only)
+  the machine updates); `e` is an initial step, asleep between runs and
+  born at each run's entry (`CFlag::RunEvent`), and only its fires after
+  the entry cycle count. `flush(e)` (`seqq` only)
   also empties the queue. A machine resets to idle in its handler's
   `sleep()`: a run does not survive its arm's sleep, and a `seqq`'s
   handler owes its queue the aborted run's credit, paid at the wake

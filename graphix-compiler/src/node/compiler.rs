@@ -210,8 +210,13 @@ fn compile_inner<R: Rt, E: UserEvent>(
     // an error.
     let mut def_asserts: SmallVec<[DefAssertionKind; 2]> = SmallVec::new();
     let mut fork: Option<ForkKind> = None;
+    let mut flags = flags;
     if let Some(dec) = &spec.dec {
         for attr in dec.attrs.iter() {
+            if attr.name == crate::expr::seq::RUN_EVENT {
+                flags |= CFlag::RunEvent;
+                continue;
+            }
             if let Some(k) = fork_kind(&spec, attr)? {
                 if fork.replace(k).is_some() {
                     bailat!(spec, "at most one of #[parallel] and #[serial]");

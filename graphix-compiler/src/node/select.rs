@@ -258,7 +258,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         }
         let typ = Type::decode(buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
-        Ok(Self::new(arg, arms, typ, spec, BitFlags::empty()))
+        let flags = match bool::decode(buf)? {
+            true => CFlag::RunEvent.into(),
+            false => BitFlags::empty(),
+        };
+        Ok(Self::new(arg, arms, typ, spec, flags))
     }
 
     pub(crate) fn compile(
@@ -270,6 +274,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         arg: &Expr,
         arms: &[(Pattern, Expr)],
     ) -> Result<Node<R, E>> {
+        let own = flags & CFlag::RunEvent;
+        let flags = flags & !CFlag::RunEvent;
         let arg = Held::new(compile(ctx, flags, arg.clone(), scope, top_id)?);
         let inputs = scrutinee_inputs(&ctx.env, &arg.node);
         let arms = arms
@@ -295,7 +301,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             })
             .collect::<Result<Vec<_>>>()
             .at(&spec)?;
-        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, flags))
+        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, flags | own))
     }
 }
 
@@ -1405,7 +1411,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             n.image_encode(buf)?;
         }
         self.typ.encode(buf)?;
-        self.spec.encode(buf)
+        self.spec.encode(buf)?;
+        self.flags.contains(CFlag::RunEvent).encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -1423,7 +1430,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident,
             slept,
             arm_facts,
-            flags: _,
+            flags,
         } = self;
         let LazyArmFacts {
             tracked,
@@ -1634,7 +1641,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         if !sleep_on_deselect[i] {
                             arms[i].1.sleep(ctx);
                         }
-                        View::Wake
+                        match flags.contains(CFlag::RunEvent) {
+                            true => View::Step,
+                            false => View::Wake,
+                        }
                     }
                     false => View::Step,
                 };
@@ -1752,7 +1762,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?;
-        if self.flags.contains(CFlag::SeqStep) {
+        if self.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) {
             return Ok(());
         }
         for (_, n) in &self.arms {

@@ -290,7 +290,25 @@ async fn abort_after_given_up_errors(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// The budget restarts with every run, not only the first: runs 1, 8 and
+// 15 each outlast their 140 ms and are aborted, each trigger after an
+// abort starts a run, and run 22 finishes inside its own budget.
+async fn abort_timer_budgets_every_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let tick = count(sys::time::timer(duration:40.ms, 30)?);
+        let go = select tick { 1 | 8 | 15 | 22 => tick, _ => never() };
+        seq go; abort(sys::time::timer(duration:140.ms, false)) {
+            until tick > go + select go { 22 => 1, _ => 6 };
+            go
+        }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [22]);
+    Ok(())
+}
+
 modes!(abort_after_given_up_errors);
+modes!(abort_timer_budgets_every_run);
 modes!(abort_ends_run);
 modes!(idle_fire_is_dropped);
 modes!(entry_fire_is_not_an_abort);

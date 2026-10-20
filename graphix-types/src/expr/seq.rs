@@ -9,9 +9,9 @@
 //! consumes one argument snapshot per entry.
 
 use super::{
-    ApplyExpr, Arg, ArgKind, BinOp, BindExpr, CatchExpr, CatchRole, Decorations, Expr,
-    ExprId, ExprKind, LambdaBody, LambdaExpr, ModPath, ModuleKind, Pattern, SelectExpr,
-    SeqCaptureExpr, SeqExpr, SeqKind, SeqMachineExpr, SeqStep, SeqTrigger,
+    ApplyExpr, Arg, ArgKind, Attr, BinOp, BindExpr, CatchExpr, CatchRole, Decorations,
+    Expr, ExprId, ExprKind, LambdaBody, LambdaExpr, ModPath, ModuleKind, Pattern,
+    SelectExpr, SeqCaptureExpr, SeqExpr, SeqKind, SeqMachineExpr, SeqStep, SeqTrigger,
     StructurePattern, TryWithExpr, WrittenAt,
 };
 use crate::{
@@ -441,11 +441,15 @@ fn run_events(
     }
 }
 
-/// An `abort(..)` or `flush(..)` event: `e` is an initial step, woken
+/// The attribute the lowering puts on a run event's select
+/// ([`crate::CFlag::RunEvent`]); no source can spell it.
+pub const RUN_EVENT: ArcStr = literal!("seq-run");
+
+/// An `abort(..)` or `flush(..)` event: `e` is an initial step, born
 /// when a run starts and asleep between runs, and only its fires after
 /// the entry cycle count. What stands at entry, and the fires it missed
 /// asleep, belong to no run.
-// CR claude for claude: [bug/high] The abort and flush event lowers to a select arm on
+// XCR claude for claude: [bug/high] The abort and flush event lowers to a select arm on
 // `seqedge`. Since a wake is a resume, every run after the first wakes that arm instead
 // of giving it a birth. A `sys::time::timer(d, false)` in `abort(..)` is therefore
 // never started again. Once it has fired, Timer's `left` is 0 and the paused run never
@@ -458,9 +462,15 @@ fn run_events(
 // It passes today only because its run 1 ends before its timer fires. probe:
 // design/review-2026-10-19/repro/x-engine-seq-errors-abort-timer-budget-first-run-only.gx
 // (x-engine-seq-errors-01)
+// 2026-10-19 claude: run_event's select carries the lowering-only attribute seq-run,
+// which compiles it with CFlag::RunEvent (its arms without): every entry of its arm is a
+// Step, so the builtins in the clause are reborn at each run and a timer budgets every
+// run; the birth-only warning is not given for it; the flag rides the select's image
+// (REGISTRATION_FORMAT 75). Pin: lang::seq_abort::abort_timer_budgets_every_run (the
+// review binary answers [8, 22], this [22]). Needs a soak (seq semantics).
 fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
     let pos = e.pos;
-    let live = select(
+    let mut live = select(
         pos,
         r#ref(pos, edge),
         [
@@ -468,6 +478,10 @@ fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
             (pat_lit(Value::Bool(false)), e.clone()),
         ],
     );
+    live.dec = Some(Arc::new(Decorations {
+        comments: Arc::from_iter([]),
+        attrs: Arc::from_iter([Attr { name: RUN_EVENT, args: Arc::from_iter([]) }]),
+    }));
     apply_filter(pos, live, lambda_sampling(pos, armed))
 }
 

@@ -649,9 +649,11 @@ seqq request; abort(skip); flush(cancel) { .. }
 ```
 
 **The event is an initial step.** The expression is asleep while the
-machine is idle and wakes when a run starts, so a timer in it times
-the run: `abort(sys::time::timer(duration:10.s, false))` is a ten
-second budget per run. Only its fires AFTER the entry cycle count. A
+machine is idle and is born again when a run starts, as a step is at
+each run's entry (its select carries `CFlag::RunEvent`, which the
+lowering asks for with an attribute no source can spell), so a timer
+in it times every run: `abort(sys::time::timer(duration:10.s, false))`
+is a ten second budget per run. Only its fires AFTER the entry cycle count. A
 value standing at entry, and a fire that happened between runs (which
 wake catch-up re-raises at entry), belong to no run and are dropped;
 there is nothing to bank. The expression reads everything live except
