@@ -1629,13 +1629,24 @@ struct Declared {
     func: FuncId,
     thunk: Option<FuncId>,
     sig: Signature,
+    /// The longest chain of distinct kernels it calls, itself included.
+    height: u32,
 }
+
+/// A call into another kernel checks the stack where the caller's and
+/// the callee's heights fall in different blocks of this many: a chain of
+/// distinct kernels descends in height, so it checks at least once every
+/// this many frames, and a call that cannot start a deep chain pays
+/// nothing. A self-call always checks.
+const CHECK_EVERY: u32 = 8;
 
 struct CachedBody {
     /// The body's id in [`Names`].
     func_id: FuncId,
     /// The body's spill thunk's id.
     thunk_id: FuncId,
+    /// [`Declared::height`].
+    height: u32,
     signature: Signature,
     /// Filled when the body is emitted. `None` at a caller's emission
     /// is a self-call, which roots a per-activation block tree.
@@ -1775,8 +1786,10 @@ fn compile_region_inner(
     let parent_key = kernel_abi::kernel_key(kernel);
     let parent_sig = kernel_signature(&*em.shared.isa, kernel)?;
     let parent_fid = em.names.local(&parent_sig);
-    funcids
-        .push((parent_key, Declared { func: parent_fid, thunk: None, sig: parent_sig }));
+    funcids.push((
+        parent_key,
+        Declared { func: parent_fid, thunk: None, sig: parent_sig, height: 0 },
+    ));
     for (key, k) in callees {
         let key = CacheKey { kernel: *key, layout: layout_of(*key) };
         let entry = match em.caches.by_kernel(&key) {
@@ -1788,6 +1801,7 @@ fn compile_region_inner(
                     func: e.func_id,
                     thunk: Some(e.thunk_id),
                     sig: e.signature.clone(),
+                    height: e.height,
                 }
             }
             None => {
@@ -1799,13 +1813,14 @@ fn compile_region_inner(
                     CachedBody {
                         func_id: func,
                         thunk_id: thunk,
+                        height: 0,
                         signature: sig.clone(),
                         _kernel: k.clone(),
                         site_layout: None,
                     },
                 );
                 fresh.push((key, k.clone()));
-                Declared { func, thunk: Some(thunk), sig }
+                Declared { func, thunk: Some(thunk), sig, height: 0 }
             }
         };
         funcids.push((key.kernel, entry));
@@ -1815,6 +1830,34 @@ fn compile_region_inner(
     // callees' `SiteLayout`s (the only one missing at emission is a
     // self-call's), then the parent.
     let order = def_order(fresh, emitters);
+    // the fresh bodies' heights, callees first, then the parent's
+    let height_of = |funcids: &[(KernelKey, Declared)],
+                     body: &BodySource,
+                     own: KernelKey| {
+        1 + body
+            .spec
+            .lambda_call_sites
+            .values()
+            .map(|info| kernel_abi::kernel_key(&info.kernel))
+            .filter(|k| *k != own)
+            .filter_map(|k| funcids.iter().find(|(p, _)| *p == k).map(|(_, d)| d.height))
+            .max()
+            .unwrap_or(0)
+    };
+    for (key, _) in order.iter() {
+        let Some(body) = emitters.get(&key.kernel) else { continue };
+        let h = height_of(&funcids, body, key.kernel);
+        if let Some((_, d)) = funcids.iter_mut().find(|(p, _)| *p == key.kernel) {
+            d.height = h;
+        }
+        if let Some(cached) = em.caches.by_kernel.get_mut(key) {
+            cached.height = h;
+        }
+    }
+    let h = height_of(&funcids, parent, parent_key);
+    if let Some((_, d)) = funcids.iter_mut().find(|(p, _)| *p == parent_key) {
+        d.height = h;
+    }
     for (key, k) in order.iter() {
         let body = emitters.get(&key.kernel).ok_or_else(|| {
             anyhow!(
@@ -1915,7 +1958,7 @@ fn emit_kernel_body(
 ) -> Result<(EmittedBody, Pending)> {
     let mut clif_profile = profile::phase(Phase::Clif);
     let self_key = kernel_abi::kernel_key(kernel);
-    let Declared { func: func_id, thunk: thunk_id, sig } =
+    let Declared { func: func_id, thunk: thunk_id, sig, height } =
         funcids.iter().find(|(p, _)| *p == self_key).map(|(_, e)| e.clone()).ok_or_else(
             || {
                 anyhow!(
@@ -1946,10 +1989,12 @@ fn emit_kernel_body(
         let mut callee_ids: BTreeMap<KernelKey, KernelFns<FuncId>> = BTreeMap::new();
         for (key, d) in funcids {
             if let (true, Some(thunk)) = (callee_keys.contains(key), d.thunk) {
-                let ids = KernelFns { body: d.func, thunk };
+                let checked =
+                    *key == self_key || height / CHECK_EVERY != d.height / CHECK_EVERY;
+                let ids = KernelFns { body: d.func, thunk, checked };
                 let body = names.import_func(ids.body, b.func);
                 let thunk = names.import_func(ids.thunk, b.func);
-                callee_refs.insert(*key, KernelFns { body, thunk });
+                callee_refs.insert(*key, KernelFns { body, thunk, checked });
                 callee_ids.insert(*key, ids);
             }
         }

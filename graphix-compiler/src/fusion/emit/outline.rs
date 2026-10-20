@@ -276,7 +276,8 @@ fn emit_chunk(
         .map(|(k, ids)| {
             let names = names.borrow();
             let body = names.import_func(ids.body, b.func);
-            (*k, KernelFns { body, thunk: names.import_func(ids.thunk, b.func) })
+            let thunk = names.import_func(ids.thunk, b.func);
+            (*k, KernelFns { body, thunk, checked: ids.checked })
         })
         .collect();
     let consts = RefCell::new(Vec::new());

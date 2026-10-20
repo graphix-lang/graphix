@@ -210,7 +210,11 @@ counter went; the kernel's non-tail self-calls run on the machine
 stack, so it needed the JIT twin of `ensure_sufficient`:
 
 - `graphix_stack_check` (0 interrupted / 1 call / 2 grow) at every
-  kernel call site, a self-call's and another kernel's alike — the same
+  self-call site, and at a call into another kernel where the caller's
+  and the callee's heights (the longest chain of distinct kernels each
+  calls, itself included) fall in different blocks of
+  `jit::CHECK_EVERY` (8): a chain descends in height, so it checks at
+  least once every 8 frames, and a shallow call pays nothing — the same
   helper-returned-flag branch shape the counter had, so the fast path
   costs what the counter cost. On 2 the site spills its CLIF args to a
   stack slot at an 8-byte stride and calls
@@ -221,8 +225,8 @@ stack, so it needed the JIT twin of `ensure_sufficient`:
   caller's record as `RelocTarget::CalleeThunk`) loads the params as
   the signature declares, calls the kernel, stores the two result words.
   Cross-kernel edges are acyclic (mutual recursion de-fuses), but a
-  chain of distinct functions is as deep as the program is long, so
-  every call checks. Measured: 2,000,000 deep in 1.4s and 507MB, ~250
+  chain of distinct functions is as deep as the program is long, hence
+  the height blocks. Measured: 2,000,000 deep in 1.4s and 507MB, ~250
   bytes of stack per level.
 - The block-tree walks (`FusedKernel::drop`'s free, the reclaim) are
   explicit worklists — they recursed one Rust frame per activation,

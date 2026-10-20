@@ -774,10 +774,10 @@ fn marshal_args<R: Rt, E: UserEvent>(
     Ok((cvs, drops))
 }
 
-/// A call of another kernel or of itself: inside the stack red zone it
-/// enters the callee on a fresh segment through the callee's spill
-/// thunk, since a chain of calls is as deep as the program is long; the
-/// same check carries the cooperative interrupt and the stack budget,
+/// A checked call of another kernel or of itself: inside the stack red
+/// zone it enters the callee on a fresh segment through the callee's
+/// spill thunk, since a chain of calls is as deep as the program is long;
+/// the same check carries the cooperative interrupt and the stack budget,
 /// which abort the run. The call's result pair goes to `rmerge`.
 fn emit_kernel_dispatch(
     cx: &mut BodyCx,
@@ -903,7 +903,21 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // check removed). The repro at N=400 and N=3000 runs; N=3000 now takes ~80 s
     // to fuse in debug, the pre-existing O(N^2) of transitive captures as kernel
     // params.
-    emit_kernel_dispatch(cx, callee, &clif_args, rmerge, fn_name)?;
+    // 2026-10-19 claude: A per-call graphix_stack_check doubled a call-heavy
+    // kernel (a fold calling h, which calls g twice: 80 ms against 40 ms over 3M
+    // elements). A call into another kernel now checks only where the caller's and
+    // callee's heights (longest chain of distinct kernels below, itself included)
+    // fall in different blocks of jit::CHECK_EVERY (8): a chain descends in
+    // height, so it checks at least once every 8 frames; that fold is back to 40
+    // ms. Self-calls always check. The 500-chain pin still passes; with no
+    // cross-kernel check it overflowed.
+    if callee.checked {
+        emit_kernel_dispatch(cx, callee, &clif_args, rmerge, fn_name)?;
+    } else {
+        let inst = cx.b.ins().call(callee.body, &clif_args);
+        let (r0, r1) = callee_results(cx, inst, fn_name)?;
+        cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
+    }
     cx.b.switch_to_block(rmerge);
     cx.b.seal_block(rmerge);
     let r0 = cx.b.block_params(rmerge)[0];

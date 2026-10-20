@@ -41,12 +41,14 @@ use super::{
     record::EmitConst,
 };
 
-/// A kernel a body calls: its body, and the spill thunk a call takes
-/// when the remaining stack is inside the red zone.
+/// A kernel a body calls: its body, the spill thunk a call takes when
+/// the remaining stack is inside the red zone, and whether a call checks
+/// the stack (`jit::CHECK_EVERY`).
 #[derive(Clone, Copy)]
 pub(super) struct KernelFns<F> {
     pub(super) body: F,
     pub(super) thunk: F,
+    pub(super) checked: bool,
 }
 
 /// The kernels a body calls, as the function being built names them,
