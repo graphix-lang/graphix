@@ -761,7 +761,8 @@ computes what the serial node-walk does. Siblings are independent iff
 no later one reads what an earlier one publishes (`analysis::
 plan_block`; a module, trait or impl statement is a run of its own and
 a catch runs last) and they do not both reach an `ORDERED` builtin
-(in-language state shared across nodes, `queuefn`). External effects in
+(in-language state shared across nodes, `queuefn`; a call with no static
+target counts as one, a slot site's own call excepted). External effects in
 parallel branches happen when they run, unordered. A seq machine runs
 serially inside; runtime compiles run in compile tasks
 (`branch::compile_each`). The mode is the runtime `Control`'s

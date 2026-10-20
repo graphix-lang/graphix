@@ -105,7 +105,10 @@ order (§4.2).
 (`dependency_summaries.md` §2), following statically resolved calls
 into their instances. It has one gap: a `Deref` reads `refs`, and a
 call with no static target reads `all`. Both meet any non-empty
-publication set.
+publication set. A call with no static target also counts as an
+`Ordered` call: a fork site decides once, and a rebind may hand the call
+a callee that reaches one (`analysis::own_access`). A slot site's own
+call is the exception: a slot site decides again at every rebind.
 
 `publishes` is new. It is the set of bind ids a subtree delivers within
 the cycle that a later sibling can name: the statement-level `let`s
@@ -117,10 +120,11 @@ publication (which `reads` sees, following the call into the
 instance) or through a variable written in an earlier cycle and called
 dynamically, which reads `all`.
 
-A dynamic call that reads `all` depends on every earlier sibling with a
-non-empty `publishes`. A program that wants parallelism across dynamic
-calls passes values as arguments rather than through captured `let`s.
-That is the idiom the book will teach.
+A dynamic call therefore depends on every earlier sibling with a
+non-empty `publishes`, and two siblings that each make one never fork.
+Parallelism across calls comes from statically resolved calls, a HOF's
+callback through its formal included. That is the idiom the book will
+teach.
 
 ### 3.3 Fork plans
 

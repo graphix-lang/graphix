@@ -1868,42 +1868,6 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// one, to ask again once it is bound. A call site decides its arguments
 /// again at each bind (`CallSite::clear_prepared_bind`), a collection its
 /// slots once they are bound to a new callback (`update_slots`).
-// XCR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
-// to a pure function outlives the call's rebind: local_summary counts a call with no
-// static target as its current instance, and ForkSite::decide_siblings keeps the answer
-// forever. Only a call's own arguments and a slot site decide again at a rebind, so a
-// tuple, an operator or an enclosing call over `h(..)` keeps forking after `h` becomes
-// a function that calls a queuefn wrapper, and the queue sees the calls out of order.
-// Fix: count a call with no static target as opaque here, as parallel_eval.md §3.2 says
-// (the slot site's own slot calls excepted, since SlotSite redecides), or make a rebind
-// invalidate the verdicts of the fork sites above it. probe:
-// design/review-2026-10-19/repro/c-analysis-branch-stale-verdict-after-rebind.gx
-// (serial order 41,42,43,44; GRAPHIX_PAR=force 44,41,42,43, varying).
-// (c-analysis-branch-02)
-// 2026-10-19 claude: local_summary counts a call with no static target as opaque,
-// except a slot site's (and fork_instances') own call (analysis::Sites::Slots, which
-// redecide at a rebind). walk_static_graph also recorded a self_bind for every call
-// through a Ref, which counted the current instance the same way; it now records one
-// only for a site with a static target (a self-call). Pin:
-// lang::par_attrs::rebound_dynamic_calls_stay_ordered.
-// 2026-10-20 claude: XCR review: Incomplete: own_access in analysis.rs still summarizes
-// a call with no static target by what it is bound to now when that is a builtin-backed
-// function: the 'Some(ApplyView::BuiltIn(name))' arm returns before the opaque
-// fallthrough, without checking cs.static_target(). So h = select n { k if k < 3 =>
-// once, _ => g2 } (the c-analysis-branch-stale-verdict-after-rebind.gx repro with 'let
-// g1 = once;') still decides the tuple Independent while h is the builtin and keeps
-// forking after h becomes g2 calling the queuefn wrapper: GRAPHIX_PAR=off prints (null,
-// [34, 41, 42, 43, 44, 51, ...]), GRAPHIX_PAR=force prints (1 or 3, [34, 43, 41, 42, 44,
-// ...]) varying (debug binary at HEAD; probe in the reviewer scratchpad as b02.gx). The
-// BuiltIn arm (and the BuiltInLambda view) must count only when the site has a static
-// target or is the slot site's current call; otherwise opaque. Pin
-// rebound_dynamic_calls_stay_ordered covers only a lambda-to-lambda rebind; add the
-// builtin case.
-// 2026-10-20 claude: own_access counts a builtin call only when the site is bound
-// statically (CallSite::bound_statically) or is the slot site's current call; a call
-// through a binding that holds a builtin now is opaque, as a lambda's is.
-// rebound_dynamic_calls_stay_ordered runs the lambda and the 'once' rebind both; with
-// the guard removed the 'once' case fails (field order 44 before 43 under Force).
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
