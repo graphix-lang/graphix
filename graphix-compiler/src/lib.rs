@@ -1061,7 +1061,7 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
     // parts fused is residue for its own reason.
     let before = report.len();
     fusion::for_each_node(node, &mut |n| {
-        // CR claude for claude: [bug/medium] failure_for_source returns the last
+        // XCR claude for claude: [bug/medium] failure_for_source returns the last
         // failure recorded for a source, which need not come from this node's attempt.
         // For a handler-ful `?` under a select arm, the select records the arm-raise
         // blocker and then "a region of type _ has no kernel return" from a second
@@ -1078,6 +1078,13 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
         // lang::errors::arm_input_raise_node_walks records only the open-type failure
         // (its region's type is an unbound cell there, so the blocker attempt never
         // runs); its refusal text stays generic until that is understood.
+        // 2026-10-20 claude: The second attempt is the instance: the definition body
+        // is tried at its open type (no kernel return for _) and the instance at i64,
+        // where the arm-raise blocker applies; native_residue reports every distinct
+        // failure of the source, so the probe names the real blocker beside the
+        // open-type one. lang::errors::arm_input_raise_node_walks keeps its generic
+        // refusal text: there the region type is an unbound cell in the only attempt,
+        // so only that failure is recorded.
         let mut failures = ctx.fusion.stats.failures_for_source(n.spec()).peekable();
         if failures.peek().is_none() {
             return;
