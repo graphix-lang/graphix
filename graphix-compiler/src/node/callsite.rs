@@ -11,10 +11,11 @@ use super::{
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
-    LambdaId, LambdaInstanceId, Node, NodeView, Refs, ResolvingLambda, Rt, Scope, Tag,
-    TagValue, Update, UserEvent, View, analysis, bailat, dbgenv, deref_typ,
+    LambdaId, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, ResolvingLambda, Rt,
+    Scope, Tag, TagValue, Update, UserEvent, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
+    format_with_flags,
     fusion::{
         self,
         emit::{
@@ -465,7 +466,7 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 fn quantified_formal(
     env: &Env,
     typ: &Type,
-) -> Result<Option<(Type, LPooled<Vec<RigidGate>>)>> {
+) -> Result<Option<(Type, LPooled<Vec<RigidGate>>, SmallVec<[TVar; 2]>)>> {
     let mut expanded = typ.with_deref(|t| t.cloned());
     while let Some(t @ Type::Ref(_)) = &expanded {
         expanded = t.lookup_ref_with(env, false)?;
@@ -476,12 +477,40 @@ fn quantified_formal(
     }
     let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     ft.collect_tvars(&mut named);
-    let gates = named
+    let quantifiers: SmallVec<[TVar; 2]> = named
         .iter()
         .filter(|(name, _)| ft.quantifiers.contains(*name))
-        .map(|(_, tv)| tv.open_quantifier_rigid())
+        .map(|(_, tv)| tv.clone())
         .collect();
-    Ok(Some((formal.clone(), gates)))
+    let gates = quantifiers.iter().map(|tv| tv.open_quantifier_rigid()).collect();
+    Ok(Some((formal.clone(), gates, quantifiers)))
+}
+
+/// A rank-2 quantifier `q` keeps the bounds its formal `declared`: the
+/// argument's check may add a predicate (the bound rule for those is
+/// open, tests-types-02), but no other conjunct that none declared
+/// implies, since the callee may call the argument at any type the
+/// declared bounds admit.
+fn added_bound(env: &Env, q: &TVar, declared: &[Type]) -> Result<()> {
+    for c in q.cell_constraints() {
+        if c.is_predicate() || declared.contains(&c) {
+            continue;
+        }
+        let implied = declared.iter().any(|d| {
+            !d.is_predicate()
+                && c.contains_with_flags(BitFlags::empty(), env, d).unwrap_or(false)
+        });
+        if !implied {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "the argument requires '{}: {c}, which the parameter's quantifier \
+                     does not declare: the callee may call it at any type its bound admits",
+                    q.name
+                )
+            })?
+        }
+    }
+    Ok(())
 }
 
 /// Fit a site's arguments to its signature: a placeholder for each
@@ -547,7 +576,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
-        // CR claude for claude: [bug/medium] A lambda literal escapes the rank-2 gate
+        // XCR claude for claude: [bug/medium] A lambda literal escapes the rank-2 gate
         // (a new aspect of x-typecheck-generics-02). pre_unify_arg merges the literal's
         // parameter cells with the formal's rigid quantifier cells, and the body check
         // then adds Number and Singleton to the quantifier's own cell.
@@ -563,6 +592,12 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
         // and
         // design/review-2026-10-19/repro/x-typecheck-generics-rank2-lambda-literal-typedef.gx
         // (x-typecheck-generics-02)
+        // 2026-10-19 claude: typecheck_arg snapshots each rank-2 quantifier's conjuncts
+        // before the argument's check and refuses, after it, a new non-predicate conjunct no
+        // declared one implies (callsite::added_bound); new predicates (Singleton, Ordered,
+        // Data) are left to Eric's tests-types-02. Pins:
+        // lang::types::rank2_literal_may_not_narrow_the_quantifier,
+        // rank2_literal_through_an_alias_may_not_narrow.
         // CR claude for eric: [bug/high] A rank-2 quantifier is rigid here, yet the
         // argument's body still adds bounds to it. `x * x` adds Singleton, `x < y` adds
         // Ordered, and a writer adds Data. The callee was checked against the declared
@@ -577,9 +612,19 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
         // behaviour and would change. probe:
         // design/review-2026-10-19/repro/tests-types-rank2-singleton.gx
         // (tests-types-02)
-        Some((formal, _rigid)) => {
+        // 2026-10-19 claude: x-typecheck-generics-02's fix (callsite::added_bound) now
+        // refuses a non-predicate bound an argument adds to a rank-2 quantifier;
+        // predicates are still let through, pending this ruling. Adding them there
+        // (dropping the is_predicate skip) is the one-line change if the rule is that a
+        // quantifier keeps exactly its declared bounds.
+        Some((formal, _rigid, quantifiers)) => {
+            let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
+                quantifiers.iter().map(|q| q.cell_constraints()).collect();
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
+            for (q, declared) in quantifiers.iter().zip(declared.iter()) {
+                wrap!(n, added_bound(&ctx.env, q, declared))?;
+            }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
             wrap!(n, polymorphic_in(&formal, n.typ()))?;
             let mut refs = Refs::default();

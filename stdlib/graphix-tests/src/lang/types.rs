@@ -3237,3 +3237,17 @@ run!(distribution_holds_declared_variables_rigid, r#"{
   let f = 'a: Any |x: [`A, `B], y: 'a| -> [(`A, 'a), (`B, i64)] (x, 5);
   f(`A, "hello")
 }"#, refused("does not contain ([`A, `B], i64)"); FuseExpect::None);
+
+// A lambda literal passed to a rank-2 formal may not narrow the formal's
+// quantifier: the callee may call it at any type the declared bound
+// admits ("a" here), and `y * y` needs a number.
+run!(rank2_literal_may_not_narrow_the_quantifier, r#"{
+  let app = |g: fn<'b: [string, i64]>(y: 'b) -> 'b| g("a");
+  app(|y| y * y)
+}"#, refused("which the parameter's quantifier does not declare"); FuseExpect::None);
+
+run!(rank2_literal_through_an_alias_may_not_narrow, r#"{
+  type F = fn<'b: [string, i64]>(y: 'b) -> 'b;
+  let app = |g: F| g("a");
+  app(|y| y * y)
+}"#, refused("which the parameter's quantifier does not declare"); FuseExpect::None);
