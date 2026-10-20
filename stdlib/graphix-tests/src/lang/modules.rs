@@ -307,6 +307,28 @@ let z = {
 "#
     ; FuseExpect::Jit);
 
+// A module's abstract type is its path without the components a body
+// mints: the module loaded at the top level and in a function body
+// declares one type.
+run!(
+    module_abstract_type_is_one_in_a_body_and_at_the_top,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:4, i64:4]"),
+    "/test.gx" => r#"
+mod m;
+let g = |v: Any| -> i64 {
+  mod m;
+  select v { m::T as t => m::get(t), _ => -1 }
+};
+let v: Any = m::mk(4);
+let result = (g(v), select v { m::T as t => m::get(t), _ => -1 })
+"#,
+    "/test/m.gx" => r#"
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let get = |t: T| -> i64 t.0
+"#
+    ; FuseExpect::Jit);
+
 // A module's check decides no type the code around it left open: its
 // siblings check concurrently and see each other through interfaces.
 run!(

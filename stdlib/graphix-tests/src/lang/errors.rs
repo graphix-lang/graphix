@@ -533,8 +533,8 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
     assert!(
         e.contains(
             "err1 is Error<ErrChain<`ArithError(string)>> and cannot hold \
-             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`B>>, \
-             Error<ErrChain<`ArithError(string)>>] where it is bound"
+             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`ArithError(string)>>, \
+             Error<ErrChain<`B>>] where it is bound"
         ),
         "{e}"
     );

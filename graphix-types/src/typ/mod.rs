@@ -405,7 +405,7 @@ impl AbstractId {
         if !parts().any(|p| p.starts_with('#')) {
             return Self::of(scope, name);
         }
-        // CR claude for claude: [bug/low] `stable` is spelled "/a/m", while Self::of
+        // XCR claude for claude: [bug/low] `stable` is spelled "/a/m", while Self::of
         // hashes the ModPath's Display form "a::m". A module's abstract type therefore
         // has one identity when the module is loaded inside function bodies and a
         // different one when the same file is loaded at the top level. Two body loads
@@ -414,11 +414,11 @@ impl AbstractId {
         // parts and call Self::of with it (and use its Display in the in-body format).
         // probe: design/review-2026-10-19/repro/t-typ-mod-abstract-id-nested-module.sh
         // (t-typ-mod-03)
-        let mut stable = compact_str::CompactString::new("");
-        for p in parts().filter(|p| !p.starts_with('#')) {
-            stable.push('/');
-            stable.push_str(p);
-        }
+        // 2026-10-19 claude: AbstractId::declared builds a ModPath of the non-# parts
+        // and calls Self::of with it outside a body, and uses its Display inside one.
+        // Pin: lang::modules::module_abstract_type_is_one_in_a_body_and_at_the_top
+        // ([4, 4]; was [-1, 4]).
+        let stable: ModPath = parts().filter(|p| !p.starts_with('#')).collect();
         // CR claude for eric: [bug/medium] A module declared inside a block or function
         // body has scope `/#do../m`. Here its types are keyed by `/m::T` alone, because
         // the `#` parts are dropped unless the last part is one. So two different
@@ -434,7 +434,7 @@ impl AbstractId {
         // (t-expr-core-01)
         let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
         let place = match in_body {
-            false => format_compact!("{stable}::{name}"),
+            false => return Self::of(&stable, name),
             true => match &ori.source {
                 Source::File(_) | Source::Vfs(_) | Source::Netidx(_) => {
                     format_compact!("{stable}::#{}:{pos}::{name}", ori.source)
@@ -879,19 +879,8 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
-    /// Do two refs of one scope and name mean one definition, as far as
-    /// their cells prove? Filled cells by the definition's identity, two
-    /// empty ones alike; one of each may differ (a def's thrown types keep
-    /// their cells when they move into its scope), and a disagreement
-    /// only sends the pair to the expansion arm.
     /// Whether two references name one definition: two filled cells by
     /// the definition, two open ones by the written scope and name.
-    // CR claude for claude: [readability/low] The first of the two doc paragraphs above
-    // this function belongs to cells_agree, which has none: same_definition compares
-    // two open cells by scope and name, not "alike". It also says a filled/open pair
-    // "may differ", where both functions answer false. Move that paragraph to
-    // cells_agree and state the false; the two matches differ only in the (None, None)
-    // arm. Found by reading; not run. (t-typ-mod-05)
     pub(crate) fn same_definition(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
@@ -900,6 +889,11 @@ impl TypeRef {
         }
     }
 
+    /// Do two refs of one scope and name mean one definition, as far as
+    /// their cells prove? Filled cells by the definition's identity, two
+    /// empty ones alike. A filled and an empty one do not agree (a def's
+    /// thrown types keep their cells when they move into its scope), and
+    /// a disagreement only sends the pair to the expansion arm.
     pub(crate) fn cells_agree(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
@@ -1979,8 +1973,10 @@ impl Type {
         }
     }
 
-    /// The definitions this type's filled cells name, and theirs, by
-    /// [`ResolvedRef::def_key`]: through bindings and conjuncts.
+    /// The definitions this type's filled cells name, and theirs, each
+    /// allocation once (an interface's definition and its
+    /// implementation's share a [`ResolvedRef::def_key`] but are two):
+    /// through bindings and conjuncts.
     #[doc(hidden)]
     pub fn named_defs(
         &self,
@@ -1999,7 +1995,7 @@ impl Type {
                 }
             }
             Type::Ref(tr) => {
-                // CR claude for claude: [risk/low] Ownership is deduped by def_key, but
+                // XCR claude for claude: [risk/low] Ownership is deduped by def_key, but
                 // def_key follows same_as. After link_same, an interface's definition
                 // and its implementation's share a key although they are two
                 // allocations, each held only weakly by its own cells. A DefTable or
@@ -2007,10 +2003,14 @@ impl Type {
                 // cells die with its env entry ("outlived its definition"). Key `out`
                 // by Arc::as_ptr(&r) instead; identity questions keep def_key. Found by
                 // reading; not run. (t-typ-mod-04)
+                // 2026-10-19 claude: named_defs keys its out map by the ResolvedRef
+                // allocation (Arc::as_ptr), so both of a linked
+                // interface/implementation pair are owned. Not reproduced: no test
+                // reaches a table naming both.
                 if let Some(r) = tr.resolved()
-                    && !out.contains_key(&r.def_key())
+                    && !out.contains_key(&(sync::Arc::as_ptr(&r) as usize))
                 {
-                    out.insert(r.def_key(), r.clone());
+                    out.insert(sync::Arc::as_ptr(&r) as usize, r.clone());
                     r.typ.named_defs(cells, out);
                     for c in r.params.iter().filter_map(|(_, c)| c.as_ref()) {
                         c.named_defs(cells, out)
@@ -2652,7 +2652,7 @@ impl Type {
                                 tv.add_cell_constraint(constraint)
                             }
                         }
-                        // CR claude for claude: [bug/medium] A bound checked against an
+                        // XCR claude for claude: [bug/medium] A bound checked against an
                         // argument that is not a bare cell is checked only as the
                         // argument stands: the open members of a union argument never
                         // get it, as require_bounds gives them when a cell binds. So
@@ -2664,7 +2664,20 @@ impl Type {
                         // (require_bounds(&[constraint], arg)). probe:
                         // design/review-2026-10-19/repro/x-kind-markers-noerror-open-member.sh
                         // (x-kind-markers-04)
-                        _ if commit => constraint.check_contains(env, arg)?,
+                        // 2026-10-19 claude: A bound checked against a non-cell argument is
+                        // handed on with tvar::require_bounds after check_contains. An
+                        // interface's typedef-parameter bounds count the same way: fntyp.rs
+                        // param_bounds_of gives a NoError parameter's bound to the open
+                        // members of a union argument (TVar::open_members), else db's
+                        // Result<[null, 'v], ..> interface refused its implementation. Only
+                        // NoError is mirrored there; no other predicate bound sits on a
+                        // typedef parameter in the tree. Pins:
+                        // lang::types::unsound_acceptances_are_refused (NO_ERROR_OPEN_MEMBER
+                        // refused, NO_ERROR_OPEN_MEMBER_TOLD accepted).
+                        _ if commit => {
+                            constraint.check_contains(env, arg)?;
+                            tvar::require_bounds(std::slice::from_ref(&constraint), arg)
+                        }
                         _ => {
                             if !constraint.contains_with_flags(
                                 BitFlags::empty(),
@@ -2692,7 +2705,7 @@ impl Type {
     }
 
     /// Core's `ErrChain<payload>`.
-    // CR claude for claude: [bug/high] The synthetic `ErrChain` ref is an Open cell in
+    // XCR claude for claude: [bug/high] The synthetic `ErrChain` ref is an Open cell in
     // the root scope, resolved later by name. A script-level `type ErrChain<'a> = ..`
     // (or a `use` of another ErrChain) shadows core's, so every `?` raise and catch
     // binder is typed with the user's type while the runtime builds core's struct.
@@ -2701,10 +2714,16 @@ impl Type {
     // definition (take the env), or scope the ref at `/core`, and pin the shadowing
     // case. probe: design/review-2026-10-19/repro/t-typ-mod-errchain-shadowed.gx
     // (t-typ-mod-01)
+    // 2026-10-19 claude: Type::err_chain scopes its synthetic ref at /core, so its
+    // name resolves to core's ErrChain before any script-level one. A side effect:
+    // unions of ErrChain refs now sort by the /core scope
+    // (lang::errors::catch_connect_union_mismatch_is_an_error's hint order updated).
+    // Pin: lang::types::unsound_acceptances_are_refused (ERRCHAIN_SHADOWED).
     pub fn err_chain(payload: Type) -> Type {
         static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
+        static CORE: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["core"]));
         Type::Ref(Arc::new(TypeRef::synthetic(
-            ModPath::root(),
+            CORE.clone(),
             NAME.clone(),
             Arc::from_iter([payload]),
         )))
@@ -2811,20 +2830,6 @@ impl Type {
 
     pub fn boolean() -> Self {
         Self::Primitive(Typ::Bool.into())
-    }
-
-    /// `Bottom`, or a union whose every member (through bound tvars)
-    /// is. An unbound tvar is not provably bottom.
-    // CR claude for claude: [dead/low] Nothing calls all_bottom but itself, here or in
-    // ../netidx. Delete it. Found by reading; not run. (t-typ-mod-06)
-    pub fn all_bottom(&self) -> bool {
-        ensure_sufficient(|| {
-            self.with_deref(|t| match t {
-                Some(Type::Bottom) => true,
-                Some(Type::Set(s)) => s.iter().all(|t| t.all_bottom()),
-                _ => false,
-            })
-        })
     }
 
     /// A `Bottom` anywhere in the type's own structure (fn signatures

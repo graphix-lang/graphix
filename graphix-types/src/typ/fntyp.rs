@@ -1883,12 +1883,17 @@ fn param_bounds_of(env: &Env, t: &Type, out: &mut IntMap<usize, SmallVec<[Type; 
                 && let Some(known) = resolved.bindings(&tr.params)
             {
                 for ((_, bound), arg) in resolved.params().iter().zip(tr.params.iter()) {
-                    if let (Some(bound), Type::TVar(tv)) = (bound, arg)
-                        && !tv.is_bound()
-                    {
-                        out.entry(tv.cell_addr())
+                    match (bound, arg) {
+                        (Some(bound), Type::TVar(tv)) if !tv.is_bound() => out
+                            .entry(tv.cell_addr())
                             .or_default()
-                            .push(bound.replace_tvars(&known))
+                            .push(bound.replace_tvars(&known)),
+                        (Some(Type::NoError), arg) => {
+                            for tv in arg.open_members() {
+                                out.entry(tv.cell_addr()).or_default().push(Type::NoError)
+                            }
+                        }
+                        _ => (),
                     }
                 }
             }

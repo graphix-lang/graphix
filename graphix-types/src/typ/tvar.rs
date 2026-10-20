@@ -720,7 +720,7 @@ impl Hash for TVar {
 }
 
 /// Hand a cell's bounds to the open cells of its binding `t`.
-fn require_bounds(cons: &[Type], t: &Type) {
+pub(crate) fn require_bounds(cons: &[Type], t: &Type) {
     for c in cons {
         match c {
             Type::Concrete => t.require_concrete(),
@@ -1269,7 +1269,7 @@ impl TVar {
     }
 
     /// Bind the open cell to ⊥ as a requirement; see
-    /// [`TCell::bottom_required`].
+    /// [`CellFact::BottomRequired`].
     pub(super) fn bind_bottom_required(&self) {
         self.bind(Type::Bottom);
         let cell = self.cell();
@@ -1286,16 +1286,7 @@ impl TVar {
         self.cell().read().facts.contains(CellFact::BottomFed)
     }
 
-    /// Record a ⊥ produced into the open cell; see [`TCell::bottom_fed`].
-    // CR claude for claude: [doc-drift/low] The doc links here, on mark_cycle_refused
-    // and bind_bottom_required, and on settle.rs TVar::settle point at
-    // TCell::bottom_fed, TCell::cycle_refused and TCell::bottom_required. Those fields
-    // are gone: they are now CellFact flags in TCell::facts. Point the links at
-    // CellFact::BottomFed, CellFact::CycleRefused and CellFact::BottomRequired.
-    // design/tvar_constraints.md has the same drift: TCell `typ` (now `binding`),
-    // `TCell::bottom_fed`, and `UnionParts::rigid_pair` (now rigid_apart, which also
-    // refuses a rigid cell beside a known member). Found by reading; not run.
-    // (t-tvar-03)
+    /// Record a ⊥ produced into the open cell; see [`CellFact::BottomFed`].
     pub(super) fn mark_bottom_fed(&self) {
         if graphix_dbg_bind() {
             eprintln!("BOTTOM-FED '{}({:x})", self.name, self.cell_addr());
@@ -1308,7 +1299,7 @@ impl TVar {
         c.facts |= CellFact::BottomFed;
     }
 
-    /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
+    /// Record an occurs-check refusal; see [`CellFact::CycleRefused`].
     pub(super) fn mark_cycle_refused(&self) {
         if graphix_dbg_bind() {
             eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
@@ -1423,7 +1414,7 @@ impl Type {
     pub(crate) fn singleton_holds(&self, env: &Env, commit: bool) -> Result<bool> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, commit)), &mut parts)?;
-        Ok(parts.known <= 1 && !parts.rigid_apart())
+        Ok(parts.known <= 1 && parts.rigid_apart().is_none())
     }
 
     /// Whether `OneNumber ⊇ self` holds as the type stands: at most one
@@ -1515,12 +1506,18 @@ impl Type {
 
     /// The open members of a `NoError` cell's binding are each `NoError`.
     pub(crate) fn require_no_error(&self) {
-        let mut parts = UnionParts::new(Measure::Members);
-        if self.union_parts(None, &mut parts).is_err() {
-            return;
-        }
-        for tv in parts.open.drain(..) {
+        for tv in self.open_members() {
             tv.add_cell_constraint(Type::NoError)
+        }
+    }
+
+    /// The open cells among this type's members read as a union: the
+    /// cells a `NoError` bound reaches ([`Self::require_no_error`]).
+    pub(crate) fn open_members(&self) -> SmallVec<[TVar; 2]> {
+        let mut parts = UnionParts::new(Measure::Members);
+        match self.union_parts(None, &mut parts) {
+            Ok(()) => parts.open,
+            Err(_) => SmallVec::new(),
         }
     }
 
@@ -1596,18 +1593,18 @@ impl Type {
     pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, false)), &mut parts)?;
-        // CR claude for claude: [readability/low] rigid_apart also holds for one
-        // declared variable beside a known member, so `'a: Number |x: 'a, b: bool| {
-        // let v = select b { true => x, false => 1 }; v * v }` is refused with "[i64,
-        // 'a] must be one type, but its type variables may differ", although only one
-        // type variable is involved. Have rigid_apart say which case it found, and word
-        // that case as "declared variable 'a may differ from the union's other
-        // members". probe: --check of that one-line program (not saved). (t-tvar-05)
-        if parts.rigid_apart() {
-            bail!(
+        match parts.rigid_apart() {
+            None => (),
+            Some(RigidApart::BesideKnown(tv)) => bail!(
+                "{} must be one type, but the declared variable '{} may differ from \
+                 its other members",
+                self.resolve_tvars(),
+                tv.name
+            ),
+            Some(RigidApart::Two) => bail!(
                 "{} must be one type, but its type variables may differ",
                 self.resolve_tvars()
-            )
+            ),
         }
         parts.merge_open();
         match parts.narrowing() {
@@ -1919,7 +1916,7 @@ impl Type {
     /// each alternative of self that matches it, where containment against
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
-    // CR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
+    // CR claude for eric: [bug/high] Unioning each open cell's parts is wrong for a
     // cell under an abstract type's parameters, which are invariant and compared
     // exactly by the run-time nominal test. An inferred `T(x)` arm over [T<i64>,
     // T<string>] narrows its predicate to T<[i64, string]>, a type no value carries, so
@@ -1930,6 +1927,10 @@ impl Type {
     // of unioning the cells, or make the inferred abstract predicate test the tag
     // alone. probe: design/review-2026-10-19/repro/c-pattern-abstract-union-params.gx
     // (c-pattern-02)
+    // 2026-10-19 claude: Not fixed: the same hole is x-typecheck-patterns-02 just
+    // below, for eric, which asks for a ruling between making the arm's predicate the
+    // set of matching instantiations (this CR's first option) and refusing the inferred
+    // form as the written-union form is. Re-addressed so the two are ruled together.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
@@ -2372,26 +2373,45 @@ enum Measure {
 
 /// A type read as a union ([`Type::union_parts`]): how many known members
 /// it has by its measure, the first of them, and its open cells.
+/// Why a union's rigid member keeps it from being one type.
+enum RigidApart {
+    BesideKnown(TVar),
+    Two,
+}
+
 struct UnionParts {
     measure: Measure,
     known: usize,
     first: Option<Type>,
     open: SmallVec<[TVar; 2]>,
+    /// The primitive and the other known members counted so far, so a
+    /// member met twice counts once.
+    prims: BitFlags<netidx_value::Typ>,
+    others: SmallVec<[Type; 2]>,
 }
 
 impl UnionParts {
     fn new(measure: Measure) -> Self {
-        Self { measure, known: 0, first: None, open: SmallVec::new() }
+        Self {
+            measure,
+            known: 0,
+            first: None,
+            open: SmallVec::new(),
+            prims: BitFlags::empty(),
+            others: SmallVec::new(),
+        }
     }
 
-    /// Whether a rigid open member cannot be made one type with the
-    /// rest: beside a known member, or beside another rigid cell.
-    fn rigid_apart(&self) -> bool {
+    /// Why a rigid open member cannot be made one type with the rest:
+    /// it stands beside a known member, or beside another rigid cell.
+    fn rigid_apart(&self) -> Option<RigidApart> {
         let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
         match rigid.next() {
-            None => false,
-            Some(_) if self.known > 0 => true,
-            Some(a) => rigid.any(|b| b.cell_addr() != a.cell_addr()),
+            None => None,
+            Some(a) if self.known > 0 => Some(RigidApart::BesideKnown(a.clone())),
+            Some(a) => {
+                rigid.any(|b| b.cell_addr() != a.cell_addr()).then_some(RigidApart::Two)
+            }
         }
     }
 
@@ -2419,7 +2439,7 @@ impl UnionParts {
         }
     }
 
-    // CR claude for claude: [bug/high] member counts every member it meets, with no
+    // XCR claude for claude: [bug/high] member counts every member it meets, with no
     // dedup. union_parts reads through bindings, so `[i64, 'y]` with 'y later bound to
     // i64 counts as two types. singleton_holds and one_number_holds then refuse it. An
     // instance's signature carries exactly that union, so InstanceTypes::new refuses
@@ -2429,15 +2449,27 @@ impl UnionParts {
     // members. OR primitive members into one flag set and count it at the end, and skip
     // a non-primitive member equal to one already counted. Pin it in lang::types.
     // probe: design/review-2026-10-19/repro/t-tvar-singleton-dup-members.gx (t-tvar-01)
+    // 2026-10-19 claude: UnionParts counts distinct members: primitive tags OR into one
+    // set (only new tags count) and a non-primitive member equal to one counted is
+    // skipped. Pin: lang::types::unsound_acceptances_are_refused's accepted list
+    // (SINGLETON_DUPLICATE_MEMBER, 9).
     fn member(&mut self, t: &Type) {
         let n = match (self.measure, t) {
-            (Measure::Members, Type::Primitive(p)) => p.len(),
-            (Measure::Numbers, Type::Primitive(p)) => {
-                (*p & netidx_value::Typ::number()).len()
-            }
             (_, Type::Any) => 2,
-            (Measure::Members, _) => 1,
-            (Measure::Numbers, _) => 0,
+            (measure, Type::Primitive(p)) => {
+                let p = match measure {
+                    Measure::Members => *p,
+                    Measure::Numbers => *p & netidx_value::Typ::number(),
+                };
+                let fresh = p & !self.prims;
+                self.prims |= p;
+                fresh.len()
+            }
+            (Measure::Members, t) if !self.others.contains(t) => {
+                self.others.push(t.clone());
+                1
+            }
+            (Measure::Members | Measure::Numbers, _) => 0,
         };
         self.known += n;
         if n > 0 && self.first.is_none() {

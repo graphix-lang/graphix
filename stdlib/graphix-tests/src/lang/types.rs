@@ -1665,6 +1665,44 @@ const ERROR_UNION_DISTRIBUTES: &str = r#"{
   select e { error as _ => 1 }
 }"#;
 
+// A raise and a catch are typed with core's ErrChain whatever a script
+// names ErrChain.
+const ERRCHAIN_SHADOWED: &str = r#"{
+  type ErrChain<'a> = {cause: i64, error: 'a, ori: i64, pos: string};
+  let r = never();
+  {
+    catch(e) r <- e.0;
+    error(`A(1))?
+  };
+  r.ori + 1
+}"#;
+
+// A typedef parameter's bound reaches the open members of a union
+// argument, as it reaches a bare cell: a result's success part holds no
+// error, and its error arm tells it from the error.
+const NO_ERROR_OPEN_MEMBER: &str = r#"{
+  let r: Result<[i64, 'x], `E> = error(`Q);
+  0
+}"#;
+const NO_ERROR_OPEN_MEMBER_TOLD: &str = r#"{
+  let f = |a: 'x| -> i64 { let r: Result<[i64, 'x], `E> = a; select r { error as e => 0, v => 1 } };
+  f(1)
+}"#;
+
+// One declared variable beside a known member is named as such.
+const RIGID_BESIDE_KNOWN: &str = r#"{
+  let f = 'a: Number |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
+  0
+}"#;
+
+// A union member met twice is one type: [i64, 'y] with 'y bound to i64
+// is a Singleton.
+const SINGLETON_DUPLICATE_MEMBER: &str = r#"{
+  let h = |x| x * x;
+  let k = |b, y| h(select b { true => 1, false => y });
+  k(false, 3)
+}"#;
+
 // The second application of one definition is walked as the first is.
 const REF_TEST_OVER_ANY_SECOND_APPLICATION: &str = r#"{
   type Box<'a> = {v: 'a};
@@ -1706,6 +1744,12 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (CONJUNCT_RIGID, "does not contain i64"),
         (CONJUNCT_RIGID_TRAIT, "does not contain [i64, 'a"),
         (GROWING_MISMATCH, "does not contain"),
+        (ERRCHAIN_SHADOWED, "cannot compute { parent"),
+        (
+            RIGID_BESIDE_KNOWN,
+            "the declared variable 'a may differ from its other members",
+        ),
+        (NO_ERROR_OPEN_MEMBER, "does not contain Error<"),
         (ABSTRACT_PATTERN_OVER_A_UNION, "patterns can't match"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
@@ -1733,11 +1777,30 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_TWO_CALLS, 3),
         (TRAIT_BESIDE_WITNESS, 0),
         (ERROR_UNION_DISTRIBUTES, 1),
+        (NO_ERROR_OPEN_MEMBER_TOLD, 1),
+        (SINGLETON_DUPLICATE_MEMBER, 9),
     ] {
         let v =
             eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
         assert_eq!(v, Value::I64(expected), "{src}");
     }
+    Ok(())
+}
+
+// A minted cell is named short in the "must be fully known" refusal, as
+// in every other diagnostic.
+#[tokio::test(flavor = "current_thread")]
+async fn not_concrete_names_a_minted_cell_short() -> Result<()> {
+    let src = r#"{
+  let rd = |s: string| -> 'a json::read(s)$;
+  let g = |s| { let v = rd(s); [v] };
+  g("1")
+}"#;
+    let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+        Err(msg) => msg,
+        Ok(v) => panic!("must be refused: {v:?}"),
+    };
+    assert!(msg.contains("must be fully known") && !msg.contains("'_46116"), "{msg}");
     Ok(())
 }
 
