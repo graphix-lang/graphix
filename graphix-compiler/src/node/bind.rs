@@ -226,6 +226,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 .at(&spec)
         };
         let mut partial = None;
+        let mut narrowed = None;
         let (node, pattern, typ) = if *rec {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
@@ -277,7 +278,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         }
                     };
                     // a `_` matches what the value holds, deciding none of it
-                    // CR claude for claude: [bug/medium] A let's shape check still uses
+                    // XCR claude for claude: [bug/medium] A let's shape check still uses
                     // ptyp.any_as_tvar().contains(typ), which binds the pattern's cells
                     // to the union's first member. So `let (x, y) = v` over [(i64,
                     // string), (string, i64)] is refused with "refutable patterns are
@@ -291,6 +292,14 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // refutable. probe:
                     // design/review-2026-10-19/repro/x-rerun-6-let-union-destructure.gx
                     // (x-rerun-6-02)
+                    // 2026-10-19 claude: Bind's shape check holds the predicate against
+                    // each member of a union value on its own (fits_every_member); over
+                    // several members the pattern compiles against the predicate
+                    // narrowed per member (narrow_per_member, as a select arm's) and
+                    // the whole-type covers check is skipped. A refusal still names the
+                    // first member. Pins:
+                    // lang::tuples_structs::let_destructures_a_union_of_one_shape,
+                    // let_over_a_union_refuses_a_member_it_misses.
                     if !completed && pat.has_partial_struct() {
                         partial = Some(ptyp);
                     // CR claude for claude: [perf/low] For a single-name pattern `ptyp`
@@ -306,7 +315,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // arrays only. probe:
                     // design/review-2026-10-19/repro/x-stack-flat-chain-quadratic.sh
                     // (x-stack-02)
-                    } else if !ptyp.any_as_tvar().contains(&ctx.env, &typ).at(&spec)? {
+                    } else if !fits_every_member(ctx, &ptyp, &typ, &mut narrowed)
+                        .at(&spec)?
+                    {
                         let part = ptyp.could_match(&ctx.env, &typ)?;
                         format_with_flags(PrintFlag::DerefTVars, || match part {
                             true => bailat!(
@@ -325,10 +336,16 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     typ
                 }
             };
-            let pattern = compile_pattern(ctx, partial.as_ref().unwrap_or(&typ))?;
+            let pattern = compile_pattern(
+                ctx,
+                partial.as_ref().or(narrowed.as_ref()).unwrap_or(&typ),
+            )?;
             (node, pattern, typ)
         };
-        if partial.is_none() && !pattern.covers(&ctx.env, &typ, false) {
+        if partial.is_none()
+            && narrowed.is_none()
+            && !pattern.covers(&ctx.env, &typ, false)
+        {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
         // Registered after the value compiled so a `let rec` body's
@@ -925,6 +942,33 @@ impl Ref {
             }
         }
     }
+}
+
+/// A let's pattern predicate `ptyp` holds every member of the value type
+/// `typ`, each on its own; over several members `narrowed` takes the
+/// predicate with each cell the union of its parts, as a select arm's is.
+fn fits_every_member<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    ptyp: &Type,
+    typ: &Type,
+    narrowed: &mut Option<Type>,
+) -> Result<bool> {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    expr::union_members(&ctx.env, typ, &mut members)?;
+    if members.len() < 2 {
+        return ptyp.any_as_tvar().contains(&ctx.env, typ);
+    }
+    for m in members.iter() {
+        if !ptyp.any_as_tvar().reset_tvars().contains(&ctx.env, m)? {
+            // the whole check, which fails too, binds the cells the refusal
+            // names
+            return ptyp.any_as_tvar().contains(&ctx.env, typ);
+        }
+    }
+    let pred = ptyp.any_as_tvar();
+    pred.narrow_per_member(&ctx.env, &members)?;
+    *narrowed = Some(pred);
+    Ok(true)
 }
 
 impl Ref {

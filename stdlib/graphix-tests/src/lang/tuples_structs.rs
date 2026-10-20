@@ -482,3 +482,20 @@ run!(
 }"#,
     is(Value::I64(3))
 );
+
+// A let's pattern over a union is irrefutable when it fits every member:
+// its binds narrow per member, as a select arm's do.
+run!(
+    let_destructures_a_union_of_one_shape,
+    r#"{
+  let f = |v: [(i64, string), (string, i64)]| { let (x, y) = v; "[x] [y]" };
+  let g = |v: [{x: i64, y: string}, {x: string, y: i64}]| { let {x, y} = v; "[x] [y]" };
+  (f((1, "s")), f(("s", 1)), g({x: 1, y: "s"}))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["1 s", "s 1", "1 s"]"#)
+);
+
+run!(let_over_a_union_refuses_a_member_it_misses, r#"{
+  let f = |v: [(i64, string), (string, i64, bool)]| { let (x, y) = v; x };
+  f((1, "s"))
+}"#, refused("refutable patterns are not allowed in let: (i64, string) matches only part of"); FuseExpect::None);
