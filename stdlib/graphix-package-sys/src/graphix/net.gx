@@ -11,7 +11,7 @@ let list = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Array<string>, `ListError(string)> 'sys_net_list;
 let list_table = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Table, `ListError(string)> 'sys_net_list_table;
-// CR claude for claude: [bug/medium] #on_write's argument `'a` has no Concrete bound,
+// XCR claude for claude: [bug/medium] #on_write's argument `'a` has no Concrete bound,
 // and Publish::update casts a write only when extract_publish_cast_type finds the
 // handler's argument type concrete. Otherwise it passes the unmarked wire data. A
 // handler whose argument is inferred, such as `|v| { let (a, b) = v; .. }` as `(i64,
@@ -47,5 +47,15 @@ let list_table = |#update: Any = sys::time::timer(1, true), path: string|
 // default (|v: Any|) settle 'a so 'a: Concrete can be declared (the checker question
 // in the note), or at least log a write refused for an unknown handler type under
 // FAILURE_TARGET, and pin whichever error results.
+// 2026-10-20 claude: Publish::update now logs a write its handler's argument type
+// cannot take under FAILURE_TARGET ('a write of .. to <path> was refused: the write
+// handler's argument type is not known; annotate it'), besides answering a writer that
+// waits with InvalidCast, so a plain sys::net::write is no longer dropped silently.
+// Pin: graphix-tests tests/failure_logs.rs
+// a_write_an_open_handler_cannot_take_is_logged (its own test binary, so its logger is
+// the process's; fails with the log removed). net_on_write_open_type_takes_no_write
+// still pins that the handler takes nothing. Refusing such a handler at check time
+// ('a: Concrete) still needs the omitted default to settle 'a, a checker ruling for
+// eric if it is wanted.
 let publish = 'v: Data, 'a: Data |#on_write: fn(v: 'a) -> _ throws 'e = |v: Any| never(v), path: string, v: 'v|
     -> Result<_, `PublishError(string)> throws 'e 'sys_net_publish

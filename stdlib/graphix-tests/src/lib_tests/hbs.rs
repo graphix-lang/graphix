@@ -153,11 +153,30 @@ run!(hbs_block_nesting_refused, r#"{
     let mutual = hbs::render(#partials: {p, q}, "{{> p}}", {a: true});
     let deep = hbs::render(nest(5000, "x"), {a: false});
     let fine = hbs::render(nest(60, "x"), {a: true});
-    "[mutual]|[deep]|[fine]"
+    let repeat = |k: i64, s: string| str::join(#sep: "", array::init(k, |i| s));
+    let chain = hbs::render(
+        str::concat("{{#if a}}x", repeat(5000, "{{else if a}}y"), "{{/if}}"),
+        {a: false}
+    );
+    let commented = hbs::render(
+        str::concat(repeat(5000, "{{#if a}}{{!-- {{/if}} --}}"), "x", repeat(5000, "{{/if}}")),
+        {a: false}
+    );
+    let quoted = hbs::render(
+        str::concat(repeat(5000, "{{#if a}}{{lookup this \"{{/if}}\"}}"), "x", repeat(5000, "{{/if}}")),
+        {a: false}
+    );
+    let short = hbs::render(
+        str::concat("{{#if a}}x", repeat(30, "{{else if a}}y"), "{{else if b}}z{{else}}w{{/if}}"),
+        {a: false, b: true}
+    );
+    "[mutual]|[deep]|[fine]|[chain]|[commented]|[quoted]|[short]"
 }"#, |v: Result<&Value>| {
+    let nests = |s: &str| s.contains("blocks nest more than 64 deep");
     matches!(v, Ok(Value::String(s)) if matches!(s.split('|').collect::<Vec<_>>()[..],
-        [mutual, deep, "x"] if mutual.contains("templates nest more than 128 deep")
-            && deep.contains("blocks nest more than 64 deep")))
+        [mutual, deep, "x", chain, commented, quoted, "z"]
+            if mutual.contains("templates nest more than 128 deep")
+            && nests(deep) && nests(chain) && nests(commented) && nests(quoted)))
 }; FuseExpect::Jit);
 
 run!(hbs_partial_tree_renders, r#"{

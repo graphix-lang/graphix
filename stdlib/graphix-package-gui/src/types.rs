@@ -94,7 +94,7 @@ impl FromValue for SizeV {
     }
 }
 
-// CR claude for claude: [bug/medium] A window size is only checked for finiteness.
+// XCR claude for claude: [bug/medium] A window size is only checked for finiteness.
 // winit's X11 create_window converts the physical size to u16 with
 // `try_into().unwrap()`, so `size: {width: 70000.0, ..}` panics the event loop on X11;
 // zero and negative sizes also reach winit. Refuse a dimension that is not positive or
@@ -118,18 +118,24 @@ impl FromValue for SizeV {
 // refuses. Either keep the OS-reported size out of the refused set (do not echo a
 // non-positive or oversized size into the ref, or clamp it), or make the constructor
 // private so every WindowSizeV passes the check.
+// 2026-10-20 claude: WindowSizeV's field is private: every one is made by
+// WindowSizeV::new, the (0, 8192] check its from_value also runs. The event loop takes
+// a Resized size through WindowSizeV::reported, which is None for a size the program's
+// type refuses (a minimized window's 0 x 0, an edge past 8192 logical pixels), and such
+// a size is not echoed into the program's size reference: the program keeps its last
+// size. Pin: types::tests::reported_window_sizes_read_back (fails with the check taken
+// out of reported).
 /// A window's size: positive, and no larger than every window system
 /// takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WindowSizeV(pub Size);
+pub struct WindowSizeV(Size);
 
 /// The largest window edge in logical pixels: X11 takes a window's size
 /// in 16 bits of physical pixels, which this leaves room to scale into.
 const MAX_WINDOW_EDGE: f32 = 8192.;
 
-impl FromValue for WindowSizeV {
-    fn from_value(v: Value) -> Result<Self> {
-        let SizeV(size) = v.cast_to()?;
+impl WindowSizeV {
+    pub fn new(size: Size) -> Result<Self> {
         for edge in [size.width, size.height] {
             if !(edge > 0. && edge <= MAX_WINDOW_EDGE) {
                 bail!(
@@ -138,6 +144,25 @@ impl FromValue for WindowSizeV {
             }
         }
         Ok(Self(size))
+    }
+
+    /// The logical size of a window the window system reports at
+    /// `physical`, none where it is no window size (a minimized window's
+    /// 0 x 0, a window past the largest edge).
+    pub fn reported(physical: winit::dpi::PhysicalSize<u32>, scale: f64) -> Option<Self> {
+        let logical = physical.to_logical::<f32>(scale);
+        Self::new(Size::new(logical.width, logical.height)).ok()
+    }
+
+    pub fn size(self) -> Size {
+        self.0
+    }
+}
+
+impl FromValue for WindowSizeV {
+    fn from_value(v: Value) -> Result<Self> {
+        let SizeV(size) = v.cast_to()?;
+        Self::new(size)
     }
 }
 
@@ -692,6 +717,27 @@ mod tests {
             assert!(size(w, h).is_err(), "{w} x {h}");
         }
         assert_eq!(size(800., 8192.).unwrap(), WindowSizeV(Size::new(800., 8192.)));
+    }
+
+    /// A size the window system reports is echoed to the program only when
+    /// the program's own type reads it back.
+    #[test]
+    fn reported_window_sizes_read_back() {
+        use winit::dpi::PhysicalSize;
+        let reported =
+            |w, h, scale| WindowSizeV::reported(PhysicalSize::new(w, h), scale);
+        for (w, h, scale) in [(0, 0, 1.), (800, 0, 1.), (9000, 600, 1.), (20000, 600, 2.)]
+        {
+            assert_eq!(reported(w, h, scale), None, "{w} x {h} at {scale}");
+        }
+        for (w, h, scale) in [(1600, 1200, 2.), (8192, 1, 1.), (1, 1, 1.)] {
+            let sz = reported(w, h, scale).expect("a window size");
+            assert_eq!(Value::from(sz).cast_to::<WindowSizeV>().unwrap(), sz);
+        }
+        assert_eq!(
+            reported(1600, 1200, 2.).map(WindowSizeV::size),
+            Some(Size::new(800., 600.))
+        );
     }
 
     #[test]

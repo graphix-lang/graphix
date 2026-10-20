@@ -1163,6 +1163,13 @@ pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr>
         .ok_or_else(|| anyhow::anyhow!("{}: no such file", path.display()))
 }
 
+/// Whether opening a path failed with `e` because it names no file: it
+/// does not exist, a link at it dangles, or it runs through a file. What
+/// [`read_optional`] reads as absent.
+pub fn names_nothing(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+}
+
 /// Read a file that may not exist: `None` when it does not, an error
 /// for any other failure (unreadable, not UTF-8).
 pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<ArcStr>> {
@@ -1170,15 +1177,7 @@ pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<A
     let path = path.as_ref();
     let mut f = match tokio::fs::File::open(path).await {
         Ok(f) => f,
-        // a path through a file names nothing either
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            return Ok(None);
-        }
+        Err(e) if names_nothing(&e) => return Ok(None),
         Err(e) => return Err(anyhow::Error::from(e).context(path.display().to_string())),
     };
     let mut buf: LPooled<Vec<u8>> = LPooled::take();

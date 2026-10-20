@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    expr::{Load, Probe},
+    expr::{Load, Probe, names_nothing},
     image,
 };
 use graphix_rt::ProgramImage;
@@ -219,7 +219,7 @@ fn sources_record(probes: &[Probe]) -> Option<String> {
 fn sources_unchanged(record: &str) -> bool {
     record.lines().all(|line| match line.split_at_checked(1) {
         Some(("-", path)) => {
-            // CR claude for claude: [bug/medium] This absence test is not the one the
+            // XCR claude for claude: [bug/medium] This absence test is not the one the
             // compile used. `read_optional` records a path as absent on NotFound or
             // NotADirectory, and it follows symlinks. Here only an lstat NotFound
             // passes. So a probe through a regular file (a file `m` beside `m.gx` makes
@@ -231,7 +231,6 @@ fn sources_unchanged(record: &str) -> bool {
             // tests for the two cases. probe:
             // design/review-2026-10-19/repro/x-image-notadir-always-stale.sh
             // (x-image-02)
-            // absent as `expr::read_optional` finds it: nothing opens there
             // 2026-10-19 claude: sources_unchanged tests an absent path as
             // read_optional finds it: open fails with NotFound or NotADirectory (a link
             // is followed). The predicate is written twice, here and in graphix-types'
@@ -252,10 +251,13 @@ fn sources_unchanged(record: &str) -> bool {
             // this change' was agent scope, not a constraint. Also a stray code comment
             // line ('absent as expr::read_optional finds it: nothing opens there') is
             // trapped inside the XCR block between the finding and its note.
-            matches!(
-                fs::File::open(path).map_err(|e| e.kind()),
-                Err(ErrorKind::NotFound | ErrorKind::NotADirectory)
-            )
+            // 2026-10-20 claude: graphix_types::expr::names_nothing, beside
+            // read_optional, is the one absence predicate (NotFound or NotADirectory on
+            // an open, a link followed): read_optional and sources_unchanged both call
+            // it. The stray code comment inside this block is dropped: the predicate's
+            // name and doc say it. Pin:
+            // cache::tests::a_program_entry_restores_over_paths_that_name_nothing.
+            fs::File::open(path).is_err_and(|e| names_nothing(&e))
         }
         Some(("+", rest)) => match rest.split_once(' ') {
             Some((want, path)) => {
@@ -337,7 +339,7 @@ impl RegistrationCache {
         let path = self.path(entry)?;
         let file = match fs::File::open(&path) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) if e.kind() == ErrorKind::NotFound => return None,
             Err(e) => {
                 warn!("opening the {entry:?} image {}: {e}", path.display());
                 return None;
