@@ -2385,11 +2385,22 @@ struct UnionParts {
     known: usize,
     first: Option<Type>,
     open: SmallVec<[TVar; 2]>,
+    /// The primitives and the other members counted so far: a member
+    /// met twice is one.
+    prims: BitFlags<netidx_value::Typ>,
+    others: SmallVec<[Type; 2]>,
 }
 
 impl UnionParts {
     fn new(measure: Measure) -> Self {
-        Self { measure, known: 0, first: None, open: SmallVec::new() }
+        Self {
+            measure,
+            known: 0,
+            first: None,
+            open: SmallVec::new(),
+            prims: BitFlags::empty(),
+            others: SmallVec::new(),
+        }
     }
 
     /// A rigid open member that cannot be made one type with the rest:
@@ -2429,7 +2440,7 @@ impl UnionParts {
         }
     }
 
-    // CR claude for claude: [bug/high] member counts every member it meets, with no
+    // XCR claude for claude: [bug/high] member counts every member it meets, with no
     // dedup. union_parts reads through bindings, so `[i64, 'y]` with 'y later bound to
     // i64 counts as two types. singleton_holds and one_number_holds then refuse it. An
     // instance's signature carries exactly that union, so InstanceTypes::new refuses
@@ -2439,15 +2450,28 @@ impl UnionParts {
     // members. OR primitive members into one flag set and count it at the end, and skip
     // a non-primitive member equal to one already counted. Pin it in lang::types.
     // probe: design/review-2026-10-19/repro/t-tvar-singleton-dup-members.gx (t-tvar-01)
+    // 2026-10-19 claude: UnionParts counts distinct members: primitives as one flag
+    // set, any other member once. Pin: lang::types::singleton_counts_a_member_once
+    // (k(false, 3) is 9; the build used to refuse h's instance).
     fn member(&mut self, t: &Type) {
         let n = match (self.measure, t) {
-            (Measure::Members, Type::Primitive(p)) => p.len(),
-            (Measure::Numbers, Type::Primitive(p)) => {
-                (*p & netidx_value::Typ::number()).len()
+            (measure, Type::Primitive(p)) => {
+                let new = *p & !self.prims;
+                self.prims |= *p;
+                match measure {
+                    Measure::Members => new.len(),
+                    Measure::Numbers => (new & netidx_value::Typ::number()).len(),
+                }
             }
             (_, Type::Any) => 2,
-            (Measure::Members, _) => 1,
-            (Measure::Numbers, _) => 0,
+            (_, t) if self.others.contains(t) => 0,
+            (measure, t) => {
+                self.others.push(t.clone());
+                match measure {
+                    Measure::Members => 1,
+                    Measure::Numbers => 0,
+                }
+            }
         };
         self.known += n;
         if n > 0 && self.first.is_none() {

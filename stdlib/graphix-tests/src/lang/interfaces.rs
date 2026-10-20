@@ -1413,3 +1413,20 @@ run!(
     "/test/m.gxi" => "val eq: fn<'a: Discernible>(x: Array<'a>, y: Array<'a>) -> bool;",
     "/test/m.gx" => "let eq = 'a: Discernible |x: Array<'a>, y: Array<'a>| -> bool x == y"
 );
+
+// An implementation that calls a function it is handed at types of its
+// own choosing (a rank-2 parameter) does not implement a signature that
+// hands it a function at one type.
+run!(
+    rank2_parameter_does_not_implement_a_monomorphic_one,
+    refused("the implementation picks 'b at each call of the function it is handed"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::f(|x: i64| x * 2)
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(g: fn(x: i64) -> i64) -> f64;
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |g: fn<'b: Number>(x: 'b) -> 'b| -> f64 g(2.5)
+    "#; FuseExpect::None);

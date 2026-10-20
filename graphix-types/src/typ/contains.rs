@@ -2257,7 +2257,7 @@ impl Type {
             for m in members.iter() {
                 let mut picked: SmallVec<[usize; 8]> = SmallVec::new();
                 for (i, c) in cands.iter().enumerate() {
-                    // CR claude for claude: [bug/high] This probe runs with empty
+                    // XCR claude for claude: [bug/high] This probe runs with empty
                     // flags, so a declared (rigid) variable in a candidate admits
                     // anything. The has_free guard in set_covers_by_distribution_inner
                     // lets such candidates through, and this verdict is final. Inside
@@ -2269,7 +2269,16 @@ impl Type {
                     // test does. probe:
                     // design/review-2026-10-19/repro/t-contains-distribution-rigid.gx
                     // (t-contains-01)
-                    if c[0].contains_int(BitFlags::empty(), env, hist, m)? {
+                    // 2026-10-19 claude: The distribution probe runs with
+                    // ContainsFlags::RigidCheck, so a declared variable in a candidate
+                    // admits only itself. Pin:
+                    // lang::types::distribution_holds_declared_variables_rigid.
+                    if c[0].contains_int(
+                        ContainsFlags::RigidCheck.into(),
+                        env,
+                        hist,
+                        m,
+                    )? {
                         picked.push(i)
                     }
                 }

@@ -3333,3 +3333,22 @@ run!(string_casts_to_decimal_and_float_exactly, r#"{
   let r: decimal = json::read(w)$;
   "[d1] [d2] [f1] [f2] [f3] [f4] [t1] [r]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890. 9223372036854776000 inf 3 -0 0 1.23456789012345678901234567"); FuseExpect::Jit);
+
+// A union whose members are one type once bound counts that type once:
+// `[i64, 'y]` with 'y bound to i64 is a singleton for arithmetic.
+run!(
+    singleton_counts_a_member_once,
+    r#"{
+  let h = |x| x * x;
+  let k = |b, y| h(select b { true => 1, false => y });
+  k(false, 3)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(9)))
+);
+
+// Distributing a tuple over a union does not let a declared variable
+// admit what is not it: (`A, 5) is no (`A, 'a).
+run!(distribution_holds_declared_variables_rigid, r#"{
+  let f = 'a: Any |x: [`A, `B], y: 'a| -> [(`A, 'a), (`B, i64)] (x, 5);
+  f(`A, "hello")
+}"#, refused("does not contain ([`A, `B], i64)"); FuseExpect::None);
