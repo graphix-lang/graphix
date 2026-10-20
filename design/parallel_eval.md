@@ -144,13 +144,20 @@ earlier independent one and reorder their writes.
   are out of every sibling's scope.
 - A summary reads through a fused kernel's feeders and records the
   reference a `*r <- v` reads.
-- `plan_blocks` plans every block the analysis reaches, with the
+- `plan_forks` plans every block the analysis reaches, with the
   holder-aware summaries, and `Block::image_encode` writes the plan into
   the image; only a block no analysis reached is planned at its first
   update. A callee bound later than the plan stays opaque in it
-  (conservative). The other fork sites (`ForkSite`, `SlotSite`) decide
-  their siblings at their first update and are not imaged, so a warm
-  start decides them again.
+  (conservative). It decides every other fork point it reaches as well
+  (a `ForkSite`: an operator's operands, a call's arguments, a
+  constructor's fields) from the same instance summaries, each subtree's
+  flags once; a run-time bind's analysis decides the new instance's, an
+  activation's call to the next one a self-call. The verdict rides the
+  image in each fork-point node's codec. A site no analysis decided (a
+  rebind's arguments, a kernel's feeders, a `SlotSite`, a server's
+  instances) decides at its update, and a verdict that rests on a call
+  not bound yet (`None`) is asked again only once the runtime has bound
+  something since (`cost::Siblings`, `Control::rebuilds`).
 
 Top-level roots are not planned: a script compiles as one block, which
 is.
@@ -385,12 +392,10 @@ direction is safe: the child is already parallel inside. True work
 accounting (each branch summing its leaves' time) is possible later if
 the wall-time bias turns out to cost.
 
-**Not imaged.** Histograms are run-time state, and so are a
-`ForkSite`'s sibling verdicts; a warm start relearns them, so call,
-constructor and operator fork sites decide again. A block's plan
-(§3.3) is imaged (`Block::image_encode` writes `Block::planned`,
-`image_decode` restores it), so a warm block keeps its cold verdicts;
-only a block no analysis reached plans at its first update.
+**Not imaged.** Histograms are run-time state; a warm start relearns
+them. A block's plan and a `ForkSite`'s sibling verdict (§3.3) are
+imaged, so a warm start keeps its cold verdicts; only a fork point no
+analysis reached decides at its update.
 
 **Before there is data,** a fork point runs serially, unless an
 attribute forces it.
