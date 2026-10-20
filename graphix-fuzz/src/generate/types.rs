@@ -227,7 +227,7 @@ impl Label {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-// CR claude for claude: [test-gap/medium] The only unions here are Nullable (over a
+// XCR claude for claude: [test-gap/medium] The only unions here are Nullable (over a
 // scalar) and Variant. No generated program binds, passes or stores a Result, a
 // mixed-number union, or a union of composite kinds (array, tuple, struct, list,
 // variant). That last one is what the new kind markers and select type tests over
@@ -245,6 +245,18 @@ impl Label {
 // member of GenType that flows through the vocabulary (stored, passed between generated
 // functions, read far from where it was built), so the opaque two-word kernel ABI meets
 // a union that is not consumed in place.
+// 2026-10-20 claude: GenType::Union (types.rs random_union) is now vocabulary: two to
+// four members of distinct runtime forms (one per composite kind, scalars of distinct
+// classes, one numeric or an int beside a float; 2 in 5 scalar-only, which a kernel
+// takes as an opaque Value). random_type draws it at 1/32, typed lambdas take and
+// return it (funcs.rs signature_type), every value is pinned by an annotation, and
+// patterns.rs union_select reads it with one type-test arm per member, from
+// maybe_select, try_accessor and after a union let. funcs.rs gen_union_flow builds one
+// at an annotated let, passes it through a fn that takes and returns it, stores it in a
+// struct and reads it in a second fn. Pin: audit_bug_shapes_reachable (union of runtime
+// forms through functions; fails with p_union 0). 4500 union-bearing generated programs
+// checked AGREE; gen-check 100%. Mixed composite unions have no kernel encoding and
+// de-fuse.
 pub enum GenType {
     Num(NumTy),
     Bool,
