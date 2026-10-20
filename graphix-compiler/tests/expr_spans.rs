@@ -56,14 +56,6 @@ fn wrong(text: &str, e: &Expr, parent: Option<&Expr>) -> Option<String> {
         return (!inside).then(|| "a text run outside its string".into());
     }
     let slice = &text[from..to];
-    // `until` is a seq statement, which no expression parse reads
-    if let ExprKind::Until(_) = e.kind {
-        let wrapped = format!("seq {{ {slice} }}");
-        return match parser::parse_one(&wrapped).as_ref().map(|s| &s.kind) {
-            Ok(ExprKind::Seq(s)) if s.body.len() == 1 && s.body[0] == *e => None,
-            _ => Some(format!("does not read back: `{slice}`")),
-        };
-    }
     if slice.starts_with(char::is_whitespace) || slice.ends_with(char::is_whitespace) {
         return Some(format!("whitespace at an edge: `{slice}`"));
     }

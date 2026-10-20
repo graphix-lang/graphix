@@ -1,6 +1,7 @@
 ; -- Comments -------------------------------------------------------
 (line_comment) @comment.line
 (doc_comment) @comment.block.documentation
+(shebang) @keyword.directive
 
 ; -- Attributes -----------------------------------------------------
 ; The brackets and the name color as one unit; an argument inside them
@@ -126,6 +127,9 @@
 
 ; -- Variables ------------------------------------------------------
 (pattern_bind name: (identifier) @variable)
+(let_binding
+  pattern: (structure_pattern (pattern_bind name: (identifier) @function))
+  value: (lambda))
 (catch_stmt binding: (identifier) @variable)
 (reference (module_path (identifier) @variable))
 

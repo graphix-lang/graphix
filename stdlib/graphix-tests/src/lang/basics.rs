@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -14,7 +14,7 @@ const BIND_REF_ARITH: &str = r#"
 }
 "#;
 
-run!(bind_ref_arith, BIND_REF_ARITH, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))));
+run!(bind_ref_arith, BIND_REF_ARITH, is(Value::I64(1)));
 
 const MOD0: &str = r#"
 {
@@ -67,10 +67,7 @@ const NAME_MODPATH: &str = r#"
 }
 "#;
 
-run!(name_modpath, NAME_MODPATH, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => &**s == "foo, bar, baz",
-    _ => false,
-}; FuseExpect::Jit);
+run!(name_modpath, NAME_MODPATH, prints(r#""foo, bar, baz""#); FuseExpect::Jit);
 
 const STATIC_SCOPE: &str = r#"
 {
@@ -123,10 +120,7 @@ const NEVER_ZERO_ARGS_OK: &str = r#"
 }
 "#;
 
-run!(never_zero_args_ok, NEVER_ZERO_ARGS_OK, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(never_zero_args_ok, NEVER_ZERO_ARGS_OK, is(Value::I64(42)); FuseExpect::Jit);
 
 const ANY0: &str = r#"
 {
@@ -137,10 +131,7 @@ const ANY0: &str = r#"
 }
 "#;
 
-run!(any0, ANY0, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(any0, ANY0, is(Value::I64(3)); FuseExpect::Jit);
 
 const ANY1: &str = r#"
 {
@@ -168,10 +159,7 @@ const OR_NEVER: &str = r#"
 }
 "#;
 
-run!(or_never, OR_NEVER, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(or_never, OR_NEVER, is(Value::I64(42)); FuseExpect::Jit);
 
 const WRAP_OVERFLOW: &str = r#"
 {
@@ -187,10 +175,7 @@ const WRAP_OVERFLOW: &str = r#"
 "#;
 
 // Unchecked integer arith wraps on overflow in both modes.
-run!(wrap_overflow, WRAP_OVERFLOW, |v: Result<&Value>| match v {
-    Ok(Value::Bool(true)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(wrap_overflow, WRAP_OVERFLOW, is(Value::Bool(true)); FuseExpect::Jit);
 
 // The compact integer types keep their type through every operator,
 // checked and unchecked.
@@ -209,10 +194,7 @@ const COMPACT_INT_OPS: &str = r#"
 }
 "#;
 
-run!(compact_int_ops, COMPACT_INT_OPS, |v: Result<&Value>| match v {
-    Ok(Value::Bool(true)) => true,
-    _ => false,
-});
+run!(compact_int_ops, COMPACT_INT_OPS, is(Value::Bool(true)));
 
 // `*`, `/` and `%` are one precedence level, left-associative.
 const MUL_DIV_MOD_LEFT: &str = r#"
@@ -228,10 +210,7 @@ const MUL_DIV_MOD_LEFT: &str = r#"
 }
 "#;
 
-run!(mul_div_mod_left, MUL_DIV_MOD_LEFT, |v: Result<&Value>| match v {
-    Ok(Value::Bool(true)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(mul_div_mod_left, MUL_DIV_MOD_LEFT, is(Value::Bool(true)); FuseExpect::Jit);
 
 // A catch in a block's value slot would cover nothing: refused.
 const CATCH_IN_A_VALUE_SLOT: &str = r#"

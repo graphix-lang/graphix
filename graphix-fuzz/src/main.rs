@@ -12,6 +12,7 @@ use graphix_fuzz::{
 };
 use std::{
     future::Future,
+    process::ExitCode,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -250,6 +251,12 @@ fn finish_child(args: &[String], verdict: &str) -> Result<()> {
     std::process::exit(0)
 }
 
+/// A check child's per-run budget: the parent's, in milliseconds at
+/// argv[3], else `default`.
+fn parent_budget(args: &[String], default: fn() -> Duration) -> Duration {
+    args.get(3).and_then(|ms| ms.parse().ok()).map_or_else(default, Duration::from_millis)
+}
+
 /// Read a whole program from stdin (the `check-one` / `minimize-one`
 /// isolated-worker input channel).
 fn read_stdin() -> Result<String> {
@@ -293,7 +300,7 @@ fn takes_path(cmd: &str) -> bool {
 // with its own runtime, and every parent thread is one stolen from them
 // (measured: per-core sizing was a 7.5x throughput regression).
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+async fn main() -> Result<ExitCode> {
     // Before anything allocates: the child half of the sandbox's
     // address-space limit.
     graphix_fuzz::apply_mem_limit();
@@ -336,7 +343,7 @@ async fn main() -> Result<()> {
     // captured before the sandbox chdir: `fusecheck --bless` and
     // `regress --bless` write here
     let orig_cwd = std::env::current_dir()?;
-    let cwd_guard = if sandbox_cwd {
+    let _cwd_guard = if sandbox_cwd {
         let d = tempfile::tempdir()?;
         std::env::set_current_dir(d.path())?;
         Some(d)
@@ -439,8 +446,7 @@ async fn main() -> Result<()> {
                      their rows would be dropped",
                     r.regressions.len()
                 );
-                drop(cwd_guard);
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
             let out: String =
                 r.verdicts.iter().map(|(n, v)| format!("{v}\t{n}\n")).collect();
@@ -453,18 +459,17 @@ async fn main() -> Result<()> {
         Some("regress") => {
             let n = print_regression().await + print_fusecheck().await;
             if n > 0 {
-                drop(cwd_guard);
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         Some("leakcheck") => {
             // RSS leak lane: run each witness under both modes on the
             // given shell binary and require the fused RSS slope within
             // headroom of the interp slope. Linux only (/proc).
-            let bin = args.get(2).cloned().unwrap_or_else(|| {
+            let Some(bin) = args.get(2).cloned() else {
                 eprintln!("usage: graphix-fuzz leakcheck <graphix-bin> [secs]");
-                std::process::exit(2)
-            });
+                return Ok(ExitCode::from(2));
+            };
             let secs: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(60);
             let mut bad = 0usize;
             for (name, prog) in LEAK_WITNESSES {
@@ -475,6 +480,7 @@ async fn main() -> Result<()> {
                 let mut died = false;
                 for (i, mode_args) in [&["--no-fusion"][..], &[][..]].iter().enumerate() {
                     let mut child = std::process::Command::new(&bin)
+                        .arg("--no-cache")
                         .args(*mode_args)
                         .arg(&f)
                         .stdout(std::process::Stdio::null())
@@ -523,8 +529,7 @@ async fn main() -> Result<()> {
                 LEAK_WITNESSES.len()
             );
             if bad > 0 {
-                drop(cwd_guard);
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         Some("fusecheck") => {
@@ -549,8 +554,7 @@ async fn main() -> Result<()> {
                     eprintln!(
                         "fusecheck: refusing to bless — {unreadable} unreadable counts"
                     );
-                    drop(cwd_guard);
-                    std::process::exit(1);
+                    return Ok(ExitCode::FAILURE);
                 }
                 let path = orig_cwd.join("graphix-fuzz/fusecheck.manifest");
                 std::fs::write(&path, out).unwrap_or_else(|e| {
@@ -561,8 +565,7 @@ async fn main() -> Result<()> {
                     counts.len()
                 );
             } else if print_fusecheck().await > 0 {
-                drop(cwd_guard);
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         Some("reactive-check") => {
@@ -662,7 +665,7 @@ async fn main() -> Result<()> {
                     println!("FLAKY under {mode}: {}", prog.replace('\n', "\\n"));
                 }
                 println!("selfcheck FAILED — {} flaky traces", flaky.len());
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         // Hidden workers. The verdict rides a file the parent names,
@@ -692,11 +695,7 @@ async fn main() -> Result<()> {
         // typemorph child: base program on stdin, verdict lines to the
         // file named by argv[2]
         Some("typemorph-one") => {
-            // the parent's per-check budget
-            let per_check = args
-                .get(3)
-                .and_then(|ms| ms.parse().ok())
-                .map_or_else(timeout, Duration::from_millis);
+            let per_check = parent_budget(&args, timeout);
             let code = read_stdin()?;
             let text = match graphix_fuzz::typemorph_subject(
                 code.trim(),
@@ -726,7 +725,7 @@ async fn main() -> Result<()> {
             if flips.is_empty() {
                 println!("typemorph: no flips");
             } else {
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         // the acceptance-plane gate: corpus + n generated subjects
@@ -759,7 +758,7 @@ async fn main() -> Result<()> {
                 flips.len()
             );
             if !flips.is_empty() {
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         // the determinism gate: every Exact-tier program in two fresh
@@ -795,7 +794,7 @@ async fn main() -> Result<()> {
                 flaps.len()
             );
             if !flaps.is_empty() {
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         // the aggregator's worker: told what to make, not what to run
@@ -812,7 +811,9 @@ async fn main() -> Result<()> {
         // named by argv[2] (the exit status is the subject's to set)
         Some("check-one") => {
             let code = read_stdin()?;
-            let verdict = match check(code.trim(), campaign_timeout()).await {
+            let verdict = match check(code.trim(), parent_budget(&args, campaign_timeout))
+                .await
+            {
                 Some(d) => format!("diverge\n{}", graphix_fuzz::Finding::of(&d).encode()),
                 None => "agree\n".to_string(),
             };
@@ -821,10 +822,10 @@ async fn main() -> Result<()> {
         // one mode alone: `trace` in the file named by argv[2] when it
         // produced one
         Some("run-one") => {
-            let run = args.get(3..6).map(|a| a.join(" ")).unwrap_or_default();
+            let run = args.get(4..7).map(|a| a.join(" ")).unwrap_or_default();
             let code = read_stdin()?;
-            let o =
-                graphix_fuzz::run_named(code.trim(), &run, campaign_timeout()).await?;
+            let budget = parent_budget(&args, campaign_timeout);
+            let o = graphix_fuzz::run_named(code.trim(), &run, budget).await?;
             finish_child(
                 &args,
                 if matches!(o, Outcome::Trace(_)) { "trace" } else { "other" },
@@ -900,7 +901,7 @@ async fn main() -> Result<()> {
                 corpus.len(),
                 stats.novel
             );
-            // CR claude for claude: [bug/low] This `std::process::exit(1)`, and the
+            // XCR claude for claude: [bug/low] This `std::process::exit(1)`, and the
             // identical one in the `soak` arm, skip `drop(cwd_guard)`.
             // fuzz/generate/soak are in-process subcommands, so their sandbox tempdir,
             // and whatever the regression gate's pins wrote into it, is left in $TMPDIR
@@ -909,8 +910,12 @@ async fn main() -> Result<()> {
             // return `Result<ExitCode>` from `main` and let every arm yield its code,
             // so the guard drops on one return path and the copies go. Found by
             // reading; not run. (fuzz-main-aux-03)
+            // 2026-10-19 claude: main returns Result<ExitCode> and every failing arm
+            // returns its code, so the sandbox guard drops on the one return path; the
+            // six drop+exit pairs are gone. No test reaches main; a finite fuzz run
+            // with a finding leaves no tempdir now.
             if new > 0 || regressions > 0 {
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         // a whole campaign in one process: all three sources through one
@@ -954,7 +959,7 @@ async fn main() -> Result<()> {
             }
             println!("{new} new, {} total in corpus", corpus.len());
             if new > 0 || regressions > 0 {
-                std::process::exit(1);
+                return Ok(ExitCode::FAILURE);
             }
         }
         // the campaign's view of a program: checked in a child as a
@@ -1059,8 +1064,7 @@ async fn main() -> Result<()> {
                         println!("DIVERGENCE — {}", d.bisect());
                         println!("  {la}: {}", render(&d.reference));
                         println!("  {lb}: {}", render(&d.tested));
-                        drop(cwd_guard);
-                        std::process::exit(1);
+                        return Ok(ExitCode::FAILURE);
                     }
                 },
                 _ => unreachable!(),
@@ -1077,7 +1081,7 @@ async fn main() -> Result<()> {
              graphix-fuzz <regress|fusecheck> [--bless]"
         ),
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `VmRSS` of `pid` in kB (Linux `/proc`).

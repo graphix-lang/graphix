@@ -25,6 +25,7 @@ use poolshark::local::LPooled;
 use std::{
     fmt::Write,
     fs,
+    io::ErrorKind,
     path::{Path as FsPath, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime},
@@ -218,7 +219,7 @@ fn sources_record(probes: &[Probe]) -> Option<String> {
 fn sources_unchanged(record: &str) -> bool {
     record.lines().all(|line| match line.split_at_checked(1) {
         Some(("-", path)) => {
-            // CR claude for claude: [bug/medium] This absence test is not the one the
+            // XCR claude for claude: [bug/medium] This absence test is not the one the
             // compile used. `read_optional` records a path as absent on NotFound or
             // NotADirectory, and it follows symlinks. Here only an lstat NotFound
             // passes. So a probe through a regular file (a file `m` beside `m.gx` makes
@@ -230,7 +231,18 @@ fn sources_unchanged(record: &str) -> bool {
             // tests for the two cases. probe:
             // design/review-2026-10-19/repro/x-image-notadir-always-stale.sh
             // (x-image-02)
-            matches!(fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            // absent as `expr::read_optional` finds it: nothing opens there
+            // 2026-10-19 claude: sources_unchanged tests an absent path as
+            // read_optional finds it: open fails with NotFound or NotADirectory (a link
+            // is followed). The predicate is written twice, here and in graphix-types'
+            // expr::read_optional; sharing it needs graphix-types, outside this change.
+            // Fails if undone: graphix-shell
+            // cache::tests::a_program_entry_restores_over_paths_that_name_nothing (a
+            // probe through a regular file, a dangling .gxi link).
+            matches!(
+                fs::File::open(path).map_err(|e| e.kind()),
+                Err(ErrorKind::NotFound | ErrorKind::NotADirectory)
+            )
         }
         Some(("+", rest)) => match rest.split_once(' ') {
             Some((want, path)) => {
@@ -260,7 +272,7 @@ impl RegistrationCache {
         let registration = digest(&[&format, root.as_bytes()]);
         let program = program.and_then(|p| {
             let id = match p {
-                // CR claude for claude: [risk/medium] The key is the path as the
+                // XCR claude for claude: [risk/medium] The key is the path as the
                 // embedder passed it, but the record verifies the canonical path
                 // (`RootFile::load` canonicalizes before its probe). An embedder that
                 // runs `Load::File("prog.gx")` from two directories gets one key, and
@@ -269,6 +281,12 @@ impl RegistrationCache {
                 // Fix: canonicalize `Load::File` once in `Shell::init`, before the key
                 // and `GXConfig::program`, and drop main.rs's copy. Found by reading;
                 // not run. (shell-05)
+                // 2026-10-19 claude: Shell::configure canonicalizes a Load::File script
+                // or check before the cache key and GXConfig::program are made. main.rs
+                // keeps its canonicalize: it also needs the absolute path for the
+                // directory test and the parent's FilesResolver. Fails if undone:
+                // graphix-shell
+                // test::a_script_file_is_configured_by_its_canonical_path.
                 Load::File(path) => path.to_string_lossy().into_owned().into_bytes(),
                 Load::Text(text) => text.as_bytes().to_vec(),
                 Load::Netidx(_) => return None,
@@ -579,5 +597,23 @@ mod tests {
         fs::create_dir(early.join("m")).unwrap();
         fs::write(early.join("m").join("mod.gx"), "let x = 2").unwrap();
         assert!(!sources_unchanged(&record), "early/m/mod.gx shadows m");
+    }
+
+    /// A path probed through a regular file, or at a dangling symlink, is
+    /// absent to the compile and so to the check of its record.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_entry_restores_over_paths_that_name_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("main.gx");
+        fs::write(&main, "mod m;\nm::x").unwrap();
+        fs::write(dir.path().join("m.gx"), "let x = 1").unwrap();
+        fs::write(dir.path().join("m"), "not a module").unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("m.gxi"))
+            .unwrap();
+        let record = record_of(&main, &[]);
+        assert!(record.contains("m/mod.gx"), "{record}");
+        assert!(record.contains("m.gxi"), "{record}");
+        assert!(sources_unchanged(&record), "{record}");
     }
 }

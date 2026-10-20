@@ -165,7 +165,11 @@ fn walk_static_graph<'a, R: Rt, E: UserEvent>(
                 return;
             };
             let instance = g.instance_id();
-            if let NodeView::Ref(r) = site.fnode().view() {
+            // a self-call binds an instance per activation; any other call
+            // with no static target is opaque
+            if site.static_target().is_some()
+                && let NodeView::Ref(r) = site.fnode().view()
+            {
                 graph.add_self_bind(r.id, instance);
             }
             if let Entry::Vacant(e) = graph.instances.entry(instance) {
@@ -579,7 +583,7 @@ pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
         if own(id) {
             calls.own = true;
             true
-        } else if ctx.def_gate_params.contains(&id) {
+        } else if ctx.def_gate_params.contains_key(&id) {
             if !calls.captured.contains(&id) {
                 calls.captured.push(id)
             }
@@ -1233,6 +1237,9 @@ struct Summary {
     ordered: bool,
     /// It calls a site not bound yet (opaque until it is).
     unbound: bool,
+    /// It makes a reference, which publishes its cell in the cycle it
+    /// fires, a callee's included.
+    makes_refs: bool,
 }
 
 impl Summary {
@@ -1254,7 +1261,9 @@ impl Summary {
         self.ordered |= other.ordered;
         let u = !self.unbound && other.unbound;
         self.unbound |= other.unbound;
-        self.writes.union(&other.writes) || r || o || u
+        let m = !self.makes_refs && other.makes_refs;
+        self.makes_refs |= other.makes_refs;
+        self.writes.union(&other.writes) || r || o || u || m
     }
 }
 
@@ -1346,8 +1355,13 @@ fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) 
 /// reach into `callees`. A write or read through a reference, a call
 /// with no static target, a dynamic module, and a builtin handed a
 /// function or a reference touch every variable.
+/// A call with no static target is opaque: what it calls may change at
+/// any bind. Only `current`, a slot site's own call, which the site
+/// decides again when its callback rebinds, counts as the instance it
+/// calls now.
 fn local_summary<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
+    current: Option<&Node<R, E>>,
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
     detail: Detail,
@@ -1355,11 +1369,11 @@ fn local_summary<R: Rt, E: UserEvent>(
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
     fusion::for_each_node(n, &mut |x| {
-        own_access(x, graph, ctx, detail, s, callees);
+        own_access(x, current, graph, ctx, detail, s, callees);
         if let NodeView::FusedKernel(k) = x.view() {
             k.feeders()
                 .iter()
-                .for_each(|f| local_summary(f, graph, ctx, detail, s, callees))
+                .for_each(|f| local_summary(f, None, graph, ctx, detail, s, callees))
         }
     })
 }
@@ -1379,6 +1393,7 @@ fn access_children<'a, R: Rt, E: UserEvent>(
 /// [`local_summary`] of `x` alone, its children aside.
 fn own_access<R: Rt, E: UserEvent>(
     x: &Node<R, E>,
+    current: Option<&Node<R, E>>,
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
     detail: Detail,
@@ -1387,6 +1402,7 @@ fn own_access<R: Rt, E: UserEvent>(
 ) {
     let ids = detail == Detail::Ids;
     match x.view() {
+        NodeView::ByRef(_) => s.makes_refs = true,
         NodeView::Ref(r) => {
             if ids {
                 s.reads.ids.insert(r.id);
@@ -1423,7 +1439,8 @@ fn own_access<R: Rt, E: UserEvent>(
             }
             match cs.resolved_apply() {
                 Some(ApplyView::Lambda(g))
-                    if graph.instances.contains_key(&g.instance_id()) =>
+                    if current.is_some_and(|c| std::ptr::eq(c, x))
+                        && graph.instances.contains_key(&g.instance_id()) =>
                 {
                     return callees.push(g.instance_id());
                 }
@@ -1489,7 +1506,7 @@ fn instance_summaries<R: Rt, E: UserEvent>(
         let Some(g) = graph.instances.get(&i) else { continue };
         let mut s = Summary::default();
         let mut cs = SmallVec::new();
-        local_summary(g.body(), graph, ctx, detail, &mut s, &mut cs);
+        local_summary(g.body(), None, graph, ctx, detail, &mut s, &mut cs);
         if detail == Detail::Ids {
             let mut refs = Refs::without_callees();
             g.body().refs(&mut refs);
@@ -1545,9 +1562,10 @@ fn accesses<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
     detail: Detail,
+    sites: Sites,
 ) -> LPooled<Vec<Summary>> {
     let graph = collect_static_graph_of(children.clone());
-    let locals = local_summaries(children, &graph, ctx, detail);
+    let locals = local_summaries(children, &graph, ctx, detail, sites);
     let sums = instance_summaries(
         &graph,
         ctx,
@@ -1557,18 +1575,28 @@ fn accesses<'a, R: Rt, E: UserEvent>(
     with_callees(&locals, &sums)
 }
 
+/// Whether the children are a slot site's slot calls, each of which
+/// counts as the instance it calls now.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sites {
+    Statements,
+    Slots,
+}
+
 /// Each of `children`'s own reads, writes and calls, and its callees.
 fn local_summaries<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>>,
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
     detail: Detail,
+    sites: Sites,
 ) -> LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> {
     children
         .map(|n| {
             let mut s = Summary::default();
             let mut cs = SmallVec::new();
-            local_summary(n, graph, ctx, detail, &mut s, &mut cs);
+            let current = (sites == Sites::Slots).then_some(n);
+            local_summary(n, current, graph, ctx, detail, &mut s, &mut cs);
             (s, cs)
         })
         .collect()
@@ -1608,7 +1636,13 @@ fn plan_forks<R: Rt, E: UserEvent>(
             continue;
         }
         let accesses = with_callees(
-            &local_summaries(b.children.iter(), graph, ctx, Detail::Ids),
+            &local_summaries(
+                b.children.iter(),
+                graph,
+                ctx,
+                Detail::Ids,
+                Sites::Statements,
+            ),
             cx.sums(Detail::Ids),
         );
         let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
@@ -1658,8 +1692,13 @@ impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {
             children.iter().map(|c| self.shallow_of(c)).collect();
         shallow_verdict(&shallow).unwrap_or_else(|| {
             let (graph, ctx) = (self.graph, self.ctx);
-            let locals =
-                local_summaries(children.iter().copied(), graph, ctx, Detail::Ids);
+            let locals = local_summaries(
+                children.iter().copied(),
+                graph,
+                ctx,
+                Detail::Ids,
+                Sites::Statements,
+            );
             ids_verdict(
                 children.iter().copied(),
                 &with_callees(&locals, self.sums(Detail::Ids)),
@@ -1677,7 +1716,15 @@ impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {
         let s = crate::stack::ensure_sufficient(|| {
             let mut own = Summary::default();
             let mut callees = SmallVec::new();
-            own_access(n, self.graph, self.ctx, Detail::Flags, &mut own, &mut callees);
+            own_access(
+                n,
+                None,
+                self.graph,
+                self.ctx,
+                Detail::Flags,
+                &mut own,
+                &mut callees,
+            );
             let mut s = Shallow::of(&own);
             s.makes_ref = matches!(n.view(), NodeView::ByRef(_));
             if !callees.is_empty() {
@@ -1755,7 +1802,7 @@ pub(crate) fn fires_with<R: Rt, E: UserEvent>(
 /// ids it binds, and each reference's cell, which a reference (and a
 /// moving place its path) publishes in the cycle it fires for a later
 /// `*r` to read.
-// CR claude for claude: [bug/high] A reference made inside a callee's body is never
+// XCR claude for claude: [bug/high] A reference made inside a callee's body is never
 // counted as a publication: `publishes` and the `cells` scan in `independent` walk only
 // the sibling's own tree (for_each_node, Refs::without_callees). A ByRef with a Channel
 // referent delivers its cell every cycle its value fires, so a later sibling that
@@ -1766,6 +1813,11 @@ pub(crate) fn fires_with<R: Rt, E: UserEvent>(
 // design/review-2026-10-19/repro/c-analysis-branch-callee-ref-cell.gx (serial
 // deref=10..40, GRAPHIX_PAR=force deref=0, GRAPHIX_PAR_AUDIT=1 panics; #[parallel] on
 // the tuple is accepted). (c-analysis-branch-01)
+// 2026-10-19 claude: Summary::makes_refs: local_summary records a ByRef reached
+// (callees joined through instance_summaries); independent and plan_runs break a later
+// sibling or statement that reads through a reference after one that makes one. Pin:
+// lang::par_attrs::callee_reference_is_a_publication (Force values == Off values;
+// #[parallel] on the pair refused).
 fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
     let mut refs = Refs::without_callees();
     n.refs(&mut refs);
@@ -1789,7 +1841,7 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// one, to ask again once it is bound. A call site decides its arguments
 /// again at each bind (`CallSite::clear_prepared_bind`), a collection its
 /// slots once they are bound to a new callback (`update_slots`).
-// CR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
+// XCR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
 // to a pure function outlives the call's rebind: local_summary counts a call with no
 // static target as its current instance, and ForkSite::decide_siblings keeps the answer
 // forever. Only a call's own arguments and a slot site decide again at a rebind, so a
@@ -1801,9 +1853,16 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 // design/review-2026-10-19/repro/c-analysis-branch-stale-verdict-after-rebind.gx
 // (serial order 41,42,43,44; GRAPHIX_PAR=force 44,41,42,43, varying).
 // (c-analysis-branch-02)
+// 2026-10-19 claude: local_summary counts a call with no static target as opaque,
+// except a slot site's (and fork_instances') own call (analysis::Sites::Slots, which
+// redecide at a rebind). walk_static_graph also recorded a self_bind for every call
+// through a Ref, which counted the current instance the same way; it now records one
+// only for a site with a static target (a self-call). Pin:
+// lang::par_attrs::rebound_dynamic_calls_stay_ordered.
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
+    sites: Sites,
 ) -> Option<bool> {
     // XCR claude for claude: [perf/medium] Every fork site that is not a block (an
     // operator's operands, a call's arguments, a constructor's fields, a collection's
@@ -1896,7 +1955,7 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // node). Probe (quick, --no-fusion, taskset 0-3): auto 0.77 s -> 0.12 s (off 0.12
     // s). Pin: lang::par_attrs::activations_decide_their_fork_points_at_bind counts
     // run-time verdicts (Control::verdicts).
-    let flags = accesses(children.clone(), ctx, Detail::Flags);
+    let flags = accesses(children.clone(), ctx, Detail::Flags, sites);
     let shallow: SmallVec<[Shallow; 8]> = children
         .clone()
         .zip(flags.iter())
@@ -1909,7 +1968,7 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
         })
         .collect();
     shallow_verdict(&shallow).unwrap_or_else(|| {
-        ids_verdict(children.clone(), &accesses(children, ctx, Detail::Ids))
+        ids_verdict(children.clone(), &accesses(children, ctx, Detail::Ids, sites))
     })
 }
 
@@ -1976,12 +2035,17 @@ fn ids_verdict<'a, R: Rt, E: UserEvent>(
     accesses: &[Summary],
 ) -> Option<bool> {
     let mut published = Vars::default();
+    let mut made_refs = false;
     let mut ordered = false;
     for (n, access) in children.zip(accesses.iter()) {
-        if access.reads.meeting(&published).is_some() || (access.ordered && ordered) {
+        if access.reads.meeting(&published).is_some()
+            || (access.reads.refs && made_refs)
+            || (access.ordered && ordered)
+        {
             return unbound_or_dependent(accesses.iter().any(|a| a.unbound));
         }
         publishes(n, &mut published);
+        made_refs |= access.makes_refs;
         ordered |= access.ordered;
     }
     Some(true)
@@ -2058,7 +2122,7 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     explain: &mut dyn FnMut(usize, RunBreak),
 ) -> Box<[(u32, u32)]> {
-    let accesses = accesses(children.iter(), ctx, Detail::Ids);
+    let accesses = accesses(children.iter(), ctx, Detail::Ids, Sites::Statements);
     plan_runs(children, catches, &accesses, explain)
 }
 
@@ -2072,6 +2136,7 @@ fn plan_runs<R: Rt, E: UserEvent>(
     let mut runs: LPooled<Vec<(u32, u32)>> = LPooled::take();
     let mut start: Option<usize> = None;
     let mut published = Vars::default();
+    let mut made_refs = false;
     let mut run_ordered = false;
     let mut after_module = false;
     for (i, n) in children.iter().enumerate() {
@@ -2090,7 +2155,10 @@ fn plan_runs<R: Rt, E: UserEvent>(
         );
         access.ordered |=
             matches!(n.view(), NodeView::SeqAbort(_) | NodeView::SeqMachine(_));
-        let met = access.reads.meeting(&published);
+        let met = match access.reads.meeting(&published) {
+            None if access.reads.refs && made_refs => Some(None),
+            met => met,
+        };
         let why = if module || after_module {
             Some(RunBreak::Module)
         } else if let Some(id) = met {
@@ -2107,9 +2175,11 @@ fn plan_runs<R: Rt, E: UserEvent>(
                 explain(i, why.expect("a break has a reason"));
             }
             published = Vars::default();
+            made_refs = false;
             run_ordered = false;
         }
         publishes(n, &mut published);
+        made_refs |= access.makes_refs;
         run_ordered |= access.ordered;
         after_module = module;
     }
@@ -2143,7 +2213,15 @@ fn plan_machines<R: Rt, E: UserEvent>(
                         let mut sum = Summary::default();
                         let mut cs = SmallVec::new();
                         s.nodes.iter().for_each(|n| {
-                            local_summary(n, graph, ctx, Detail::Ids, &mut sum, &mut cs)
+                            local_summary(
+                                n,
+                                None,
+                                graph,
+                                ctx,
+                                Detail::Ids,
+                                &mut sum,
+                                &mut cs,
+                            )
                         });
                         (sum, cs)
                     })
@@ -2276,7 +2354,9 @@ fn forks_two<'a, R: Rt, E: UserEvent>(
     kids.iter().filter(|n| is_work(n)).nth(1).is_some()
         && match siblings.decided() {
             true => siblings.independent(),
-            false => independent(kids.iter().copied(), ctx) == Some(true),
+            false => {
+                independent(kids.iter().copied(), ctx, Sites::Statements) == Some(true)
+            }
         }
 }
 

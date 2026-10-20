@@ -956,16 +956,9 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
     }
 }
 
-/// An origin is written once per image and referenced afterwards; its
-/// parent chain is written first, so ids are completion order. Outside
-/// a session every origin is written in full. (`Arc<Origin>` cannot
+/// An origin is an image object keyed by its address, its parent a
+/// reference; it has no encoding outside a session. (`Arc<Origin>` cannot
 /// carry the impl itself: the orphan rule.)
-// CR claude for claude: [doc-drift/low] The doc above describes the old inline format.
-// Ordinals are assigned at first sight, not in completion order. Outside a session an
-// origin is not written in full: object_len returns 0 and object_encode refuses with
-// InvalidFormat. Rewrite it as: an image object keyed by address, its parent a
-// reference, with no encoding outside a session. Found by reading; not run.
-// (t-image-04)
 pub(crate) fn origin_len(ori: &Arc<Origin>) -> usize {
     let key = Arc::as_ptr(ori) as usize;
     object_len(&key, |k| (*k, ori.clone()), |e| &mut e.origins)

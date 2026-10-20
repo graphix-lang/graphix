@@ -155,6 +155,53 @@ fn program(shape: &str, d: usize) -> String {
             format!("let x = {s}")
         }
         "qop" => format!("let x = {}1{}", "cast<i64>(".repeat(d), ")$".repeat(d)),
+        "list" => format!("let x = {}1{}", "[<".repeat(d), ">]".repeat(d)),
+        "listpat" => {
+            let v = format!("{}1{}", "[<".repeat(d), ">]".repeat(d));
+            let pat = format!("{}x{}", "[<".repeat(d), ">]".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => 1, _ => 0 }}")
+        }
+        "variantpat" => {
+            let v = format!("{}1{}", "`A(".repeat(d), ")".repeat(d));
+            let pat = format!("{}x{}", "`A(".repeat(d), ")".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => x }}")
+        }
+        "structpat" => {
+            let v = format!("{}1{}", "{a: ".repeat(d), "}".repeat(d));
+            let pat = format!("{}x{}", "{a: ".repeat(d), "}".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => x }}")
+        }
+        // CR claude for eric: [bug/low] The bool form of this shape, `select (true,
+        // (true, .. 1)) { (true | false, (true | false, .. x)) => x }`, is refused as
+        // non-exhaustive ('missing match cases: no arm covers (bool, (bool, ..') from
+        // eleven levels on, though its one arm matches every value: LiteralPool
+        // enumerates a group's combinations of heads and gives up past
+        // MAX_POOL_COMBINATIONS (1024, graphix-compiler/src/node/select.rs), so eleven
+        // bool positions never complete. Ten levels check. The same holds for any arm set
+        // over eleven or more independent bool or variant-head positions. Decide whether
+        // coverage over many positions must be complete (a per-position decision where
+        // positions are independent, as a lone or-arm's are) or the cap is the rule, then
+        // document it. Found by the deep_nesting orpat case at depth 331; this shape now
+        // uses integer literals, which never pool. (pool-cap-01)
+        "orpat" => {
+            let v = format!("{}1{}", "(1, ".repeat(d), ")".repeat(d));
+            let pat = format!("{}x{}", "(1 | 2, ".repeat(d), ")".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => x, _ => 0 }}")
+        }
+        "refmut" => {
+            format!("let v = 1;\nlet r = {}v{}", "&mut (".repeat(d), ")".repeat(d))
+        }
+        "catch" => format!("let x = {}1{}", "{ catch(e) e; ".repeat(d), " }".repeat(d)),
+        "trywith" => format!(
+            "seq {{ {}1; 1{} }}",
+            "try { 1; ".repeat(d),
+            " } with(e) { 0 }".repeat(d)
+        ),
+        "structwith" => format!(
+            "let s = {{a: 1}};\nlet x = {}s{}",
+            "{(".repeat(d),
+            ") with a: 1}".repeat(d)
+        ),
         // Runs inside parens: each fold is under the limit, the AST they
         // build together is `d` deep.
         "parenchain" => format!("let x = {}", paren_chain(d)),
@@ -200,6 +247,16 @@ fn program(shape: &str, d: usize) -> String {
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
+        // a static call chain: each kernel calls the one before, so the
+        // link installs (and an image writes) a record tree this deep
+        "calleechain" => {
+            let mut s = String::from("let f0 = |x| x;\n");
+            for i in 1..d {
+                s.push_str(&format!("let f{i} = |x| f{}(x);\n", i - 1));
+            }
+            s.push_str(&format!("let g = |x: i64| f{}(x) + 1;\ng(1)", d - 1));
+            s
+        }
         "flatcast" => {
             let mut s = String::from("type A0 = [`Z];\n");
             for i in 1..=d {
@@ -225,7 +282,7 @@ fn paren_chain(d: usize) -> String {
 
 /// Shapes with no source nesting at all: the parser cannot refuse
 /// them, so each must compile at `FLAT_DEPTH`.
-const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
+const FLAT_SHAPES: &[&str] = &["flattype", "flatcast", "calleechain"];
 const FLAT_DEPTH: usize = 3000;
 
 /// Cells chained by bounds in one signature (`chainbounds`).
@@ -235,14 +292,6 @@ const CHAIN_DEPTH: usize = 10000;
 /// bounds none of it: module resolution recurses once per file.
 const MODCHAIN_DEPTH: usize = 1000;
 
-// CR claude for claude: [test-gap/low] These shapes miss the recursive constructs added
-// since this list was last grown: List literals and patterns, variant, struct and
-// or-patterns, &mut chains, nested catch, try/with and {s with ..}. CLAUDE.md asks for
-// a case per construct. Each has its own parser knot and walks. Add them here
-// (accepted() finds their depths: 331 for the pattern and list shapes, 248 for &mut).
-// By hand they pass check, run, --no-fusion, fmt and the LSP queries at a 256K stack,
-// so this is a missing pin, not a bug. Found by reading; shapes probed with the debug
-// binary. (tests-shell-compiler-04)
 const SHAPES: &[&str] = &[
     "parens",
     "array",
@@ -275,6 +324,15 @@ const SHAPES: &[&str] = &[
     "seqarm",
     "seqblock",
     "seqabort",
+    "list",
+    "listpat",
+    "variantpat",
+    "structpat",
+    "orpat",
+    "refmut",
+    "catch",
+    "trywith",
+    "structwith",
 ];
 
 /// What a child may map: a runaway case dies alone, by a signal.

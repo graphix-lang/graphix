@@ -19,8 +19,9 @@ let tick_out = {
 };
 sys::net::publish(path, tick_out)$;
 let tick: f64 = sys::net::subscribe(path)$;
-let (variance, chk) = winstats::stats(wsize, tick);
-// CR claude for claude: [bug/medium] netidx_stream is not self-clocked, and `processed`
+let chk = winstats::stats(wsize, tick);
+let processed = count(chk) - 1;
+// XCR claude for claude: [bug/medium] netidx_stream is not self-clocked, and `processed`
 // over-counts. `let (variance, chk) = winstats::stats(..)` fires both names whenever
 // the tuple fires. The tuple fires twice per tick: when the inner variance fires, and
 // again when the inner chk lands a cycle later. So idx advances twice per received
@@ -33,11 +34,15 @@ let (variance, chk) = winstats::stats(wsize, tick);
 // first tick, not after the window fills. probe:
 // design/review-2026-10-19/repro/examples-rest-netidx-stream-double-clock.gx
 // (examples-rest-01)
-idx <- select variance ~ idx {
-  i if i < n - 1 => i + 1,
+// 2026-10-19 claude: winstats::stats returns chk alone and netidx_stream clocks idx on
+// processed (p > 0 && p < n). At n = 50 under --no-netidx the run prints one result
+// line and its chk equals stream_stats' for the same seed. Its README Results row was
+// measured on the double clock: re-measure it with bench/run.sh on a quick build. The
+// winstats header now says chk fires at birth and once per tick.
+idx <- select processed {
+  p if p > 0 && p < n => p,
   _ => never()
 };
-let processed = count(chk) - 1;
 let done = select processed {
   p if p < n => never(),
   p => p

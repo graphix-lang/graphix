@@ -11,10 +11,11 @@ use super::{
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
-    LambdaId, LambdaInstanceId, Node, NodeView, Refs, ResolvingLambda, Rt, Scope, Tag,
-    TagValue, Update, UserEvent, View, analysis, bailat, dbgenv, deref_typ,
+    LambdaId, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, ResolvingLambda, Rt,
+    Scope, Tag, TagValue, Update, UserEvent, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
+    format_with_flags,
     fusion::{
         self,
         emit::{
@@ -64,53 +65,6 @@ use std::{
     },
 };
 use triomphe::Arc as TArc;
-
-// CR claude for claude: [bug/high] DEFAULTS_IN_CHECK is thread state, but
-// resolve_static holds its guards across bind_instance, whose statement elaboration
-// blocks in a rayon join (check_in_tasks). A job stolen there, often a sibling
-// statement calling the same definition with the same omitted label, sees the pair 'in
-// progress' and leaves its site dynamic. So `#[native] f(i)` over a multi-statement `f`
-// with a defaulted label fails at random (about 5 builds in 12), and without
-// `#[native]` fusion and fork plans vary from run to run. a8b168951 set the other
-// compile thread-locals aside for stolen jobs, but not this one. Keep the stack in the
-// CompileCtx beside resolving_lambdas (forked with it), or set it aside wherever
-// TaskContext is entered. probe:
-// design/review-2026-10-19/repro/x-parallel-default-in-check-tls.gx (x-parallel-02)
-thread_local! {
-    /// The (definition, label) defaults this thread is checking, innermost
-    /// last.
-    static DEFAULTS_IN_CHECK: std::cell::RefCell<SmallVec<[(LambdaId, ArcStr); 4]>> =
-        const { std::cell::RefCell::new(SmallVec::new_const()) };
-}
-
-/// A default of a definition's label being checked or elaborated: the
-/// guard takes it off.
-struct DefaultInCheck(LambdaId, ArcStr);
-
-impl DefaultInCheck {
-    /// `None` when the pair's check is already in progress.
-    fn enter(id: LambdaId, label: &ArcStr) -> Option<Self> {
-        DEFAULTS_IN_CHECK.with(|s| {
-            let mut s = s.borrow_mut();
-            if s.iter().any(|(i, l)| *i == id && l == label) {
-                return None;
-            }
-            s.push((id, label.clone()));
-            Some(Self(id, label.clone()))
-        })
-    }
-}
-
-impl Drop for DefaultInCheck {
-    fn drop(&mut self) {
-        DEFAULTS_IN_CHECK.with(|s| {
-            let mut s = s.borrow_mut();
-            if let Some(i) = s.iter().rposition(|(i, l)| *i == self.0 && *l == self.1) {
-                s.remove(i);
-            }
-        })
-    }
-}
 
 /// Reject a direct call to a sync variadic builtin with no positional
 /// arguments (`str::concat()`, `sum()`): the node has no data inputs and
@@ -198,6 +152,16 @@ impl fmt::Display for ArgKey {
     }
 }
 
+/// What an instance registers for its body's check: its fn-typed formals
+/// bound to the lambdas its arguments are, and keyed by definition and
+/// position (`CompileCtx::instance_fn_params`), with what each key held.
+#[derive(Default)]
+struct FnParams {
+    binds: LPooled<Vec<BindId>>,
+    formals: SmallVec<[((LambdaId, u32), Option<BindId>); 4]>,
+    args: SmallVec<[BindId; 4]>,
+}
+
 /// The call's argument nodes, keyed for signature lookups and iterating
 /// in source order: the written arguments, then the defaults a bind
 /// added. A forked update merges its parts in that order.
@@ -249,8 +213,6 @@ impl ArgStage {
     }
 }
 
-/// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
-/// `Fn` arms of a `[fn(...), null]` / Set union.
 /// A labeled default of `f` compiled and checked in `f`'s environment,
 /// where its names are, against the site's view of the label, which the
 /// default narrows and the instance runs with; where the site hides the
@@ -456,6 +418,8 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     })
 }
 
+/// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
+/// `Fn` arms of a `[fn(...), null]` / Set union.
 fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     match t {
         Type::Fn(ft) => out.push(ft.clone()),
@@ -474,16 +438,6 @@ fn printed_deref(t: &Type) -> String {
     crate::format_with_flags(crate::PrintFlag::DerefTVars, || t.to_string())
 }
 
-/// Re-run a builtin definition's check `Apply` at this site's resolved
-/// type; a user definition has no check. The check is shared by every
-/// site, the last one's type wins. A definition restored from an image
-/// has none until its first site rebuilds it.
-
-// CR claude for claude: [readability/low] The doc block above this function describes a
-// builtin re-check that no longer exists, so compile_apply_args reads as something it
-// is not; delete it. Similarly, the first sentence of the free checked_default's doc
-// ("Collect every `Type::Fn` arm reachable in `t`") belongs to collect_fn_arms, which
-// has no doc; move it there. Found by reading; not run. (c-callsite-06)
 fn compile_apply_args<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -513,7 +467,7 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 fn quantified_formal(
     env: &Env,
     typ: &Type,
-) -> Result<Option<(Type, LPooled<Vec<RigidGate>>)>> {
+) -> Result<Option<(Type, LPooled<Vec<RigidGate>>, SmallVec<[TVar; 2]>)>> {
     let mut expanded = typ.with_deref(|t| t.cloned());
     while let Some(t @ Type::Ref(_)) = &expanded {
         expanded = t.lookup_ref_with(env, false)?;
@@ -524,12 +478,40 @@ fn quantified_formal(
     }
     let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     ft.collect_tvars(&mut named);
-    let gates = named
+    let quantifiers: SmallVec<[TVar; 2]> = named
         .iter()
         .filter(|(name, _)| ft.quantifiers.contains(*name))
-        .map(|(_, tv)| tv.open_quantifier_rigid())
+        .map(|(_, tv)| tv.clone())
         .collect();
-    Ok(Some((formal.clone(), gates)))
+    let gates = quantifiers.iter().map(|tv| tv.open_quantifier_rigid()).collect();
+    Ok(Some((formal.clone(), gates, quantifiers)))
+}
+
+/// A rank-2 quantifier `q` keeps the bounds its formal `declared`: the
+/// argument's check may add a predicate (the bound rule for those is
+/// open, tests-types-02), but no other conjunct that none declared
+/// implies, since the callee may call the argument at any type the
+/// declared bounds admit.
+fn added_bound(env: &Env, q: &TVar, declared: &[Type]) -> Result<()> {
+    for c in q.cell_constraints() {
+        if c.is_predicate() || declared.contains(&c) {
+            continue;
+        }
+        let implied = declared.iter().any(|d| {
+            !d.is_predicate()
+                && c.contains_with_flags(BitFlags::empty(), env, d).unwrap_or(false)
+        });
+        if !implied {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "the argument requires '{}: {c}, which the parameter's quantifier \
+                     does not declare: the callee may call it at any type its bound admits",
+                    q.name
+                )
+            })?
+        }
+    }
+    Ok(())
 }
 
 /// Fit a site's arguments to its signature: a placeholder for each
@@ -595,7 +577,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
-        // CR claude for claude: [bug/medium] A lambda literal escapes the rank-2 gate
+        // XCR claude for claude: [bug/medium] A lambda literal escapes the rank-2 gate
         // (a new aspect of x-typecheck-generics-02). pre_unify_arg merges the literal's
         // parameter cells with the formal's rigid quantifier cells, and the body check
         // then adds Number and Singleton to the quantifier's own cell.
@@ -611,6 +593,12 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
         // and
         // design/review-2026-10-19/repro/x-typecheck-generics-rank2-lambda-literal-typedef.gx
         // (x-typecheck-generics-02)
+        // 2026-10-19 claude: typecheck_arg snapshots each rank-2 quantifier's conjuncts
+        // before the argument's check and refuses, after it, a new non-predicate conjunct no
+        // declared one implies (callsite::added_bound); new predicates (Singleton, Ordered,
+        // Data) are left to Eric's tests-types-02. Pins:
+        // lang::types::rank2_literal_may_not_narrow_the_quantifier,
+        // rank2_literal_through_an_alias_may_not_narrow.
         // CR claude for eric: [bug/high] A rank-2 quantifier is rigid here, yet the
         // argument's body still adds bounds to it. `x * x` adds Singleton, `x < y` adds
         // Ordered, and a writer adds Data. The callee was checked against the declared
@@ -625,11 +613,32 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
         // behaviour and would change. probe:
         // design/review-2026-10-19/repro/tests-types-rank2-singleton.gx
         // (tests-types-02)
-        Some((formal, _rigid)) => {
+        // 2026-10-19 claude: x-typecheck-generics-02's fix (callsite::added_bound) now
+        // refuses a non-predicate bound an argument adds to a rank-2 quantifier;
+        // predicates are still let through, pending this ruling. Adding them there
+        // (dropping the is_predicate skip) is the one-line change if the rule is that a
+        // quantifier keeps exactly its declared bounds.
+        Some((formal, _rigid, quantifiers)) => {
+            let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
+                quantifiers.iter().map(|q| q.cell_constraints()).collect();
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
+            for (q, declared) in quantifiers.iter().zip(declared.iter()) {
+                wrap!(n, added_bound(&ctx.env, q, declared))?;
+            }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
             wrap!(n, polymorphic_in(&formal, n.typ()))?;
+            let mut refs = Refs::default();
+            n.refs(&mut refs);
+            let mut free: SmallVec<[Type; 4]> = SmallVec::new();
+            refs.with_external_refs(|id| {
+                if let Some(b) = ctx.env.by_id.get(&id) {
+                    free.push(b.typ.clone())
+                }
+            });
+            for t in free.iter() {
+                wrap!(n, escapes_through(&formal, t))?;
+            }
             Ok(true)
         }
     }
@@ -697,12 +706,94 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
     Ok(())
 }
 
+/// The cells of the quantifiers a function type under `t` binds.
+pub(crate) fn bound_quantifiers(
+    t: &Type,
+    out: &mut AHashSet<usize>,
+    seen: &mut AHashSet<usize>,
+) {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if seen.insert(tv.cell_addr())
+                && let Some(b) = tv.binding()
+            {
+                bound_quantifiers(&b, out, seen)
+            }
+        }
+        Type::Fn(ft) => {
+            if !ft.quantifiers.is_empty() {
+                let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                ft.collect_tvars(&mut named);
+                out.extend(
+                    named
+                        .iter()
+                        .filter(|(n, _)| ft.quantifiers.contains(*n))
+                        .map(|(_, tv)| tv.cell_addr()),
+                );
+            }
+            t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
+        }
+        t => {
+            if t.shared_identity().is_none_or(|a| seen.insert(a)) {
+                t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
+            }
+        }
+    })
+}
+/// A binding the argument reads or writes holds none of the formal's
+/// quantifiers: its cell would carry the quantifier out.
+fn escapes_through(formal: &Type, env: &Type) -> Result<()> {
+    let Type::Fn(ft) = formal else { return Ok(()) };
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.collect_tvars(&mut named);
+    let quantified: SmallVec<[(ArcStr, usize); 2]> = named
+        .iter()
+        .filter(|(name, _)| ft.quantifiers.contains(*name))
+        .map(|(name, tv)| (name.clone(), tv.cell_addr()))
+        .collect();
+    let mut own = AHashSet::new();
+    bound_quantifiers(env, &mut own, &mut AHashSet::new());
+    let mut reached = None;
+    let mut seen = AHashSet::new();
+    reaches_cell(env, &mut seen, &mut |c| {
+        if own.contains(&c.cell_addr()) {
+            return;
+        }
+        if let Some((q, _)) = quantified.iter().find(|(_, a)| *a == c.cell_addr()) {
+            reached = Some(q.clone())
+        }
+    });
+    match reached {
+        None => Ok(()),
+        Some(q) => bail!(
+            "the argument is not polymorphic in '{q}: a binding it reaches, of type \
+             {}, would carry '{q} out",
+            printed_deref(env)
+        ),
+    }
+}
+
+/// Every cell under `t`, following bindings.
+fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar)) {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if seen.insert(tv.cell_addr()) {
+                f(tv);
+                if let Some(b) = tv.binding() {
+                    reaches_cell(&b, seen, f)
+                }
+            }
+        }
+        t => t.for_each_child(&mut |c| reaches_cell(c, seen, f)),
+    })
+}
+
 /// The first of the `quantified` cells (name, cell address) that a
 /// variable of `value`'s environment reaches, with that variable: a
 /// cell at the top level or another definition's, never one the
 /// lambdas `value` holds own nor a quantifier a function type in `value`
 /// binds. Such a value is not general in that cell.
-// CR claude for claude: [bug/high] The escape test only walks cells reachable from the
+// XCR claude for claude: [bug/high] The escape test only walks cells reachable from the
 // argument's type. In `|x| { let k = |y| { st <- y; y }; k(x) }` the outer `st` cell is
 // bound to k's cell, so walking from g's signature never reaches it. As a result,
 // `h(g)` with `h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"))` passes the check, `let
@@ -714,6 +805,11 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
 // nested form beside NESTED_QUANTIFIER_ENV_CELL. probe:
 // design/review-2026-10-19/repro/tests-types-rank2-escape-nested-lambda.gx
 // (tests-types-01)
+// 2026-10-19 claude: The rank-2 check also walks the types of the bindings the argument
+// reads or writes (its free refs) for the formal's quantifiers (escapes_through),
+// skipping quantifiers those types bind themselves (bound_quantifiers, shared with
+// carried_out). Pin: lang::types NESTED_QUANTIFIER_ENV_CELL_NESTED refused 'not
+// polymorphic'.
 pub(crate) fn carried_out(
     quantified: &[(ArcStr, usize)],
     value: &Type,
@@ -722,35 +818,6 @@ pub(crate) fn carried_out(
         Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
         _ => SmallVec::new(),
     };
-    fn bound_quantifiers(
-        t: &Type,
-        out: &mut AHashSet<usize>,
-        seen: &mut AHashSet<usize>,
-    ) {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr())
-                    && let Some(b) = tv.binding()
-                {
-                    bound_quantifiers(&b, out, seen)
-                }
-            }
-            Type::Fn(ft) => {
-                if !ft.quantifiers.is_empty() {
-                    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                    ft.collect_tvars(&mut named);
-                    out.extend(
-                        named
-                            .iter()
-                            .filter(|(n, _)| ft.quantifiers.contains(*n))
-                            .map(|(_, tv)| tv.cell_addr()),
-                    );
-                }
-                t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
-            }
-            t => t.for_each_child(&mut |c| bound_quantifiers(c, out, seen)),
-        })
-    }
     let mut bound = AHashSet::new();
     bound_quantifiers(value, &mut bound, &mut AHashSet::new());
     fn walk(t: &Type, f: &mut impl FnMut(&TVar), seen: &mut AHashSet<usize>) {
@@ -912,6 +979,40 @@ impl Widening {
         held.iter()
             .any(|(name, tv)| cells.contains_key(name) && tv.is_bound())
             .then(|| Self::open(formal, cells).0)
+    }
+
+    /// Whether the argument `n` for `key`, a reference to a cell nothing
+    /// has decided, waits for the end of the argument loop: checked now it
+    /// would take what a widenable variable of `formal` holds so far, not
+    /// the widest argument's type.
+    fn defers_open<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        def: &Type,
+        inst: &FnType,
+        key: &ArgKey,
+        formal: &Type,
+        n: &mut Node<R, E>,
+    ) -> Result<bool> {
+        if !self.fresh || !matches!(n.view(), NodeView::Ref(_)) {
+            return Ok(false);
+        }
+        wrap!(n, n.typecheck0(ctx))?;
+        let undecided = match n.typ() {
+            Type::TVar(tv) => !tv.is_rigid() && n.typ().with_deref(|t| t.is_none()),
+            _ => false,
+        };
+        if !undecided {
+            return Ok(false);
+        }
+        let cells = Self::cells(&mut self.cells, def, inst);
+        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        formal.collect_tvars(&mut held);
+        if !held.keys().any(|name| cells.contains_key(name)) {
+            return Ok(false);
+        }
+        self.deferred.push((key.clone(), formal.clone()));
+        Ok(true)
     }
 
     /// The argument `n` for `key` did not fit `formal`: widen, defer, or
@@ -1243,6 +1344,24 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.args.values().filter_map(|a| a.node.as_ref())
     }
 
+    /// The order the node-walk updates `nodes`, some of this call's
+    /// argument nodes in another order: their indices by each one's place
+    /// among the arguments, the written ones then the defaults a bind
+    /// added; a node that is no argument goes last. It is the order their
+    /// raises reach a handler.
+    pub(crate) fn update_order(
+        &self,
+        nodes: &[Option<&Node<R, E>>],
+    ) -> SmallVec<[usize; 12]> {
+        let rank = |n: Option<&Node<R, E>>| {
+            n.and_then(|n| self.arg_nodes().position(|a| std::ptr::eq(a, n)))
+                .unwrap_or(usize::MAX)
+        };
+        let mut order: SmallVec<[usize; 12]> = (0..nodes.len()).collect();
+        order.sort_by_key(|i| rank(nodes[*i]));
+        order
+    }
+
     /// Look up a labeled argument's compiled sub-Node.
     pub fn arg_named(&self, name: &ArcStr) -> Option<&Node<R, E>> {
         self.arg(&ArgKey::Named(name.clone()))
@@ -1378,16 +1497,22 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         expr: &Expr,
         defaults: &mut Refs,
     ) -> Result<Node<R, E>> {
-        self.checked_default_at(
+        let entered = ctx.enter_default(f.id, name);
+        let node = checked_default(
             ctx,
             flags,
             scope,
+            self.top_id,
             f,
             name,
             expr,
             defaults,
             self.ftype.as_deref(),
-        )
+        );
+        if entered {
+            ctx.leave_default(f.id, name)
+        }
+        node
     }
 
     /// A function passed where a fn type is expected is called through it:
@@ -1419,26 +1544,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             )?;
         }
         Ok(())
-    }
-
-    // CR claude for claude: [structure/low] checked_default_at has one caller,
-    // CallSite::checked_default, and both only forward: two layers over the free
-    // checked_default. Delete this method and call the free function from
-    // CallSite::checked_default with self.top_id and self.ftype. Found by reading; not
-    // run. (c-callsite-07)
-    #[allow(clippy::too_many_arguments)]
-    fn checked_default_at(
-        &self,
-        ctx: &mut CompileCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        scope: &Scope,
-        f: &LambdaDef<R, E>,
-        name: &ArcStr,
-        expr: &Expr,
-        defaults: &mut Refs,
-        site: Option<&FnType>,
-    ) -> Result<Node<R, E>> {
-        checked_default(ctx, flags, scope, self.top_id, f, name, expr, defaults, site)
     }
 
     /// What the call raises joins the enclosing catch's type; with no
@@ -1520,10 +1625,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 // a default that reaches its own label's check again (`let
                 // rec f = |#a = f(1), b| b`) is not known here: the run-time
                 // bind narrows it
-                let Some(_checking) = DefaultInCheck::enter(f.id, name) else {
+                if ctx.default_in_check(f.id, name) {
                     known = false;
                     continue;
-                };
+                }
                 let node = self.checked_default(
                     ctx,
                     flags,
@@ -1532,8 +1637,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     name,
                     expr,
                     &mut Refs::default(),
-                )?;
-                ctx.discard(node);
+                );
+                ctx.discard(node?);
             }
         }
         Ok(known)
@@ -1582,14 +1687,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn typecheck_static_defaults(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
-        env: &Env,
+        def: &LambdaDef<R, E>,
     ) -> Result<()> {
-        ctx.with_restored(env.clone(), |ctx| {
-            for arg in self.args.values_mut() {
+        ctx.with_restored(def.env.clone(), |ctx| {
+            for (key, arg) in self.args.iter_mut() {
                 if arg.stage.is_default()
                     && let Some(node) = arg.node.as_mut()
                 {
-                    wrap!(node, node.typecheck1(ctx))?;
+                    let label = match key {
+                        ArgKey::Named(name) => Some(name),
+                        _ => None,
+                    };
+                    let entered = label.filter(|l| ctx.enter_default(def.id, l));
+                    let res = wrap!(node, node.typecheck1(ctx));
+                    if let Some(l) = entered {
+                        ctx.leave_default(def.id, l)
+                    }
+                    res?;
                 }
             }
             Ok(())
@@ -1669,10 +1783,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let instance_ftype = if same_parameters(&site_ftype, &f.typ) {
             site_ftype.clone()
         } else {
-            let definition_ftype = f.typ.reset_tvars();
-            definition_ftype.alias_tvars(&mut LPooled::take());
-            site_ftype.check_contains(&ctx.env, &definition_ftype)?;
-            definition_ftype.resolve_tvars()
+            super::lambda::fit_callee(ctx, &site_ftype, &f.typ)?.resolve_tvars()
         };
         let apply = self.init_prepared_bind(
             ctx,
@@ -1799,7 +1910,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             drop(setup_span);
             // its defaults are elaborated as a static bind's are: trait
             // dispatch resolves in typecheck1
-            if let Err(e) = self.typecheck_static_defaults(ctx, &f.env) {
+            if let Err(e) = self.typecheck_static_defaults(ctx, f) {
                 ctx.discard_apply(apply);
                 return Err(e);
             }
@@ -1917,7 +2028,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // a site its own omitted default's elaboration reaches stays
         // dynamic: elaborating it would elaborate that default again
-        // CR claude for claude: [bug/medium] These guards live until resolve_static
+        // XCR claude for claude: [bug/medium] These guards live until resolve_static
         // returns, so they are held across the whole bind_instance, including the
         // instance body's typecheck1. A recursive call in the body that omits the same
         // label then returns here, before the self-call branch. It gets no
@@ -1932,13 +2043,27 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // None sources out of the identity. probe:
         // design/review-2026-10-19/repro/c-callsite-omitted-default-selfcall-defuses.gx
         // (c-callsite-02)
-        let mut elaborating: SmallVec<[DefaultInCheck; 2]> = SmallVec::new();
-        for label in self.omitted_labels(def) {
-            match DefaultInCheck::enter(def.id, &label) {
-                Some(g) => elaborating.push(g),
-                None => return Ok(()),
-            }
+        // 2026-10-19 claude: Default checks are entered only where a default elaborates
+        // (CallSite::checked_default, typecheck_static_defaults); resolve_static stays
+        // dynamic only for a label whose check is in progress
+        // (CompileCtx::default_in_check), so the body's recursive call is a self-call.
+        // fn_arg_identity keys only arguments with a known lambda source, so passing or
+        // omitting a data label is one identity. Pin:
+        // lang::functions::omitted_default_self_call_fuses (#[native]).
+        let labels = self.omitted_labels(def);
+        if labels.iter().any(|l| ctx.default_in_check(def.id, l)) {
+            return Ok(());
         }
+        self.resolve_static_entered(ctx, def)
+    }
+
+    /// [`Self::resolve_static`] outside the checks of its omitted
+    /// defaults.
+    fn resolve_static_entered(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        def: &LambdaDef<R, E>,
+    ) -> Result<()> {
         // A site reached while an instantiation with the same fn-arg
         // identity is resolving is a self-call and shares that instance;
         // a different identity is a fresh instantiation.
@@ -1947,7 +2072,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Some(active) = active {
             let scope = self.scope.clone();
             self.prepare_bind(ctx, &scope, self.flags, def, &mut Refs::default())?;
-            self.typecheck_static_defaults(ctx, &def.env)?;
+            self.typecheck_static_defaults(ctx, def)?;
             if self.ftype.is_none() {
                 bail!("statically resolving an untyped call site: {}", self.spec)
             }
@@ -2015,7 +2140,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // Fn-typed args are registered under the instance's param
         // BindIds for the whole body typecheck (`register_fn_params`).
-        let param_binds = self.register_fn_params(ctx, &instance_ftype);
+        let param_binds = self.register_fn_params(ctx, &instance_ftype, def.id);
         if let Some(instance) = instance {
             ctx.push_resolving(
                 def.id,
@@ -2037,7 +2162,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let resolved_ftype =
             self.refresh_static_ftype().expect("static callee must have an apply");
         let res = typecheck0
-            .and_then(|()| self.typecheck_static_defaults(ctx, &def.env))
+            .and_then(|()| self.typecheck_static_defaults(ctx, def))
             .and_then(|()| {
                 self.callee
                     .apply_mut()
@@ -2163,7 +2288,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             .args
             .iter()
             .filter(|(_, arg)| !arg.stage.is_default())
-            .map(|(key, arg)| {
+            .filter_map(|(key, arg)| {
                 let source = arg.node.as_ref().and_then(|node| match node.view() {
                     _ if let Some(l) = lambda_literal(node) => Some(l.source_id()),
                     NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
@@ -2173,7 +2298,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         .map(|def| def.source),
                     _ => None,
                 });
-                (key.clone(), source)
+                source.map(|s| (key.clone(), Some(s)))
             })
             .collect();
         identity.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
@@ -2187,22 +2312,29 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &self,
         ctx: &mut CompileCtx<R, E>,
         ftype: &FnType,
-    ) -> LPooled<Vec<BindId>> {
-        let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
+        lid: LambdaId,
+    ) -> FnParams {
+        let mut params = FnParams::default();
         let apply = match self.callee.apply() {
             Some(a) => a,
-            None => return param_binds,
+            None => return params,
         };
         let ApplyView::Lambda(g) = apply.view() else {
-            return param_binds;
+            return params;
         };
         let formals =
             ftype.args.iter().zip(g.args()).zip(ArgKey::of_formals(&ftype.args));
-        for ((farg, pat), key) in formals {
+        for (i, ((farg, pat), key)) in formals.enumerate() {
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
                 continue;
             }
             let Some(id) = pat.single_bind_id() else { continue };
+            let k = (lid, i as u32);
+            params.formals.push((k, ctx.instance_fn_params.insert(k, id)));
+            let param_binds = &mut params.binds;
+            let Some(arg) = self.args.get(&key) else { continue };
+            ctx.fn_param_args.insert(id, arg.spec.clone());
+            params.args.push(id);
             let Some(arg_node) = self.arg(&key) else { continue };
             match arg_node.view() {
                 _ if let Some(l) = lambda_literal(arg_node) => {
@@ -2228,17 +2360,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 _ => {}
             }
         }
-        param_binds
+        params
     }
 
     /// Undo [`Self::register_fn_params`]; the `fn_forward_resolutions`
     /// snapshot stays for the kernel cache fingerprint.
-    fn unregister_fn_params(
-        ctx: &mut CompileCtx<R, E>,
-        mut param_binds: LPooled<Vec<BindId>>,
-    ) {
-        for id in param_binds.drain(..) {
+    fn unregister_fn_params(ctx: &mut CompileCtx<R, E>, mut params: FnParams) {
+        for id in params.binds.drain(..) {
             ctx.bind_to_lambda.remove(&id);
+        }
+        for id in params.args.drain(..) {
+            ctx.fn_param_args.remove(&id);
+        }
+        for (k, prev) in params.formals.drain(..).rev() {
+            match prev {
+                Some(id) => ctx.instance_fn_params.insert(k, id),
+                None => ctx.instance_fn_params.remove(&k),
+            };
         }
     }
 
@@ -2332,8 +2470,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // a first bind reads every quiet production; a bound site's rebind
         // finds its arguments' standing values in the store, which its
-        // first bind stood them in, but not its defaults'; a constant
-        // function never rebinds
+        // first bind stood them in, and compiles its defaults afresh; a
+        // constant function never rebinds
         let keep = match &self.callee {
             Callee::Static { first_update: true, .. } => Keep::Every,
             Callee::Static { .. } => Keep::Nothing,
@@ -2342,15 +2480,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             {
                 Keep::Nothing
             }
-            // CR claude for claude: [dead/low] Keep::Defaults makes update_args clone
-            // every quiet default production into `prods` each cycle, and nothing can
-            // read them. A bound dynamic site is only fresh again through bind, whose
-            // clear_prepared_bind drops the default arguments and recompiles them under
-            // fresh BindIds, so the kept ids never match in the replay. The only live
-            // part of this variant is the replay's store read for given arguments. Fix:
-            // rename it to say that (read given arguments from the store), and keep no
-            // productions for it. Found by reading; not run. (c-callsite-05)
-            Callee::DynamicBound { .. } => Keep::Defaults,
+            Callee::DynamicBound { .. } => Keep::Stored,
             _ => Keep::Every,
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
@@ -2398,7 +2528,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
                 let tv = match prods.iter().find(|(id, _)| *id == arg.id) {
                     Some((_, tv)) => tv.clone(),
-                    None if keep == Keep::Defaults && !arg.stage.is_default() => {
+                    None if keep == Keep::Stored && !arg.stage.is_default() => {
                         let Some((tv, _)) = ctx.rt.store_get(&arg.id) else { continue };
                         TagValue::tagged(tv.value_cloned(), tv.tag().quiet())
                     }
@@ -2789,7 +2919,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 #[derive(Debug)]
 pub(crate) enum CallNode<R: Rt, E: UserEvent> {
     Call(CallSite<R, E>),
-    Lowered(Node<R, E>),
+    /// The call's lowering, under the call's own spec: errors and the
+    /// attribute walk name the user's call.
+    Lowered(Node<R, E>, TArc<Expr>),
 }
 
 impl<R: Rt, E: UserEvent> CallNode<R, E> {
@@ -2797,7 +2929,7 @@ impl<R: Rt, E: UserEvent> CallNode<R, E> {
     pub(crate) fn call_mut(&mut self) -> Option<&mut CallSite<R, E>> {
         match self {
             Self::Call(c) => Some(c),
-            Self::Lowered(_) => None,
+            Self::Lowered(..) => None,
         }
     }
 }
@@ -2809,7 +2941,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
                 c.args.values().filter_map(|a| a.node.as_ref()).for_each(&mut *f);
                 f(&c.fnode)
             }
-            Self::Lowered(n) => n.for_each_child(f),
+            Self::Lowered(n, _) => n.for_each_child(f),
         }
     }
 
@@ -2819,7 +2951,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
                 c.args.values_mut().filter_map(|a| a.node.as_mut()).for_each(&mut *f);
                 f(&mut c.fnode)
             }
-            Self::Lowered(n) => n.for_each_child_mut(f),
+            Self::Lowered(n, _) => n.for_each_child_mut(f),
         }
     }
 
@@ -2827,39 +2959,39 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         match self {
             Self::Call(c) => c.image_encode(buf),
-            Self::Lowered(n) => n.image_encode(buf),
+            Self::Lowered(n, _) => n.image_encode(buf),
         }
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         match self {
             Self::Call(c) => c.update(ctx),
-            Self::Lowered(n) => n.update(ctx),
+            Self::Lowered(n, _) => n.update(ctx),
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         match self {
             Self::Call(c) => c.delete(ctx),
-            Self::Lowered(n) => n.delete(ctx),
+            Self::Lowered(n, _) => n.delete(ctx),
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         match self {
             Self::Call(c) => c.sleep(ctx),
-            Self::Lowered(n) => n.sleep(ctx),
+            Self::Lowered(n, _) => n.sleep(ctx),
         }
     }
 
     fn typ(&self) -> &Type {
         match self {
             Self::Call(c) => c.typ(),
-            Self::Lowered(n) => n.typ(),
+            Self::Lowered(n, _) => n.typ(),
         }
     }
 
-    // CR claude for claude: [bug/medium] A lowered union-self trait call answers spec()
+    // XCR claude for claude: [bug/medium] A lowered union-self trait call answers spec()
     // with the lowering's spec, so the attribute walk never finds the decorated call.
     // `let r = #[native] Show::show(one)` over `[i64, string]` is refused with
     // 'attribute in a position the fusion pass cannot check — put the decorated
@@ -2870,17 +3002,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
     // dispatch in traits.rs. probe:
     // design/review-2026-10-19/repro/tests-fusion-traits-native-on-union-dispatch.gx
     // (tests-fusion-traits-05)
+    // 2026-10-19 claude: CallNode::Lowered carries the call's own spec and spec()
+    // answers it, so the attribute walk finds the decorated call and errors name it
+    // (the lowering is built at elaboration, after the table is recorded, so no row key
+    // moves). The probe prints "sq". Pin: lang::traits::native_on_a_union_dispatch.
     fn spec(&self) -> &Expr {
         match self {
             Self::Call(c) => c.spec(),
-            Self::Lowered(n) => n.spec(),
+            Self::Lowered(_, spec) => spec,
         }
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         match self {
             Self::Call(c) => c.typecheck0(ctx),
-            Self::Lowered(n) => n.typecheck0(ctx),
+            Self::Lowered(n, _) => n.typecheck0(ctx),
         }
     }
 
@@ -2892,7 +3028,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         match self {
             Self::Call(c) => c.typecheck0_instance(ctx, types),
             // a lowering is built by elaboration: no table types it
-            Self::Lowered(n) => n.typecheck0(ctx),
+            Self::Lowered(n, _) => n.typecheck0(ctx),
         }
     }
 
@@ -2900,39 +3036,40 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         match self {
             Self::Call(c) => {
                 if let Some(lowered) = c.typecheck1(ctx)? {
-                    *self = Self::Lowered(lowered);
+                    let spec = c.spec.clone();
+                    *self = Self::Lowered(lowered, spec);
                 }
                 Ok(())
             }
-            Self::Lowered(n) => n.typecheck1(ctx),
+            Self::Lowered(n, _) => n.typecheck1(ctx),
         }
     }
 
     fn refs(&self, refs: &mut Refs) {
         match self {
             Self::Call(c) => c.refs(refs),
-            Self::Lowered(n) => n.refs(refs),
+            Self::Lowered(n, _) => n.refs(refs),
         }
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
         match self {
             Self::Call(c) => c.view(),
-            Self::Lowered(n) => n.view(),
+            Self::Lowered(n, _) => n.view(),
         }
     }
 
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         match self {
             Self::Call(c) => c.fuse(ctx),
-            Self::Lowered(n) => n.fuse(ctx),
+            Self::Lowered(n, _) => n.fuse(ctx),
         }
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         match self {
             Self::Call(c) => c.emit_clif(cx),
-            Self::Lowered(n) => n.emit_clif(cx),
+            Self::Lowered(n, _) => n.emit_clif(cx),
         }
     }
 }
@@ -3069,7 +3206,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 let is_param_knot = !ctx.def_gate_params.is_empty()
                     && matches!(
                         self.fnode.view(),
-                        NodeView::Ref(r) if ctx.def_gate_params.contains(&r.id)
+                        NodeView::Ref(r) if ctx.def_gate_params.contains_key(&r.id)
                     );
                 let ftype = if let Some(active) = active_ftype {
                     active
@@ -3087,7 +3224,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.ftype.as_ref().unwrap()
             }
         };
-        // CR claude for claude: [bug/medium] Widening is not order-independent for an
+        // XCR claude for claude: [bug/medium] Widening is not order-independent for an
         // argument whose own type is an open cell. That argument is checked against
         // whatever the site's cell holds at that moment, and binds its own cell to it.
         // A later wider argument widens only the site's cell. With `pick(x: 'a, y: 'a,
@@ -3099,9 +3236,24 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // incomparable one, so it is checked after every concrete argument has widened.
         // probe: design/review-2026-10-19/repro/c-callsite-widening-order-open-arg.sh
         // (c-callsite-03)
+        // 2026-10-19 claude: Widening::defers_open: in a fresh instance an argument
+        // that is a reference to an undecided, non-rigid cell, at a formal holding a
+        // widenable variable, is checked in the deferred pass after every concrete
+        // argument widened. Pin: lang::functions::widening_waits_for_an_open_argument;
+        // lang::types::rigid_cell_guides_the_member_placement pins the rigid exclusion.
         let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
+                if widening.defers_open(
+                    ctx,
+                    self.fnode.typ(),
+                    ftype,
+                    &key,
+                    &farg.typ,
+                    n,
+                )? {
+                    continue;
+                }
                 let hint = widening.hint(self.fnode.typ(), ftype, &farg.typ);
                 if !typecheck_arg(ctx, &farg.typ, hint.as_ref(), n)? {
                     widening.misfit(
@@ -3370,7 +3522,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }),
             })
             .collect::<Result<SmallVec<[_; 8]>>>()?;
-        emit_builtin_call_node(cx, &info, &arg_nodes)
+        let order = self.update_order(
+            &arg_nodes.iter().map(|n| Some(*n)).collect::<SmallVec<[_; 8]>>(),
+        );
+        emit_builtin_call_node(cx, &info, &arg_nodes, &order)
     }
 }
 
@@ -3447,8 +3602,9 @@ impl Absent {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Keep {
     Every,
-    /// The defaults': the store holds the other arguments' values.
-    Defaults,
+    /// None: a rebind reads the given arguments from the store, and its
+    /// defaults compile afresh.
+    Stored,
     Nothing,
 }
 
@@ -3501,8 +3657,7 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
         out.fired |= fired;
         let kept = match keep {
             Keep::Every => true,
-            Keep::Defaults => arg.stage.is_default(),
-            Keep::Nothing => false,
+            Keep::Stored | Keep::Nothing => false,
         };
         if kept && !fired {
             out.prods.push((arg.id, tv.clone()));

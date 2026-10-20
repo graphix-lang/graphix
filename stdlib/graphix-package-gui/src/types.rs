@@ -81,13 +81,6 @@ impl FromValue for PaddingV {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SizeV(pub Size);
 
-// CR claude for claude: [bug/medium] A window size is only checked for finiteness.
-// winit's X11 create_window converts the physical size to u16 with
-// `try_into().unwrap()`, so `size: {width: 70000.0, ..}` panics the event loop on X11;
-// zero and negative sizes also reach winit. Refuse a dimension that is not positive or
-// exceeds a bound (e.g. 16384), so it becomes a logged error like NaN. Found by reading
-// winit-0.30.13 x11/window.rs; not run (no display). Program:
-// design/review-2026-10-19/repro/gui-core-x11-window-size-panic.gx (gui-core-04)
 impl FromValue for SizeV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
@@ -98,6 +91,47 @@ impl FromValue for SizeV {
         }
         let Fields { width, height } = v.cast_to()?;
         Ok(Self(Size::new(width.0, height.0)))
+    }
+}
+
+// XCR claude for claude: [bug/medium] A window size is only checked for finiteness.
+// winit's X11 create_window converts the physical size to u16 with
+// `try_into().unwrap()`, so `size: {width: 70000.0, ..}` panics the event loop on X11;
+// zero and negative sizes also reach winit. Refuse a dimension that is not positive or
+// exceeds a bound (e.g. 16384), so it becomes a logged error like NaN. Found by reading
+// winit-0.30.13 x11/window.rs; not run (no display). Program:
+// design/review-2026-10-19/repro/gui-core-x11-window-size-panic.gx (gui-core-04)
+// 2026-10-19 claude: The window's size is now its own type, WindowSizeV, whose read
+// refuses an edge that is not positive or is past 8192 logical pixels (room for a scale
+// factor of 7 within X11's 16 bits); a canvas Rect's SizeV keeps taking any finite
+// size. The bound 8192 is my choice. Pin:
+// types::tests::window_sizes_fit_the_window_system.
+/// A window's size: positive, and no larger than every window system
+/// takes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSizeV(pub Size);
+
+/// The largest window edge in logical pixels: X11 takes a window's size
+/// in 16 bits of physical pixels, which this leaves room to scale into.
+const MAX_WINDOW_EDGE: f32 = 8192.;
+
+impl FromValue for WindowSizeV {
+    fn from_value(v: Value) -> Result<Self> {
+        let SizeV(size) = v.cast_to()?;
+        for edge in [size.width, size.height] {
+            if !(edge > 0. && edge <= MAX_WINDOW_EDGE) {
+                bail!(
+                    "a window edge must be positive and at most {MAX_WINDOW_EDGE}, not {edge}"
+                )
+            }
+        }
+        Ok(Self(size))
+    }
+}
+
+impl From<WindowSizeV> for Value {
+    fn from(WindowSizeV(s): WindowSizeV) -> Value {
+        SizeV(s).into()
     }
 }
 
@@ -427,13 +461,6 @@ impl ImageSourceV {
         }
     }
 
-    // CR claude for claude: [risk/medium] Raster icons reach winit at native size.
-    // winit's X11 set_window_icon sends them as one ChangeProperty and calls
-    // `.expect("Failed to set icons")`, which panics when the request exceeds the
-    // server's maximum length (about 2048x2048 pixels with BIG-REQUESTS), so a
-    // high-resolution logo as the icon panics the event loop. Downscale raster icons to
-    // a fixed bound (e.g. 256x256) here, as the SVG path already renders at 32x32.
-    // Found by reading winit-0.30.13 x11/window.rs; not run. (gui-core-05)
     pub fn decode_icon(&self) -> Result<Option<winit::window::Icon>> {
         match self {
             Self::Path(p) if p.is_empty() => Ok(None),
@@ -441,28 +468,18 @@ impl ImageSourceV {
                 let data = std::fs::read(p)?;
                 decode_svg_icon(&data)
             }
-            Self::Path(p) => {
-                let img = ::image::open(p)?.into_rgba8();
-                let (w, h) = img.dimensions();
-                Ok(Some(winit::window::Icon::from_rgba(img.into_raw(), w, h)?))
-            }
+            Self::Path(p) => raster_icon(::image::open(p)?.into_rgba8()),
             Self::Bytes(b) if b.is_empty() => Ok(None),
-            Self::Bytes(b) => {
-                let img = ::image::load_from_memory(b)?.into_rgba8();
-                let (w, h) = img.dimensions();
-                Ok(Some(winit::window::Icon::from_rgba(img.into_raw(), w, h)?))
-            }
+            Self::Bytes(b) => raster_icon(::image::load_from_memory(b)?.into_rgba8()),
             Self::Svg(s) if s.is_empty() => Ok(None),
             Self::Svg(s) => decode_svg_icon(s.as_bytes()),
             Self::Rgba { width, height, pixels } => {
                 if pixels.is_empty() {
                     return Ok(None);
                 }
-                Ok(Some(winit::window::Icon::from_rgba(
-                    pixels.to_vec(),
-                    *width,
-                    *height,
-                )?))
+                let img = ::image::RgbaImage::from_raw(*width, *height, pixels.to_vec())
+                    .context("an RGBA icon's pixels do not fill its size")?;
+                raster_icon(img)
             }
         }
     }
@@ -471,17 +488,34 @@ impl ImageSourceV {
 /// An RGBA image's pixels are four bytes for every one of its width x
 /// height pixels.
 pub(crate) fn check_rgba(width: u32, height: u32, len: usize) -> Result<()> {
-    // CR claude for claude: [bug/medium] This product overflows u64 for large u32
-    // dimensions. A debug build panics here and the runtime dies
-    // (clipboard::write_image with 2147483648 x 2147483648). A release build wraps to
-    // 0, so that size with empty pixels passes and reaches the image widget, the window
-    // icon or arboard. Use checked_mul and refuse on overflow. probe:
-    // design/review-2026-10-19/repro/gui-core-check-rgba-overflow.gx (gui-core-03)
-    let want = width as u64 * height as u64 * 4;
-    if want != len as u64 {
-        bail!("an RGBA image of {width} x {height} needs {want} bytes, not {len}")
+    match (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(4)) {
+        Some(want) if want == len as u64 => Ok(()),
+        Some(want) => {
+            bail!("an RGBA image of {width} x {height} needs {want} bytes, not {len}")
+        }
+        None => bail!("an RGBA image of {width} x {height} is too large"),
     }
-    Ok(())
+}
+
+/// The largest icon edge handed to the window system: X11 sends an icon
+/// in one request, which a much larger one overflows.
+const MAX_ICON_EDGE: u32 = 256;
+
+/// `img` shrunk, keeping its shape, to fit `MAX_ICON_EDGE`.
+fn fit_icon(img: ::image::RgbaImage) -> ::image::RgbaImage {
+    let (w, h) = img.dimensions();
+    let edge = w.max(h);
+    if edge <= MAX_ICON_EDGE {
+        return img;
+    }
+    let fit = |n: u32| ((n as u64 * MAX_ICON_EDGE as u64 / edge as u64) as u32).max(1);
+    ::image::imageops::thumbnail(&img, fit(w), fit(h))
+}
+
+fn raster_icon(img: ::image::RgbaImage) -> Result<Option<winit::window::Icon>> {
+    let img = fit_icon(img);
+    let (w, h) = img.dimensions();
+    Ok(Some(winit::window::Icon::from_rgba(img.into_raw(), w, h)?))
 }
 
 fn decode_svg_icon(data: &[u8]) -> Result<Option<winit::window::Icon>> {
@@ -631,6 +665,30 @@ impl FromValue for StringVec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgba_sizes_past_u64_are_refused() {
+        assert!(check_rgba(u32::MAX, u32::MAX, 0).is_err());
+        assert!(check_rgba(1 << 31, 1 << 31, 0).is_err());
+        assert!(check_rgba(2, 3, 24).is_ok());
+    }
+
+    #[test]
+    fn window_sizes_fit_the_window_system() {
+        let size = |w, h| Value::from(SizeV(Size::new(w, h))).cast_to::<WindowSizeV>();
+        for (w, h) in [(70000., 10.), (10., 0.), (-5., 10.), (10., 8193.)] {
+            assert!(size(w, h).is_err(), "{w} x {h}");
+        }
+        assert_eq!(size(800., 8192.).unwrap(), WindowSizeV(Size::new(800., 8192.)));
+    }
+
+    #[test]
+    fn icons_shrink_to_fit() {
+        let dims = |w, h| fit_icon(::image::RgbaImage::new(w, h)).dimensions();
+        assert_eq!(dims(1024, 512), (256, 128));
+        assert_eq!(dims(4000, 1), (256, 1));
+        assert_eq!(dims(100, 60), (100, 60));
+    }
 
     #[test]
     fn text_sizes_fit_the_rasterizer() {

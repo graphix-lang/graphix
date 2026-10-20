@@ -9,11 +9,11 @@ operation reached or written another way:
   corpus (`fold_sum`, `map_fold`, …).
 - **`*_trait`**: the same intrinsic reached through `Collection::…`
   trait dispatch.
-- **`*_fmshape` / `find_fold` / `flatmap_fold` / `map_init`**: the
-  trait DEFAULT's body shape written out directly (`map` as
-  `filter_map` with a total callback, `find` as a fold carrying the
-  default's `(done, Option)` tuple, `flat_map` as fold + concat, `map`
-  as `init(len, a[i])`).
+- **`*_fmshape` / `find_fold`**: the trait DEFAULT's body shape written
+  out directly (`map` as `filter_map` with a total callback, `find` as
+  the default's fold carrying `` `Found(x) `` or null).
+- **`flatmap_fold` / `map_init`**: other derivations of a required
+  method (`flat_map` as fold + concat, `map` as `init(len, a[i])`).
 - **`*_rec` / `map_push`**: the operation written in Graphix as a tail
   recursion (an index loop, `push` for Array, `[<>]` / `[<x, rest..>]`
   patterns for List): what a user-defined `Collection` impl writes.
@@ -54,7 +54,7 @@ node-walk did not finish within run.sh's 120 s limit.
 | `filter_intr`    | 100k | 1.30 ms   | 2.50 s    | 1923x   |
 | `filter_fmshape` | 100k | 1.24 ms   | 3.16 s    | 2549x   |
 | `find_intr`      | 500k | 0.49 ms   | 7.21 s    | 14773x  |
-| `find_fold`      | 500k | 46.1 ms   | 59.5 s    | 1291x   |
+| `find_fold`      | 500k | †         | †         | †       |
 | `find_rec`       | 500k | 5.86 ms   | 38.6 s*   | 6587x   |
 | `flatmap_intr`   | 10k  | 1.31 ms   | 0.38 s    | 289x    |
 | `flatmap_fold`   | 10k  | 0.47 s    | 1.22 s    | 2.6x    |
@@ -66,6 +66,8 @@ node-walk did not finish within run.sh's 120 s limit.
 | `lfold_rec_100k` | 100k | 3.10 ms   | 4.59 s*   | 1481x   |
 | `mfold_intr`     | 100k | 22.9 ms   | 2.56 s    | 112x    |
 | `mfold_trait`    | 100k | 22.7 ms   | 6.16 s    | 272x    |
+
+`†` not measured yet (`run.sh` fills it).
 
 `*` node-walk re-measured 2026-10-18 (quick build, one unpinned run)
 once a select's list test stopped walking the spine.
@@ -85,8 +87,7 @@ rows move little.
   intrinsic: the loop pays its own bounds check, `$` and select per
   element. Its node-walk is linear; each activation costs tens of
   microseconds there, which is what fusion is for.
-- **`find`**: the default's tuple fold (`find_fold`) visits every
-  element and carries a tuple, about 25x the serial intrinsic. A
+- **`find`**: the default's fold (`find_fold`) visits every element. A
   hand-written loop (`find_rec`) stops at the match; it wins against
   Array's intrinsic only on a hit near the front, and never against the
   forked one.

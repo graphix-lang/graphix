@@ -1,7 +1,9 @@
 // Tests for variant types
 
-use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, is, prints},
+};
 use netidx::publisher::Value;
 
 const VARIANTS0: &str = r#"
@@ -15,13 +17,7 @@ const VARIANTS0: &str = r#"
 }
 "#;
 
-run!(variants0, VARIANTS0, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(0), Value::I64(1)] => true,
-        _ => false,
-    },
-    _ => false,
-}; FuseExpect::Jit);
+run!(variants0, VARIANTS0, prints("[i64:0, i64:1]"); FuseExpect::Jit);
 
 const VARIANTS1: &str = r#"
 {
@@ -36,7 +32,4 @@ const VARIANTS1: &str = r#"
 }
 "#;
 
-run!(variants1, VARIANTS1, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(variants1, VARIANTS1, is(Value::I64(0)); FuseExpect::Jit);

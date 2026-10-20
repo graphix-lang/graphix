@@ -1,4 +1,4 @@
-use super::{BoundsV, ColorV, LineV, MarkerV, PointV, TuiW, TuiWidget, compile_each};
+use super::{BoundsV, ColorV, LineV, MarkerV, PointV, TuiW, TuiWidget, reconcile};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::{BindId, expr::ExprId};
@@ -167,7 +167,7 @@ pub(super) struct CanvasW<X: GXExt> {
     gx: GXHandle<X>,
     p: Props<X>,
     shapes_ref: Ref<X>,
-    shapes: Vec<TRef<X, ShapeV>>,
+    shapes: Vec<(Value, TRef<X, ShapeV>)>,
 }
 
 impl<X: GXExt> CanvasW<X> {
@@ -178,16 +178,15 @@ impl<X: GXExt> CanvasW<X> {
         if let Some(v) = t.shapes_ref.last.take() {
             t.set_shapes(v).await?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     async fn set_shapes(&mut self, v: Value) -> Result<()> {
-        self.shapes = compile_each(v, |id| {
+        reconcile(&mut self.shapes, v.cast_to()?, |id| {
             let gx = self.gx.clone();
             async move { TRef::new(gx.compile_ref(id.cast_to::<BindId>()?).await?) }
         })
-        .await?;
-        Ok(())
+        .await
     }
 }
 
@@ -202,7 +201,7 @@ impl<X: GXExt> TuiWidget for CanvasW<X> {
         if self.shapes_ref.id == id {
             return Ok(Some(Box::pin(self.set_shapes(v.clone()))));
         }
-        for s in &mut self.shapes {
+        for (_, s) in &mut self.shapes {
             s.update(id, v).context("canvas shape")?;
         }
         Ok(None)
@@ -222,7 +221,7 @@ impl<X: GXExt> TuiWidget for CanvasW<X> {
         }
         let shapes = &self.shapes;
         canvas = canvas.paint(|ctx| {
-            for shape in shapes.iter().filter_map(|s| s.t.as_ref()) {
+            for shape in shapes.iter().filter_map(|(_, s)| s.t.as_ref()) {
                 shape.draw(ctx);
             }
         });

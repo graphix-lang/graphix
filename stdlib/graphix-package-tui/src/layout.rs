@@ -1,16 +1,12 @@
 use super::{
-    DirectionV, FlexV, SizeReport, TuiW, TuiWidget, compile, finish_update, reconcile,
-    update_children,
+    DirectionV, FlexV, SizeReport, TuiW, TuiWidget, compile, reconcile, update_children,
     validate::{Dim, Index, Offset, Percent},
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
-use netidx::{
-    protocol::valarray::ValArray,
-    publisher::{FromValue, Value},
-};
+use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
@@ -113,16 +109,12 @@ impl<X: GXExt> LayoutW<X> {
         if let Some(v) = t.children_ref.last.take() {
             t.set_children(v).await?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     async fn set_children(&mut self, v: Value) -> Result<()> {
-        let sources = v.cast_to::<ValArray>()?;
-        reconcile(&mut self.children, sources.iter().cloned(), |v| {
-            Slot::compile(self.gx.clone(), v)
-        })
-        .await?;
-        Ok(())
+        reconcile(&mut self.children, v.cast_to()?, |v| Slot::compile(self.gx.clone(), v))
+            .await
     }
 }
 
@@ -144,15 +136,7 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
     ) -> Result<crate::PendingUpdate<'a>> {
         self.p.update(id, v).context("layout")?;
         if self.children_ref.id == id {
-            return Ok(Some(Box::pin(async move {
-                self.set_children(v.clone()).await?;
-                finish_update(update_children(
-                    self.children.iter_mut().map(|(_, c)| &mut c.child),
-                    id,
-                    v,
-                )?)
-                .await
-            })));
+            return Ok(Some(Box::pin(self.set_children(v.clone()))));
         }
         update_children(self.children.iter_mut().map(|(_, c)| &mut c.child), id, v)
     }

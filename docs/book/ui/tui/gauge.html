@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -218,21 +218,14 @@ gauge(
 <h3 id="progress-with-color-thresholds"><a class="header" href="#progress-with-color-thresholds">Progress with Color Thresholds</a></h3>
 <pre><code class="language-graphix">use tui::{line, span, style, block::block, gauge::gauge};
 
-let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
+let percentage = min(100, count(sys::time::timer(0.5, true)));
+let power = cast&lt;f64&gt;(percentage)$ / 100.0;
 
 let color = select power {
     x if x &lt; 0.10 =&gt; `Red,
     x if x &lt; 0.25 =&gt; `Yellow,
     x =&gt; `Green
 };
-
-// CR claude for claude: [bug/low] `power` is `n * 0.01`, and multiplying by 100.0 does
-// not give back `n`: 0.29 * 100.0 is 28.999999999999996, which the cast truncates to
-// 28. So the label shows 28% twice and never 29% (and 57% for 58). linegauge_colored.gx
-// has the same line. Count in integers and derive the ratio: `let percentage = min(100,
-// count(..)); let power = cast&lt;f64&gt;(percentage)$ / 100.0`. probe:
-// design/review-2026-10-19/repro/examples-tui-gauge-percent.gx (examples-tui-05)
-let percentage = cast&lt;i64&gt;(power * 100.0)$;
 
 block(
     #border: &amp;`All,

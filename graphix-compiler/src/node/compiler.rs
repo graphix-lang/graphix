@@ -9,7 +9,7 @@ use super::{
     fork_control::{ForkControl, ForkKind},
     lambda::Lambda,
     module::Module,
-    op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
+    op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Or, Sub, Unary, UnaryOp},
     select::Select,
     seq_machine::{SeqCapture, SeqMachine},
 };
@@ -31,10 +31,10 @@ use crate::{
     typ::{TVar, Type},
 };
 use ahash::AHashMap;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx_value::{Typ, Value};
+use netidx_value::Value;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
@@ -89,12 +89,12 @@ fn fork_kind(spec: &Expr, attr: &crate::expr::Attr) -> Result<Option<ForkKind>> 
             }
             _ => bailat!(spec, "#[parallel(grain)] takes a positive integer literal"),
         },
-        // CR claude for claude: [readability/low] `#[parallel(2, 3)]` lands here and is
-        // told "#[parallel] takes no arguments here", but #[parallel] takes one
-        // argument, its grain. Give parallel its own message ("at most one argument, a
-        // positive integer literal") and keep this one for #[serial]. probe:
-        // design/review-2026-10-19/repro/c-data-map-parallel-two-args.gx
-        // (c-data-map-04)
+        _ if attr.name == "parallel" => {
+            bailat!(
+                spec,
+                "#[parallel] takes at most one argument, a positive integer literal"
+            )
+        }
         _ if ForkKind::of(&attr.name, None).is_some() => {
             bailat!(spec, "#[{}] takes no arguments here", attr.name)
         }
@@ -200,7 +200,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
     if ctx.env.ide.is_lsp() {
         ctx.env.push_scope_map_entry(ScopeMapEntry {
             pos: spec.pos,
-            end: spec.end.0,
+            end: spec.end.get(),
             ori: spec.ori.clone(),
             scope: scope.lexical.clone(),
         });
@@ -210,8 +210,13 @@ fn compile_inner<R: Rt, E: UserEvent>(
     // an error.
     let mut def_asserts: SmallVec<[DefAssertionKind; 2]> = SmallVec::new();
     let mut fork: Option<ForkKind> = None;
+    let mut flags = flags;
     if let Some(dec) = &spec.dec {
         for attr in dec.attrs.iter() {
+            if attr.name == crate::expr::seq::RUN_EVENT {
+                flags |= CFlag::RunEvent;
+                continue;
+            }
             if let Some(k) = fork_kind(&spec, attr)? {
                 if fork.replace(k).is_some() {
                     bailat!(spec, "at most one of #[parallel] and #[serial]");
@@ -374,22 +379,6 @@ fn not_an_expression<R: Rt, E: UserEvent>(spec: &Expr, what: &str) -> Result<Nod
     )
 }
 
-/// The type of a literal value: its primitive, or for `error:<v>` the
-/// error of its payload's type. A literal no type names (`abstract:..`)
-/// is refused.
-fn constant_type(v: &Value) -> Result<Type> {
-    ensure_sufficient(|| match v {
-        Value::Error(p) => Ok(Type::Error(Arc::new(constant_type(p)?))),
-        Value::Abstract(_) => {
-            bail!("an abstract value literal has no type: build it with its constructor")
-        }
-        Value::Array(_) | Value::Map(_) => {
-            bail!("a collection value literal has no type: write it as an expression")
-        }
-        v => Ok(Type::Primitive(Typ::get(v).into())),
-    })
-}
-
 fn compile_kind<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -414,7 +403,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             top_id,
         ),
         ExprKind::Constant(v) => {
-            let typ = constant_type(v).at(spec)?;
+            let typ = Type::of_literal(v).at(spec)?;
             Ok(Constant::new(v.clone(), typ, spec.clone()))
         }
         ExprKind::Block { exprs } => {
@@ -472,10 +461,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
             _ => not_an_expression(spec, "a module definition"),
         },
         ExprKind::Use { .. } => not_an_expression(spec, "a use declaration"),
-        ExprKind::Connect { name, value, deref: true } => {
+        ExprKind::Connect { name, value, deref: true, .. } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }
-        ExprKind::Connect { name, value, deref: false } => {
+        ExprKind::Connect { name, value, deref: false, .. } => {
             Connect::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }
         ExprKind::Lambda(l) => {
@@ -517,7 +506,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
             ByRef::compile(ctx, flags, spec.clone(), scope, top_id, *m, e)
         }
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
-        ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
+        ExprKind::Neg(e) => {
+            Unary::compile(ctx, flags, spec.clone(), scope, top_id, e, UnaryOp::Neg)
+        }
         ExprKind::Ref { name } => {
             Ref::compile_value(ctx, flags, spec.clone(), scope, top_id, name)
         }
@@ -542,8 +533,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                 }
                 Ok(lowered)
             };
-            let lowered =
-                lowering(ctx, spec, &scope.lexical, |ctx| lower(ctx).map(Some))?;
+            let lowered = lowering(ctx, spec, |ctx| lower(ctx).map(Some))?;
             compile(ctx, flags, lowered.expect("a seq always lowers"), scope, top_id)
         }
         ExprKind::Until(_) => {
@@ -571,7 +561,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             MapRef::compile(ctx, flags, spec.clone(), scope, top_id, source, key)
         }
         ExprKind::Not { expr } => {
-            Not::compile(ctx, flags, spec.clone(), scope, top_id, expr)
+            Unary::compile(ctx, flags, spec.clone(), scope, top_id, expr, UnaryOp::Not)
         }
         ExprKind::BinOp { op, lhs, rhs } => match op {
             BinOp::Eq => binop!(Eq, lhs, rhs),
@@ -602,33 +592,28 @@ fn compile_kind<R: Rt, E: UserEvent>(
     }
 }
 
-/// A trait method named as a value (`let d = Desc::desc`) is its
-/// eta-expansion at the method's signature, `|x| Desc::desc(x)`: a
-/// dispatcher binding holds no
-/// value, the call resolves by its receiver. A call's own function stays
-/// a reference. `None` for any other name; a variadic method has no
-/// expansion (a lambda cannot pass its rest on) and is refused.
 /// `lower`'s rewrite of `spec`, once per definition body: every compile of
 /// the body takes the first compile's, so its expression ids are the ones
 /// the check's table has rows for.
-// CR claude for claude: [readability/low] The doc block above this fn opens with six
-// lines describing eta_dispatcher ("A trait method named as a value ...") and then
-// describes `lowering`. eta_dispatcher, below, has no doc. Move those six lines onto
-// eta_dispatcher. Found by reading; not run. (c-data-map-05)
 pub(super) fn lowering<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     spec: &Expr,
-    scope: &ModPath,
     lower: impl FnOnce(&CompileCtx<R, E>) -> Result<Option<Expr>>,
 ) -> Result<Option<Expr>> {
     let Some(share) = ctx.body.as_ref().map(|b| &b.share) else { return lower(ctx) };
-    let key = (spec.id, scope.clone());
+    let key = spec.id;
     if let Some(e) = share.lock().lowerings.get(&key) {
         return Ok(Some(e.clone()));
     }
     Ok(lower(ctx)?.map(|e| share.lock().lowerings.entry(key).or_insert(e).clone()))
 }
 
+/// A trait method named as a value (`let d = Desc::desc`) is its
+/// eta-expansion at the method's signature, `|x| Desc::desc(x)`: a
+/// dispatcher binding holds no value, the call resolves by its
+/// receiver. A call's own function stays a reference. `None` for any
+/// other name; a variadic method has no expansion (a lambda cannot pass
+/// its rest on) and is refused.
 pub(super) fn eta_dispatcher<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     spec: &Expr,

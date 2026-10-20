@@ -21,6 +21,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 /// A successful take empties the old handle; the returned stream owns its bytes.
 async fn take_tcp(stream: &Halves) -> Result<BufferedRead<TcpStream>, Value> {
+    stream.stop_lines();
     match stream.take().await {
         Some(whole) => whole
             .into_tcp()
@@ -88,12 +89,48 @@ impl Started {
     }
 }
 
-/// A started handshake exists only once a cycle has run.
+/// A TLS config and the arguments it was built from, or the error they
+/// gave: rebuilt only when they change, so a site's connections share its
+/// session cache.
+// XCR claude for claude: [perf/low] Every accept parses the cert and key PEM
+// and builds a new ServerConfig. TlsConnectEv likewise builds a root store
+// (the whole webpki set when ca_cert is null) and a ClientConfig on every
+// connect. Besides the repeated work, rustls keeps its session cache and
+// ticketer per config, so these sites never resume a session, and every
+// reconnect pays a full handshake. Fix: build the Arc'd config in
+// prepare_args (it has &mut self) when the cert, key or ca_cert value
+// changes, keep it in the Ev beside Started, and pass the Arc in Args.
+// Found by reading; not run. (sys-io-04)
+// 2026-10-19 claude: TlsAcceptEv and TlsConnectEv build their config in
+// prepare_args through built(), which rebuilds only when the cert/key or
+// ca_cert bytes change, and pass the Arc in Args; image state is unchanged (a
+// config is built again after decode). Pin:
+// tls::test::connections_share_a_config.
+type Built<K, C> = Option<(K, Result<Arc<C>, Value>)>;
+
+/// The config `key` builds, from `slot` when it was built from `key`.
+fn built<K: PartialEq, C>(
+    slot: &mut Built<K, C>,
+    key: K,
+    build: impl FnOnce(&K) -> Result<C, Value>,
+) -> Result<Arc<C>, Value> {
+    match slot {
+        Some((k, c)) if *k == key => c.clone(),
+        _ => {
+            let c = build(&key).map(Arc::new);
+            *slot = Some((key, c.clone()));
+            c
+        }
+    }
+}
+
+/// A started handshake exists only once a cycle has run; a config is
+/// built again.
 macro_rules! started_image_state {
     ($($t:ident),*) => {$(
         impl ImageState for $t {
             fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
-                if self.0.0.strong_count() > 0 {
+                if self.started.0.strong_count() > 0 {
                     return Err(PackError::Application(image::NOT_QUIESCENT));
                 }
                 Ok(())
@@ -112,10 +149,35 @@ macro_rules! started_image_state {
 started_image_state!(TlsConnectEv, TlsAcceptEv);
 
 #[derive(Debug, Default)]
-pub(crate) struct TlsConnectEv(Started);
+pub(crate) struct TlsConnectEv {
+    started: Started,
+    config: Built<Option<Bytes>, rustls::ClientConfig>,
+}
+
+/// A client config trusting `ca_cert`'s certificates, else the webpki
+/// roots.
+fn client_config(ca_cert: &Option<Bytes>) -> Result<rustls::ClientConfig, Value> {
+    let mut root_store = rustls::RootCertStore::empty();
+    match ca_cert {
+        Some(pem) => {
+            let certs: Vec<_> = rustls_pemfile::certs(&mut &**pem)
+                .collect::<Result<_, _>>()
+                .map_err(|e| errf!("TLSError", "invalid ca_cert PEM: {e}"))?;
+            for cert in certs {
+                root_store
+                    .add(cert)
+                    .map_err(|e| errf!("TLSError", "invalid CA cert: {e}"))?;
+            }
+        }
+        None => root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+    }
+    Ok(rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth())
+}
 
 impl EvalCachedAsync for TlsConnectEv {
-    type Args = Result<(Option<Bytes>, ArcStr, Arc<Halves>), Value>;
+    type Args = Result<(Arc<rustls::ClientConfig>, ArcStr, Arc<Halves>), Value>;
 
     const NAME: &str = "sys_tls_connect";
     const CALLS: Calls = Calls::Concurrent;
@@ -129,41 +191,16 @@ impl EvalCachedAsync for TlsConnectEv {
             }
         };
         let hostname = cached.get::<ArcStr>(1)?;
-        let sv = self.0.take_new(cached)?;
-        Some(Ok((ca_cert, hostname, sv)))
+        let sv = self.started.take_new(cached)?;
+        Some(built(&mut self.config, ca_cert, client_config).map(|c| (c, hostname, sv)))
     }
 
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let (ca_cert, hostname, sv) = match args {
+            let (config, hostname, sv) = match args {
                 Ok(args) => args,
                 Err(error) => return error,
             };
-            let mut root_store = rustls::RootCertStore::empty();
-            match &ca_cert {
-                Some(pem) => {
-                    let certs: Vec<_> = match rustls_pemfile::certs(&mut &**pem).collect()
-                    {
-                        Ok(c) => c,
-                        Err(e) => {
-                            return errf!("TLSError", "invalid ca_cert PEM: {e}");
-                        }
-                    };
-                    for cert in certs {
-                        if let Err(e) = root_store.add(cert) {
-                            return errf!("TLSError", "invalid CA cert: {e}");
-                        }
-                    }
-                }
-                None => {
-                    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-                }
-            }
-            let config = Arc::new(
-                rustls::ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth(),
-            );
             let connector = TlsConnector::from(config);
             let server_name = match rustls::pki_types::ServerName::try_from(
                 hostname.as_str().to_owned(),
@@ -193,10 +230,32 @@ impl EvalCachedAsync for TlsConnectEv {
 pub(crate) type TlsConnect = CachedArgsAsync<TlsConnectEv>;
 
 #[derive(Debug, Default)]
-pub(crate) struct TlsAcceptEv(Started);
+pub(crate) struct TlsAcceptEv {
+    started: Started,
+    config: Built<(Bytes, Bytes), rustls::ServerConfig>,
+}
+
+/// A server config presenting the certificate chain in `cert_pem` with
+/// the key in `key_pem`.
+fn server_config(
+    (cert_pem, key_pem): &(Bytes, Bytes),
+) -> Result<rustls::ServerConfig, Value> {
+    let certs: Vec<_> = rustls_pemfile::certs(&mut &**cert_pem)
+        .collect::<Result<_, _>>()
+        .map_err(|e| errf!("TLSError", "invalid cert PEM: {e}"))?;
+    let key = match rustls_pemfile::private_key(&mut &**key_pem) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(errf!("TLSError", "no private key found in key PEM")),
+        Err(e) => return Err(errf!("TLSError", "invalid key PEM: {e}")),
+    };
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| errf!("TLSError", "TLS config error: {e}"))
+}
 
 impl EvalCachedAsync for TlsAcceptEv {
-    type Args = (Bytes, Bytes, Arc<Halves>);
+    type Args = (Result<Arc<rustls::ServerConfig>, Value>, Arc<Halves>);
 
     const NAME: &str = "sys_tls_accept";
     const CALLS: Calls = Calls::Concurrent;
@@ -204,38 +263,16 @@ impl EvalCachedAsync for TlsAcceptEv {
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let cert = cached.get::<Bytes>(0)?;
         let key = cached.get::<Bytes>(1)?;
-        let sv = self.0.take_new(cached)?;
-        Some((cert, key, sv))
+        let sv = self.started.take_new(cached)?;
+        Some((built(&mut self.config, (cert, key), server_config), sv))
     }
 
-    fn eval((cert_pem, key_pem, sv): Self::Args) -> impl Future<Output = Value> + Send {
+    fn eval((config, sv): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let certs: Vec<_> = match rustls_pemfile::certs(&mut &*cert_pem).collect() {
-                Ok(c) => c,
-                Err(e) => return errf!("TLSError", "invalid cert PEM: {e}"),
+            let acceptor = match config {
+                Ok(config) => TlsAcceptor::from(config),
+                Err(error) => return error,
             };
-            let key = match rustls_pemfile::private_key(&mut &*key_pem) {
-                Ok(Some(k)) => k,
-                Ok(None) => return errf!("TLSError", "no private key found in key PEM"),
-                Err(e) => return errf!("TLSError", "invalid key PEM: {e}"),
-            };
-            // CR claude for claude: [perf/low] Every accept parses the cert and key PEM
-            // and builds a new ServerConfig. TlsConnectEv likewise builds a root store
-            // (the whole webpki set when ca_cert is null) and a ClientConfig on every
-            // connect. Besides the repeated work, rustls keeps its session cache and
-            // ticketer per config, so these sites never resume a session, and every
-            // reconnect pays a full handshake. Fix: build the Arc'd config in
-            // prepare_args (it has &mut self) when the cert, key or ca_cert value
-            // changes, keep it in the Ev beside Started, and pass the Arc in Args.
-            // Found by reading; not run. (sys-io-04)
-            let config = match rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(certs, key)
-            {
-                Ok(c) => c,
-                Err(e) => return errf!("TLSError", "TLS config error: {e}"),
-            };
-            let acceptor = TlsAcceptor::from(Arc::new(config));
             match handshake(&sv, TLS_HANDSHAKE_TIMEOUT, |tcp| async move {
                 acceptor
                     .accept(tcp)
@@ -289,6 +326,23 @@ mod test {
                 CachedVals::from_values([Some(Value::Null), Some(host), Some(stream)]);
             assert!(connect.prepare_args(&cached).is_some());
         }
+    }
+
+    /// A site's connections share one config while its CA stands, and so
+    /// its session cache (sys-io-04).
+    #[tokio::test]
+    async fn connections_share_a_config() {
+        let mut connect = TlsConnectEv::default();
+        let mut config = || {
+            let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+            let stream = crate::wrap_tcp(StreamKind::File(file));
+            let host = Value::String(literal!("localhost"));
+            let cached =
+                CachedVals::from_values([Some(Value::Null), Some(host), Some(stream)]);
+            connect.prepare_args(&cached).unwrap().unwrap().0
+        };
+        let (first, second) = (config(), config());
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[tokio::test]

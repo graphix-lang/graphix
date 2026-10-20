@@ -147,6 +147,8 @@ pub enum RelocTarget {
     Helper(ArcStr),
     /// A record in the body's `callees`.
     Callee(u32),
+    /// The spill thunk of a record in the body's `callees`.
+    CalleeThunk(u32),
     /// The record itself, or for a thunk the body it serves.
     Owner,
     /// The body's own spill thunk.
@@ -169,14 +171,16 @@ pub struct RecordReloc {
 pub enum RecordKind {
     /// A kernel body; its signature derives from its `KernelSig`. Its
     /// constants are what its code refers to by address; its thunk, a
-    /// [`RecordKind::Thunk`], is the one a self-recursive body
-    /// re-enters through; its chunks are its outlined loops.
+    /// [`RecordKind::Thunk`], is the one a call enters it through on a
+    /// fresh stack segment (every lambda kernel has one, a region's
+    /// parent none); its chunks are its outlined loops.
     Kernel {
         consts: Vec<KernelConst>,
         thunk: Option<Arc<BodyRecord>>,
         chunks: Vec<Arc<BodyRecord>>,
     },
-    /// The `(args, out)` thunk a self-recursive body re-enters through.
+    /// The `(args, out)` thunk a call enters a body through on a fresh
+    /// stack segment.
     Thunk,
     /// An outlined loop of a kernel body, `(frame, lo, hi, out)`; its
     /// owner is that body.
@@ -264,6 +268,7 @@ mod tag {
     pub const LIBCALL: u8 = 4;
     pub const CONST: u8 = 5;
     pub const CHUNK: u8 = 6;
+    pub const CALLEE_THUNK: u8 = 7;
 
     pub const KERNEL: u8 = 0;
     pub const THUNK_KIND: u8 = 1;
@@ -352,9 +357,10 @@ impl Pack for RecordReloc {
         let RecordReloc { offset, kind: _, target, addend } = self;
         let target = match target {
             RelocTarget::Helper(n) => n.encoded_len(),
-            RelocTarget::Callee(i) | RelocTarget::Const(i) | RelocTarget::Chunk(i) => {
-                i.encoded_len()
-            }
+            RelocTarget::Callee(i)
+            | RelocTarget::CalleeThunk(i)
+            | RelocTarget::Const(i)
+            | RelocTarget::Chunk(i) => i.encoded_len(),
             RelocTarget::Owner | RelocTarget::Thunk => 0,
             RelocTarget::LibCall(_) => 1,
         };
@@ -372,6 +378,10 @@ impl Pack for RecordReloc {
             }
             RelocTarget::Callee(i) => {
                 buf.put_u8(tag::CALLEE);
+                i.encode(buf)?;
+            }
+            RelocTarget::CalleeThunk(i) => {
+                buf.put_u8(tag::CALLEE_THUNK);
                 i.encode(buf)?;
             }
             RelocTarget::Owner => buf.put_u8(tag::OWNER),
@@ -398,6 +408,7 @@ impl Pack for RecordReloc {
         let target = match u8::decode(buf)? {
             tag::HELPER => RelocTarget::Helper(ArcStr::decode(buf)?),
             tag::CALLEE => RelocTarget::Callee(u32::decode(buf)?),
+            tag::CALLEE_THUNK => RelocTarget::CalleeThunk(u32::decode(buf)?),
             tag::OWNER => RelocTarget::Owner,
             tag::THUNK => RelocTarget::Thunk,
             tag::CHUNK => RelocTarget::Chunk(u32::decode(buf)?),
@@ -552,6 +563,13 @@ pub(crate) fn record_encode(
     r: &Arc<BodyRecord>,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
+    crate::stack::ensure_sufficient(|| record_encode_inner(r, buf))
+}
+
+fn record_encode_inner(
+    r: &Arc<BodyRecord>,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
     image::object_encode(
         &(Arc::as_ptr(r) as usize),
         |k| (*k, r.clone()),
@@ -594,6 +612,10 @@ pub(crate) fn record_encode(
 }
 
 pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackError> {
+    crate::stack::ensure_sufficient(|| record_decode_inner(buf))
+}
+
+fn record_decode_inner(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackError> {
     image::foreign_decode(
         buf,
         |buf| {

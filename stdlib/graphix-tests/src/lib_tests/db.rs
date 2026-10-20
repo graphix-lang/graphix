@@ -2,13 +2,6 @@ use anyhow::Result;
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;
 
-// CR claude for claude: [structure/low] Most fixtures above db_float_keys_order take
-// their result apart by hand: nested match/panic ladders and per-field matches! that
-// check keys but not values (db_first_last, db_pop_min_max, db_get_lt_gt). The
-// `arr`/`s` helpers further down already let one assert_eq! state the whole expected
-// value. Move them up and rewrite each expect as a single assert_eq!: about 500 fewer
-// lines, full coverage of each result, and a failure that prints both values. Found by
-// reading; not run. (tests-lib-a-05)
 fn assert_tree_type(v: &Value, expected_key: &str, expected_val: &str) {
     let ty = match v {
         Value::Array(a) => a,
@@ -33,11 +26,7 @@ run_with_tempdir!(
         td.path().join("test_open.db")
     },
     expect: |v: Value| -> Result<()> {
-        assert_eq!(
-            v,
-            Value::Array([Value::Bool(false), Value::Bool(false)].into()),
-            "expected open and flush to succeed"
-        );
+        assert_eq!(v.to_string(), r#"[false, false]"#);
         Ok(())
     }
 );
@@ -56,9 +45,7 @@ run_with_tempdir!(
         td.path().join("test_insert_get.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::I64(42)), "expected I64(42), got: {:?}", arr[0]);
-        assert_tree_type(&arr[1], "string", "i64");
+        assert_eq!(v.to_string(), r#"[i64:42, ["string", "i64"]]"#);
         Ok(())
     }
 );
@@ -74,7 +61,7 @@ run_with_tempdir!(
         td.path().join("test_get_missing.db")
     },
     expect: |v: Value| -> Result<()> {
-        assert!(matches!(v, Value::Null), "expected Null, got: {v:?}");
+        assert_eq!(v.to_string(), r#"null"#);
         Ok(())
     }
 );
@@ -93,9 +80,7 @@ run_with_tempdir!(
         td.path().join("test_remove.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::I64(99)), "expected I64(99), got: {:?}", arr[0]);
-        assert_tree_type(&arr[1], "string", "i64");
+        assert_eq!(v.to_string(), r#"[i64:99, ["string", "i64"]]"#);
         Ok(())
     }
 );
@@ -114,9 +99,7 @@ run_with_tempdir!(
         td.path().join("test_contains.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Bool(true)), "expected Bool(true), got: {:?}", arr[0]);
-        assert_tree_type(&arr[1], "string", "i64");
+        assert_eq!(v.to_string(), r#"[true, ["string", "i64"]]"#);
         Ok(())
     }
 );
@@ -135,12 +118,7 @@ run_with_tempdir!(
         td.path().join("test_named_tree.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        match &arr[0] {
-            Value::String(s) if &**s == "hello" => (),
-            _ => panic!("expected String(\"hello\"), got: {:?}", arr[0]),
-        }
-        assert_tree_type(&arr[1], "string", "string");
+        assert_eq!(v.to_string(), r#"["hello", ["string", "string"]]"#);
         Ok(())
     }
 );
@@ -166,28 +144,7 @@ run_with_tempdir!(
         td.path().join("test_int_order.db")
     },
     expect: |v: Value| -> Result<()> {
-        let outer = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        let arr = match &outer[0] { Value::Array(a) => a, _ => panic!("results not array: {:?}", outer[0]) };
-        assert_eq!(arr.len(), 5, "expected 5 entries from read_many(6), got {}", arr.len());
-        let expected: &[(i64, &str)] = &[
-            (-50, "neg fifty"), (-1, "neg one"), (0, "zero"), (50, "fifty"), (100, "hundred"),
-        ];
-        for (i, (ek, ev)) in expected.iter().enumerate() {
-            match &arr[i] {
-                Value::Array(pair) => {
-                    match &pair[0] {
-                        Value::I64(k) => assert_eq!(*k, *ek, "key {i} mismatch"),
-                        other => panic!("key {i}: expected I64, got {other:?}"),
-                    }
-                    match &pair[1] {
-                        Value::String(s) => assert_eq!(&**s, *ev, "val {i} mismatch"),
-                        other => panic!("val {i}: expected String, got {other:?}"),
-                    }
-                }
-                other => panic!("entry {i}: expected tuple array, got {other:?}"),
-            }
-        }
-        assert_tree_type(&outer[1], "i64", "string");
+        assert_eq!(v.to_string(), r#"[[[i64:-50, "neg fifty"], [i64:-1, "neg one"], [i64:0, "zero"], [i64:50, "fifty"], [i64:100, "hundred"]], ["i64", "string"]]"#);
         Ok(())
     }
 );
@@ -212,24 +169,7 @@ run_with_tempdir!(
         td.path().join("test_cursor_prefix.db")
     },
     expect: |v: Value| -> Result<()> {
-        let outer = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        let arr = match &outer[0] { Value::Array(a) => a, _ => panic!("results not array: {:?}", outer[0]) };
-        match &arr[0] {
-            Value::Array(pair) => match &pair[0] {
-                Value::String(s) if &**s == "aaa" => (),
-                other => panic!("entry 0 key: expected 'aaa', got {other:?}"),
-            },
-            other => panic!("entry 0: expected tuple array, got {other:?}"),
-        }
-        match &arr[1] {
-            Value::Array(pair) => match &pair[0] {
-                Value::String(s) if &**s == "aab" => (),
-                other => panic!("entry 1 key: expected 'aab', got {other:?}"),
-            },
-            other => panic!("entry 1: expected tuple array, got {other:?}"),
-        }
-        assert!(matches!(arr[2], Value::Null), "entry 2: expected Null (end), got {:?}", arr[2]);
-        assert_tree_type(&outer[1], "string", "i64");
+        assert_eq!(v.to_string(), r#"[[["aaa", i64:1], ["aab", i64:2], null], ["string", "i64"]]"#);
         Ok(())
     }
 );
@@ -253,11 +193,7 @@ run_with_tempdir!(
         td.path().join("test_batch.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Null), "'a' should be removed, got: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::I64(2)), "'b' should be 2, got: {:?}", arr[1]);
-        assert!(matches!(&arr[2], Value::I64(3)), "'c' should be 3, got: {:?}", arr[2]);
-        assert!(matches!(&arr[3], Value::I64(4)), "'d' should be 4, got: {:?}", arr[3]);
+        assert_eq!(v.to_string(), r#"[null, i64:2, i64:3, i64:4]"#);
         Ok(())
     }
 );
@@ -279,13 +215,7 @@ run_with_tempdir!(
         td.path().join("test_get_many.db")
     },
     expect: |v: Value| -> Result<()> {
-        let outer = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        let arr = match &outer[0] { Value::Array(a) => a, _ => panic!("results not array: {:?}", outer[0]) };
-        assert_eq!(arr.len(), 3);
-        assert!(matches!(&arr[0], Value::I64(20)), "expected I64(20), got: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::Null), "expected Null for missing, got: {:?}", arr[1]);
-        assert!(matches!(&arr[2], Value::I64(10)), "expected I64(10), got: {:?}", arr[2]);
-        assert_tree_type(&outer[1], "string", "i64");
+        assert_eq!(v.to_string(), r#"[[i64:20, null, i64:10], ["string", "i64"]]"#);
         Ok(())
     }
 );
@@ -309,17 +239,7 @@ run_with_tempdir!(
         td.path().join("test_first_last.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Null), "empty first: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::Null), "empty last: {:?}", arr[1]);
-        match &arr[2] {
-            Value::Array(p) => assert!(matches!(&p[0], Value::I64(5)), "first key: {:?}", p[0]),
-            other => panic!("first not tuple: {other:?}"),
-        }
-        match &arr[3] {
-            Value::Array(p) => assert!(matches!(&p[0], Value::I64(20)), "last key: {:?}", p[0]),
-            other => panic!("last not tuple: {other:?}"),
-        }
+        assert_eq!(v.to_string(), r#"[null, null, [i64:5, "five"], [i64:20, "twenty"]]"#);
         Ok(())
     }
 );
@@ -344,20 +264,7 @@ run_with_tempdir!(
         td.path().join("test_pop.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        match &arr[0] {
-            Value::Array(p) => assert!(matches!(&p[0], Value::I64(5)), "pop_min: {:?}", p[0]),
-            other => panic!("pop_min: {other:?}"),
-        }
-        match &arr[1] {
-            Value::Array(p) => assert!(matches!(&p[0], Value::I64(20)), "pop_max: {:?}", p[0]),
-            other => panic!("pop_max: {other:?}"),
-        }
-        match &arr[2] {
-            Value::Array(p) => assert!(matches!(&p[0], Value::I64(10)), "remain: {:?}", p[0]),
-            other => panic!("remain: {other:?}"),
-        }
-        assert!(matches!(&arr[3], Value::Null), "empty pop: {:?}", arr[3]);
+        assert_eq!(v.to_string(), r#"[[i64:5, "five"], [i64:20, "twenty"], [i64:10, "ten"], null]"#);
         Ok(())
     }
 );
@@ -381,17 +288,7 @@ run_with_tempdir!(
         td.path().join("test_lt_gt.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        match &arr[0] {
-            Value::Array(p) => assert!(matches!(&p[0], Value::I64(10)), "lt: {:?}", p[0]),
-            other => panic!("lt: {other:?}"),
-        }
-        match &arr[1] {
-            Value::Array(p) => assert!(matches!(&p[0], Value::I64(30)), "gt: {:?}", p[0]),
-            other => panic!("gt: {other:?}"),
-        }
-        assert!(matches!(&arr[2], Value::Null), "no_lt: {:?}", arr[2]);
-        assert!(matches!(&arr[3], Value::Null), "no_gt: {:?}", arr[3]);
+        assert_eq!(v.to_string(), r#"[[i64:10, "ten"], [i64:30, "thirty"], null, null]"#);
         Ok(())
     }
 );
@@ -412,20 +309,7 @@ run_with_tempdir!(
         td.path().join("test_cas.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Null), "cas1 success: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::Null), "cas2 success: {:?}", arr[1]);
-        match &arr[2] {
-            Value::Array(a) => {
-                match &a[0] {
-                    Value::String(s) if &**s == "Mismatch" => (),
-                    other => panic!("cas3 tag: {other:?}"),
-                }
-                assert!(matches!(&a[1], Value::I64(100)), "cas3 current: {:?}", a[1]);
-            }
-            other => panic!("cas3: {other:?}"),
-        }
-        assert!(matches!(&arr[3], Value::I64(100)), "final: {:?}", arr[3]);
+        assert_eq!(v.to_string(), r#"[null, null, ["Mismatch", i64:100], i64:100]"#);
         Ok(())
     }
 );
@@ -449,11 +333,7 @@ run_with_tempdir!(
         td.path().join("test_len.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Bool(true)), "empty: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::U64(0)), "len0: {:?}", arr[1]);
-        assert!(matches!(&arr[2], Value::U64(3)), "len3: {:?}", arr[2]);
-        assert!(matches!(&arr[3], Value::Bool(false)), "not_empty: {:?}", arr[3]);
+        assert_eq!(v.to_string(), r#"[true, u64:0, u64:3, false]"#);
         Ok(())
     }
 );
@@ -507,9 +387,7 @@ run_with_tempdir!(
         td.path().to_path_buf()
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::I64(10)), "x: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::I64(20)), "y: {:?}", arr[1]);
+        assert_eq!(v.to_string(), r#"[i64:10, i64:20]"#);
         Ok(())
     }
 );
@@ -534,16 +412,7 @@ run_with_tempdir!(
         td.path().join("test_cursor_read_many.db")
     },
     expect: |v: Value| -> Result<()> {
-        let outer = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        let arr = match &outer[0] { Value::Array(a) => a, _ => panic!("results not array: {:?}", outer[0]) };
-        assert_eq!(arr.len(), 3);
-        let b1 = match &arr[0] { Value::Array(a) => a, _ => panic!("batch1 not array") };
-        assert_eq!(b1.len(), 2, "batch1 should have 2 entries");
-        let b2 = match &arr[1] { Value::Array(a) => a, _ => panic!("batch2 not array") };
-        assert_eq!(b2.len(), 1, "batch2 should have 1 entry");
-        let b3 = match &arr[2] { Value::Array(a) => a, _ => panic!("batch3 not array") };
-        assert_eq!(b3.len(), 0, "batch3 should be empty");
-        assert_tree_type(&outer[1], "string", "i64");
+        assert_eq!(v.to_string(), r#"[[[["a", i64:1], ["b", i64:2]], [["c", i64:3]], []], ["string", "i64"]]"#);
         Ok(())
     }
 );
@@ -566,14 +435,7 @@ run_with_tempdir!(
         td.path().join("test_get_type.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v {
-            Value::Array(a) => a,
-            _ => panic!("expected Array, got: {v:?}"),
-        };
-        assert_eq!(arr.len(), 3);
-        assert!(matches!(&arr[0], Value::Null), "expected Null for missing, got: {:?}", arr[0]);
-        assert_tree_type(&arr[1], "i64", "string");
-        assert_tree_type(&arr[2], "string", "bool");
+        assert_eq!(v.to_string(), r#"[null, ["i64", "string"], ["string", "bool"]]"#);
         Ok(())
     }
 );
@@ -591,9 +453,7 @@ run_with_tempdir!(
         td.path().join("test_reserved.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Bool(true)), "expected $$__graphix_default__$$ to be rejected, got: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::Bool(true)), "expected $$__graphix_meta__$$ to be rejected, got: {:?}", arr[1]);
+        assert_eq!(v.to_string(), r#"[true, true]"#);
         Ok(())
     }
 );
@@ -612,9 +472,7 @@ run_with_tempdir!(
         td.path().join("test_type_mismatch_named.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Bool(false)), "first open should succeed, got: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::Bool(true)), "second open should fail, got: {:?}", arr[1]);
+        assert_eq!(v.to_string(), r#"[false, true]"#);
         Ok(())
     }
 );
@@ -633,9 +491,7 @@ run_with_tempdir!(
         td.path().join("test_type_mismatch_default.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Bool(false)), "first open should succeed, got: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::Bool(true)), "second open should fail, got: {:?}", arr[1]);
+        assert_eq!(v.to_string(), r#"[false, true]"#);
         Ok(())
     }
 );
@@ -655,9 +511,7 @@ run_with_tempdir!(
         td.path().join("test_default_typed.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::I64(42)), "expected I64(42), got: {:?}", arr[0]);
-        assert_tree_type(&arr[1], "string", "i64");
+        assert_eq!(v.to_string(), r#"[i64:42, ["string", "i64"]]"#);
         Ok(())
     }
 );
@@ -682,24 +536,7 @@ run_with_tempdir!(
         td.path().join("test_range_incl_excl.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert_eq!(arr.len(), 2, "expected 2 entries, got {}", arr.len());
-        let expected: &[(i64, &str)] = &[(5, "five"), (10, "ten")];
-        for (i, (ek, ev)) in expected.iter().enumerate() {
-            match &arr[i] {
-                Value::Array(pair) => {
-                    match &pair[0] {
-                        Value::I64(k) => assert_eq!(*k, *ek, "key {i} mismatch"),
-                        other => panic!("key {i}: expected I64, got {other:?}"),
-                    }
-                    match &pair[1] {
-                        Value::String(s) => assert_eq!(&**s, *ev, "val {i} mismatch"),
-                        other => panic!("val {i}: expected String, got {other:?}"),
-                    }
-                }
-                other => panic!("entry {i}: expected tuple, got {other:?}"),
-            }
-        }
+        assert_eq!(v.to_string(), r#"[[i64:5, "five"], [i64:10, "ten"]]"#);
         Ok(())
     }
 );
@@ -724,18 +561,7 @@ run_with_tempdir!(
         td.path().join("test_range_unbound_start.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert_eq!(arr.len(), 3, "expected 3 entries (1,5,10), got {}", arr.len());
-        let expected: &[i64] = &[1, 5, 10];
-        for (i, ek) in expected.iter().enumerate() {
-            match &arr[i] {
-                Value::Array(pair) => match &pair[0] {
-                    Value::I64(k) => assert_eq!(*k, *ek, "key {i} mismatch"),
-                    other => panic!("key {i}: expected I64, got {other:?}"),
-                },
-                other => panic!("entry {i}: expected tuple, got {other:?}"),
-            }
-        }
+        assert_eq!(v.to_string(), r#"[[i64:1, "one"], [i64:5, "five"], [i64:10, "ten"]]"#);
         Ok(())
     }
 );
@@ -760,18 +586,7 @@ run_with_tempdir!(
         td.path().join("test_range_unbound_end.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert_eq!(arr.len(), 2, "expected 2 entries (15,20), got {}", arr.len());
-        let expected: &[i64] = &[15, 20];
-        for (i, ek) in expected.iter().enumerate() {
-            match &arr[i] {
-                Value::Array(pair) => match &pair[0] {
-                    Value::I64(k) => assert_eq!(*k, *ek, "key {i} mismatch"),
-                    other => panic!("key {i}: expected I64, got {other:?}"),
-                },
-                other => panic!("entry {i}: expected tuple, got {other:?}"),
-            }
-        }
+        assert_eq!(v.to_string(), r#"[[i64:15, "fifteen"], [i64:20, "twenty"]]"#);
         Ok(())
     }
 );
@@ -794,8 +609,7 @@ run_with_tempdir!(
         td.path().join("test_range_empty.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert_eq!(arr.len(), 0, "expected empty result, got {}", arr.len());
+        assert_eq!(v.to_string(), r#"[]"#);
         Ok(())
     }
 );
@@ -816,7 +630,7 @@ run_with_tempdir!(
         td.path().join("test_txn_commit.db")
     },
     expect: |v: Value| -> Result<()> {
-        assert!(matches!(v, Value::I64(42)), "expected I64(42), got: {v:?}");
+        assert_eq!(v.to_string(), r#"i64:42"#);
         Ok(())
     }
 );
@@ -838,7 +652,7 @@ run_with_tempdir!(
         td.path().join("test_txn_rollback.db")
     },
     expect: |v: Value| -> Result<()> {
-        assert!(matches!(v, Value::I64(100)), "expected I64(100) (original), got: {v:?}");
+        assert_eq!(v.to_string(), r#"i64:100"#);
         Ok(())
     }
 );
@@ -864,12 +678,7 @@ run_with_tempdir!(
         td.path().join("test_txn_multi_tree.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::I64(1)), "expected I64(1), got: {:?}", arr[0]);
-        match &arr[1] {
-            Value::String(s) if &**s == "hello" => (),
-            other => panic!("expected String(\"hello\"), got: {other:?}"),
-        }
+        assert_eq!(v.to_string(), r#"[i64:1, "hello"]"#);
         Ok(())
     }
 );
@@ -894,10 +703,7 @@ run_with_tempdir!(
         td.path().join("test_txn_batch.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        assert!(matches!(&arr[0], Value::Null), "'a' should be removed, got: {:?}", arr[0]);
-        assert!(matches!(&arr[1], Value::I64(2)), "'b' should be 2, got: {:?}", arr[1]);
-        assert!(matches!(&arr[2], Value::I64(3)), "'c' should be 3, got: {:?}", arr[2]);
+        assert_eq!(v.to_string(), r#"[null, i64:2, i64:3]"#);
         Ok(())
     }
 );
@@ -918,20 +724,7 @@ run_with_tempdir!(
         td.path().join("test_sub_insert.db")
     },
     expect: |v: Value| -> Result<()> {
-        let outer = match &v { Value::Array(a) => a, _ => panic!("expected array, got: {v:?}") };
-        assert_eq!(outer.len(), 1, "expected 1 insert event, got: {}", outer.len());
-        let s = match &outer[0] { Value::Array(a) => a, _ => panic!("expected struct, got: {:?}", outer[0]) };
-        match &s[0] {
-            Value::Array(kv) => match &kv[1] {
-                Value::String(k) if &**k == "mykey" => (),
-                other => panic!("expected key='mykey', got: {other:?}"),
-            },
-            other => panic!("expected key field, got: {other:?}"),
-        }
-        match &s[1] {
-            Value::Array(kv) => assert!(matches!(&kv[1], Value::I64(99)), "expected value=99, got: {:?}", kv[1]),
-            other => panic!("expected value field, got: {other:?}"),
-        }
+        assert_eq!(v.to_string(), r#"[[["key", "mykey"], ["value", i64:99]]]"#);
         Ok(())
     }
 );
@@ -953,16 +746,7 @@ run_with_tempdir!(
         td.path().join("test_sub_remove.db")
     },
     expect: |v: Value| -> Result<()> {
-        let outer = match &v { Value::Array(a) => a, _ => panic!("expected array, got: {v:?}") };
-        assert_eq!(outer.len(), 1, "expected 1 remove event, got: {}", outer.len());
-        let s = match &outer[0] { Value::Array(a) => a, _ => panic!("expected struct, got: {:?}", outer[0]) };
-        match &s[0] {
-            Value::Array(kv) => match &kv[1] {
-                Value::String(k) if &**k == "delme" => (),
-                other => panic!("expected key='delme', got: {other:?}"),
-            },
-            other => panic!("expected key field, got: {other:?}"),
-        }
+        assert_eq!(v.to_string(), r#"[[["key", "delme"]]]"#);
         Ok(())
     }
 );
@@ -989,15 +773,7 @@ run_with_tempdir!(
         td.path().join("test_sub_both.db")
     },
     expect: |v: Value| -> Result<()> {
-        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
-        match &arr[0] {
-            Value::String(s) if &**s == "shared" => (),
-            other => panic!("expected 'shared' from on_insert, got: {other:?}"),
-        }
-        match &arr[1] {
-            Value::String(s) if &**s == "shared" => (),
-            other => panic!("expected 'shared' from on_remove, got: {other:?}"),
-        }
+        assert_eq!(v.to_string(), r#"["shared", "shared"]"#);
         Ok(())
     }
 );

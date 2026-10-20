@@ -311,6 +311,8 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	recursive-activation-blocks-aug2026/03_per_depth_builtin_state.gx
 0	recursive-activation-blocks-aug2026/04_sibling_activation_trees.gx
 2	recursive-activation-blocks-aug2026/05_forward_edge_callee_block.gx
+0	ref-by-value-oct2026/00_ref_in_an_abstract.gx
+0	ref-by-value-oct2026/01_ref_through_any.gx
 0	ref-cast-sep2026/00_cast_of_a_reference.gx
 4	ref-print-id-oct2026/00_interpolated_ref.gx
 0	refparam-occurs-aug2026/00_flatmap_typedef_wedge.gx
@@ -369,6 +371,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 2	select-strict-rule-aug2026/02_live_fold_two_cycle.gx
 2	select-strict-rule-aug2026/03_filter_select_qop.gx
 4	select-wake-rematch-sep2026/00_arm_local_counter.gx
+0	seq-refusal-names-oct2026/00_refusal_in_a_seq_step.gx
 0	set-eq-drops-cell-link-aug2026/00_list_fold_map_fn.gx
 1	settle-order-jul2026/01_firstclass_hof_occurs_flap.gx
 0	skipped-fn-arg-effect-aug2026/00_connect_in_discarded_fn_arg.gx

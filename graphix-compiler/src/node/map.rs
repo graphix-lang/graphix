@@ -28,7 +28,6 @@ use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
@@ -39,9 +38,9 @@ pub struct Map<R: Rt, E: UserEvent> {
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    /// Every key in written order, then every value: the order they
-    /// update in.
-    // CR claude for claude: [bug/medium] Every key then every value makes the node-walk
+    /// Each entry's key then its value, in written order: the order
+    /// they update in.
+    // XCR claude for claude: [bug/medium] Every key then every value makes the node-walk
     // update k1, k2, v1, v2, while emit_map_new_node emits k1, v1, k2, v2. A fused map
     // literal's effects therefore run in a different order than the node-walk's:
     // `{dbg(x) => dbg(x + 1), dbg(x + 2) => dbg(x + 3)}` prints 10, 11, 12, 13 fused
@@ -50,6 +49,11 @@ pub struct Map<R: Rt, E: UserEvent> {
     // `chunks_exact(2)` of the productions. That also drops Map::update's two
     // SmallVecs, which spill to the heap past 16 entries. probe:
     // design/review-2026-10-19/repro/c-data-map-map-effect-order.sh (c-data-map-02)
+    // 2026-10-19 claude: Map::n holds each entry's key then its value in written order;
+    // the update folds the productions in pairs, the image codec and emit_map_new_node
+    // and lowering::const_map read the same layout, and Map::update's two SmallVecs are
+    // gone. Pin: graphix-shell/tests/effect_order.rs (dbg order fused and node-walked,
+    // both 10 11 12 13).
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
     pub(crate) fork: ForkSite,
@@ -72,9 +76,9 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         })
     }
 
-    /// The entries' keys and values, each in written order.
-    pub(crate) fn entries(&self) -> (&[Node<R, E>], &[Node<R, E>]) {
-        self.n.split_at(self.n.len() / 2)
+    /// Each entry's key and value, in written order.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Node<R, E>, &Node<R, E>)> {
+        self.n.chunks_exact(2).map(|kv| (&kv[0], &kv[1]))
     }
 
     pub(crate) fn image_decode(
@@ -84,13 +88,10 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = crate::image::count_decode(buf)?;
-        let (mut keys, mut values) = (Vec::with_capacity(n), Vec::with_capacity(n));
-        for _ in 0..n {
-            keys.push(decode_node(ctx, buf)?);
-            values.push(decode_node(ctx, buf)?);
-        }
-        keys.extend(values);
-        Ok(Self::with(spec, typ, keys.into_boxed_slice(), ForkSite::image_decode(buf)?))
+        let entries = (0..2 * n)
+            .map(|_| decode_node(ctx, buf))
+            .collect::<Result<Box<[_]>, PackError>>()?;
+        Ok(Self::with(spec, typ, entries, ForkSite::image_decode(buf)?))
     }
 
     pub(crate) fn compile(
@@ -103,8 +104,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     ) -> Result<Node<R, E>> {
         let n = args
             .iter()
-            .map(|(k, _)| k)
-            .chain(args.iter().map(|(_, v)| v))
+            .flat_map(|(k, v)| [k, v])
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let typ = Type::Map {
@@ -120,9 +120,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         put_tag(NodeTag::Map, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        let (keys, values) = self.entries();
-        encode_varint(keys.len() as u64, buf);
-        for (k, v) in keys.iter().zip(values.iter()) {
+        encode_varint(self.n.len() as u64 / 2, buf);
+        for (k, v) in self.entries() {
             k.image_encode(buf)?;
             v.image_encode(buf)?;
         }
@@ -130,12 +129,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let (vals, tag) = gathered!(self, ctx, Value::Map(CMap::new()));
-        let mut keys: SmallVec<[Value; 32]> = vals.collect();
-        let values: SmallVec<[Value; 16]> = keys.drain(keys.len() / 2..).collect();
+        let (mut vals, tag) = gathered!(self, ctx, Value::Map(CMap::new()));
         let m = with_hooks(ctx, || {
             let mut m = CMap::new();
-            for (k, v) in keys.drain(..).zip(values) {
+            while let (Some(k), Some(v)) = (vals.next(), vals.next()) {
                 m.insert_cow(k, v);
             }
             m
@@ -148,8 +145,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     super::typed_by_row!();
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let (keys, values) = self.entries();
-        emit_map_new_node(cx, keys, values, &self.typ)
+        emit_map_new_node(cx, &self.n, &self.typ)
     }
 }
 
@@ -171,9 +167,10 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         let mut vts: LPooled<Vec<&Type>> = LPooled::take();
         kts.push(&bottom);
         vts.push(&bottom);
-        let (keys, values) = self.entries();
-        kts.extend(keys.iter().map(|k| k.typ()));
-        vts.extend(values.iter().map(|v| v.typ()));
+        for (k, v) in self.entries() {
+            kts.push(k.typ());
+            vts.push(v.typ());
+        }
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         ktype.require_compared(&Type::Ordered);
         // CR claude for eric: [perf/low] The chain fix that SeqLit::typecheck0_with

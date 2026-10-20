@@ -15,54 +15,11 @@ See [Packages](../packages/overview.md) for details.
 
 ## Writing Built-in Functions in Rust
 
-For a simple pure function you can use the `CachedArgs` interface which takes
-care of most of the details for you. You only need to implement one method to
-evaluate changes to your arguments. For example, a function that finds the
-minimum value of all its arguments:
-
-```rust
-use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
-use netidx_value::Value;
-
-#[derive(Debug, Default)]
-struct MinEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
-    const NAME: &str = "core_min";
-    const EFFECT: Effect = Effect::Stateless(None);
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = None;
-        for v in from.flat_iter() {
-            match (res, v) {
-                (None, None) | (Some(_), None) => return None,
-                (None, Some(v)) => res = Some(v),
-                (Some(v0), Some(v)) => {
-                    res = if v < v0 { Some(v) } else { Some(v0) };
-                }
-            }
-        }
-        res
-    }
-}
-
-unit_image_state!(MinEv);
-
-type Min = CachedArgs<MinEv>;
-```
-
-Then register this built-in by listing it in your package's `defpackage!` macro,
-and bind it in your Graphix module:
-
-```graphix
-let min = |a: 'a, @args: 'a| -> 'a 'core_min
-```
-
-The special form function body `'core_min` references a built-in Rust
-function. Builtin lambdas must have full type annotations on all
-arguments and the return type — this is how the compiler knows the
-function's signature.
+A pure function of its arguments is a plain Rust function over their values,
+which `graphix_package_core::fast_builtin!` turns into a builtin that runs in
+the interpreter and in native code alike; see [The Simple
+Path](../packages/creating.md#the-simple-path-fast_builtin) for an example
+(`mylib_min`) and how to register and bind it.
 
 See [Writing Built in Functions](./builtins.md) for the full API details.
 

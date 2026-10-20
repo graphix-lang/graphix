@@ -500,7 +500,7 @@ impl Type {
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
                 if union_identical(self, t) { Some(self.clone()) } else { None }
             }
-            // CR claude for eric: [bug/low] Two function types merge only when
+            // XCR claude for eric: [bug/low] Two function types merge only when
             // identical, so `[|x: i64| x * 2, |x| x]` has element type `[fn(x: i64) ->
             // i64, fn(x: '_) -> '_]` and calling an element is refused ('expected fn
             // not [..]'), while the same two lambdas as select arms are accepted and
@@ -510,12 +510,11 @@ impl Type {
             // cell, unified), or merge unifies two function types whose only
             // differences are open cells. probe:
             // design/review-2026-10-12/repro/t-fntyp-10.gx. (t-fntyp-10)
-            // CR claude for claude: [doc-drift/low] The t-fntyp-10 CR just above no
-            // longer reproduces. Array, list and map literals and any() now join their
-            // elements as select arms do (d99f80510, x-typecheck-generics-06, pinned by
-            // lang::functions::gathered_functions_meet), so both element orders are
-            // callable. Delete that CR. probe:
-            // design/review-2026-10-19/repro/x-rerun-4-fntyp10-fixed.gx (x-rerun-4-04)
+            // 2026-10-19 claude: No longer reproduces: array, list and map literals
+            // and any() join their elements as select arms do (d99f80510).
+            // design/review-2026-10-12/repro/t-fntyp-10.gx prints [10, 5] and
+            // design/review-2026-10-19/repro/x-rerun-4-fntyp10-fixed.gx [5, 10]. Pin:
+            // lang::functions::gathered_functions_meet. Reported as x-rerun-4-04.
             (Type::Fn(_), Type::Fn(_)) => {
                 if union_identical(self, t) {
                     Some(self.clone())

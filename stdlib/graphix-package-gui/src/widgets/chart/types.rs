@@ -230,7 +230,7 @@ impl FromValue for XYZData {
 }
 
 /// Surface data: Array<Array<(f64, f64, f64)>> — a grid of 3D points.
-pub struct SurfaceData(pub Vec<Vec<(f64, f64, f64)>>);
+pub struct SurfaceData(pub LPooled<Vec<LPooled<Vec<(f64, f64, f64)>>>>);
 
 impl FromValue for SurfaceData {
     fn from_value(v: Value) -> Result<Self> {
@@ -238,17 +238,20 @@ impl FromValue for SurfaceData {
             Value::Array(a) => a,
             _ => bail!("chart surface data: expected array of arrays"),
         };
-        let mut rows = Vec::with_capacity(a.len());
+        let mut rows: LPooled<Vec<LPooled<Vec<(f64, f64, f64)>>>> = LPooled::take();
         for row_v in a.iter() {
             let row_a = match row_v {
                 Value::Array(a) => a,
                 _ => bail!("chart surface data: expected inner array"),
             };
-            let row: Vec<(f64, f64, f64)> = row_a
-                .iter()
-                .map(|v| v.clone().cast_to::<Triple>().map(|Triple(x, y, z)| (x, y, z)))
-                .collect::<Result<_>>()?;
-            rows.push(row);
+            rows.push(
+                row_a
+                    .iter()
+                    .map(|v| {
+                        v.clone().cast_to::<Triple>().map(|Triple(x, y, z)| (x, y, z))
+                    })
+                    .collect::<Result<_>>()?,
+            );
         }
         Ok(Self(rows))
     }
@@ -258,12 +261,7 @@ impl FromValue for SurfaceData {
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct SeriesStyleV {
     pub color: Option<ChartColor>,
-    // CR claude for claude: [style/low] The style labels here, in BarStyleV,
-    // CandlestickStyleV and SurfaceStyleV, are `Option<String>`: each style refire
-    // copies the Value's ArcStr into a fresh String. Use `Option<ArcStr>`. SurfaceData
-    // below is a plain `Vec<Vec<..>>` while every other data type is LPooled; pool it
-    // as `LPooled<Vec<LPooled<Vec<..>>>>`. Found by reading; not run. (gui-chart-10)
-    pub label: Option<String>,
+    pub label: Option<ArcStr>,
     pub stroke_width: Option<f64>,
     pub point_size: Option<f64>,
 }
@@ -272,7 +270,7 @@ pub struct SeriesStyleV {
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct BarStyleV {
     pub color: Option<ChartColor>,
-    pub label: Option<String>,
+    pub label: Option<ArcStr>,
     pub margin: Option<f64>,
 }
 
@@ -282,7 +280,7 @@ pub struct CandlestickStyleV {
     pub gain_color: Option<ChartColor>,
     pub loss_color: Option<ChartColor>,
     pub bar_width: Option<f64>,
-    pub label: Option<String>,
+    pub label: Option<ArcStr>,
 }
 
 #[derive(FromValue)]
@@ -300,7 +298,7 @@ pub struct PieStyleV {
 pub struct SurfaceStyleV {
     pub color: Option<ChartColor>,
     pub color_by_z: Option<bool>,
-    pub label: Option<String>,
+    pub label: Option<ArcStr>,
 }
 
 #[derive(FromValue)]

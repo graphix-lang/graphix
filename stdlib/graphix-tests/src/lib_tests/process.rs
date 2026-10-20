@@ -329,6 +329,35 @@ run!(io_lines_batched, IO_LINES_BATCHED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "a1,a2,a3,b1,b2")
 }; FuseExpect::Jit);
 
+// A sleeping batched reader is held back as the unbatched one is: what
+// the child writes while the arm sleeps arrives at the wake
+// (sys-io-01, x-node-contract-01).
+#[cfg(unix)]
+run!(io_lines_batched_keeps_lines_across_a_sleep, r#"
+{
+  use sys::io::Lines;
+  let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "printf 'a1\n'; sleep 0.3; printf 'b1\n'; sleep 0.1; printf 'b2\n'; sleep 0.3; printf 'c1\n'"],
+    #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+    #kill_on_drop: true,
+    "/bin/sh"
+  ))?;
+  let out = opt::ok_or(child.stdout, `Null("stdout"))?;
+  let on = true;
+  on <- sys::time::timer(duration:150.ms, false) ~ false;
+  on <- sys::time::timer(duration:550.ms, false) ~ true;
+  let batch = select on { true => Lines::lines_batched(out)?, false => never() };
+  let seen = [];
+  seen <- array::concat(batch ~ seen, batch);
+  select array::len(seen) {
+    i64:4 => str::join(#sep: ",", seen),
+    _ => never()
+  }
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "a1,b1,b2,c1")
+}; FuseExpect::Jit);
+
 /// Whether `pid` names a live process (a zombie is dead).
 #[cfg(target_os = "linux")]
 fn alive(pid: i64) -> bool {

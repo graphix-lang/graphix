@@ -41,6 +41,7 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
         | GenType::Nullable(t)
         | GenType::Ref { inner: t, .. } => map_abstract(t, f),
         GenType::Struct(fs) => fs.iter_mut().for_each(|(_, t)| map_abstract(t, f)),
+        GenType::Union(ms) => ms.iter_mut().for_each(|t| map_abstract(t, f)),
         GenType::Variant(vs) => vs
             .iter_mut()
             .for_each(|(_, ts)| ts.iter_mut().for_each(|t| map_abstract(t, f))),
@@ -287,13 +288,6 @@ pub(super) fn gen_module(
         // `via`. Both enter the main vocabulary as T -> i64 fns.
         if chance(rng, 0.6) {
             let override_default = chance(rng, 0.5);
-            // CR claude for claude: [test-gap/low] `Tr` is only implemented for this
-            // module's abstract T and T2. No impl generic over a constructor (`impl<'a:
-            // Tr> Tr for Array<'a>`), no impl for a primitive or structural type, and
-            // no nested dispatch (Array<Array<i64>>) is ever generated. Add those impls
-            // and register `via` at i64, Array<i64> and Array<Array<i64>>. probe:
-            // design/review-2026-10-19/repro/fuzz-gen-b-trait-generic-impl.gx agrees
-            // with hand-computed values. (fuzz-gen-b-05)
             let decl = "trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };\n";
             let tw = if override_default {
                 format!("; let tw = |t| {un_body} * i64:2")
@@ -375,6 +369,44 @@ pub(super) fn gen_module(
                     },
                 );
                 stats.bounded_hof = true;
+            }
+            // impls beyond the module's abstracts: a primitive, and a
+            // constructor generic over its element that dispatches again
+            // per element; `via` reaches each at its own type
+            if chance(rng, 0.5) {
+                if has_gxi {
+                    gxi.push_str(
+                        "impl Tr for i64;\nimpl<'a: Tr> Tr for Array<'a>;\n\
+                         val vi: fn(x: i64) -> i64;\nval va: fn(x: Array<i64>) -> i64;\n\
+                         val vaa: fn(x: Array<Array<i64>>) -> i64;\n",
+                    );
+                }
+                gx.push_str(
+                    "impl Tr for i64 { let tv = |x| x * i64:2 };\n\
+                     impl<'a: Tr> Tr for Array<'a> { let tv = |xs| \
+                     array::fold(xs, i64:0, |acc, x| acc + Tr::tv(x)) };\n\
+                     let vi = |x: i64| -> i64 via(x);\n\
+                     let va = |x: Array<i64>| -> i64 via(x);\n\
+                     let vaa = |x: Array<Array<i64>>| -> i64 via(x);\n",
+                );
+                let arr = |t: GenType| GenType::Array(Box::new(t));
+                for (f, p) in [("vi", I64), ("va", arr(I64)), ("vaa", arr(arr(I64)))] {
+                    let fty = GenType::Fn {
+                        labels: Vec::new(),
+                        params: vec![p],
+                        ret: Box::new(I64),
+                    };
+                    ctx.push(format!("{mname}::{f}"), fty);
+                }
+                // one nested dispatch seeded as a statement
+                let (a, b) = (
+                    exprs::gen_typed(ctx, rng, &I64, 1),
+                    exprs::gen_typed(ctx, rng, &I64, 1),
+                );
+                let w = ctx.fresh();
+                stmts.push(format!("let {w} = {mname}::vaa([[{a}], [{b}, {a}]])"));
+                ctx.push(w, I64);
+                stats.generic_impl = true;
             }
         }
         // The core traits: an `Eq` whose answer differs from the

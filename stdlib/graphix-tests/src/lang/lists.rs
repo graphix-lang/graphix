@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, refused},
 };
 use netidx::publisher::Value;
 
@@ -22,10 +22,7 @@ const LIST_LIT_EMPTY: &str = r#"
   list::len([<>])
 "#;
 
-run!(list_lit_empty, LIST_LIT_EMPTY, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(0))
-); FuseExpect::Jit);
+run!(list_lit_empty, LIST_LIT_EMPTY, is(Value::I64(0)); FuseExpect::Jit);
 
 const LIST_LIT_NESTED: &str = r#"
 {
@@ -34,10 +31,7 @@ const LIST_LIT_NESTED: &str = r#"
 }
 "#;
 
-run!(list_lit_nested, LIST_LIT_NESTED, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(6))
-); FuseExpect::Jit);
+run!(list_lit_nested, LIST_LIT_NESTED, is(Value::I64(6)); FuseExpect::Jit);
 
 // The canonical ladder: `[<>]` + `[<h, t..>]` is exhaustive and the
 // tail bind is the k-th tail, O(1); fuses end to end.
@@ -49,10 +43,7 @@ const LIST_PAT_SUM: &str = r#"
 }
 "#;
 
-run!(list_pat_sum, LIST_PAT_SUM, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(6))
-); FuseExpect::Jit);
+run!(list_pat_sum, LIST_PAT_SUM, is(Value::I64(6)); FuseExpect::Jit);
 
 // Exact-length arms miss on other lengths; anonymous rest `..`.
 const LIST_PAT_SHAPES: &str = r#"
@@ -64,10 +55,7 @@ const LIST_PAT_SHAPES: &str = r#"
 }
 "#;
 
-run!(list_pat_shapes, LIST_PAT_SHAPES, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(-199))
-); FuseExpect::Jit);
+run!(list_pat_shapes, LIST_PAT_SHAPES, is(Value::I64(-199)); FuseExpect::Jit);
 
 // Guards consult after structure; the @-bind captures the whole list.
 const LIST_PAT_GUARD_AT: &str = r#"
@@ -81,10 +69,7 @@ const LIST_PAT_GUARD_AT: &str = r#"
 }
 "#;
 
-run!(list_pat_guard_at, LIST_PAT_GUARD_AT, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(12))
-); FuseExpect::Jit);
+run!(list_pat_guard_at, LIST_PAT_GUARD_AT, is(Value::I64(12)); FuseExpect::Jit);
 
 // The tail bind shares the spine: it is the k-th tail.
 const LIST_PAT_TAIL: &str = r#"
@@ -94,10 +79,7 @@ const LIST_PAT_TAIL: &str = r#"
 }
 "#;
 
-run!(list_pat_tail, LIST_PAT_TAIL, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(2))
-); FuseExpect::Jit);
+run!(list_pat_tail, LIST_PAT_TAIL, is(Value::I64(2)); FuseExpect::Jit);
 
 const LIST_PAT_NONEXHAUSTIVE: &str = r#"
 {

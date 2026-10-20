@@ -12,14 +12,8 @@ run_with_tempdir! {
         path
     },
     expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
-        if let ::netidx::subscriber::Value::Array(arr) = &v {
-            assert_eq!(arr.len(), 2);
-            assert!(matches!(&arr[0], ::netidx::subscriber::Value::String(s) if &**s == "Alpha"));
-            assert!(matches!(&arr[1], ::netidx::subscriber::Value::String(s) if &**s == "Beta"));
-            Ok(())
-        } else {
-            panic!("expected Array, got: {v:?}")
-        }
+        assert_eq!(v.to_string(), r#"["Alpha", "Beta"]"#);
+        Ok(())
     }
 }
 
@@ -38,41 +32,7 @@ run_with_tempdir! {
         path
     },
     expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
-        let arr = match &v {
-            ::netidx::subscriber::Value::Array(a) => a,
-            _ => panic!("expected Array, got: {v:?}"),
-        };
-        assert_eq!(arr.len(), 2);
-        let row0 = match &arr[0] {
-            ::netidx::subscriber::Value::Array(r) => r,
-            v => panic!("expected row Array, got: {v:?}"),
-        };
-        assert_eq!(row0.len(), 2);
-        // 42 may come back as Int or Float
-        // CR claude for claude: [test-gap/low] This match accepts I64 or F64 for a
-        // numeric cell, but the reader returns f64 (xls_read_pads_to_a1 pins `f64:1.`
-        // for an integer cell). run_with_tempdir compares no modes, so a mode returning
-        // i64 would pass. Pin F64(42.0) here and F64(-7.0) below. Also check row[0] in
-        // xls_read_mixed and the row count in xls_read_bools. Found by reading; not
-        // run. (tests-lib-b2-08)
-        match &row0[0] {
-            ::netidx::subscriber::Value::I64(42) => (),
-            ::netidx::subscriber::Value::F64(f) if (*f - 42.0).abs() < 1e-10 => (),
-            v => panic!("expected 42, got: {v:?}"),
-        }
-        match &row0[1] {
-            ::netidx::subscriber::Value::F64(f) if (*f - 3.14).abs() < 1e-10 => (),
-            v => panic!("expected 3.14, got: {v:?}"),
-        }
-        let row1 = match &arr[1] {
-            ::netidx::subscriber::Value::Array(r) => r,
-            v => panic!("expected row Array, got: {v:?}"),
-        };
-        match &row1[0] {
-            ::netidx::subscriber::Value::I64(-7) => (),
-            ::netidx::subscriber::Value::F64(f) if (*f + 7.0).abs() < 1e-10 => (),
-            v => panic!("expected -7, got: {v:?}"),
-        }
+        assert_eq!(v.to_string(), r#"[[f64:42., f64:3.14], [f64:-7., f64:0.]]"#);
         Ok(())
     }
 }
@@ -90,18 +50,7 @@ run_with_tempdir! {
         path
     },
     expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
-        let arr = match &v {
-            ::netidx::subscriber::Value::Array(a) => a,
-            _ => panic!("expected Array, got: {v:?}"),
-        };
-        assert_eq!(arr.len(), 1);
-        let row = match &arr[0] {
-            ::netidx::subscriber::Value::Array(r) => r,
-            v => panic!("expected row Array, got: {v:?}"),
-        };
-        assert_eq!(row.len(), 2);
-        assert!(matches!(&row[0], ::netidx::subscriber::Value::String(s) if &**s == "hello"));
-        assert!(matches!(&row[1], ::netidx::subscriber::Value::String(s) if &**s == "world"));
+        assert_eq!(v.to_string(), r#"[["hello", "world"]]"#);
         Ok(())
     }
 }
@@ -119,16 +68,7 @@ run_with_tempdir! {
         path
     },
     expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
-        let arr = match &v {
-            ::netidx::subscriber::Value::Array(a) => a,
-            _ => panic!("expected Array, got: {v:?}"),
-        };
-        let row = match &arr[0] {
-            ::netidx::subscriber::Value::Array(r) => r,
-            v => panic!("expected row Array, got: {v:?}"),
-        };
-        assert!(matches!(&row[0], ::netidx::subscriber::Value::Bool(true)));
-        assert!(matches!(&row[1], ::netidx::subscriber::Value::Bool(false)));
+        assert_eq!(v.to_string(), r#"[[true, false]]"#);
         Ok(())
     }
 }
@@ -148,22 +88,7 @@ run_with_tempdir! {
         path
     },
     expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
-        let arr = match &v {
-            ::netidx::subscriber::Value::Array(a) => a,
-            _ => panic!("expected Array, got: {v:?}"),
-        };
-        assert_eq!(arr.len(), 1);
-        let row = match &arr[0] {
-            ::netidx::subscriber::Value::Array(r) => r,
-            v => panic!("expected row Array, got: {v:?}"),
-        };
-        assert_eq!(row.len(), 4);
-        assert!(matches!(&row[1], ::netidx::subscriber::Value::String(s) if &**s == "text"));
-        assert!(matches!(&row[2], ::netidx::subscriber::Value::Bool(true)));
-        match &row[3] {
-            ::netidx::subscriber::Value::F64(f) if (*f - 2.718).abs() < 1e-10 => (),
-            v => panic!("expected 2.718, got: {v:?}"),
-        }
+        assert_eq!(v.to_string(), r#"[[f64:42., "text", true, f64:2.718]]"#);
         Ok(())
     }
 }
@@ -181,18 +106,7 @@ run_with_tempdir! {
         path
     },
     expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
-        let arr = match &v {
-            ::netidx::subscriber::Value::Array(a) => a,
-            _ => panic!("expected Array, got: {v:?}"),
-        };
-        let row = match &arr[0] {
-            ::netidx::subscriber::Value::Array(r) => r,
-            v => panic!("expected row Array, got: {v:?}"),
-        };
-        assert_eq!(row.len(), 3);
-        assert!(matches!(&row[0], ::netidx::subscriber::Value::String(s) if &**s == "a"));
-        assert!(matches!(&row[1], ::netidx::subscriber::Value::Null));
-        assert!(matches!(&row[2], ::netidx::subscriber::Value::String(s) if &**s == "c"));
+        assert_eq!(v.to_string(), r#"[["a", null, "c"]]"#);
         Ok(())
     }
 }

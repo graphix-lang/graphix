@@ -4,6 +4,7 @@ use gui::{
   data_table::{combo_column, data_table, spin_column, text_column, toggle_column},
   text::text
 };
+use sys::net;
 mod icon;
 
 // Four editable columns demonstrating every ColumnType that takes
@@ -14,10 +15,10 @@ mod icon;
 // #on_write writes it, and the publish republishes the new value.
 let publish_host = |#name: string, #enabled: bool, #zone: string, #cpu: f64, host: string| {
     let base = "/local/graphix/data_table_editable/[host]";
-    sys::net::publish(#on_write: |v: string| name <- v, "[base]/name", name);
-    sys::net::publish(#on_write: |v: bool| enabled <- v, "[base]/enabled", enabled);
-    sys::net::publish(#on_write: |v: string| zone <- v, "[base]/zone", zone);
-    sys::net::publish(#on_write: |v: f64| cpu <- v, "[base]/cpu", cpu)
+    net::publish(#on_write: |v: string| name <- v, "[base]/name", name);
+    net::publish(#on_write: |v: bool| enabled <- v, "[base]/enabled", enabled);
+    net::publish(#on_write: |v: string| zone <- v, "[base]/zone", zone);
+    net::publish(#on_write: |v: f64| cpu <- v, "[base]/cpu", cpu)
 };
 publish_host(#name: "alpha", #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01");
 publish_host(#name: "bravo", #enabled: false, #zone: "eu-west-1", #cpu: 8.0, "host-02");
@@ -29,13 +30,13 @@ let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
     "name" => text_column(
         #name: "name",
         #on_edit: |#path: string, #value: Any|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Name"
     ),
     "enabled" => toggle_column(
         #name: "enabled",
         #on_edit: |#path: string, #value: bool|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Enabled"
     ),
     "zone" => combo_column(
@@ -47,22 +48,22 @@ let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
             { id: "ap-south-1", label: "Asia Pacific" }
         ],
         #on_edit: |#path: string, #value: string|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Zone"
     ),
     "cpu" => spin_column(
         #name: "cpu",
-        #min: f64:1.0,
-        #max: f64:64.0,
-        #increment: f64:1.0,
+        #min: 1.0,
+        #max: 64.0,
+        #increment: 1.0,
         #on_edit: |#path: string, #value: f64|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "CPU cores"
     ),
     other => other
 });
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_editable")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_editable")$;
 let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let selection: Array<string> = [];

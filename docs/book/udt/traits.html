@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -187,18 +187,16 @@ Graphix’s traits are Rust’s, spelled in Graphix.</p>
     val twice: fn(self) -&gt; string = |s| "[show(s)] [show(s)]"
 };
 </code></pre>
-<!-- CR claude for claude: [doc-drift/low] This paragraph says every method has a
-positional `self` parameter. A method that names `self` only in its result is accepted,
-as is its impl (core's `Cast::from_value` is one), but every call to it is refused with
-"called without its self argument". Fix: state that rule (`self` only in the result is
-legal, and no call dispatches such a method) so the error has an explanation. probe:
-design/review-2026-10-19/repro/book-modules-udt-trait-no-self.gx (book-modules-udt-08)
--->
 <p>Each item is a <code>val</code> with a function type. The type <code>self</code> is the
-receiver — the type implementing the trait — and every method has a
-positional <code>self</code> parameter, written bare: <code>fn(self, n: u64) -&gt; bytes</code>
+receiver — the type implementing the trait — and a method takes it as
+a positional <code>self</code> parameter, written bare: <code>fn(self, n: u64) -&gt; bytes</code>
 is <code>self</code> followed by an ordinary named parameter. A method may use
-<code>self</code> anywhere in its signature (<code>fn(self) -&gt; self</code>).</p>
+<code>self</code> anywhere in its signature (<code>fn(self) -&gt; self</code>). A method that
+names <code>self</code> only in its result (<code>fn(x: i64) -&gt; self</code>) is accepted, as
+is its implementation, but a call dispatches on its <code>self</code> argument, so
+no call can reach it: calling one is refused (“called without its self
+argument”). Core’s <code>Cast::from_value</code> is one; the compiler calls it,
+never a program.</p>
 <p>A method with a <code>= default</code> body is inherited by implementors that
 do not override it. Inside a default body the trait’s other methods
 are visible bare (<code>show(s)</code> above), as are the items of the declaring
@@ -236,15 +234,6 @@ that the implementation provides the impl (see below).</p>
 <p>The head’s type variables are declared in <code>impl&lt;..&gt;</code> with their
 bounds; every one must occur in the target. <code>Array&lt;i64&gt;</code> then
 implements <code>Show</code> exactly when <code>i64</code> does.</p>
-<!-- CR claude for claude: [doc-drift/low] These rules say an alias or variant may be
-implemented only in the trait's own package and that unions are never targets.
-`node::traits::check_target` exempts a constructor trait's named head: the name's
-package (or the trait's) suffices, even for a union alias. That is why `impl Collection
-for L<'_>`, shown in implementing Collection and examples/collection/cons_list.gx,
-compiles in a script, while `impl Display for L<i64>` is refused. Fix: state the
-constructor-trait rule here. probe:
-design/review-2026-10-19/repro/book-modules-udt-ctor-trait-orphan.gx
-(book-modules-udt-07) -->
 <h3 id="where-an-impl-may-be-written"><a class="header" href="#where-an-impl-may-be-written">Where an impl may be written</a></h3>
 <p>Implementations are global facts: once the module holding one loads,
 the impl applies everywhere the trait is used. To keep that coherent,
@@ -253,14 +242,20 @@ an <code>impl</code> is restricted to where its author answers for it:</p>
 <li>an <strong>abstract type</strong> (<code>Abstract&lt;..&gt;</code> or Rust-backed) may be
 implemented in the type’s package or the trait’s package;</li>
 <li><strong>any other type</strong> — a primitive, <code>Array&lt;..&gt;</code>, a struct, a tuple, a
-variant, an alias — only inside the <strong>trait’s own package</strong>.</li>
+variant, an alias — only inside the <strong>trait’s own package</strong>, except
+under a <strong>constructor trait</strong> (one over <code>self&lt;'a&gt;</code>, such as
+<code>Collection</code>): there a named type (<code>L&lt;'_&gt;</code>, even a union alias) may be
+implemented in the package that defines the name or the trait’s
+package, which is how a script implements <code>Collection</code> for its own
+<code>L</code> (<a href="./collection.html">Collection</a>).</li>
 </ul>
 <p>A structural type is its shape, so <code>impl Show for {x: i64, y: i64}</code>
 would apply to every <code>{x: i64, y: i64}</code> in the program; only the
 trait’s author may decide that. A type that should carry behaviour
 gets a name: <code>type Point = Abstract&lt;{x: i64, y: i64}&gt;</code>. Unions are
-never targets (each member is implemented separately), and one
-implementation per (trait, type) is enforced.</p>
+never targets (each member is implemented separately) outside a
+constructor trait’s named head, and one implementation per (trait, type)
+is enforced.</p>
 <h2 id="calling-trait-methods"><a class="header" href="#calling-trait-methods">Calling Trait Methods</a></h2>
 <p>A trait’s methods live under the trait’s name, like a module’s items:</p>
 <pre><code class="language-graphix">Show::show(Counter(42));

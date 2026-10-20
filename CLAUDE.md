@@ -156,8 +156,8 @@ region it replaces is discarded) and `BuiltIn::init` take a
 compiling would ask of the runtime it defers: a reference is recorded
 (`CompileCtx::record_ref`), an abandoned node, application or stored
 value is discarded (`discard`, `discard_apply`, `discard_stored`), and
-`ExecCtx::apply_deferred` deletes the discards and then registers the
-references: at the end of `check_and_fuse`, a registration read, a
+`ExecCtx::apply_deferred` registers the references and then deletes the
+discards: at the end of `check_and_fuse`, a registration read, a
 runtime bind, a lazily decoded body, a dynamic module's recompile and a
 core-trait hook site's build (`drop_deferred` on a failed compile);
 every cycle asserts (debug) that nothing is left. `ExecCtx::unref_var`
@@ -187,7 +187,8 @@ root and the boundary around the reader (`prune::Reader`), taken from the
 traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
 copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a
 pending reference keep theirs). Every this-cycle write marks its readers'
-boundaries and their ancestors: a stamped `store_insert`, `notify_set`,
+boundaries and their ancestors: a stamped `store_insert` or a standing
+`store_insert_standing`, `notify_set`,
 `ExecCtx::publish`/`try_publish` (never `event.variables.insert` from a
 node), the cycle's deliveries; state a node polls without a variable
 marks its pollers (error handlers: `ErrorHandler::polled_by`). `Prune`
@@ -513,7 +514,7 @@ node graph IS the IR — there is no parallel typed IR
   raise is queued and delivered after the run through the same path
   `Qop` uses), except a handler-ful `?` reachable under a select arm,
   callee bodies included: its raise may be owed to a fire the arm
-  missed asleep or to a constant at its wake, and a kernel remembers
+  missed asleep or to a constant at its first entry, and a kernel remembers
   neither, so it node-walks (`lowering::arm_raise_blocker`); only a
   `never(..)` arm is a
   standing bottom (its args are still emitted and consumed), any other
@@ -550,8 +551,9 @@ node graph IS the IR — there is no parallel typed IR
   stale everywhere else; every argument-less literal (`` `Tag ``, `[]`,
   `{}`) is a constant (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
-  resize, a fired slot, a fired empty source, a fired fold carry, or a
-  source back from bottom. A bottom source forgets the length and runs
+  resize, a fired slot, a fired empty source, a fired fold carry, a
+  source back from bottom, or, for filter and find, which read the
+  elements, a fired source of the same length. A bottom source forgets the length and runs
   no slot: its slots pause as a deselected arm does and wake, caught up,
   when it returns; a kernel loop runs no iteration over a tainted source
   (`scaffold::slots_run`).
@@ -915,7 +917,9 @@ cycle, across workers; the compiler never pins threads.
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere. Its
   parameters, and an unknown constructor's (`'c<a>`), are invariant; a
-  `let` annotation decides a constructed value's.
+  `let` annotation decides a constructed value's. A pattern `T(p)` with no
+  type test tests the tag and takes its parameters from the scrutinee,
+  never from `p` (`StructPatternNode::narrow_payloads`).
 - **Traits v1** (`design/traits.md`): static dispatch on the self
   argument's type; a union self lowers to a select; impls are global
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,
@@ -992,8 +996,9 @@ cycle, across workers; the compiler never pins threads.
   included, is live (`SeqCapture`). `seq t; abort(e) { .. }` ends the run when
   `e` fires: silent, past any `try`, and it wins the cycle it fires in
   (the compiler-only `SeqAbort` node fails the machine's guards before
-  the machine updates); `e` is an initial step, asleep between runs, and
-  only its fires after the entry cycle count. `flush(e)` (`seqq` only)
+  the machine updates); `e` is an initial step, asleep between runs and
+  born at each run's entry (`CFlag::RunEvent`), and only its fires after
+  the entry cycle count. `flush(e)` (`seqq` only)
   also empties the queue. A machine resets to idle in its handler's
   `sleep()`: a run does not survive its arm's sleep, and a `seqq`'s
   handler owes its queue the aborted run's credit, paid at the wake

@@ -4,12 +4,12 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refusal},
+    testing::{FuseExpect, is, refusal},
 };
 use netidx::subscriber::Value;
 
 const NEG_I64: &str = "{ let x = i64:5; -x }";
-run!(neg_i64, NEG_I64, |v: Result<&Value>| matches!(v, Ok(Value::I64(-5)));
+run!(neg_i64, NEG_I64, is(Value::I64(-5));
     FuseExpect::Jit);
 
 const NEG_F64: &str = "{ let x = f64:2.5; -x }";
@@ -18,7 +18,7 @@ run!(neg_f64, NEG_F64, |v: Result<&Value>| matches!(v, Ok(Value::F64(f)) if *f =
 
 // `-(a + b)` fuses as one region.
 const NEG_SUM: &str = "{ let a = i64:3; let b = i64:4; -(a + b) }";
-run!(neg_sum, NEG_SUM, |v: Result<&Value>| matches!(v, Ok(Value::I64(-7)));
+run!(neg_sum, NEG_SUM, is(Value::I64(-7));
     FuseExpect::Jit);
 
 // `-x` on an unsigned operand is a compile error.

@@ -366,12 +366,6 @@ block that declared the trait has left the environment, checks the bound
 from the cell; `trait_of_ref` reads a filled cell and walks the table
 only for an empty one.
 
-<!-- CR claude for claude: [doc-drift/low] This paragraph says the generated union
-select de-fuses ('coverage residue, FuseExpect::None'). A primitive-union dispatch fuses
-today (`#[native] f(one)` with `f = |x: [i64, string]| Show::show(x)` builds), and
-traits.rs annotates its four union-dispatch fixtures FuseExpect::Jit. Only a union of
-abstract types still de-fuses. Say that instead. Found by running the --expand probes.
-(tests-fusion-traits-09) -->
 **Dispatch** (`node/callsite.rs`): `try_static_resolve` finds no
 lambda behind a dispatcher `Ref` and calls `resolve_trait_call`: the
 instantiated signature's self-argument type, resolved and
@@ -383,8 +377,10 @@ left for the instances; open at depth zero is the compile error. A
 union self type lowers the call to `{ let #s = self; let #a_i = arg_i;
 ..; select #s { M as #t => #bind::N(#t, #a_i, ..), .. } }` — `#bind::N`
 being the compiler's private spelling for a binding by id — and the
-`CallSite` delegates every `Update` method to the lowered node (the
-generated select de-fuses: coverage residue, `FuseExpect::None`). A
+`CallSite` delegates every `Update` method to the lowered node. The
+generated select fuses over a union of primitives (`lang::traits`' union
+dispatch fixtures are `FuseExpect::Jit`); over a union of abstract types
+it de-fuses (coverage residue). A
 dispatcher is only ever a call's own function: a trait method named as a
 value is its eta-expansion at the method's signature
 (`node/compiler.rs::eta_dispatcher`: `Desc::desc` is `'eta_self: Desc

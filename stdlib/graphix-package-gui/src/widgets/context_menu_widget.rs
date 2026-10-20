@@ -166,13 +166,8 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
             translation,
         );
         let state = tree.state.downcast_mut::<State>();
-        // CR claude for claude: [bug/low] With no items the menu is hidden but
-        // state.open stays true, so when the items come back the menu reappears at the
-        // old position without a right click, and a click there fires an action. Set
-        // state.open = false when self.items is empty. probe:
-        // design/review-2026-10-19/repro/gui-widgets-a-context-menu-reopens.rs
-        // (gui-widgets-a-05)
-        if !state.open || self.items.is_empty() {
+        state.open &= !self.items.is_empty();
+        if !state.open {
             return child_overlay;
         }
         let menu = overlay::Element::new(Box::new(MenuOverlay {

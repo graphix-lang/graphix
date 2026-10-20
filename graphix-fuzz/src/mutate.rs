@@ -42,6 +42,12 @@ impl Rng {
     pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
         &xs[self.below(xs.len())]
     }
+
+    pub fn shuffle<T>(&mut self, xs: &mut [T]) {
+        for i in (1..xs.len()).rev() {
+            xs.swap(i, self.below(i + 1));
+        }
+    }
 }
 
 fn aslice(v: Vec<Expr>) -> Arc<[Expr]> {
@@ -295,7 +301,7 @@ pub fn mutate_program(
     rng: &mut Rng,
     max_muts: usize,
 ) -> Option<String> {
-    let mut expr = parse_one(seed).ok()?;
+    let mut expr = parse_body(seed)?;
     let n = 1 + rng.below(max_muts);
     let mut applied = 0;
     let mut tries = 0;
@@ -421,7 +427,7 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
 pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
     let (_, body) = crate::schedule::Schedule::parse(prog).ok()?;
     let (body, _) = crate::files::split(&body).ok()?;
-    let e = parse_one(&body).ok()?;
+    let e = parse_body(body)?;
     let mut sig = 0u64;
     let mut nodes = 0usize;
     let mut interesting = false;
@@ -453,7 +459,7 @@ pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
 pub fn donor_pool(seeds: &[&str]) -> Vec<Expr> {
     let mut pool = Vec::new();
     for s in seeds {
-        if let Ok(e) = parse_one(s) {
+        if let Some(e) = parse_body(s) {
             collect_preorder(&e, &mut pool);
         }
     }
@@ -461,15 +467,18 @@ pub fn donor_pool(seeds: &[&str]) -> Vec<Expr> {
 }
 
 /// Parse an expression, or `None` if it doesn't parse.
-// CR claude for claude: [test-gap/medium] This takes one expression, but a subject body
-// may be a statement sequence (`Subject::parse` wraps it in a block).
-// `typemorph::probes`, `mustreject::probes`, `mutate_program` and `minimize` all parse
-// the body here, so such a subject (76 of 549 findings files) gets no probe, mutant or
-// minimization, and typemorph does not count it as NOPARSE. Add a `parse_body` that
-// returns the lone item or a Block of the items, and use it at those sites. probe:
-// design/review-2026-10-19/repro/fuzz-mutate-bare-body-no-probes.gx (fuzz-mutate-05)
 pub fn parse(s: &str) -> Option<Expr> {
     parse_one(s).ok()
+}
+
+/// Parse a subject's body: one expression, or a statement sequence
+/// as the block `Subject::parse` compiles it as.
+pub fn parse_body(s: &str) -> Option<Expr> {
+    let block = parse_items(s)?;
+    match &block.kind {
+        ExprKind::Block { exprs } if exprs.len() == 1 => Some(exprs[0].clone()),
+        _ => Some(block),
+    }
 }
 
 /// Parse a top-level item SEQUENCE — a `.gx` module section, which is

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -180,15 +180,9 @@
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
-// CR claude for claude: [doc-drift/medium] The doc says a wake writes the standing
-// value again. It does not: a wake re-attaches to the path and writes only when the
-// value (or the path) fires, which lib_tests::net::net_write_not_repeated_after_wake
-// pins and the wake-is-a-resume rule requires. An arm that sleeps and wakes with an
-// unchanged value produces 1 write, not 2. Change the doc to say that. probe:
-// design/review-2026-10-19/repro/gx-stdlib-net-write-wake.gx Also reported as
-// (tests-lib-b2-03), (sys-net-06). (gx-stdlib-03)
-/// Write the value to the specified path. When its arm wakes, write the
-/// standing value again.
+/// Write the value to the specified path. When its arm wakes, the write
+/// attaches to the path again and writes only when the value or the path
+/// fires.
 val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
@@ -205,7 +199,7 @@ val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&
 /// Each call runs an instance of f of its own and is answered by its first
 /// value, or by the error it raises. A call runs to its answer whether or not
 /// the caller is still waiting; one f never answers holds the call.
-val rpc: fn&lt;'spec: Data, 'result: Data&gt;(
+val rpc: fn&lt;'spec: Data, 'result: Data, 'args: Concrete + Data&gt;(
     #path:string,
     #doc:string,
     #spec:'spec,
@@ -218,8 +212,10 @@ val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `L
 /// list the table under the specified path.
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-/// Publish the specifed value at the specified path.
-val publish: fn&lt;'v: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+/// Publish the specifed value at the specified path. A write to it is cast
+/// to #on_write's argument type, and a value that does not cast answers the
+/// writer with the cast's error.
+val publish: fn&lt;'v: Data, 'a: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 
                     </main>

@@ -1,0 +1,9 @@
+// A reference the result's type does not show (here inside an abstract)
+// kept its per-run cell in the trace, so every comparison dropped as
+// nondeterministic (fuzz-lib-a-02). The trace now numbers references by
+// value, wherever they sit.
+{
+  type T = Abstract<&i64>;
+  let x = 1;
+  T(&x)
+}

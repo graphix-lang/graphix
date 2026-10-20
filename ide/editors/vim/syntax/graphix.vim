@@ -7,7 +7,7 @@ if exists('b:current_syntax')
 endif
 
 " Keywords
-syntax keyword graphixKeyword let rec mod use type fn select seq seqq until if catch cast any with where throws as
+syntax keyword graphixKeyword let rec mod use type fn select seq seqq until abort flush if try catch cast never any with throws as pub trait impl mut val for self super package
 
 " Built-in constants
 syntax keyword graphixConstant true false null ok

@@ -18,7 +18,7 @@ use crate::{
     node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
     typ::{
-        CoreTrait, FnArgKind, FnArgType, FnType, TVar, Type,
+        FnArgKind, FnArgType, FnType, TVar, Type,
         tvar::{AtLevel, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
@@ -204,7 +204,7 @@ fn bind_sig(
         }
     }
     for (i, si) in sig.items.iter().enumerate() {
-        let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+        let ori = si.ori.clone();
         bind_sig_item(env, pending, scope, i, si, &ori)
             .map_err(|e| e.context(ParserContext { ori, pos: si.pos }))?;
     }
@@ -466,7 +466,9 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
         return Ok(());
     }
     let impl_body = match &td.body {
-        TypeDefBody::Alias(t) => TypeDefBody::Alias(t.scope_refs(scope)),
+        TypeDefBody::Alias(t) => {
+            TypeDefBody::Alias(t.scope_refs(scope).rewrite_trait_args(&ctx.env)?)
+        }
         TypeDefBody::Abstract(rep) => {
             TypeDefBody::Abstract(rep.as_ref().map(|r| r.scope_refs(scope)))
         }
@@ -480,7 +482,7 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
             && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
             && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
     };
-    // CR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
+    // XCR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
     // body is the interface's registered typedef, which Env::deftype already passed
     // through rewrite_trait_args. impl_body here only went through scope_refs. A fn
     // type with a trait-typed parameter (`type F = fn(x: Display) -> string`) therefore
@@ -491,6 +493,9 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
     // or compare the two registered definitions. probe:
     // design/review-2026-10-19/repro/t-typ-mod-sig-trait-param-typedef.sh
     // (t-typ-mod-02)
+    // 2026-10-19 claude: check_typedef_decl rewrites the implementation's alias body
+    // with rewrite_trait_args, as Env::deftype rewrote the interface's; the probe's
+    // check passes. Pin: lang::modules::interface_typedef_with_a_trait_parameter.
     let same_body = sig_td.body == impl_body
         || match (&sig_td.body, &impl_body) {
             (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => one_type(t0, t1),
@@ -511,7 +516,7 @@ fn check_trait_decl<R: Rt, E: UserEvent>(
     t: &crate::expr::TraitExpr,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
-    let ori = si.ori.clone().unwrap_or_default();
+    let ori = si.ori.clone();
     let tref = traits::trait_ref(scope, &t.name, si.pos, &ori);
     let method =
         |m: &crate::expr::TraitMethod| traits::method_sig(&ctx.env, &m.typ, &tref, scope);
@@ -671,7 +676,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     }
     for si in sig.items.iter() {
         let at = |e: anyhow::Error| {
-            let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+            let ori = si.ori.clone();
             e.context(ParserContext { ori, pos: si.pos })
         };
         let missing = (|| -> Result<bool> { Ok(match &si.kind {
@@ -713,15 +718,9 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                                 )
                                 .at(i.spec())
                             })?;
-                        let mut representation: Map<CompactString, BindId> =
-                            declared.methods.clone();
                         for (name, outer) in declared.methods.into_iter() {
                             let (inner, private_inner) = match i.def.methods.get(name) {
                                 Some(id) => (*id, true),
-                                None if CoreTrait::representation_default(trait_id) => {
-                                    representation.remove_cow(name);
-                                    continue;
-                                }
                                 None => {
                                     let default = trait_def
                                         .methods
@@ -738,44 +737,6 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                                 }
                             };
                             proxy.push(Proxy { inner, outer: *outer, private_inner });
-                        }
-                        // a method the implementation leaves out is the
-                        // representation, which the declared impl must say
-                        // CR claude for claude: [bug/high] This re-registration runs in
-                        // check_sig, inside Module::typecheck0, so for a run of sibling
-                        // modules it runs in parallel compile tasks. Env::impls is
-                        // keyed by TraitId with the whole list as the value, so two
-                        // siblings that both leave Cast's to_value out write the same
-                        // key. The join then panics in debug (TrackedMap::join's
-                        // debug_assert), and in release one module's re-registration is
-                        // lost: its Cast impl keeps a to_value that nothing proxies.
-                        // design/parallel_compile.md says impls are registered before
-                        // any body runs. Move this unregister/register into
-                        // Module::compile_inner for a static body, after the body
-                        // compiles, and add a fixture with two sibling modules that
-                        // each declare `impl Cast for T;` and omit to_value. probe:
-                        // design/review-2026-10-19/repro/t-env-cast-repr-race.sh
-                        // (t-env-01)
-                        if representation.len() < declared.methods.len() {
-                            // CR claude for claude: [bug/high] This narrowing rewrites
-                            // the global `impls` entry for the Cast trait during a
-                            // module's check, and sibling modules check in parallel
-                            // compile tasks. Two modules that each narrow a declared
-                            // `impl Cast for T;` write the same key, and
-                            // TrackedMap::join panics in debug ("a fork's write to
-                            // TraitId(..) would replace a write made since the fork").
-                            // In release the later join wins and puts back the other
-                            // module's unnarrowed declaration. Narrow the declaration
-                            // where the implementation registers, which is serial: in
-                            // Impl::compile, when register_impl returns the fulfilled
-                            // declaration. The check should only verify. probe:
-                            // design/review-2026-10-19/repro/c-module-traits-sibling-cast-narrowing.sh
-                            // (c-module-traits-01)
-                            ctx.env.unregister_impl(&declared);
-                            ctx.env.register_impl(Arc::new(ImplDef {
-                                methods: representation,
-                                ..(*declared).clone()
-                            }))?;
                         }
                         false
                     }
@@ -822,7 +783,7 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     for si in sig.items.iter() {
         let at = |e: anyhow::Error| {
-            let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+            let ori = si.ori.clone();
             e.context(ParserContext { ori, pos: si.pos })
         };
         let missing = || at(anyhow!("sig item {si} is missing an implementation"));
@@ -861,7 +822,7 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                         scope: scope.clone(),
                         name: name.name.as_str().into(),
                         pos: name.pos_or(si.pos),
-                        ori: si.ori.clone().unwrap_or_default(),
+                        ori: si.ori.clone(),
                         facet: None,
                     };
                     let link = SigImplLink {
@@ -1117,8 +1078,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         text: ArcStr,
     ) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
-        let exprs =
-            add_interface_modules(parser::parse((*ori).clone())?, &self.sig, &ori);
+        let exprs = add_interface_modules(parser::parse((*ori).clone())?, &self.sig);
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);
@@ -1186,7 +1146,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 .and_then(|()| crate::drain_pending_settles(ctx))
                 .and_then(|()| crate::check_pending_names(ctx))
                 .map_err(|e| crate::resite_pending_name(ctx, e))?;
-            // CR claude for claude: [bug/high] For a dynamic body this maps each
+            // XCR claude for claude: [bug/high] For a dynamic body this maps each
             // interface binding to this load's LambdaDef. Every call compiled at run
             // time afterwards (collection slots, activations, core-trait hook sites
             // through SynthCall) binds statically to it and ignores later reloads.
@@ -1201,6 +1161,13 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             // and
             // design/review-2026-10-19/repro/c-module-traits-dyn-reload-stale-core-hook.gx
             // (c-module-traits-02)
+            // 2026-10-19 claude: Module::proxy_lambda_defs maps nothing for a dynamic
+            // body, so a call compiled after a load dispatches dynamically and follows
+            // reloads; a successful load bumps CoreHookSites' generation
+            // (CoreHookSites::reloaded), and a cached core-trait site is stale when its
+            // impl list or the generation changed (coretraits::Version). Pins:
+            // lang::traits::dynamic_module_slot_calls_follow_reloads,
+            // core_trait_dynamic_impl_reload.
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
             crate::drain_pending_settles(ctx)?;
@@ -1233,6 +1200,11 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     /// Map each signature `BindId` to its impl binding's `LambdaDef` so
     /// cross-module calls resolve statically.
     pub(crate) fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R, E>) {
+        // a dynamic body's outer bindings are rebound at each load, so a
+        // call through one dispatches dynamically
+        if let Body::Dynamic { .. } = self.body {
+            return;
+        }
         for Proxy { inner, outer, .. } in self.proxy.iter() {
             let hit = ctx.bind_to_lambda.contains_key(inner);
             if crate::dbgenv::gxdbg_resolve() {
@@ -1334,6 +1306,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         let mut compiled = false;
         let mut primed: LPooled<Vec<BindId>> = LPooled::take();
         let mut src_tag = Tag::FIRED;
+        let mut bottom = false;
         let src = match &mut self.body {
             Body::Static => None,
             Body::Dynamic { source, .. } => {
@@ -1341,7 +1314,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 let tag = tv.tag();
                 if !tag.triggers() {
                     None
-                // CR claude for claude: [bug/medium] Returning here skips the proxy
+                // XCR claude for claude: [bug/medium] Returning here skips the proxy
                 // copies and the body's update for the whole cycle, so everything the
                 // loaded body had that cycle is lost. A write to an interface val in
                 // the same cycle reaches the readers outside but never the body: the
@@ -1350,11 +1323,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 // the body and the proxies still update. probe:
                 // design/review-2026-10-19/repro/c-module-traits-dyn-bottom-source-skips-body.gx
                 // (c-module-traits-03)
+                // 2026-10-19 claude: A bottom source sets the bottom resident and falls through:
+                // the loaded body and the proxies update that cycle. The probe prints t2: x=5
+                // y=50. Pin: lang::modules::dynamic_module_runs_on_under_a_bottom_source (the
+                // review binary answers 0).
                 } else if tag.is_bottom() {
-                    // a taint placeholder never compiles or tears down
-                    return self
-                        .resident
-                        .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+                    // a taint placeholder never compiles or tears down; the
+                    // loaded body runs on
+                    bottom = true;
+                    None
                 } else {
                     Some((tv.value_cloned(), tag))
                 }
@@ -1382,6 +1359,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                             tag,
                         ));
                     }
+                    ctx.core_hook_sites.lock().reloaded();
                 }
                 v => {
                     return self.resident.set(TagValue::tagged(
@@ -1463,7 +1441,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             store_production(ctx, *outer, &tv);
             ctx.event.variables.insert(*outer, tv);
         }
-        if compiled {
+        if bottom {
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+        } else if compiled {
             self.resident.set(TagValue::tagged(Value::Null, src_tag))
         } else {
             self.resident.ride()

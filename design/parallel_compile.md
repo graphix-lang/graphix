@@ -5,16 +5,9 @@ the runtime, module checks and fusion in parallel tasks, statement
 elaboration in parallel compile tasks, and instances typed by
 substitution. Open: the audits as fuzz findings, the instance cache and
 the per-unit image caches (Steps).
-<!-- CR claude for claude: [doc-drift/low] Stale names. `monomorphic_flat_map_twice` is
-now `written_callback_is_one_instance` / `unwritten_callback_is_generic`.
-`lambda::build_builtin_check` and the per-site builtin re-check were deleted
-(fd3f39aaf), so its task-rule bullet goes. `LambdaDef::seqs` is `LambdaDef::shared`
-(`BodyShared::lowerings`), here and in seq_blocks.md. Same kind of drift elsewhere:
-tvar_constraints.md's `UnionParts::rigid_pair` is `rigid_apart`, and
-type_copy_discipline.md's `Act::CellMerge` is `OpenPair::Merge`. Found by reading; not
-run. (x-doc-drift-11) -->
 Pins: `lang::functions::same_named_tvar_in_callback_arg`,
-`lang::functions::monomorphic_flat_map_twice`; the `GRAPHIX_ELAB_AUDIT`
+`lang::functions::written_callback_is_one_instance`,
+`lang::functions::unwritten_callback_is_generic`; the `GRAPHIX_ELAB_AUDIT`
 probe (`node/lambda.rs::elab_audit`) and `GRAPHIX_TASK_AUDIT`
 (`typ/tvar.rs::written`); `findings/omitted-default-check-sep2026/`.
 
@@ -222,10 +215,7 @@ What keeps it so:
 - a settle skips an earlier task's cell (`TVar::settle_witness`,
   `settle_bottom`): what the check left open, it decided open;
 - a raise already covered by the catch's type rebinds nothing
-  (`error::join_raised`);
-- a builtin's per-site check rebuilds over a private copy of its
-  signature (`lambda::build_builtin_check`), never reopening the
-  definition's gate on shared cells.
+  (`error::join_raised`).
 
 `GRAPHIX_TASK_AUDIT=1` prints a backtrace at every write that breaks the
 rule (`tvar::written`); the gate runs with none.
@@ -456,7 +446,7 @@ node's type, each call site's signature, each lambda literal's own
 table. An id two nodes share has no row. A cell of the table its gate
 created, that nothing bounded and its signature does not reach, settles
 to ⊥ with the check (`PendingSettle::Body`). A seq block lowers once per
-expression and scope (`LambdaDef::seqs`, held in `CompileCtx::body` while the body compiles), so every compile of a
+expression and scope (`BodyShared::lowerings` in `LambdaDef::shared`, held in `CompileCtx::body` while the body compiles), so every compile of a
 body has the same ids.
 
 **An instance** compiles its body as before and runs

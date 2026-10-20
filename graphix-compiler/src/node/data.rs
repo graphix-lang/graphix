@@ -162,15 +162,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     composite_plumbing!(Struct);
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        // CR claude for claude: [dead/low] Unreachable: struct_fields parses with
-        // sep_by1, so a struct literal has at least one field, `{}` is the empty Map,
-        // and nothing else builds an ExprKind::Struct. Delete this branch. Found by
-        // reading; not run. (c-data-map-06)
-        if self.n.is_empty() {
-            return super::produce_constant(ctx.event, &mut self.resident, || {
-                rep::structure_of_fields([])
-            });
-        }
         let fields = self.n.len();
         let (tag, prods) = super::gather(ctx, &mut self.n, &mut self.fork);
         let woke = self.slept.take();

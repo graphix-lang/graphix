@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{Collect, FuseExpect, Mode, collect, refused},
+    testing::{Collect, FuseExpect, Mode, collect, prints, refused},
 };
 use netidx::subscriber::Value;
 use std::time::Duration;
@@ -28,29 +28,13 @@ const LIST_CONS: &str = r#"
   list::to_array(list::cons(1, list::cons(2, list::cons(3, list::nil(null)))))
 "#;
 
-run!(list_cons, LIST_CONS, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_cons, LIST_CONS, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
 
 const LIST_SINGLETON: &str = r#"
   list::to_array(list::singleton(42))
 "#;
 
-run!(list_singleton, LIST_SINGLETON, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(42)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_singleton, LIST_SINGLETON, prints("[i64:42]"); FuseExpect::Jit);
 
 const LIST_HEAD_NONEMPTY: &str = r#"
   list::head(list::from_array([10, 20, 30]))
@@ -165,57 +149,25 @@ const LIST_REVERSE: &str = r#"
   list::to_array(list::reverse(list::from_array([1, 2, 3])))
 "#;
 
-run!(list_reverse, LIST_REVERSE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(3), Value::I64(2), Value::I64(1)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_reverse, LIST_REVERSE, prints("[i64:3, i64:2, i64:1]"); FuseExpect::Jit);
 
 const LIST_TAKE: &str = r#"
   list::to_array(list::take(2, list::from_array([1, 2, 3, 4, 5])))
 "#;
 
-run!(list_take, LIST_TAKE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_take, LIST_TAKE, prints("[i64:1, i64:2]"); FuseExpect::Jit);
 
 const LIST_TAKE_MORE: &str = r#"
   list::to_array(list::take(10, list::from_array([1, 2, 3])))
 "#;
 
-run!(list_take_more, LIST_TAKE_MORE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_take_more, LIST_TAKE_MORE, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
 
 const LIST_DROP: &str = r#"
   list::to_array(list::drop(2, list::from_array([1, 2, 3, 4, 5])))
 "#;
 
-run!(list_drop, LIST_DROP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(3), Value::I64(4), Value::I64(5)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_drop, LIST_DROP, prints("[i64:3, i64:4, i64:5]"); FuseExpect::Jit);
 
 const LIST_DROP_MORE: &str = r#"
   list::to_array(list::drop(10, list::from_array([1, 2, 3])))
@@ -232,15 +184,7 @@ const LIST_ROUNDTRIP: &str = r#"
   list::to_array(list::from_array([10, 20, 30]))
 "#;
 
-run!(list_roundtrip, LIST_ROUNDTRIP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(10), Value::I64(20), Value::I64(30)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_roundtrip, LIST_ROUNDTRIP, prints("[i64:10, i64:20, i64:30]"); FuseExpect::Jit);
 
 const LIST_CONCAT: &str = r#"
 {
@@ -273,15 +217,7 @@ const LIST_FLATTEN: &str = r#"
 }
 "#;
 
-run!(list_flatten, LIST_FLATTEN, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_flatten, LIST_FLATTEN, prints("[i64:1, i64:2, i64:3, i64:4, i64:5]"); FuseExpect::Jit);
 
 const LIST_MAP: &str = r#"
 {
@@ -290,15 +226,7 @@ const LIST_MAP: &str = r#"
 }
 "#;
 
-run!(list_map, LIST_MAP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(2), Value::I64(4), Value::I64(6)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_map, LIST_MAP, prints("[i64:2, i64:4, i64:6]"); FuseExpect::Jit);
 
 const LIST_MAP_TYPE_ERR: &str = r#"
 {
@@ -316,21 +244,7 @@ const LIST_FILTER: &str = r#"
 }
 "#;
 
-run!(list_filter, LIST_FILTER, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [
-                Value::I64(4),
-                Value::I64(5),
-                Value::I64(6),
-                Value::I64(7),
-                Value::I64(8),
-            ] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_filter, LIST_FILTER, prints("[i64:4, i64:5, i64:6, i64:7, i64:8]"); FuseExpect::Jit);
 
 const LIST_FILTER_MAP: &str = r#"
 {
@@ -342,15 +256,7 @@ const LIST_FILTER_MAP: &str = r#"
 }
 "#;
 
-run!(list_filter_map, LIST_FILTER_MAP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(7), Value::I64(8), Value::I64(9)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_filter_map, LIST_FILTER_MAP, prints("[i64:7, i64:8, i64:9]"); FuseExpect::Jit);
 
 const LIST_FLAT_MAP: &str = r#"
 {
@@ -359,15 +265,7 @@ const LIST_FLAT_MAP: &str = r#"
 }
 "#;
 
-run!(list_flat_map, LIST_FLAT_MAP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(list_flat_map, LIST_FLAT_MAP, prints("[i64:1, i64:2, i64:2, i64:3]"); FuseExpect::Jit);
 
 const LIST_FOLD: &str = r#"
 {

@@ -6,10 +6,8 @@
 //! in both engines. A dropped write through a reference names its
 //! writer, and a task the runtime cancels itself logs nothing.
 
-use std::{
-    fs,
-    process::{Command, Stdio},
-};
+mod common;
+use common::graphix;
 
 /// A runtime index (rand cannot fold) that is always out of bounds,
 /// swallowed once by `$` and once by a `?` no catch covers.
@@ -28,48 +26,16 @@ let a = #[native] array::init(n, |i| i);
 sys::exit(sys::time::after_idle(duration:200.ms, 0))
 "#;
 
-/// Run `program` with logging to `dir`; returns (stderr, log text).
-// CR claude for claude: [structure/low] This tempdir / spawn graphix / collect *.log
-// helper is rebuilt by hand in about 19 shell test files. The log collection is copied
-// verbatim in five of them, and flags drift (--no-netidx and stdin null in some, not
-// others). Several clean up only after their asserts, so failing runs leave gx-*
-// directories behind. One tests/common/mod.rs function graphix(program, args, env) ->
-// Ran { status, stdout, stderr, log } over a tempfile::TempDir would replace them.
-// Found by reading. (tests-shell-compiler-06)
+/// Run `program`; returns (stderr, log text).
 fn run(program: &str, no_fusion: bool, label: &str) -> (String, String) {
-    let dir =
-        std::env::temp_dir().join(format!("gx-swallow-{}-{}", std::process::id(), label));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("tempdir");
-    let path = dir.join("swallow.gx");
-    fs::write(&path, program).expect("write program");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
-    cmd.arg("--no-cache");
-    if no_fusion {
-        cmd.arg("--no-fusion");
-    }
-    let out = cmd
-        .arg("--no-netidx")
-        .arg("--log-dir")
-        .arg(&dir)
-        .arg(&path)
-        .env("RUST_LOG", "warn")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run graphix");
-    assert!(
-        out.status.success(),
-        "{label}: graphix failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let log = fs::read_dir(&dir)
-        .expect("read log dir")
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
-        .map(|e| fs::read_to_string(e.path()).expect("read log"))
-        .collect::<String>();
-    let _ = fs::remove_dir_all(&dir);
-    (String::from_utf8_lossy(&out.stderr).into_owned(), log)
+    let dir = tempfile::tempdir().expect("tempdir");
+    let args: &[&str] = match no_fusion {
+        true => &["--no-cache", "--no-fusion"],
+        false => &["--no-cache"],
+    };
+    let ran = graphix(dir.path(), program, args, &[("RUST_LOG", "warn")]);
+    assert!(ran.status.success(), "{label}: graphix failed: {}", ran.stderr);
+    (ran.stderr, ran.log)
 }
 
 fn assert_diagnostics(label: &str, module: &str, stderr: &str, log: &str) {

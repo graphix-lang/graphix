@@ -1,7 +1,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::subscriber::Value;
 
@@ -51,7 +51,7 @@ const ONCE: &str = r#"
 }
 "#;
 
-run!(once, ONCE, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+run!(once, ONCE, is(Value::I64(1)); FuseExpect::None);
 
 const SKIP: &str = r#"
 {
@@ -60,15 +60,7 @@ const SKIP: &str = r#"
 }
 "#;
 
-run!(skip, SKIP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(4), Value::I64(5), Value::I64(6)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(skip, SKIP, prints("[i64:4, i64:5, i64:6]"); FuseExpect::Jit);
 
 const SKIP_ZERO: &str = r#"
 {
@@ -77,15 +69,7 @@ const SKIP_ZERO: &str = r#"
 }
 "#;
 
-run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(skip_zero, SKIP_ZERO, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
 
 const SKIP_ALL: &str = r#"
 {
@@ -94,10 +78,7 @@ const SKIP_ALL: &str = r#"
 }
 "#;
 
-run!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(skip_all, SKIP_ALL, is(Value::I64(0)); FuseExpect::None);
 
 const TAKE: &str = r#"
 {
@@ -106,7 +87,7 @@ const TAKE: &str = r#"
 }
 "#;
 
-run!(take, TAKE, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::None);
+run!(take, TAKE, is(Value::I64(3)); FuseExpect::None);
 
 const TAKE_ZERO: &str = r#"
 {
@@ -115,10 +96,7 @@ const TAKE_ZERO: &str = r#"
 }
 "#;
 
-run!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(take_zero, TAKE_ZERO, is(Value::I64(0)); FuseExpect::None);
 
 const TAKE_MORE: &str = r#"
 {
@@ -127,15 +105,7 @@ const TAKE_MORE: &str = r#"
 }
 "#;
 
-run!(take_more, TAKE_MORE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(take_more, TAKE_MORE, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
 
 const ALL: &str = r#"
 {
@@ -146,10 +116,7 @@ const ALL: &str = r#"
 }
 "#;
 
-run!(all, ALL, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(all, ALL, is(Value::I64(1)); FuseExpect::Jit);
 
 const SUM: &str = r#"
 {
@@ -158,10 +125,7 @@ const SUM: &str = r#"
 }
 "#;
 
-run!(sum, SUM, |v: Result<&Value>| match v {
-    Ok(Value::I64(21)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(sum, SUM, is(Value::I64(21)); FuseExpect::Jit);
 
 const PRODUCT: &str = r#"
 {
@@ -172,10 +136,7 @@ const PRODUCT: &str = r#"
 
 // `product` over a heterogeneous `Array<Number>` fuses: a union of the
 // number typedefs is the primitive set it names.
-run!(product, PRODUCT, |v: Result<&Value>| match v {
-    Ok(Value::F64(21.0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(product, PRODUCT, is(Value::F64(21.0)); FuseExpect::Jit);
 
 const DIVIDE: &str = r#"
 {
@@ -184,51 +145,32 @@ const DIVIDE: &str = r#"
 }
 "#;
 
-run!(divide, DIVIDE, |v: Result<&Value>| match v {
-    Ok(Value::I64(21)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(divide, DIVIDE, is(Value::I64(21)); FuseExpect::Jit);
 
 // min/max compare each argument as a whole value under the total order.
 const MIN_VALUE_LEVEL: &str = r#"
    min([1, 9], [3, 4])
 "#;
 
-run!(min_value_level, MIN_VALUE_LEVEL, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(9)]),
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(min_value_level, MIN_VALUE_LEVEL, prints("[i64:1, i64:9]"); FuseExpect::Jit);
 
 const MAX_VALUE_LEVEL: &str = r#"
    max([1, 9], [3, 4])
 "#;
 
-run!(max_value_level, MAX_VALUE_LEVEL, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(4)]),
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(max_value_level, MAX_VALUE_LEVEL, prints("[i64:3, i64:4]"); FuseExpect::Jit);
 
 const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
 "#;
 
-run!(min, MIN, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(min, MIN, is(Value::I64(0)); FuseExpect::Jit);
 
 const MAX: &str = r#"
    max(1, 2, 3, 4, 5, 6, 0)
 "#;
 
-run!(max, MAX, |v: Result<&Value>| match v {
-    Ok(Value::I64(6)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(max, MAX, is(Value::I64(6)); FuseExpect::Jit);
 
 const AND: &str = r#"
 {
@@ -239,19 +181,13 @@ const AND: &str = r#"
 }
 "#;
 
-run!(and, AND, |v: Result<&Value>| match v {
-    Ok(Value::Bool(true)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(and, AND, is(Value::Bool(true)); FuseExpect::Jit);
 
 const OR: &str = r#"
   or(false, false, true)
 "#;
 
-run!(or, OR, |v: Result<&Value>| match v {
-    Ok(Value::Bool(true)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(or, OR, is(Value::Bool(true)); FuseExpect::Jit);
 
 const INDEX: &str = r#"
 {
@@ -260,10 +196,7 @@ const INDEX: &str = r#"
 }
 "#;
 
-run!(index, INDEX, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(index, INDEX, is(Value::I64(3)); FuseExpect::Jit);
 
 const SLICE: &str = r#"
 {
@@ -272,15 +205,7 @@ const SLICE: &str = r#"
 }
 "#;
 
-run!(slice, SLICE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(7), Value::I64(15), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(slice, SLICE, prints("[i64:7, i64:15, i64:3]"); FuseExpect::Jit);
 
 const FILTER0: &str = r#"
 {
@@ -370,15 +295,7 @@ const QUEUEFN_QUEUE_POP: &str = r#"
 }
 "#;
 
-run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(10), Value::I64(20), Value::I64(30), Value::I64(40)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, prints("[i64:10, i64:20, i64:30, i64:40]"); FuseExpect::None);
 
 const QUEUEFN_MULTI_ARG: &str = r#"
 {
@@ -392,15 +309,7 @@ const QUEUEFN_MULTI_ARG: &str = r#"
 }
 "#;
 
-run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(201), Value::I64(403), Value::I64(605)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, prints("[i64:201, i64:403, i64:605]"); FuseExpect::None);
 
 const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 {
@@ -413,15 +322,7 @@ const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 }
 "#;
 
-run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, prints("[i64:100, i64:200, i64:300]"); FuseExpect::None);
 
 // `#count` is written each time the queue grows; with `#trigger=never()`
 // nothing pops, so depth ramps up.
@@ -441,15 +342,7 @@ const QUEUEFN_COUNT_REF: &str = r#"
 }
 "#;
 
-run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(-1), Value::I64(2)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(queuefn_count_ref, QUEUEFN_COUNT_REF, prints("[i64:-1, i64:2]"); FuseExpect::None);
 
 // A place target for #count is written as a level too: the cycle's
 // changes land as one write, as they do for a binding.
@@ -477,7 +370,7 @@ const QUEUEFN_HOF_CALLBACK: &str = r#"
 }
 "#;
 
-run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, is(Value::I64(1)); FuseExpect::None);
 
 // Feeding the wrapper output back to the trigger drains every queued
 // invocation.
@@ -520,15 +413,7 @@ const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
 run!(
     queuefn_trigger_before_fn,
     QUEUEFN_TRIGGER_BEFORE_FN,
-    |v: Result<&Value>| {
-        match v {
-            Ok(Value::Array(a)) => match &a[..] {
-                [Value::I64(10), Value::I64(20), Value::I64(30)] => true,
-                _ => false,
-            },
-            _ => false,
-        }
-    }; FuseExpect::None);
+    prints("[i64:10, i64:20, i64:30]"); FuseExpect::None);
 
 // A wrapped fn with a trigger-style arg (`tick ~ x + 1000`) emits once
 // per tick/x pair and never when one fires alone.
@@ -550,15 +435,7 @@ const QUEUEFN_TRIGGER_ARG: &str = r#"
 run!(
     queuefn_trigger_arg,
     QUEUEFN_TRIGGER_ARG,
-    |v: Result<&Value>| {
-        match v {
-            Ok(Value::Array(a)) => match &a[..] {
-                [Value::I64(1010), Value::I64(1020), Value::I64(1030)] => true,
-                _ => false,
-            },
-            _ => false,
-        }
-    }; FuseExpect::None);
+    prints("[i64:1010, i64:1020, i64:1030]"); FuseExpect::None);
 
 // A netidx subscription inside the wrapped lambda: queuefn serializes
 // the three subscribes via feedback.
@@ -586,15 +463,7 @@ const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 run!(
     queuefn_net_subscribe,
     QUEUEFN_NET_SUBSCRIBE,
-    |v: Result<&Value>| {
-        match v {
-            Ok(Value::Array(a)) => match &a[..] {
-                [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
-                _ => false,
-            },
-            _ => false,
-        }
-    }; FuseExpect::None);
+    prints("[i64:100, i64:200, i64:300]"); FuseExpect::None);
 
 // Per-cycle delta semantics: a pop sets only the queued arg, so an x
 // queued without a tick emits nothing. Total emits: 2.
@@ -633,15 +502,7 @@ const COUNT: &str = r#"
 }
 "#;
 
-run!(count, COUNT, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(count, COUNT, prints("[i64:1, i64:2, i64:3, i64:4]"); FuseExpect::Jit);
 
 const SAMPLE: &str = r#"
 {
@@ -670,21 +531,13 @@ const UNIQ: &str = r#"
 }
 "#;
 
-run!(uniq, UNIQ, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::None);
+run!(uniq, UNIQ, is(Value::I64(3)); FuseExpect::None);
 
 const RANGE: &str = r#"
   array::group(range(0, 4), |n, _| n == 4)
 "#;
 
-run!(range, RANGE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(0), Value::I64(1), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::None);
+run!(range, RANGE, prints("[i64:0, i64:1, i64:2, i64:3]"); FuseExpect::None);
 
 const THROTTLE: &str = r#"
 {
@@ -694,15 +547,7 @@ const THROTTLE: &str = r#"
 }
 "#;
 
-run!(throttle, THROTTLE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(10)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; FuseExpect::Jit);
+run!(throttle, THROTTLE, prints("[i64:1, i64:10]"); FuseExpect::Jit);
 
 const NEVER: &str = r#"
 {
@@ -777,10 +622,7 @@ const HOLD_BASIC: &str = r#"
 }
 "#;
 
-run!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
-    Ok(Value::I64(42)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(hold_basic, HOLD_BASIC, is(Value::I64(42)); FuseExpect::None);
 
 const HOLD_MULTIPLE: &str = r#"
 {
@@ -791,7 +633,7 @@ const HOLD_MULTIPLE: &str = r#"
 "#;
 
 // hold releases only the value standing when its clock fires.
-run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| matches!(v, Ok(Value::I64(30))); FuseExpect::None);
+run!(hold_multiple, HOLD_MULTIPLE, is(Value::I64(30)); FuseExpect::None);
 
 const HOLD_NO_TRIGGER: &str = r#"
 {
@@ -801,16 +643,7 @@ const HOLD_NO_TRIGGER: &str = r#"
 }
 "#;
 
-// The hold call node-walks; the scalar sub-regions around it fuse.
-// CR claude for claude: [readability/low] The comment above says scalar sub-regions
-// fuse, but this test asserts FuseExpect::None and graphix-fuzz run reports fused=0
-// (count has no fast-call entry; any depends on partial delivery). Delete the comment;
-// the copy above hold_multiple_values should name what actually fuses or go too. Found
-// by running graphix-fuzz run on the fixture. (tests-lib-a-03)
-run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(hold_no_trigger, HOLD_NO_TRIGGER, is(Value::I64(0)); FuseExpect::None);
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
 {
@@ -821,11 +654,7 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 }
 "#;
 
-// The hold call node-walks; the scalar sub-regions around it fuse.
-run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
-    Ok(Value::I64(300)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, is(Value::I64(300)); FuseExpect::Jit);
 
 const NOW: &str = r#"sys::time::now(null)"#;
 
@@ -901,7 +730,7 @@ run!(all_compares_references_by_what_they_name, r#"{
     let r1 = &a;
     let r2 = &a;
     *all(r1, r2)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+}"#, is(Value::I64(1)); FuseExpect::None);
 
 // opt::contains compares as `==` does: a reference by what it names, and
 // a type `==` refuses is refused.
@@ -916,7 +745,7 @@ run!(opt_contains_compares_references_by_what_they_name, r#"{
 run!(opt_contains_tells_a_tuple_from_an_array, r#"{
     let x: [(i64, i64), Array<i64>, null] = (1, 2);
     opt::contains(x, [1, 2])
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(false))); FuseExpect::Jit);
+}"#, is(Value::Bool(false)); FuseExpect::Jit);
 
 run!(opt_contains_refuses_the_indiscernible, r#"{
     let a = |x: i64| x;
@@ -970,7 +799,7 @@ run!(queuefn_sleeping_site_drops_its_calls, r#"{
     let xb = select c { 3 => 10, _ => never() };
     let r = select mode { `A => q(xa), `B => q(xb) };
     select r { 10 => c, _ => never() }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::Jit);
+}"#, is(Value::I64(5)); FuseExpect::Jit);
 
 // The option HOFs answer every delivery of their input, as their select
 // spellings do, even when the callback ignores its argument: after a
@@ -990,3 +819,70 @@ run!(opt_hofs_answer_every_input, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[i64:100, true, false, i64:4, i64:100]")
 }; FuseExpect::Jit);
+
+// A queuefn whose arm sleeps keeps its queue and its credit: the calls
+// made after the first wait for a trigger that never fires, before the
+// sleep and after the wake (core-aux-01, x-builtin-effects-03).
+run!(queuefn_sleep_is_a_pause, r#"{
+    let c = 0;
+    c <- select c { n if n < 8 => n + 1, _ => never() };
+    let sel = select c { 3 => 1, _ => 0 };
+    let qf = never();
+    let r = select sel {
+        0 => qf <- queuefn(#trigger: never(), |x: i64| -> i64 x * 10),
+        _ => null
+    };
+    let x = select c { 1 => 10, 2 => 20, 5 => 50, _ => never() };
+    let out = qf(x);
+    let log: Array<i64> = [];
+    log <- out ~ array::push(log, out);
+    select c { 8 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:100]")
+}; FuseExpect::Jit);
+
+// A throttle whose arm sleeps keeps the window its last emission opened:
+// the first fire after the wake waits out the rest of it (core-lib-02).
+run!(throttle_sleep_keeps_the_window, r#"{
+    let c = 0;
+    c <- select c { n if n < 6 => n + 1, _ => never() };
+    let log: Array<i64> = [];
+    let on = select c { 2 => false, 3 => false, _ => true };
+    select uniq(on) {
+        true => {
+            let t = throttle(#rate: duration:10.s, c);
+            log <- t ~ array::push(log, t);
+            t
+        },
+        false => never()
+    };
+    select c { 6 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:0]")
+}; FuseExpect::Jit);
+
+// The elements a range owes deliver though its arguments go bottom
+// (core-lib-01).
+run!(range_delivers_past_a_bottom_argument, r#"{
+    let go = 0;
+    let j = select go { 0 => 5, _ => never() };
+    let v = range(0, j)$;
+    go <- v ~ 1;
+    let log: Array<i64> = [];
+    log <- v ~ array::push(log, v);
+    select array::len(log) { 5 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:2, i64:3, i64:4]")
+}; FuseExpect::Jit);
+
+// all over a type holding a reference still compares an abstract part by
+// its core Eq (core-lib-03).
+run!(all_with_a_reference_uses_eq, r#"{
+    type Key = Abstract<string>;
+    impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+    let x = 0;
+    let with_ref = all((&x, Key("Foo")), (&x, Key("FOO")));
+    with_ref ~ "fired"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "fired")
+}; FuseExpect::None);

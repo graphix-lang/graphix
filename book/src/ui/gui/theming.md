@@ -4,40 +4,10 @@ Every GUI window accepts a `#theme` parameter that controls the visual appearanc
 
 ## Built-in Themes
 
-<!-- CR claude for claude: [structure/low] This page, and types.md, copy about 150 lines
-of type and builder definitions from gui's mod.gxi and style.gxi by hand. The book test
-only parses fences, so the first renamed field or new theme diverges silently. Fix: mark
-each definition with `// ANCHOR: <name>` in the gxi and `{{#include}}` it, as types.md
-already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
 The `Theme` type enumerates all available themes:
 
 ```graphix
-type Theme = [
-  `Light,
-  `Dark,
-  `Dracula,
-  `Nord,
-  `SolarizedLight,
-  `SolarizedDark,
-  `GruvboxLight,
-  `GruvboxDark,
-  `CatppuccinLatte,
-  `CatppuccinFrappe,
-  `CatppuccinMacchiato,
-  `CatppuccinMocha,
-  `TokyoNight,
-  `TokyoNightStorm,
-  `TokyoNightLight,
-  `KanagawaWave,
-  `KanagawaDragon,
-  `KanagawaLotus,
-  `Moonfly,
-  `Nightfly,
-  `Oxocarbon,
-  `Ferra,
-  `Custom(StyleSheet),
-  `CustomPalette(Palette)
-];
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:theme}}
 ```
 
 Apply a theme by passing it to the `window` function:
@@ -63,14 +33,7 @@ window(#theme: &theme, &content)
 For quick color customization without defining per-widget styles, use `` `CustomPalette `` with a `Palette`:
 
 ```graphix
-type Palette = {
-  background: Color,
-  danger: Color,
-  primary: Color,
-  success: Color,
-  text: Color,
-  warning: Color
-};
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:palette}}
 ```
 
 The palette defines the core colors from which iced derives all widget styles automatically:
@@ -93,22 +56,7 @@ The palette defines the core colors from which iced derives all widget styles au
 For full control over individual widget appearances, use `` `Custom(StyleSheet) ``. A stylesheet combines a palette with optional per-widget style overrides:
 
 ```graphix
-type StyleSheet = {
-  button: [ButtonStyle, null],
-  checkbox: [CheckboxStyle, null],
-  container: [ContainerStyle, null],
-  menu: [MenuStyle, null],
-  palette: Palette,
-  pick_list: [PickListStyle, null],
-  progress_bar: [ProgressBarStyle, null],
-  radio: [RadioStyle, null],
-  rule: [RuleStyle, null],
-  scrollable: [ScrollableStyle, null],
-  slider: [SliderStyle, null],
-  text_editor: [TextEditorStyle, null],
-  text_input: [TextInputStyle, null],
-  toggler: [TogglerStyle, null]
-};
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:stylesheet_type}}
 ```
 
 Every widget style field is optional (union with `null`). When `null`, the widget inherits its style from the palette automatically.
@@ -118,22 +66,7 @@ Every widget style field is optional (union with `null`). When `null`, the widge
 Use the `stylesheet` function to construct a `StyleSheet` without filling in every field manually. Only `#palette` is required; all widget style parameters default to `null`:
 
 ```graphix
-val stylesheet: fn(
-  #palette: Palette,
-  ?#button: [ButtonStyle, null],
-  ?#checkbox: [CheckboxStyle, null],
-  ?#container: [ContainerStyle, null],
-  ?#menu: [MenuStyle, null],
-  ?#pick_list: [PickListStyle, null],
-  ?#progress_bar: [ProgressBarStyle, null],
-  ?#radio: [RadioStyle, null],
-  ?#rule: [RuleStyle, null],
-  ?#scrollable: [ScrollableStyle, null],
-  ?#slider: [SliderStyle, null],
-  ?#text_editor: [TextEditorStyle, null],
-  ?#text_input: [TextInputStyle, null],
-  ?#toggler: [TogglerStyle, null]
-) -> StyleSheet;
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:stylesheet}}
 ```
 
 Example with a custom palette and button override:
@@ -151,71 +84,22 @@ Each widget style type is a struct where every field is optional (`[T, null]`). 
 ### ButtonStyle
 
 ```graphix
-type ButtonStyle = {
-  background: [Color, null],
-  border_color: [Color, null],
-  border_radius: [f64, null],
-  border_width: [f64, null],
-  text_color: [Color, null]
-};
-
-val button_style: fn(
-  ?#background: [Color, null],
-  ?#border_color: [Color, null],
-  ?#border_radius: [f64, null],
-  ?#border_width: [f64, null],
-  ?#text_color: [Color, null]
-) -> ButtonStyle;
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:button_style_type}}
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:button_style}}
 ```
 
 ### TextInputStyle
 
 ```graphix
-type TextInputStyle = {
-  background: [Color, null],
-  border_color: [Color, null],
-  border_radius: [f64, null],
-  border_width: [f64, null],
-  icon_color: [Color, null],
-  placeholder_color: [Color, null],
-  selection_color: [Color, null],
-  value_color: [Color, null]
-};
-
-val text_input_style: fn(
-  ?#background: [Color, null],
-  ?#border_color: [Color, null],
-  ?#border_radius: [f64, null],
-  ?#border_width: [f64, null],
-  ?#icon_color: [Color, null],
-  ?#placeholder_color: [Color, null],
-  ?#selection_color: [Color, null],
-  ?#value_color: [Color, null]
-) -> TextInputStyle;
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:text_input_style_type}}
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:text_input_style}}
 ```
 
 ### SliderStyle
 
 ```graphix
-type SliderStyle = {
-  handle_border_color: [Color, null],
-  handle_border_width: [f64, null],
-  handle_color: [Color, null],
-  handle_radius: [f64, null],
-  rail_color: [Color, null],
-  rail_fill_color: [Color, null],
-  rail_width: [f64, null]
-};
-
-val slider_style: fn(
-  ?#handle_border_color: [Color, null],
-  ?#handle_border_width: [f64, null],
-  ?#handle_color: [Color, null],
-  ?#handle_radius: [f64, null],
-  ?#rail_color: [Color, null],
-  ?#rail_fill_color: [Color, null],
-  ?#rail_width: [f64, null]
-) -> SliderStyle;
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:slider_style_type}}
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:slider_style}}
 ```
 
 ### Other Widget Styles

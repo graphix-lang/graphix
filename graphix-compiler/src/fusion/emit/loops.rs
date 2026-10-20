@@ -1,7 +1,12 @@
 //! The fused loops of the collection intrinsics (`node/collection.rs`):
 //! each traversal's gate and its loop over the scaffold.
 
-use super::{self as emit, BodyCx, CompiledExpr, CompositeSource, scaffold};
+use super::{
+    self as emit, BodyCx, CompiledExpr, CompositeSource,
+    abi::LocalKind,
+    body::{emit_into_slot, slot_source},
+    scaffold,
+};
 use crate::{
     BindId, Node, NodeView, Rt, UserEvent,
     expr::Expr,
@@ -9,7 +14,7 @@ use crate::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
     },
-    node::{collection::Flavor, lambda::GXLambda},
+    node::{collection::Flavor, lambda::GXLambda, pattern::StructPatternNode},
     typ::{FnArgKind, Type},
 };
 use anyhow::Result;
@@ -20,32 +25,40 @@ use netidx_value::Typ;
 use smallvec::SmallVec;
 
 #[derive(Debug)]
-pub(crate) struct CallbackParam {
+pub(crate) struct CallbackParam<'p> {
     name: ArcStr,
     id: Option<BindId>,
     binds: Vec<(BindId, usize)>,
+    /// A destructure past a flat tuple, bound as a `let` binds it.
+    pattern: Option<&'p StructPatternNode>,
 }
 
-impl CallbackParam {
+impl CallbackParam<'_> {
     /// The loop's element bind for this parameter.
     fn elem<'a>(
         &'a self,
         typ: &'a Type,
         leaves: &'a [scaffold::Leaf],
     ) -> scaffold::HofElem<'a> {
-        scaffold::HofElem { name: &self.name, id: self.id, typ, leaves }
+        scaffold::HofElem {
+            name: &self.name,
+            id: self.id,
+            typ,
+            leaves,
+            pattern: self.pattern,
+        }
     }
 }
 
 /// The callback's `index`-th positional parameter. A callback with
 /// labeled parameters, which the collection interprets, is a blocker
 /// naming the first.
-pub(crate) fn callback_param<R: Rt, E: UserEvent>(
-    callback: &GXLambda<R, E>,
+pub(crate) fn callback_param<'c, R: Rt, E: UserEvent>(
+    callback: &'c GXLambda<R, E>,
     index: usize,
     fallback: ArcStr,
     spec: &Expr,
-) -> Result<Option<CallbackParam>> {
+) -> Result<Option<CallbackParam<'c>>> {
     if let Some(FnArgKind::Labeled { name, .. }) =
         callback.typ().args.first().map(|a| &a.kind)
     {
@@ -57,9 +70,19 @@ pub(crate) fn callback_param<R: Rt, E: UserEvent>(
         ));
     }
     let Some(arg) = callback.args().get(index) else { return Ok(None) };
+    let mut names = false;
+    arg.ids(&mut |_| names = true);
     Ok(match arg.tuple_leaves() {
-        Some(binds) => Some(CallbackParam { name: fallback, id: None, binds }),
-        // CR claude for claude: [perf/medium] A destructuring formal other than a flat
+        Some(binds) => {
+            Some(CallbackParam { name: fallback, id: None, binds, pattern: None })
+        }
+        None if names && arg.single_bind_id().is_none() => Some(CallbackParam {
+            name: fallback,
+            id: None,
+            binds: Vec::new(),
+            pattern: Some(arg),
+        }),
+        // XCR claude for claude: [perf/medium] A destructuring formal other than a flat
         // tuple (`|{a, b}|`, `|((a, b), c)|`, a fold acc `|((n, m), k), x|`) lands here
         // as if it were a single name: id is None, there are no leaves, and the
         // pattern's binds are never bound. The loop then fails with 'emit_clif:
@@ -70,11 +93,27 @@ pub(crate) fn callback_param<R: Rt, E: UserEvent>(
         // both shapes beside native_destructured_tuple_acc_folds. probe:
         // design/review-2026-10-19/repro/tests-fusion-traits-destructured-callback-defuses.gx
         // (tests-fusion-traits-04)
+        // 2026-10-19 claude: callback_param now refuses a formal that binds names and is
+        // neither one name nor a flat tuple with a blocker naming the parameter (pin:
+        // fusion_review destructured_callback_formal_is_named), so a #[native] says what does
+        // not fuse and nothing reaches 'undefined local'. The loop still node-walks: binding
+        // the general pattern's leaves (as select destructuring does) remains.
+        // 2026-10-19 claude: A formal that binds names and is neither one name nor a flat
+        // tuple now rides the CallbackParam as its pattern: the loop binds the element under
+        // its synthetic name and the pattern's names over it through
+        // select::emit_composite_binds (emit_structure_cond plus install_arm_binds, as a let
+        // destructure does), the owned ones dropped with the iteration's leaves; a fold's
+        // composite acc takes the same (FoldAcc::Composite's pattern). A destructure over a
+        // non-composite element or acc refuses (the bind_elem check, the acc arms' guards).
+        // Pin: fusion_review destructured_callback_formals_fuse (the review's three shapes
+        // plus a filter, each #[native]); an RSS watch over 3000 ticks of the three loops
+        // matches the single-name control.
         None => match &callback.typ().args.get(index).map(|a| &a.kind) {
             Some(FnArgKind::Positional { name: Some(name) }) => Some(CallbackParam {
                 name: name.clone(),
                 id: arg.single_bind_id(),
                 binds: Vec::new(),
+                pattern: None,
             }),
             _ => None,
         },
@@ -243,7 +282,7 @@ pub(crate) fn emit_init_kind<R: Rt, E: UserEvent>(
     }
     let count = source.emit_clif(cx)?;
     let output_source = emit::node_composite_source(body);
-    let sites = emit::slot_state_sites(cx, body);
+    let sites = emit::loop_body(cx, body);
     let (ptr, flags, count_disc) = scaffold::emit_init_loop(
         cx,
         count.payload,
@@ -281,7 +320,7 @@ pub(crate) fn emit_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let output_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_map_loop(
             cx,
             src,
@@ -311,7 +350,7 @@ pub(crate) fn emit_filter_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_filter_loop(
             cx,
             src,
@@ -350,7 +389,7 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let output_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_filter_map_loop(
             cx,
             src,
@@ -388,7 +427,7 @@ pub(crate) fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     };
     emit_loop(cx, source, flavor, |cx, src| {
         let body_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_flat_map_loop(
             cx,
             src,
@@ -438,7 +477,7 @@ pub(crate) fn emit_find_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let ((disc, payload), flags) = scaffold::emit_find_loop(
             cx,
             src,
@@ -473,7 +512,7 @@ pub(crate) fn emit_find_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let body_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let ((disc, payload), flags) = scaffold::emit_find_map_loop(
             cx,
             src,
@@ -492,21 +531,13 @@ pub(crate) fn emit_find_map_kind<R: Rt, E: UserEvent>(
 pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
     pub(crate) init: &'a Node<R, E>,
     pub(crate) body: &'a Node<R, E>,
-    pub(crate) acc: &'a CallbackParam,
-    pub(crate) element: &'a CallbackParam,
+    pub(crate) acc: &'a CallbackParam<'a>,
+    pub(crate) element: &'a CallbackParam<'a>,
 }
 
-/// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
-/// carry and stays interpreted.
 /// A fold's acc carried one register per field: a tuple of scalars
 /// built by a tuple literal, its parameter destructured into names or
 /// one name read only field by field (`p.0`).
-// CR claude for claude: [readability/low] This doc opens with "The fold kind. A List-
-// or Map-valued accumulator ...", which describes `emit_fold_kind`; that function has
-// no doc. In scaffold.rs, `AccNames` carries `emit_fold_fields_loop`'s paragraph above
-// its own, and the function has none. In call.rs, `OwnedDrop` has two docs run
-// together. Move each paragraph to the item it describes. Found by reading; not run.
-// (f-call-flow-05)
 fn unpackable_acc<R: Rt, E: UserEvent>(
     cx: &BodyCx,
     acc_type: &Type,
@@ -548,6 +579,8 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
     (reads == field_reads).then_some((scaffold::AccNames::Whole(id), prims))
 }
 
+/// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
+/// carry and stays interpreted.
 pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -572,7 +605,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     }
     if let Some((names, prims)) = unpackable_acc(cx, &acc_type, acc, body) {
         return emit_loop(cx, source, flavor, |cx, src| {
-            let sites = emit::slot_state_sites(cx, body);
+            let sites = emit::loop_body(cx, body);
             scaffold::emit_fold_fields_loop(
                 cx,
                 src,
@@ -594,7 +627,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     }
     let acc_leaves;
     let acc_shape = match kernel_abi::abi_kind(&acc_type) {
-        Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
+        Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() && acc.pattern.is_none() => {
             scaffold::FoldAcc::Scalar(prim)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -603,16 +636,19 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
             };
             acc_leaves = leaves;
             scaffold::FoldAcc::Composite {
-                init_src: emit::node_composite_source(init),
-                body_src: emit::node_composite_source(body),
+                init_src: slot_source(cx, init, LocalKind::Composite),
+                body_src: slot_source(cx, body, LocalKind::Composite),
                 leaves: &acc_leaves,
+                pattern: acc.pattern.map(|p| (p, &acc_type)),
             }
         }
-        Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
+        Some(AbiKind::String) if acc.binds.is_empty() && acc.pattern.is_none() => {
+            scaffold::FoldAcc::Str
+        }
         // The init and body may emit narrower members of the acc union;
         // `emit_owned_value_operand_node` normalizes them to an owned Value.
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
-            if acc.binds.is_empty() =>
+            if acc.binds.is_empty() && acc.pattern.is_none() =>
         {
             for n in [init, body] {
                 match kernel_abi::abi_kind(n.typ()) {
@@ -627,16 +663,14 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
         }
         _ => return Ok(None),
     };
-    let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
-    let operand = move |cx: &mut BodyCx, n: &Node<R, E>| {
-        if value_acc {
-            emit::emit_owned_value_operand_node(cx, n)
-        } else {
-            n.emit_clif(cx)
-        }
+    let acc_kind = acc_shape.local_kind();
+    let operand = move |cx: &mut BodyCx, n: &Node<R, E>| match acc_kind {
+        LocalKind::Value => emit::emit_owned_value_operand_node(cx, n),
+        LocalKind::Composite => emit_into_slot(cx, n, acc_kind).map(|s| s.cv),
+        LocalKind::Scalar(_) | LocalKind::String => n.emit_clif(cx),
     };
     emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         scaffold::emit_fold_loop(
             cx,
             src,

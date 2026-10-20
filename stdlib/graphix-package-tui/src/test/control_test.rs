@@ -4,7 +4,7 @@
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn suspend_without_a_display_is_an_error() -> Result<()> {
@@ -24,25 +24,19 @@ let result = paragraph(&status)
         10,
     )
     .await?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
+    h.wait_for(Duration::from_secs(30), |h| {
         let lines = h.render_lines()?;
-        if lines.iter().any(|l| {
-            l.starts_with("error: ") && l.contains("no terminal display is running")
-        }) {
-            return Ok(());
-        }
         if lines.iter().any(|l| l.contains("suspended") || l.contains("idle errored")) {
             anyhow::bail!(
                 "suspend(true) did not error, or suspend(false) did:\n{}",
                 lines.join("\n")
             );
         }
-        if Instant::now() > deadline {
-            anyhow::bail!("no answer from suspend; last render:\n{}", lines.join("\n"));
-        }
-        h.next_update(Duration::from_millis(500)).await?;
-    }
+        Ok(lines.iter().any(|l| {
+            l.starts_with("error: ") && l.contains("no terminal display is running")
+        }))
+    })
+    .await
 }
 
 #[tokio::test]

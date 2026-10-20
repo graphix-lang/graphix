@@ -45,6 +45,8 @@ pub(crate) fn key_event_to_value(
         }
         keyboard::Key::Unidentified => Value::String(literal!("Unidentified")),
     };
+    // winit gives the control character a key types ("\r" for Enter)
+    let printable = text.filter(|t| !t.chars().any(char::is_control));
     let mods = rep::structure([
         (literal!("alt"), Value::Bool(modifiers.alt())),
         (literal!("ctrl"), Value::Bool(modifiers.control())),
@@ -55,15 +57,7 @@ pub(crate) fn key_event_to_value(
         (literal!("key"), key),
         (literal!("modifiers"), mods),
         (literal!("repeat"), Value::Bool(repeat)),
-        // CR claude for claude: [bug/medium] text is winit's text_with_all_modifiers()
-        // passed through unfiltered (convert.rs), which winit documents as "\r" for
-        // Enter and "\x01" for Ctrl+A; Backspace, Tab, Escape and Delete give control
-        // characters too. The book says text is empty for non-character keys, and a
-        // program that appends e.text to a buffer collects those characters. Map text
-        // containing a control character to "" here (iced's text_input does the same)
-        // and pin it with a KeyPressed whose text is "\r". Found by reading; not run.
-        // (gui-widgets-a-03)
-        (literal!("text"), Value::String(text.unwrap_or("").into())),
+        (literal!("text"), Value::String(printable.unwrap_or("").into())),
     ])
 }
 

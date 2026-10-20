@@ -31,7 +31,7 @@ let count = 0;
 count <- timer ~ (count + 1)
 ```
 
-You're telling Graphix: "When `timer` updates, increment `count` for the next cycle." Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. It's also the only looping construct in Graphix—there's no `for` or `while`, just connect and select working together.
+You're telling Graphix: "When `timer` updates, increment `count` for the next cycle." Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. There's no `for` or `while`: a loop over time is connect and select working together, and iteration over a collection is the collection functions (`array::map`, `array::fold`, ...) or recursion.
 
 ## Select: Powerful Pattern Matching
 

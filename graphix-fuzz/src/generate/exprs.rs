@@ -3,7 +3,7 @@
 //! in-scope references.
 
 use super::{
-    GenCtx, chance,
+    GenCtx, chance, patterns,
     types::{self, GenType, I64, Label, NUM_TYS, NumTy},
 };
 use crate::mutate::Rng;
@@ -44,7 +44,7 @@ pub(super) fn gen_pinned(
         t => narrows(t),
     };
     match wide {
-        true => format!("{{ let mt: {} = {v}; mt }}", ty.render()),
+        true => types::pin_to(ty, &v),
         false => v,
     }
 }
@@ -60,9 +60,7 @@ pub(super) fn call_args(
 ) -> String {
     let mut given: Vec<&Label> =
         labels.iter().filter(|l| !l.optional || chance(rng, 0.5)).collect();
-    for i in (1..given.len()).rev() {
-        given.swap(i, rng.below(i + 1));
-    }
+    rng.shuffle(&mut given);
     let mut args: Vec<String> = given
         .into_iter()
         .map(|l| format!("#{}: {}", l.name, gen_typed(ctx, rng, &l.ty, depth)))
@@ -166,10 +164,15 @@ fn try_accessor(
                     cands.push(consume_fallible(ctx, rng, name, ty, "null", depth));
                 }
             }
+            // a visible union read by a type-test select
+            GenType::Union(ms) if rng.below(2) == 0 => {
+                cands.push(patterns::union_select(ctx, rng, name, ms, ty, depth));
+            }
             GenType::Num(_)
             | GenType::Bool
             | GenType::Str
             | GenType::Variant(_)
+            | GenType::Union(_)
             | GenType::Fn { .. }
             | GenType::Dur
             | GenType::Time
@@ -243,22 +246,41 @@ fn map_source_elem(rng: &mut Rng, e: &GenType) -> GenType {
     if rng.below(2) == 0 { e.clone() } else { types::scalar_type(rng) }
 }
 
-/// A source of `Array<d_ty>` and a callback from `d_ty` to `e`.
+/// A source `coll(d_ty)` (an Array or a List) and a callback from `d_ty`
+/// to `e`.
 fn map_parts(
     ctx: &GenCtx,
     rng: &mut Rng,
     e: &GenType,
+    coll: fn(Box<GenType>) -> GenType,
     d_ty: GenType,
     d: usize,
 ) -> HofParts {
-    let src = gen_pinned(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
+    let src = gen_pinned(ctx, rng, &coll(Box::new(d_ty.clone())), d);
     let mut inner = ctx.clone();
     let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
     let body = gen_typed(&inner, rng, e, d.min(2));
     HofParts { src, binder, body }
 }
 
-/// A source of `ty` (an `Array<e>`) and a bool predicate over `e`.
+/// A fold callback's scope: `ctx` with an accumulator of `acc_ty` and a
+/// binder for elements of `d_ty` after it, and the callback's parameter
+/// list.
+fn fold_params(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    acc_ty: &GenType,
+    d_ty: &GenType,
+) -> (GenCtx, String) {
+    let mut inner = ctx.clone();
+    let acc = inner.name_avoiding(rng, |_, _| false);
+    inner.push(acc.clone(), acc_ty.clone());
+    let binder = callback_binder(&mut inner, rng, d_ty, &[acc.clone()]);
+    (inner, format!("{acc}, {binder}"))
+}
+
+/// A source of `ty` (an Array or a List of `e`) and a bool predicate over
+/// `e`.
 fn filter_parts(
     ctx: &GenCtx,
     rng: &mut Rng,
@@ -285,7 +307,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
         GenType::Array(e) => match rng.below(7) {
             0 => {
                 let d_ty = map_source_elem(rng, e);
-                let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);
+                let HofParts { src, binder, body } =
+                    map_parts(ctx, rng, e, GenType::Array, d_ty, d);
                 // a third of draws take the trait road: `Collection::map`
                 // dispatches through the constructor trait
                 Some(if rng.below(3) == 0 {
@@ -305,7 +328,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // list HOFs, roundtrip-wrapped so the target type stays Array
             4 => {
                 let d_ty = map_source_elem(rng, e);
-                let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);
+                let HofParts { src, binder, body } =
+                    map_parts(ctx, rng, e, GenType::Array, d_ty, d);
                 Some(format!(
                     "list::to_array(list::map(list::from_array({src}), |{binder}| {body}))"
                 ))
@@ -319,15 +343,22 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // flat_map's callback returns the collection it splices
             2 => {
                 let d_ty = map_source_elem(rng, e);
-                let HofParts { src, binder, body } =
-                    map_parts(ctx, rng, &GenType::Array(e.clone()), d_ty, d);
+                let HofParts { src, binder, body } = map_parts(
+                    ctx,
+                    rng,
+                    &GenType::Array(e.clone()),
+                    GenType::Array,
+                    d_ty,
+                    d,
+                );
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
             // filter_map keeps the payloads its callback does not null
             3 if e.is_scalar() => {
                 let d_ty = map_source_elem(rng, e);
+                let nullable = GenType::Nullable(e.clone());
                 let HofParts { src, binder, body } =
-                    map_parts(ctx, rng, &GenType::Nullable(e.clone()), d_ty, d);
+                    map_parts(ctx, rng, &nullable, GenType::Array, d_ty, d);
                 Some(format!("array::filter_map({src}, |{binder}| {body})"))
             }
             _ => {
@@ -345,13 +376,6 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             }
         },
         // a List target: literal / from_array / cons / the list HOFs
-        // CR claude for claude: [structure/low] The map, filter and filter_map/flat_map
-        // arms below repeat map_parts and filter_parts by hand, differing only in a
-        // List source instead of an Array one. The scalar fold arm and
-        // try_map_builtin's map::fold repeat the same accumulator + binder setup. Pass
-        // the source GenType into map_parts/filter_parts and use them here, and share
-        // one fold-binder helper between the two folds, so a scoping or pinning fix
-        // cannot miss the list copies. Found by reading; not run. (fuzz-gen-a-06)
         GenType::List(e) => match rng.below(5) {
             0 => {
                 let src =
@@ -364,45 +388,33 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("list::cons({h}, {t})"))
             }
             2 => {
-                let d_ty = if rng.below(2) == 0 {
-                    (**e).clone()
-                } else {
-                    types::scalar_type(rng)
-                };
-                let src = gen_pinned(ctx, rng, &GenType::List(Box::new(d_ty.clone())), d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
-                let body = gen_typed(&inner, rng, e, d.min(2));
+                let d_ty = map_source_elem(rng, e);
+                let HofParts { src, binder, body } =
+                    map_parts(ctx, rng, e, GenType::List, d_ty, d);
                 Some(format!("list::map({src}, |{binder}| {body})"))
             }
             3 => {
-                let src = gen_pinned(ctx, rng, ty, d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, e, &[]);
-                let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+                let HofParts { src, binder, body } = filter_parts(ctx, rng, ty, e, d);
                 Some(format!("list::filter({src}, |{binder}| {body})"))
             }
+            // filter_map keeps the payloads its callback does not null;
+            // flat_map splices the list its callback returns
             _ => {
                 let d_ty = map_source_elem(rng, e);
-                let src = gen_pinned(ctx, rng, &GenType::List(Box::new(d_ty.clone())), d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
-                if e.is_scalar() && rng.below(2) == 0 {
-                    // filter_map keeps the payloads its callback does not null
-                    let body =
-                        gen_typed(&inner, rng, &GenType::Nullable(e.clone()), d.min(2));
-                    Some(format!("list::filter_map({src}, |{binder}| {body})"))
-                } else {
-                    // flat_map splices the list its callback returns
-                    let body = gen_typed(&inner, rng, ty, d.min(2));
-                    Some(format!("list::flat_map({src}, |{binder}| {body})"))
-                }
+                let (f, ret) = match e.is_scalar() && rng.below(2) == 0 {
+                    true => ("filter_map", GenType::Nullable(e.clone())),
+                    false => ("flat_map", ty.clone()),
+                };
+                let HofParts { src, binder, body } =
+                    map_parts(ctx, rng, &ret, GenType::List, d_ty, d);
+                Some(format!("list::{f}({src}, |{binder}| {body})"))
             }
         },
         // find_map: the first payload its callback does not null
         GenType::Nullable(e) if e.is_scalar() && rng.below(3) == 0 => {
             let d_ty = map_source_elem(rng, e);
-            let HofParts { src, binder, body } = map_parts(ctx, rng, ty, d_ty, d);
+            let HofParts { src, binder, body } =
+                map_parts(ctx, rng, ty, GenType::Array, d_ty, d);
             Some(if rng.below(3) == 0 {
                 // the list twin
                 format!("list::find_map(list::from_array({src}), |{binder}| {body})")
@@ -412,10 +424,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
         }
         // find: the union return `[e, null]` is the Nullable type
         GenType::Nullable(e) if e.is_scalar() => {
-            let src = gen_pinned(ctx, rng, &GenType::Array(Box::new((**e).clone())), d);
-            let mut inner = ctx.clone();
-            let binder = callback_binder(&mut inner, rng, e, &[]);
-            let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+            let src_ty = GenType::Array(e.clone());
+            let HofParts { src, binder, body } = filter_parts(ctx, rng, &src_ty, e, d);
             if rng.below(3) == 0 {
                 // the list twin
                 Some(format!("list::find(list::from_array({src}), |{binder}| {body})"))
@@ -430,10 +440,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 if rng.below(2) == 0 { ty.clone() } else { types::random_type(rng, 1) };
             let src = gen_pinned(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
             let init = gen_typed(ctx, rng, ty, d.min(2));
-            let mut inner = ctx.clone();
-            let acc = inner.name_avoiding(rng, |_, _| false);
-            inner.push(acc.clone(), ty.clone());
-            let binder = callback_binder(&mut inner, rng, &d_ty, &[acc.clone()]);
+            let (mut inner, params) = fold_params(ctx, rng, ty, &d_ty);
             let body = if *ty == I64 && rng.below(8) == 0 {
                 // a terminating tail-recursive `let rec` inside the
                 // callback: the per-slot pred lazy-binds at runtime
@@ -442,8 +449,9 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 let la = inner.fresh();
                 let depth = 200 + rng.below(200);
                 let combine = gen_typed(&inner, rng, ty, 1);
+                let attr = if chance(rng, 0.5) { "#[tail_recursive] " } else { "" };
                 format!(
-                    "{{ let rec {lp} = |{ln}: i64, {la}: i64| -> i64 \
+                    "{{ {attr}let rec {lp} = |{ln}: i64, {la}: i64| -> i64 \
                      select {ln} {{ i64:0 => {la}, _ => {lp}({ln} - i64:1, {la} + {ln}) }}; \
                      {lp}(i64:{depth}, i64:0) + {combine} }}"
                 )
@@ -453,12 +461,12 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             if rng.below(4) == 0 {
                 // the list twin
                 Some(format!(
-                    "list::fold(list::from_array({src}), {init}, |{acc}, {binder}| {body})"
+                    "list::fold(list::from_array({src}), {init}, |{params}| {body})"
                 ))
             } else if rng.below(3) == 0 {
-                Some(format!("Collection::fold({src}, {init}, |{acc}, {binder}| {body})"))
+                Some(format!("Collection::fold({src}, {init}, |{params}| {body})"))
             } else {
-                Some(format!("array::fold({src}, {init}, |{acc}, {binder}| {body})"))
+                Some(format!("array::fold({src}, {init}, |{params}| {body})"))
             }
         }
         _ => None,
@@ -661,7 +669,7 @@ pub(super) fn gen_typed(
         GenType::Array(elem) => {
             // occasionally empty (annotated: a bare `[]` doesn't infer)
             if rng.below(10) == 0 {
-                return format!("{{ let mt: {} = []; mt }}", ty.render());
+                return types::pin_to(ty, "[]");
             }
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
@@ -671,14 +679,14 @@ pub(super) fn gen_typed(
             // occasionally empty (annotated: a bare `[<>]` leaves the
             // element cell free)
             if rng.below(10) == 0 {
-                return format!("{{ let mt: {} = [<>]; mt }}", ty.render());
+                return types::pin_to(ty, "[<>]");
             }
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
             // nullable-bearing elements must be annotated: a `null` part
             // infers the bare null, not the union
             if ty.contains_nullable() {
-                format!("{{ let mt: {} = [<{}>]; mt }}", ty.render(), parts.join(", "))
+                types::pin_to(ty, &format!("[<{}>]", parts.join(", ")))
             } else {
                 format!("[<{}>]", parts.join(", "))
             }
@@ -723,6 +731,10 @@ pub(super) fn gen_typed(
             } else {
                 gen_typed(ctx, rng, t, d)
             }
+        }
+        GenType::Union(ms) => {
+            let m = rng.pick(ms);
+            types::pin_to(ty, &gen_typed(ctx, rng, m, d))
         }
         // a visible `&T` binding, `&` of a visible T-typed binding, or
         // `&(<expr>)`
@@ -780,13 +792,10 @@ fn try_map_builtin(
                 GenType::Map { key: Box::new(key.clone()), val: Box::new(elem.clone()) };
             let m = gen_typed(ctx, rng, &mty, d);
             let init = gen_typed(ctx, rng, t, d);
-            let mut inner = ctx.clone();
-            let acc = inner.name_avoiding(rng, |_, _| false);
-            inner.push(acc.clone(), t.clone());
-            let kv = GenType::Tuple(vec![key, elem]);
-            let binder = callback_binder(&mut inner, rng, &kv, &[acc.clone()]);
+            let (inner, params) =
+                fold_params(ctx, rng, t, &GenType::Tuple(vec![key, elem]));
             let body = gen_typed(&inner, rng, t, d);
-            Some(format!("map::fold({m}, {init}, |{acc}, {binder}| {body})"))
+            Some(format!("map::fold({m}, {init}, |{params}| {body})"))
         }
         GenType::Map { key, val: e } => {
             let m = gen_pinned(ctx, rng, ty, d);
@@ -883,56 +892,75 @@ fn ref_comparison(ctx: &GenCtx, rng: &mut Rng) -> Option<String> {
     Some(format!("({a} {op} {b})"))
 }
 
+/// A format a value round-trips through.
+#[derive(Clone, Copy, PartialEq)]
+enum Format {
+    Json,
+    Toml,
+    Pack,
+}
+
+impl Format {
+    /// Whether a value of `ty` round-trips through this format; `field`
+    /// when it is a struct field, where toml writes a null as an absent
+    /// key (anywhere else toml has no null).
+    fn holds(self, ty: &GenType, field: bool) -> bool {
+        use Format::*;
+        let toml = self == Toml;
+        match ty {
+            GenType::Num(n) if toml => {
+                !matches!(n, NumTy::Decimal | NumTy::U64 | NumTy::V64)
+            }
+            GenType::Num(_) | GenType::Bool | GenType::Str | GenType::Time => true,
+            GenType::Dur | GenType::Bytes => !toml,
+            GenType::Nullable(t) => (field || !toml) && self.holds(t, false),
+            GenType::Tuple(ts) => ts.iter().all(|t| self.holds(t, false)),
+            GenType::Array(t) | GenType::List(t) => self.holds(t, false),
+            GenType::Map { key, val } => {
+                let key_ok = match self {
+                    Json => !matches!(**key, GenType::Tuple(_)),
+                    Toml => **key == GenType::Str,
+                    Pack => true,
+                };
+                key_ok && self.holds(key, false) && self.holds(val, false)
+            }
+            GenType::Struct(fs) => fs.iter().all(|(_, t)| self.holds(t, true)),
+            GenType::Variant(vs) => {
+                vs.iter().all(|(_, ts)| ts.iter().all(|t| self.holds(t, false)))
+            }
+            // a reader picks a union's member from the data alone, maybe not the written one
+            GenType::Union(_)
+            | GenType::Fn { .. }
+            | GenType::Ref { .. }
+            | GenType::Abstract { .. } => false,
+        }
+    }
+}
+
 /// A value of `ty` through a format and its async, type-directed reader:
-/// json for any data, toml for a struct (its documents are tables), pack
-/// for any data. The reader's target is the annotation, so the imaged cast
-/// target meets the cold/warm comparison.
+/// json or pack for any data the format holds, toml for a struct (its
+/// documents are tables). The reader's target is the annotation, so the
+/// imaged cast target meets the cold/warm comparison.
 fn try_format_round_trip(
     ctx: &GenCtx,
     rng: &mut Rng,
     ty: &GenType,
     depth: usize,
 ) -> Option<String> {
-    // CR claude for claude: [test-gap/low] `data` excludes List, Dur, Time and Bytes,
-    // but all of them round-trip today. A List writes flat and is rebuilt by the reader
-    // cast; datetime, duration and bytes go through json and pack. Only toml refuses a
-    // duration on write. So the composite-form reader's list path and those conversions
-    // are never generated. Accept List(t) when data(t), accept Dur/Time/Bytes, and keep
-    // durations out of the toml arm. probe:
-    // design/review-2026-10-19/repro/fuzz-gen-b-codec-gap.gx (fuzz-gen-b-03)
-    // CR claude for claude: [test-gap/low] One predicate judges three formats, so it
-    // gets both sides wrong. It refuses List, duration, datetime, bytes and non-string
-    // map keys, which json and pack round-trip (the List one goes through the rep.rs
-    // rebuild the kind markers just changed). For toml it admits decimal, u64/v64 above
-    // i64::MAX and a null inside an array or tuple, which toml::write_str refuses, so
-    // those round trips always bottom. Pick the format first and judge the type against
-    // it. probe: design/review-2026-10-19/repro/fuzz-gen-a-codec-data-gap.gx
-    // (fuzz-gen-a-04)
-    fn data(ty: &GenType) -> bool {
-        match ty {
-            GenType::Num(_) | GenType::Bool | GenType::Str => true,
-            GenType::Dur | GenType::Time | GenType::Bytes => false,
-            GenType::Tuple(ts) => ts.iter().all(data),
-            GenType::Array(t) | GenType::Nullable(t) => data(t),
-            // json and toml keys are strings
-            GenType::Map { key, val } => **key == GenType::Str && data(val),
-            GenType::Struct(fs) => fs.iter().all(|(_, t)| data(t)),
-            GenType::Variant(vs) => vs.iter().all(|(_, ts)| ts.iter().all(data)),
-            GenType::List(_)
-            | GenType::Fn { .. }
-            | GenType::Ref { .. }
-            | GenType::Abstract { .. } => false,
-        }
-    }
-    if !data(ty) {
+    let f = match (rng.below(3), ty) {
+        (0, GenType::Struct(_)) => Format::Toml,
+        (0 | 1, _) => Format::Json,
+        _ => Format::Pack,
+    };
+    if !f.holds(ty, false) {
         return None;
     }
     let v = gen_typed(ctx, rng, ty, depth.min(1));
     let t = ty.render();
-    let fmt = match (rng.below(3), ty) {
-        (0, GenType::Struct(_)) => "toml::read(toml::write_str",
-        (0 | 1, _) => "json::read(json::write_str",
-        _ => "pack::read(pack::write_bytes",
+    let fmt = match f {
+        Format::Toml => "toml::read(toml::write_str",
+        Format::Json => "json::read(json::write_str",
+        Format::Pack => "pack::read(pack::write_bytes",
     };
     Some(format!("{{ let r: {t} = {fmt}({v})$)$; r }}"))
 }
@@ -1018,5 +1046,42 @@ fn try_str_builtin(
             Some(format!("re::split(#pat: r\"{pat}\", {src})$"))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Each format holds what it round-trips, as the codecs answer: toml
+    /// has no duration, bytes, wide integer or decimal, and a null only as
+    /// a struct field; json keys are scalars.
+    #[test]
+    fn formats_hold_what_round_trips() {
+        use Format::*;
+        use GenType::*;
+        let b = |t: GenType| Box::new(t);
+        let opt = Nullable(b(I64));
+        let field = |t: GenType| Struct(vec![("x".into(), t)]);
+        for f in [Json, Pack] {
+            for t in [List(b(I64)), Dur, Time, Bytes, Array(b(opt.clone()))] {
+                assert!(f.holds(&t, false), "{t:?}");
+            }
+        }
+        let tuple_key = Map { key: b(Tuple(vec![I64, Str])), val: b(I64) };
+        assert!(Pack.holds(&tuple_key, false) && !Json.holds(&tuple_key, false));
+        assert!(Json.holds(&Map { key: b(I64), val: b(Str) }, false));
+        assert!(Toml.holds(&field(opt.clone()), false));
+        assert!(Toml.holds(&field(List(b(I64))), false));
+        for t in [
+            Dur,
+            Bytes,
+            Num(NumTy::Decimal),
+            Num(NumTy::U64),
+            Array(b(opt.clone())),
+            Tuple(vec![I64, opt.clone()]),
+        ] {
+            assert!(!Toml.holds(&field(t.clone()), false), "{t:?}");
+        }
     }
 }

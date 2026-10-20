@@ -239,8 +239,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         }
         tv.with_value(|v| {
             let [disc, payload] = match (p, v) {
-                // A narrow Value's upper payload bytes are padding.
-                // CR claude for claude: [readability/low] The comment above is wrong:
+                // XCR claude for claude: [readability/low] The comment above is wrong:
                 // pack_value_to_u64 returns value_words' payload, which sign- or
                 // zero-extends narrow scalars, so no byte is padding.
                 // pack_value_to_u64's doc in emit/jit.rs says a None makes the caller
@@ -249,6 +248,13 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 // i64/u64 slot would be relabeled rather than reported by `mismatch`.
                 // Drop the comment, fix that doc, and test the exact Value variant
                 // here. Found by reading; not run. (f-kernel-05)
+                // 2026-10-19 claude: The wrong padding comment is gone and
+                // pack_value_to_u64's doc says a None is reported as a mismatch. The
+                // exact-variant test is not taken: a v32/z32/v64/z64 parameter's
+                // ParamKind is the fixed-width Scalar prim, so a varint Value in its
+                // slot is the type's own, and an exact test would refuse it; only a
+                // slot that records the varint could tell. Review: drop the third
+                // item or make ParamKind carry varints.
                 (ParamKind::Scalar(prim), v) => match pack_value_to_u64(v, *prim) {
                     Some(payload) => [prim_to_value_disc(*prim) as u64, payload],
                     None => mismatch(v),
@@ -423,7 +429,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             self.self_gen
         });
         let generation =
-            emit_helpers::Restore::set(&SELF_BLOCK_GEN, shrink_gen.unwrap_or(0));
+            crate::Restore::replace(&SELF_BLOCK_GEN, shrink_gen.unwrap_or(0));
         // The run reads its env loan under the value-hook loan (a
         // snapshot when a hook can fire) and delivers its raises after.
         // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)

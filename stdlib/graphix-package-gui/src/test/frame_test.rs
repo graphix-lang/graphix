@@ -3,11 +3,10 @@
 //! their status from.
 
 use super::{GuiTestHarness, headless_gpu};
-use crate::{frame::frame, theme::GraphixTheme, widgets::Renderer};
+use crate::theme::GraphixTheme;
 use ahash::AHashMap;
 use anyhow::Result;
 use iced_core::{Color, Event, Point, Size, clipboard, mouse};
-use iced_runtime::user_interface::Cache;
 use iced_wgpu::graphics::Viewport;
 
 const W: u32 = 400;
@@ -28,28 +27,9 @@ fn button(disabled: bool) -> String {
 }
 
 /// The dominant colour inside the button after one frame.
-fn draw(
-    h: &mut GuiTestHarness,
-    r: &mut Renderer,
-    cache: &mut Cache,
-    events: &[Event],
-    at: Point,
-) -> [u8; 3] {
-    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
-    let mut messages = Vec::new();
-    frame(
-        &mut h.widget,
-        Size::new(W as f32, H as f32),
-        cache,
-        r,
-        events,
-        mouse::Cursor::Available(at),
-        &mut clipboard::Null,
-        &mut messages,
-        &theme,
-    );
-    let rgba =
-        r.screenshot(&Viewport::with_physical_size(Size::new(W, H), 1.0), Color::BLACK);
+fn draw(h: &mut GuiTestHarness, events: &[Event]) -> [u8; 3] {
+    let _ = h.frame(Size::new(W as f32, H as f32), events);
+    let rgba = h.screenshot(W, H);
     let mut counts: AHashMap<[u8; 3], usize> = AHashMap::default();
     for y in 35..65 {
         for x in 35..125 {
@@ -62,15 +42,13 @@ fn draw(
 
 #[tokio::test(flavor = "current_thread")]
 async fn an_enabled_button_draws_enabled_and_hovers() -> Result<()> {
-    let mut r = headless_gpu().await.create_renderer();
     let mut on = GuiTestHarness::new(&button(false)).await?;
     let mut off = GuiTestHarness::new(&button(true)).await?;
-    let mut cache = Cache::default();
-    let idle = draw(&mut on, &mut r, &mut cache, &[], Point::ORIGIN);
+    let idle = draw(&mut on, &[]);
     let over = Point::new(80.0, 50.0);
-    let moved = [Event::Mouse(mouse::Event::CursorMoved { position: over })];
-    let hovered = draw(&mut on, &mut r, &mut cache, &moved, over);
-    let disabled = draw(&mut off, &mut r, &mut Cache::default(), &[], Point::ORIGIN);
+    let hovered =
+        draw(&mut on, &[Event::Mouse(mouse::Event::CursorMoved { position: over })]);
+    let disabled = draw(&mut off, &[]);
     assert_ne!(idle, disabled, "an enabled button drew as disabled");
     assert_ne!(idle, hovered, "the button under the cursor drew as idle");
     Ok(())
@@ -174,7 +152,7 @@ async fn assert_deferred_focus(context_menu: bool) -> Result<()> {
         r#"use gui::text::text; let result = text(&"placeholder")"#,
     )
     .await?;
-    h.inner.widget =
+    h.inner.root.w =
         Box::new(FocusInput { id: Id::unique(), prepared: false, context_menu });
     assert!(matches!(h.type_text("a").as_slice(), [Message::Nop]));
     Ok(())

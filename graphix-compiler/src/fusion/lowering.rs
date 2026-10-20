@@ -9,7 +9,7 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     fusion::{
-        self, FusionBlocker,
+        self, Brief, FusionBlocker,
         kernel_abi::{
             self, AbiKind, KernelParam, KernelSig, ParamKind, Seen, abi_kind,
             expand_key_fp, freeze_for_abi_normalized, scalar_prim,
@@ -26,7 +26,10 @@ use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    collections::hash_map::Entry,
+};
 use triomphe::Arc;
 
 pub use kernel_abi::PrimType;
@@ -117,6 +120,34 @@ pub struct BuiltinCallDiscovery {
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
 
+impl BuiltinCallDiscovery {
+    /// Two instances of one callback in a region share their sites'
+    /// ids, and emission finds a site by id, so a site that two
+    /// instances type apart refuses the region.
+    fn insert(
+        &mut self,
+        spec: &Expr,
+        info: BuiltinCallSiteInfo,
+    ) -> Result<(), FusionBlocker> {
+        match self.apply_sites.entry(spec.id) {
+            Entry::Vacant(e) => {
+                e.insert(info);
+                Ok(())
+            }
+            Entry::Occupied(e)
+                if e.get().arg_types == info.arg_types
+                    && e.get().return_type == info.return_type =>
+            {
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(FusionBlocker {
+                spec: spec.clone(),
+                reason: "two instances in one region type this call apart".into(),
+            }),
+        }
+    }
+}
+
 /// Discover the fusable call sites in a subtree: every `CallSite` on a
 /// builtin with a fast fn and every non-inline `cast<T>(x)`. Descent
 /// is [`fusion::for_each_emitted_node`], so collection callbacks are
@@ -166,11 +197,12 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// A handler-ful `?` under a select arm raises on an edge its arm may
 /// owe to the select's fire tracker: an input whose fire no selected
 /// arm saw is re-delivered FIRED when this arm reads it
-/// (design/wake_catchup.md), and a constant fires at the arm's wake. A
-/// kernel derives its selection fresh every run and remembers neither,
+/// (design/wake_catchup.md), and a constant fires at the arm's first
+/// entry only, a wake being a resume. A kernel derives its selection
+/// fresh every run and remembers neither,
 /// so the raise node-walks. `selects` are the region's selects in
 /// pre-order; one nested in another's arm is covered by the outer walk.
-// CR claude for claude: [doc-drift/low] The doc above says a constant fires at the
+// XCR claude for claude: [doc-drift/low] The doc above says a constant fires at the
 // arm's wake. Since "a wake is a resume" it stands: a constant-derived raise happens at
 // the arm's first entry only (observed: one raise across three `A entries, both
 // engines). The blocker still holds for the missed-fire reason. Drop the constant
@@ -178,6 +210,12 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 // strict-fusion paragraph. probe:
 // design/review-2026-10-19/repro/x-doc-drift-const-raise-not-at-wake.gx
 // (x-doc-drift-04)
+// 2026-10-19 claude: The constant clause is corrected rather than dropped, here, in
+// design/strict_fusion.md (both places) and in CLAUDE.md (AGENTS.md regenerated): a
+// constant fires at the arm's first entry only, a wake being a resume. That entry is
+// still memory a kernel lacks (its born flag is its own instance's, not the arm's), so
+// it stays a reason beside the missed fire. Review: drop it instead if a first-entry
+// raise is judged a kernel's to make.
 fn arm_raise_blocker<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     selects: &[&Node<R, E>],
@@ -196,11 +234,11 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
     // CLAUDE.md. probe:
     // design/review-2026-10-19/repro/f-call-flow-arm-entry-unhandled-raise.gx (0 vs 1
     // reports) and f-call-flow-tail-loop-unhandled-raise.gx (1 vs 6) (f-call-flow-02)
-    let raises =
-        |n: &Node<R, E>| matches!(n.view(), NodeView::Qop(q) if q.handler().is_some());
     let mut any = false;
     if !selects.is_empty() {
-        fusion::for_each_reachable_node(root, &mut |n| any |= raises(n));
+        fusion::for_each_reachable_node(root, &mut |n| {
+            any |= fusion::raises_to_handler(n)
+        });
     }
     if !any {
         return None;
@@ -220,7 +258,7 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
                 NodeView::Select(_) => {
                     nested.insert(n as *const Node<R, E> as usize);
                 }
-                _ if found.is_none() && raises(n) => found = Some(n),
+                _ if found.is_none() && fusion::raises_to_handler(n) => found = Some(n),
                 _ => (),
             });
         }
@@ -393,9 +431,7 @@ fn always_fits(src: PrimType, tgt: PrimType) -> bool {
 fn frozen_or_blocked(t: &Type, spec: &Expr, what: &str) -> Result<Type, FusionBlocker> {
     freeze_for_abi_normalized(t).ok_or_else(|| FusionBlocker {
         spec: spec.clone(),
-        reason: crate::format_with_flags(PrintFlag::DerefTVars, || {
-            format_compact!("{what} type {t} has no kernel ABI form")
-        }),
+        reason: format_compact!("{what} type {} has no kernel ABI form", Brief(t)),
     })
 }
 
@@ -410,8 +446,8 @@ fn try_register_cast<R: Rt, E: UserEvent>(
     }
     let arg_frozen = frozen_or_blocked(source, &tc.spec, "the cast source's")?;
     let ret_frozen = frozen_or_blocked(&tc.typ, &tc.spec, "the cast result's")?;
-    out.apply_sites.insert(
-        tc.spec.id,
+    out.insert(
+        &tc.spec,
         BuiltinCallSiteInfo {
             marshal_args: vec![MarshalArg::Call(0)],
             arg_types: vec![arg_frozen],
@@ -421,8 +457,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
                 source: source.clone(),
             },
         },
-    );
-    Ok(())
+    )
 }
 
 /// Register one CallSite as a fastcall site, if it qualifies. Types
@@ -466,7 +501,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(ft) => ft.resolve_tvars(),
         None => (*info.typ).clone(),
     };
-    let apply_id = apply_expr.id;
     let mut call_positional: SmallVec<[usize; 8]> = SmallVec::new();
     let mut call_labeled: LPooled<ahash::AHashMap<&str, usize>> = LPooled::take();
     for (call_idx, (label, _)) in a.args.iter().enumerate() {
@@ -562,7 +596,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     if !arg_types.iter().all(|t| is_call_arg_supported(t)) {
         return None;
     }
-    if !is_call_return_supported(&return_type) {
+    if abi_kind(&return_type).is_none() {
         return None;
     }
     let name: ArcStr = info.name.as_str().into();
@@ -587,11 +621,11 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             SiteDispatch::Typed { name, f, typ: Arc::new(fn_type.clone()) }
         }
     };
-    out.apply_sites.insert(
-        apply_id,
+    out.insert(
+        apply_expr,
         BuiltinCallSiteInfo { marshal_args, arg_types, return_type, dispatch },
-    );
-    None
+    )
+    .err()
 }
 
 /// The bare identifier of a single-level path; a kernel reads a `Ref`
@@ -633,10 +667,7 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
             let fields = st.names.iter().cloned().zip(vals.drain(..));
             Some(crate::rep::structure(fields))
         }
-        NodeView::Map(m) => {
-            let (keys, values) = m.entries();
-            const_map(keys, values)
-        }
+        NodeView::Map(m) => const_map(&m.n),
         _ => None,
     }
 }
@@ -659,15 +690,12 @@ fn const_values<R: Rt, E: UserEvent>(
     Some(vals)
 }
 
-/// Fold parallel key/value node slices into a constant `Value::Map`,
-/// or `None` if any entry isn't constant.
-pub(crate) fn const_map<R: Rt, E: UserEvent>(
-    keys: &[Node<R, E>],
-    values: &[Node<R, E>],
-) -> Option<Value> {
+/// Fold a map literal's entries (each key, then its value) into a
+/// constant `Value::Map`, or `None` if any entry isn't constant.
+pub(crate) fn const_map<R: Rt, E: UserEvent>(entries: &[Node<R, E>]) -> Option<Value> {
     let mut map = netidx_value::Map::new();
-    for (k, v) in keys.iter().zip(values.iter()) {
-        map.insert_cow(node_const_value(k)?, node_const_value(v)?);
+    for kv in entries.chunks_exact(2) {
+        map.insert_cow(node_const_value(&kv[0])?, node_const_value(&kv[1])?);
     }
     Some(Value::Map(map))
 }
@@ -1749,29 +1777,6 @@ pub(crate) fn is_map(t: &Type) -> bool {
     t.with_deref(|r| matches!(r, Some(Type::Map { .. })))
 }
 
-/// A marshallable call return shape: every fusable shape but bare `Null`.
-// CR claude for claude: [doc-drift/low] The doc says 'every fusable shape but bare
-// Null', but the match accepts Null and Unit too, so this is `abi_kind(t).is_some()`.
-// Either reduce it to that and fix the doc, or restore the Null exclusion if it was
-// intended. Found by reading; not run. (f-mod-lowering-05)
-fn is_call_return_supported(t: &Type) -> bool {
-    match abi_kind(t) {
-        Some(
-            AbiKind::Scalar(_)
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value
-            | AbiKind::Unit
-            | AbiKind::Null
-            | AbiKind::String,
-        ) => true,
-        None => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1794,5 +1799,27 @@ mod tests {
         }
         assert!(unfolds_past(&typ, FUSION_SIZE_CAP));
         assert!(unfolds_past(&typ, u32::MAX));
+    }
+
+    /// A refusal renders a type that shares its parts in time bounded by
+    /// its prefix, not 2^depth.
+    #[test]
+    fn shared_type_reason_is_bounded() {
+        let mut variant = Type::Primitive(Typ::I64.into());
+        let mut tuple = variant.clone();
+        for _ in 1..=60 {
+            variant = Type::Variant(
+                arcstr::literal!("A"),
+                Arc::from_iter([variant.clone(), variant]),
+                Default::default(),
+            );
+            tuple = Type::Tuple(Arc::from_iter([tuple.clone(), tuple]));
+        }
+        for typ in [&variant, &tuple] {
+            let s = format_compact!("{}", Brief(typ));
+            assert!(s.len() <= Brief::BYTES + '…'.len_utf8() && s.ends_with('…'), "{s}");
+        }
+        let small = Type::Primitive(Typ::I64.into());
+        assert_eq!(format_compact!("{}", Brief(&small)), "i64");
     }
 }

@@ -39,11 +39,11 @@
             "patterns": [
                 {
                     "name": "keyword.control.graphix",
-                    "match": "\\b(select|seq|seqq|until|if|catch)\\b"
+                    "match": "\\b(select|seq|seqq|until|abort|flush|if|try|catch)\\b"
                 },
                 {
                     "name": "keyword.other.graphix",
-                    "match": "\\b(let|rec|mod|use|type|fn|cast|any|with|where|throws|as)\\b"
+                    "match": "\\b(let|rec|mod|use|type|fn|cast|never|any|with|throws|as|pub|trait|impl|mut|val|for|self|super|package)\\b"
                 }
             ]
         },

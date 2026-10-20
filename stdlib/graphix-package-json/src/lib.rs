@@ -6,9 +6,8 @@ use ahash::AHashSet;
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use compact_str::{CompactString, format_compact};
+use compact_str::CompactString;
 use graphix_compiler::{
-    abstract_value::to_data,
     env::Env,
     errf,
     typ::{FnType, Type},
@@ -61,7 +60,8 @@ impl<'de> Deserialize<'de> for JsonKey {
 /// The key serde_json's arbitrary_precision passes a number under.
 const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
-/// A number as the first of i64, u64 and f64 that holds it.
+/// A number as the first of i64, u64 and f64 that holds it, `None` past
+/// f64's range.
 // CR claude for eric: [bug/medium] Every number that is not an i64 or u64 becomes an
 // f64 here, before the target cast sees it. The exact text is in hand
 // (arbitrary_precision is on through rust_decimal), but the rounding still decides the
@@ -73,18 +73,11 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 // target reads exactly. The JsonValue doc ("the first of i64, u64 and f64 that holds
 // it") says the same. Needs your ruling on untyped readers seeing a decimal. probe:
 // design/review-2026-10-19/repro/small-pkgs-json-number-via-f64.gx (small-pkgs-02)
-fn number(n: serde_json::Number) -> Value {
+fn number(n: serde_json::Number) -> Option<Value> {
     match (n.as_i64(), n.as_u64()) {
-        (Some(i), _) => Value::I64(i),
-        (None, Some(u)) => Value::U64(u),
-        // CR claude for claude: [bug/medium] With arbitrary_precision on, as_f64 is
-        // None for a number out of f64 range, so json::read("1e400") (and "-1e400")
-        // succeeds with NaN, a value the input never held. Return a JsonErr ("number
-        // out of range", serde_json's own answer) through de::Error::custom, or parse
-        // to ±inf with f64::from_str, and pin it. probe:
-        // design/review-2026-10-19/repro/x-engine-collections-json-overflow-nan.gx Also
-        // reported as (x-panics-06). (x-engine-collections-05)
-        (None, None) => Value::F64(n.as_f64().unwrap_or(f64::NAN)),
+        (Some(i), _) => Some(Value::I64(i)),
+        (None, Some(u)) => Some(Value::U64(u)),
+        (None, None) => n.as_f64().map(Value::F64),
     }
 }
 
@@ -144,10 +137,8 @@ impl<'de> Visitor<'de> for JsonVisitor {
             // (small-pkgs-07)
             if pairs.is_empty() && &*k == NUMBER_TOKEN {
                 let n: CompactString = a.next_value()?;
-                return n
-                    .parse::<serde_json::Number>()
-                    .map(number)
-                    .map_err(|e| de::Error::custom(e));
+                let n = n.parse::<serde_json::Number>().map_err(de::Error::custom)?;
+                return number(n).ok_or_else(|| de::Error::custom("number out of range"));
             }
             let JsonValue(v) = a.next_value()?;
             pairs.push((k, v))
@@ -199,19 +190,18 @@ impl Serialize for JsonView<'_> {
                 "the value nests {MAX_DEPTH} containers deep or more"
             )));
         }
-        match shape(self.env, self.typ, self.value) {
+        match shape(self.env, self.typ, self.value).map_err(S::Error::custom)? {
             Shape::Object(entries, _) => {
                 let mut map = s.serialize_map(Some(entries.len()))?;
-                let mut keys: LPooled<AHashSet<CompactString>> = LPooled::take();
+                let mut keys: LPooled<AHashSet<ArcStr>> = LPooled::take();
                 for (k, v, t) in entries.iter() {
-                    let key = format_compact!("{k}");
                     // two keys may print alike (`1` and `"1"`): never one for two
-                    if !keys.insert(key.clone()) {
+                    if !keys.insert(k.clone()) {
                         return Err(S::Error::custom(format_args!(
                             "two keys write as the same JSON key {k}"
                         )));
                     }
-                    map.serialize_entry(key.as_str(), &self.under(t.as_ref(), v))?;
+                    map.serialize_entry(k.as_str(), &self.under(t.as_ref(), v))?;
                 }
                 map.end()
             }
@@ -222,16 +212,13 @@ impl Serialize for JsonView<'_> {
                 }
                 seq.end()
             }
-            // CR claude for claude: [bug/low] A bytes leaf is written as a JSON array
-            // (serialize_leaf's collect_seq), but the depth gate above counts it as no
-            // container. Bytes nested under 127 arrays is written as 128 nested arrays,
-            // which json::read refuses ("recursion limit exceeded"), so the
-            // write-what-reads-back rule fails for bytes. Count a Value::Bytes leaf as
-            // one more level in the gate and add a bytes case to
-            // the_deepest_written_value_reads_back. probe:
-            // design/review-2026-10-19/repro/x-rerun-3-json-bytes-depth.gx
-            // (x-rerun-3-03)
-            Shape::Leaf => serialize_leaf(self.value, s),
+            // bytes are written as an array of numbers: one container more
+            Shape::Leaf(Value::Bytes(_)) if self.depth + 1 >= MAX_DEPTH => {
+                Err(S::Error::custom(format_args!(
+                    "the value nests {MAX_DEPTH} containers deep or more"
+                )))
+            }
+            Shape::Leaf(v) => serialize_leaf(&v, s),
         }
     }
 }
@@ -307,11 +294,7 @@ fn encode(
     args: &[Value],
 ) -> Option<Result<LPooled<Vec<u8>>, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let data = match to_data(args.get(1)?) {
-        Ok(d) => d,
-        Err(e) => return Some(Err(errf!("JsonErr", "{e}"))),
-    };
-    let json = JsonView::new(env, ft.args.get(1).map(|a| &a.typ), &data);
+    let json = JsonView::new(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?);
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
     let res = if pretty {
         serde_json::to_writer_pretty(&mut *buf, &json)

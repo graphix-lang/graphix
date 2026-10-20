@@ -1,6 +1,6 @@
 use super::{
-    LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, finish_update,
-    into_borrowed_line, reconcile, update_children, validate::Index,
+    LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, into_borrowed_line,
+    reconcile, update_children, validate::Index,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -39,7 +39,7 @@ impl<X: GXExt> TabsW<X> {
         if let Some(v) = t.tabs_ref.last.take() {
             t.set_tabs(v).await?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     async fn set_tabs(&mut self, v: Value) -> Result<()> {
@@ -52,8 +52,7 @@ impl<X: GXExt> TabsW<X> {
             self.titles.push(title.clone().cast_to()?);
             sources.push(source.clone());
         }
-        reconcile(&mut self.tabs, sources.drain(..), |v| compile(self.gx.clone(), v))
-            .await
+        reconcile(&mut self.tabs, sources, |v| compile(self.gx.clone(), v)).await
     }
 
     /// The tab shown: `selected`, at most the last tab.
@@ -80,21 +79,7 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
     ) -> Result<crate::PendingUpdate<'a>> {
         self.p.update(id, v).context("tabs")?;
         if self.tabs_ref.id == id {
-            return Ok(Some(Box::pin(async move {
-                self.set_tabs(v.clone()).await?;
-                // CR claude for claude: [dead/low] Dead work: `id` here is
-                // self.tabs_ref.id, and GX::compile_ref gives every Ref a fresh ExprId,
-                // so no child can hold it. This walks every descendant's handle_update
-                // and changes nothing. Return Box::pin(self.set_tabs(v.clone())) alone.
-                // LayoutW::handle_update in layout.rs has the same tail after
-                // set_children. Found by reading; not run. (tui-widgets-04)
-                finish_update(update_children(
-                    self.tabs.iter_mut().map(|(_, c)| c),
-                    id,
-                    v,
-                )?)
-                .await
-            })));
+            return Ok(Some(Box::pin(self.set_tabs(v.clone()))));
         }
         update_children(self.tabs.iter_mut().map(|(_, c)| c), id, v)
     }

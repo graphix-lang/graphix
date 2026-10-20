@@ -129,7 +129,7 @@ pub(super) enum ColumnType {
     /// Boolean toggle.
     Toggle,
     /// Dropdown selection from a fixed list.
-    Combo { choices: Vec<(ArcStr, ArcStr)> },
+    Combo { choices: Vec<Choice> },
     /// Numeric spinner with range and step.
     Spin { min: f64, max: f64, increment: f64 },
     /// Progress bar (read-only).
@@ -222,13 +222,22 @@ pub(super) fn parse_selection(v: &Value) -> Selection {
     selection
 }
 
-fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
-    #[derive(FromValue)]
-    #[value(shape = "graphix_compiler::rep::GraphixShape")]
-    struct Choice {
-        id: ArcStr,
-        label: ArcStr,
+/// One of a Combo column's choices: what the cell holds and what it
+/// shows.
+#[derive(Clone, PartialEq, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
+pub(super) struct Choice {
+    pub(super) id: ArcStr,
+    pub(super) label: ArcStr,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
     }
+}
+
+fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
     #[derive(FromValue)]
     #[value(shape = "graphix_compiler::rep::GraphixShape")]
     enum Repr {
@@ -244,11 +253,7 @@ fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
         Err(_) => (ColumnType::Text, None),
         Ok(Repr::Text { on_edit }) => (ColumnType::Text, on_edit),
         Ok(Repr::Toggle { on_edit }) => (ColumnType::Toggle, on_edit),
-        Ok(Repr::Combo { choices, on_edit }) => {
-            let choices =
-                choices.into_iter().map(|Choice { id, label }| (id, label)).collect();
-            (ColumnType::Combo { choices }, on_edit)
-        }
+        Ok(Repr::Combo { choices, on_edit }) => (ColumnType::Combo { choices }, on_edit),
         Ok(Repr::Spin { min, max, increment, on_edit }) => {
             (ColumnType::Spin { min, max, increment }, on_edit)
         }
@@ -266,13 +271,9 @@ fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
     }
 }
 
-/// Strip null bytes so a user column name cannot collide with the
-/// `ROW_NAME_SENTINEL_KEY` / `VALUE_COL_KEY` sentinels.
-// CR claude for claude: [doc-drift/low] The doc above names ROW_NAME_SENTINEL_KEY,
-// which does not exist (the key is ROW_NAME_KEY). It also omits the rule this function
-// mostly enforces: a name must be exactly one nonempty path component, or it is
-// refused. Reword it to say both. ColumnState's doc ('filled in by apply_table') should
-// name compile_column_refs. Found by reading. (gui-datatable-05)
+/// A column name: the raw name without `\0`, so it cannot be
+/// `ROW_NAME_KEY` or `VALUE_COL_KEY`, or `None` unless it is one nonempty
+/// path component.
 fn sanitize_col_name(raw: ArcStr) -> Option<ArcStr> {
     let name = if raw.contains('\0') {
         let cleaned: CompactString = raw.chars().filter(|ch| *ch != '\0').collect();
@@ -445,7 +446,7 @@ impl<X: GXExt> SourceEntry<X> {
 }
 
 /// Per-column state: the parsed spec plus the compiled callables and
-/// refs, filled in by `apply_table`.
+/// refs, filled in by `compile_column_refs`.
 pub(super) struct ColumnState<X: GXExt> {
     pub(super) spec: ColumnSpec,
     pub(super) callback: Option<Callable<X>>,

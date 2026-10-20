@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -189,7 +189,7 @@ type Text = {
   valign: &amp;VAlign
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -214,13 +214,7 @@ val text: fn(
 </li>
 <li><strong>width</strong> - Horizontal sizing as a <code>Length</code>: <code>`Fill</code>, <code>`Shrink</code>, <code>`Fixed(f64)</code>, or <code>`FillPortion(i64)</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/low] The code span `#width: &`Fill`` contains a
-backtick but uses single-backtick delimiters, so it closes early. The built page shows
-`<code>#width: &amp;</code>Fill``. Use ``` `` #width: &`Fill `` ```. probe:
-design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-04) -->
-<ul>
-<li><strong>halign</strong> - Horizontal text alignment: <code>`Left</code>, <code>`Center</code>, or <code>`Right</code>. Defaults to <code>`Left</code>. Only visible when the widget is wider than the text (e.g. with <code>#width: &amp;</code>Fill``).</li>
+<li><strong>halign</strong> - Horizontal text alignment: <code>`Left</code>, <code>`Center</code>, or <code>`Right</code>. Defaults to <code>`Left</code>. Only visible when the widget is wider than the text (e.g. with <code>#width: &amp;`Fill</code>).</li>
 <li><strong>valign</strong> - Vertical text alignment: <code>`Top</code>, <code>`Center</code>, or <code>`Bottom</code>. Defaults to <code>`Top</code>.</li>
 </ul>
 <p>The positional argument is a reference to the string to display. Because it is a reference, the text updates reactively when the underlying value changes.</p>

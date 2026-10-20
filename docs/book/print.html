@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-09628de6.js";
+            window.path_to_searchindex_js = "searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -194,14 +194,8 @@ const(2) ──&gt; + &lt;── const(2)
 <p>The semantics of simple examples like this aren’t noticibly different
 from a normal programming language. However a more complex example
 such as,</p>
-<!-- CR claude for claude: [doc-drift/low] This program prints `100null`, not `100`.
-`print` adds no newline, and the shell prints the program's value (print's null) after
-it. The `?` also prints "error raised by ? will not be caught" on the reader's first
-program. Make the last expression `x * 10` and use `$`. connect.md's `print(x)` examples
-have the same `null` suffix. probe:
-design/review-2026-10-19/repro/book-core-intro-print.gx (book-core-11) -->
-<pre><code class="language-graphix">let x: i64 = sys::net::subscribe("/foo")?;
-print(x * 10)
+<pre><code class="language-graphix">let x: i64 = sys::net::subscribe("/foo")$;
+x * 10
 </code></pre>
 <p>compiles to a graph like</p>
 <pre><code>                                  const(10)
@@ -209,13 +203,14 @@ print(x * 10)
                                       │
                                       ▼
                                          
-const("/foo") ──&gt; sys::net::subscribe ──&gt; * ──&gt; print
+const("/foo") ──&gt; sys::net::subscribe ──&gt; * ──&gt; output
                                          
 </code></pre>
 <p>Unlike the first example, the value of <code>sys::net::subscribe</code> isn’t a
 constant, it can change if the value published in netidx changes. If
 that happens the new value will flow through the graph and will be
-printed again. If the published value of “/foo” is initially 10, and
+printed again (the shell prints a program’s value each time it
+changes). If the published value of “/foo” is initially 10, and
 then the value of “/foo” changes to 5 then the program will print.</p>
 <pre><code>100
 50
@@ -582,7 +577,7 @@ want to exit the REPL press ctrl-d.</p>
 53
 〉2.5 * 4.0
 -: f64
-10.0
+10
 </code></pre>
 <p>Notice that integer arithmetic produces <code>i64</code> (integer) results, while floating-point arithmetic produces <code>f64</code> (float) results.</p>
 <h3 id="strings"><a class="header" href="#strings">Strings</a></h3>
@@ -718,7 +713,7 @@ text(&amp;"Count: [counter]")
 <pre><code class="language-graphix">let count = 0;
 count &lt;- timer ~ (count + 1)
 </code></pre>
-<p>You’re telling Graphix: “When <code>timer</code> updates, increment <code>count</code> for the next cycle.” Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. It’s also the only looping construct in Graphix—there’s no <code>for</code> or <code>while</code>, just connect and select working together.</p>
+<p>You’re telling Graphix: “When <code>timer</code> updates, increment <code>count</code> for the next cycle.” Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. There’s no <code>for</code> or <code>while</code>: a loop over time is connect and select working together, and iteration over a collection is the collection functions (<code>array::map</code>, <code>array::fold</code>, …) or recursion.</p>
 <h2 id="select-powerful-pattern-matching"><a class="header" href="#select-powerful-pattern-matching">Select: Powerful Pattern Matching</a></h2>
 <p>The <code>select</code> expression is Graphix’s answer to <code>switch</code>, <code>match</code>, and <code>if/else</code>. It lets you match on types, destructure complex data, and ensure at compile time that you’ve handled every case.</p>
 <p><strong><a href="#select">Select</a></strong> shows you how to:</p>
@@ -782,7 +777,7 @@ without a cast.</p>
 </div>
 <p>Unchecked integer <code>+</code>, <code>-</code> and <code>*</code> wrap on overflow (`i64:9223372036854775807</p>
 <ul>
-<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>log an error and return bottom (no value) on a zero divisor, and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
+<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>return bottom (no value) on a zero divisor (the interpreter also logs it; compiled code does not, so run with</code>–no-fusion<code>to see the log), and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
 -1<code>is</code>0`. A bottomed expression simply stops updating until its inputs
 change to values that produce a valid result.</li>
 </ul>
@@ -798,22 +793,15 @@ Caused by:
 -: f64
 2
 </code></pre>
-<p>With unchecked operators, a division by zero logs an error and returns bottom – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
+<p>With unchecked operators, a division by zero returns bottom (logged by the interpreter only) – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
 -: i64
 </code></pre>
 <p>No value is printed because the division by zero produces bottom. If the divisor later changes to a non-zero value, the expression will resume producing values.</p>
 <p>With checked operators, you get an explicit error value you can handle:</p>
-<!-- CR claude for claude: [doc-drift/low] These transcripts print errors in the
-pre-kind-marker array form. The REPL now prints `error:`ArithError("attempt to divide by
-zero")`, `error:`ArithError("attempt to subtract with overflow")` and
-`error:`MapKeyError(..)`. Re-capture them. The "Numbers" text also says unchecked `/`
-and `%` log on a zero divisor. Only the node-walk logs (see reading_types.md), so say
-so. probe: design/review-2026-10-19/repro/book-core-fundamental-printed-forms.sh
-(book-core-09) -->
 <pre><code class="language-graphix">〉0 /? 0
 -: [i64, Error&lt;`ArithError(string)&gt;]
-error:["ArithError", "attempt to divide by zero"]
+error:`ArithError("attempt to divide by zero")
 </code></pre>
 <p>You can use <code>?</code> to propagate, <code>$</code> to swallow, or <code>select</code> to match on the result:</p>
 <pre><code class="language-graphix">〉(0 /? 0)?
@@ -826,7 +814,7 @@ error:["ArithError", "attempt to divide by zero"]
 
 〉u32:0 -? u32:1
 -: [u32, Error&lt;`ArithError(string)&gt;]
-error:["ArithError", "attempt to subtract with overflow"]
+error:`ArithError("attempt to subtract with overflow")
 </code></pre>
 <h4 id="v32-z32-v64-z64"><a class="header" href="#v32-z32-v64-z64">v32, z32, v64, z64</a></h4>
 <p>These number types are the same as the normal types except when they
@@ -1090,29 +1078,17 @@ shared — this is what makes lists cheap to build incrementally. The
 cells are pooled like arrays, so building a list does not usually
 allocate. Indexed access (<code>list::nth</code>) walks the spine and is O(n);
 if you need random access, convert to an array.</p>
-<!-- CR claude for claude: [doc-drift/low] This section predates kind markers. Data
-carries no markers now: pack writes `[<1, 2, 3>]` as the same bytes as `[1, 2, 3]`, not
-as a chain of cells. A cast into `List<T>` builds the list from any array, so
-`cast<List<Array<i64>>>` of an `Any` holding `[[1, 2], [3, 4]]` reads `[<[1, 2], [3,
-4]>]` directly and the two-step cast below is unnecessary. Rewrite the section to say
-every writer flattens a list and a typed read rebuilds it. probe:
-design/review-2026-10-19/repro/book-core-list-data-flat.sh (book-core-06) -->
 <h3 id="lists-as-data"><a class="header" href="#lists-as-data">Lists as Data</a></h3>
-<p>At run time a list is its chain of cells, each a pair of the head and
-the rest. <code>pack</code> and netidx carry that chain, and it reads back into a
-<code>List</code> as itself. <code>json</code> and <code>toml</code> write a list as a flat array, and
-their typed reads take every array as an array, so a <code>List</code> read from
-them is built from the flat array again: what they write reads back
-into its type.</p>
-<p>A cast whose source type is unknown, such as <code>cast&lt;List&lt;T&gt;&gt;</code> of an
-<code>Any</code>, has only the value’s shape to go on, and takes an array that is
-a well-formed chain for one. When the value is really an array, say so
-first, then convert:</p>
-<pre><code class="language-graphix">let rows: Array&lt;Array&lt;i64&gt;&gt; = cast&lt;Array&lt;Array&lt;i64&gt;&gt;&gt;(v)?;
-let l = cast&lt;List&lt;Array&lt;i64&gt;&gt;&gt;(rows)?
+<p>Data carries no list cells: every writer (<code>json</code>, <code>toml</code>, <code>pack</code>, netidx)
+writes a list as a flat array, so <code>pack::write_bytes([&lt;1, 2, 3&gt;])</code> is the
+same bytes as <code>pack::write_bytes([1, 2, 3])</code>. A typed read or a cast to a
+<code>List</code> builds the list from the array again, so what a writer emits reads
+back into its type, and a cast of an <code>Any</code> holding an array of rows reads
+the list directly:</p>
+<pre><code class="language-graphix">let v: Any = [[1, 2], [3, 4]];
+cast&lt;List&lt;Array&lt;i64&gt;&gt;&gt;(v)
 </code></pre>
-<p>The second cast’s source type, <code>Array&lt;Array&lt;i64&gt;&gt;</code>, decides that the
-value is an array of rows.</p>
+<p>is <code>[&lt;[1, 2], [3, 4]&gt;]</code>.</p>
 <h2 id="tuples"><a class="header" href="#tuples">Tuples</a></h2>
 <p>Tuples are written <code>(x, y)</code>, they can be of arbitrary length, and each element
 may have a different type. Tuples may be indexed using numeric field indexes.
@@ -1149,7 +1125,7 @@ is a <code>Map&lt;string, i64&gt;</code>.</p>
 <p>If a key is not present in the map, indexing returns a <code>MapKeyError</code>:</p>
 <pre><code class="language-graphix">〉m{"missing"}
 -: ['_1907: i64, Error&lt;`MapKeyError(string)&gt;]
-error:["MapKeyError", "map key \"missing\" not found"]
+error:`MapKeyError("map key \"missing\" not found")
 </code></pre>
 <h3 id="mutability-and-implementation-2"><a class="header" href="#mutability-and-implementation-2">Mutability and Implementation</a></h3>
 <p>Like all Graphix values, maps are immutable. All operations that “change” a map
@@ -1538,7 +1514,7 @@ x == 2
 </code></pre>
 <p>You can annotate the binding with a type, which will then be enforced at compile
 time. Sometimes this is necessary in order to help type inference.</p>
-<pre><code class="language-graphix">// x may be null later, so its type is the union, though it starts as an i64
+<pre><code class="language-graphix refused">// x may be null later, so its type is the union, though it starts as an i64
 let x: [i64, null] = 1;
 // compile time type error: string does not contain [i64, null]
 let y: string = x;
@@ -1585,13 +1561,13 @@ to connect one part of the graph to another by name, causing the output of the
 right side to flow to the name on the left side. Consider,</p>
 <pre><code class="language-graphix">let x = "off";
 x &lt;- sys::time::timer(duration:1.0s, false) ~ "on";
-print(x)
+x
 </code></pre>
 <p>This program will first print <code>off</code>, and after 1 second it will print <code>on</code>. Note
 the <code>~</code> operator means, when the expression on the left updates return the
 current value of the expression on the right (called the sample operator). The
 graph we created looks like,</p>
-<pre><code>const("off") ────────────────&gt; "x" ──────&gt; print
+<pre><code>const("off") ────────────────&gt; "x" ──────&gt; output
                                  ▲
                                  │
                                  │
@@ -1605,12 +1581,12 @@ graph we created looks like,</p>
 and it won’t stop other parts of the program from being evaluated,</p>
 <pre><code class="language-graphix">let x = 0;
 x &lt;- x + 1;
-print(x)
+x
 </code></pre>
 <p>This program will print all the i64s from 0 to MAX and then will wrap around. It
 will print numbers forever. You might notice, and you might wonder, why does it
-start from zero, shouldn’t it start from 1? After all we increment x BEFORE the
-print right? Well, no, not actually, it will start at 0, for the same reason
+start from zero, shouldn’t it start from 1? After all we increment x BEFORE it
+is printed, right? Well, no, not actually, it will start at 0, for the same reason
 this infinite loop won’t lock up the program or cause other expressions not to
 be evaluated. Graphix programs are evaluated in cycles, a batch of updates from
 the network, timers, and other IO is processed into a set of all events that
@@ -1621,16 +1597,13 @@ current cycle proceeds as normal to it’s conclusion as if the connect didn’t
 happen yet, because it didn’t. In the above case the event loop would never
 wait, because there is always work to do adding 1 to <code>x</code>, however it will still
 check for other events every cycle.</p>
-<!-- CR claude for claude: [doc-drift/low] Connect is the only way to make a cycle in
-the graph, not the only way to loop. recursion.md presents recursion as the way to write
-a traversal (a stateless tail recursion is a native loop), and `array::map`/`fold`
-iterate in one cycle. A connect loop takes a cycle per step and breaks when its input
-moves (semantics.md's `len`). Reword this and overview.md's "only looping construct"
-sentence, and point to the collection functions and recursion. Found by reading; not
-run. (book-core-13) -->
 <p>When combined with other operations, specifically select, connect becomes a
-powerful general looping construct, and is the only way to write a loop in
-Graphix. A quick example,</p>
+looping construct that runs one step per cycle: connect is the only way to
+make a cycle in the graph. To iterate over a collection, use the collection
+functions (<code>array::map</code>, <code>array::fold</code>, …) or recursion
+(<a href="#recursion">Recursion</a>), which compute the whole result in one
+cycle; a connect loop takes a cycle per step and starts over when its input
+moves mid-loop. A quick example,</p>
 <pre><code class="language-graphix">let count = {
   let x = 0;
   select x {
@@ -1676,13 +1649,7 @@ separated, meaning every expression except the last one must end in a <code>;</c
 it is illegal for a block to have just one expression (it will not parse).</p>
 <p>You can use blocks to hide intermediate variables from outer scopes, and to
 group code together in a logical way.</p>
-<!-- CR claude for claude: [test-gap/low] This fence is a program the text says will not
-compile, but it is untagged, so examples_compile only parses it and never checks that
-the check refuses it. Tag it ```` ```graphix,refused ````, and likewise the refused
-programs in let_binds.md (`let y: string = x`), select.md (the `f64 as n`, guarded `i64`
-and `Wrong fences) and use.md (the block-local `map`). Each is refused today; found by
-running --check on each fence. (book-core-10) -->
-<pre><code class="language-graphix">let important_thing = {
+<pre><code class="language-graphix refused">let important_thing = {
   let x = 0;
   let y = x + 1;
   43 - y
@@ -1777,13 +1744,8 @@ bindings at the top of the file.</li>
 the primitive type names are implicitly imported into every module.
 They can be shadowed by explicit declarations and imports.</p>
 <h2 id="scoping"><a class="header" href="#scoping">Scoping</a></h2>
-<!-- CR claude for claude: [doc-drift/low] `use` is a statement, not an expression. The
-compiler refuses it outside a block or module body ("a use declaration is not an
-expression"), as CLAUDE.md says of every declaration. Say "valid as a statement in any
-block or module body". probe:
-design/review-2026-10-19/repro/book-core-use-statement-only.sh (book-core-12) -->
-<p><code>use</code> is valid anywhere expressions are valid, and imports into the
-enclosing lexical scope only:</p>
+<p><code>use</code> is a statement, valid in any block or module body (not in
+expression position), and imports into the enclosing lexical scope only:</p>
 <pre><code class="language-graphix">let list = {
   use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
@@ -1791,7 +1753,7 @@ enclosing lexical scope only:</p>
 list
 </code></pre>
 <p>will print <code>[2, 4, 6, 8, 10]</code></p>
-<pre><code class="language-graphix">let list = {
+<pre><code class="language-graphix refused">let list = {
   use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };
@@ -1891,24 +1853,17 @@ select x {
 <p>This program will print 42, 15, 7 and then wait. The compiler will check that
 you have handled all the possible cases. If we remove the null case from this
 select we will get a compile error.</p>
-<!-- CR claude for claude: [doc-drift/low] These transcripts quote diagnostics the
-checker no longer prints. Removing the null arm now gives `missing match cases: no arm
-covers null`, the guarded `i64` case gives `no arm covers i64`, and the `Wrong arm gives
-`unreachable arm: the earlier arms already cover the whole scrutinee, unused match
-cases`. The paragraph after this block explains the old type-set message. Re-capture all
-three and rewrite that paragraph (error.md's "Checked Errors" transcript is stale the
-same way). probe: design/review-2026-10-19/repro/book-core-select-diagnostics.sh
-(book-core-08) -->
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    missing match cases type mismatch [i64, Array&lt;i64&gt;] does not contain [[i64, null], Array&lt;i64&gt;]
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
+    1: missing match cases: no arm covers null
 </code></pre>
-<p>If you read this carefully you can see that the compiler is building up a set of
-types that we did match, and checking that it contains the argument type. This
-goes both ways, a match case that could never match is also an error.</p>
-<pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
+<p>The compiler subtracts what each arm matches from the argument’s type, and
+names what is left when the arms run out: here <code>null</code>, which no arm covers.
+This goes both ways, a match case that could never match is also an error.</p>
+<pre><code class="language-graphix refused">let x: [Array&lt;i64&gt;, i64, null] = null;
 x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
 x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
@@ -1921,10 +1876,12 @@ select x {
 <p>Here we’ve added an <code>f64</code> match case, but the argument type can never contain an
 <code>f64</code> so we will get a compile error.</p>
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    pattern f64 will never match null, unused match cases
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
+    1: at: line: 7, column: 3 in file test.gx
+    2: pattern f64 will never match null, unused match cases
 </code></pre>
 <p>The diagnostic message gives you an insight into the compiler’s thinking. What
 it is saying is that, by the time it’s gotten to looking at the <code>f64</code> pattern,
@@ -1935,7 +1892,7 @@ match.</p>
 subtract from the argument type set. You are required to match without a guard
 at some point. No analysis is done to determine if your guard covers the entire
 range of a type.</p>
-<pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
+<pre><code class="language-graphix refused">let x: [Array&lt;i64&gt;, i64, null] = null;
 x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
 x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
@@ -1947,10 +1904,11 @@ select x {
 <p>This will fail with a missing match case because the <code>i64</code> pattern is guarded
 and no unguarded pattern exists that matches <code>i64</code>.</p>
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    missing match cases type mismatch [null, Array&lt;i64&gt;] does not contain [[i64, null], Array&lt;i64&gt;]
+    0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
+    1: missing match cases: no arm covers i64
 </code></pre>
 <p>This is the same error you would get if you omitted the <code>i64</code> match case
 entirely.</p>
@@ -2145,7 +2103,7 @@ select v {
 "it's big `MoreArg(\"hello world\", 42) with args \"hello world\" and 42"
 </code></pre>
 <p>Variant patterns enforce the same kinds of match case checking as all the other pattern types</p>
-<pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
+<pre><code class="language-graphix refused">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
 v &lt;- `Arg(42);
 v &lt;- `MoreArg("hello world", 42);
 select v {
@@ -2157,10 +2115,12 @@ select v {
 </code></pre>
 <p>yields</p>
 <pre><code>$ graphix test.gx
-Error: in file "test.gx"
+Error: in file test.gx
 
 Caused by:
-    pattern `Wrong will never match [`Arg(i64), `MoreArg(string, i64)], unused match cases
+    0: at: line: 4, column: 1 in file test.gx, in: select v { `Bare =&gt; "it's bare, no arg..
+    1: at: line: 8, column: 3 in file test.gx
+    2: unreachable arm: the earlier arms already cover the whole scrutinee, unused match cases
 </code></pre>
 <h3 id="literals-ignore"><a class="header" href="#literals-ignore">Literals, Ignore</a></h3>
 <p>You can match literals as well as bind variables, as you may have noticed, and
@@ -2176,17 +2136,12 @@ the arm and delivers its bindings.</p>
 </code></pre>
 <pre><code>$ graphix or.gx
 5
-&lt;!-- CR claude for claude: [doc-drift/low] The checker does not require a name to have
-the same type in every alternative. It types the name as the union, as CLAUDE.md and
-this page's "Matching Structure" section say: `` `A(n) | `B(n) `` over `` [`A(i64),
-`B(string)] `` is accepted with `n: [i64, string]`. Keep "same names" and replace "same
-types" with the union rule. probe:
-design/review-2026-10-19/repro/book-core-or-pattern-types.gx (book-core-07) --&gt;
 </code></pre>
 <p>The rules are the orthodox ones:</p>
 <ul>
-<li><strong>Same binds, same types.</strong> Every alternative must bind exactly the same
-names, and each name must have exactly the same type in every alternative.
+<li><strong>Same binds.</strong> Every alternative must bind exactly the same names, and a
+name’s type is the union of its types in the alternatives:
+<code>`A(n) | `B(n)</code> over <code>[`A(i64), `B(string)]</code> binds <code>n: [i64, string]</code>.
 <code>(0, y) | (y, 0)</code> is fine over <code>(i64, i64)</code>; <code>1 | x</code> is refused (the second
 alternative binds <code>x</code>, the first binds nothing).</li>
 <li><strong>One guard per arm.</strong> A guard written after the alternation covers the
@@ -2390,19 +2345,12 @@ earlier statement wrote starts the next cycle and reads the new value:
 <code>n &lt;- n + 1; publish(n)</code> publishes the new <code>n</code>. Connects that nothing
 in between reads land together: <code>a &lt;- x; b &lt;- y; let s = a + b</code> writes
 <code>a</code> and <code>b</code> in one cycle and binds <code>s</code> the next.</p>
-<!-- CR claude for claude: [doc-drift/low] The `put(5); let s = b` example below works
-only if `put` returns a value; the pin seq_steps::closure_write_is_seen defines `|v| { b
-<- v; v }`. Written the natural way, `let put = |v| b <- v`, `put(5)` is a step whose
-value is a connect's. A connect never produces, so the run stalls forever and --check
-says nothing. Show put's definition in the text. Also consider a check warning for a seq
-step whose type settles to ⊥ (a connect-valued call, never()), next to select.rs's
-warn_birth_only. probe:
-design/review-2026-10-19/repro/x-engine-firing-seq-connect-step.gx (x-engine-firing-05)
--->
 <p>The compiler decides this after it has resolved every call, following
 each call into the function it reaches. A write a function makes counts
-like one the statement makes itself: <code>put(5); let s = b</code>, where <code>put</code>
-writes the <code>b</code> it captured, reads the new <code>b</code>. A call to a function
+like one the statement makes itself: <code>put(5); let s = b</code>, where <code>let put = |v| { b &lt;- v; v }</code> writes the <code>b</code> it captured, reads the new <code>b</code>. (A
+step must produce a value to complete: written <code>|v| b &lt;- v</code>, <code>put</code>’s
+value would be a connect’s, which never produces, and the run would
+stall.) A call to a function
 that does not read <code>a</code> does not wait for <code>a &lt;- ..</code> to land. Two things
 count as touching every variable, because the compiler cannot name what
 they touch: a read or write through a reference (<code>*r</code>), and a call
@@ -2566,30 +2514,27 @@ starts. <code>flush(event)</code> also empties the queue:</p>
 </code></pre>
 <p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
 it. A request that arrives with the flush or after it is kept.</p>
-<!-- CR claude for claude: [doc-drift/medium] Two claims in this section contradict the
-code and CLAUDE.md. A triggerless seq does not start a fresh run when its arm wakes: it
-runs only at the arm's first entry, and the check warns of it. Sleeping does not discard
-a seqq's queued requests: they are kept and served after the wake (select.md also says
-queues keep their state). Rewrite the section to say this. probe:
-design/review-2026-10-19/repro/book-core-seq-triggerless-wake.gx and
-design/review-2026-10-19/repro/book-core-seqq-queue-survives-sleep.gx (book-core-04) -->
 <h2 id="sleeping"><a class="header" href="#sleeping">Sleeping</a></h2>
 <p>A sequence inside a <code>select</code> arm, or inside a function called from one,
 sleeps with the arm. A run in progress does not survive that: the
-sequence is idle when the arm wakes, and a <code>seq</code> without a trigger
-starts a fresh run there. The same holds for a <code>seq</code> nested in a step of
-an outer run that was aborted.</p>
+sequence is idle when the arm wakes, since a wake resumes the arm and
+starts nothing. A <code>seq</code> without a trigger in an arm runs only at the
+arm’s first entry, and the check warns of it: to run at every entry,
+trigger it on the event that selects the arm. A <code>seq</code> nested in a step
+of an outer run that was aborted is idle too; a triggerless one starts
+again when a later run enters its step.</p>
 <p>The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
-Sleeping the enclosing expression discards pending queued work, following
-the ordinary <code>queue</code> sleep behavior.</p>
+Sleeping the enclosing expression keeps the queued requests, as <code>queue</code>
+keeps its contents: they are served after the wake, and the credit of
+the run the sleep aborted is returned then.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Graphix are represented by the <code>Error&lt;'a&gt;</code> type. A new instance of
 which can be created with the <code>error</code> function. e.g.</p>
 <pre><code class="language-graphix">〉error(`Foo)
--: Error&lt;'a: `Foo&gt;
-error:"Foo"
+-: Error&lt;'a&gt;
+error:`Foo
 </code></pre>
 <h2 id="catch-and-"><a class="header" href="#catch-and-">Catch and ?</a></h2>
 <p>While errors are normal values, and can be matched in select, they can also be
@@ -2598,21 +2543,16 @@ error handler covering the REST of its enclosing scope — every statement after
 it, and everything called from those statements. The <code>?</code> operator throws
 errors generated by the expression on it’s left to the nearest installed
 catch in dynamic scope. for example,</p>
-<!-- CR claude for claude: [doc-drift/medium] This page's REPL transcripts no longer run
-as shown. A catch installed on its own input line is checked before any error reaches
-it, so the REPL refuses the later `a[15]?`, `div0(0)` and `v?` ("annotate the catch with
-the errors it takes"). Annotate each catch, or present the examples as files. Also
-re-capture the printed values: ErrChain now prints as a struct, `error(`Foo)` prints
-`error:`Foo`, and the "Checked Errors" diagnostic is now `missing match cases: no arm
-covers ..`. probe: design/review-2026-10-19/repro/book-core-error-repl-catch.sh
-(book-core-05) -->
 <pre><code class="language-graphix">〉let a = [1, 2, 3, 4]
-〉catch(e) println(e)
+〉catch(e: Error&lt;ErrChain&lt;`ArrayIndexError(string)&gt;&gt;) println(e)
 〉a[15]?
 -: i64
-error:[["cause", null], ["error", ["ArrayIndexError", "array index out of bounds"]], ["ori", [["parent", null], ["source", "Unspecified"], ["text", "a[15]?"]]], ["pos", [["column", i32:2], ["line", i32:1]]]]
+error:{cause: null, error: `ArrayIndexError("array index out of bounds"), ori: {parent: null, source: `Unspecified, text: "a[15]?\n"}, pos: {column: 1, line: 1}}
 </code></pre>
-<p>Catches the array index error and prints it’s full context to stdout.</p>
+<p>Catches the array index error and prints it’s full context to stdout. In the
+REPL each input line is checked on its own, so a catch entered before the code
+that raises to it has seen no error yet: annotate it with the errors it takes,
+as here. In a file the catch’s type is inferred from what it covers.</p>
 <p>Catching errors is NOT control flow: the catch statement is an installation,
 its type is bottom (it never produces a value), and an error being raised
 does not stop the execution of any node. The handler is an ordinary reactive
@@ -2664,10 +2604,10 @@ it was ever raised.</p>
 <p>The scope is dynamic, not lexical, mirroring exception systems that unwind the
 stack,</p>
 <pre><code class="language-graphix">〉let div0 = { catch(e) println(e ~ "never triggered"); |x| (x /? 0)? }
-〉catch(e) println(e)
+〉catch(e: Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;) println(e)
 〉div0(0)
 -: i64
-error:[["cause", null], ["error", ["ArithError", "attempt to divide by zero"]], ["ori", [["parent", null], ["source", "Unspecified"], ["text", "let div0 = { catch(e) println(e ~ \"never triggered\"); |x| (x /? 0)? }"]]], ["pos", [["column", i32:26], ["line", i32:1]]]]
+error:{cause: null, error: `ArithError("attempt to divide by zero"), ori: {parent: null, source: `Unspecified, text: "let div0 = { catch(e) println(e ~ \"never triggered\"); |x| (x /? 0)? }\n"}, pos: {column: 59, line: 1}}
 </code></pre>
 <p>The catch surrounding the function call site, not the definition site, is the
 one triggered. Note the use of the checked division operator <code>/?</code> combined with
@@ -2697,11 +2637,12 @@ indexing can produce an <code>ArrayIndexError</code>, and the checked addition <
 produce an <code>ArithError</code>. The compiler knows both, and if you were to omit one of
 them, then the example would not compile.
 Suppose we remove the pattern for ArrayIndexError, we would get,</p>
-<pre><code>Error: in file "test.gx"
+<pre><code>Error: in file test.gx
 
 Caused by:
-    0: at: line: 3, column: 13, in: select (e.0).error {`ArithError(s) =&gt; ..
-    1: missing match cases type mismatch `ArithError('_1897: string) does not contain '_1895: [`ArithError(string), `ArrayIndexError(string)]
+    0: at: line: 2, column: 1 in file test.gx, in: catch(e) select e.0.error { `ArithErro..
+    1: at: line: 2, column: 10 in file test.gx, in: select e.0.error { `ArithError(s) =&gt; p..
+    2: missing match cases: no arm covers `ArrayIndexError(string)
 </code></pre>
 <p>You’ll recognize that this is just the normal select exhaustiveness checking at
 work. Since errors are just normal types, the important point is the compiler
@@ -2736,7 +2677,7 @@ nothing is logged. It is the way to say “wait until this is there”,</p>
 <p><code>?</code> raises. There is no error value to raise, so it makes one,
 <code>`NullError(string)</code>, where the string is the expression that was null. Only
 a <code>?</code> on a nullable adds that tag to the error type of the catch it raises to,</p>
-<pre><code class="language-graphix">〉catch(e) println((e.0).error)
+<pre><code class="language-graphix">〉catch(e: Error&lt;ErrChain&lt;`NullError(string)&gt;&gt;) println((e.0).error)
 〉let m = {"a" =&gt; 1}
 〉let v = map::get(m, "b")
 〉v?
@@ -3271,13 +3212,6 @@ f(path)
 "baz1"
 "baz2"
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] This example no longer works. The `_`
-arm's `clock <- null` and `sum <- 0` are constants, which fire only at the arm's first
-entry (a wake resumes). The queue is never clocked again and `once(sum)` keeps its
-state, so the program prints 5, 5, not 5, 3, 2, and the check warns on both writes.
-Rewrite it under the resume rule: sample the event that selects the arm, or use a `seqq`
-over `a`. Or drop the section in favour of `array::fold`. probe:
-design/review-2026-10-19/repro/book-core-fixed-len.gx (book-core-03) -->
 <h3 id="fixing-our-contrived-len"><a class="header" href="#fixing-our-contrived-len">Fixing Our Contrived Len</a></h3>
 <p>Advice about not using &lt;- in iteration aside, if you understand cycles
 then you can do it if you wish, and maybe in advanced examples there
@@ -3289,17 +3223,23 @@ work in any situation using <code>queue</code>.</p>
   let sum = 0;
   select q {
     [x, tl..] =&gt; {
-      sum &lt;- sum + 1;
+      sum &lt;- x ~ sum + 1;
       q &lt;- tl
     },
-    _ =&gt; {
-      clock &lt;- null;
-      sum &lt;- 0;
-      once(sum)
+    e@ [] =&gt; {
+      clock &lt;- e ~ null;
+      sum &lt;- e ~ 0;
+      e ~ sum
     }
   }
 }
 </code></pre>
+<p>The queue holds each new array until the previous one is counted. Every
+write samples the event that selected its arm (<code>x ~</code>, <code>e ~</code>): an arm
+that is left and later selected again resumes, so a constant such as
+<code>clock &lt;- null</code> would write only at the arm’s first entry, and <code>sum + 1</code>
+read on its own would not fire when the arm comes back to a <code>sum</code> that
+has not changed.</p>
 <p>Now we can see our very verbose and inefficient <code>len</code> is now correct</p>
 <pre><code>$ graphix cycle_iter.gx
 5
@@ -3445,22 +3385,21 @@ changed. This is called functional struct update syntax. For example,</p>
 {bar: 21, foo: "I am foo"}
 </code></pre>
 <p>Notice that the type printed is the full type of the struct, this is because of structural typing.</p>
-<!-- CR claude for claude: [doc-drift/low] This section says a struct is a sorted array
-of `[name, value]` pairs. Since kind markers, its runtime form is an array whose element
-0 is the `#struct` marker (graphix-types rep.rs), followed by the sorted pairs. The bare
-pair array is only the data form that writers emit and `cast`/reads accept. Fix:
-describe the marked value form, the unmarked data form, and how cast and the writers
-convert between them. Found by reading; not run. (book-modules-udt-11) -->
 <h2 id="implementation"><a class="header" href="#implementation">Implementation</a></h2>
-<p>Structs are implemented as a sorted array of pairs, the field name being the
-first element of the pair, and the data value being the second. The array is
-sorted by the field name, and because of this it is not necessary to do any
-matching when the field is accessed at run time, the index of the field
-reference is pre computed at compile time, so field references are always O(1).
-The reason why the fields are stored at all is so they can be used on the
-network and in files without losing information. Because structs are array
-backed, they are also memory pooled, and so making a new struct does not usually
-allocate any memory, but instead reuses objects from the pool.</p>
+<p>A struct is an array whose first element is the struct marker, a value
+no data can hold that tells a struct apart from an array at run time,
+followed by its fields as pairs, the field name being the first element
+of the pair and the value the second. The pairs are sorted by field
+name, and because of this it is not necessary to do any matching when
+the field is accessed at run time, the index of the field reference is
+pre computed at compile time, so field references are always O(1).
+Because structs are array backed, they are also memory pooled, and so
+making a new struct does not usually allocate any memory, but instead
+reuses objects from the pool.</p>
+<p>Data carries no marker. A writer (the network, <code>json</code>, <code>toml</code>, <code>pack</code>)
+writes a struct as its sorted array of pairs, so the field names travel
+with the values and nothing is lost; a <code>cast</code> or a typed read builds the
+struct from the pairs again.</p>
 <p>The <code>cast</code> operator can cast an unsorted array of pairs where the first element
 is a string to a struct type. For example,</p>
 <pre><code class="language-graphix">〉cast&lt;{foo: string, bar: i64}&gt;([["foo", "I am foo"], ["bar", 42]])$
@@ -3812,18 +3751,16 @@ Graphix’s traits are Rust’s, spelled in Graphix.</p>
     val twice: fn(self) -&gt; string = |s| "[show(s)] [show(s)]"
 };
 </code></pre>
-<!-- CR claude for claude: [doc-drift/low] This paragraph says every method has a
-positional `self` parameter. A method that names `self` only in its result is accepted,
-as is its impl (core's `Cast::from_value` is one), but every call to it is refused with
-"called without its self argument". Fix: state that rule (`self` only in the result is
-legal, and no call dispatches such a method) so the error has an explanation. probe:
-design/review-2026-10-19/repro/book-modules-udt-trait-no-self.gx (book-modules-udt-08)
--->
 <p>Each item is a <code>val</code> with a function type. The type <code>self</code> is the
-receiver — the type implementing the trait — and every method has a
-positional <code>self</code> parameter, written bare: <code>fn(self, n: u64) -&gt; bytes</code>
+receiver — the type implementing the trait — and a method takes it as
+a positional <code>self</code> parameter, written bare: <code>fn(self, n: u64) -&gt; bytes</code>
 is <code>self</code> followed by an ordinary named parameter. A method may use
-<code>self</code> anywhere in its signature (<code>fn(self) -&gt; self</code>).</p>
+<code>self</code> anywhere in its signature (<code>fn(self) -&gt; self</code>). A method that
+names <code>self</code> only in its result (<code>fn(x: i64) -&gt; self</code>) is accepted, as
+is its implementation, but a call dispatches on its <code>self</code> argument, so
+no call can reach it: calling one is refused (“called without its self
+argument”). Core’s <code>Cast::from_value</code> is one; the compiler calls it,
+never a program.</p>
 <p>A method with a <code>= default</code> body is inherited by implementors that
 do not override it. Inside a default body the trait’s other methods
 are visible bare (<code>show(s)</code> above), as are the items of the declaring
@@ -3861,15 +3798,6 @@ that the implementation provides the impl (see below).</p>
 <p>The head’s type variables are declared in <code>impl&lt;..&gt;</code> with their
 bounds; every one must occur in the target. <code>Array&lt;i64&gt;</code> then
 implements <code>Show</code> exactly when <code>i64</code> does.</p>
-<!-- CR claude for claude: [doc-drift/low] These rules say an alias or variant may be
-implemented only in the trait's own package and that unions are never targets.
-`node::traits::check_target` exempts a constructor trait's named head: the name's
-package (or the trait's) suffices, even for a union alias. That is why `impl Collection
-for L<'_>`, shown in implementing Collection and examples/collection/cons_list.gx,
-compiles in a script, while `impl Display for L<i64>` is refused. Fix: state the
-constructor-trait rule here. probe:
-design/review-2026-10-19/repro/book-modules-udt-ctor-trait-orphan.gx
-(book-modules-udt-07) -->
 <h3 id="where-an-impl-may-be-written"><a class="header" href="#where-an-impl-may-be-written">Where an impl may be written</a></h3>
 <p>Implementations are global facts: once the module holding one loads,
 the impl applies everywhere the trait is used. To keep that coherent,
@@ -3878,14 +3806,20 @@ an <code>impl</code> is restricted to where its author answers for it:</p>
 <li>an <strong>abstract type</strong> (<code>Abstract&lt;..&gt;</code> or Rust-backed) may be
 implemented in the type’s package or the trait’s package;</li>
 <li><strong>any other type</strong> — a primitive, <code>Array&lt;..&gt;</code>, a struct, a tuple, a
-variant, an alias — only inside the <strong>trait’s own package</strong>.</li>
+variant, an alias — only inside the <strong>trait’s own package</strong>, except
+under a <strong>constructor trait</strong> (one over <code>self&lt;'a&gt;</code>, such as
+<code>Collection</code>): there a named type (<code>L&lt;'_&gt;</code>, even a union alias) may be
+implemented in the package that defines the name or the trait’s
+package, which is how a script implements <code>Collection</code> for its own
+<code>L</code> (<a href="#implementing-collection">Collection</a>).</li>
 </ul>
 <p>A structural type is its shape, so <code>impl Show for {x: i64, y: i64}</code>
 would apply to every <code>{x: i64, y: i64}</code> in the program; only the
 trait’s author may decide that. A type that should carry behaviour
 gets a name: <code>type Point = Abstract&lt;{x: i64, y: i64}&gt;</code>. Unions are
-never targets (each member is implemented separately), and one
-implementation per (trait, type) is enforced.</p>
+never targets (each member is implemented separately) outside a
+constructor trait’s named head, and one implementation per (trait, type)
+is enforced.</p>
 <h2 id="calling-trait-methods"><a class="header" href="#calling-trait-methods">Calling Trait Methods</a></h2>
 <p>A trait’s methods live under the trait’s name, like a module’s items:</p>
 <pre><code class="language-graphix">Show::show(Counter(42));
@@ -4187,9 +4121,9 @@ let map_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b| -&gt; Array&lt;'b&gt;
     array::init(array::len(a), |i| f(a[i]$));
 
 let xs = [1, 2, 3, 4, 5];
-let s = fold_go(xs, |acc, x| acc + x, 0, 0);
-let m = select find_go(xs, |x| x &gt; 3, 0) { null as _ =&gt; -1, x =&gt; x };
-let d = map_go(xs, |x| x * 10);
+let s = #[native] fold_go(xs, |acc, x| acc + x, 0, 0);
+let m = select #[native] find_go(xs, |x| x &gt; 3, 0) { null as _ =&gt; -1, x =&gt; x };
+let d = #[native] map_go(xs, |x| x * 10);
 println("sum=[s] found=[m] mapped=[d]");
 sys::exit(s ~ 0)
 </code></pre>
@@ -4216,7 +4150,7 @@ let flat_map_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Array&lt;'b&gt;| -&gt;
     list::to_array_rev(l)
 };
 
-let r = flat_map_go([1, 2, 3], |x| [x, x * 10]);
+let r = #[native] flat_map_go([1, 2, 3], |x| [x, x * 10]);
 println("[r]");
 sys::exit(r ~ 0)
 </code></pre>
@@ -4272,7 +4206,7 @@ impl Collection for L&lt;'_&gt; {
 use Collection::*;
 let l: L&lt;i64&gt; = `C(1, `C(2, `C(3, `N)));
 let doubled = map(l, |x| x * 2);
-let s = fold(doubled, 0, |a, x| a + x);
+let s = #[native] fold(doubled, 0, |a, x| a + x);
 let n = len(filter(l, |x| x &gt; 1));
 println("sum=[s] kept=[n]");
 sys::exit(s ~ 0)
@@ -4680,14 +4614,8 @@ let sign = |c: Counter| -&gt; i64 select c {
     Counter(_) =&gt; -1
 }
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] `T({ x.0 with a: 1 })` on the next line
-does not parse. The parser refuses it with "a functional update's source is a name or
-parenthesized"; `T({ (x.0) with a: 1 })` works. It is inline prose, so the book-fence
-parse test never sees it. Fix: write `T({ (x.0) with a: 1 })`. probe:
-design/review-2026-10-19/repro/book-modules-udt-abstract-update.gx (book-modules-udt-06)
--->
 <p>The payload keeps its shape: for <code>Abstract&lt;{ a: i64, b: string }&gt;</code>,
-<code>x.0.a</code> reads a field and <code>T({ x.0 with a: 1 })</code> updates one.</p>
+<code>x.0.a</code> reads a field and <code>T({ (x.0) with a: 1 })</code> updates one.</p>
 <p>Outside the module all three are compile errors — users can only call
 the functions the interface exports. The type <em>test</em> <code>T as t</code> works
 everywhere, since it compares the tag:</p>
@@ -5221,12 +5149,6 @@ let twice = |f: fn(x: 'a) -&gt; 'a, x: 'a| f(f(x));
 <p>The shell loads this as the module <code>init</code>, so in any REPL session the
 utilities are available as <code>init::debug</code>, <code>init::twice</code>, etc. — or
 bare after a <code>use init::*</code>.</p>
-<!-- CR claude for claude: [doc-drift/low] The book never mentions the session image
-cache (`$XDG_CACHE_HOME/graphix/registration/..`), or the `--no-cache`, `--warm`,
-`--no-fusion` and `--fusion-stats` flags. A warm start also prints different warnings
-(open CR shell-04), and nothing here would tell a user why. Add a short subsection: what
-is cached and where, what invalidates it, and the flags that bypass or prepare it. Found
-by reading; not run. (book-core-14) -->
 <h2 id="command-line-options"><a class="header" href="#command-line-options">Command-Line Options</a></h2>
 <p>The <code>graphix</code> command supports several options for controlling its behavior.</p>
 <h3 id="netidx-configuration"><a class="header" href="#netidx-configuration">Netidx Configuration</a></h3>
@@ -5269,6 +5191,36 @@ graphix -W error ./myapp
 <pre><code class="language-bash">graphix -W unhandled -W error myprogram
 </code></pre>
 <p>If you specify both a flag and its negation (e.g., <code>unhandled</code> and <code>no-unhandled</code>), the <code>no-</code> variant always wins.</p>
+<h3 id="startup-cache"><a class="header" href="#startup-cache">Startup Cache</a></h3>
+<p>The shell caches compiled work so a later start is fast. After compiling
+it writes an image of the session (the packages compiled in, and for a
+script the program itself, fusion’s native code included) under
+<code>$XDG_CACHE_HOME/graphix/registration/&lt;build-id&gt;/</code>, and a later start of
+the same executable restores it instead of compiling. An entry records
+every source file the compile read, and the compile flags and
+<code>GRAPHIX_MODPATH</code> are part of its key: a changed file, flag or search
+path is a miss, and the program compiles again. A new build of
+<code>graphix</code> gets entries of its own.</p>
+<pre><code class="language-bash"># neither read nor write the cache
+graphix --no-cache ./myprogram.gx
+
+# compile, write the cache and exit (prepare a deployment's first start)
+graphix --warm ./myprogram.gx
+</code></pre>
+<p>A restored program compiles nothing, so diagnostics printed while
+compiling (some warnings, <code>--fusion-stats</code>) appear only on a cold
+start: pass <code>--no-cache</code> to see them.</p>
+<h3 id="debugging-native-code"><a class="header" href="#debugging-native-code">Debugging Native Code</a></h3>
+<pre><code class="language-bash"># run every expression in the interpreter (no native code)
+graphix --no-fusion ./myprogram.gx
+
+# print the fusion profile (regions attempted and fused, and why
+# the rest were not) to stderr after compiling
+graphix --no-cache --fusion-stats ./myprogram.gx
+</code></pre>
+<p><code>--no-fusion</code> is also how to see the interpreter’s diagnostics for
+unchecked arithmetic (a division by zero), which native code does not
+log.</p>
 <h3 id="logging"><a class="header" href="#logging">Logging</a></h3>
 <p>Enable debug logging for troubleshooting:</p>
 <pre><code class="language-bash">RUST_LOG=debug graphix --log-dir /tmp/graphix-logs ./myprogram
@@ -5780,11 +5732,8 @@ val fract: fn(x: f64) -&gt; f64;
 /// Absolute value.
 val abs: fn(x: f64) -&gt; f64;
 
-// CR claude for claude: [doc-drift/low] The doc promises -1.0, 0.0 or 1.0. The builtin
-// is f64::signum: signum(0.0) is 1 and signum(-0.0) is -1, never 0. Document the zero
-// cases, or return 0.0 for zero if that is the intent. probe:
-// design/review-2026-10-19/repro/gx-stdlib-signum-zero.gx (gx-stdlib-05)
-/// Sign: -1.0, 0.0, or 1.0. NaN if `x` is NaN.
+/// Sign: 1.0 when `x` is positive or `0.0`, -1.0 when it is negative or
+/// `-0.0`. NaN if `x` is NaN.
 val signum: fn(x: f64) -&gt; f64;
 
 /// `x` with the sign of `y`.
@@ -5898,27 +5847,20 @@ val zip: fn(a: ['a, null], b: ['b, null]) -&gt; [('a, 'b), null];
 /// null input yields (null, null).
 val unzip: fn(p: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
 
-// CR claude for claude: [doc-drift/low] This doc ('invoked at most once per update of
-// v', 'fire-and-forget, no queueing', 'the new input supersedes the pending one')
-// describes the deleted OptHof builtin. opt.gx now implements map as `select v { null
-// as _ =&gt; null, x =&gt; f(x) }`, so it has f's cadence. A slow async f answers both inputs
-// in order, and f fires whenever what it reads fires. flat_map, filter, is_some_and and
-// is_none_or point to the same text. State the select semantics instead. probe:
-// design/review-2026-10-19/repro/gx-stdlib-opt-map-supersede.sh (gx-stdlib-04)
 /// map(v, f): apply f to the inner value if v is non-null, otherwise
-/// return null. f is invoked at most once per update of v — fire-and-
-/// forget, no queueing. If v updates again before f produces a result,
-/// the new input supersedes the pending one.
+/// return null. It is `select v { null as _ =&gt; null, x =&gt; f(x) }`, so it
+/// fires as f does: f answers every non-null input (a slow async f
+/// answers each in order), and fires again whenever what f reads fires.
 val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; ['b, null] throws 'e;
 
 /// flat_map(v, f): apply f to the inner value if v is non-null,
 /// otherwise return null. f's own optional result is forwarded
-/// unchanged. Same fire-and-forget semantics as map.
+/// unchanged. It fires as map does.
 val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null] throws 'e) -&gt; ['b, null] throws 'e;
 
 /// filter(v, pred): if v is non-null and pred(v) is true, emit v.
-/// Otherwise (v is null, or pred is false) emit null. Same fire-and-
-/// forget semantics as map.
+/// Otherwise (v is null, or pred is false) emit null. It fires as map
+/// does.
 ///
 /// Caveat for reactive predicates: when pred takes more than one cycle
 /// to produce its bool, the emitted value is the *current* input, not
@@ -5942,13 +5884,13 @@ val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null] throws 'e) -&gt; ['a, nu
 val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e throws 'x) -&gt; Result&lt;'a, 'e&gt; throws 'x;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
-/// false when v is null or pred is false. Fire-and-forget like map —
-/// for non-null v, no output is produced until pred fires.
+/// false when v is null or pred is false. It fires as map does: for a
+/// non-null v, no output is produced until pred fires.
 val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e;
 
 /// is_none_or(v, pred): true when v is null or pred(v) is true, false
-/// when v is non-null and pred is false. Fire-and-forget like map —
-/// for non-null v, no output is produced until pred fires.
+/// when v is non-null and pred is false. It fires as map does: for a
+/// non-null v, no output is produced until pred fires.
 val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -6189,16 +6131,12 @@ val split: fn(#pat: string, s: string) -&gt; Array&lt;string&gt;;
 /// reverse split the string by the specified #pat and return an array of each part
 val rsplit: fn(#pat: string, s: string) -&gt; Array&lt;string&gt;;
 
-// CR claude for claude: [doc-drift/low] splitn returns at most #n PARTS (#n - 1
-// splits): #n: 1 returns the whole string unsplit. rsplitn returns its parts from the
-// end, in reverse order. Both docs say 'at most #n times'; say 'into at most #n parts'
-// as splitn_escaped's doc does, and state rsplitn's order. (collections-str-08)
-/// split the string at most #n times by the specified #pat and return an array of
-/// each part
+/// split the string by the specified #pat into at most #n parts (#n: 1 is the whole
+/// string) and return an array of each part
 val splitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
-/// reverse split the string at most #n times by the specified #pat and return an array of
-/// each part
+/// split the string from its end by the specified #pat into at most #n parts and return
+/// an array of each part, the last part first
 val rsplitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
@@ -6328,7 +6266,7 @@ val args: fn() -&gt; Array&lt;string&gt;;
 val join_path: fn(path: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 
 /// flush stdout/stderr and terminate the process with the given exit
-/// code. The return type is fully polymorphic because the call never
+/// code; a code outside 0..=255 exits with 1. The return type is fully polymorphic because the call never
 /// actually returns; it fires when its argument produces a value, so
 /// you can use it as the trailing expression of a program to make it
 /// exit deterministically on completion.
@@ -6396,13 +6334,19 @@ trait Read {
         }
     };
 
-    // CR claude for claude: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
+    // CR claude for eric: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
     // copies everything read so far, so a Graphix-defined stream reads in time
     // quadratic in its length: 64 MB took 3.8 s against 1.3 s for 32 MB. read_exact's
     // default does the same. Push the chunks onto an Array&lt;bytes&gt; and `buffer::concat`
     // it once at the end. For read_exact, keep a running length beside the array.
     // probe: design/review-2026-10-19/repro/gx-stdlib-read-all-quadratic.sh
     // (gx-stdlib-07)
+    // 2026-10-19 claude: Not done: the Graphix default bodies in sys's io.gxi reach
+    // only core (sys depends on no array or list package), and core has no array or
+    // list append, so the chunks cannot be pushed onto an Array&lt;bytes&gt; here. A fix
+    // needs one of: sys depending on graphix-package-array for array::push, a core
+    // builtin that appends to an Array, or a recursive chunk list flattened at the end.
+    // Each is a dependency or surface choice.
     /// Read the stream to its end and return everything it produced as
     /// one value. Reads re-arm themselves until the stream ends, so a
     /// stream that never ends (a socket the peer holds open) never
@@ -7025,15 +6969,9 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
-// CR claude for claude: [doc-drift/medium] The doc says a wake writes the standing
-// value again. It does not: a wake re-attaches to the path and writes only when the
-// value (or the path) fires, which lib_tests::net::net_write_not_repeated_after_wake
-// pins and the wake-is-a-resume rule requires. An arm that sleeps and wakes with an
-// unchanged value produces 1 write, not 2. Change the doc to say that. probe:
-// design/review-2026-10-19/repro/gx-stdlib-net-write-wake.gx Also reported as
-// (tests-lib-b2-03), (sys-net-06). (gx-stdlib-03)
-/// Write the value to the specified path. When its arm wakes, write the
-/// standing value again.
+/// Write the value to the specified path. When its arm wakes, the write
+/// attaches to the path again and writes only when the value or the path
+/// fires.
 val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
@@ -7050,7 +6988,7 @@ val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&
 /// Each call runs an instance of f of its own and is answered by its first
 /// value, or by the error it raises. A call runs to its answer whether or not
 /// the caller is still waiting; one f never answers holds the call.
-val rpc: fn&lt;'spec: Data, 'result: Data&gt;(
+val rpc: fn&lt;'spec: Data, 'result: Data, 'args: Concrete + Data&gt;(
     #path:string,
     #doc:string,
     #spec:'spec,
@@ -7063,8 +7001,10 @@ val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `L
 /// list the table under the specified path.
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-/// Publish the specifed value at the specified path.
-val publish: fn&lt;'v: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+/// Publish the specifed value at the specified path. A write to it is cast
+/// to #on_write's argument type, and a value that does not cast answers the
+/// writer with the cast's error.
+val publish: fn&lt;'v: Data, 'a: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers-and-time-arithmetic"><a class="header" href="#systime---timers-and-time-arithmetic">sys::time - Timers and Time Arithmetic</a></h1>
@@ -7487,24 +7427,22 @@ Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> fo
 <p>Calls on one connection are independent async calls, ordered only when
 something sequences them: here a <code>seq</code>, so the table exists before the
 insert and the row before the queries.</p>
-<pre><code class="language-graphix">// CR claude for claude: [style/low] This example raises with `?` under no handler, so
-// every check and run prints 'error raised by ? will not be caught'. The book page
-// teaches a pattern the compiler warns about, and on a failure the program prints
-// nothing and never exits. Wrap the body in `try { .. (users, raw) } with(e) {
-// println("sqlite failed: [e]"); ([], []) }`: the branches share one type, and it
-// checks and runs clean with the same output. probe: graphix --check on this file
-// prints the warning; the try/with version does not. (examples-rest-05)
-let (users, raw) = seq {
-    let conn = sqlite::open(":memory:")?;
-    sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
-    sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
-    // typed struct results
-    let users: Array&lt;{id: i64, name: string, age: i64}&gt; =
-        sqlite::query(conn, "SELECT * FROM users", [])?;
-    // raw map results
-    let raw: Array&lt;Map&lt;string, sqlite::SqlVal&gt;&gt; =
-        sqlite::query(conn, "SELECT * FROM users", [])?;
-    (users, raw)
+<pre><code class="language-graphix">let (users, raw) = seq {
+    try {
+        let conn = sqlite::open(":memory:")?;
+        sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
+        sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
+        // typed struct results
+        let users: Array&lt;{id: i64, name: string, age: i64}&gt; =
+            sqlite::query(conn, "SELECT * FROM users", [])?;
+        // raw map results
+        let raw: Array&lt;Map&lt;string, sqlite::SqlVal&gt;&gt; =
+            sqlite::query(conn, "SELECT * FROM users", [])?;
+        (users, raw)
+    } with(e) {
+        println("sqlite failed: [e]");
+        ([], [])
+    }
 };
 println("[users] [raw]")
 </code></pre>
@@ -8091,24 +8029,24 @@ layout(
 <li>Application modes (normal, edit, command)</li>
 </ul>
 <p>State changes automatically trigger UI updates:</p>
-<pre><code class="language-graphix">use tui::{line, list::list};
+<pre><code class="language-graphix">use tui::{line, input_handler::{Event, input_handler, on_press}, list::list};
 
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
-// CR claude for claude: [doc-drift/low] Nothing writes `arrow_pressed`. The
-// input_handler the comment mentions does not exist, so this program, which the
-// overview presents as showing that 'state changes automatically trigger UI updates',
-// can never change. Make it a whole program: an `on_press` handler whose Down arm
-// writes `selected_item &lt;- d ~ (selected_item + 1) % array::len(items)`, and delete
-// `arrow_pressed`. Found by reading; not run. (examples-tui-09)
-let arrow_pressed = never();
 
-// an input_handler (see the Input Handling page) sets arrow_pressed
-// when the user presses the down arrow
-selected_item &lt;- arrow_pressed ~ ((selected_item + 1) % array::len(items));
+let handle = |e: Event| on_press(e, |k| select k.code {
+    d@ `Down =&gt; {
+        selected_item &lt;- d ~ (selected_item + 1) % array::len(items);
+        `Stop
+    },
+    _ =&gt; `Continue
+});
 
 // UI automatically reflects the change
-list(#selected: &amp;selected_item, &amp;items)
+input_handler(
+    #handle: &amp;handle,
+    &amp;list(#highlight_symbol: &amp;"&gt; ", #selected: &amp;selected_item, &amp;items)
+)
 </code></pre>
 <h2 id="real-time-data-integration"><a class="header" href="#real-time-data-integration">Real-time Data Integration</a></h2>
 <p>Graphix TUIs excel at displaying real-time data. Connect to data sources via netidx and the UI updates automatically:</p>
@@ -8165,6 +8103,7 @@ modifiers. Most widgets accept style parameters to customize their appearance.</
   `Rgb({ r: i64, g: i64, b: i64 }),
   `Indexed(i64)
 ];
+
 </code></pre>
 <p>Use <code>Reset</code> to return to the terminal’s default color. Use <code>Rgb</code> for 24-bit true
 color, or <code>Indexed</code> for 256-color palette indices.</p>
@@ -8181,6 +8120,7 @@ color, or <code>Indexed</code> for 256-color palette indices.</p>
   `Hidden,
   `CrossedOut
 ];
+
 </code></pre>
 <h2 id="the-style-type"><a class="header" href="#the-style-type">The Style Type</a></h2>
 <p>A <code>Style</code> combines foreground color, background color, underline color, and
@@ -8192,6 +8132,7 @@ modifiers:</p>
   add_modifier: [Array&lt;Modifier&gt;, null],
   sub_modifier: [Array&lt;Modifier&gt;, null]
 };
+
 </code></pre>
 <h2 id="creating-styles"><a class="header" href="#creating-styles">Creating Styles</a></h2>
 <p>Use the <code>tui::style</code> function to create styles. All parameters are optional:</p>
@@ -8202,6 +8143,7 @@ modifiers:</p>
   ?#add_modifier: [Array&lt;Modifier&gt;, null],
   ?#sub_modifier: [Array&lt;Modifier&gt;, null]
 ) -&gt; Style;
+
 </code></pre>
 <p>Examples:</p>
 <pre><code class="language-graphix">// Red foreground
@@ -8222,20 +8164,14 @@ tui::style()
 <h2 id="spans-and-lines"><a class="header" href="#spans-and-lines">Spans and Lines</a></h2>
 <p>Styles are commonly used with <code>Span</code> and <code>Line</code> types to create styled text.</p>
 <h3 id="spans"><a class="header" href="#spans">Spans</a></h3>
-<!-- CR claude for claude: [structure/low] The type blocks on this page are hand copies
-of tui/mod.gxi and have drifted. `val span` takes `content: string` in the gxi, not `s`,
-and `val line` takes `spans`, not `v`. input.md copies input_handler.gxi the same way,
-and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
-(MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
-and `{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
-reading; not run. (book-ui-b-05) -->
 <p>A <code>Span</code> is a piece of text with a single style:</p>
 <pre><code class="language-graphix">type Span = {
   style: Style,
   content: string
 };
 
-val span: fn(?#style: Style, s: string) -&gt; Span;
+val span: fn(?#style: Style, content: string) -&gt; Span;
+
 </code></pre>
 <p>Example:</p>
 <pre><code class="language-graphix">// Create a red "Error:" span
@@ -8258,7 +8194,8 @@ type Line = {
   spans: [Array&lt;Span&gt;, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array&lt;Span&gt;, string]) -&gt; Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], spans: [Array&lt;Span&gt;, string]) -&gt; Line;
+
 </code></pre>
 <p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
 simple string (which will use the line’s style).</p>
@@ -8304,12 +8241,7 @@ paragraph(&amp;[l])
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
-<!-- CR claude for claude: [doc-drift/low] Bars are vertical only by default:
-`#direction: &`Horizontal` lays them out sideways. The parameter list also leaves out
-`#direction`, `#bar_style`, `#label_style` and `#value_style` (bar_chart) and
-`#value_style` (bar), all in barchart.gxi. Mention them. Found by reading; not run.
-(book-ui-b-09) -->
-<p>The <code>bar_chart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It’s ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
+<p>The <code>bar_chart</code> widget displays categorical data as bars, vertical by default (<code>#direction: &amp;`Horizontal</code> lays them out sideways), supporting grouped bars, custom styling, and dynamic updates. It’s ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
 <h2 id="interface-4"><a class="header" href="#interface-4">Interface</a></h2>
 <pre><code class="language-graphix">use super::{Direction, Line, Style, Tui};
 type Bar = {
@@ -8372,6 +8304,10 @@ val bar_chart: fn(
 <li><strong>bar_gap</strong> - Space between bars within a group</li>
 <li><strong>group_gap</strong> - Space between bar groups</li>
 <li><strong>style</strong> - Base style for the chart</li>
+<li><strong>direction</strong> - <code>`Vertical</code> (the default) or <code>`Horizontal</code></li>
+<li><strong>bar_style</strong> - Default style for every bar</li>
+<li><strong>label_style</strong> - Style for the bar and group labels</li>
+<li><strong>value_style</strong> - Default style for the values drawn on the bars</li>
 </ul>
 <h3 id="bar_group"><a class="header" href="#bar_group">bar_group</a></h3>
 <ul>
@@ -8382,6 +8318,7 @@ val bar_chart: fn(
 <li><strong>style</strong> - Style for the bar</li>
 <li><strong>label</strong> - Line labeling the bar</li>
 <li><strong>text_value</strong> - String displayed above the bar (defaults to the numeric value)</li>
+<li><strong>value_style</strong> - Style for this bar’s value</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
@@ -8610,7 +8547,7 @@ block(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-browser-widget"><a class="header" href="#the-browser-widget">The Browser Widget</a></h1>
-<p>The <code>browser</code> widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.</p>
+<p>The <code>browser</code> widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays a table of one level’s children, one column per published column when the children are rows of a table, with selection and cursor movement support.</p>
 <h2 id="interface-6"><a class="header" href="#interface-6">Interface</a></h2>
 <pre><code class="language-graphix">use super::{Constraint, Flex, line, Size, Style, style, Tui};
 use sys::net;
@@ -8647,38 +8584,39 @@ val browser: fn(
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-2"><a class="header" href="#parameters-2">Parameters</a></h2>
-<!-- CR claude for claude: [doc-drift/medium] This contradicts the code and browser.gxi.
-The browser lists through `net::list_table(path)`, whose `#update` defaults to
-`sys::time::timer(1, true)`, so the listing refreshes about once a second as well as on
-a path change. A row published later appears within a second with no change of path.
-Fix: say what browser.gxi says. While here, line 3's "tree structure" should be "a table
-of one level's children", and `#rate` (the subscription throttle), `#flex` and the three
-style parameters need bullets. probe:
-design/review-2026-10-19/repro/book-ui-a-browser-listing-refresh.gx Also reported as
-(gx-ui-04). (book-ui-a-01) -->
 <ul>
-<li><strong>path</strong> - The netidx path whose children are listed. The listing is fetched once each time <code>path</code> changes, so rows published later appear when the path next changes</li>
+<li><strong>path</strong> - The netidx path whose children are listed. The listing refreshes when <code>path</code> changes and about once a second, so rows published later appear on the next refresh</li>
 <li><strong>cursor</strong> - Programmatic cursor movement: <code>Left(n)</code>, <code>Right(n)</code>, <code>Up(n)</code>, <code>Down(n)</code></li>
 <li><strong>selected_row</strong> (output) - Full path of the selected row (e.g. <code>/t/r1</code>), null while the listing is empty</li>
 <li><strong>selected_path</strong> (output) - Full path of the selected cell: the row in a list, the row and column in a table; null while the listing is empty</li>
 <li><strong>size</strong> (input) - The area the browser is drawn in, which sizes its viewport; pass the enclosing block’s <code>#size</code> output</li>
+<li><strong>rate</strong> - The most often a cell’s subscription updates the display (default <code>duration:0.5s</code>)</li>
+<li><strong>flex</strong> - How the columns share leftover width (default <code>`SpaceBetween</code>)</li>
+<li><strong>style</strong>, <strong>header_style</strong>, <strong>selected_style</strong> - Styles for the table, its header row and the selected cell</li>
 </ul>
 <h2 id="examples-2"><a class="header" href="#examples-2">Examples</a></h2>
 <h3 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui::browser::browser;
+<pre><code class="language-graphix">use tui::{Size, block::block, browser::browser};
 
 let selected_path: [string, null] = never();
+let size: Size = never();
 
-browser(
-    #size: {width: 40, height: 10},
-    #selected_path: &amp;mut selected_path,
-    // Start browsing from root
-    "/"
+block(
+    #border: &amp;`None,
+    #size: &amp;mut size,
+    &amp;browser(
+        #size,
+        #selected_path: &amp;mut selected_path,
+        // Start browsing from root
+        "/"
+    )
 )
 </code></pre>
 <p><img src="ui/tui/media/browser_basic.png" alt="Basic Browser Widget"></p>
 <h3 id="basic-navigation"><a class="header" href="#basic-navigation">Basic Navigation</a></h3>
 <pre><code class="language-graphix">use tui::{
+  Size,
+  block::block,
   browser::{MoveCursor, browser},
   input_handler::{Event, input_handler, on_press}
 };
@@ -8687,6 +8625,7 @@ let path = "/";
 let selected_path: [string, null] = never();
 let selected_row: [string, null] = never();
 let cursor: MoveCursor = never();
+let size: Size = never();
 
 let handle_event = |e: Event| on_press(e, |k| select k.code {
     e@ `Up =&gt; { cursor &lt;- e ~ `Up(1); `Stop },
@@ -8697,20 +8636,18 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
     _ =&gt; `Continue
 });
 
-// CR claude for claude: [bug/low] The browser below gets `#size: {width: 80, height:
-// 24}`. browser.gx sizes its table from it (`row_slots = size.height - 1`), so this
-// lists at most 23 rows in any terminal. browser_basic.gx caps at 9 with its 40x10.
-// browser.gxi and the book say to pass the enclosing block's `#size` output. Do what
-// browser_commands.gx does: `let size: Size = never()` and `block(#size: &amp;mut size,
-// ..)`. Found by reading; not run. (examples-tui-08)
 input_handler(
     #handle: &amp;handle_event,
-    &amp;browser(
-        #size: {width: 80, height: 24},
-        #cursor,
-        #selected_path: &amp;mut selected_path,
-        #selected_row: &amp;mut selected_row,
-        path
+    &amp;block(
+        #border: &amp;`None,
+        #size: &amp;mut size,
+        &amp;browser(
+            #size,
+            #cursor,
+            #selected_path: &amp;mut selected_path,
+            #selected_row: &amp;mut selected_row,
+            path
+        )
     )
 )
 </code></pre>
@@ -8735,20 +8672,14 @@ let command_mode = false;
 let command = "";
 
 let run_command = |c: string, path: string| {
-    catch(e) command_error &lt;- "[e]";
+    catch(e) command_error &lt;- "[(e.0).error]";
     select str::sub(#start:0, #len:2, c)? {
         "w " =&gt; {
             let v = str::sub(#start:2, #len:str::char_len(c) - 2, c)?;
             let v: Primitive = str::parse(v)?;
             sys::net::write(path, v)?
         },
-        // CR claude for claude: [bug/low] `s` is the 2-character prefix, so `:quit`
-        // reports `invalid command qu`. The catch above also writes `"[e]"`, which
-        // prints the whole ErrChain struct, source path and position included, into the
-        // bottom title. Use `[c]` here and `"[e.error]"` in the catch. probe:
-        // design/review-2026-10-19/repro/examples-tui-browser-cmd-error.sh
-        // (examples-tui-06)
-        s =&gt; error("invalid command [s]")?
+        _ =&gt; error("invalid command [c]")?
     }
 };
 
@@ -9112,12 +9043,8 @@ canvas(
 <li><strong>Block</strong>: High contrast, blocky appearance, good for filled areas</li>
 </ul>
 <h2 id="coordinate-system"><a class="header" href="#coordinate-system">Coordinate System</a></h2>
-<!-- CR claude for claude: [doc-drift/low] The bottom-left corner is (x_bounds.min,
-y_bounds.min), not (0, 0). This page's own canvas_plot example uses y bounds -1..1,
-which puts (0, 0) at mid-left. State the corners in terms of the bounds. Found by
-reading; not run. (book-ui-b-07) -->
 <ul>
-<li>Origin (0, 0) is at the bottom-left</li>
+<li>The bottom-left corner is (x_bounds.min, y_bounds.min) and the top-right corner (x_bounds.max, y_bounds.max); (0, 0) is wherever the bounds put it</li>
 <li>X increases to the right</li>
 <li>Y increases upward</li>
 <li>Shapes outside bounds are clipped</li>
@@ -9504,7 +9431,7 @@ input_handler(
 <p><img src="ui/tui/media/paragraph_scrollable.gif" alt="Scrollable Paragraph"></p>
 <h3 id="live-log-viewer"><a class="header" href="#live-log-viewer">Live Log Viewer</a></h3>
 <p>Display real-time updating content:</p>
-<pre><code class="language-graphix">use tui::{line, paragraph::paragraph};
+<pre><code class="language-graphix">use tui::{Size, line, block::block, paragraph::paragraph};
 use sys::time;
 
 // Self-contained: publish a simulated log entry every second, then
@@ -9519,35 +9446,30 @@ let messages = [
     "background job complete",
     "config reloaded",
 ];
-let log_source = "";
+let log_source: string = never();
 log_source &lt;- tick ~ "[n] [rand::pick(tick ~ messages)]";
 sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
 let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")$;
 
-// CR claude for claude: [bug/medium] `array::window` appends the newest entry at the
-// end, and the paragraph below keeps its default scroll of {x: 0, y: 0}. So a view H
-// lines tall shows entries 0..H forever, and once the log is taller than the terminal
-// (about 22 s at 24 lines) every new entry is out of sight. The page sells this as a
-// live log viewer. Fix: follow the tail, e.g. a `block` with `#size: &amp;mut size` and
-// `#scroll: &amp;{x: 0, y: max(0, array::len(log_entries) - size.height)}`, or keep the
-// newest entry first. probe:
-// design/review-2026-10-19/repro/book-ui-a-log-viewer-newest-hidden.gx (book-ui-a-03)
 log_entries &lt;- array::window(
     #n: 100,
     new_entry ~ log_entries,
     line(new_entry)
 );
 
-// CR claude for claude: [bug/medium] The paragraph draws from the top and new entries
-// are appended at the end, so once the screen is full the newest entries are never
-// visible. The initial `log_source = ""` is published too, which makes the first line
-// blank. Fix: `let log_source: string = never();`, and follow the tail with a block's
-// `#size` output: `#scroll: &amp;{x: 0, y: max(0, array::len(log_entries) - size.height)}`
-// and `#wrap: &amp;false`. probe:
-// design/review-2026-10-19/repro/examples-tui-log-viewer-tail.sh (examples-tui-03)
-paragraph(&amp;log_entries)
+// follow the tail: scroll so the newest entry is on the bottom line
+let size: Size = never();
+block(
+    #border: &amp;`None,
+    #size: &amp;mut size,
+    &amp;paragraph(
+        #wrap: &amp;false,
+        #scroll: &amp;{x: 0, y: max(0, array::len(log_entries) - size.height)},
+        &amp;log_entries
+    )
+)
 </code></pre>
 <p><img src="ui/tui/media/paragraph_log_viewer.gif" alt="Log Viewer"></p>
 <h3 id="centered-message"><a class="header" href="#centered-message">Centered Message</a></h3>
@@ -9618,21 +9540,14 @@ gauge(
 <h3 id="progress-with-color-thresholds"><a class="header" href="#progress-with-color-thresholds">Progress with Color Thresholds</a></h3>
 <pre><code class="language-graphix">use tui::{line, span, style, block::block, gauge::gauge};
 
-let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
+let percentage = min(100, count(sys::time::timer(0.5, true)));
+let power = cast&lt;f64&gt;(percentage)$ / 100.0;
 
 let color = select power {
     x if x &lt; 0.10 =&gt; `Red,
     x if x &lt; 0.25 =&gt; `Yellow,
     x =&gt; `Green
 };
-
-// CR claude for claude: [bug/low] `power` is `n * 0.01`, and multiplying by 100.0 does
-// not give back `n`: 0.29 * 100.0 is 28.999999999999996, which the cast truncates to
-// 28. So the label shows 28% twice and never 29% (and 57% for 58). linegauge_colored.gx
-// has the same line. Count in integers and derive the ratio: `let percentage = min(100,
-// count(..)); let power = cast&lt;f64&gt;(percentage)$ / 100.0`. probe:
-// design/review-2026-10-19/repro/examples-tui-gauge-percent.gx (examples-tui-05)
-let percentage = cast&lt;i64&gt;(power * 100.0)$;
 
 block(
     #border: &amp;`All,
@@ -9723,15 +9638,14 @@ line_gauge(
 <h3 id="color-coded-status"><a class="header" href="#color-coded-status">Color-coded Status</a></h3>
 <pre><code class="language-graphix">use tui::{line, style, block::block, line_gauge::line_gauge};
 
-let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
+let percentage = min(100, count(sys::time::timer(0.5, true)));
+let power = cast&lt;f64&gt;(percentage)$ / 100.0;
 
 let color = select power {
     x if x &lt; 0.10 =&gt; `Red,
     x if x &lt; 0.25 =&gt; `Yellow,
     x =&gt; `Green
 };
-
-let percentage = cast&lt;i64&gt;(power * 100.0)$;
 
 block(
     #border: &amp;`All,
@@ -9809,6 +9723,7 @@ before they propagate further.</p>
   `Paste(string),
   `Resize(i64, i64)
 ];
+
 </code></pre>
 <ul>
 <li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes (enabled while the display runs, independently of mouse input)</li>
@@ -9825,6 +9740,13 @@ before they propagate further.</p>
   modifiers: Array&lt;KeyModifier&gt;,
   state: Array&lt;KeyEventState&gt;
 };
+
+type KeyEventState = [
+  `Keypad,
+  `CapsLock,
+  `NumLock
+];
+
 </code></pre>
 <h3 id="key-codes"><a class="header" href="#key-codes">Key Codes</a></h3>
 <pre><code class="language-graphix">type KeyCode = [
@@ -9856,6 +9778,40 @@ before they propagate further.</p>
   `Media(MediaKeyCode),
   `Modifier(ModifierKeyCode)
 ];
+
+type MediaKeyCode = [
+  `Play,
+  `Pause,
+  `PlayPause,
+  `Reverse,
+  `Stop,
+  `FastForward,
+  `Rewind,
+  `TrackNext,
+  `TrackPrevious,
+  `Record,
+  `LowerVolume,
+  `RaiseVolume,
+  `MuteVolume
+];
+
+type ModifierKeyCode = [
+  `LeftShift,
+  `LeftControl,
+  `LeftAlt,
+  `LeftSuper,
+  `LeftHyper,
+  `LeftMeta,
+  `RightShift,
+  `RightControl,
+  `RightAlt,
+  `RightSuper,
+  `RightHyper,
+  `RightMeta,
+  `IsoLevel3Shift,
+  `IsoLevel5Shift
+];
+
 </code></pre>
 <p>Character keys use <code>Char(string)</code>, e.g., <code>Char("a")</code> or <code>Char("A")</code>.
 Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
@@ -9865,6 +9821,7 @@ Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
   `Repeat,
   `Release
 ];
+
 </code></pre>
 <p>Most applications only care about <code>Press</code> events, and must say so: a
 terminal that reports releases (the Windows console does) delivers two
@@ -9895,6 +9852,7 @@ other):</p>
   `Hyper,
   `Meta
 ];
+
 </code></pre>
 <p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
 <h2 id="ending-the-program"><a class="header" href="#ending-the-program">Ending the Program</a></h2>
@@ -9927,12 +9885,11 @@ the level with the program’s exit:</p>
 <pre><code class="language-graphix">tui::mouse &lt;- true
 </code></pre>
 <p>Mouse events contain position and action information:</p>
-<pre><code class="language-graphix">type MouseEvent = {
-  column: i64,
-  kind: MouseEventKind,
-  modifiers: Array&lt;KeyModifier&gt;,
-  row: i64
-};
+<pre><code class="language-graphix">type MouseButton = [
+  `Left,
+  `Right,
+  `Middle
+];
 
 type MouseEventKind = [
   `Down(MouseButton),
@@ -9945,11 +9902,13 @@ type MouseEventKind = [
   `ScrollRight
 ];
 
-type MouseButton = [
-  `Left,
-  `Right,
-  `Middle
-];
+type MouseEvent = {
+  column: i64,
+  kind: MouseEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  row: i64
+};
+
 </code></pre>
 <h2 id="creating-input-handlers"><a class="header" href="#creating-input-handlers">Creating Input Handlers</a></h2>
 <p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>
@@ -10009,21 +9968,12 @@ let handle = |e: Event| on_press(e, |k| select k.code {
 
 input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[count]"))
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] This paragraph says a constant write such
-as `mode <- `Insert` "fires once when the arm becomes selected" and that both forms are
-useful. The rule as built is that a constant right-hand side fires only at the arm's
-FIRST entry, because a later entry resumes the arm. The check warns about it, and
-select.md's "Writing From an Arm" says so. Rewrite it to match: sample the event that
-selects the arm (`` k@ `Char("i") => mode <- k ~ `Insert ``), and drop "Both are
-useful". The code span `mode <- \`Insert` also renders broken, because CommonMark has no
-backslash escapes inside code spans; use ``` `` mode <- `Insert `` ```. probe:
-design/review-2026-10-19/repro/book-ui-b-const-arm-write.gx,
-design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-01) -->
 <p>The <code>Up</code> and <code>Down</code> arms sample the key (<code>u ~ count + 1</code>). A write
 inside a select arm fires when its right-hand side fires: <code>count &lt;- count + 1</code> would fire again on its own update and loop, and a constant
-such as <code>mode &lt;- \</code>Insert` fires once when the arm becomes selected
-rather than on every key. Both are useful, and the select chapter’s
-“Writing From an Arm” spells out when.</p>
+such as <code>mode &lt;- `Insert</code> fires only at the arm’s first entry, since a
+later entry resumes the arm (the check warns of it). Sample the event
+that selects the arm instead, <code>k@ `Char("i") =&gt; mode &lt;- k ~ `Insert</code>;
+the select chapter’s “Writing From an Arm” spells out why.</p>
 <h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>
 <p>The <code>#enabled</code> parameter turns a handler on and off. A disabled handler
 drops every event: neither it nor anything it wraps, nested handlers
@@ -10070,14 +10020,6 @@ input_handler(
 )
 </code></pre>
 <h2 id="event-propagation"><a class="header" href="#event-propagation">Event Propagation</a></h2>
-<!-- CR claude for claude: [doc-drift/medium] This section describes propagation only
-through handlers. It leaves out that containers route each event to one child.
-LayoutW::handle_event sends it only to the `#focused` child (0 when unset),
-TabsW::handle_event only to the selected tab, and OverlayW only to the top layer. So an
-input_handler in a non-focused layout pane or an unselected tab never sees a key, with
-no warning. Say this here, and in one line under layout.md's `focused` and tabs.md's
-`selected`. Also reword tabs.md's "Keyboard Navigation" list as patterns the program
-implements itself. Found by reading; not run. (book-ui-b-02) -->
 <p>Input handlers form a stack. Events flow from the outermost handler inward:</p>
 <pre><code class="language-graphix">use tui::{
   input_handler::{Event, input_handler, on_press},
@@ -10111,6 +10053,11 @@ input_handler(
 </code></pre>
 <p>If the outer handler returns <code>Continue</code>, the event reaches the inner one. If
 either returns <code>Stop</code>, propagation stops.</p>
+<p>Containers route an event to one child: a block passes it to its child,
+a layout only to its <code>#focused</code> child (the first when <code>#focused</code> is not
+set), tabs only to the selected tab, and an overlay only to its top
+layer. A handler in a pane that is not focused, or in a tab that is not
+selected, sees no event at all.</p>
 <h2 id="the-raw-event-stream"><a class="header" href="#the-raw-event-stream">The Raw Event Stream</a></h2>
 <p>For advanced use cases, you can access the raw event stream directly via
 <code>tui::event</code>:</p>
@@ -10236,13 +10183,7 @@ type Mode = [`Normal, `Insert];
 let mode: Mode = `Normal;
 let text = "";
 
-// CR claude for claude: [readability/low] `mode` is read unsampled. When a key writes
-// it, the write lands next cycle, the scrutinee fires again with the previous key, and
-// a second arm runs (Esc answers `Stop` and then `Continue`). Nothing breaks today only
-// because every arm samples `k`, but this is the book's showcase of the pattern. Write
-// `select (k ~ mode, k.code)`, as browser_commands does with `k ~ command_mode`. probe:
-// design/review-2026-10-19/repro/examples-tui-vim-unsampled-mode.gx (examples-tui-07)
-let handle = |e: Event| on_press(e, |k| select (mode, k.code) {
+let handle = |e: Event| on_press(e, |k| select (k ~ mode, k.code) {
   (`Normal, `Char("i")) =&gt; {
     mode &lt;- k ~ `Insert;
     `Stop
@@ -10353,17 +10294,7 @@ val layout: fn(
 <h2 id="parameters-9"><a class="header" href="#parameters-9">Parameters</a></h2>
 <ul>
 <li><strong>direction</strong> - <code>Horizontal</code> or <code>Vertical</code> (default: <code>Vertical</code>)</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/medium] This bullet does not say what focus does.
-`LayoutW::handle_event` sends every event, keys and mouse alike, only to the focused
-child, which defaults to 0. An `input_handler` in any other child hears nothing, and a
-click over pane 2 goes to the focused pane. A new user who puts a handler in child 1
-without setting `#focused` gets silence. Fix: say so here (layout_nested_focus works
-only because it sets `#focused: &2` on the inner layout). Routing mouse events by
-position instead would be a separate design call. Found by reading; not run.
-(book-ui-a-02) -->
-<ul>
-<li><strong>focused</strong> - Index of the currently focused child (0-indexed)</li>
+<li><strong>focused</strong> - Index of the currently focused child (0-indexed, the first when not set). Every event, keys and mouse alike, goes only to the focused child: an <code>input_handler</code> in another child hears nothing, and a click over another pane goes to the focused one</li>
 <li><strong>flex</strong> - How leftover space is distributed when children don’t fill it: <code>Legacy</code>, <code>Start</code>, <code>End</code>, <code>Center</code>, <code>SpaceBetween</code>, <code>SpaceEvenly</code>, <code>SpaceAround</code></li>
 </ul>
 <h2 id="constraint-types"><a class="header" href="#constraint-types">Constraint Types</a></h2>
@@ -10578,12 +10509,7 @@ input_handler(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-list-widget"><a class="header" href="#the-list-widget">The List Widget</a></h1>
-<!-- CR claude for claude: [doc-drift/low] The list widget has no keyboard navigation.
-ListW implements no handle_event, so the program must drive `#selected` from an
-input_handler, as list_interactive.gx does. Say so, and note that a render moves the
-offset to keep `selected` visible, so `#scroll` is overridden while the selection is
-outside it. Found by reading; not run. (book-ui-b-08) -->
-<p>The <code>list</code> widget displays a scrollable, selectable list of items with keyboard navigation support. It’s perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.</p>
+<p>The <code>list</code> widget displays a scrollable list of items and draws a selection the program drives: it handles no keys itself, so the program writes <code>#selected</code> from an <code>input_handler</code>, as the interactive example below does. It’s perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.</p>
 <h2 id="interface-15"><a class="header" href="#interface-15">Interface</a></h2>
 <pre><code class="language-graphix">use super::{HighlightSpacing, Line, Style, Tui};
 type ListBox = {
@@ -10611,7 +10537,7 @@ val list: fn(
 <h2 id="parameters-10"><a class="header" href="#parameters-10">Parameters</a></h2>
 <ul>
 <li><strong>selected</strong> - Index of the currently selected item (0-indexed)</li>
-<li><strong>scroll</strong> - Scroll position (offset from the top)</li>
+<li><strong>scroll</strong> - Scroll position (offset from the top). A render keeps the selected item in view, moving the offset when the selection is outside it</li>
 <li><strong>highlight_style</strong> - Style for the selected item</li>
 <li><strong>highlight_symbol</strong> - String displayed before selected item (e.g., “▶ “)</li>
 <li><strong>repeat_highlight_symbol</strong> - Whether to repeat symbol on wrapped lines</li>
@@ -10648,22 +10574,6 @@ let items = [
 
 let last = array::len(items) - 1;
 let selected = 0;
-let scroll_pos = 0;
-let visible = 5;
-
-// Auto-scroll to keep selection visible
-// CR claude for claude: [bug/medium] This hand-kept scroll offset uses the constant
-// `visible = 5`, not the list's real height. In a 9-row terminal, End scrolls Apple and
-// Banana off and leaves two blank rows, although all 7 items fit. With no `#scroll`,
-// ratatui's ListState already keeps the selection visible at any size (see the doc on
-// ListW's `state`). Delete `scroll_pos`, `visible`, this connect and `#scroll:
-// &amp;scroll_pos`. probe: design/review-2026-10-19/repro/examples-tui-list-overscroll.sh
-// (examples-tui-01)
-scroll_pos &lt;- select selected {
-    s if s &lt; scroll_pos =&gt; s,
-    s if s &gt; (scroll_pos + visible - 1) =&gt; s - visible + 1,
-    _ =&gt; never()
-};
 
 let handle_event = |e: Event| on_press(e, |k| select k.code {
     k@`Up if selected &gt; 0 =&gt; {
@@ -10688,7 +10598,6 @@ input_handler(
             #highlight_style: &amp;style(#fg: `Black, #bg: `Yellow),
             #highlight_symbol: &amp;"▶ ",
             #selected: &amp;selected,
-            #scroll: &amp;scroll_pos,
             &amp;items
         )
     )
@@ -10964,7 +10873,7 @@ input_handler(
 <p><img src="ui/tui/media/scroll_paragraph.gif" alt="Scrollable Paragraph"></p>
 <h3 id="scrollable-list"><a class="header" href="#scrollable-list">Scrollable List</a></h3>
 <pre><code class="language-graphix">use tui::{
-  line,
+  Size, line, style,
   input_handler::{Event, input_handler, on_press},
   list::list,
   scrollbar::scrollbar
@@ -10974,15 +10883,8 @@ let items = array::init(30, |i| line("Item [i + 1]"));
 let last = array::len(items) - 1;
 let selected = 0;
 let scroll_pos = 0;
-// CR claude for claude: [bug/medium] `visible` is a constant, but ratatui scrolls the
-// list by its real height. Below 10 rows the list moves while the thumb stays put.
-// Above 10 rows the example scrolls although the selection fits. The list also sets no
-// highlight, so the selection cannot be seen. Fix: `let size: Size = never(); let
-// visible = size.height;`, pass `#size: &amp;mut size` to the scrollbar, and add
-// `#highlight_style` to the list. Then fix scroll_list_follows_the_selection in
-// examples_test, which pins the over-scroll at 24 rows. probe:
-// design/review-2026-10-19/repro/examples-tui-list-overscroll.sh (examples-tui-02)
-let visible = 10;
+let size: Size = never();
+let visible = size.height;
 
 // Auto-scroll to keep selection visible
 scroll_pos &lt;- select selected {
@@ -11009,7 +10911,9 @@ input_handler(
         #position: &amp;scroll_pos,
         #content_length: &amp;array::len(items),
         #viewport_length: &amp;visible,
+        #size: &amp;mut size,
         &amp;list(
+            #highlight_style: &amp;style(#fg: `Black, #bg: `Yellow),
             #scroll: &amp;scroll_pos,
             #selected: &amp;selected,
             &amp;items
@@ -11140,17 +11044,11 @@ layout(
 <h3 id="sparkline-from-netidx"><a class="header" href="#sparkline-from-netidx">Sparkline from Netidx</a></h3>
 <p>This example is self-contained: it both publishes and subscribes to a
 simulated CPU value over netidx, so you can run it without any
-external publisher. Drop the <code>publish</code> call and point the subscribe at</p>
-<!-- CR claude for claude: [bug/low] The pipeline below publishes field 6 of top's
-`%Cpu(s): <us> us, <sy> sy, <ni> ni, <id> id` line, which is the nice percentage, so the
-chart reads about 0 while the CPU is busy. Without `-b`, `top` also fails in a pipe with
-no tty. Fix: `top -b | grep --line-buffered Cpu | awk '{
-printf("/local/metrics/cpu|f64|%s\n", 100 - $8); fflush() }'`. probe:
-design/review-2026-10-19/repro/book-ui-a-sparkline-top-field.sh (book-ui-a-04) -->
-<p>a real path to chart live data instead — for example, the output of:</p>
-<pre><code>top | \
+external publisher. Drop the <code>publish</code> call and point the subscribe at
+a real path to chart live data instead — for example, the output of:</p>
+<pre><code>top -b | \
 grep --line-buffered Cpu | \
-awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
+awk '{ printf("/local/metrics/cpu|f64|%s\n", 100 - $8); fflush() }' | \
 netidx publisher
 </code></pre>
 <pre><code class="language-graphix">use tui::sparkline::sparkline;
@@ -11461,7 +11359,7 @@ val tabs: fn(
 </code></pre>
 <h2 id="parameters-15"><a class="header" href="#parameters-15">Parameters</a></h2>
 <ul>
-<li><strong>selected</strong> - Index of the currently selected tab (0-indexed)</li>
+<li><strong>selected</strong> - Index of the currently selected tab (0-indexed). Events go only to the selected tab’s content</li>
 <li><strong>highlight_style</strong> - Style for the selected tab title</li>
 <li><strong>style</strong> - Base style for unselected tab titles</li>
 <li><strong>divider</strong> - A <code>Span</code> separating tab titles</li>
@@ -11582,7 +11480,8 @@ tabs(&amp;[
 </code></pre>
 <p><img src="ui/tui/media/tabs_badge.png" alt="Tabs With Badges"></p>
 <h2 id="keyboard-navigation"><a class="header" href="#keyboard-navigation">Keyboard Navigation</a></h2>
-<p>Common patterns:</p>
+<p>The widget handles no keys itself: the program writes <code>#selected</code> from
+an <code>input_handler</code> around the tabs. Common patterns:</p>
 <ul>
 <li><code>Left</code>/<code>Right</code> - Switch to previous/next tab</li>
 <li><code>Tab</code> - Cycle forward through tabs</li>
@@ -11674,13 +11573,7 @@ let clicks = 0;
 <pre><code class="language-graphix">let name = "world";
 text(&amp;"Hello, [name]!")
 </code></pre>
-<!-- CR claude for claude: [doc-drift/low] "Only this specific text widget re-renders --
-the rest of the window is untouched" is not what happens. The graph update is
-fine-grained, but frame.rs rebuilds the whole window's `view()` on every redraw. This
-also contradicts ui/overview.md, which says the view is redrawn from the current widget
-values. Reword: only the computations that depend on `name` run and only this widget's
-value changes; the window is then redrawn. Found by reading; not run. (book-ui-b-03) -->
-<p>The <code>text</code> widget holds a reference to the string expression <code>"Hello, [name]!"</code>. When <code>name</code> changes, only this specific text widget re-renders – the rest of the window is untouched.</p>
+<p>The <code>text</code> widget holds a reference to the string expression <code>"Hello, [name]!"</code>. When <code>name</code> changes, only the computations that depend on it run and only this widget’s value changes; the window is then redrawn from the current widget values.</p>
 <p>This is especially important for interactive widgets. A text input, for example, takes a <code>&amp;string</code> for its current value and provides a callback to update it:</p>
 <pre><code class="language-graphix">let name = "";
 text_input(#on_input: |v| name &lt;- v, #placeholder: &amp;"Type here...", &amp;name)
@@ -11729,19 +11622,7 @@ mod icon;
 <h3 id="length"><a class="header" href="#length">Length</a></h3>
 <p>Controls how a widget is sized along a single axis:</p>
 <pre><code class="language-graphix">type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
-</code></pre>
-<ul>
-<li><code>`Fill</code> – expand to fill all available space.</li>
-<li><code>`FillPortion(n)</code> – fill proportionally. Two widgets with <code>FillPortion(1)</code> and <code>FillPortion(2)</code> split space 1:2.</li>
-<li><code>`Shrink</code> – take only as much space as the content needs.</li>
-<li><code>`Fixed(px)</code> – exact size in logical pixels.</li>
-</ul>
-<p>Most layout widgets accept <code>#width</code> and <code>#height</code> parameters of type <code>&amp;Length</code>:</p>
-<pre><code class="language-graphix ignore">column(
-  #width: &amp;`Fill,
-  #height: &amp;`Fixed(300.0),
-  &amp;[...]
-)
+
 </code></pre>
 <h3 id="padding"><a class="header" href="#padding">Padding</a></h3>
 <p>Controls spacing between a widget’s border and its content:</p>
@@ -11750,6 +11631,7 @@ mod icon;
   `Axis({x: f64, y: f64}),
   `Each({top: f64, right: f64, bottom: f64, left: f64})
 ];
+
 </code></pre>
 <ul>
 <li><code>`All(px)</code> – uniform padding on all sides.</li>
@@ -11769,13 +11651,13 @@ container(
 <h3 id="size"><a class="header" href="#size">Size</a></h3>
 <p>A width/height pair used for window dimensions:</p>
 <pre><code class="language-graphix">type Size = { width: f64, height: f64 };
-</code></pre>
-<pre><code class="language-graphix">window(#size: &amp;mut { width: 1024.0, height: 768.0 }, &amp;content)
+
 </code></pre>
 <h3 id="halign-and-valign"><a class="header" href="#halign-and-valign">HAlign and VAlign</a></h3>
 <p>Horizontal and vertical alignment for positioning content within a container:</p>
 <pre><code class="language-graphix">type HAlign = [`Left, `Center, `Right];
 type VAlign = [`Top, `Center, `Bottom];
+
 </code></pre>
 <pre><code class="language-graphix">column(
   #halign: &amp;`Center,
@@ -11810,6 +11692,7 @@ type FontWeight = [
 ];
 type FontStyle = [`Normal, `Italic, `Oblique];
 type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
+
 </code></pre>
 <ul>
 <li><code>FontFamily</code> selects the font. <code>`Name(string)</code> allows loading a specific named font.</li>
@@ -11825,68 +11708,16 @@ type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 <h3 id="scrolldirection"><a class="header" href="#scrolldirection">ScrollDirection</a></h3>
 <p>Controls which axes a scrollable widget allows scrolling on:</p>
 <pre><code class="language-graphix">type ScrollDirection = [`Vertical, `Horizontal, `Both];
-</code></pre>
-<pre><code class="language-graphix">scrollable(#direction: &amp;`Both, &amp;content)
+
 </code></pre>
 <h3 id="tooltipposition"><a class="header" href="#tooltipposition">TooltipPosition</a></h3>
 <p>Controls where a tooltip appears relative to its target widget:</p>
 <pre><code class="language-graphix">type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
-</code></pre>
-<pre><code class="language-graphix">tooltip(
-  #position: &amp;`Top,
-  #tip: &amp;text(&amp;"Tooltip text"),
-  &amp;button(&amp;text(&amp;"Hover me"))
-)
+
 </code></pre>
 <h3 id="contentfit"><a class="header" href="#contentfit">ContentFit</a></h3>
 <p>Controls how an image or SVG is scaled within its bounds:</p>
 <pre><code class="language-graphix">type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
-</code></pre>
-<ul>
-<li><code>`Fill</code> – stretch to fill the bounds exactly (may distort).</li>
-<li><code>`Contain</code> – scale to fit within bounds, preserving aspect ratio.</li>
-<li><code>`Cover</code> – scale to cover bounds, preserving aspect ratio (may crop).</li>
-<li><code>`None</code> – no scaling, display at original size.</li>
-<li><code>`ScaleDown</code> – like <code>`Contain</code> but never scales up.</li>
-</ul>
-<h2 id="the-widget-type"><a class="header" href="#the-widget-type">The Widget Type</a></h2>
-<p><code>Widget</code> is a union of all individual widget types. Most widget constructor functions return <code>Widget</code>, which means you can freely mix different widget types in arrays and containers:</p>
-<pre><code class="language-graphix">/// Widget types (content within a window)
-type Widget = [
-  `Button(button::Button),
-  `Canvas(canvas::Canvas),
-  `Chart(chart::Chart),
-  `Checkbox(checkbox::Checkbox),
-  `Column(column::Column),
-  `ComboBox(combo_box::ComboBox),
-  `ContextMenu(menu::ContextMenu),
-  `Container(container::Container),
-  `Grid(grid::Grid),
-  `HorizontalRule(rule::HorizontalRule),
-  `Image(image::Image),
-  `KeyboardArea(keyboard_area::KeyboardArea),
-  `Markdown(markdown::Markdown),
-  `MenuBar(menu::MenuBar),
-  `MouseArea(mouse_area::MouseArea),
-  `PickList(pick_list::PickList),
-  `ProgressBar(progress_bar::ProgressBar),
-  `QrCode(qr_code::QrCode),
-  `Radio(radio::Radio),
-  `Row(row::Row),
-  `Scrollable(scrollable::Scrollable),
-  `Slider(slider::Slider),
-  `Space(space::Space),
-  `Stack(stack::Stack),
-  `Table(table::Table),
-  `Text(text::Text),
-  `TextEditor(text_editor::TextEditor),
-  `TextInput(text_input::TextInput),
-  `Toggler(toggler::Toggler),
-  `Tooltip(tooltip::Tooltip),
-  `VerticalRule(rule::VerticalRule),
-  `VerticalSlider(vertical_slider::VerticalSlider),
-  `DataTable(data_table::DataTable)
-];
 
 </code></pre>
 <p>You do not normally construct <code>Widget</code> variants directly. Each widget module exports a constructor function (e.g., <code>gui::text::text(...)</code>, <code>gui::button::button(...)</code>) that returns <code>Widget</code>. This means a column’s children array has type <code>Array&lt;Widget&gt;</code> and can contain any mix of widgets:</p>
@@ -11907,11 +11738,6 @@ column(
 <h1 id="theming-1"><a class="header" href="#theming-1">Theming</a></h1>
 <p>Every GUI window accepts a <code>#theme</code> parameter that controls the visual appearance of all widgets inside it. Graphix provides 22 built-in themes, plus two mechanisms for full customization: custom palettes and custom stylesheets.</p>
 <h2 id="built-in-themes"><a class="header" href="#built-in-themes">Built-in Themes</a></h2>
-<!-- CR claude for claude: [structure/low] This page, and types.md, copy about 150 lines
-of type and builder definitions from gui's mod.gxi and style.gxi by hand. The book test
-only parses fences, so the first renamed field or new theme diverges silently. Fix: mark
-each definition with `// ANCHOR: <name>` in the gxi and `{{#include}}` it, as types.md
-already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
 <p>The <code>Theme</code> type enumerates all available themes:</p>
 <pre><code class="language-graphix">type Theme = [
   `Light,
@@ -11939,6 +11765,7 @@ already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
   `Custom(StyleSheet),
   `CustomPalette(Palette)
 ];
+
 </code></pre>
 <p>Apply a theme by passing it to the <code>window</code> function:</p>
 <pre><code class="language-graphix">window(#theme: &amp;`CatppuccinMocha, &amp;content)
@@ -11962,6 +11789,7 @@ window(#theme: &amp;theme, &amp;content)
   text: Color,
   warning: Color
 };
+
 </code></pre>
 <p>The palette defines the core colors from which iced derives all widget styles automatically:</p>
 <ul>
@@ -12018,7 +11846,8 @@ let col = column(
 <p><img src="ui/gui/media/custom_palette.png" alt="Custom Palette"></p>
 <h2 id="custom-stylesheets"><a class="header" href="#custom-stylesheets">Custom Stylesheets</a></h2>
 <p>For full control over individual widget appearances, use <code>`Custom(StyleSheet)</code>. A stylesheet combines a palette with optional per-widget style overrides:</p>
-<pre><code class="language-graphix">type StyleSheet = {
+<pre><code class="language-graphix">/// Full custom theme with optional per-widget style overrides
+type StyleSheet = {
   button: [ButtonStyle, null],
   checkbox: [CheckboxStyle, null],
   container: [ContainerStyle, null],
@@ -12034,11 +11863,14 @@ let col = column(
   text_input: [TextInputStyle, null],
   toggler: [TogglerStyle, null]
 };
+
 </code></pre>
 <p>Every widget style field is optional (union with <code>null</code>). When <code>null</code>, the widget inherits its style from the palette automatically.</p>
 <h3 id="the-stylesheet-builder"><a class="header" href="#the-stylesheet-builder">The <code>stylesheet</code> Builder</a></h3>
 <p>Use the <code>stylesheet</code> function to construct a <code>StyleSheet</code> without filling in every field manually. Only <code>#palette</code> is required; all widget style parameters default to <code>null</code>:</p>
-<pre><code class="language-graphix">val stylesheet: fn(
+<pre><code class="language-graphix">/// Build a full custom theme from a palette and optional per-widget styles.
+/// Omitted widget styles default to the theme's built-in palette-derived style.
+val stylesheet: fn(
   #palette: Palette,
   ?#button: [ButtonStyle, null],
   ?#checkbox: [CheckboxStyle, null],
@@ -12054,6 +11886,7 @@ let col = column(
   ?#text_input: [TextInputStyle, null],
   ?#toggler: [TogglerStyle, null]
 ) -&gt; StyleSheet;
+
 </code></pre>
 <p>Example with a custom palette and button override:</p>
 <pre><code class="language-graphix">use gui::{
@@ -12159,7 +11992,9 @@ let dark_mode = true;
 <h2 id="per-widget-style-types"><a class="header" href="#per-widget-style-types">Per-Widget Style Types</a></h2>
 <p>Each widget style type is a struct where every field is optional (<code>[T, null]</code>). A <code>null</code> field means “inherit from the theme palette.” The GUI module provides both the types and corresponding builder functions.</p>
 <h3 id="buttonstyle"><a class="header" href="#buttonstyle">ButtonStyle</a></h3>
-<pre><code class="language-graphix">type ButtonStyle = {
+<pre><code class="language-graphix">/// Per-widget style types for custom theming.
+/// All fields are optional — null fields inherit the theme default.
+type ButtonStyle = {
   background: [Color, null],
   border_color: [Color, null],
   border_radius: [f64, null],
@@ -12167,6 +12002,7 @@ let dark_mode = true;
   text_color: [Color, null]
 };
 
+/// Build a ButtonStyle with optional overrides
 val button_style: fn(
   ?#background: [Color, null],
   ?#border_color: [Color, null],
@@ -12174,6 +12010,7 @@ val button_style: fn(
   ?#border_width: [f64, null],
   ?#text_color: [Color, null]
 ) -&gt; ButtonStyle;
+
 </code></pre>
 <h3 id="textinputstyle"><a class="header" href="#textinputstyle">TextInputStyle</a></h3>
 <pre><code class="language-graphix">type TextInputStyle = {
@@ -12187,6 +12024,7 @@ val button_style: fn(
   value_color: [Color, null]
 };
 
+/// Build a TextInputStyle with optional overrides
 val text_input_style: fn(
   ?#background: [Color, null],
   ?#border_color: [Color, null],
@@ -12197,6 +12035,7 @@ val text_input_style: fn(
   ?#selection_color: [Color, null],
   ?#value_color: [Color, null]
 ) -&gt; TextInputStyle;
+
 </code></pre>
 <h3 id="sliderstyle"><a class="header" href="#sliderstyle">SliderStyle</a></h3>
 <pre><code class="language-graphix">type SliderStyle = {
@@ -12209,6 +12048,7 @@ val text_input_style: fn(
   rail_width: [f64, null]
 };
 
+/// Build a SliderStyle with optional overrides
 val slider_style: fn(
   ?#handle_border_color: [Color, null],
   ?#handle_border_width: [f64, null],
@@ -12218,6 +12058,7 @@ val slider_style: fn(
   ?#rail_fill_color: [Color, null],
   ?#rail_width: [f64, null]
 ) -&gt; SliderStyle;
+
 </code></pre>
 <h3 id="other-widget-styles"><a class="header" href="#other-widget-styles">Other Widget Styles</a></h3>
 <p>The remaining widget style types follow the same pattern – a struct of optional fields with a corresponding builder function:</p>
@@ -12257,7 +12098,7 @@ type Text = {
   valign: &amp;VAlign
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -12282,13 +12123,7 @@ val text: fn(
 </li>
 <li><strong>width</strong> - Horizontal sizing as a <code>Length</code>: <code>`Fill</code>, <code>`Shrink</code>, <code>`Fixed(f64)</code>, or <code>`FillPortion(i64)</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/low] The code span `#width: &`Fill`` contains a
-backtick but uses single-backtick delimiters, so it closes early. The built page shows
-`<code>#width: &amp;</code>Fill``. Use ``` `` #width: &`Fill `` ```. probe:
-design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-04) -->
-<ul>
-<li><strong>halign</strong> - Horizontal text alignment: <code>`Left</code>, <code>`Center</code>, or <code>`Right</code>. Defaults to <code>`Left</code>. Only visible when the widget is wider than the text (e.g. with <code>#width: &amp;</code>Fill``).</li>
+<li><strong>halign</strong> - Horizontal text alignment: <code>`Left</code>, <code>`Center</code>, or <code>`Right</code>. Defaults to <code>`Left</code>. Only visible when the widget is wider than the text (e.g. with <code>#width: &amp;`Fill</code>).</li>
 <li><strong>valign</strong> - Vertical text alignment: <code>`Top</code>, <code>`Center</code>, or <code>`Bottom</code>. Defaults to <code>`Top</code>.</li>
 </ul>
 <p>The positional argument is a reference to the string to display. Because it is a reference, the text updates reactively when the underlying value changes.</p>
@@ -12412,7 +12247,7 @@ type TextInput = {
   font: &amp;[Font, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_input: fn(
   ?#placeholder: &amp;string,
   ?#on_input: [fn(s: string) -&gt; Any, null],
@@ -12483,7 +12318,7 @@ type TextEditor = {
   size: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_editor: fn(
   ?#placeholder: &amp;string,
   ?#on_edit: [fn(s: string) -&gt; Any, null],
@@ -12555,12 +12390,7 @@ type Checkbox = {
   spacing: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
-// CR claude for claude: [doc-drift/low] The size rule above this val is a `//` comment,
-// so the LSP hover and the docs never show it. The same holds in markdown.gxi,
-// radio.gxi, text.gxi, text_editor.gxi, text_input.gxi, toggler.gxi and canvas.gxi
-// (above `type CanvasShape`). chart.gxi writes the same rule as `///`. Make all eight
-// `///` docs. Found by reading; not run. (gx-ui-05)
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],
@@ -12625,7 +12455,7 @@ type Toggler = {
   spacing: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val toggler: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],
@@ -12690,7 +12520,7 @@ type Radio = {
   spacing: &amp;[f64, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;['a, null],
@@ -12782,14 +12612,7 @@ val slider: fn(
 <ul>
 <li><strong><code>#min</code></strong> – Minimum value of the range. Defaults to <code>0.0</code>.</li>
 <li><strong><code>#max</code></strong> – Maximum value of the range. Defaults to <code>100.0</code>.</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/low] Wrong for a stepped slider. A drag snaps to
-#min plus a multiple of #step (iced's locate), not to multiples of #step. With a step,
-Up/Down and Ctrl+wheel move one step (iced's increment); only a continuous slider goes
-through SliderInput, which moves one percent. Rewrite after the slider.rs lattice fix.
-Found by reading; not run. (gui-widgets-b-04) -->
-<ul>
-<li><strong><code>#step</code></strong> – Snap increment. When set, the slider snaps to multiples of this value. <code>null</code> means continuous dragging. With the pointer over the track, Up/Down arrows and Ctrl+wheel move by one percent of the range.</li>
+<li><strong><code>#step</code></strong> – Snap increment. When set, every value the slider sends is <code>#min</code> plus a whole number of steps, never past <code>#max</code>, and with the pointer over the track Up/Down arrows and Ctrl+wheel move one step. <code>null</code> means continuous dragging, and then Up/Down and Ctrl+wheel move by one percent of the range.</li>
 <li><strong><code>#on_change</code></strong> – Callback invoked as the handle is dragged. Receives the current <code>f64</code> value. Typically: <code>#on_change: |v| volume &lt;- v</code>.</li>
 <li><strong><code>#on_release</code></strong> – Callback invoked when the user releases the handle. Receives <code>null</code>. Useful for committing a value only after the user finishes adjusting.</li>
 <li><strong><code>#width</code></strong> – Width of the slider track. Accepts <code>Length</code> values. Defaults to <code>`Fill</code>.</li>
@@ -13557,7 +13380,7 @@ type PathSegment = [
   `Close
 ];
 
-// A Text shape's size must be finite, positive and at most 4096 pixels.
+/// A Text shape's size must be finite, positive and at most 4096 pixels.
 type CanvasShape = [
   `Line({ from: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
   `Circle({ center: {x: f64, y: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
@@ -14208,15 +14031,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>label_size</strong> — Font size for axis labels. Must be finite, positive and at most 4096 pixels.</li>
 <li><strong>x_label_area_size</strong> — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.</li>
 <li><strong>x_labels</strong> — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/low] "0 draws bold lines only" holds only for a
-numeric x axis. `configure_mesh` clamps the value with `ticks(n, x_min_lines)`, and
-`x_min_lines` is 1 for the datetime axis and for the bar chart's category axis, so 0
-still draws a light line there. Fix: document the floor, or remove it if plotters no
-longer needs it for those coordinate types. Found by reading; not run. (book-ui-a-06)
--->
-<ul>
-<li><strong>x_light_lines</strong> — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.</li>
+<li><strong>x_light_lines</strong> — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only on a numeric x axis, while a datetime or bar-category x axis draws at least one light line.</li>
 <li><strong>y_label_area_size</strong> — Width of the y-axis label area in pixels. Increase to prevent label clipping.</li>
 <li><strong>y_labels</strong> — Number of y-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
 <li><strong>y_light_lines</strong> — Maximum number of light grid lines between adjacent y labels. Defaults to 10; 0 draws bold lines only.</li>
@@ -14853,12 +14668,12 @@ let position = "---";
             text(&amp;status),
             text(&amp;"Position: [position]"),
             mouse_area(
-                #on_press: |btn| status &lt;- btn ~ select btn {
+                #on_press: |btn| status &lt;- select btn {
                     `Left =&gt; "Left pressed",
                     `Right =&gt; "Right pressed",
                     `Middle =&gt; "Middle pressed"
                 },
-                #on_release: |btn| status &lt;- btn ~ select btn {
+                #on_release: |btn| status &lt;- select btn {
                     `Left =&gt; "Left released",
                     `Right =&gt; "Right released",
                     `Middle =&gt; "Middle released"
@@ -14944,21 +14759,12 @@ let mod_name = "None";
     #title: &amp;"Keyboard Area",
     &amp;keyboard_area(
         #on_key_press: |e| {
-            // CR claude for claude: [readability/low] `e ~ e.key` samples the event
-            // with a value that fires only with the event, so the `~` does nothing. It
-            // teaches that a handler must sample its own argument, but the rule is to
-            // sample state the handler reads. mouse_area.gx's `btn ~ select btn` has
-            // the same issue. The modifier select below also lists every field with `_`
-            // where `{ ctrl: true, .. }` says the same. Write `last_key &lt;- e.key`, use
-            // the partial patterns, and drop `btn ~` in mouse_area. The rewrite passes
-            // --expand. Found by reading; the rewrite was checked with graphix
-            // --expand. (examples-gui-06)
-            last_key &lt;- e ~ e.key;
-            mod_name &lt;- e ~ select e.modifiers {
-                { ctrl: true, shift: _, alt: _, logo: _ } =&gt; "Ctrl",
-                { ctrl: _, shift: true, alt: _, logo: _ } =&gt; "Shift",
-                { ctrl: _, shift: _, alt: true, logo: _ } =&gt; "Alt",
-                { ctrl: _, shift: _, alt: _, logo: true } =&gt; "Logo",
+            last_key &lt;- e.key;
+            mod_name &lt;- select e.modifiers {
+                { ctrl: true, .. } =&gt; "Ctrl",
+                { shift: true, .. } =&gt; "Shift",
+                { alt: true, .. } =&gt; "Alt",
+                { logo: true, .. } =&gt; "Logo",
                 _ =&gt; "None"
             }
         },
@@ -15116,11 +14922,7 @@ val grid: fn(
 <li><strong>positional <code>&amp;Array&lt;Widget&gt;</code></strong> – The child widgets to arrange in the grid. They fill left-to-right, top-to-bottom.</li>
 </ul>
 <h2 id="examples-38"><a class="header" href="#examples-38">Examples</a></h2>
-<!-- CR claude for claude: [doc-drift/low] The included grid.gx sets no colors: `item`
-is a plain container around text. Rename the heading to describe what the example shows,
-or give `item` a container style so the heading is true. Found by reading; not run.
-(examples-gui-02) -->
-<h3 id="colored-grid-items"><a class="header" href="#colored-grid-items">Colored Grid Items</a></h3>
+<h3 id="six-items-in-three-columns"><a class="header" href="#six-items-in-three-columns">Six Items in Three Columns</a></h3>
 <pre><code class="language-graphix">use gui::{window, column::column, container::container, grid::grid, text::text};
 mod icon;
 
@@ -15181,14 +14983,7 @@ val qr_code: fn(
 <h2 id="parameters-38"><a class="header" href="#parameters-38">Parameters</a></h2>
 <ul>
 <li><strong><code>#cell_size</code></strong> – Size in pixels of each cell in the QR code matrix, or <code>null</code> for the default size. Larger values produce a bigger QR code image.</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/low] The limit is wrong. `Data::new` goes through
-`qrcode::QrCode::new`, which encodes at `EcLevel::M`. The largest version-40-M code
-holds 2331 bytes of byte-mode data, so a 2.5 KB string already renders empty and logs an
-error. 2.9 KB is the level-L capacity. Fix: say about 2.3 KB (2331 bytes of text; more
-for purely numeric data). Found by reading; not run. (book-ui-a-05) -->
-<ul>
-<li><strong>positional <code>&amp;string</code></strong> – The data to encode. Data past a QR code’s capacity (about 2.9 KB) cannot be encoded: the widget renders empty space and logs an error.</li>
+<li><strong>positional <code>&amp;string</code></strong> – The data to encode. Data past a QR code’s capacity (about 2.3 KB: 2331 bytes of text, more for purely numeric data) cannot be encoded: the widget renders empty space and logs an error.</li>
 </ul>
 <h2 id="examples-39"><a class="header" href="#examples-39">Examples</a></h2>
 <h3 id="qr-code-from-text-input"><a class="header" href="#qr-code-from-text-input">QR Code from Text Input</a></h3>
@@ -15240,7 +15035,7 @@ type Markdown = {
   width: &amp;Length
 };
 
-// A non-null #text_size must be finite, positive and at most 4096 pixels.
+/// A non-null #text_size must be finite, positive and at most 4096 pixels.
 val markdown: fn(
   ?#on_link: [fn(url: string) -&gt; Any, null],
   ?#spacing: &amp;[f64, null],
@@ -15785,6 +15580,9 @@ On other column types, <code>Space</code> does nothing. Clicking another cell ca
 an open Text editor.
 Other keys go on to an enclosing <code>keyboard_area</code>, so application
 shortcuts keep working while the table has focus.</p>
+<p>With multiple selected cells, keyboard navigation starts at the first valid
+cell in the program’s selection array. If none of the selected cells is fully
+visible, the table scrolls to that first cell.</p>
 <h2 id="examples-42"><a class="header" href="#examples-42">Examples</a></h2>
 <h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
 <p>Minimal usage: publish three hosts and hand the
@@ -15792,12 +15590,13 @@ shortcuts keep working while the table has focus.</p>
 configuration. Bare-string columns become default Text columns with
 <code>`Netidx</code> source.</p>
 <pre><code class="language-graphix">use gui::{window, column::column, data_table::data_table, text::text};
+use sys::net;
 mod icon;
 
 let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
-    sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
-    sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
-    sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
+    net::publish("/local/graphix/data_table_basic/[name]/status", status);
+    net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
+    net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
 };
 
 publish_host(#name: "host-01", #status: `Up, #cpu: 12.4, #mem: 37.1);
@@ -15805,7 +15604,7 @@ publish_host(#name: "host-02", #status: `Up, #cpu: 88.2, #mem: 62.0);
 publish_host(#name: "host-03", #status: `Degraded, #cpu: 4.1, #mem: 19.8);
 
 // list_table inspects the resolver to discover children of this path.
-let tbl = sys::net::list_table("/local/graphix/data_table_basic")$;
+let tbl = net::list_table("/local/graphix/data_table_basic")$;
 
 let layout = column(
     #spacing: &amp;12.0,
@@ -15839,25 +15638,26 @@ caller owns the data pipeline end to end.</p>
   text::text,
   text_input::text_input
 };
+use sys::net;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
 // let the user pick a row filter mode. Sorting is driven entirely
 // from the table itself — click a header to cycle its sort order.
-sys::net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
-sys::net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
-sys::net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
-sys::net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
-sys::net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
-sys::net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
-sys::net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
-sys::net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
-sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
+net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
+net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
+net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
+net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
+net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
+net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
+net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
+net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
+net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_filter")$;
 
 // Filter controls: a regex pattern and whether it includes or excludes.
 // The caller reshapes the Table in graphix before passing it in.
@@ -15964,6 +15764,7 @@ as bare-string Netidx-sourced columns.</p>
   data_table::{combo_column, data_table, spin_column, text_column, toggle_column},
   text::text
 };
+use sys::net;
 mod icon;
 
 // Four editable columns demonstrating every ColumnType that takes
@@ -15974,10 +15775,10 @@ mod icon;
 // #on_write writes it, and the publish republishes the new value.
 let publish_host = |#name: string, #enabled: bool, #zone: string, #cpu: f64, host: string| {
     let base = "/local/graphix/data_table_editable/[host]";
-    sys::net::publish(#on_write: |v: string| name &lt;- v, "[base]/name", name);
-    sys::net::publish(#on_write: |v: bool| enabled &lt;- v, "[base]/enabled", enabled);
-    sys::net::publish(#on_write: |v: string| zone &lt;- v, "[base]/zone", zone);
-    sys::net::publish(#on_write: |v: f64| cpu &lt;- v, "[base]/cpu", cpu)
+    net::publish(#on_write: |v: string| name &lt;- v, "[base]/name", name);
+    net::publish(#on_write: |v: bool| enabled &lt;- v, "[base]/enabled", enabled);
+    net::publish(#on_write: |v: string| zone &lt;- v, "[base]/zone", zone);
+    net::publish(#on_write: |v: f64| cpu &lt;- v, "[base]/cpu", cpu)
 };
 publish_host(#name: "alpha", #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01");
 publish_host(#name: "bravo", #enabled: false, #zone: "eu-west-1", #cpu: 8.0, "host-02");
@@ -15989,13 +15790,13 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
     "name" =&gt; text_column(
         #name: "name",
         #on_edit: |#path: string, #value: Any|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Name"
     ),
     "enabled" =&gt; toggle_column(
         #name: "enabled",
         #on_edit: |#path: string, #value: bool|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Enabled"
     ),
     "zone" =&gt; combo_column(
@@ -16007,22 +15808,22 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
             { id: "ap-south-1", label: "Asia Pacific" }
         ],
         #on_edit: |#path: string, #value: string|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Zone"
     ),
     "cpu" =&gt; spin_column(
         #name: "cpu",
-        #min: f64:1.0,
-        #max: f64:64.0,
-        #increment: f64:1.0,
+        #min: 1.0,
+        #max: 64.0,
+        #increment: 1.0,
         #on_edit: |#path: string, #value: f64|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "CPU cores"
     ),
     other =&gt; other
 });
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_editable")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_editable")$;
 let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let selection: Array&lt;string&gt; = [];
@@ -16061,7 +15862,7 @@ per-row aggregates (here, sums) without touching netidx.</p>
   data_table::{ColumnSpec, Table, data_table, text_column},
   text::text
 };
-use sys::{time, net::publish};
+use sys::{net, time};
 mod icon;
 
 // Two published columns A and B. A virtual "sum" column has its
@@ -16074,14 +15875,14 @@ let rv = {
     || any(1, rand::rand(#start:0, #end:10, #clock))
 };
 
-publish("/local/graphix/data_table_calculated/r0/A", rv());
-publish("/local/graphix/data_table_calculated/r1/A", rv());
-publish("/local/graphix/data_table_calculated/r2/A", rv());
-publish("/local/graphix/data_table_calculated/r0/B", rv());
-publish("/local/graphix/data_table_calculated/r1/B", rv());
-publish("/local/graphix/data_table_calculated/r2/B", rv());
+net::publish("/local/graphix/data_table_calculated/r0/A", rv());
+net::publish("/local/graphix/data_table_calculated/r1/A", rv());
+net::publish("/local/graphix/data_table_calculated/r2/A", rv());
+net::publish("/local/graphix/data_table_calculated/r0/B", rv());
+net::publish("/local/graphix/data_table_calculated/r1/B", rv());
+net::publish("/local/graphix/data_table_calculated/r2/B", rv());
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_calculated")$;
 
 let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
 
@@ -16144,7 +15945,7 @@ bounds.</p>
   text::text
 };
 use core::math;
-use sys::time;
+use sys::{net, time};
 mod icon;
 
 // Four rows, each publishing a cpu value that updates once a second
@@ -16158,10 +15959,10 @@ let cpu_2 = 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
 let cpu_3 = 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
 let cpu_4 = 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
 
-sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
-sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
-sys::net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
-sys::net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
+net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
+net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
+net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
+net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
 
 let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
     "cpu" =&gt; sparkline_column(
@@ -16173,7 +15974,7 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
     other =&gt; other
 });
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_sparkline")$;
 let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let layout = column(
@@ -16228,7 +16029,7 @@ let tbl = {
             #name: "score",
             #display_name: "Score",
             #source: &amp;`Netidx(score),
-            #width: &amp;f64:180.0
+            #width: &amp;180.0
         ),
         n =&gt; n
     });
@@ -16254,17 +16055,17 @@ let layout = column(
         text(&amp;"Move the sliders to change the score in the three virtual rows."),
         slider(
             #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr0", v),
-            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr0", 0.)
         ),
         slider(
             #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr1", v),
-            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr1", 0.)
         ),
         slider(
             #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr2", v),
-            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr2", 0.)
         ),
         data_table(#table: &amp;tbl)
@@ -16297,14 +16098,7 @@ selection echoed in the footer.</p>
   text_input::text_input
 };
 use core::math;
-// CR claude for claude: [style/low] This file imports sys::time but writes
-// sys::net::publish, sys::net::write and sys::net::list_table in full six times.
-// data_table_calculated, data_table_sparkline, data_table_basic, data_table_editable
-// and data_table_filter_sort do the same. data_table_scrolling and data_table_virtual
-// import `sys::{net, time}` and write `net::publish`. Use that form in all of the
-// data_table examples, since data_table.md shows all of them on one page. Found by
-// reading; not run. (examples-gui-03)
-use sys::time;
+use sys::{net, time};
 mod icon;
 
 // Kitchen-sink example combining the main data_table features:
@@ -16322,25 +16116,20 @@ type State = [`Healthy, `Degraded, `Down];
 
 // Publish a tiny fleet of services. state is writable (Combo).
 let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
-    sys::net::publish(
+    net::publish(
         #on_write: |v: State| state &lt;- v,
         "/local/graphix/data_table_dashboard/[name]/state",
         state
     );
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+    net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
 };
 
 // single random number
 let rn = |start, end| rand::rand(#start, #end, #clock:1);
 
-// CR claude for claude: [readability/low] Nothing reads `published`. The init runs only
-// for its publishes, so write it as a bare statement. In the same file, the `rows`
-// select in `tbl` tests `n if n == 0` where data_table_filter_sort writes the literal
-// arm `0 =&gt; ..`; use the literal here too. Both edits pass --expand. Found by reading;
-// the edited copy was checked with graphix --expand. (examples-gui-05)
-let published = array::init(1024, |i| svc(
+array::init(1024, |i| svc(
     #name:"svc-[i]",
     #state:select rand::rand(#clock:1) {
         n if n &lt;= 0.8 =&gt; `Healthy,
@@ -16365,13 +16154,13 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
             { id: "Down", label: "Down" }
         ],
         #on_edit: |#path: string, #value: string|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "State",
         #width: &amp;110.
     ),
     "cpu" =&gt; sparkline_column(
         #name: "cpu",
-        #history_seconds: f64:30.0,
+        #history_seconds: 30.0,
         #display_name: "CPU",
         #width: &amp;220.0,
         #min:0.,
@@ -16395,9 +16184,9 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
 // rewrap with the column specs.
 let pattern = "";
 let tbl: Table = {
-    let raw = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    let raw = net::list_table("/local/graphix/data_table_dashboard")$;
     let rows = select str::len(pattern) {
-        n if n == 0 =&gt; raw.rows,
+        0 =&gt; raw.rows,
         _ =&gt; array::filter(raw.rows, |r| {
             let row = opt::or_default(str::basename(r), r);
             select re::is_match(#pat: pattern, row) {
@@ -16504,15 +16293,9 @@ let base = "/local/graphix/data_table_scrolling";
 // Drive every metric off one clock so all rows update in lockstep.
 let tick = time::timer(duration:2.s, true);
 
-// CR claude for claude: [readability/low] The `f64:` prefix is redundant on a float
-// literal (`0.` is already f64). It appears 14 times in this file and also in
-// data_table_virtual, data_table_editable and data_table_dashboard, while
-// data_table_sparkline writes plain `30.0`. Remove them all; with the prefixes
-// stripped, all four files still pass --expand. Found by reading; the stripped files
-// were checked with graphix --expand. (examples-gui-04)
-let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
-let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
-let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
+let rand01 = || rand::rand(#start: 0., #end: 1., #clock: tick);
+let rand100 = || rand::rand(#start: 0., #end: 100., #clock: tick);
+let rand_mbps = || rand::rand(#start: 0., #end: 1000., #clock: tick);
 
 let publish_host = |name: string| {
     net::publish("[base]/host-[name]/cpu_pct", rand100());
@@ -16530,16 +16313,16 @@ let publish_host = |name: string| {
 array::map(host_ids, publish_host);
 
 let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
-    "cpu_pct"       =&gt; progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &amp;f64:90.),
-    "mem_pct"       =&gt; progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &amp;f64:90.),
-    "disk_pct"      =&gt; progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &amp;f64:90.),
-    "net_in_mbps"   =&gt; text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &amp;f64:110.),
-    "net_out_mbps"  =&gt; text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &amp;f64:110.),
-    "load_1m"       =&gt; sparkline_column(#name: "load_1m",    #history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &amp;f64:120.),
-    "load_5m"       =&gt; sparkline_column(#name: "load_5m",    #history_seconds: f64:300., #display_name: "Load 5m",  #width: &amp;f64:120.),
-    "load_15m"      =&gt; sparkline_column(#name: "load_15m",   #history_seconds: f64:900., #display_name: "Load 15m", #width: &amp;f64:120.),
-    "error_count"   =&gt; text_column(    #name: "error_count", #display_name: "Errors",   #width: &amp;f64:100.),
-    "request_count" =&gt; text_column(    #name: "request_count",#display_name: "Requests",#width: &amp;f64:110.),
+    "cpu_pct"       =&gt; progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &amp;90.),
+    "mem_pct"       =&gt; progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &amp;90.),
+    "disk_pct"      =&gt; progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &amp;90.),
+    "net_in_mbps"   =&gt; text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &amp;110.),
+    "net_out_mbps"  =&gt; text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &amp;110.),
+    "load_1m"       =&gt; sparkline_column(#name: "load_1m",    #history_seconds: 60.,  #display_name: "Load 1m",  #width: &amp;120.),
+    "load_5m"       =&gt; sparkline_column(#name: "load_5m",    #history_seconds: 300., #display_name: "Load 5m",  #width: &amp;120.),
+    "load_15m"      =&gt; sparkline_column(#name: "load_15m",   #history_seconds: 900., #display_name: "Load 15m", #width: &amp;120.),
+    "error_count"   =&gt; text_column(    #name: "error_count", #display_name: "Errors",   #width: &amp;100.),
+    "request_count" =&gt; text_column(    #name: "request_count",#display_name: "Requests",#width: &amp;110.),
     other =&gt; other
 });
 
@@ -16562,7 +16345,7 @@ let layout = column(
     #icon: &amp;icon::icon,
     #title: &amp;"Data Table — Scrolling",
     #theme: &amp;`CatppuccinMocha,
-    #size: &amp;mut {width: f64:900., height: f64:400.},
+    #size: &amp;mut {width: 900., height: 400.},
     &amp;layout
 )]
 </code></pre>
@@ -16574,12 +16357,6 @@ widgets, no netidx subscriptions.</li>
 <li><a href="#sysnet---netidx-operations"><code>sys::net</code></a> – the <code>Table</code> record and
 <code>list_table</code> helper consumed by <code>#table</code>.</li>
 </ul>
-<!-- CR claude for claude: [readability/low] This paragraph is about keyboard navigation
-but sits after See Also, at the end of the page. Move it into the Keyboard Navigation
-section. Found by reading; not run. (book-ui-b-10) -->
-<p>With multiple selected cells, keyboard navigation starts at the first valid
-cell in the program’s selection array. If none of the selected cells is fully
-visible, the table scrolls to that first cell.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
@@ -16956,18 +16733,11 @@ roughly the same time as compiling any Rust project of similar size.</p>
 <p>Or specify a directory:</p>
 <pre><code>graphix package create mylib --dir ~/projects
 </code></pre>
-<!-- CR claude for claude: [doc-drift/medium] The tree below leaves out build.rs, which
-`create_package` writes, and the page never says a package needs it or the
-`graphix-ast-pack` build-dependency. `defpackage!` includes `$OUT_DIR/graphix_ast.pack`,
-which only that build script produces, so a crate set up from this page fails with a
-bare "OUT_DIR not defined". `graphix_derive::check_invariants` does not check for it
-either. Fix: list build.rs, show `graphix_ast_pack::emit()` and the build-dependency
-here, and have `check_invariants` panic with that instruction when the build script or
-the build-dependency is missing. Found by reading; not run. (book-modules-udt-05) -->
 <p>This creates a <code>graphix-package-mylib</code> directory with the following structure:</p>
 <pre><code>graphix-package-mylib/
   Cargo.toml
   README.md
+  build.rs
   src/
     lib.rs
     graphix/
@@ -16999,6 +16769,19 @@ defpackage! {
 <li>Automatic inclusion of all <code>.gx</code> and <code>.gxi</code> files from <code>src/graphix/</code></li>
 <li>Test infrastructure (<code>TEST_REGISTER</code>) for the test harness</li>
 </ul>
+<h3 id="buildrs--packing-the-graphix-source"><a class="header" href="#buildrs--packing-the-graphix-source"><code>build.rs</code> – Packing the Graphix Source</a></h3>
+<p>Every package has the build script the scaffold writes, which packs the
+package’s Graphix source into a pre-parsed blob at build time:</p>
+<pre class="playground"><code class="language-rust">fn main() {
+    graphix_ast_pack::emit().expect("packing graphix AST blob");
+}</code></pre>
+<p>with <code>graphix-ast-pack</code> as its build-dependency in <code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[build-dependencies]
+graphix-ast-pack = "0.9.0"
+</code></pre>
+<p><code>defpackage!</code> includes the blob (<code>$OUT_DIR/graphix_ast.pack</code>), so it
+refuses a package that lacks the build script or the build-dependency,
+with an error that says to add them.</p>
 <h3 id="srcgraphix--graphix-source-modules"><a class="header" href="#srcgraphix--graphix-source-modules"><code>src/graphix/</code> – Graphix Source Modules</a></h3>
 <p>Graphix source files in <code>src/graphix/</code> are automatically included in the
 package. These files provide the Graphix-level API for your package. The
@@ -17027,55 +16810,41 @@ fine-grained control over the update cycle.</p>
 <p>All builtin names <strong>must</strong> start with your package name. For a package named
 <code>mylib</code>, builtins must be named <code>mylib_something</code> (or <code>mylib</code> itself). The <code>register</code> function
 <code>defpackage!</code> generates refuses any other name when the package loads.</p>
-<!-- CR claude for claude: [doc-drift/low] The MinEv example below declares
-`Effect::Stateless(None)` although this page says `None` is only for a raw Apply and
-every pure CachedArgs builtin takes a fast fn (core's min is `fast_builtin!`). Its
-handling of a missing argument is dead, because CachedArgs never passes one. The copy in
-embedding/overview.md names it `core_min`, which `defpackage!` refuses in a third-party
-package, and binds it without core's `'a: Ordered`. Fix: one example built with
-`fast_builtin!`, named `mylib_min` and bound with `'a: Ordered`, kept here and linked
-from the overview. Found by reading; not run. (book-modules-udt-09) -->
-<h3 id="the-simple-path-evalcached--cachedargs"><a class="header" href="#the-simple-path-evalcached--cachedargs">The Simple Path: <code>EvalCached</code> / <code>CachedArgs</code></a></h3>
-<p>For pure functions that just compute a result from their arguments, use
-<code>EvalCached</code>:</p>
+<h3 id="the-simple-path-fast_builtin"><a class="header" href="#the-simple-path-fast_builtin">The Simple Path: <code>fast_builtin!</code></a></h3>
+<p>A pure function of its arguments is a plain Rust function over their
+values, and <code>graphix_package_core::fast_builtin!</code> writes the rest. For
+example, the minimum of all its arguments:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
+</span>use graphix_package_core::fast_builtin;
 use netidx_value::Value;
 
-#[derive(Debug, Default)]
-struct MyMinEv;
-
-impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyMinEv {
-    const NAME: &amp;str = "mylib_min";
-    // Every output appears on the cycle its inputs arrive, and the
-    // result depends only on the arguments; no fast call yet.
-    const EFFECT: Effect = Effect::Stateless(None);
-
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
-        let mut res = None;
-        for v in from.flat_iter() {
-            match (res, v) {
-                (None, None) | (Some(_), None) =&gt; return None,
-                (None, Some(v)) =&gt; res = Some(v),
-                (Some(v0), Some(v)) =&gt; {
-                    res = if v &lt; v0 { Some(v) } else { Some(v0) };
-                }
-            }
+fn mylib_min(args: &amp;[Value]) -&gt; Option&lt;Value&gt; {
+    let mut res = args.first()?;
+    for v in &amp;args[1..] {
+        if v &lt; res {
+            res = v
         }
-        res
     }
+    Some(res.clone())
 }
 
-// a payload with no state to image
-unit_image_state!(MyMinEv);
-
-type MyMin = CachedArgs&lt;MyMinEv&gt;;
+fast_builtin!(MyMin, MyMinEv, "mylib_min", mylib_min);
 <span class="boring">}</span></code></pre>
-<p>Then list <code>MyMin</code> in your <code>defpackage!</code> builtins. <code>CachedArgs</code> handles all the
-details of caching argument values, calling <code>eval</code> when arguments change, and
-implementing the <code>Apply</code> trait.</p>
+<p>Then list <code>MyMin</code> in your <code>defpackage!</code> builtins, and bind it in your
+package’s Graphix module with every argument and the return type
+annotated:</p>
+<pre><code class="language-graphix ignore">let min = 'a: Ordered |a: 'a, @args: 'a| -&gt; 'a 'mylib_min
+</code></pre>
+<p>The body <code>'mylib_min</code> names the builtin. <code>'a: Ordered</code> holds the
+arguments to a type whose values order (no references or functions),
+the bound core’s own <code>min</code> declares.</p>
+<p>The macro writes an <code>EvalCached</code> (the one method <code>eval</code>, called with the
+cached argument values whenever an argument changes), a
+<code>CachedArgs&lt;MyMinEv&gt;</code> named <code>MyMin</code> that implements <code>Apply</code> around it,
+and declares <code>mylib_min</code> the builtin’s fast call, so the interpreter and
+native code run one implementation. The sections below are what it
+writes by hand.</p>
 <p><code>EFFECT</code> is the builtin’s whole classification, three questions
 answered in one place:</p>
 <ul>
@@ -17155,79 +16924,9 @@ all its arguments arrive is a raw <code>Apply</code> (below), not an
 state across cycles, or work with higher-order functions, implement the
 <code>BuiltIn</code> and <code>Apply</code> traits directly. See
 <a href="#writing-built-in-functions-1">Writing Built in Functions</a> for a deep dive.</p>
-<p>Here is a minimal example – <code>once</code> passes through exactly one update:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use anyhow::Result;
-use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
-    UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
-};
-use netidx_core::pack::{Pack, PackError};
-
-#[derive(Debug, Default)]
-struct MyOnce {
-    // whether the one update has passed
-    done: bool,
-    // the result slot `update` lends to the caller
-    out: TagValue,
-}
-
-impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
-    const NAME: &amp;str = "mylib_once";
-    // it keeps state across invocations
-    const EFFECT: Effect = Effect::Sync;
-
-    fn init&lt;'a, 'b, 'c, 'd&gt;(
-        _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
-        _typ: &amp;'a FnType,
-        _resolved_typ: Option&lt;&amp;'d FnType&gt;,
-        _scope: &amp;'b Scope,
-        _from: &amp;'c [Node&lt;R, E&gt;],
-        _top_id: ExprId,
-    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
-        Ok(Box::new(MyOnce::default()))
-    }
-
-    // restore what `image_encode` wrote; the result slot is never imaged
-    fn image_decode(
-        _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
-        _from: &amp;[Node&lt;R, E&gt;],
-        buf: &amp;mut &amp;[u8],
-    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;, PackError&gt; {
-        Ok(Box::new(MyOnce { done: bool::decode(buf)?, out: TagValue::phantom() }))
-    }
-}
-
-impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
-    fn image_encode(&amp;self, buf: &amp;mut ImageBuf) -&gt; Result&lt;(), PackError&gt; {
-        self.done.encode(buf)
-    }
-
-    fn update(
-        &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
-        from: &amp;mut [Node&lt;R, E&gt;],
-    ) -&gt; &amp;TagValue {
-        match from[0].update(ctx).view() {
-            TagView::Fired(tv) if !self.done =&gt; {
-                self.done = true;
-                let v = tv.value_cloned();
-                self.out.set(TagValue::fired(v))
-            }
-            // a bottom input before the update makes the result bottom
-            TagView::FreshBottom if !self.done =&gt; self.out.set_bottom(true),
-            TagView::StaleBottom if !self.done =&gt; self.out.set_bottom(false),
-            _ =&gt; self.out.ride(),
-        }
-    }
-
-    // once is a restart builtin: a woken once is a fresh one
-    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
-        self.done = false
-    }
-}
-<span class="boring">}</span></code></pre>
+<p><a href="#implementing-once">Implementing Once</a> walks
+through a minimal one, <code>once</code>, which passes through exactly one update;
+in a package its name starts with the package’s (<code>mylib_once</code>).</p>
 <h3 id="generic-builtins"><a class="header" href="#generic-builtins">Generic Builtins</a></h3>
 <p>If your builtin’s type is parameterized over the runtime types <code>R</code> and <code>E</code>, use
 the <code>as</code> syntax in the builtins list:</p>
@@ -17338,12 +17037,6 @@ graphix-package-sys = "0.9"
 <p>Your package’s <code>register()</code> function (generated by <code>defpackage!</code>) automatically
 calls <code>register()</code> on all its <code>graphix-package-*</code> dependencies before
 registering itself. This ensures transitive dependencies are always available.</p>
-<!-- CR claude for claude: [doc-drift/low] The run! example below checks
-`mylib::my_builtin(true)` against `Bool(true)`, but this page documents my_builtin as
-"Check if a value is an error", so it yields false and the test fails in every mode. It
-also names `netidx::subscriber::Value`, and a scaffolded package depends on
-netidx-value, not netidx. Fix: test `my_builtin(error(`E))`, or expect `Bool(false)`,
-and write `netidx_value::Value`. Found by reading; not run. (book-modules-udt-10) -->
 <h2 id="testing"><a class="header" href="#testing">Testing</a></h2>
 <p>The <code>defpackage!</code> macro generates a <code>TEST_REGISTER</code> constant that includes
 register functions for all package dependencies. Use the test macros from
@@ -17354,8 +17047,9 @@ register functions for all package dependencies. Use the test macros from
 mod test {
     use graphix_package_core::{run, testing::FuseExpect};
 
+    // true is no error
     run!(my_test, "mylib::my_builtin(true)", |r| {
-        matches!(r, Ok(netidx::subscriber::Value::Bool(true)))
+        matches!(r, Ok(netidx_value::Value::Bool(false)))
     }; FuseExpect::None);
 }
 <span class="boring">}</span></code></pre>
@@ -17425,50 +17119,11 @@ functions and Graphix modules into a crate that can be installed with <code>grap
 same tools available to third-party developers.</p>
 <p>See <a href="#packages">Packages</a> for details.</p>
 <h2 id="writing-built-in-functions-in-rust"><a class="header" href="#writing-built-in-functions-in-rust">Writing Built-in Functions in Rust</a></h2>
-<p>For a simple pure function you can use the <code>CachedArgs</code> interface which takes
-care of most of the details for you. You only need to implement one method to
-evaluate changes to your arguments. For example, a function that finds the
-minimum value of all its arguments:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
-use netidx_value::Value;
-
-#[derive(Debug, Default)]
-struct MinEv;
-
-impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MinEv {
-    const NAME: &amp;str = "core_min";
-    const EFFECT: Effect = Effect::Stateless(None);
-
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
-        let mut res = None;
-        for v in from.flat_iter() {
-            match (res, v) {
-                (None, None) | (Some(_), None) =&gt; return None,
-                (None, Some(v)) =&gt; res = Some(v),
-                (Some(v0), Some(v)) =&gt; {
-                    res = if v &lt; v0 { Some(v) } else { Some(v0) };
-                }
-            }
-        }
-        res
-    }
-}
-
-unit_image_state!(MinEv);
-
-type Min = CachedArgs&lt;MinEv&gt;;
-<span class="boring">}</span></code></pre>
-<p>Then register this built-in by listing it in your package’s <code>defpackage!</code> macro,
-and bind it in your Graphix module:</p>
-<pre><code class="language-graphix">let min = |a: 'a, @args: 'a| -&gt; 'a 'core_min
-</code></pre>
-<p>The special form function body <code>'core_min</code> references a built-in Rust
-function. Builtin lambdas must have full type annotations on all
-arguments and the return type — this is how the compiler knows the
-function’s signature.</p>
+<p>A pure function of its arguments is a plain Rust function over their values,
+which <code>graphix_package_core::fast_builtin!</code> turns into a builtin that runs in
+the interpreter and in native code alike; see <a href="#the-simple-path-fast_builtin">The Simple
+Path</a> for an example
+(<code>mylib_min</code>) and how to register and bind it.</p>
 <p>See <a href="#writing-built-in-functions-1">Writing Built in Functions</a> for the full API details.</p>
 <h2 id="custom-embedded-applications"><a class="header" href="#custom-embedded-applications">Custom Embedded Applications</a></h2>
 <p>For most standalone binaries, the simplest approach is <code>graphix package build-standalone</code> — see <a href="#standalone-binaries">Standalone Binaries</a>.</p>
@@ -17552,14 +17207,6 @@ operation must wait for its own completion instead of exposing the previous
 activation’s result. This applies outside <code>seq</code> as well as inside it.
 Retain outputs for paused computations whose semantic value remains valid;
 do not reset every builtin merely because it is classified asynchronous.</p>
-<!-- CR claude for claude: [doc-drift/medium] The Once example below clears `done` in
-`sleep` ("a woken once is a fresh one"). Since a wake became a resume, core's `Once`
-keeps its latch across a sleep: its `sleep` is empty and its `reborn` clears the latch.
-The prose after the example says the same, so the page contradicts itself, and an author
-who copies the code gets a once that re-fires at every re-entry of its arm. Fix: make
-`sleep` empty and move the reset into `reborn`, as core does. The same block is
-duplicated in packages/creating.md; keep this copy and link to it from there. probe:
-design/review-2026-10-19/repro/book-modules-udt-once-sleep.gx (book-modules-udt-01) -->
 <h2 id="implementing-once"><a class="header" href="#implementing-once">Implementing Once</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -17627,9 +17274,13 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Once {
         }
     }
 
-    // once is a restart builtin: a woken once is a fresh one
-    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
-        self.done = false
+    // sleep is a pause: the latch is kept across it
+    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {}
+
+    // a seq step entered for its next run is a birth: forget the update
+    fn reborn(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
+        self.done = false;
+        self.out = TagValue::phantom()
     }
 }
 <span class="boring">}</span></code></pre>
@@ -17657,33 +17308,11 @@ output is its last event (see above). <code>reborn</code> is called before an
 update that follows a sleep and is a birth, a seq step entered for its
 next run: that is where <code>once</code> clears its flag, as a new one would
 hold nothing.</p>
-<!-- CR claude for claude: [doc-drift/medium] This section and the two after it describe
-`genn::bind`/`genn::reference`/`genn::apply`, the bind ids `pid`/`nid`/`xid`, and
-setting `Event::variables` plus `store_insert` by hand. The `array::group` they cite now
-holds a `genn::Callback` (`Callback::new`, `feed_fn`, `feed_arg`, and
-`update`/`refs`/`sleep`/`delete` forwarded). Feeding goes through `ExecCtx::deliver`,
-which also stands a bottom stale in the store, and CLAUDE.md forbids a node writing
-`event.variables` directly. Fix: rewrite the walkthrough around `genn::Callback` and
-`ExecCtx::deliver`/`publish`, and drop the `pid`/`xid`/`nid` story and the "hard way
-(for now)" paragraph. Found by reading; not run. (book-modules-udt-04) -->
 <h2 id="higher-order-functions-1"><a class="header" href="#higher-order-functions-1">Higher Order Functions</a></h2>
-<p>Right, now that the easy stuff is out of the way, lets see how we can
-implement a built-in that takes another Graphix function as an
-argument. This gets compiler guts all over the place, sorry about
-that. The simplest example in the standard library is <code>array::group</code>,
-<code>Group</code> in <code>stdlib/graphix-package-array/src/lib.rs</code>; read it beside
-this section. Its <code>init</code> generates the nodes for a call of the
-predicate:</p>
-<ul>
-<li><code>genn::bind</code> makes two variables for the predicate’s arguments, <code>n</code>
-and <code>x</code>, and returns their <code>BindId</code>s (<code>nid</code>, <code>xid</code>) and reference
-nodes;</li>
-<li>a third <code>BindId</code> (<code>pid</code>) names the predicate itself, and
-<code>genn::reference</code> makes a reference node to it;</li>
-<li><code>genn::apply</code> builds a call site over that reference with the two
-argument references, the <code>pred</code> node.</li>
-</ul>
-<p>Its <code>update</code> delivers values to those variables and updates <code>pred</code>.</p>
+<p>Now for a built-in that takes another Graphix function as an argument.
+The simplest example in the standard library is <code>array::group</code>, <code>Group</code>
+in <code>stdlib/graphix-package-array/src/lib.rs</code>; read it beside this
+section.</p>
 <p>This implements <code>array::group</code>, which given an argument, stores that
 argument’s updates internally, and creates an array out of them when
 the predicate returns true. Its type is</p>
@@ -17695,12 +17324,28 @@ array::group(n, |_, n| (n == 50) || (n == 99))
 <p><code>range(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
 create two arrays, one containing <code>[0, .. 50]</code> and the other
 containing <code>[51, .. 99]</code>.</p>
-<p>The implementation needs to build a <code>Node</code> representing the
-predicate. <code>Node</code> is the fundamental type of everything in the graph.
-Ultimately the entire program compiles to a node. The kind of node we
-need to create here is a function call site, that will handle all the
-details of late binding, optional arguments, default args, etc. The
-<code>genn</code> module is specifically for generating nodes.</p>
+<p>The implementation needs a call of the predicate in the graph: a call
+site node, which handles late binding, optional arguments, default
+arguments and the rest. <code>genn::Callback</code> builds one and owns it. Its
+<code>init</code> makes it from the predicate’s resolved function type and a name
+for each argument:</p>
+<pre><code class="language-rust ignore">let pred = genn::Callback::new(ctx, &amp;scope, &amp;mftyp, &amp;["n", "x"], top_id)?;</code></pre>
+<p><code>Callback::new</code> binds a private variable for each argument and one for
+the function, and builds the call over them. (<code>Callback::through</code> calls
+the function a binding the builtin already holds, and
+<code>Callback::of_value</code> a function value known when it is built.) From
+then on the builtin drives it:</p>
+<ul>
+<li><code>feed_fn(ctx, tv)</code> hands it the function, every time the function
+argument (<code>from[1]</code>) produces: functions are late bound, so the
+function a call reaches may change, and the call site follows it;</li>
+<li><code>feed_arg(ctx, i, tv)</code> delivers argument <code>i</code> for this cycle;</li>
+<li><code>update(ctx)</code> updates the call and returns its production, which
+fires when the predicate answers: maybe this cycle, maybe later, maybe
+never;</li>
+<li><code>typecheck0</code>, <code>refs</code>, <code>sleep</code> and <code>delete</code> are forwarded from the
+builtin’s own.</li>
+</ul>
 <h3 id="typecheck"><a class="header" href="#typecheck">Typecheck</a></h3>
 <p>An <code>Apply</code> has two typecheck hooks, both with defaults that do nothing.
 <code>typecheck0(ctx, from)</code> runs once the argument nodes have typechecked;
@@ -17735,49 +17380,32 @@ formal and no more), or one whose type stays unknown. The builtin’s
 <code>typecheck1</code> reads the signature from the resolved
 argument (through type references) without refusing.</p>
 <h3 id="bindids-and-refs"><a class="header" href="#bindids-and-refs">BindIds and Refs</a></h3>
-<p><code>BindId</code> is a very fundamental type in compiler guts. The
+<p><code>BindId</code> names a variable. The
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html"><code>Event</code></a>
-struct contains two tables indexed by it. The most important is <code>variables</code>.
-Every bound variable has a <code>BindId</code>. If a variable has updated this cycle, then
-its updated value, a <code>TagValue</code>, will be in the <code>variables</code> table indexed by
-its <code>BindId</code>. In
-order to call this predicate function we actually create three different
-variables and store their <code>BindIds</code> as <code>xid</code>, <code>nid</code>, and <code>pid</code>.
-<code>genn::reference</code> returns a reference <code>Node</code> and the <code>BindId</code> of the variable it
-is referencing. Since those ref nodes become the arguments to the predicate call
-site we create, <code>xid</code> and <code>nid</code> allow us to control the arguments passed into
-the function. We just have to set <code>xid</code> and <code>nid</code> in <code>Event::variables</code> before
-we update the predicate in order to <code>call</code> the function. This may cause it to
-update immediately, or, it may depend on something else that needs to update
-before it will update. Either way, once we’ve set <code>xid</code> and <code>nid</code> once and
-called update on the predicate we’ve done our duty (it may never update, and
-that’s ok). That just leaves <code>pid</code>, what is it for? Well, earlier it was
-mentioned that functions are always late bound. This is how that works. The
-lambda argument we were passed <code>from[1]</code>, whatever kind of node it is, will
-ultimately update and return a <code>Lambda</code>, which a compiled function. So every
-cycle we need to call update on this node just like any other node, because the
-<code>Lambda</code> we are calling might change, and if that happens the call site we
-created with <code>genn::apply</code> needs to know about it. Luckily we don’t have to
-handle any of the wonderful details of late binding beyond this simple passing
-through of updates, the call site will take care of that.</p>
+holds this cycle’s deliveries in <code>variables</code>, indexed by it: a variable
+that updated this cycle has its <code>TagValue</code> there. A <code>Callback</code>’s
+arguments and function are variables of its own, and its call site’s
+argument nodes are references to them, so feeding an argument is
+delivering to its variable (<code>args()</code> lists their ids, for a builtin that
+writes one for a later cycle with <code>ctx.rt.set_var</code>).</p>
 <h3 id="the-store-refs-delete"><a class="header" href="#the-store-refs-delete">The store, refs, delete</a></h3>
 <p>When a call site is initialized for the first time, or a select arm
 wakes from sleep, it needs the current value of every variable it
 depends on, so the runtime keeps the current value of every variable
-in its store. A builtin that sets a variable itself updates both: the
-store (<code>ctx.rt.store_insert(id, tv)</code>) and this cycle’s event
-(<code>ctx.event.variables.insert(id, TagValue::fired(v))</code>).</p>
-<p>And this also explains another function that you have to implement
-when you’re generating nodes, which is <code>refs</code>. Turns out we need to know
-all the variables a node depends on, so we can set them when it’s
-being woken up from sleep, or stood up at a call site for the first
-time.</p>
-<p>That just leaves <code>delete</code>. The structure of the graph changes at
-runtime, and we need to keep everything straight. It would be nice if
-we could do this with <code>Drop</code>, but that would require holding a
-reference to the <code>ExecCtx</code> at every <code>Node</code>. I’d really rather not pay
-to wrap every access to the context in a mutex, so we’re doing it the
-hard way (for now).</p>
+in its store. A builtin that sets a variable itself never writes
+<code>ctx.event.variables</code> directly: <code>ExecCtx::deliver(id, tv)</code> delivers this
+cycle and updates the store (a bottom stands there as a stale one), and
+<code>ExecCtx::publish(id, tv)</code> delivers this cycle alone. Both mark the
+variable’s readers, so the walk visits them (<code>Callback::feed_arg</code> and
+<code>feed_fn</code> deliver).</p>
+<p><code>refs</code> reports every variable a node depends on, so the runtime can
+hand them their values when the node wakes from sleep or a call site
+stands up for the first time; a builtin that owns a <code>Callback</code> forwards
+it.</p>
+<p><code>delete</code> removes the node’s part of the graph, which changes at run
+time: a <code>Callback</code>’s <code>delete</code> drops its call and releases every
+variable it owns. Graphix does this by hand rather than in <code>Drop</code>,
+which would need every <code>Node</code> to hold a reference to the <code>ExecCtx</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="custom-embedded-applications-1"><a class="header" href="#custom-embedded-applications-1">Custom Embedded Applications</a></h1>
 <p>For most standalone binaries, <code>graphix package build-standalone</code> is the simplest
@@ -17793,18 +17421,12 @@ add your own with <code>add_packages</code>, e.g.
 <code>.add_packages(graphix_package::packages!())</code> for your <code>graphix-package-*</code>
 dependencies, or replace the set with <code>packages(..)</code>.</p>
 <h2 id="basic-application"><a class="header" href="#basic-application">Basic Application</a></h2>
-<!-- CR claude for claude: [doc-drift/medium] Every example on this page writes
-`Mode::Script(Source::File(..))` and imports `graphix_compiler::expr::Source`, but
-`graphix_shell::Mode::Script` takes a `graphix_compiler::expr::Load` (`Load::File`,
-`Load::Netidx`, `Load::Text`), so none of these snippets compiles. Fix: import `Load`
-and write `Mode::Script(Load::File(PathBuf::from("main.gx")))` everywhere on the page.
-Found by reading; not run. (book-modules-udt-03) -->
 <p>The shell needs a <code>MainThreadHandle</code> so widgets that must run on the
 main thread (notably the GUI backend) can dispatch work back from the
 tokio runtime. The standard pattern is to spawn tokio on its own thread
 and pump the main-thread queue from <code>main</code>:</p>
 <pre class="playground"><code class="language-rust">use anyhow::Result;
-use graphix_compiler::expr::Source;
+use graphix_compiler::expr::Load;
 use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
@@ -17813,7 +17435,7 @@ use std::path::PathBuf;
 // the exit code a script asked for with `sys::exit`, if any
 async fn tokio_main(run_on_main: MainThreadHandle) -&gt; Result&lt;Option&lt;i32&gt;&gt; {
     ShellBuilder::&lt;NoExt&gt;::default()
-        .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
+        .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
         .no_init(true)
         .build()?
         .run(run_on_main)
@@ -17859,7 +17481,7 @@ use netidx::publisher::DesiredAuth;
 
 let config = netidx::config::Config::load_default()?;
 ShellBuilder::&lt;NoExt&gt;::default()
-    .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
+    .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
     .setup_context(Box::new(move |ctx| {
         ctx.libstate.set(NetConfig::Config {
             config,
@@ -17895,7 +17517,7 @@ fn my_modules() -&gt; ResolverRef {
 
 ShellBuilder::&lt;NoExt&gt;::default()
     .module_resolvers(vec![my_modules()])
-    .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
+    .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
     .build()?
     .run(run_on_main)
     .await
@@ -18015,26 +17637,25 @@ common, because
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.BindId.html"><code>BindId</code></a>
 will appear in any data structure that has a value passed by ref (e.g. <code>&amp;v</code>),
 which should be common for large structures that don’t change often.</p>
-<!-- CR claude for claude: [doc-drift/medium] The derive example below has no
-`#[value(shape = "graphix_compiler::rep::GraphixShape")]`, so it uses
-`netidx_value::NetidxShape`. A Graphix struct value carries its kind marker at element 0
-(graphix-types rep.rs), and `GXEvent::Updated` hands it over unconverted, so
-`derive_struct_field` bails with "expected a struct field" on every struct, tuple or
-variant the embedder receives. An `IntoValue` built the same way writes data that
-Graphix code does not read as a struct. Every derive in the tree carries the attribute.
-Fix: add it to the example and say every derive over Graphix values needs it, in both
-directions. Found by reading; not run. (book-modules-udt-02) -->
 <p>A Rust type that mirrors a Graphix type need not implement <code>FromValue</code> by hand:
 <code>#[derive(FromValue, IntoValue)]</code> from the <code>netidx-derive</code> crate maps a struct’s
 named fields onto the Graphix struct’s fields by name, and an enum’s variants
 onto Graphix variants (<code>`Tag</code>, <code>`Tag(a, b)</code>, <code>`Tag({ .. })</code>). A field
 passed by reference (<code>&amp;T</code>) reads as a <code>BindId</code>, a reference’s own value
-(<code>graphix_compiler::reference::cell</code> reads one from a <code>Value</code>). The generated
-code names <code>netidx_value</code> and <code>anyhow</code>, so the crate depends on both.</p>
+(<code>graphix_compiler::reference::cell</code> reads one from a <code>Value</code>).</p>
+<p>Every derive over a Graphix value, in either direction, carries
+<code>#[value(shape = "graphix_compiler::rep::GraphixShape")]</code>. A Graphix
+tuple, struct or variant value carries a kind marker the default
+(netidx) shape does not know: without the attribute, <code>FromValue</code>
+refuses every struct, tuple and variant the program sends, and
+<code>IntoValue</code> builds values the program does not read as one. The
+generated code names <code>netidx_value</code>, <code>anyhow</code> and <code>graphix_compiler</code>, so
+the crate depends on all three.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// the Graphix type {x: f64, y: f64, label: &amp;string}
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct Point {
     x: f64,
     y: f64,
@@ -18102,7 +17723,7 @@ callable’s <code>answer</code> id:</p>
 </span><span class="boring">fn main() {
 </span>f.call_answered(netidx_value::ValArray::from_iter_exact(
     [Value::from(1), Value::from(2), Value::from(3)]
-)).await?;
+))?;
 'answer: loop {
     let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
     for ev in batch.drain(..) {

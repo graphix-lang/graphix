@@ -1,14 +1,14 @@
 use crate::expr::{
     ApplyExpr, BinOp, Expr, ExprKind, Name,
     parser::{
-        any, apply_args, array, array_index_suffix,
+        ONE_TUPLE, any, apply_args, array, array_index_suffix,
         arrayexp::Index,
         brace, cast, construct, csep, expr, fldname,
-        grow::{fold_fits, grow},
+        grow::{fold_fits, grow, refuse},
         interpolated,
         lambdaexp::{any_lambda, lambda_ahead},
-        list_lit, literal, never_expr, raw_string, reference, select, sep_by1_tok, seq,
-        spaces, sptoken, variant,
+        list_lit, literal, never_expr, raw_string, reference, select,
+        sep_by1_tok_trailing, seq, spaces, sptoken, variant,
     },
 };
 use crate::typ::Mutability;
@@ -20,7 +20,7 @@ use combine::{
     parser::char::string,
     position, satisfy,
     stream::{Range, StreamErrorFor, position::SourcePosition},
-    token, unexpected_any,
+    token, unexpected_any, value,
 };
 use netidx_value::parser::{int, not_prefix};
 use poolshark::local::LPooled;
@@ -146,6 +146,7 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
 
 /// A single parenthesized expr: `ExplicitParens` if no postfix follows,
 /// else the bare postfix source.
+#[derive(Clone)]
 struct Parenthesized;
 
 fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
@@ -156,28 +157,29 @@ where
 {
     (
         position(),
-        between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), token(')'))),
+        between(
+            token('('),
+            sptoken(')'),
+            sep_by1_tok_trailing(expr(), csep(), token(')')),
+        ),
+        position(),
     )
-        .map(|(pos, mut exprs): (_, LPooled<Vec<Expr>>)| {
-            // CR claude for claude: [bug/low] `(e,)` is read as the grouping `(e)`:
-            // sep_by1_tok drops the trailing comma, and one element means parens. The
-            // type parser does the same (`(i64,)` is `i64`), but the pattern `(x,)` is
-            // refused with "tuples must have at least 2 elements". So `let t: (i64,) =
-            // (1,)` checks and fmt rewrites it to `let t: i64 = (1)`. Graphix has no
-            // 1-tuple, so refuse a one-element list that ends in a comma here and in
-            // typexp's tuple type, with the pattern's message. probe:
-            // design/review-2026-10-19/repro/t-parser-a-one-tuple-comma.gx
-            // (t-parser-a-04)
-            if exprs.len() == 1 {
-                (exprs.drain(..).next().unwrap(), Some(Parenthesized))
-            } else {
-                (
-                    ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }
-                        .to_expr(pos),
-                    None,
-                )
-            }
-        })
+        .then(
+            |(pos, (mut exprs, trailing), end): (_, (LPooled<Vec<Expr>>, bool), _)| {
+                let kind = match exprs.len() {
+                    1 if trailing => return refuse(end, ONE_TUPLE).right(),
+                    1 => {
+                        return value((
+                            exprs.drain(..).next().unwrap(),
+                            Some(Parenthesized),
+                        ))
+                        .left();
+                    }
+                    _ => ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) },
+                };
+                value((kind.to_expr(pos), None)).left()
+            },
+        )
 }
 
 /// Where a literal may start, consuming nothing: never at a letter that

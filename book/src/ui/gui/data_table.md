@@ -184,6 +184,10 @@ an open Text editor.
 Other keys go on to an enclosing `keyboard_area`, so application
 shortcuts keep working while the table has focus.
 
+With multiple selected cells, keyboard navigation starts at the first valid
+cell in the program's selection array. If none of the selected cells is fully
+visible, the table scrolls to that first cell.
+
 ## Examples
 
 ### Basic
@@ -293,10 +297,3 @@ the rows that enter that window and drops the ones that leave it.
 - [Chart](chart.md) -- larger-scale line / area / scatter plots.
 - [`sys::net`](../../stdlib/sys/net.md) -- the `Table` record and
   `list_table` helper consumed by `#table`.
-
-<!-- CR claude for claude: [readability/low] This paragraph is about keyboard navigation
-but sits after See Also, at the end of the page. Move it into the Keyboard Navigation
-section. Found by reading; not run. (book-ui-b-10) -->
-With multiple selected cells, keyboard navigation starts at the first valid
-cell in the program's selection array. If none of the selected cells is fully
-visible, the table scrolls to that first cell.

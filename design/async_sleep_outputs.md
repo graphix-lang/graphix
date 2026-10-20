@@ -23,7 +23,8 @@ its output is.
   a delivery stream in flight is aborted. Its output is the last event,
   which does not survive the sleep: a select emits its arm's value at a
   re-entry, so a kept event would be re-raised as if it were new.
-- **State** (the restart builtins, `queue`, `iterq`, `filter`, `hold`):
+- **State** (the restart builtins, `queue`, `iterq`, `queuefn`,
+  `filter`, `hold`):
   kept. A queue takes back what it sent through its reply variable and
   had not received (`InFlight`), and sends it again from the wake.
 
@@ -39,9 +40,10 @@ born view, a seq step entered for its next run.
 | rpc `call` | remints the reply ID; keeps the result | as above |
 | `timer` | cancels the armed fire; keeps the run; clears its output | re-arms the run if fires remain |
 | `after_idle` | cancels a pending wait; clears its output | resumes a pending wait |
-| `throttle` | cancels the pending emission; keeps the held value | — |
+| `throttle` | cancels the pending emission; keeps the held value and the window the last emission opened | — |
 | `range`, `iter` | remints the delivery ID (the stream in flight is aborted); keeps the output | — |
 | `queue`, `iterq` | takes back sent-undelivered values; keeps contents and credits | sends again |
+| `queuefn` | keeps the queue and its credit; a wrapper site drops its own queued calls | — |
 | `once`, `take`, `skip`, `uniq`, `hold`, `count`, `filter` | nothing | — |
 | net subscribe, list/list_table, publish, publish_rpc, `write` | detaches; clears the output | re-attaches over standing args (`write` writes only on a value fire) |
 | filesystem watch application and event/path accessors | rebuilds the watch or detaches listeners; clears the output | rebuilds over standing args |
@@ -55,9 +57,10 @@ born view, a seq step entered for its next run.
 
 `IoLines` retains its reader and its delivery ID across sleep. The
 reader owns the stream position; a second reader would race it for
-bytes. Unbatched lines wait in the reader's queue until the graph takes
-them, one a cycle, and the reader reads no more until it has: a
-sleeping listener holds the reader back and loses nothing. A partial
+bytes. Lines wait in the reader's queue until the graph takes them, one
+a cycle (`lines_batched`: one array per read), and the reader reads no
+more until it has: a sleeping listener holds the reader back and loses
+nothing. A partial
 line stays in the stream's read half (`BufferedRead`), so an operation
 on the whole stream that stops the reader (a TLS upgrade, a seek) reads
 those bytes first. A reselected listener starts without an old output

@@ -88,7 +88,7 @@ let browser = |
         })
     };
     let visible_columns: Array<string> = uniq(visible_columns);
-    // CR claude for claude: [bug/medium] `selected` is never clamped to the visible
+    // XCR claude for claude: [bug/medium] `selected` is never clamped to the visible
     // window. After the window shrinks (a terminal resize changes `#size`) or fewer
     // columns fit, `row_path` is null and `cell_path` bottoms, so `*selected_path`
     // keeps naming a cell that is no longer selected. Up and Left then walk back
@@ -99,7 +99,18 @@ let browser = |
     // within 0 .. len(visible_rows)) and read it in row_path, cell_path, the cursor
     // arms and the table. probe:
     // design/review-2026-10-19/repro/gx-ui-browser-selection-unclamped.gx (gx-ui-02)
-    let row_path: [string, null] = select visible_rows[selected.y] {
+    // 2026-10-19 claude: browser.gx derives sel, the selection clamped to the visible
+    // window, and reads it in row_path, cell_path, the cursor arms and the table.
+    // Right and Down now sample their limit with the key (n ~ (sel, limit)): with the
+    // limit read by a guard, a shrink re-routed the last Down to the scroll arm and
+    // moved the viewport (a guard consult re-enters an arm whose pattern bind then
+    // fires; see the final report). Pin:
+    // input_test::a_browser_selection_stays_in_a_shrunk_window.
+    let sel = {
+        x: max(1, min(array::len(visible_columns), selected.x)),
+        y: max(0, min(array::len(visible_rows) - 1, selected.y))
+    };
+    let row_path: [string, null] = select visible_rows[sel.y] {
         error as _ => null,
         r => r
     };
@@ -107,7 +118,7 @@ let browser = |
         null as n => n,
         r => select mode {
             `List => r,
-            `Table => "[r]/[visible_columns[selected.x - 1]$]"
+            `Table => "[r]/[visible_columns[sel.x - 1]$]"
         }
     };
     *selected_row <- select fresh {
@@ -166,44 +177,30 @@ let browser = |
             0 => cell(#style:header_style, line(s)),
             _ => cell(line(s))
         })));
-    // CR claude for claude: [bug/high] Each scroll arm writes `viewport <- uniq(e ~ {
-    // viewport with .. })`. `uniq` compares with its own last output, not with the
-    // current `viewport`, and keeps that state while its arm sleeps. So once another
-    // arm (or `restart`) has moved the viewport, a scroll back to a value this arm
-    // wrote before is dropped. Repro: press Up at the top (a no-op scroll), Down past
-    // the last visible row, then Up at the top: the window never returns to row 0. Drop
-    // the `uniq` from the four scroll writes; a no-op edge press then costs one
-    // recompute, and `uniq(row) ~ "#SUB"` already keeps that from flickering. Pin a
-    // down-then-up case next to a_browser_scroll_keeps_the_rows_that_stay. probe:
-    // design/review-2026-10-19/repro/gx-ui-browser-uniq-scroll.gx (gx-ui-01)
     select cursor {
-        `Left(n) => select n ~ selected.x {
-            e if e <= 1 =>
-                viewport <- uniq(e ~ { viewport with x: max(0, viewport.x - n) }),
-            e => selected <- e ~ { selected with x: max(1, selected.x - n) }
+        `Left(n) => select n ~ sel.x {
+            e if e <= 1 => viewport <- e ~ { viewport with x: max(0, viewport.x - n) },
+            e => selected <- e ~ { sel with x: max(1, sel.x - n) }
         },
         `Right(n) => {
-            let limit = array::len(visible_columns);
             let clim = array::len(structure.columns) - array::len(visible_columns);
-            select n ~ selected.x {
-                x if x >= limit =>
-                    viewport <- uniq(x ~ { viewport with x: min(clim, viewport.x + n) }),
-                e => selected <- e ~ {selected with x: min(limit, selected.x + n)}
+            select n ~ (sel.x, array::len(visible_columns)) {
+                (x, limit) if x >= limit =>
+                    viewport <- x ~ { viewport with x: min(clim, viewport.x + n) },
+                (x, limit) => selected <- x ~ { sel with x: min(limit, sel.x + n) }
             }
         },
         `Down(n) => {
             let rlim = array::len(structure.rows) - array::len(visible_rows);
-            let limit = array::len(visible_rows) - 1;
-            select n ~ selected.y {
-                x if x >= limit =>
-                    viewport <- uniq(x ~ { viewport with y: min(rlim, viewport.y + n) }),
-                e => selected <- e ~ { selected with y: min(limit, selected.y + n) }
+            select n ~ (sel.y, array::len(visible_rows) - 1) {
+                (y, limit) if y >= limit =>
+                    viewport <- y ~ { viewport with y: min(rlim, viewport.y + n) },
+                (y, limit) => selected <- y ~ { sel with y: min(limit, sel.y + n) }
             }
         },
-        `Up(n) => select n ~ selected.y {
-            y if y <= 0 =>
-                viewport <- uniq(y ~ { viewport with y: max(0, viewport.y - n) }),
-            y => selected <- y ~ { selected with y: max(0, selected.y - n) }
+        `Up(n) => select n ~ sel.y {
+            y if y <= 0 => viewport <- y ~ { viewport with y: max(0, viewport.y - n) },
+            y => selected <- y ~ { sel with y: max(0, sel.y - n) }
         }
     };
     table(
@@ -211,7 +208,7 @@ let browser = |
         #header:&header,
         #widths:&widths,
         #flex:&flex,
-        #selected_cell: &selected,
+        #selected_cell: &sel,
         #style:&style,
         &rows
     )

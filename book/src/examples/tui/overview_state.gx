@@ -1,18 +1,18 @@
-use tui::{line, list::list};
+use tui::{line, input_handler::{Event, input_handler, on_press}, list::list};
 
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
-// CR claude for claude: [doc-drift/low] Nothing writes `arrow_pressed`. The
-// input_handler the comment mentions does not exist, so this program, which the
-// overview presents as showing that 'state changes automatically trigger UI updates',
-// can never change. Make it a whole program: an `on_press` handler whose Down arm
-// writes `selected_item <- d ~ (selected_item + 1) % array::len(items)`, and delete
-// `arrow_pressed`. Found by reading; not run. (examples-tui-09)
-let arrow_pressed = never();
 
-// an input_handler (see the Input Handling page) sets arrow_pressed
-// when the user presses the down arrow
-selected_item <- arrow_pressed ~ ((selected_item + 1) % array::len(items));
+let handle = |e: Event| on_press(e, |k| select k.code {
+    d@ `Down => {
+        selected_item <- d ~ (selected_item + 1) % array::len(items);
+        `Stop
+    },
+    _ => `Continue
+});
 
 // UI automatically reflects the change
-list(#selected: &selected_item, &items)
+input_handler(
+    #handle: &handle,
+    &list(#highlight_symbol: &"> ", #selected: &selected_item, &items)
+)

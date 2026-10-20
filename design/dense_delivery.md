@@ -94,10 +94,10 @@ bottom-resident ∨ woke`. `read_prod!`/`node::gather`
 are the per-child join accumulators every computing node uses.
 
 **R2 — read-side init.** There are no FIRED backfills. One rule at the
-store read: a reader under an init view (`event.init`) interprets a standing
-entry as Fired; otherwise as
-Stale. A wake (`event.wake_init`) is NOT genuine init — standing entries
-read Stale under it.
+store read: a reader under a birth (`event.view`, `View::Birth`)
+interprets a standing entry as Fired; otherwise as Stale. A wake or a
+step (`View::wake`: `Wake`, `Step`) is NOT a birth: standing entries
+read Stale under it, though constants fire in a step (`View::born`).
 
 **R3 — bottom propagates.** Consuming a bottom bottoms the production,
 uniformly, including builtin argument seams: a bottomed argument makes
@@ -176,18 +176,13 @@ the JIT and the engine did not get simpler.
   or stale). Every raw production read in stdlib flows through these
   or the staging buffer. Tag-blindness is unwritable under this
   contract.
-<!-- CR claude for claude: [doc-drift/medium] Stale since "a wake is a resume": the
-restart builtins keep their latches and counts across a sleep (reset only in
-`Apply::reborn`). An async call's result survives a sleep; only an event source's last
-event does not (async_sleep_outputs.md). R2's `event.init`/`event.wake_init` are now
-`Event::view` (`View::born`/`View::wake`), and parallel_eval.md still names `wake_init`
-too. Rewrite these bullets to the rule as built. probe:
-design/review-2026-10-19/repro/x-doc-drift-count-survives-sleep.gx (x-doc-drift-03) -->
 - The restart builtins (`once`/`take`/`skip`/`uniq`/`hold`/`count`)
-  clear their latches in their own `sleep()`. They are `Sync`, never
-  `Stateless`, so they never fuse and no kernel needs an interior
-  arm-sleep initiator.
-- Async builtins clear their output to the phantom on sleep
+  keep their latches and counts across a sleep: a wake is a resume.
+  They start afresh only where they are born again (`Apply::reborn`, a
+  seq step's next run). They are `Sync`, never `Stateless`, so they
+  never fuse and no kernel needs an interior arm-sleep initiator.
+- An async call's result survives a sleep (the call in flight is
+  aborted); an event source's output, its last event, does not
   (`design/async_sleep_outputs.md`).
 
 ## The kernel boundary

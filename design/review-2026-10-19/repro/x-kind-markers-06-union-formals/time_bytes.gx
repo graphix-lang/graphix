@@ -1,0 +1,1 @@
+{ let g = |q: [datetime, bytes, decimal]| -> i64 select q { datetime as a => str::len("[a]"), bytes as a => str::len("[a]"), decimal as a => str::len("[a]") }; let w: [datetime, bytes, decimal] = bytes:AA==; let r = #[native] g(w); println("[r]"); sys::exit(sys::time::after_idle(duration:50.ms, 0)) }

@@ -1,6 +1,6 @@
 use super::{
-    AlignmentV, BoundsV, LineV, MarkerV, PointV, StyleV, TuiW, TuiWidget, compile_each,
-    into_borrowed_line, layout::ConstraintV,
+    AlignmentV, BoundsV, LineV, MarkerV, PointV, StyleV, TuiW, TuiWidget,
+    into_borrowed_line, layout::ConstraintV, reconcile,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -201,7 +201,7 @@ pub(super) struct ChartW<X: GXExt> {
     gx: GXHandle<X>,
     p: Props<X>,
     datasets_ref: Ref<X>,
-    datasets: Vec<DatasetW<X>>,
+    datasets: Vec<(Value, DatasetW<X>)>,
 }
 
 impl<X: GXExt> ChartW<X> {
@@ -212,12 +212,12 @@ impl<X: GXExt> ChartW<X> {
         if let Some(v) = t.datasets_ref.last.take() {
             t.set_datasets(v).await?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     async fn set_datasets(&mut self, v: Value) -> Result<()> {
-        self.datasets = compile_each(v, |d| DatasetW::compile(&self.gx, d)).await?;
-        Ok(())
+        reconcile(&mut self.datasets, v.cast_to()?, |d| DatasetW::compile(&self.gx, d))
+            .await
     }
 }
 
@@ -232,7 +232,7 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if self.datasets_ref.id == id {
             return Ok(Some(Box::pin(self.set_datasets(v.clone()))));
         }
-        for d in &mut self.datasets {
+        for (_, d) in &mut self.datasets {
             d.update(id, v)?;
         }
         Ok(None)
@@ -240,7 +240,8 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
-        let mut chart = Chart::new(self.datasets.iter().map(|d| d.build()).collect());
+        let mut chart =
+            Chart::new(self.datasets.iter().map(|(_, d)| d.build()).collect());
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }

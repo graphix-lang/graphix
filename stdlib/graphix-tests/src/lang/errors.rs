@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -11,19 +11,13 @@ const UNCHECKED0: &str = r#"
 2 + 2
 "#;
 
-run!(unchecked0, UNCHECKED0, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(unchecked0, UNCHECKED0, is(Value::I64(4)); FuseExpect::Jit);
 
 const CHECKED0: &str = r#"
 2 +? 2
 "#;
 
-run!(checked0, CHECKED0, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(checked0, CHECKED0, is(Value::I64(4)); FuseExpect::Jit);
 
 const CHECKED_DIV0: &str = r#"
 {
@@ -52,8 +46,9 @@ run!(
     };
     f(3)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap())
-        == r#"[error:["ArithError", "attempt to add with overflow"], error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"], error:["ArithError", "attempt to multiply with overflow"]]"#
+    prints(
+        r#"[error:["ArithError", "attempt to add with overflow"], error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"], error:["ArithError", "attempt to multiply with overflow"]]"#
+    )
 );
 
 // `x % -1` is 0 for every x, MIN included, checked or not; `%` fails
@@ -131,10 +126,7 @@ const CATCH1: &str = r#"
 }
 "#;
 
-run!(catch1, CATCH1, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(catch1, CATCH1, is(Value::I64(3)); FuseExpect::Jit);
 
 // Nested catches in one block: the second covers the ?s below it; its
 // handler's rethrow resolves to the first, seen the same cycle.
@@ -154,10 +146,7 @@ const CATCH4: &str = r#"
 }
 "#;
 
-run!(catch4, CATCH4, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == r#"[["ArrayIndexError", "array index out of bounds"], ["ArithError", "attempt to divide by zero"], i64:1, i64:1]"#
-}; FuseExpect::Jit);
+run!(catch4, CATCH4, prints(r#"[["ArrayIndexError", "array index out of bounds"], ["ArithError", "attempt to divide by zero"], i64:1, i64:1]"#); FuseExpect::Jit);
 
 const CHECKED_DOLLAR: &str = r#"
 {
@@ -166,10 +155,7 @@ const CHECKED_DOLLAR: &str = r#"
 }
 "#;
 
-run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
-    Ok(Value::I64(4)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(checked_dollar, CHECKED_DOLLAR, is(Value::I64(4)); FuseExpect::Jit);
 
 // Composite-success `$`.
 const COMPOSITE_DOLLAR: &str = r#"
@@ -260,7 +246,7 @@ const DYNCALL_PENDING_CONSUMED_LOCAL: &str = r#"
 run!(
     dyncall_pending_consumed_local,
     DYNCALL_PENDING_CONSUMED_LOCAL,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    is(Value::I64(1));
     FuseExpect::Jit
 );
 
@@ -369,10 +355,7 @@ const CATCH_IN_LAMBDA_THROWS: &str = r#"
 }
 "#;
 
-run!(catch_in_lambda_throws, CATCH_IN_LAMBDA_THROWS, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::Jit);
+run!(catch_in_lambda_throws, CATCH_IN_LAMBDA_THROWS, is(Value::I64(1)); FuseExpect::Jit);
 
 // Without the catch the lambda throws, and the ascription refuses it.
 const UNCAUGHT_IN_LAMBDA_THROWS: &str = r#"
@@ -445,10 +428,7 @@ const CATCH_PER_ACTIVATION: &str = r#"
 }
 "#;
 
-run!(catch_per_activation, CATCH_PER_ACTIVATION, |v: Result<&Value>| match v {
-    Ok(Value::I64(6)) => true,
-    _ => false,
-}; FuseExpect::None);
+run!(catch_per_activation, CATCH_PER_ACTIVATION, is(Value::I64(6)); FuseExpect::None);
 
 // A callee's handler covers the callee's body only.
 const CATCH_IN_CALLEE_STAYS_IN_CALLEE: &str = r#"
@@ -467,10 +447,7 @@ const CATCH_IN_CALLEE_STAYS_IN_CALLEE: &str = r#"
 }
 "#;
 
-run!(catch_in_callee_stays_in_callee, CATCH_IN_CALLEE_STAYS_IN_CALLEE, |v: Result<&Value>| match v {
-    Ok(Value::I64(11)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(catch_in_callee_stays_in_callee, CATCH_IN_CALLEE_STAYS_IN_CALLEE, is(Value::I64(11)); FuseExpect::Jit);
 
 // A `?` in a body that installs no handler reaches the caller's.
 const CATCH_THROUGH_CALL: &str = r#"
@@ -486,10 +463,7 @@ const CATCH_THROUGH_CALL: &str = r#"
 }
 "#;
 
-run!(catch_through_call, CATCH_THROUGH_CALL, |v: Result<&Value>| match v {
-    Ok(Value::I64(6)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(catch_through_call, CATCH_THROUGH_CALL, is(Value::I64(6)); FuseExpect::Jit);
 
 // A `?` in an inline collection callback is baked into the calling
 // kernel, so two instances of `g` under different catches are two kernels.
@@ -510,7 +484,7 @@ const CATCH_IN_INLINE_CALLBACK_PER_INSTANCE: &str = r#"
 run!(
     catch_in_inline_callback_per_instance,
     CATCH_IN_INLINE_CALLBACK_PER_INSTANCE,
-    |v: Result<&Value>| { format!("{}", v.unwrap()) == r#"["h1", "h2"]"# }
+    prints(r#"["h1", "h2"]"#)
 );
 
 // A connect of the catch variable into a binding over a different
@@ -533,8 +507,8 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
     assert!(
         e.contains(
             "err1 is Error<ErrChain<`ArithError(string)>> and cannot hold \
-             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`B>>, \
-             Error<ErrChain<`ArithError(string)>>] where it is bound"
+             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`ArithError(string)>>, \
+             Error<ErrChain<`B>>] where it is bound"
         ),
         "{e}"
     );
@@ -597,10 +571,7 @@ const ARM_INPUT_RAISE_DELIVERS: &str = r#"
 }
 "#;
 
-run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-); FuseExpect::None);
+run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, is(Value::I64(1)); FuseExpect::None);
 
 const ARM_INPUT_RAISE_NODE_WALKS: &str = r#"
 {
@@ -708,9 +679,7 @@ const BUILTIN_CALLBACK_RAISES_TO_CALLER: &str = r#"
 }
 "#;
 
-run!(builtin_callback_raises_to_caller, BUILTIN_CALLBACK_RAISES_TO_CALLER, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "\"Caught\""
-}; FuseExpect::None);
+run!(builtin_callback_raises_to_caller, BUILTIN_CALLBACK_RAISES_TO_CALLER, prints("\"Caught\""); FuseExpect::None);
 
 // Two raises to one handler in one cycle: the first is delivered that
 // cycle, the second the next, from forked siblings as from serial ones.
@@ -782,7 +751,7 @@ run!(
     g
 }
 "#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(6)))
+    is(Value::I64(6))
 );
 
 run!(
@@ -950,8 +919,7 @@ run!(
 // definition does, an error passing through.
 run!(
     open_member_beside_null_strips_the_null,
-    |v: Result<&Value>| format!("{}", v.unwrap())
-        == r#"[[i64:3, error:"E", i64:4], ["NullError", "x"]]"#,
+    prints(r#"[[i64:3, error:"E", i64:4], ["NullError", "x"]]"#),
     "/test.gx" => r#"
         let f = |x: ['a, null]| x$;
         let g = |x: ['a, null]| x?;
@@ -984,7 +952,7 @@ run!(
 // one above the operand.
 run!(
     a_comment_does_not_reach_an_error_value,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => r#"
         let x: [i64, null] = null;
         let s = { a: 1, b: x };
@@ -1000,3 +968,12 @@ run!(
         let result = out
     "#
 ; FuseExpect::Jit);
+
+// A raise is typed with core's ErrChain whatever a program names
+// ErrChain: `r.ori` is core's origin struct.
+run!(err_chain_is_cores_under_a_shadowing_type, r#"{
+  type ErrChain<'a> = {cause: i64, error: 'a, ori: i64, pos: string};
+  let r = never();
+  { catch(e) r <- e.0; error(`A(1))? };
+  r.ori + 1
+}"#, refused("cannot compute { parent: [null, Ori], source: Source, text: string } + i64"); FuseExpect::None);

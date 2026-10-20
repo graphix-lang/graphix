@@ -3,10 +3,8 @@
 //! arithmetic diagnostic is the node-walk's alone, as an operator's is:
 //! fused, it logs nothing.
 
-use std::{
-    fs,
-    process::{Command, Stdio},
-};
+mod common;
+use common::graphix;
 
 /// `divide` over args that fire only at init, beside a counter that
 /// keeps its statement updating.
@@ -19,36 +17,14 @@ sys::exit(select ep { 20 => 0, _ => never() })
 "#;
 
 fn divide_logs(fusion: bool) -> usize {
-    let dir = std::env::temp_dir()
-        .join(format!("gx-standing-bottom-{}-{fusion}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("tempdir");
-    let path = dir.join("divide.gx");
-    fs::write(&path, PROGRAM).expect("write program");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
-    cmd.arg("--no-cache").arg("--no-netidx").arg("--log-dir").arg(&dir);
-    if !fusion {
-        cmd.arg("--no-fusion");
-    }
-    let out = cmd
-        .arg(&path)
-        .env("RUST_LOG", "error")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run graphix");
-    assert!(
-        out.status.success(),
-        "graphix failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let log = fs::read_dir(&dir)
-        .expect("read log dir")
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
-        .map(|e| fs::read_to_string(e.path()).expect("read log"))
-        .collect::<String>();
-    let _ = fs::remove_dir_all(&dir);
-    log.matches("divide").count()
+    let dir = tempfile::tempdir().expect("tempdir");
+    let args: &[&str] = match fusion {
+        true => &["--no-cache"],
+        false => &["--no-cache", "--no-fusion"],
+    };
+    let ran = graphix(dir.path(), PROGRAM, args, &[("RUST_LOG", "error")]);
+    assert!(ran.status.success(), "graphix failed: {}", ran.stderr);
+    ran.log.matches("divide").count()
 }
 
 #[test]
@@ -61,22 +37,9 @@ fn a_standing_divide_by_zero_logs_once() {
 /// failure is.
 #[test]
 fn a_failing_divide_is_reported() {
-    let dir =
-        std::env::temp_dir().join(format!("gx-divide-report-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("tempdir");
-    let path = dir.join("divide.gx");
-    fs::write(&path, "let z = 0;\nlet r = divide(7, z);\nsys::exit(sys::time::after_idle(duration:100.ms, 0))\n")
-        .expect("write program");
-    let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
-        .arg("--no-cache")
-        .arg("--no-netidx")
-        .arg("--no-fusion")
-        .arg(&path)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run graphix");
-    let _ = fs::remove_dir_all(&dir);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("divide:"), "{stderr}");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = "let z = 0;\nlet r = divide(7, z);\n\
+                   sys::exit(sys::time::after_idle(duration:100.ms, 0))\n";
+    let ran = graphix(dir.path(), program, &["--no-cache", "--no-fusion"], &[]);
+    assert!(ran.stderr.contains("divide:"), "{}", ran.stderr);
 }

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -332,12 +332,8 @@ canvas(
 <li><strong>Block</strong>: High contrast, blocky appearance, good for filled areas</li>
 </ul>
 <h2 id="coordinate-system"><a class="header" href="#coordinate-system">Coordinate System</a></h2>
-<!-- CR claude for claude: [doc-drift/low] The bottom-left corner is (x_bounds.min,
-y_bounds.min), not (0, 0). This page's own canvas_plot example uses y bounds -1..1,
-which puts (0, 0) at mid-left. State the corners in terms of the bounds. Found by
-reading; not run. (book-ui-b-07) -->
 <ul>
-<li>Origin (0, 0) is at the bottom-left</li>
+<li>The bottom-left corner is (x_bounds.min, y_bounds.min) and the top-right corner (x_bounds.max, y_bounds.max); (0, 0) is wherever the bounds put it</li>
 <li>X increases to the right</li>
 <li>Y increases upward</li>
 <li>Shapes outside bounds are clipped</li>

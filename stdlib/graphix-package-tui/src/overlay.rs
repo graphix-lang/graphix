@@ -1,12 +1,11 @@
 use super::{
-    SizeReport, TuiW, TuiWidget, compile, finish_update, layout::ConstraintV, reconcile,
-    update_children,
+    SizeReport, TuiW, TuiWidget, compile, layout::ConstraintV, reconcile, update_children,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
-use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx::publisher::Value;
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
@@ -74,16 +73,12 @@ impl<X: GXExt> OverlayW<X> {
         if let Some(v) = t.layers_ref.last.take() {
             t.set_layers(v).await?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     async fn set_layers(&mut self, v: Value) -> Result<()> {
-        let sources = v.cast_to::<ValArray>()?;
-        reconcile(&mut self.layers, sources.iter().cloned(), |v| {
-            LayerW::compile(self.gx.clone(), v)
-        })
-        .await?;
-        Ok(())
+        reconcile(&mut self.layers, v.cast_to()?, |v| LayerW::compile(self.gx.clone(), v))
+            .await
     }
 }
 
@@ -102,16 +97,7 @@ impl<X: GXExt> TuiWidget for OverlayW<X> {
         v: &'a Value,
     ) -> Result<crate::PendingUpdate<'a>> {
         if self.layers_ref.id == id {
-            return Ok(Some(Box::pin(async move {
-                self.set_layers(v.clone()).await?;
-                finish_update(update_children(
-                    std::iter::once(&mut self.base)
-                        .chain(self.layers.iter_mut().map(|(_, l)| &mut l.child)),
-                    id,
-                    v,
-                )?)
-                .await
-            })));
+            return Ok(Some(Box::pin(self.set_layers(v.clone()))));
         }
         for (_, l) in &mut self.layers {
             l.p.update(id, v).context("layer")?;

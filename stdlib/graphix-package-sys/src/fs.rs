@@ -72,6 +72,7 @@ impl EvalCachedAsync for FileSeekEv {
 
     fn eval((stream, pos): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
+            stream.stop_lines();
             let Some(mut kind) = stream.take().await else {
                 return errf!("IOError", "stream unavailable");
             };

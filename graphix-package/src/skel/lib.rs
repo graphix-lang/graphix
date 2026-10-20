@@ -22,7 +22,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     //   `FastCall` lets the JIT call it inside a fused kernel;
     // - `Sync`: the same cycle, but it keeps state across invocations, or
     //   depends on which arguments arrived;
-    // - `Async`: it may answer later, on its own, or never.
+    // - `Async`: it may answer later, on its own, or never;
+    // - `Io(call)`: stateless, but it acts on the world at each fire of its
+    //   trigger argument (a printer, `exit`).
     const EFFECT: Effect = Effect::Stateless(None);
 
     fn init<'a, 'b, 'c, 'd>(
@@ -60,15 +62,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         // Every awake arg produces every cycle; match the view exhaustively.
+        // A stateless builtin computes from a stale arg too, unfired: the
+        // result it holds may be none (an arm's first entry) or from before
+        // a sleep the arg changed in.
+        let is_err = |tv: &TagValue| {
+            tv.with_value(|v| Value::Bool(matches!(v, Value::Error(_))))
+        };
         match from[0].update(ctx).view() {
-            TagView::Fired(tv) => {
-                let v = tv.with_value(|v| match v {
-                    Value::Error(_) => Value::Bool(true),
-                    _ => Value::Bool(false),
-                });
-                self.out.set(TagValue::fired(v))
-            }
-            TagView::Stale(_) => self.out.ride(),
+            TagView::Fired(tv) => self.out.set(TagValue::fired(is_err(tv))),
+            TagView::Stale(tv) => self.out.set(TagValue::stale(is_err(tv))),
             // A bottom input sets the result bottom: it never rides the
             // value from before.
             TagView::FreshBottom => self.out.set_bottom(true),

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -192,7 +192,7 @@ x == 2
 </code></pre>
 <p>You can annotate the binding with a type, which will then be enforced at compile
 time. Sometimes this is necessary in order to help type inference.</p>
-<pre><code class="language-graphix">// x may be null later, so its type is the union, though it starts as an i64
+<pre><code class="language-graphix refused">// x may be null later, so its type is the union, though it starts as an i64
 let x: [i64, null] = 1;
 // compile time type error: string does not contain [i64, null]
 let y: string = x;

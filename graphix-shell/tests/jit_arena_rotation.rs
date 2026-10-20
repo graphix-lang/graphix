@@ -3,11 +3,9 @@
 //! the program still fuses and runs to its value, and the rotation says
 //! so.
 
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Stdio},
-};
+mod common;
+use common::{CACHE_LOG, Ran, graphix, program_image};
+use std::path::Path;
 
 /// Regions for two links.
 const REGIONS: usize = 512;
@@ -31,47 +29,27 @@ fn program(calling: bool) -> String {
     s
 }
 
-/// Run the program with an arena of `arena` bytes, caching its image
-/// under `dir`: whether it computed its total, its stderr and its log.
-fn run(dir: &Path, path: &Path, arena: &str) -> (bool, String, String) {
-    let logs = dir.join("log");
-    let _ = fs::remove_dir_all(&logs);
-    fs::create_dir_all(&logs).expect("log dir");
-    let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
-        .arg("--no-netidx")
-        .arg("--log-dir")
-        .arg(&logs)
-        .arg(path)
-        // the cache's info lines say whether the image was written or restored
-        .env("RUST_LOG", "warn,graphix_shell::cache=info")
-        .env("GRAPHIX_JIT_ARENA", arena)
-        .env("XDG_CACHE_HOME", dir.join("cache"))
-        .stdin(Stdio::null())
-        .output()
-        .expect("run graphix");
-    let log = fs::read_dir(&logs)
-        .expect("read log dir")
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
-        .map(|e| fs::read_to_string(e.path()).expect("read log"))
-        .collect::<String>();
-    (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned(), log)
+/// Run `program` with an arena of `arena` bytes, caching its image under
+/// `dir`; it computed its total when it succeeded.
+fn run(dir: &Path, program: &str, arena: &str) -> Ran {
+    graphix(dir, program, &[], &[CACHE_LOG, ("GRAPHIX_JIT_ARENA", arena)])
 }
 
 fn arena_rotates(calling: bool) {
-    let dir =
-        std::env::temp_dir().join(format!("gx-arena-{}-{calling}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("tempdir");
-    let path = dir.join("arena.gx");
-    fs::write(&path, program(calling)).expect("write program");
-    let (cold_ok, cold_err, cold_log) = run(&dir, &path, "196608");
-    let (warm_ok, warm_err, warm_log) = run(&dir, &path, "196608");
-    let _ = fs::remove_dir_all(&dir);
-    assert!(cold_ok, "the program did not compute its total: {cold_err}\n{cold_log}");
-    assert!(cold_log.contains("Program image written to"), "{cold_log}");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = program(calling);
+    let cold = run(dir.path(), &program, "196608");
+    let warm = run(dir.path(), &program, "196608");
+    let (cold_log, warm_log) = (&cold.log, &warm.log);
     assert!(
-        warm_log.contains("Program image ") && !warm_log.contains("written to"),
+        cold.status.success(),
+        "the program did not compute its total: {}\n{cold_log}",
+        cold.stderr
+    );
+    assert_eq!(program_image(&cold), (true, false), "{cold_log}");
+    assert_eq!(
+        program_image(&warm),
+        (false, true),
         "the warm start did not restore the program:\n{warm_log}"
     );
     assert!(
@@ -79,7 +57,11 @@ fn arena_rotates(calling: bool) {
         "a 192KB arena never rotated:\n{cold_log}"
     );
     // the warm start installs the restored regions into the same arena
-    assert!(warm_ok, "the warm start did not compute its total: {warm_err}\n{warm_log}");
+    assert!(
+        warm.status.success(),
+        "the warm start did not compute its total: {}\n{warm_log}",
+        warm.stderr
+    );
     assert!(
         warm_log.contains("JIT code arena exhausted: retired generation"),
         "the warm start never rotated:\n{warm_log}"
@@ -102,48 +84,30 @@ fn exhausted_arena_rotates_task_regions() {
 /// the size, as many times as it takes.
 #[test]
 fn arena_grows_for_a_batch_it_cannot_hold() {
-    let dir = std::env::temp_dir().join(format!("gx-arena-grow-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("tempdir");
-    let path = dir.join("grow.gx");
-    fs::write(&path, program(false)).expect("write program");
-    let (ok, err, log) = run(&dir, &path, "16384");
-    let _ = fs::remove_dir_all(&dir);
-    assert!(ok, "the program did not compute its total: {err}\n{log}");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ran = run(dir.path(), &program(false), "16384");
     assert!(
-        log.contains("reinstalling in a fresh module of 32768 bytes"),
-        "a 16KB arena never grew:\n{log}"
+        ran.status.success(),
+        "the program did not compute its total: {}\n{}",
+        ran.stderr,
+        ran.log
+    );
+    assert!(
+        ran.log.contains("reinstalling in a fresh module of 32768 bytes"),
+        "a 16KB arena never grew:\n{}",
+        ran.log
     );
 }
 
 /// A JIT that cannot be built leaves the program unfused, never failed.
 #[test]
 fn unbuildable_jit_runs_unfused() {
-    let dir = std::env::temp_dir().join(format!("gx-noarena-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("tempdir");
-    let path = dir.join("noarena.gx");
-    fs::write(
-        &path,
-        "let r = (|x: i64| x * 2 + 1)(20);\n\
-         sys::exit(select sys::time::after_idle(duration:1.ms, r) { 41 => 0, _ => 1 })\n",
-    )
-    .expect("write program");
-    let logs = dir.join("log");
-    let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
-        .arg("--no-netidx")
-        .arg("--no-cache")
-        .arg("--log-dir")
-        .arg(&logs)
-        .arg(&path)
-        .env("RUST_LOG", "warn")
-        .env("GRAPHIX_JIT_ARENA", "1000000000000000")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run graphix");
-    let log = fs::read_to_string(logs.join("graphix.log")).unwrap_or_default();
-    let _ = fs::remove_dir_all(&dir);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = "let r = (|x: i64| x * 2 + 1)(20);\n\
+         sys::exit(select sys::time::after_idle(duration:1.ms, r) { 41 => 0, _ => 1 })\n";
+    let env = [("RUST_LOG", "warn"), ("GRAPHIX_JIT_ARENA", "1000000000000000")];
+    let ran = graphix(dir.path(), program, &["--no-cache"], &env);
+    assert!(ran.status.success(), "{}", ran.stderr);
     // the arena cannot be reserved, or the test proves nothing
-    assert!(log.contains("fusion is unavailable"), "{log}");
+    assert!(ran.log.contains("fusion is unavailable"), "{}", ran.log);
 }

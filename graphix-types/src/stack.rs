@@ -36,6 +36,25 @@ static DEFAULT_BUDGET: LazyLock<AtomicUsize> = LazyLock::new(|| {
     })
 });
 
+/// The mode the variable `var` names, any case, else `default`; a value
+/// that names none is reported, so a mistyped knob does not run quietly
+/// in the default mode.
+fn env_mode<T: Copy>(var: &str, modes: &[(&str, T)], default: T) -> T {
+    let Ok(s) = std::env::var(var) else { return default };
+    match modes.iter().find(|(n, _)| n.eq_ignore_ascii_case(s.trim())) {
+        Some((_, m)) => *m,
+        None => {
+            let names = modes.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
+            let msg = compact_str::format_compact!(
+                "{var}={s:?} is not one of {names}; using the default"
+            );
+            log::error!("{msg}");
+            eprintln!("{msg}");
+            default
+        }
+    }
+}
+
 /// Bytes, optionally scaled by a binary `K`, `M` or `G` (`64M`, `1GiB`).
 fn parse_budget(s: &str) -> Option<usize> {
     let s = s.trim();
@@ -104,34 +123,14 @@ pub fn activation_born() -> Option<usize> {
     // SAFETY: see `current_control`.
     let c = unsafe { &*p };
     let live = c.activations.fetch_add(1, Ordering::Relaxed) + 1;
-    if live > c.activation_budget() && !c.budget_aborted() {
+    if live > c.activation_budget() && c.abort_budget(Budget::Activations) {
         log::error!(
             "activation budget ({}) exceeded by a recursion — aborting the runtime \
              (raise via GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget)",
             c.activation_budget()
         );
-        c.abort_budget(Budget::Activations);
     }
     Some(p as usize)
-}
-
-/// [`Control::activation_died`] for the runtime whose cycle runs on this
-/// thread, when it is the one `charged` names.
-#[doc(hidden)]
-// CR claude for claude: [dead/low] The identity check here is vacuous. The only caller,
-// record_self_blocks(-1), passes current_control() itself, and record_self_blocks(1)
-// discards activation_born's charge, so a kernel block is never released against what
-// it was charged to. Delete this function, have record_self_blocks release on
-// current_control() directly, and either record a charge per block as GXLambda does or
-// say in one line that blocks are born and freed in one runtime's cycle. Found by
-// reading; not run. (t-misc-04)
-pub fn activation_died(charged: Option<usize>) {
-    if let Some(p) = current_control()
-        && charged == Some(p as usize)
-    {
-        // SAFETY: see `current_control`.
-        unsafe { (*p).activation_died() }
-    }
 }
 
 /// Abort the running runtime because a recursion exceeded its budget;
@@ -183,19 +182,21 @@ pub fn record_invocation(jit: bool) {
 }
 
 /// Count `n` per-activation kernel blocks allocated (or freed, negative)
-/// against the runtime whose cycle runs on this thread.
+/// against the runtime whose cycle runs on this thread. A block is born
+/// and freed in one runtime's cycles, so it is released where it was
+/// charged.
 #[doc(hidden)]
 pub fn record_self_blocks(n: i64) {
-    if let Some(c) = current_control() {
-        // SAFETY: see `current_control`.
-        unsafe { (*c).self_blocks.fetch_add(n, Ordering::Relaxed) };
-    }
+    let Some(c) = current_control() else { return };
+    // SAFETY: see `current_control`.
+    let c = unsafe { &*c };
+    c.self_blocks.fetch_add(n, Ordering::Relaxed);
     // a kernel's per-activation block is an activation
     match n {
         1 => {
             activation_born();
         }
-        -1 => activation_died(current_control().map(|p| p as usize)),
+        -1 => c.activation_died(),
         _ => (),
     }
 }
@@ -317,19 +318,17 @@ pub enum ParMode {
 impl ParMode {
     /// `GRAPHIX_PAR` (`off`, `auto` or `force`), else `Auto`.
     pub fn from_env() -> Self {
-        // CR claude for claude: [risk/low] An unrecognised GRAPHIX_PAR value is
-        // silently Auto, and an unrecognised GRAPHIX_PRUNE value (PruneMode::from_env)
-        // is silently On. `GRAPHIX_PAR=Force` forks nothing and `GRAPHIX_PRUNE=Audit`
-        // audits nothing, so a debugging run with a mistyped knob looks clean. Match
-        // case-insensitively, and log and eprintln any other value as DEFAULT_BUDGET
-        // does for GRAPHIX_STACK_BUDGET before falling back. probe:
-        // design/review-2026-10-19/repro/t-misc-env-mode-typo.sh (t-misc-01)
-        static MODE: LazyLock<ParMode> =
-            LazyLock::new(|| match std::env::var("GRAPHIX_PAR").as_deref() {
-                Ok("force") => ParMode::Force,
-                Ok("off") => ParMode::Off,
-                _ => ParMode::Auto,
-            });
+        static MODE: LazyLock<ParMode> = LazyLock::new(|| {
+            env_mode(
+                "GRAPHIX_PAR",
+                &[
+                    ("off", ParMode::Off),
+                    ("auto", ParMode::Auto),
+                    ("force", ParMode::Force),
+                ],
+                ParMode::Auto,
+            )
+        });
         *MODE
     }
 }
@@ -351,12 +350,17 @@ pub enum PruneMode {
 impl PruneMode {
     /// `GRAPHIX_PRUNE` (`off`, `on` or `audit`), else `On`.
     pub fn from_env() -> Self {
-        static MODE: LazyLock<PruneMode> =
-            LazyLock::new(|| match std::env::var("GRAPHIX_PRUNE").as_deref() {
-                Ok("off") => PruneMode::Off,
-                Ok("audit") => PruneMode::Audit,
-                _ => PruneMode::On,
-            });
+        static MODE: LazyLock<PruneMode> = LazyLock::new(|| {
+            env_mode(
+                "GRAPHIX_PRUNE",
+                &[
+                    ("off", PruneMode::Off),
+                    ("on", PruneMode::On),
+                    ("audit", PruneMode::Audit),
+                ],
+                PruneMode::On,
+            )
+        });
         *MODE
     }
 }
@@ -535,17 +539,22 @@ impl Control {
     }
 
     /// [`Self::abort`], marked as `budget`'s doing unless a budget already
-    /// stopped the runtime.
-    pub fn abort_budget(&self, budget: Budget) {
+    /// stopped the runtime; whether this call was the first budget to.
+    pub fn abort_budget(&self, budget: Budget) -> bool {
         const CAUSES: u32 =
             CtlFlag::StackBudget as u32 | CtlFlag::ActivationBudget as u32;
         let cause = match budget {
             Budget::Stack => CtlFlag::StackBudget as u32,
             Budget::Activations => CtlFlag::ActivationBudget as u32,
         };
-        let _ = self.flags.fetch_update(Ordering::Release, Ordering::Acquire, |f| {
-            Some(f | CtlFlag::Abort as u32 | if f & CAUSES == 0 { cause } else { 0 })
-        });
+        let prev = self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::AcqRel);
+        prev & CAUSES == 0
+            && self
+                .flags
+                .fetch_update(Ordering::Release, Ordering::Acquire, |f| {
+                    (f & CAUSES == 0).then_some(f | cause)
+                })
+                .is_ok()
     }
 
     /// The budget that aborted this runtime, if one did.
@@ -603,13 +612,7 @@ pub fn interrupted() -> bool {
 /// enclosing runtime's is back when `f` returns or unwinds. Run it on
 /// the thread that runs the nodes, before the task can migrate.
 pub fn with_control<T>(control: &Control, f: impl FnOnce() -> T) -> T {
-    struct Restore(*const Control);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            CURRENT.with(|c| c.set(self.0));
-        }
-    }
-    let _restore = Restore(CURRENT.with(|c| c.replace(control as *const Control)));
+    let _restore = crate::Restore::replace(&CURRENT, control as *const Control);
     f()
 }
 
@@ -618,39 +621,18 @@ pub fn with_control<T>(control: &Control, f: impl FnOnce() -> T) -> T {
 pub(crate) fn current_stack_budget() -> usize {
     CURRENT.with(|c| {
         let p = c.get();
-        // SAFETY: see `graphix_interrupted`.
+        // SAFETY: see `interrupted`.
         if p.is_null() { default_budget() } else { unsafe { (*p).stack_budget() } }
     })
 }
 
-/// Abort the runtime this thread is running under (the stack budget's
-/// containment); a no-op with no runtime on this thread.
 /// Abort the running cycle's runtime by its stack budget; whether this
-/// call stopped it (a cycle runs, and nothing had aborted it yet).
-// CR claude for claude: [readability/low] This function has two doc summaries stacked
-// on each other. Keep one: it aborts the running cycle's runtime by its stack budget
-// and returns whether this call stopped it (false with no runtime on this thread). The
-// SAFETY comments here and in `current_stack_budget` say 'see `graphix_interrupted`', a
-// helper in graphix-compiler; the invariant is the one stated at `interrupted` in this
-// file, so point there. Found by reading; not run. (x-stack-04)
-// CR claude for claude: [readability/low] Two doc comments are stacked here and say
-// different things; keep the second. The SAFETY notes in this function and in
-// current_stack_budget point at `graphix_interrupted`, a JIT helper in graphix-compiler
-// with no SAFETY argument; the argument is in `interrupted` above. The
-// `budget_aborted()` read followed by `abort_budget` is a check-then-act that
-// activation_born repeats. Have abort_budget return whether this call set the cause
-// (fetch_update already has the previous flags) and use that in both places. Found by
-// reading; not run. (t-misc-03)
+/// call stopped it (false with no runtime on this thread).
 pub(crate) fn abort_current_control_budget() -> bool {
     CURRENT.with(|c| {
         let p = c.get();
-        // SAFETY: see `graphix_interrupted`.
-        !p.is_null()
-            && unsafe {
-                let first = !(*p).budget_aborted();
-                (*p).abort_budget(Budget::Stack);
-                first
-            }
+        // SAFETY: see `interrupted`.
+        !p.is_null() && unsafe { (*p).abort_budget(Budget::Stack) }
     })
 }
 

@@ -8,7 +8,7 @@ use super::{
 use crate::{
     expr::{
         Comments, Doc, Expr, ExprKind, ImplExpr, Name, StructurePattern, TraitExpr,
-        TraitMethod, WrittenPath,
+        TraitMethod,
     },
     typ::{FnArgKind, TVar, Type},
 };
@@ -20,7 +20,6 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token, value,
 };
-use netidx_core::path::Path;
 use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -129,12 +128,6 @@ where
                 sep_by1_tok(tvar_opt_bound(), csep(), token('>')),
             ),
         )),
-        // CR claude for claude: [structure/low] This position (named at_params, but it
-        // is where the trait path starts) is used to rebuild trait_at by adding each
-        // segment's length + 2, on the invariant that typath allows no space in a path.
-        // use_segment records each segment's position as parsed. Make typath return the
-        // per-segment WrittenPath with the ModPath and use it here: one way to locate
-        // path segments instead of two. Found by reading; not run. (t-parser-b-06)
         spaces().with(position()),
         typath(),
         spaces1().with(string("for")).with(spaces1()).with(typ()),
@@ -146,7 +139,7 @@ where
         position(),
     )
         .then(
-            |(params, at_params, trait_name, target, methods, end): (
+            |(params, at_params, (trait_name, trait_at), target, methods, end): (
                 Option<LPooled<Vec<(TVar, Option<LPooled<Vec<Type>>>)>>>,
                 _,
                 _,
@@ -179,17 +172,6 @@ where
                     )
                     .right();
                 }
-                // a path holds no space: each segment follows the last's `::`
-                let mut col = at_params.column;
-                let trait_at = WrittenPath(
-                    Path::parts(&trait_name.0)
-                        .map(|seg| {
-                            let at = SourcePosition { line: at_params.line, column: col };
-                            col += seg.chars().count() as i32 + 2;
-                            at
-                        })
-                        .collect(),
-                );
                 value(ImplExpr {
                     trait_name,
                     trait_at,

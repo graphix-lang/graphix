@@ -10,7 +10,10 @@ use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use quick_xml::events::{BytesStart, Event};
-use std::io::{BufReader, Cursor, Read, Seek};
+use std::{
+    io::{BufReader, Cursor, Read, Seek},
+    time::Duration,
+};
 use tokio::task;
 use triomphe::Arc as TArc;
 
@@ -20,7 +23,7 @@ fn data_to_value(cell: &Data) -> Value {
         Data::Float(f) => Value::F64(*f),
         Data::String(s) => Value::String(ArcStr::from(s.as_str())),
         Data::Bool(b) => Value::Bool(*b),
-        // CR claude for claude: [bug/medium] A duration-formatted cell ([h]:mm:ss,
+        // XCR claude for claude: [bug/medium] A duration-formatted cell ([h]:mm:ss,
         // which calamine marks with is_duration()) goes through as_datetime too. A
         // 36-hour cell reads as 1900-01-01 12:00:00 UTC instead of 36.h, even though
         // the row type admits duration. ods time values (DurationIso) come back as raw
@@ -29,6 +32,13 @@ fn data_to_value(cell: &Data) -> Value {
         // as_duration, and pin a duration cell and a date cell (no xls pin reads either
         // today). probe: design/review-2026-10-19/repro/small-pkgs-xls-duration.sh
         // (small-pkgs-04)
+        // a duration-formatted cell ([h]:mm:ss) counts days, never from an epoch
+        // 2026-10-19 claude: A duration-formatted cell reads as Value::Duration (days *
+        // 86400 s, F64 when negative or non-finite), and an ods DurationIso is parsed
+        // (iso_duration_secs: days, hours, minutes, seconds) the same way, else kept as
+        // its string. Pin: xls test::duration_cells_read_as_durations (with a date
+        // cell).
+        Data::DateTime(edt) if edt.is_duration() => duration_value(edt.as_f64() * 86400.),
         Data::DateTime(edt) => match edt.as_datetime() {
             Some(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
             None => Value::F64(edt.as_f64()),
@@ -41,10 +51,50 @@ fn data_to_value(cell: &Data) -> Value {
                 Err(_) => Value::String(ArcStr::from(s.as_str())),
             },
         },
-        Data::DurationIso(s) => Value::String(ArcStr::from(s.as_str())),
+        Data::DurationIso(s) => match iso_duration_secs(s) {
+            Some(secs) => duration_value(secs),
+            None => Value::String(ArcStr::from(s.as_str())),
+        },
         Data::Empty => Value::Null,
         Data::Error(e) => Value::String(ArcStr::from(format!("{e:?}").as_str())),
     }
+}
+
+/// `secs` seconds as a duration, or as an f64 where no duration holds
+/// them (a negative or non-finite count).
+fn duration_value(secs: f64) -> Value {
+    match Duration::try_from_secs_f64(secs) {
+        Ok(d) => Value::Duration(TArc::new(d)),
+        Err(_) => Value::F64(secs),
+    }
+}
+
+/// The seconds an ISO 8601 duration of days, hours, minutes and seconds
+/// names (`PT36H00M00S`, `-P1DT2H`), as ods writes a time value; `None`
+/// for any other form.
+fn iso_duration_secs(s: &str) -> Option<f64> {
+    let (sign, s) = match s.strip_prefix('-') {
+        Some(s) => (-1., s),
+        None => (1., s),
+    };
+    let s = s.strip_prefix('P')?;
+    let (date, time) = s.split_once('T').unwrap_or((s, ""));
+    let mut secs = 0.;
+    for (part, units) in
+        [(date, &[('D', 86400.)][..]), (time, &[('H', 3600.), ('M', 60.), ('S', 1.)][..])]
+    {
+        let mut rest = part;
+        for (unit, scale) in units {
+            if let Some((n, r)) = rest.split_once(*unit) {
+                secs += n.parse::<f64>().ok()? * scale;
+                rest = r;
+            }
+        }
+        if !rest.is_empty() {
+            return None;
+        }
+    }
+    Some(sign * secs)
 }
 
 /// The columns and rows calamine expands an ods table to at most.
@@ -90,8 +140,9 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
     let Ok(mut zip) = zip::ZipArchive::new(rs) else { return Ok(()) };
     let Ok(content) = zip.by_name("content.xml") else { return Ok(()) };
     let mut reader = quick_xml::Reader::from_reader(BufReader::new(content));
-    let mut buf: LPooled<Vec<u8>> = LPooled::take();
-    let mut table = OdsTable::default();
+    let (mut buf, mut skip): (LPooled<Vec<u8>>, LPooled<Vec<u8>>) =
+        (LPooled::take(), LPooled::take());
+    let mut table: Option<OdsTable> = None;
     let mut row: Option<OdsRow> = None;
     loop {
         let event = reader.read_event_into(&mut buf).map_err(|e| e.to_string())?;
@@ -100,8 +151,15 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
             Event::Start(e) => (e, false),
             Event::Empty(e) => (e, true),
             Event::End(e) if e.name().as_ref() == b"table:table-row" => {
-                table.end_row(row.take());
-                table.check()?;
+                if let Some(t) = &mut table {
+                    t.end_row(row.take());
+                    t.check()?;
+                }
+                buf.clear();
+                continue;
+            }
+            Event::End(e) if e.name().as_ref() == b"table:table" => {
+                table = None;
                 buf.clear();
                 continue;
             }
@@ -111,7 +169,7 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
             }
         };
         match e.name().as_ref() {
-            // CR claude for claude: [bug/high] check_ods counts XML that calamine never
+            // XCR claude for claude: [bug/high] check_ods counts XML that calamine never
             // reads. A `<table:table/>` or a `<table:table-row></table:table-row>`
             // inside a cell resets the counts here (`table` is replaced, or `row` is
             // replaced). calamine's read_row skips a cell's content with
@@ -123,8 +181,16 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
             // Add a pin with a nested table in each far row. probe:
             // design/review-2026-10-19/repro/small-pkgs-ods-nested-table.sh
             // (small-pkgs-01)
-            b"table:table" => table = OdsTable::default(),
-            b"table:table-row" => {
+            // what calamine reads: rows of the table it is in, never a table
+            // or row inside a cell, whose content it skips
+            // 2026-10-19 claude: check_ods skips a non-empty cell's content to its End
+            // as calamine does, and starts a table only at a table:table Start outside
+            // a table, ending it at the table's End. Pin: xls
+            // test::ods_counts_no_table_inside_a_cell.
+            b"table:table" if !empty && table.is_none() => {
+                table = Some(OdsTable::default())
+            }
+            b"table:table-row" if let Some(t) = &mut table => {
                 let r = OdsRow {
                     repeats: ods_count(e, b"table:number-rows-repeated")?,
                     col: 0,
@@ -132,23 +198,32 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
                     end: 0,
                 };
                 if empty {
-                    table.end_row(Some(r));
+                    t.end_row(Some(r));
                 } else {
                     row = Some(r);
                 }
             }
-            b"table:table-cell" | b"table:covered-table-cell"
-                if let Some(r) = &mut row =>
-            {
-                let repeats = ods_count(e, b"table:number-columns-repeated")?;
-                let valued = !empty
-                    || e.try_get_attribute(b"office:value-type").ok().flatten().is_some()
-                    || e.try_get_attribute(b"table:formula").ok().flatten().is_some();
-                if valued {
-                    r.first.get_or_insert(r.col);
-                    r.end = r.col.saturating_add(repeats).min(ODS_MAX_COLUMNS);
+            b"table:table-cell" | b"table:covered-table-cell" => {
+                if let Some(r) = &mut row {
+                    let repeats = ods_count(e, b"table:number-columns-repeated")?;
+                    let valued = !empty
+                        || e.try_get_attribute(b"office:value-type")
+                            .ok()
+                            .flatten()
+                            .is_some()
+                        || e.try_get_attribute(b"table:formula").ok().flatten().is_some();
+                    if valued {
+                        r.first.get_or_insert(r.col);
+                        r.end = r.col.saturating_add(repeats).min(ODS_MAX_COLUMNS);
+                    }
+                    r.col = r.col.saturating_add(repeats);
                 }
-                r.col = r.col.saturating_add(repeats);
+                if !empty {
+                    reader
+                        .read_to_end_into(e.name(), &mut skip)
+                        .map_err(|e| e.to_string())?;
+                    skip.clear();
+                }
             }
             _ => (),
         }
@@ -436,5 +511,37 @@ mod test {
         let v = parse_sheets(Cursor::new(ods(&rows)));
         let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
         assert!(format!("{e}").contains("ods table spans"), "{e}");
+    }
+
+    /// A table or row inside a cell, which calamine skips, counts for
+    /// nothing: the far rows around it are still refused (small-pkgs-01).
+    #[test]
+    fn ods_counts_no_table_inside_a_cell() {
+        let nested = r#"<table:table-cell office:value-type="string"><table:table/><table:table-row></table:table-row><text:p>x</text:p></table:table-cell>"#;
+        let row = format!(
+            r#"<table:table-row>{nested}<table:table-cell table:number-columns-repeated="16382"/>{ONE}</table:table-row>"#
+        );
+        let v = parse_sheets(Cursor::new(ods(&row.repeat(2000))));
+        let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
+        assert!(format!("{e}").contains("ods table spans"), "{e}");
+    }
+
+    /// A duration-formatted cell is a duration, an ods time value too; a
+    /// date cell stays a datetime (small-pkgs-04).
+    #[test]
+    fn duration_cells_read_as_durations() {
+        use calamine::{ExcelDateTime, ExcelDateTimeType};
+        let hours = |h: u64| Value::Duration(TArc::new(Duration::from_secs(h * 3600)));
+        let dur = ExcelDateTime::new(1.5, ExcelDateTimeType::TimeDelta, false);
+        assert_eq!(data_to_value(&Data::DateTime(dur)), hours(36));
+        let iso = Data::DurationIso("PT36H00M00S".into());
+        assert_eq!(data_to_value(&iso), hours(36));
+        let neg = Data::DurationIso("-P1DT2H".into());
+        assert_eq!(data_to_value(&neg), Value::F64(-26. * 3600.));
+        let date = ExcelDateTime::new(45943.5, ExcelDateTimeType::DateTime, false);
+        let Value::DateTime(dt) = data_to_value(&Data::DateTime(date)) else {
+            panic!("a date cell is a datetime")
+        };
+        assert_eq!(dt.to_rfc3339(), "2025-10-13T12:00:00+00:00");
     }
 }

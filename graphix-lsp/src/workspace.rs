@@ -23,6 +23,17 @@ pub enum FileKind {
     Gxi,
 }
 
+impl FileKind {
+    /// A `.gx` or a `.gxi`, by its extension.
+    pub fn of(path: &Path) -> Option<Self> {
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("gx") => Some(Self::Gx),
+            Some("gxi") => Some(Self::Gxi),
+            _ => None,
+        }
+    }
+}
+
 /// A single file in the workspace plus the names of every external
 /// module it declares (`mod foo;` lines, including those inside
 /// signatures of `.gxi` files).
@@ -70,7 +81,9 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
             !e.file_name().to_str().map(|s| SKIP_DIRS.contains(&s)).unwrap_or(false)
         }) {
             let Ok(entry) = entry else { continue };
-            // CR claude for claude: [bug/medium] A symlinked .gx is dropped here:
+            // a link to a file is the file, as the resolver reads it; a link
+            // to a directory is not descended
+            // XCR claude for claude: [bug/medium] A symlinked .gx is dropped here:
             // WalkDir does not follow links, so a symlink's file_type is not a file,
             // though the resolver reads through it. A module reached through a symlink
             // is then missing from the project graph. It is checked as a lone script,
@@ -80,16 +93,17 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
             // `std::fs::metadata(entry.path())` so saved() sees the target's changes.
             // Keep not descending symlinked directories. probe:
             // design/review-2026-10-19/repro/lsp-symlinked-module.py (lsp-02)
-            if !entry.file_type().is_file() {
+            // 2026-10-19 claude: scan takes fs::metadata (following the link) for the
+            // file test and modified; WalkDir still does not descend linked
+            // directories. Fails if undone: graphix-shell/tests/lsp
+            // a_symlinked_module_is_in_its_project.
+            let Ok(meta) = std::fs::metadata(entry.path()) else { continue };
+            if !meta.is_file() {
                 continue;
             }
-            let kind = match entry.path().extension().and_then(|s| s.to_str()) {
-                Some("gx") => FileKind::Gx,
-                Some("gxi") => FileKind::Gxi,
-                _ => continue,
-            };
+            let Some(kind) = FileKind::of(entry.path()) else { continue };
             let path = entry.path().to_path_buf();
-            let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
+            let modified = meta.modified().ok();
             let file = match known.files.get(&path) {
                 Some(f) if modified.is_some() && f.modified == modified => f.clone(),
                 Some(_) | None => {
@@ -119,7 +133,11 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
 
 /// A file's `mod` declarations and top-level symbols, from one parse;
 /// none of either when it does not parse.
-fn summarize(path: &Path, kind: FileKind, text: ArcStr) -> (Vec<ArcStr>, Arc<[Symbol]>) {
+pub(crate) fn summarize(
+    path: &Path,
+    kind: FileKind,
+    text: ArcStr,
+) -> (Vec<ArcStr>, Arc<[Symbol]>) {
     let text = parser::without_shebang(&text);
     let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
     let mut mods = Vec::new();

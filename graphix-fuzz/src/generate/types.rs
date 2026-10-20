@@ -227,7 +227,7 @@ impl Label {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-// CR claude for claude: [test-gap/medium] The only unions here are Nullable (over a
+// XCR claude for claude: [test-gap/medium] The only unions here are Nullable (over a
 // scalar) and Variant. No generated program binds, passes or stores a Result, a
 // mixed-number union, or a union of composite kinds (array, tuple, struct, list,
 // variant). That last one is what the new kind markers and select type tests over
@@ -237,6 +237,26 @@ impl Label {
 // member, and let Results sometimes reach a let or typed param before being consumed.
 // probe: design/review-2026-10-19/repro/fuzz-gen-a-composite-union.gx (a valid such
 // program; 0 Result-typed lets in 1000 generated programs) (fuzz-gen-a-02)
+// 2026-10-19 claude: Partly addressed: funcs.rs gen_shape_template now binds a union of
+// runtime forms (composite kinds, string beside a bare variant, i64 beside f64) at
+// annotated lets and reads it with one type-test arm per member (kind_union, with
+// fuzz-gen-b-01), and binds Results to a let and passes an annotated Result to a typed
+// parameter (result_lets); audit_bug_shapes_reachable pins both. Still open: a Union
+// member of GenType that flows through the vocabulary (stored, passed between generated
+// functions, read far from where it was built), so the opaque two-word kernel ABI meets
+// a union that is not consumed in place.
+// 2026-10-20 claude: GenType::Union (types.rs random_union) is now vocabulary: two to
+// four members of distinct runtime forms (one per composite kind, scalars of distinct
+// classes, one numeric or an int beside a float; 2 in 5 scalar-only, which a kernel
+// takes as an opaque Value). random_type draws it at 1/32, typed lambdas take and
+// return it (funcs.rs signature_type), every value is pinned by an annotation, and
+// patterns.rs union_select reads it with one type-test arm per member, from
+// maybe_select, try_accessor and after a union let. funcs.rs gen_union_flow builds one
+// at an annotated let, passes it through a fn that takes and returns it, stores it in a
+// struct and reads it in a second fn. Pin: audit_bug_shapes_reachable (union of runtime
+// forms through functions; fails with p_union 0). 4500 union-bearing generated programs
+// checked AGREE; gen-check 100%. Mixed composite unions have no kernel encoding and
+// de-fuse.
 pub enum GenType {
     Num(NumTy),
     Bool,
@@ -266,6 +286,10 @@ pub enum GenType {
     },
     /// An option (`[T, null]`).
     Nullable(Box<GenType>),
+    /// A union of members of distinct runtime forms ([`random_union`]),
+    /// read by one type-test arm per member. A member value is narrower
+    /// than the union, so every generated value of it is annotated.
+    Union(Vec<GenType>),
     /// A lambda with fully annotated params/return. Never produced by
     /// `random_type`; enters scope only through lambda bindings. Labeled
     /// params precede the positional ones, in definitions and calls.
@@ -335,6 +359,10 @@ impl GenType {
                 format!("Map<{}, {}>", key.render(), val.render())
             }
             GenType::Nullable(t) => format!("[{}, null]", t.render()),
+            GenType::Union(ms) => {
+                let parts: Vec<_> = ms.iter().map(|m| m.render()).collect();
+                format!("[{}]", parts.join(", "))
+            }
             GenType::Abstract { module, boxed: false } => format!("{module}::T"),
             GenType::Abstract { module, boxed: true } => format!("{module}::B<i64>"),
             GenType::Ref { inner, mutable: false } => format!("&{}", inner.render()),
@@ -371,6 +399,7 @@ impl GenType {
             GenType::Variant(ts) => {
                 ts.iter().any(|(_, args)| args.iter().any(|t| t.contains_nullable()))
             }
+            GenType::Union(ms) => ms.iter().any(|m| m.contains_nullable()),
             GenType::Array(e) | GenType::List(e) | GenType::Map { val: e, .. } => {
                 e.contains_nullable()
             }
@@ -387,13 +416,7 @@ impl GenType {
     }
 
     /// A value of this type prints the same in every engine and session:
-    /// no function and no reference (a reference prints its session id).
-    // CR claude for claude: [doc-drift/low] The doc says a reference prints its session
-    // id. It prints `&ref`, the same in every engine and session. So observe()
-    // needlessly skips the `(r, other)` and `[r, r]` bindings that gen_ref_stmts makes,
-    // and the data beside the reference is never printed. Treat Ref as printable when
-    // its inner type is, and leave functions as the only exclusion. probe:
-    // design/review-2026-10-19/repro/fuzz-gen-b-ref-prints.gx (fuzz-gen-b-08)
+    /// no function (a reference prints `&ref`).
     pub(super) fn printable(&self) -> bool {
         match self {
             GenType::Num(_)
@@ -408,11 +431,13 @@ impl GenType {
             GenType::Variant(ts) => {
                 ts.iter().all(|(_, args)| args.iter().all(|t| t.printable()))
             }
+            GenType::Union(ms) => ms.iter().all(|m| m.printable()),
             GenType::Array(e)
             | GenType::List(e)
             | GenType::Map { val: e, .. }
-            | GenType::Nullable(e) => e.printable(),
-            GenType::Ref { .. } | GenType::Fn { .. } => false,
+            | GenType::Nullable(e)
+            | GenType::Ref { inner: e, .. } => e.printable(),
+            GenType::Fn { .. } => false,
         }
     }
 
@@ -434,6 +459,7 @@ impl GenType {
             | GenType::Abstract { .. } => true,
             GenType::Variant(_)
             | GenType::Nullable(_)
+            | GenType::Union(_)
             | GenType::Ref { .. }
             | GenType::Fn { .. } => false,
             GenType::Tuple(es) => es.iter().all(|e| e.infers_exact()),
@@ -560,7 +586,50 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Variant(tags)
 }
 
-// CR claude for claude: [test-gap/medium] No generator draws a union of different
+/// A union of two to four kinds, each a runtime form of its own, so a
+/// type test tells every member apart: at most one of each composite
+/// (array, tuple, struct, list, tag union, map), scalars of distinct
+/// classes, and one numeric type or an integer beside a float. Two in
+/// five are scalars only: a kernel takes such a union as an opaque value.
+pub(super) fn random_union(rng: &mut Rng, depth: usize) -> GenType {
+    let first = if rng.below(5) < 2 { 6 } else { 0 };
+    let mut kinds: Vec<usize> = (first..12).collect();
+    rng.shuffle(&mut kinds);
+    kinds.truncate(2 + rng.below(3));
+    let mut members = Vec::new();
+    for k in kinds {
+        match k {
+            0 => members.push(GenType::Array(Box::new(random_type(rng, depth)))),
+            1 => {
+                let n = 2 + rng.below(2);
+                members.push(GenType::Tuple(
+                    (0..n).map(|_| random_type(rng, depth)).collect(),
+                ))
+            }
+            2 => members.push(random_struct(rng, depth)),
+            3 => members.push(GenType::List(Box::new(random_type(rng, depth)))),
+            4 => members.push(random_variant(rng, depth)),
+            5 => members.push(GenType::Map {
+                key: Box::new(map_key(rng)),
+                val: Box::new(random_type(rng, depth)),
+            }),
+            6 => members.push(GenType::Str),
+            7 => members.push(GenType::Bool),
+            8 => members.push(GenType::Dur),
+            9 => members.push(GenType::Time),
+            10 => members.push(GenType::Bytes),
+            _ if rng.below(4) == 0 => {
+                const INTS: &[NumTy] = &[NumTy::I32, NumTy::I64, NumTy::U8, NumTy::U64];
+                members.push(GenType::Num(*rng.pick(INTS)));
+                members.push(GenType::Num(*rng.pick(&[NumTy::F32, NumTy::F64])));
+            }
+            _ => members.push(numeric_type(rng)),
+        }
+    }
+    GenType::Union(members)
+}
+
+// XCR claude for claude: [test-gap/medium] No generator draws a union of different
 // composite kinds (array, tuple, List, struct, variant, string beside a bare variant)
 // or a type-test arm over one. The only unions are Nullable(scalar), tag unions and the
 // two shape templates, so the kind-marker runtime forms (rep.rs, Type::rep_collision)
@@ -569,9 +638,18 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
 // arm per member, as in the probe. probe:
 // design/review-2026-10-19/repro/fuzz-gen-b-kind-union-gap.sh (0 composite type tests
 // in 6000 programs); fuzz-gen-b-kind-union-probe.gx agrees and fuses. (fuzz-gen-b-01)
+// 2026-10-19 claude: funcs.rs gen_shape_template now draws kind_union: a union of two
+// to nine members of distinct runtime forms (Array, tuple, List, struct, payload and
+// bare variants, string, i64, f64) annotated at two lets, read by one type-test arm per
+// member, compared with == and used as map keys. Pinned by the
+// audit_bug_shapes_reachable stat (union of runtime forms); generated samples agree
+// under check.
 pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);
+    }
+    if rng.below(32) == 0 {
+        return random_union(rng, depth - 1);
     }
     match rng.below(13) {
         12 => rng.pick(&[GenType::Dur, GenType::Time, GenType::Bytes]).clone(),
@@ -593,6 +671,11 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
         10 => GenType::List(Box::new(random_type(rng, depth - 1))),
         _ => GenType::Array(Box::new(random_type(rng, depth - 1))),
     }
+}
+
+/// `v` with exactly the type `ty`, which may be wider than `v`'s own.
+pub(super) fn pin_to(ty: &GenType, v: &str) -> String {
+    format!("{{ let mt: {} = {v}; mt }}", ty.render())
 }
 
 pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
@@ -673,6 +756,10 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
             } else {
                 literal(rng, t)
             }
+        }
+        GenType::Union(ms) => {
+            let m = rng.pick(ms);
+            pin_to(ty, &literal(rng, m))
         }
         // a ref to a literal
         GenType::Ref { inner, mutable: false } => format!("&{}", literal(rng, inner)),

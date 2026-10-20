@@ -4,7 +4,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -16,10 +16,7 @@ const TAIL_RECURSIVE_OK: &str = r#"
 }
 "#;
 
-run!(tail_recursive_ok, TAIL_RECURSIVE_OK, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(55))
-));
+run!(tail_recursive_ok, TAIL_RECURSIVE_OK, is(Value::I64(55)));
 
 // fib recurses through `+` — non-tail on both self-calls.
 const TAIL_RECURSIVE_NON_TAIL: &str = r#"
@@ -94,7 +91,7 @@ const SYNC_OK: &str = r#"
 }
 "#;
 
-run!(sync_ok, SYNC_OK, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
+run!(sync_ok, SYNC_OK, is(Value::I64(42)));
 
 // Parentheses around the lambda do not hide it from the assertion.
 const SYNC_PARENS: &str = r#"
@@ -105,7 +102,7 @@ const SYNC_PARENS: &str = r#"
 }
 "#;
 
-run!(sync_parens, SYNC_PARENS, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
+run!(sync_parens, SYNC_PARENS, is(Value::I64(42)));
 
 // ... nor from the check: parentheses around an async body still fail.
 const SYNC_PARENS_ON_ASYNC: &str = r#"
@@ -226,7 +223,7 @@ const ASYNC_ON_DYNAMIC_MODULE: &str = r#"
 }
 "#;
 
-run!(async_on_dynamic_module, ASYNC_ON_DYNAMIC_MODULE, |v: Result<&Value>| matches!(v, Ok(Value::I64(43))); FuseExpect::Jit);
+run!(async_on_dynamic_module, ASYNC_ON_DYNAMIC_MODULE, is(Value::I64(43)); FuseExpect::Jit);
 
 const ASYNC_OK: &str = r#"
 {
@@ -236,7 +233,7 @@ const ASYNC_OK: &str = r#"
 }
 "#;
 
-run!(async_ok, ASYNC_OK, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::None);
+run!(async_ok, ASYNC_OK, is(Value::I64(5)); FuseExpect::None);
 
 const ASYNC_ON_SYNC: &str = r#"
 {
@@ -304,7 +301,7 @@ const TAIL_RECURSIVE_PURE_INSTANCES: &str = r#"
 run!(
     tail_recursive_pure_instances,
     TAIL_RECURSIVE_PURE_INSTANCES,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:6, i64:12]"; FuseExpect::Jit);
+    prints("[i64:6, i64:12]"); FuseExpect::Jit);
 
 // A labeled formal keeps the self-call off the loop, so the recursion
 // is not constant-space although every self-call is in tail position.
@@ -342,3 +339,17 @@ const SYNC_ON_ASYNC_LITERAL_CALL: &str = r#"
 "#;
 
 run!(sync_on_async_literal_call, SYNC_ON_ASYNC_LITERAL_CALL, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
+// A literal an instance defines keeps the enclosing parameters it calls:
+// a builtin handed `|x| f(x)` is judged with the instance's `f`.
+const CAPTURED_PARAM_CALL: &str = r#"
+{
+  let g = |v: i64, f: fn(x: i64) -> bool| filter(v, |x| f(x));
+  #[ATTR]
+  let h = |v: i64| g(v, |x| sys::time::after_idle(duration:1.ms, x) > 0);
+  h(1)
+}
+"#;
+
+run!(captured_param_call_sync_refused, &CAPTURED_PARAM_CALL.replace("ATTR", "sync"), refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+run!(captured_param_call_async_accepted, &CAPTURED_PARAM_CALL.replace("ATTR", "async"), |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);

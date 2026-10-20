@@ -25,7 +25,7 @@ pub(super) struct ParagraphW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> ParagraphW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, source: Value) -> Result<TuiW> {
-        Ok(Box::new(Self(Props::compile(&gx, &source).await.context("paragraph")?)))
+        Ok(TuiW::new(Self(Props::compile(&gx, &source).await.context("paragraph")?)))
     }
 }
 

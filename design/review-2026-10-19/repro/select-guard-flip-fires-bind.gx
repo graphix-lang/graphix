@@ -1,0 +1,17 @@
+// Title: a guard flip moves the select to another arm, and that arm's
+//   pattern bind fires though the scrutinee did not.
+// Command: graphix --no-cache select-guard-flip-fires-bind.gx (same with --no-fusion)
+// Expected (if a pattern bind is a facet of its scrutinee's delivery, as
+//   CLAUDE.md "Wake catch-up" says): out goes 1 and stays 1 when only
+//   `limit` changes.
+// Observed: out goes 1, then 100 at the limit's write (both engines).
+// Found by the GUI/TUI CR-fix agent in tui::browser (a window shrink re-ran
+// the last Down key).
+let limit = 10;
+let n: i64 = never();
+let out = 0;
+let s = select n ~ 5 { x if x >= limit => out <- x ~ 100, e => out <- e ~ 1 };
+n <- sys::time::after_idle(duration:100.ms, 1);
+limit <- sys::time::after_idle(duration:300.ms, 2);
+sys::exit(sys::time::after_idle(duration:600.ms, 0));
+out

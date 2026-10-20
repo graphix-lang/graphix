@@ -33,13 +33,7 @@ pub struct Document {
     /// under it.
     pub uri: Uri,
     pub version: i32,
-    // CR claude for claude: [perf/low] An open buffer is immutable and shared by the
-    // overrides, the symbol parses and parse_interface, yet it is a String copied into
-    // a fresh ArcStr on every didChange (set_document) and again on every
-    // documentSymbol/workspace symbol request. Make it an ArcStr converted once in
-    // set_document, and hand clones to the overrides and the parses. Found by reading;
-    // not run. (lsp-06)
-    pub text: String,
+    pub text: ArcStr,
 }
 
 /// A successful check of one root: the environment it left and every
@@ -174,7 +168,7 @@ impl ServerState {
         self.documents.keys().flat_map(|p| self.roots_of(p)).collect()
     }
 
-    // CR claude for claude: [bug/medium] Opening a document can change the roots of
+    // XCR claude for claude: [bug/medium] Opening a document can change the roots of
     // another one: opening an unsaved `api.gx` moves `api.gxi` off its lone-interface
     // root. This function never retires the old root, so its last error stays published
     // on `api.gxi` after the interface is fixed, through every later edit. Closing an
@@ -183,7 +177,12 @@ impl ServerState {
     // `retire()`, and return its Diagnostics here as close_document does. probe:
     // design/review-2026-10-19/repro/x-lsp-probe-lone-gxi-stale-error.py
     // (x-lsp-probe-02)
-    // CR claude for claude: [bug/medium] Opening a `.gx` changes which roots are live:
+    // 2026-10-19 claude: set_document returns retire(), which didOpen/didChange
+    // publish; retire now also dirties every live root missing from roots, so a lone
+    // .gxi root that becomes live again on close is checked. Fails if undone:
+    // graphix-shell/tests/lsp opening_an_implementation_retires_its_interface_root (its
+    // last assert for the close half).
+    // XCR claude for claude: [bug/medium] Opening a `.gx` changes which roots are live:
     // roots_of makes an open `.gxi` a root of its own only while its `.gx` is unknown,
     // and an open document makes it known. But set_document never calls retire(). The
     // lone-interface root lives on with its error, and fixing the interface in the
@@ -191,13 +190,19 @@ impl ServerState {
     // until a save. Fix: return `self.retire()` from didOpen/didChange as didClose
     // already does, and pin the sequence in graphix-shell/tests/lsp. probe:
     // design/review-2026-10-19/repro/lsp-stale-interface-root.py (lsp-01)
-    pub fn set_document(&mut self, uri: Uri, text: String, version: i32) {
+    // 2026-10-19 claude: Same change as x-lsp-probe-02: set_document returns retire()
+    // and the server publishes it. Fails if undone: graphix-shell/tests/lsp
+    // opening_an_implementation_retires_its_interface_root.
+    /// Open or change a document: its roots are checked again, and the
+    /// roots it moved another file off are retired.
+    pub fn set_document(&mut self, uri: Uri, text: String, version: i32) -> Diagnostics {
         self.last_active = Some(uri.clone());
-        let Some(path) = uri_to_path(&uri) else { return };
-        let buffer = ArcStr::from(text.as_str());
-        self.backend.buffer_overrides().lock().insert(path.clone(), buffer);
+        let Some(path) = uri_to_path(&uri) else { return vec![] };
+        let text = ArcStr::from(text);
+        self.backend.buffer_overrides().lock().insert(path.clone(), text.clone());
         self.dirty.extend(self.roots_of(&path));
         self.documents.insert(path, Document { uri, version, text });
+        self.retire()
     }
 
     /// Stop tracking a document: the roots it kept are checked again or,
@@ -253,10 +258,12 @@ impl ServerState {
     }
 
     /// Forget every root no open document is checked under, and publish
-    /// what that leaves on its files.
+    /// what that leaves on its files; a root that is live and was never
+    /// checked is checked.
     fn retire(&mut self) -> Diagnostics {
         let live = self.live();
         self.dirty.retain(|r| live.contains(r));
+        self.dirty.extend(live.iter().filter(|r| !self.roots.contains_key(*r)).cloned());
         let gone: Vec<PathBuf> =
             self.roots.keys().filter(|r| !live.contains(*r)).cloned().collect();
         let mut files = AHashSet::default();
@@ -313,7 +320,7 @@ impl ServerState {
     /// Parse the interface `path`, its buffer when it is open.
     fn parse_interface(&self, path: &Path) -> anyhow::Result<()> {
         let text = match self.documents.get(path) {
-            Some(doc) => ArcStr::from(doc.text.as_str()),
+            Some(doc) => doc.text.clone(),
             None => ArcStr::from(std::fs::read_to_string(path)?),
         };
         let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };

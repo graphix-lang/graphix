@@ -210,6 +210,22 @@ fn check_invariants(c: &Crate) {
     if c.name != "core" && !c.runtime().any(|d| d.name == "core") {
         panic!("graphix packages must depend on graphix-package-core")
     }
+    let build = match c.doc.get("package").and_then(|p| p.get("build")) {
+        None => c.root.join("build.rs").exists(),
+        Some(b) => b.as_bool() != Some(false),
+    };
+    let packer = c
+        .doc
+        .get("build-dependencies")
+        .and_then(|b| b.as_table_like())
+        .is_some_and(|b| b.contains_key("graphix-ast-pack"));
+    if !build || !packer {
+        panic!(
+            "graphix packages must pack their graphix source at build time: add a \
+             build.rs whose main calls graphix_ast_pack::emit(), and graphix-ast-pack \
+             under [build-dependencies]"
+        )
+    }
 }
 
 fn package_crate_ident(short: &str) -> syn::Ident {

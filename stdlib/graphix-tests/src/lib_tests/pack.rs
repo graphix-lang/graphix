@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, prints},
+};
 use netidx::subscriber::Value;
 
 // A `bytes` literal bound to a let-local and returned as a Value.
@@ -10,6 +13,17 @@ run!(bytes_const_local, r#"{ let x = bytes:SGVsbG8=; x }"#, |v: Result<&Value>| 
 run!(pack_i64, r#"{let v: i64 = pack::read(pack::write_bytes(42)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 }; FuseExpect::None);
+
+// Bytes left after the value are refused, as json and toml refuse
+// trailing input (small-pkgs-05).
+run!(pack_refuses_trailing_bytes, r#"{
+    let a: Result<i64, [`PackErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array(
+        [u8:6, u8:0, u8:0, u8:0, u8:0, u8:0, u8:0, u8:0, u8:42, u8:99, u8:99, u8:99]
+    ));
+    select a { error as e => "[e]", v => "[v]" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:`PackErr("3 bytes follow the value")"#)
+}; FuseExpect::Jit);
 
 run!(pack_f64, r#"{let v: f64 = pack::read(pack::write_bytes(3.14)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
@@ -45,9 +59,7 @@ run!(pack_struct, r#"{
     type S = {x: i64, y: string};
     let obj: S = pack::read(pack::write_bytes({x: 42, y: "hi"})$)?;
     obj
-}"#, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[["x", i64:42], ["y", "hi"]]"#
-}; FuseExpect::None);
+}"#, prints(r#"[["x", i64:42], ["y", "hi"]]"#); FuseExpect::None);
 
 run!(pack_bytes, r#"{
     let b = buffer::from_string("abc");

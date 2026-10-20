@@ -7,7 +7,6 @@ use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::{
-    abstract_value::to_data,
     env::Env,
     errf,
     typ::{FnType, Type},
@@ -76,24 +75,19 @@ fn to_toml(
     value: &Value,
     depth: usize,
 ) -> Result<toml::Value, String> {
-    // CR claude for claude: [bug/low] The bound also counts the leaf, so a table
-    // holding 80 nested arrays is refused on write while toml::read reads it (the
-    // reader first refuses at 81). The MAX_DEPTH doc promises the two agree. Check
-    // depth only for Object/Seq shapes, and add the pin JSON has
-    // (the_deepest_written_value_reads_back) for TOML. probe:
-    // design/review-2026-10-19/repro/small-pkgs-toml-depth-off-by-one.gx
-    // (small-pkgs-06)
-    if depth > MAX_DEPTH {
-        return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
-    }
-    match shape(env, typ, value) {
+    let deeper = |depth: usize| match depth <= MAX_DEPTH {
+        true => Ok(depth + 1),
+        false => Err(format!("the value nests deeper than {MAX_DEPTH} levels")),
+    };
+    match shape(env, typ, value).map_err(|e| format!("{e}"))? {
         Shape::Object(mut entries, keys) => {
+            let depth = deeper(depth)?;
             let mut table = toml::map::Map::new();
             // TOML has no null: a null field is a key left out, which a
             // cast reads back as null; a map's null value is refused
             let field_null = |v: &Value| keys == Keys::Fields && *v == Value::Null;
             for (k, v, t) in entries.drain(..).filter(|(_, v, _)| !field_null(v)) {
-                let v = to_toml(env, t.as_ref(), &v, depth + 1)?;
+                let v = to_toml(env, t.as_ref(), &v, depth)?;
                 // two keys may print alike (`1` and `"1"`): never one for two
                 if table.insert(k.to_string(), v).is_some() {
                     return Err(format!("two keys write as the same TOML key {k}"));
@@ -102,13 +96,14 @@ fn to_toml(
             Ok(toml::Value::Table(table))
         }
         Shape::Seq(mut elems) => {
+            let depth = deeper(depth)?;
             let mut vals: LPooled<Vec<toml::Value>> = elems
                 .drain(..)
-                .map(|(v, t)| to_toml(env, t.as_ref(), &v, depth + 1))
+                .map(|(v, t)| to_toml(env, t.as_ref(), &v, depth))
                 .collect::<Result<_, _>>()?;
             Ok(toml::Value::Array(vals.drain(..).collect()))
         }
-        Shape::Leaf => leaf_to_toml(value),
+        Shape::Leaf(v) => leaf_to_toml(&v),
     }
 }
 
@@ -187,11 +182,8 @@ type TomlRead = CachedArgsAsync<TypedRead<Toml>>;
 /// site says, or the error to answer with.
 fn encode(env: &Env, ft: &FnType, args: &[Value]) -> Option<Result<String, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let data = match to_data(args.get(1)?) {
-        Ok(d) => d,
-        Err(e) => return Some(Err(errf!("TomlErr", "{e}"))),
-    };
-    let toml_val = match value_to_toml(env, ft.args.get(1).map(|a| &a.typ), &data) {
+    let toml_val = match value_to_toml(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?)
+    {
         Ok(t) => t,
         Err(e) => return Some(Err(errf!("TomlErr", "{e}"))),
     };

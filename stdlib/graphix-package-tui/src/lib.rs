@@ -33,7 +33,8 @@ use graphix_package::{CustomDisplay, Stop};
 use graphix_package_core::{
     CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState, seam_tick,
 };
-use graphix_rt::{CompExp, GXExt, GXHandle, TRef};
+use graphix_rt::{CompExp, GXExt, GXHandle, TRef, reconcile};
+use graphix_types::stack::ensure_sufficient;
 use input_handler::{InputHandlerW, event_to_value};
 use layout::LayoutW;
 use line_gauge::LineGaugeW;
@@ -44,7 +45,6 @@ use netidx_core::pack::PackError;
 use netidx_derive::{FromValue, IntoValue};
 use paragraph::ParagraphW;
 use parking_lot::Mutex;
-use poolshark::local::LPooled;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Direction, Flex, Rect},
@@ -54,15 +54,16 @@ use ratatui::{
     widgets::TitlePosition,
 };
 use scrollbar::ScrollbarW;
-use smallvec::SmallVec;
 use sparkline::SparklineW;
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     fmt,
     future::Future,
     marker::PhantomData,
-    pin::Pin,
+    pin::{Pin, pin},
     sync::atomic::{AtomicBool, Ordering},
+    task::Poll,
     time::Duration,
 };
 use text::TextW;
@@ -70,7 +71,7 @@ use tokio::{
     select,
     sync::oneshot,
     task,
-    time::{MissedTickBehavior, interval},
+    time::{Interval, MissedTickBehavior, interval},
 };
 use triomphe::Arc;
 use validate::{Byte, Offset};
@@ -304,24 +305,18 @@ struct ScrollV {
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct PointV(f64, f64);
 
-/// An axis range; a bound that is not a number is read as the empty
-/// range, which draws nothing (ratatui paints a NaN at the edge).
+/// An axis range; one ratatui cannot scale onto the screen (a bound
+/// that is not a number, or a span that overflows times the dots of the
+/// widest screen) is read as the empty range, which draws nothing.
 #[derive(Clone, Copy)]
 struct BoundsV {
     max: f64,
     min: f64,
 }
 
-// CR claude for claude: [bug/medium] Finite bounds whose span overflows when ratatui
-// scales it crash the display. Painter::get_point computes (x - left) * (res - 1) /
-// width; with bounds {min: 0.0, max: 1e308} that is inf, cast to usize::MAX, and the
-// HalfBlock grid indexes pixels[y][x] directly: index out of bounds, release builds
-// too. A canvas `Label at the same x underflows `canvas_area.right() - x` (debug).
-// Chart axes reach the same path. Read bounds whose span cannot be scaled as the empty
-// range, as non-finite bounds already are: require ((max - min) *
-// 262144.0).is_finite(), which covers u16::MAX cells times 4 dots. Every coordinate
-// get_point or the label pass scales then stays in range. probe:
-// design/review-2026-10-19/repro/tui-widgets-canvas-huge-bounds.gx (tui-widgets-01)
+/// The most dots an axis can have: `u16::MAX` cells times four.
+const MAX_AXIS_DOTS: f64 = 262144.;
+
 impl FromValue for BoundsV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
@@ -331,10 +326,10 @@ impl FromValue for BoundsV {
             min: f64,
         }
         let Fields { max, min } = v.cast_to()?;
-        if max.is_finite() && min.is_finite() {
+        if ((max - min) * MAX_AXIS_DOTS).is_finite() {
             Ok(Self { max, min })
         } else {
-            log::warn!("bounds [{min}, {max}] are not numbers; drawing nothing");
+            log::warn!("bounds [{min}, {max}] cannot be scaled; drawing nothing");
             Ok(Self { max: 0., min: 0. })
         }
     }
@@ -476,22 +471,19 @@ fn update_children<'a>(
 ) -> Result<PendingUpdate<'a>> {
     while let Some(child) = children.next() {
         if let Some(pending) = child.handle_update(id, v)? {
-            return Ok(Some(Box::pin(async move {
+            return Ok(Some(Box::pin(StackGuarded(async move {
                 pending.await?;
                 for child in children {
                     finish_update(child.handle_update(id, v)?).await?;
                 }
                 Ok(())
-            })));
+            }))));
         }
     }
     Ok(None)
 }
 
-type TuiW = Box<dyn TuiWidget + Send + Sync + 'static>;
-type CompRes = Pin<Box<dyn Future<Output = Result<TuiW>> + Send + Sync + 'static>>;
-
-// CR claude for claude: [bug/medium] A widget tree nested about 135 deep (debug build)
+// XCR claude for claude: [bug/medium] A widget tree nested about 135 deep (debug build)
 // overflows the tokio worker's stack, and the process dies with SIGSEGV. The cause is
 // that `compile` -> `ChildW::compile` -> `compile` is an async recursion whose polls
 // nest, two frames a level, with no stack guard, and `TuiWidget::draw`/`handle_update`
@@ -501,8 +493,58 @@ type CompRes = Pin<Box<dyn Future<Output = Result<TuiW>> + Send + Sync + 'static
 // fixed depth with an error. The gui's `widgets::compile`/`Child::compile` has the same
 // shape (found by reading). probe:
 // design/review-2026-10-19/repro/x-stack-tui-deep-widget.gx (x-stack-01)
+// 2026-10-19 claude: TuiW is now a newtype whose draw, handle_update and handle_event
+// run under graphix_types::stack::ensure_sufficient, and compile's future and
+// update_children's pending future are polled through StackGuarded, which guards each
+// poll. The tui crate takes graphix-types as a dependency for it. Pin:
+// panic_test::a_deep_widget_tree_compiles_and_draws (1000 nested blocks). The GUI's
+// widgets::compile/Child::compile is not changed: iced's own layout and draw recurse
+// through the tree too, so a guard on our side alone would not make a deep GUI tree
+// safe.
+/// A widget in a tree as deep as the program builds it: every walk into
+/// one runs with a guaranteed stack.
+struct TuiW(Box<dyn TuiWidget + Send + Sync + 'static>);
+
+impl TuiW {
+    fn new(w: impl TuiWidget + Send + Sync + 'static) -> Self {
+        Self(Box::new(w))
+    }
+
+    async fn handle_event(&mut self, v: Value) -> Result<()> {
+        StackGuarded(self.0.handle_event(v)).await
+    }
+
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<PendingUpdate<'a>> {
+        ensure_sufficient(|| self.0.handle_update(id, v))
+    }
+
+    fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
+        ensure_sufficient(|| self.0.draw(frame, rect))
+    }
+}
+
+/// A future whose polls run with a guaranteed stack: an async walk of a
+/// widget tree nests a poll for every level.
+struct StackGuarded<F>(F);
+
+impl<F: Future> Future for StackGuarded<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<F::Output> {
+        // The inner future is pinned with self and never moved out.
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        ensure_sufficient(|| inner.poll(cx))
+    }
+}
+
+type CompRes = Pin<Box<dyn Future<Output = Result<TuiW>> + Send + Sync + 'static>>;
+
 fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompRes {
-    Box::pin(async move {
+    Box::pin(StackGuarded(async move {
         let Some((s, [v])) = rep::variant(&source) else {
             bail!("invalid widget {source}")
         };
@@ -527,7 +569,7 @@ fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompRes {
             "InputHandler" => InputHandlerW::compile(gx, v).await,
             s => bail!("invalid widget type `{s}({})", graphix_compiler::typ::Naked(&v)),
         }
-    })
+    }))
 }
 
 struct EmptyW;
@@ -559,7 +601,7 @@ impl<X: GXExt> ChildW<X> {
         let r = gx.compile_field(v, name).await?;
         let w = match r.last.clone() {
             Some(v) => compile(gx.clone(), v).await.context("child")?,
-            None => Box::new(EmptyW),
+            None => TuiW::new(EmptyW),
         };
         Ok(Self { r, w })
     }
@@ -583,62 +625,6 @@ impl<X: GXExt> ChildW<X> {
             self.w.handle_update(id, v)
         }
     }
-}
-
-/// `f` over each element of the array `v`, together.
-// CR claude for claude: [perf/medium] This recompiles every element each time the
-// caller's list ref fires, and a ref fires on every production, whether or not the
-// value changed. `TableW::set_rows` uses it for `&Array<&Row>`: the browser's `rows =
-// array::map(cells, |row| &tui::table::row(..))` fires whenever any visible cell
-// changes. Each live update then recompiles every visible row ref: one runtime round
-// trip, one node created and one deleted per row. Chart datasets, bar-chart groups and
-// canvas shapes go through here too. `reconcile` below already keeps the elements whose
-// source value is unchanged. Move these callers to it (they would hold `Vec<(Value,
-// T)>`) and delete this helper. Found by reading; not run. (tui-core-04)
-async fn compile_each<T, F: Future<Output = Result<T>>>(
-    v: Value,
-    f: impl FnMut(Value) -> F,
-) -> Result<Vec<T>> {
-    futures::future::try_join_all(v.cast_to::<SmallVec<[Value; 8]>>()?.into_iter().map(f))
-        .await
-}
-
-/// Make `items` follow `sources`, keeping each item whose source is
-/// unchanged and compiling the others together.
-// CR claude for claude: [structure/medium] [structure] This is a second implementation
-// of the GUI's widgets::reconcile, with a weaker rule. It keeps a child only when the
-// value at the same index is unchanged. The GUI's keep_equal keeps any child whose
-// value is still in the list, wherever it moved. So inserting a layout/overlay/tabs
-// child at the front recompiles every later child: their refs are rebuilt, and
-// Rust-side widget state such as a list's ListState offset is lost. The GUI keeps those
-// children. Move keep_equal + reconcile into graphix-rt (both packages depend on it
-// already) and delete this copy. Found by reading; not run. (x-dup-01)
-async fn reconcile<T, F: Future<Output = Result<T>>>(
-    items: &mut Vec<(Value, T)>,
-    sources: impl IntoIterator<Item = Value>,
-    mut compile: impl FnMut(Value) -> F,
-) -> Result<()> {
-    let mut len = 0;
-    let mut changed: LPooled<Vec<(usize, Value)>> = LPooled::take();
-    for (i, source) in sources.into_iter().enumerate() {
-        len = i + 1;
-        if items.get(i).is_none_or(|(old, _)| *old != source) {
-            changed.push((i, source));
-        }
-    }
-    let built = futures::future::try_join_all(changed.drain(..).map(|(i, source)| {
-        let t = compile(source.clone());
-        async move { Ok::<_, anyhow::Error>((i, source, t.await?)) }
-    }))
-    .await?;
-    items.truncate(len);
-    for (i, source, t) in built {
-        match items.get_mut(i) {
-            Some(slot) => *slot = (source, t),
-            None => items.push((source, t)),
-        }
-    }
-    Ok(())
 }
 
 /// Where a widget tells the program the size its content draws in: the
@@ -1012,7 +998,7 @@ impl<X: GXExt> Screen<X> {
         Ok(Self {
             gx,
             root_id,
-            root: Box::new(EmptyW),
+            root: TuiW::new(EmptyW),
             source: None,
             size: get_id(env, &["tui", "size"].into())?,
             event: get_id(env, &["tui", "event"].into())?,
@@ -1175,6 +1161,30 @@ impl Term {
             }
         }
     }
+
+    /// Run `work` to its end while reading the terminal, so a Ctrl-C is
+    /// read even while the work waits on a busy runtime; `None` when one
+    /// was, and the work is dropped. Other events wait in `pending`.
+    async fn reading<T>(
+        &mut self,
+        work: impl Future<Output = T>,
+        liveness: &mut Interval,
+        pending: &mut VecDeque<Event>,
+    ) -> Result<Option<T>> {
+        let Term::Live(live) = self else { return Ok(Some(work.await)) };
+        let mut work = pin!(work);
+        loop {
+            select! {
+                r = &mut work => break Ok(Some(r)),
+                _ = liveness.tick() => terminal_connected()?,
+                e = live.events.select_next_some() => match e {
+                    Ok(e) if is_ctrl_c(&e) => break Ok(None),
+                    Ok(e) => pending.push_back(e),
+                    Err(e) => bail!("reading the terminal: {e}"),
+                },
+            }
+        }
+    }
 }
 
 struct SuspendReceiver<'a> {
@@ -1244,6 +1254,7 @@ async fn display<X: GXExt>(
     let mut updated = false;
     let mut liveness = interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut pending = VecDeque::new();
     loop {
         if let Term::Live(live) = &mut term {
             dirty |= live.recover(mouse.t == Some(true))?;
@@ -1256,6 +1267,15 @@ async fn display<X: GXExt>(
                     error!("error drawing {e:?}")
                 }
             })?;
+        }
+        if let Some(e) = pending.pop_front() {
+            dirty |= matches!(e, Event::Resize(..));
+            match term.reading(screen.event(&e), &mut liveness, &mut pending).await? {
+                Some(Ok(true)) => (),
+                Some(Ok(false)) | None => control.finish(Ok(())),
+                Some(Err(e)) => error!("error handling event {e:?}"),
+            }
+            continue;
         }
         select! {
             _ = liveness.tick() => terminal_connected()?,
@@ -1270,7 +1290,7 @@ async fn display<X: GXExt>(
                     {
                         set_mouse(*v)
                     }
-                    // CR claude for claude: [bug/high] This arm awaits the widget
+                    // XCR claude for claude: [bug/high] This arm awaits the widget
                     // rebuild, which makes compile round trips to the runtime, and the
                     // loop reads no terminal input until it returns. If the runtime is
                     // busy in the cycle after the rebuild (a long or non-terminating
@@ -1285,8 +1305,17 @@ async fn display<X: GXExt>(
                     // design/review-2026-10-19/repro/tui-core-ctrl-c-unread-during-rebuild.gx
                     // (still running 15 s after the Ctrl-C; without the rebuild it
                     // exits 130 at once). (tui-core-02)
-                    if let Err(e) = screen.update(id, v).await {
-                        error!("error handling update {e:?}")
+                    // 2026-10-19 claude: Term::reading drives the update (and a dispatched
+                    // event) together with the terminal and the liveness tick; a Ctrl-C ends
+                    // the wait (the work is dropped) and finishes the display, other events
+                    // queue in pending and are dispatched in order from the top of the loop.
+                    // Pin: terminal_test::ctrl_c_is_read_while_work_waits (a PTY child;
+                    // in_child now types bytes once the child is raw). The repro now exits
+                    // 130 at the Ctrl-C.
+                    match term.reading(screen.update(id, v), &mut liveness, &mut pending).await? {
+                        Some(Ok(())) => (),
+                        Some(Err(e)) => error!("error handling update {e:?}"),
+                        None => control.finish(Ok(())),
                     }
                 },
             },
@@ -1305,14 +1334,7 @@ async fn display<X: GXExt>(
                     screen.resize(SizeV::from_terminal()?)?;
                     dirty = true;
                 },
-                Some(Ok(e)) => {
-                    dirty |= matches!(e, Event::Resize(..));
-                    match screen.event(&e).await {
-                        Ok(true) => (),
-                        Ok(false) => control.finish(Ok(())),
-                        Err(e) => error!("error handling event {e:?}"),
-                    }
-                },
+                Some(Ok(e)) => pending.push_back(e),
                 Some(Err(e)) => bail!("reading the terminal: {e}"),
             }
         }

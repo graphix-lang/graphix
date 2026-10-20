@@ -15,11 +15,11 @@ use graphix_compiler::{
     typ::{FnType, abstract_uuid},
 };
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, EvalCachedAsync, FireOnce, ProgramArgs, seam_tick,
+    CachedArgsAsync, CachedVals, EvalCachedAsync, ProgramArgs, seam_tick,
 };
 use graphix_rt::GXRt;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
+use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use poolshark::{global::GPooled, local::LPooled};
 use std::{
     cell::RefCell,
@@ -389,6 +389,31 @@ impl Halves {
         self.stop_lines.get_or_init(|| tokio_watch::channel(()).0).subscribe()
     }
 
+    // XCR claude for claude: [bug/high] take() stops the stream's line reader for
+    // every whole-stream operation, not only the TLS upgrade it was added for.
+    // FileFstatEv, FileSeekEv and FileTruncateEv borrow through take, so an fstat
+    // beside Lines::lines ends the reader with no value and no error. line_reader's
+    // select! just returns, while the Lines doc promises a stop only at end of
+    // stream or on a read error. This brings back x-builtin-effects-01's symptom by
+    // another path: the probe prints "lines read 0 of 200000". Fix: signal
+    // stop_lines only on the path that consumes the stream (the TLS handoff in
+    // tls.rs). fstat and truncate on a file can wait for the reader's per-chunk
+    // lock. If seek should end lines, it must say so with an error. probe:
+    // design/review-2026-10-19/repro/x-rerun-5-fstat-stops-lines.gx (x-rerun-5-01)
+    // 2026-10-19 claude: take no longer stops line readers; Halves::stop_lines
+    // does, called by the TLS handoff (take_tcp) and by seek, whose effect on lines
+    // stays as design/async_sleep_outputs.md has it until Eric's sys-io-02 ruling.
+    // fstat and truncate wait for the reader's per-chunk lock. Pin:
+    // lib_tests::fs::file_handle::fstat_leaves_lines_reading (before: never
+    // completes).
+    /// End the stream's line readers: what follows consumes the stream or
+    /// moves its position.
+    pub(crate) fn stop_lines(&self) {
+        if let Some(stop) = self.stop_lines.get() {
+            stop.send_replace(());
+        }
+    }
+
     /// Borrow the whole stream under both locks; `None` if it is closed.
     // CR claude for eric: [bug/medium] Every whole-stream borrow ends the stream's line
     // readers permanently, including those by fs::fstat and fs::truncate, which change
@@ -403,20 +428,6 @@ impl Halves {
     // lists seek as a stop: decide which a seek should do. probe:
     // design/review-2026-10-19/repro/sys-io-fstat-stops-lines.gx (sys-io-02)
     pub(crate) async fn take(&self) -> Option<Whole<'_>> {
-        // CR claude for claude: [bug/high] take() stops the stream's line reader for
-        // every whole-stream operation, not only the TLS upgrade it was added for.
-        // FileFstatEv, FileSeekEv and FileTruncateEv borrow through take, so an fstat
-        // beside Lines::lines ends the reader with no value and no error. line_reader's
-        // select! just returns, while the Lines doc promises a stop only at end of
-        // stream or on a read error. This brings back x-builtin-effects-01's symptom by
-        // another path: the probe prints "lines read 0 of 200000". Fix: signal
-        // stop_lines only on the path that consumes the stream (the TLS handoff in
-        // tls.rs). fstat and truncate on a file can wait for the reader's per-chunk
-        // lock. If seek should end lines, it must say so with an error. probe:
-        // design/review-2026-10-19/repro/x-rerun-5-fstat-stops-lines.gx (x-rerun-5-01)
-        if let Some(stop) = self.stop_lines.get() {
-            stop.send_replace(());
-        }
         let mut r = self.r.lock().await;
         let mut w = self.w.lock().await;
         match (r.take(), w.take()) {
@@ -738,69 +749,10 @@ graphix_package_core::fast_builtin!(pub(crate) JoinPath, JoinPathEv, "sys_join_p
 
 graphix_package_core::unit_image_state!(GxTempDirEv);
 
-#[derive(Debug)]
-// CR claude for claude: [structure/low] [structure] Args is the builtin dirs_mod.rs's
-// dirs_builtin! generates, written out by hand: a FireOnce latch, fired when born() and
-// the latch is free, reset at reborn. Give the macro a value closure over the ExecCtx
-// and define Args through it. Found by reading; not run. (x-dup-05)
-pub(crate) struct Args {
-    once: FireOnce,
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
-    const EFFECT: Effect = Effect::Async;
-    const NAME: &str = "sys_args";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
-    }
-
-    fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let once = FireOnce::decode(buf)?;
-        Ok(Box::new(Self { once, out: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.once.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        if ctx.event.born() && self.once.take() {
-            let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
-            let arr: ValArray =
-                pargs.0.iter().map(|s| Value::String(s.clone())).collect();
-            self.out.set(TagValue::fired(Value::Array(arr)))
-        } else {
-            self.out.ride()
-        }
-    }
-
-    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.once.reset();
-    }
-}
+dirs_mod::born_builtin!(Args, "sys_args", |ctx| {
+    let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
+    Value::Array(pargs.0.iter().map(|s| Value::String(s.clone())).collect())
+});
 
 #[derive(Debug)]
 pub(crate) struct Exit;
@@ -845,6 +797,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         // code outside 0..=255 to 1 (or refuse it with a logged failure and exit 1),
         // use i32::try_from in place of `as`, and state the range on `val exit` in
         // mod.gxi. Ran: sys::exit(after_idle(50.ms, 256)) exited 0. (sys-net-05)
+        // 2026-10-19 claude: The claude twin (x-panics-07) is fixed: Exit::update
+        // maps a code outside 0..=255 to 1 (u8::try_from) for the ExitRequest path
+        // and process::exit alike, and val exit in sys mod.gxi states it. If that is
+        // the rule, delete this CR.
         if let Some(Value::I64(code)) = from
             .get_mut(0)
             .and_then(|n| seam_tick(n.update(ctx)))
@@ -853,19 +809,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
+            // XCR claude for claude: [bug/low] `code as i32`, and then the OS's low
+            // 8 bits, turn a code the program computed into one it did not:
+            // sys::exit(256) exits 0, so a failure reports success. The ExitRequest
+            // path above takes the same cast. Map a code outside 0..=255 to 1 for
+            // both uses (or type the gxi argument u8). probe:
+            // design/review-2026-10-19/repro/x-panics-exit-code-truncated.gx
+            // (x-panics-07)
+            // a status the OS cannot carry is a failure, never a success
+            // 2026-10-19 claude: A code outside 0..=255 exits 1 (u8::try_from) on
+            // the ExitRequest path and process::exit alike; sys mod.gxi states it.
+            // Pin: graphix-shell/tests/exit_code.rs. Eric's sys-net-05 twin is
+            // noted.
+            let code = u8::try_from(code).map_or(1, i32::from);
             let asked = ctx
                 .libstate
                 .get::<graphix_package_core::ExitRequest>()
-                .is_some_and(|r| r.request(code as i32));
+                .is_some_and(|r| r.request(code));
             if !asked {
-                // CR claude for claude: [bug/low] `code as i32`, and then the OS's low
-                // 8 bits, turn a code the program computed into one it did not:
-                // sys::exit(256) exits 0, so a failure reports success. The ExitRequest
-                // path above takes the same cast. Map a code outside 0..=255 to 1 for
-                // both uses (or type the gxi argument u8). probe:
-                // design/review-2026-10-19/repro/x-panics-exit-code-truncated.gx
-                // (x-panics-07)
-                std::process::exit(code as i32);
+                std::process::exit(code);
             }
         }
         TagValue::phantom_ref()

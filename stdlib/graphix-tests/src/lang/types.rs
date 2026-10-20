@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval_modes, refused},
+    testing::{FuseExpect, eval_modes, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -87,10 +87,7 @@ const EXPLICIT_TYPE_VARS2: &str = r#"
 }
 "#;
 
-run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, |v: Result<&Value>| match v {
-    Ok(Value::I64(2)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, is(Value::I64(2)); FuseExpect::Jit);
 
 const EXPLICIT_TYPE_VARS3: &str = r#"
 {
@@ -219,7 +216,7 @@ const TYPEDEF_FN_QUANTIFIER: &str = r#"
 }
 "#;
 
-run!(typedef_fn_quantifier, TYPEDEF_FN_QUANTIFIER, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::None);
+run!(typedef_fn_quantifier, TYPEDEF_FN_QUANTIFIER, is(Value::I64(3)); FuseExpect::None);
 
 // A multi-hop type-alias chain resolves.
 const DEEP_ALIAS_CHAIN: &str = r#"
@@ -234,10 +231,7 @@ const DEEP_ALIAS_CHAIN: &str = r#"
 }
 "#;
 
-run!(deep_alias_chain, DEEP_ALIAS_CHAIN, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(1))
-));
+run!(deep_alias_chain, DEEP_ALIAS_CHAIN, is(Value::I64(1)));
 
 // A cyclic typedef is a compile error, not a hang.
 const CYCLIC_ALIAS: &str = r#"
@@ -546,9 +540,11 @@ const CAST_LET_WIRE_SHAPE: &str = r#"
 }
 "#;
 
-run!(cast_let_wire_shape, CAST_LET_WIRE_SHAPE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[f64:-9223372036854776000., i64:42]"
-});
+run!(
+    cast_let_wire_shape,
+    CAST_LET_WIRE_SHAPE,
+    prints("[f64:-9223372036854776000., i64:42]")
+);
 
 // The f32 twin, plus a `$` consumer over the widened shape.
 const CAST_LET_WIRE_SHAPE_F32: &str = r#"
@@ -558,9 +554,7 @@ const CAST_LET_WIRE_SHAPE_F32: &str = r#"
 }
 "#;
 
-run!(cast_let_wire_shape_f32, CAST_LET_WIRE_SHAPE_F32, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[f32:3., f32:1.5]"
-});
+run!(cast_let_wire_shape_f32, CAST_LET_WIRE_SHAPE_F32, prints("[f32:3., f32:1.5]"));
 
 // A union member whose tag the value carries is its reading, whatever a
 // tagless reading of an earlier member says; a bare string is a tag only
@@ -579,9 +573,7 @@ const CAST_READS_THE_TAG: &str = r#"
 }
 "#;
 
-run!(cast_reads_the_tag, CAST_READS_THE_TAG, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[["Zed", i64:5], "Zed", true]"#
-});
+run!(cast_reads_the_tag, CAST_READS_THE_TAG, prints(r#"[["Zed", i64:5], "Zed", true]"#));
 
 // A cast to an integer type holds the value exactly or refuses it,
 // whatever the source: a narrower integer, a float (its fraction
@@ -612,10 +604,13 @@ const CAST_TO_AN_INTEGER_IS_EXACT: &str = r#"
 }
 "#;
 
-run!(cast_to_an_integer_is_exact, CAST_TO_AN_INTEGER_IS_EXACT, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == "[true, true, true, true, true, true, u8:200, i16:-3, u64:18446744073709551615, i64:300, u8:3, f64:-5.]"
-});
+run!(
+    cast_to_an_integer_is_exact,
+    CAST_TO_AN_INTEGER_IS_EXACT,
+    prints(
+        "[true, true, true, true, true, true, u8:200, i16:-3, u64:18446744073709551615, i64:300, u8:3, f64:-5.]"
+    )
+);
 
 // A cast leaves a value's runtime class only by parsing a string into a
 // scalar, by printing a number, bool, datetime or duration plainly,
@@ -648,10 +643,13 @@ const CAST_STAYS_IN_CLASS: &str = r#"
 )
 "#;
 
-run!(cast_stays_in_class, CAST_STAYS_IN_CLASS, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == r#"["42", "1.5", "true", "300", [f64:1., f64:2.], [f64:1., f64:2.], true, duration:1.5s, f64:1.5, i64:1577836800, datetime:"2020-01-01 00:00:00 UTC", i64:1, f64:0., true, true, true, true, true, true, true]"#
-});
+run!(
+    cast_stays_in_class,
+    CAST_STAYS_IN_CLASS,
+    prints(
+        r#"["42", "1.5", "true", "300", [f64:1., f64:2.], [f64:1., f64:2.], true, duration:1.5s, f64:1.5, i64:1577836800, datetime:"2020-01-01 00:00:00 UTC", i64:1, f64:0., true, true, true, true, true, true, true]"#
+    )
+);
 
 // A rec def whose base arm returns a param: the elem union is honestly
 // `[i64, string]`.
@@ -729,7 +727,7 @@ const REC_BLOCK_BODY_COLLAPSES: &str = r#"
 run!(
     rec_block_body_collapses,
     REC_BLOCK_BODY_COLLAPSES,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)));
+    is(Value::I64(0));
     FuseExpect::Jit
 );
 
@@ -746,7 +744,7 @@ const REC_NESTED_BLOCK_COLLAPSES: &str = r#"
 run!(
     rec_nested_block_collapses,
     REC_NESTED_BLOCK_COLLAPSES,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)));
+    is(Value::I64(0));
     FuseExpect::Jit
 );
 
@@ -858,7 +856,7 @@ const CONNECT_PUSH_NESTING_TYPES: &str = r#"
 run!(
     connect_push_nesting_types,
     CONNECT_PUSH_NESTING_TYPES,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4)));
+    is(Value::I64(4));
     FuseExpect::Jit
 );
 
@@ -909,10 +907,7 @@ const RECURSIVE_LIST_FIND: &str = r#"
 }
 "#;
 
-run!(recursive_list_find, RECURSIVE_LIST_FIND, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(2))
-));
+run!(recursive_list_find, RECURSIVE_LIST_FIND, is(Value::I64(2)));
 
 // Non-scalar variant payload binds fuse (composite, string, value).
 const VARIANT_COMPOSITE_PAYLOAD: &str = r#"
@@ -921,7 +916,7 @@ const VARIANT_COMPOSITE_PAYLOAD: &str = r#"
     let v: T = `A([10, 20, 30]);
     select v { `A(xs) => xs[1]$ + array::len(xs), `B => 0 }
 }"#;
-run!(variant_composite_payload, VARIANT_COMPOSITE_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(23))); FuseExpect::Jit);
+run!(variant_composite_payload, VARIANT_COMPOSITE_PAYLOAD, is(Value::I64(23)); FuseExpect::Jit);
 
 const VARIANT_STRING_PAYLOAD: &str = r#"
 {
@@ -940,7 +935,7 @@ const VARIANT_RECURSIVE_PAYLOAD: &str = r#"
         `C(x, rest) => x + select rest { `N => 10, `C(y, _) => y * 100 }
     }
 }"#;
-run!(variant_recursive_payload, VARIANT_RECURSIVE_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(201))); FuseExpect::Jit);
+run!(variant_recursive_payload, VARIANT_RECURSIVE_PAYLOAD, is(Value::I64(201)); FuseExpect::Jit);
 
 const VARIANT_MAP_PAYLOAD: &str = r#"
 {
@@ -948,7 +943,7 @@ const VARIANT_MAP_PAYLOAD: &str = r#"
     let v: M = `M({"a" => 1, "b" => 2});
     select v { `M(m) => map::len(m), `N => 0 }
 }"#;
-run!(variant_map_payload, VARIANT_MAP_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+run!(variant_map_payload, VARIANT_MAP_PAYLOAD, is(Value::I64(2)); FuseExpect::Jit);
 
 // A recursive union that consumes nothing names no value: refused at
 // its definition, not a stack overflow at the cast.
@@ -962,15 +957,11 @@ run!(cast_recursive_no_progress, CAST_RECURSIVE_NO_PROGRESS, refused("refers bac
 
 // A two-element array is not a list: converting it keeps both items.
 const CAST_PAIR_TO_LIST: &str = r#"cast<List<i64>>([1, 2])$"#;
-run!(cast_pair_to_list, CAST_PAIR_TO_LIST, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:1, i64:2]"
-}; FuseExpect::Jit);
+run!(cast_pair_to_list, CAST_PAIR_TO_LIST, prints("[i64:1, i64:2]"); FuseExpect::Jit);
 
 // A struct cast converts each field; the names decide the match.
 const CAST_STRUCT_FIELDS: &str = r#"cast<{x: i64, y: i64}>({y: "2", x: "1"})$"#;
-run!(cast_struct_fields, CAST_STRUCT_FIELDS, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[["x", i64:1], ["y", i64:2]]"#
-}; FuseExpect::Jit);
+run!(cast_struct_fields, CAST_STRUCT_FIELDS, prints(r#"[["x", i64:1], ["y", i64:2]]"#); FuseExpect::Jit);
 
 // A reference is not a number: a cast whose source can hold one is
 // refused where the check sees it, and fails where only an instance
@@ -1064,7 +1055,7 @@ run!(cast_of_a_reference_through_a_nested_alias, CAST_OF_A_REFERENCE_THROUGH_A_N
 // A name expanded twice on one value with other parameters is no cycle.
 run!(
     cast_to_a_nested_alias,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         type Id<'a> = 'a;
         let result = cast<Id<Id<i64>>>(u8:41)$ + 1
@@ -1089,7 +1080,7 @@ run!(cast_to_a_block_nested_alias, CAST_TO_A_BLOCK_NESTED_ALIAS, |v: Result<&Val
 // every application of it holds what its parameters hold.
 run!(
     cast_to_a_growing_definition,
-    |v: Result<&Value>| matches!(v, Ok(Value::Null)),
+    is(Value::Null),
     "/test.gx" => r#"
         type N<'a> = [null, ('a, N<Array<'a>>)];
         let result = cast<N<i64>>(null)$
@@ -1146,7 +1137,7 @@ run!(
 
 run!(
     typedef_body_names_a_later_sibling,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let f = |x: i64| { type A = [`X(B), `N]; type B = i64; x };
         let result = f(0)
@@ -1156,7 +1147,7 @@ run!(
 // A body-local abstract type constructs in a call bound at run time.
 run!(
     local_abstract_in_a_runtime_recursion,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    is(Value::I64(4)),
     "/test.gx" => r#"
         let f = |x: i64| {
             type T = Abstract<i64>;
@@ -1174,7 +1165,7 @@ run!(
 // from the types its definition's check settled.
 run!(
     local_typedef_in_a_runtime_recursion,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
+    is(Value::I64(6)),
     "/test.gx" => r#"
         let f = |x: i64| {
             type L = [`C(i64, L), `N];
@@ -1214,7 +1205,7 @@ run!(
 
 run!(
     annotation_names_from_a_later_module,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => r#"
 mod s;
 mod u;
@@ -1243,15 +1234,12 @@ const ARM_TYPEDEF_IN_THE_SIGNATURE: &str = r#"
 }
 "#;
 
-run!(arm_typedef_in_the_signature, ARM_TYPEDEF_IN_THE_SIGNATURE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(42))
-); FuseExpect::None);
+run!(arm_typedef_in_the_signature, ARM_TYPEDEF_IN_THE_SIGNATURE, is(Value::I64(42)); FuseExpect::None);
 
 // A typedef's parameter constraint names types where the typedef is.
 run!(
     typedef_constraint_resolves_in_its_module,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::first
@@ -1279,31 +1267,24 @@ const CAST_ARRAY_TO_LIST: &str = r#"{
   let a: Array<Array<i64>> = [[1], []];
   cast<List<Array<i64>>>(a)$
 }"#;
-run!(cast_array_to_list, CAST_ARRAY_TO_LIST, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:1], []]"
-}; FuseExpect::Jit);
+run!(cast_array_to_list, CAST_ARRAY_TO_LIST, prints("[[i64:1], []]"); FuseExpect::Jit);
 
 const CAST_NESTED_ARRAY_TO_LIST: &str = r#"{
   let b: Array<Array<Array<i64>>> = [[[1]], [[2], []]];
   cast<List<Array<Array<i64>>>>(b)$
 }"#;
-run!(cast_nested_array_to_list, CAST_NESTED_ARRAY_TO_LIST, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[[i64:1]], [[i64:2], []]]"
-}; FuseExpect::Jit);
+run!(cast_nested_array_to_list, CAST_NESTED_ARRAY_TO_LIST, prints("[[[i64:1]], [[i64:2], []]]"); FuseExpect::Jit);
 
 // A list statically so converts to an array element by element.
 const CAST_LIST_TO_ARRAY: &str = r#"{
   let l = [<1, 2>];
   cast<Array<i64>>(l)$
 }"#;
-run!(cast_list_to_array, CAST_LIST_TO_ARRAY, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:1, i64:2]"
-}; FuseExpect::Jit);
+run!(cast_list_to_array, CAST_LIST_TO_ARRAY, prints("[i64:1, i64:2]"); FuseExpect::Jit);
 
-// Each refused program was accepted and went wrong at run time (a
-// value the type excludes, a function called on the wrong type, an
-// exhaustive select with no arm to take); each accepted twin shows
-// what the rule still admits.
+// Each refused program would run a value its type excludes, call a
+// function on the wrong type, or take no arm of an exhaustive select;
+// each accepted twin shows what the rule still admits.
 const NON_CONTRACTIVE: &str = r#"{
   type T = [i64, T];
   let v: T = "hello";
@@ -1461,16 +1442,8 @@ const NESTED_QUANTIFIER_SQUARE: &str = r#"{
   let apply = |f: F| f(3);
   apply(|x| x * x)
 }"#;
-// Through an alias of the quantified type, the same.
 /// A type test can't tell one function signature from another, inside
 /// a tuple too.
-// CR claude for claude: [readability/low] The line 'Through an alias of the quantified
-// type, the same.' above this doc comment belongs to NESTED_QUANTIFIER_ALIAS_MONO
-// further down; here it reads as if this fixture were an alias test. The headers above
-// NON_CONTRACTIVE ('Each refused program was accepted and went wrong ...') and
-// CONJUNCT_REACHES_OPEN_CELLS ('each rule below once admitted ...') narrate history.
-// Move the alias line and state the rules instead. Found by reading; not run.
-// (tests-types-07)
 const TYPE_TEST_HOLDING_A_FN: &str = r#"{
     let fs = |x: string| "[x]!";
     let u: [(fn(x: i64) -> i64, i64), (fn(x: string) -> string, i64)] = (fs, 1);
@@ -1514,6 +1487,17 @@ const NESTED_QUANTIFIER_ENV_CELL: &str = r#"{
     a * 2
 }"#;
 
+/// The same, through a lambda nested in the callback: the variable is
+/// reached through a binding the callback reaches, not its own type.
+const NESTED_QUANTIFIER_ENV_CELL_NESTED: &str = r#"{
+    let st = never();
+    let g = |x| { let k = |y| { st <- y; y }; k(x) };
+    let h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let (a, b) = h(g);
+    a * 2
+}"#;
+
+// Through an alias of the quantified type, the same.
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
   type G = F;
@@ -1586,6 +1570,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),
+        (NESTED_QUANTIFIER_ENV_CELL_NESTED, "not polymorphic"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
@@ -1784,7 +1769,7 @@ const BOTTOM_OPERAND: &str = r#"{
   0
 }"#;
 
-run!(bottom_operand, BOTTOM_OPERAND, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))));
+run!(bottom_operand, BOTTOM_OPERAND, is(Value::I64(0)));
 
 // An index narrows an open operand to the integers, as arithmetic
 // narrows one to the numbers: a function's parameter keeps the
@@ -1976,7 +1961,7 @@ run!(singleton_merged_members_run, SINGLETON_MERGED_MEMBERS_RUN, |v: Result<&Val
     matches!(v, Ok(Value::I64(3)))
 });
 
-// Containment: each rule below once admitted an ill-typed program.
+// Containment: each rule below refuses an ill-typed program.
 
 /// A conjunct reaches the open cells of what its cell is bound to.
 const CONJUNCT_REACHES_OPEN_CELLS: &str = r#"
@@ -2074,7 +2059,7 @@ const UNION_HOLDS_ITS_OWN_CELL: &str = r#"
 }
 "#;
 
-run!(union_holds_its_own_cell, UNION_HOLDS_ITS_OWN_CELL, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+run!(union_holds_its_own_cell, UNION_HOLDS_ITS_OWN_CELL, is(Value::I64(3)); FuseExpect::Jit);
 
 /// A recursive type under a union member with variables in its params
 /// ends its walk: the memo meets a rebuilt expansion by its structure.
@@ -2087,11 +2072,7 @@ const RECURSIVE_UNION_MEMBER_ENDS: &str = r#"
 }
 "#;
 
-run!(
-    recursive_union_member_ends,
-    RECURSIVE_UNION_MEMBER_ENDS,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
-);
+run!(recursive_union_member_ends, RECURSIVE_UNION_MEMBER_ENDS, is(Value::I64(0)));
 
 /// A typedef whose parameters grow at every level cannot be compared:
 /// refused, never a walk without end.
@@ -2136,11 +2117,7 @@ const UNION_GROWING_TYPEDEF_ENDS: &str = r#"
 }
 "#;
 
-run!(
-    union_growing_typedef_ends,
-    UNION_GROWING_TYPEDEF_ENDS,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
-);
+run!(union_growing_typedef_ends, UNION_GROWING_TYPEDEF_ENDS, is(Value::I64(1)));
 
 /// A deep nominal value compares, and drops, without the thread stack.
 const DEEP_ABSTRACT_EQ: &str = r#"
@@ -2156,47 +2133,7 @@ const DEEP_ABSTRACT_EQ: &str = r#"
 }
 "#;
 
-run!(deep_abstract_eq, DEEP_ABSTRACT_EQ, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);
-
-/// Crafted bytes nesting a type's params past any sane depth are an
-/// error, not a stack overflow.
-// CR claude for claude: [test-gap/medium] This fixture cannot fail. GxAbstract::decode
-// refuses outside an image session before it reads the id, name or params, so the
-// 2^16-deep params never reach the nesting guard, and the target is i64 anyway. The
-// shallow input with no nested params gives the same ParseError. Removing the guard
-// from Type's or GxAbstract's decode leaves this green. Delete it, and if the guard
-// needs a pin, decode the crafted bytes under an image session in a graphix-types unit
-// test, the only path that reads abstract params. probe:
-// design/review-2026-10-19/repro/tests-types-crafted-abstract-vacuous.gx
-// (tests-types-05)
-const CRAFTED_ABSTRACT_PARAMS: &str = r#"
-{
-    type T = Abstract<i64>;
-    let t = T(1);
-    let s0 = "CAgI";
-    let s1 = "[s0][s0]";
-    let s2 = "[s1][s1]";
-    let s3 = "[s2][s2]";
-    let s4 = "[s3][s3]";
-    let s5 = "[s4][s4]";
-    let s6 = "[s5][s5]";
-    let s7 = "[s6][s6]";
-    let s8 = "[s7][s7]";
-    let s9 = "[s8][s8]";
-    let s10 = "[s9][s9]";
-    let s11 = "[s10][s10]";
-    let s12 = "[s11][s11]";
-    let s13 = "[s12][s12]";
-    let s14 = "[s13][s13]";
-    let s15 = "[s14][s14]";
-    let s16 = "[s15][s15]";
-    let input = "abstract:oIAMWgwxfpJLTmG4LW8TyaR9CAAAAAAAADA5AXgB[s16]ARA=";
-    let r: [i64, Error<`ParseError(string)>] = str::parse(t ~ input);
-    select r { error as _ => true, _ => false }
-}
-"#;
-
-run!(crafted_abstract_params, CRAFTED_ABSTRACT_PARAMS, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);
+run!(deep_abstract_eq, DEEP_ABSTRACT_EQ, is(Value::Bool(true)); FuseExpect::Jit);
 
 /// A forward-referenced alias cycle is refused once its names exist.
 const FORWARD_ALIAS_CYCLE: &str = r#"
@@ -2242,10 +2179,7 @@ const NESTED_ALIAS_APPLICATIONS: &str = r#"
 }
 "#;
 
-run!(nested_alias_applications, NESTED_ALIAS_APPLICATIONS, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::I64(42))
-));
+run!(nested_alias_applications, NESTED_ALIAS_APPLICATIONS, is(Value::I64(42)));
 
 /// Two blocks' typedefs of one name are two types, thrown types moved
 /// into a function's scope included.
@@ -2266,7 +2200,7 @@ const SAME_NAME_OTHER_DEFINITION: &str = r#"
 }
 "#;
 
-run!(same_name_other_definition, SAME_NAME_OTHER_DEFINITION, refused("does not contain"); FuseExpect::None);
+run!(same_name_other_definition, SAME_NAME_OTHER_DEFINITION, refused("the two P are different definitions"); FuseExpect::None);
 
 /// An undefined type is reported where it is written.
 const UNDEFINED_TYPE_SITED: &str = r#"{
@@ -2307,12 +2241,7 @@ const CONSTRUCTOR_PROBE_BINDS_NOTHING: &str = r#"
 }
 "#;
 
-run!(constructor_probe_binds_nothing, CONSTRUCTOR_PROBE_BINDS_NOTHING, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::I64(0))
-); FuseExpect::None);
+run!(constructor_probe_binds_nothing, CONSTRUCTOR_PROBE_BINDS_NOTHING, is(Value::I64(0)); FuseExpect::None);
 
 /// A bound holds neither a hole nor a trait below its top.
 const HOLE_IN_A_BOUND: &str = r#"
@@ -2343,28 +2272,6 @@ const HOLE_IN_A_FN_QUANTIFIER: &str = r#"
 "#;
 
 run!(hole_in_a_fn_quantifier, HOLE_IN_A_FN_QUANTIFIER, refused("'_ is the hole"); FuseExpect::None);
-
-/// An inline literal passed to a union formal is checked before a member
-/// is chosen for it.
-// CR claude for claude: [structure/low] This program is the `f(["a"])` term of
-// literal_into_a_union_formal below, over the same formal type. Likewise
-// SAME_NAME_OTHER_DEFINITION (refused 'does not contain') is covered by
-// same_name_definitions_are_told_apart, which pins the full 'different definitions'
-// message. Each run! costs four modes. Delete the weaker copies, or fold
-// SAME_NAME_OTHER_DEFINITION's parameter swap into the message test. Found by reading;
-// not run. (tests-types-08)
-const UNION_FORMAL_INLINE_LITERAL: &str = r#"
-{
-    let g = |x: [Array<f64>, Array<string>]| 7;
-    g(["a"])
-}
-"#;
-
-run!(
-    union_formal_inline_literal,
-    UNION_FORMAL_INLINE_LITERAL,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit
-);
 
 /// A declared variable may be anything, so `_` cannot hold it.
 const BOTTOM_REFUSES_A_DECLARED_VARIABLE: &str = r#"
@@ -2453,7 +2360,7 @@ const ANNOTATION_DECIDES_CONSTRUCTED_PARAMETERS: &str = r#"
 run!(
     annotation_decides_constructed_parameters,
     ANNOTATION_DECIDES_CONSTRUCTED_PARAMETERS,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    is(Value::I64(1));
     FuseExpect::Jit
 );
 
@@ -2468,9 +2375,7 @@ const UNION_PLACES_EVERY_MEMBER: &str = r#"
 }
 "#;
 
-run!(union_places_every_member, UNION_PLACES_EVERY_MEMBER, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:1]]"
-});
+run!(union_places_every_member, UNION_PLACES_EVERY_MEMBER, prints("[[i64:1]]"));
 
 /// A binding something writes is not generalized: its uses and its
 /// writers share one type, whatever the statement order.
@@ -2523,14 +2428,14 @@ run!(
 run!(
     write_to_a_later_let_leaves_the_earlier_generic,
     r#"{ let f = |x| x; let a = f(1); let b = f("s"); let f = 0; f <- 1; (a, b) }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:1, "s"]"#
+    prints(r#"[i64:1, "s"]"#)
 );
 
 // A write to a name a nearer binding shadows leaves the outer let generic.
 run!(
     shadowed_write_leaves_the_let_generic,
     r#"{ let f = |x| x; let a = { let f = 0; f <- 1; f }; (f(1), f("s"), a) }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:1, "s", i64:0]"#
+    prints(r#"[i64:1, "s", i64:0]"#)
 );
 
 /// A binding an earlier input generalized stays generic, its uses having
@@ -2662,12 +2567,7 @@ const QUANTIFIED_TYPEDEF_TAKES_POLY: &str = r#"
 }
 "#;
 
-run!(quantified_typedef_takes_poly, QUANTIFIED_TYPEDEF_TAKES_POLY, |v: Result<
-    &Value,
->| matches!(
-    v,
-    Ok(Value::F64(1.5))
-));
+run!(quantified_typedef_takes_poly, QUANTIFIED_TYPEDEF_TAKES_POLY, is(Value::F64(1.5)));
 
 /// A cast through a typedef whose params grow over one value ends.
 const CAST_GROWING_TYPEDEF: &str = r#"
@@ -2678,7 +2578,7 @@ const CAST_GROWING_TYPEDEF: &str = r#"
 }
 "#;
 
-run!(cast_growing_typedef, CAST_GROWING_TYPEDEF, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);
+run!(cast_growing_typedef, CAST_GROWING_TYPEDEF, is(Value::Bool(true)); FuseExpect::None);
 
 /// A value under one definition nested in itself (`O<O<X>>`) prints by
 /// its type, as under one level.
@@ -2710,12 +2610,8 @@ run!(abstract_payload_prints_typed, ABSTRACT_PAYLOAD_PRINTS_TYPED, |v: Result<&V
     matches!(v, Ok(Value::String(s)) if s == "P({x: 1, y: 2}) V(`A(3)) L([<1, 2>])")
 }; FuseExpect::Jit);
 
-/// A bare variant is a string at run time: `array` does not cover it.
-// CR claude for claude: [doc-drift/low] The doc comment above says a bare variant is a
-// string at run time. Under the kind markers (rep.rs) it is an array whose element 0 is
-// the Variant marker; only data writes it as its tag. The test holds because the
-// primitive `array` holds unmarked arrays only. Reword the comment to give that reason.
-// Found by reading; not run. (tests-types-06)
+/// A bare variant is a marked array at run time, and the primitive
+/// `array` holds unmarked arrays only: it does not cover the variant.
 const ARRAY_DOES_NOT_COVER_A_BARE_VARIANT: &str = r#"
 {
     let f = |x: [`Foo, i64, Array<i64>]| select x { array as _ => 1, i64 as _ => 2 };
@@ -2834,7 +2730,7 @@ run!(
     let h = |x: [Array<(i64, i64)>, Array<(string, f64)>]| 100;
     f(["a"]) + g(&["a"]) + h([("a", 1.0)])
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(111))); FuseExpect::Jit
+    is(Value::I64(111)); FuseExpect::Jit
 );
 
 // A generic function beside a monomorphic one in a union meets it: the
@@ -2939,7 +2835,7 @@ run!(
     let y: A<string> = ("a", null);
     x == y
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)))
+    is(Value::Bool(false))
 );
 
 // A conjunct that is not exact passes its parts down to the open cells it
@@ -2958,7 +2854,7 @@ run!(
     let g = |y| f([y]);
     g(i64:5)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(5)))
+    is(Value::I64(5))
 );
 
 run!(inferred_int_reaches_open_cell, r#"{
@@ -2976,7 +2872,7 @@ run!(
     let g = |b, k| f(select b { true => 1, false => k });
     g(false, 2)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(30)))
+    is(Value::I64(30))
 );
 
 run!(fn_bound_commits_argument, r#"{
@@ -2990,7 +2886,7 @@ run!(
     let f = 'a: fn(x: i64, y: [i64, string]) -> i64 |g: 'a| 0;
     f(|x, y| 0)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
+    is(Value::I64(0))
 );
 
 // A rank-2 formal's quantifier takes only an argument whose bounds its own
@@ -3107,7 +3003,7 @@ async fn repl_inputs_declare_distinct_abstract_types() -> anyhow::Result<()> {
 // A renaming import of ErrChain is ErrChain: a chain of it is a chain.
 run!(
     renamed_errchain_collapses,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => "use core::ErrChain as EC; let f = |e: Error<ErrChain<`A>>| 0; let h = |g: Error<EC<EC<`A>>>| f(g); let result = 0"; FuseExpect::None
 );
 
@@ -3116,25 +3012,25 @@ run!(
 // alias, in a tuple, a struct field or a variant payload.
 run!(
     union_formal_behind_an_alias,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => "type D = [Array<f64>, Array<string>]; let g = |x: D| 0; let result = g([\"a\"])"; FuseExpect::Jit
 );
 
 run!(
     union_formal_in_a_tuple,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => "let g = |x: (i64, [Array<f64>, Array<string>])| 0; let result = g((1, [\"a\"]))"; FuseExpect::Jit
 );
 
 run!(
     union_formal_in_a_struct,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => "let g = |x: {a: [Array<f64>, Array<string>]}| 0; let result = g({a: [\"a\"]})"; FuseExpect::Jit
 );
 
 run!(
     union_formal_in_a_variant,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => "let g = |x: [`A([Array<f64>, Array<string>]), `B]| 0; let result = g(`A([\"a\"]))"; FuseExpect::Jit
 );
 
@@ -3149,7 +3045,7 @@ run!(
 // the argument and 'q stays free for y.
 run!(
     probe_checks_an_open_cells_bounds_against_a_bound_cell,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let f = 'a: Number |x: [(Any, 'q, Array<'a>), (string, string, Array<[string, null]>)], y: 'q| -> i64 0;
         let s = "x";
@@ -3186,7 +3082,7 @@ run!(
 // cannot take Array<i64>, so 'c does.
 run!(
     rigid_cell_guides_the_member_placement,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let g = |w: 'd, v: ['c, Array<'d>]| 0;
         let f = |x: 'a, t: bool| -> i64 g(x, select t { true => [1, 2], false => "s" });
@@ -3220,7 +3116,7 @@ run!(
 // type, open cells included: a generic function over it checks.
 run!(
     nested_datatype_instances_relate_by_parameters,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         type N<'a> = [null, ('a, N<Array<'a>>)];
         let n1: N<i64> = (1, ([2], null));
@@ -3233,7 +3129,7 @@ run!(
 // does not match; the others still cover the value.
 run!(
     a_growing_member_is_a_miss,
-    |v: Result<&Value>| matches!(v, Ok(Value::Null)),
+    is(Value::Null),
     "/test.gx" => r#"
         type N<'a> = [null, ('a, N<Array<'a>>)];
         let f = |x: N<i64>| -> [N<string>, (Any, Any), null] x;
@@ -3245,7 +3141,7 @@ run!(
 // written in: f and g take one type, so [f, g] is an array of one fn type.
 run!(
     union_member_order_is_not_the_type,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         let f = |x: [(i64, string), (f64, string), (i64, bool)]| 0;
         let g = |x: [(i64, string), (i64, bool), (f64, string)]| 1;
@@ -3290,3 +3186,68 @@ run!(instance_expands_caller_recursive_typedef, r#"{
     let a: T = [null];
     any(array::map([a], never<fn(x: T) -> i64>()), [7])
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(7)]); FuseExpect::Jit);
+
+// A declared variable beside a known member is named as the one that may
+// differ.
+run!(singleton_names_the_declared_variable, r#"{
+  let f = 'a: Number |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
+  f(1, true)
+}"#, refused("the declared variable 'a may differ from its other members"); FuseExpect::None);
+
+// A reference test under Any is refused at every place it meets one, the
+// second pair of one definition included.
+run!(ref_test_over_any_in_a_second_pair, r#"{
+  type Box<'a> = {v: 'a};
+  let s = "hi";
+  let x: (Box<Any>, Box<Any>) = ({v: 1}, {v: &s});
+  select x { (Box<i64>, Box<&i64>) as y => *(y.1.v) + 1, _ => 0 }
+}"#, refused("can't tell what the reference"); FuseExpect::None);
+
+// A string casts to a decimal or a float exactly: digits past f64 stay,
+// a float reads anything Rust's float parse reads, and a pre-epoch
+// datetime truncates toward zero as a float does.
+run!(string_casts_to_decimal_and_float_exactly, r#"{
+  let d1 = cast<decimal>("1.23456789012345678901234567")$;
+  let d2 = cast<decimal>("12345678901234567890")$;
+  let f1 = cast<f64>("9223372036854775808")$;
+  let f2 = cast<f64>("inf")$;
+  let f3 = cast<f32>("+3")$;
+  let f4 = cast<f64>("-0")$;
+  let t1 = cast<i64>(datetime:"1969-12-31T23:59:59.5Z")$;
+  let w = json::write_str(d1)$;
+  let r: decimal = json::read(w)$;
+  "[d1] [d2] [f1] [f2] [f3] [f4] [t1] [r]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890. 9223372036854776000 inf 3 -0 0 1.23456789012345678901234567"); FuseExpect::Jit);
+
+// A union whose members are one type once bound counts that type once:
+// `[i64, 'y]` with 'y bound to i64 is a singleton for arithmetic.
+run!(
+    singleton_counts_a_member_once,
+    r#"{
+  let h = |x| x * x;
+  let k = |b, y| h(select b { true => 1, false => y });
+  k(false, 3)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(9)))
+);
+
+// Distributing a tuple over a union does not let a declared variable
+// admit what is not it: (`A, 5) is no (`A, 'a).
+run!(distribution_holds_declared_variables_rigid, r#"{
+  let f = 'a: Any |x: [`A, `B], y: 'a| -> [(`A, 'a), (`B, i64)] (x, 5);
+  f(`A, "hello")
+}"#, refused("does not contain ([`A, `B], i64)"); FuseExpect::None);
+
+// A lambda literal passed to a rank-2 formal may not narrow the formal's
+// quantifier: the callee may call it at any type the declared bound
+// admits ("a" here), and `y * y` needs a number.
+run!(rank2_literal_may_not_narrow_the_quantifier, r#"{
+  let app = |g: fn<'b: [string, i64]>(y: 'b) -> 'b| g("a");
+  app(|y| y * y)
+}"#, refused("which the parameter's quantifier does not declare"); FuseExpect::None);
+
+run!(rank2_literal_through_an_alias_may_not_narrow, r#"{
+  type F = fn<'b: [string, i64]>(y: 'b) -> 'b;
+  let app = |g: F| g("a");
+  app(|y| y * y)
+}"#, refused("which the parameter's quantifier does not declare"); FuseExpect::None);

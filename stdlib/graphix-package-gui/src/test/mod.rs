@@ -1,16 +1,22 @@
 use anyhow::{Context, Result, bail};
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::expr::ExprId;
-use graphix_package_core::testing::{self, Fixture};
-use graphix_rt::{CallableId, NoExt};
-use iced_core::{Event, Point, Size, clipboard, mouse, window};
+use graphix_package_core::testing::{self, Fixture, find_bind_id};
+use graphix_rt::{CallableId, GXHandle, NoExt};
+use iced_core::{Event, Point, Size, clipboard, keyboard, mouse, window};
 use iced_runtime::user_interface;
-use iced_wgpu::{graphics::Shell, wgpu};
+use iced_wgpu::{
+    graphics::{Shell, Viewport},
+    wgpu,
+};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use std::{cell::RefCell, time::Duration};
+use std::{
+    cell::{self, RefCell, RefMut},
+    time::Duration,
+};
 use tokio::sync::OnceCell;
 
-use crate::widgets::{self, GuiW, Message, MessageShell};
+use crate::widgets::{self, Child, Message, MessageShell};
 
 mod canvas_test;
 mod chart_test;
@@ -76,20 +82,21 @@ const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
     &crate::P,
 ];
 
-/// Deliver an update to the widget tree. A children recompile blocks on
-/// the runtime, which only a multi-thread flavor permits, and there only
+/// Deliver an update to the widget tree. A recompile blocks on the
+/// runtime, which only a multi-thread flavor permits, and there only
 /// inside `block_in_place`.
 fn update_widget(
-    widget: &mut GuiW<NoExt>,
+    root: &mut Child<NoExt>,
+    gx: &GXHandle<NoExt>,
     rt: &tokio::runtime::Handle,
     id: ExprId,
     v: &Value,
 ) -> Result<bool> {
     match rt.runtime_flavor() {
         tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| widget.handle_update(rt, id, v))
+            tokio::task::block_in_place(|| root.update(rt, gx, id, v))
         }
-        _ => widget.handle_update(rt, id, v),
+        _ => root.update(rt, gx, id, v),
     }
 }
 
@@ -98,31 +105,47 @@ fn update_widget(
 /// interactions through the reactive loop.
 struct GuiTestHarness {
     f: Fixture,
-    widget: GuiW<NoExt>,
+    /// The program's `test::result`, rebuilt when it changes, as a
+    /// window's content is.
+    root: Child<NoExt>,
     rt_handle: tokio::runtime::Handle,
-    renderer: OnceCell<RefCell<widgets::Renderer>>,
+    /// Built at the first frame.
+    frame: cell::OnceCell<RefCell<Frame>>,
+}
+
+/// What a window keeps between frames: its renderer, the interface's
+/// cache, the pointer as the events moved it, and a clipboard.
+struct Frame {
+    renderer: widgets::Renderer,
+    cache: user_interface::Cache,
+    cursor: mouse::Cursor,
+    clipboard: TestClipboard,
+}
+
+impl Frame {
+    fn new() -> Self {
+        Self {
+            renderer: futures::executor::block_on(headless_gpu()).create_renderer(),
+            cache: user_interface::Cache::default(),
+            cursor: mouse::Cursor::Unavailable,
+            clipboard: TestClipboard::default(),
+        }
+    }
 }
 
 impl GuiTestHarness {
     /// Compile module-level graphix code whose last binding, `result`,
     /// is a Widget value.
     async fn new(code: &str) -> Result<Self> {
-        let (f, initial_value) = Fixture::new(code, TEST_REGISTER, |_| ()).await?;
-        // CR claude for claude: [test-gap/low] The root is compiled once from result's
-        // first value, and drain passes later updates of result to a widget that
-        // ignores ids it did not compile. A fixture whose result changes silently keeps
-        // the old tree. A window's content is a &Widget Child that recompiles. Hold the
-        // root as a Child over a ref to test::result (compile_ref + Child::compile) so
-        // the harness rebuilds as a window does. Found by reading; not run.
-        // (tests-gui-b-06)
-        let widget = widgets::compile(f.gx.clone(), initial_value)
-            .await
-            .context("compile widget tree")?;
+        let (f, _) = Fixture::new(code, TEST_REGISTER, |_| ()).await?;
+        let result =
+            f.gx.compile_ref(find_bind_id(&f.compiled.env, "test::result")?).await?;
+        let root = Child::compile(&f.gx, result).await.context("compile widget tree")?;
         Ok(Self {
             f,
-            widget,
+            root,
             rt_handle: tokio::runtime::Handle::current(),
-            renderer: OnceCell::const_new(),
+            frame: cell::OnceCell::new(),
         })
     }
 
@@ -131,11 +154,11 @@ impl GuiTestHarness {
     /// A value from outside the runtime (netidx) can come later: wait for
     /// it with `wait_until`.
     async fn drain(&mut self) -> Result<bool> {
-        let Self { f: Fixture { gx, rx, watches, .. }, widget, rt_handle, .. } = self;
+        let Self { f: Fixture { gx, rx, watches, .. }, root, rt_handle, .. } = self;
         let mut first_error = None;
         let deliver = async |id, v: Value| {
             watches.note(id, &v);
-            match update_widget(widget, rt_handle, id, &v) {
+            match update_widget(root, gx, rt_handle, id, &v) {
                 Ok(changed) => Ok(changed),
                 Err(e) => {
                     log::error!(target: graphix_compiler::FAILURE_TARGET, "{e:#}");
@@ -149,6 +172,11 @@ impl GuiTestHarness {
             Some(e) => Err(e),
             None => Ok(changed),
         }
+    }
+
+    /// Set the program variable `name`, module-qualified, from the test.
+    fn set_var(&self, name: &str, v: Value) -> Result<()> {
+        self.f.gx.set(find_bind_id(&self.f.compiled.env, name)?, v)
     }
 
     /// Watch a module-qualified variable such as "test::released" and
@@ -174,7 +202,7 @@ impl GuiTestHarness {
     }
 
     fn apply(&mut self, msgs: &[Message]) {
-        let widget = &mut self.widget;
+        let widget = &mut self.root.w;
         crate::frame::apply_messages(&self.f.gx, msgs.iter().cloned(), |msg, pending| {
             let mut shell = MessageShell::default();
             widget.on_message(msg, &mut shell);
@@ -183,45 +211,60 @@ impl GuiTestHarness {
         });
     }
 
-    async fn renderer(&self) -> &RefCell<widgets::Renderer> {
-        self.renderer
-            .get_or_init(|| async {
-                RefCell::new(headless_gpu().await.create_renderer())
-            })
-            .await
+    /// The window state frames draw with.
+    fn frame_state(&self) -> RefMut<'_, Frame> {
+        self.frame.get_or_init(|| RefCell::new(Frame::new())).borrow_mut()
     }
 
-    /// Build, lay out and draw the widget tree once, as a window frame
-    /// does, on a headless renderer.
-    async fn render(&mut self) -> Result<()> {
-        self.renderer().await;
-        let mut renderer = self.renderer.get().unwrap().borrow_mut();
+    /// One frame of the widget tree at `size` over `events`, as a window
+    /// draws it on a headless renderer: the messages the widgets published.
+    fn frame(&mut self, size: Size, events: &[Event]) -> Vec<Message> {
         let theme =
             crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+        let Self { root, frame, .. } = self;
+        let mut fr = frame.get_or_init(|| RefCell::new(Frame::new())).borrow_mut();
+        let fr = &mut *fr;
+        for ev in events {
+            crate::window::track_cursor(&mut fr.cursor, ev);
+        }
+        let mut messages = Vec::new();
         crate::frame::frame(
-            &mut self.widget,
-            Size::new(800.0, 600.0),
-            &mut user_interface::Cache::default(),
-            &mut renderer,
-            &[],
-            mouse::Cursor::Unavailable,
-            &mut TestClipboard::default(),
-            &mut Vec::new(),
+            &mut root.w,
+            size,
+            &mut fr.cache,
+            &mut fr.renderer,
+            events,
+            fr.cursor,
+            &mut fr.clipboard,
+            &mut messages,
             &theme,
         );
+        messages
+    }
+
+    /// Build, lay out and draw the widget tree once at 800 x 600.
+    fn render(&mut self) -> Result<()> {
+        let _ = self.frame(Size::new(800.0, 600.0), &[]);
         Ok(())
+    }
+
+    /// A frame at `width` x `height` over a black background, as RGBA.
+    fn screenshot(&mut self, width: u32, height: u32) -> Vec<u8> {
+        let _ = self.frame(Size::new(width as f32, height as f32), &[]);
+        let viewport = Viewport::with_physical_size(Size::new(width, height), 1.0);
+        self.frame_state().renderer.screenshot(&viewport, iced_core::Color::BLACK)
     }
 
     /// The widget's element, built and dropped.
     fn view(&self) -> crate::widgets::IcedElement<'_> {
-        self.widget.view()
+        self.root.w.view()
     }
 
     /// Flush deferred per-widget state as the event loop does before a
     /// render. Call before `dt_snapshot()` after publishing to a sort
     /// column.
     fn before_view(&mut self) -> bool {
-        self.widget.before_view()
+        self.root.w.before_view()
     }
 
     /// Drain and `before_view` in a loop until `pred(self)` holds;
@@ -256,13 +299,14 @@ impl GuiTestHarness {
 
     /// The widget's `DataTableSnapshot`, if it is a data table.
     fn dt_snapshot(&self) -> crate::widgets::DataTableSnapshot {
-        self.widget.data_table_snapshot().expect("widget is not a DataTableW")
+        self.root.w.data_table_snapshot().expect("widget is not a DataTableW")
     }
 
     /// Downcast the root widget to `DataTableW<NoExt>`; panics if it is
     /// not a data table.
     fn dt(&self) -> &crate::widgets::data_table::DataTableW<NoExt> {
-        self.widget
+        self.root
+            .w
             .as_any()
             .downcast_ref::<crate::widgets::data_table::DataTableW<NoExt>>()
             .expect("widget is not a DataTableW")
@@ -270,7 +314,8 @@ impl GuiTestHarness {
 
     /// Mutable downcast to `DataTableW<NoExt>`.
     fn dt_mut(&mut self) -> &mut crate::widgets::data_table::DataTableW<NoExt> {
-        self.widget
+        self.root
+            .w
             .as_any_mut()
             .downcast_mut::<crate::widgets::data_table::DataTableW<NoExt>>()
             .expect("widget is not a DataTableW")
@@ -290,6 +335,44 @@ impl GuiTestHarness {
     async fn compile_named_callable(&mut self, name: &str) -> Result<CallableId> {
         self.f.compile_named_callable(name).await
     }
+}
+
+/// A key going down, as the event loop delivers it.
+fn key_press(
+    key: keyboard::Key,
+    modifiers: keyboard::Modifiers,
+    text: Option<iced_core::SmolStr>,
+) -> Event {
+    Event::Keyboard(keyboard::Event::KeyPressed {
+        modified_key: key.clone(),
+        key,
+        physical_key: keyboard::key::Physical::Unidentified(
+            keyboard::key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers,
+        text,
+        repeat: false,
+    })
+}
+
+fn named_key(named: keyboard::key::Named) -> Event {
+    key_press(keyboard::Key::Named(named), keyboard::Modifiers::empty(), None)
+}
+
+/// A key that types `c`.
+fn char_key(c: &str) -> Event {
+    let s: iced_core::SmolStr = c.into();
+    key_press(keyboard::Key::Character(s.clone()), keyboard::Modifiers::empty(), Some(s))
+}
+
+/// A left click at `at`: the move there, the press and the release.
+fn left_click(at: Point) -> [Event; 3] {
+    [
+        Event::Mouse(mouse::Event::CursorMoved { position: at }),
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ]
 }
 
 /// Shared headless wgpu adapter and device, created once for all tests.
@@ -364,19 +447,7 @@ impl HeadlessGpu {
 /// resulting `Message`s.
 struct InteractionHarness {
     inner: GuiTestHarness,
-    // CR claude for claude: [structure/low] This renderer duplicates inner's lazily
-    // built one, so a test that also calls inner.render() builds two wgpu Engines. The
-    // dark-theme frame call is written four times: GuiTestHarness::render,
-    // process_events, chart_test::screenshot and frame_test::draw. Give GuiTestHarness
-    // the renderer, cache, clipboard and cursor plus one frame(size, events) ->
-    // Vec<Message> and a screenshot(size), and have the four callers use them. Found by
-    // reading; not run. (tests-gui-b-07)
-    renderer: widgets::Renderer,
-    cache: user_interface::Cache,
     viewport: Size,
-    /// The pointer as the event loop tracks it from the events sent.
-    cursor: mouse::Cursor,
-    clipboard: TestClipboard,
 }
 
 /// A clipboard holding one text.
@@ -399,40 +470,12 @@ impl InteractionHarness {
     }
 
     async fn with_viewport(code: &str, viewport: Size) -> Result<Self> {
-        let gpu = headless_gpu().await;
-        let renderer = gpu.create_renderer();
-        let inner = GuiTestHarness::new(code).await?;
-        Ok(Self {
-            inner,
-            renderer,
-            cache: user_interface::Cache::default(),
-            viewport,
-            cursor: mouse::Cursor::Unavailable,
-            clipboard: TestClipboard::default(),
-        })
+        Ok(Self { inner: GuiTestHarness::new(code).await?, viewport })
     }
 
-    /// Build a UserInterface, feed events, and return the messages the
-    /// widgets produced.
+    /// One frame over `events`: the messages the widgets produced.
     fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
-        let mut messages = Vec::new();
-        let theme =
-            crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
-        for ev in events {
-            crate::window::track_cursor(&mut self.cursor, ev);
-        }
-        crate::frame::frame(
-            &mut self.inner.widget,
-            self.viewport,
-            &mut self.cache,
-            &mut self.renderer,
-            events,
-            self.cursor,
-            &mut self.clipboard,
-            &mut messages,
-            &theme,
-        );
-        messages
+        self.inner.frame(self.viewport, events)
     }
 
     async fn drain(&mut self) -> Result<bool> {
@@ -466,18 +509,11 @@ impl InteractionHarness {
     }
 
     fn click(&mut self, pos: Point) -> Vec<Message> {
-        let mut all = Vec::new();
         // One UI frame per event so pressed → released transitions.
-        all.extend(self.process_events(&[Event::Mouse(mouse::Event::CursorMoved {
-            position: pos,
-        })]));
-        all.extend(self.process_events(&[Event::Mouse(mouse::Event::ButtonPressed(
-            mouse::Button::Left,
-        ))]));
-        all.extend(self.process_events(&[Event::Mouse(mouse::Event::ButtonReleased(
-            mouse::Button::Left,
-        ))]));
-        all
+        left_click(pos)
+            .iter()
+            .flat_map(|ev| self.process_events(std::slice::from_ref(ev)))
+            .collect()
     }
 
     /// Deliver `events` one frame each, applying each frame's messages
@@ -514,61 +550,25 @@ impl InteractionHarness {
     }
 
     fn type_text(&mut self, text: &str) -> Vec<Message> {
-        use iced_core::keyboard;
         let mut all_msgs = Vec::new();
+        let mut buf = [0; 4];
         for ch in text.chars() {
-            let s: iced_core::SmolStr = ch.to_string().into();
-            all_msgs.extend(self.process_events(&[Event::Keyboard(
-                keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Character(s.clone()),
-                    modified_key: keyboard::Key::Character(s.clone()),
-                    physical_key: keyboard::key::Physical::Unidentified(
-                        keyboard::key::NativeCode::Unidentified,
-                    ),
-                    location: keyboard::Location::Standard,
-                    modifiers: keyboard::Modifiers::empty(),
-                    text: Some(s),
-                    repeat: false,
-                },
-            )]));
+            all_msgs.extend(self.process_events(&[char_key(ch.encode_utf8(&mut buf))]));
         }
         all_msgs
     }
 
-    fn press_key(&mut self, named: iced_core::keyboard::key::Named) -> Vec<Message> {
-        use iced_core::keyboard;
-        self.process_events(&[Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(named),
-            modified_key: keyboard::Key::Named(named),
-            physical_key: keyboard::key::Physical::Unidentified(
-                keyboard::key::NativeCode::Unidentified,
-            ),
-            location: keyboard::Location::Standard,
-            modifiers: keyboard::Modifiers::empty(),
-            text: None,
-            repeat: false,
-        })])
+    fn press_key(&mut self, named: keyboard::key::Named) -> Vec<Message> {
+        self.process_events(&[named_key(named)])
     }
 
     /// Ctrl and a letter, the modifiers delivered first as the event loop
     /// does.
     fn press_ctrl(&mut self, c: &str) -> Vec<Message> {
-        use iced_core::keyboard;
         let ctrl = keyboard::Modifiers::CTRL;
-        let s: iced_core::SmolStr = c.into();
         self.process_events(&[
             Event::Keyboard(keyboard::Event::ModifiersChanged(ctrl)),
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key: keyboard::Key::Character(s.clone()),
-                modified_key: keyboard::Key::Character(s),
-                physical_key: keyboard::key::Physical::Unidentified(
-                    keyboard::key::NativeCode::Unidentified,
-                ),
-                location: keyboard::Location::Standard,
-                modifiers: ctrl,
-                text: None,
-                repeat: false,
-            }),
+            key_press(keyboard::Key::Character(c.into()), ctrl, None),
         ])
     }
 
@@ -602,7 +602,7 @@ impl InteractionHarness {
         for m in msgs {
             if let Message::EditorAction(_, _) = m {
                 let mut shell = MessageShell::default();
-                self.inner.widget.on_message(m, &mut shell);
+                self.inner.root.w.on_message(m, &mut shell);
                 for emitted in shell.out.drain(..) {
                     if let Message::Call(cid, args) = emitted {
                         if let Some(v) = args.into_iter().next() {

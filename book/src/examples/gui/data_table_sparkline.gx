@@ -5,7 +5,7 @@ use gui::{
   text::text
 };
 use core::math;
-use sys::time;
+use sys::{net, time};
 mod icon;
 
 // Four rows, each publishing a cpu value that updates once a second
@@ -19,10 +19,10 @@ let cpu_2 = 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
 let cpu_3 = 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
 let cpu_4 = 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
 
-sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
-sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
-sys::net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
-sys::net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
+net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
+net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
+net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
+net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
 
 let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
     "cpu" => sparkline_column(
@@ -34,7 +34,7 @@ let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
     other => other
 });
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_sparkline")$;
 let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let layout = column(

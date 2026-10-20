@@ -8,6 +8,7 @@ use graphix_compiler::{
     err,
     expr::ExprId,
     image::{self, ImageBuf},
+    node::WakeBit,
     typ::FnType,
 };
 use graphix_package_core::{seam_arg, seam_tick, seam_value};
@@ -26,7 +27,7 @@ pub(crate) struct AfterIdle {
     last_v: Option<Value>,
     id: Option<BindId>,
     /// A wait a sleep paused, which the next update resumes.
-    slept: bool,
+    slept: WakeBit,
     eid: ExprId,
     out: TagValue,
 }
@@ -47,7 +48,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
             timeout_v: None,
             last_v: None,
             id: None,
-            slept: false,
+            slept: WakeBit::default(),
             eid: top_id,
             out: TagValue::phantom(),
         }))
@@ -65,7 +66,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
             timeout_v,
             last_v,
             id: None,
-            slept: false,
+            slept: WakeBit::default(),
             eid,
             out: TagValue::phantom(),
         }))
@@ -88,7 +89,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let resume = std::mem::take(&mut self.slept);
+        let resume = self.slept.take();
         let mut timeout_up = false;
         if let Some(tv) = seam_value(from[0].update(ctx)) {
             timeout_up = tv.is_fired();
@@ -146,12 +147,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         self.out = TagValue::phantom();
         if let Some(id) = self.id.take() {
             ctx.release_var(id, self.eid);
-            self.slept = true;
+            self.slept.set();
         }
     }
 
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept = false;
+        self.slept = WakeBit::default();
         self.timeout_v = None;
         self.last_v = None;
         self.out = TagValue::phantom();
@@ -180,7 +181,7 @@ pub(crate) struct Timer {
     left: Option<u64>,
     id: Option<BindId>,
     /// A run a sleep paused, which the next update resumes.
-    slept: bool,
+    slept: WakeBit,
     eid: ExprId,
     out: TagValue,
 }
@@ -215,7 +216,7 @@ impl Timer {
             timeout: None,
             left: None,
             id: None,
-            slept: false,
+            slept: WakeBit::default(),
             eid,
             out: TagValue::phantom(),
         }
@@ -255,7 +256,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if std::mem::take(&mut self.slept) {
+        if self.slept.take() {
             self.arm(ctx);
         }
         let (timeout, timeout_fired) = seam_arg(ctx, &mut from[0]);
@@ -311,12 +312,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         // design/review-2026-10-19/repro/x-engine-firing-event-clear-bottoms-consumer.gx
         // (x-engine-firing-03)
         self.out = TagValue::phantom();
-        self.slept = true;
+        self.slept.set();
         self.stop(ctx)
     }
 
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept = false;
+        self.slept = WakeBit::default();
         self.timeout = None;
         self.out = TagValue::phantom();
     }

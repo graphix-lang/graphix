@@ -112,8 +112,9 @@ async fn handler_writes_through_ref_param(mode: Mode) -> Result<()> {
 }
 
 /// A handler whose interior select routes by a state variable: flipping
-/// the state wakes an arm for the first time, and the handler's standing
-/// params must deliver stale, never re-fire a consumed event.
+/// the state enters an arm for the first time and later wakes it, and at
+/// either the handler's standing params deliver stale, never re-firing a
+/// consumed event.
 const PHANTOM: &str = r#"
 let active: [`A, `B, null] = null;
 let submitted = 0;
@@ -139,13 +140,7 @@ let handle = |e: string| -> i64 select active {
 let result = submitted
 "#;
 
-// CR claude for claude: [readability/low] The `B arm is entered here for the first
-// time, which CLAUDE.md calls a Step, not a Wake. The name and the doc comment ('wakes
-// an arm for the first time') present it as wake coverage, and a regression in wake
-// handling would leave it green. Rename it to say first entry, or add a real wake: flip
-// back to `A, then to `B again, and assert the count does not move. Found by reading;
-// not run. (tests-lib-a-04)
-async fn arm_wake_delivers_standing_args_stale(mode: Mode) -> Result<()> {
+async fn arm_entry_and_wake_deliver_standing_args_stale(mode: Mode) -> Result<()> {
     let mut f = Fixture::new(PHANTOM, mode).await?;
     // route to `A, deliver one real event, then flip to `B with no new
     // event: the flip must not fire the `B arm's callee with the standing "x"
@@ -155,6 +150,14 @@ async fn arm_wake_delivers_standing_args_stale(mode: Mode) -> Result<()> {
     assert_eq!(f.settle().await?, Some(Value::I64(0)), "a phantom fire at the wake");
     f.call("test::handle", ["y".into()]).await?;
     assert_eq!(f.settle().await?, Some(Value::I64(1)));
+    // put `B to sleep over a new event, then wake it with none
+    f.call("test::set_active", [Value::Bool(false)]).await?;
+    f.settle().await?;
+    f.call("test::handle", ["z".into()]).await?;
+    f.call("test::set_active", [Value::Bool(true)]).await?;
+    assert_eq!(f.settle().await?, Some(Value::I64(1)), "a phantom fire at the wake");
+    f.call("test::handle", ["w".into()]).await?;
+    assert_eq!(f.settle().await?, Some(Value::I64(2)));
     Ok(())
 }
 
@@ -386,7 +389,7 @@ async fn arm_wake_switch_binds_the_standing_key_stale(mode: Mode) -> Result<()> 
 
 modes!(
     handler_writes_through_ref_param,
-    arm_wake_delivers_standing_args_stale,
+    arm_entry_and_wake_deliver_standing_args_stale,
     callable_body_flip_reads_standing_key_stale,
     arm_wake_does_not_redeliver_the_key_to_the_woken_callee,
     alias_read_consumes_the_formals_fire,

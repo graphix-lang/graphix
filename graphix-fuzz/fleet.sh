@@ -46,7 +46,7 @@ HOSTS=(
     "ryouko:rsync:80:1:linux"
 )
 
-MIX=${FLEET_MIX:-50:25:25:10}
+MIX=${FLEET_MIX:-}                   # empty: the binary's DEFAULT_MIX
 SYNC_WAIT=${FLEET_SYNC_WAIT:-600}     # seconds to wait for syncthing
 LAUNCH_WAIT=${FLEET_LAUNCH_WAIT:-5400} # seconds to wait for build+gate
 
@@ -59,8 +59,10 @@ f_os()      { echo "$1" | cut -d: -f5; }
 # FLEET_ONLY=<name> restricts every step to one host;
 # FLEET_EXCLUDE=<name>[,<name>...] holds those hosts OUT. Both leave the
 # seed math unchanged (each host keeps its position-derived seed).
-# FLEET_ONLY adds or restarts a single box
-# without touching the rest — bring washu-chan into a running campaign:
+# FLEET_ONLY adds a single box that has not run the campaign, without
+# touching the rest (soak.sh start refuses an existing campaign
+# directory, so a restart takes a new campaign name) — bring washu-chan
+# into a running campaign:
 # FLEET_ONLY=washu-chan fleet.sh launch <camp> <base>. FLEET_EXCLUDE runs a
 # FULL deploy that must skip a box — hold the session box out of a launch
 # while a session is live, then add it later with FLEET_ONLY:
@@ -78,13 +80,6 @@ asan_host() {
     [[ -n ${FLEET_ASAN:-} && ",${FLEET_ASAN}," == *",$1,"* ]]
 }
 
-# CR claude for claude: [doc-drift/low] The FLEET_ONLY comment above says it 'adds or
-# restarts a single box'. A restart under the same campaign name always fails: `soak.sh
-# start` exits with 'campaign directory already exists' when `~/tmp/target/fuzz/<camp>`
-# is present, and it is on any box that already ran the campaign. Either say that
-# FLEET_ONLY adds a box that has not run the campaign (a restart takes a new name), or
-# let `start` reuse a directory whose soak is not live. Found by reading; not run.
-# (fuzz-main-aux-06)
 skip_host() {
     [[ -n ${FLEET_ONLY:-} && $FLEET_ONLY != "$1" ]] && return 0
     [[ -n ${FLEET_EXCLUDE:-} && ",${FLEET_EXCLUDE}," == *",$1,"* ]] && return 0
@@ -127,6 +122,7 @@ FINGERPRINT='cd ~/proj/graphix && find graphix-types graphix-compiler graphix-rt
     | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-16'
 
 local_fingerprint() { bash -c "${FINGERPRINT/\~\/proj\/graphix/$repo}"; }
+is_this_machine()   { [[ $(timeout 120 ssh "$1" hostname 2>/dev/null) == "$(hostname)" ]]; }
 host_fingerprint()  { timeout 120 ssh "$1" "bash -c '$FINGERPRINT'" 2>/dev/null || echo unreachable; }
 
 campaign_dir_of() { # host campaign -> remote path, home-relative for rsync
@@ -222,7 +218,7 @@ $dirty"
 }
 
 sync_tree() {
-    local want now h name method got waited rc=0
+    local want now h name method got waited wait_limit rc=0
     require_clean_inputs
     want=$(local_fingerprint)
     say "local build-input fingerprint: $want"
@@ -232,9 +228,13 @@ sync_tree() {
         now=$(local_fingerprint)
         [[ $now == "$want" ]] || die "local tree CHANGED during the sync \
 ($want -> $now) — the fleet would end half old, half new; commit and redeploy"
-        if [[ $method == rsync ]]; then
+        wait_limit=$SYNC_WAIT
+        if [[ $method == rsync ]] && is_this_machine "$name"; then
+            # its checkout is ~/proj/graphix itself: verified, never written
+            wait_limit=0
+        elif [[ $method == rsync ]]; then
             # graphix builds against the sibling netidx
-            # CR claude for claude: [risk/medium] washu-chan is an rsync host that
+            # XCR claude for claude: [risk/medium] washu-chan is an rsync host that
             # reaches itself over ssh. This copy goes onto the session's own checkout,
             # and ../netidx gets the same. From ~/proj/graphix it changes nothing. From
             # any other checkout (a worktree, a copy; `local_fingerprint` already allows
@@ -244,6 +244,11 @@ sync_tree() {
             # is the local machine (compare `ssh $name hostname` with `hostname`), or
             # refuse to sync when `$repo` is not `$HOME/proj/graphix`. Found by reading;
             # not run. (fuzz-main-aux-02)
+            # 2026-10-19 claude: sync_tree skips the rsync when ssh to the host reaches
+            # this machine (is_this_machine compares hostnames) and checks its
+            # fingerprint once, so a worktree deploy reports TREE STALE for the session
+            # box instead of overwriting ~/proj/graphix. No test reaches fleet.sh; bash
+            # -n only.
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/" "$name:proj/graphix/"
             rsync -a --delete --exclude target --exclude .git \
@@ -253,7 +258,7 @@ sync_tree() {
         while :; do
             got=$(host_fingerprint "$name")
             [[ $got == "$want" ]] && break
-            (( waited >= SYNC_WAIT )) && break
+            (( waited >= wait_limit )) && break
             sleep 10; waited=$((waited + 10))
         done
         if [[ $got == "$want" ]]; then
@@ -294,9 +299,9 @@ launch() {
         say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s%s' \
              "$name" "$camp" "$seed" "$workers" "$scale" \
              "$([[ $asan == 1 ]] && echo ' ASAN' || true)")"
-        timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" "$asan" <<'EOF' \
+        timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$asan" $MIX <<'EOF' \
             || { warn "$(printf '%-8s LAUNCH FAILED' "$name")"; rc=1; }
-camp=$1; seed=$2; workers=$3; scale=$4; mix=$5; asan=$6
+camp=$1; seed=$2; workers=$3; scale=$4; asan=$5; mix=${6:-}
 log=~/tmp/fleet-$camp-launch.log
 perl -MPOSIX -e 'exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' \
     bash -lc "

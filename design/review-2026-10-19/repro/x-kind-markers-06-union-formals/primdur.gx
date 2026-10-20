@@ -1,0 +1,1 @@
+{ let g = |q: [string, duration, bool]| -> i64 select q { string as a => str::len("[a]"), duration as a => str::len("[a]"), bool as a => str::len("[a]") }; let w: [string, duration, bool] = "x"; let r = #[native] g(w); println("[r]"); sys::exit(sys::time::after_idle(duration:50.ms, 0)) }

@@ -15,7 +15,7 @@ let prices = array::init(n, |i| {
   100.0 + cast<f64>(x)$ / 10.0
 });
 let tick = array::iter(prices);
-let (variance, chk) = winstats::stats(wsize, tick);
+let chk = winstats::stats(wsize, tick);
 let processed = count(chk) - 1;
 let done = select processed {
   p if p < n => never(),

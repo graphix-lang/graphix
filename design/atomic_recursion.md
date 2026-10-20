@@ -99,15 +99,11 @@ SIGKILL could end the process. An embedder watchdog is buildable today
 into the engine, because a default timeout would be a credit system
 wearing a hat.
 
-<!-- CR claude for claude: [doc-drift/low] This paragraph and the activation-budget one
-below name `CtlFlag::Budget`, which no longer exists. A budget abort sets
-CtlFlag::StackBudget or CtlFlag::ActivationBudget beside Abort (Control::abort_budget,
-read back by Control::aborted_by). Update both, and design/recursive_activations.md,
-which repeats it. Found by reading; not run. (rt-10) -->
 The memory twin is the stack budget (`GRAPHIX_STACK_BUDGET` /
 `set_stack_budget`, unlimited by default): a recursion that would
 exceed it aborts the runtime through the same `Control`
-(`CtlFlag::Budget`), on both engines, and the fuzz harness reads that
+(`Control::abort_budget`: `CtlFlag::StackBudget` beside `Abort`, read
+back by `Control::aborted_by`), on both engines, and the fuzz harness reads that
 abort as a timeout — containment, like the deadline, not a program
 outcome.
 
@@ -120,6 +116,7 @@ released at its delete, against the runtime's `Control`
 chooses). A node-walked activation holds about 20 KB of heap, so memory
 runs out long before stack, and a count follows the program where stack
 bytes follow the thread and the fork schedule; past the budget the
-runtime aborts the same way (`CtlFlag::Budget`). The fuzzer's children
+runtime aborts the same way (`CtlFlag::ActivationBudget` beside
+`Abort`). The fuzzer's children
 run at 50,000, below where their 1 GiB stack budget would trip. A JIT
 tail loop binds nothing and is not counted; the interrupt stops it.

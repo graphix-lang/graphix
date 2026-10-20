@@ -5,14 +5,14 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::publisher::Value;
 
 // The interface declares an abstract type; the implementation defines it.
 run!(
     abstract_type_basic,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::get(inner::make(42))
@@ -50,7 +50,7 @@ run!(
 // An interface without abstract types.
 run!(
     interface_no_abstract_types,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(30))),
+    is(Value::I64(30)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::add(10, 20)
@@ -65,7 +65,7 @@ run!(
 // Multiple abstract types in one interface.
 run!(
     abstract_type_multiple,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
+    is(Value::I64(15)),
     "/test.gx" => r#"
         mod inner;
         let a = inner::make_a(10);
@@ -89,7 +89,7 @@ run!(
 // Two modules using the same abstract type name with different definitions.
 run!(
     abstract_type_different_modules,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(142))),
+    is(Value::I64(142)),
     "/test.gx" => r#"
         mod mod_a;
         mod mod_b;
@@ -119,7 +119,7 @@ run!(
 // An abstract type used in an exported type definition.
 run!(
     abstract_type_in_typedef,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(77))),
+    is(Value::I64(77)),
     "/test.gx" => r#"
         mod inner;
         let p = inner::make_pair(77, "test");
@@ -140,7 +140,7 @@ run!(
 // An abstract type in a variant.
 run!(
     abstract_type_in_variant,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         mod inner;
         let opt = inner::some(42);
@@ -164,7 +164,7 @@ run!(
 // An abstract type in a tuple.
 run!(
     abstract_type_in_tuple,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
+    is(Value::I64(15)),
     "/test.gx" => r#"
         mod inner;
         let pair = inner::make_pair(5, 10);
@@ -184,7 +184,7 @@ run!(
 // An abstract type in an array.
 run!(
     abstract_type_in_array,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
+    is(Value::I64(6)),
     "/test.gx" => r#"
         mod inner;
         let arr = inner::make_array([1, 2, 3]);
@@ -203,7 +203,7 @@ run!(
 // An abstract type in a recursive type.
 run!(
     abstract_type_recursive,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
+    is(Value::I64(6)),
     "/test.gx" => r#"
         mod inner;
         let list = inner::cons(1, inner::cons(2, inner::cons(3, inner::nil())));
@@ -228,13 +228,7 @@ run!(
 // An abstract type behind a byref parameter.
 run!(
     abstract_type_byref,
-    |v: Result<&Value>| match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(42), Value::I64(43)] => true,
-            _ => false,
-        },
-        _ => false,
-    },
+    prints("[i64:42, i64:43]"),
     "/test.gx" => r#"
         mod inner;
         let counter = inner::make(42);
@@ -256,7 +250,7 @@ run!(
 // A nested module with an abstract type.
 run!(
     abstract_type_nested_module,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(99))),
+    is(Value::I64(99)),
     "/test.gx" => r#"
         mod outer;
         let result = outer::inner::get(outer::inner::make(99))
@@ -281,7 +275,7 @@ run!(
 // A dynamic module with an abstract type in its signature.
 run!(
     abstract_type_dynamic_module,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
+    is(Value::I64(84)),
     "/test.gx" => r#"
         let source = "
             type T = Abstract<i64>;
@@ -308,7 +302,7 @@ run!(
 // compiles.
 run!(
     abstract_type_rust_backed,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    is(Value::I64(0)),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -380,7 +374,7 @@ run!(
 // repeating it in the val declarations.
 run!(
     abstract_type_constraint_auto_enforced,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         mod inner;
         let box = inner::wrap(42);
@@ -423,7 +417,7 @@ run!(
 // carry: a call through it is checked by it alone.
 run!(
     interface_declares_the_arithmetic_bound,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    is(Value::I64(4)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::add(2, 2)
@@ -506,7 +500,7 @@ run!(
 // A parameterized abstract type.
 run!(
     abstract_type_parameterized_basic,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         mod inner;
         let box = inner::wrap(42);
@@ -526,7 +520,7 @@ run!(
 // A parameterized abstract type at different concrete types.
 run!(
     abstract_type_parameterized_multi_instantiation,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
+    is(Value::I64(47)),
     "/test.gx" => r#"
         mod inner;
         let int_box = inner::wrap(42);
@@ -548,7 +542,7 @@ run!(
 // concretely in the interface.
 run!(
     abstract_type_parameterized_constrained,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
+    is(Value::I64(84)),
     "/test.gx" => r#"
         mod inner;
         let wrapper = inner::wrap(42);
@@ -568,7 +562,7 @@ run!(
 // A parameterized abstract type in nested position (Array of Box).
 run!(
     abstract_type_parameterized_nested,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
+    is(Value::I64(6)),
     "/test.gx" => r#"
         mod inner;
         let boxes = [inner::wrap(1), inner::wrap(2), inner::wrap(3)];
@@ -589,7 +583,7 @@ run!(
 // Two type parameters.
 run!(
     abstract_type_parameterized_two_params,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
+    is(Value::I64(47)),
     "/test.gx" => r#"
         mod inner;
         let pair = inner::make(42, "hello");
@@ -635,7 +629,7 @@ run!(
 // An abstract type as a Map value.
 run!(
     abstract_type_map_value,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         mod inner;
         let m = inner::make_map();
@@ -659,7 +653,7 @@ run!(
 // Abstract types as both Map key and value.
 run!(
     abstract_type_map_key_and_value,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(100))),
+    is(Value::I64(100)),
     "/test.gx" => r#"
         mod inner;
         let k = inner::make_key("test");
@@ -688,7 +682,7 @@ run!(
 // An abstract type as an error payload in a throws clause.
 run!(
     abstract_type_in_throws,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         mod inner;
         let result = {
@@ -710,30 +704,19 @@ run!(
         let risky = |x: i64| -> i64 x
     "#; FuseExpect::Jit);
 
-// An abstract type with a throwing function whose `?` is caught by the
-// enclosing catch.
-// CR claude for claude: [test-gap/low] This fixture and abstract_type_in_throws never
-// raise: `[t.0.value + 41][0]` is in bounds, the catch handler is dead, and the result
-// is the success value. Nothing in the tree pins an error raised through an interface
-// `val .. throws` reaching the caller's catch. Nothing pins an implementation that
-// throws more than its val declares being refused. Index out of range here, observe the
-// catch (`caught <- ..`, pin -1), and add a refused("in throws clause") fixture. probe:
-// design/review-2026-10-19/repro/tests-modules-image-interface-throws.sh
-// (tests-modules-image-05)
+// An abstract type with a throwing function whose `?` raises through the
+// interface's `throws` to the caller's catch.
 run!(
     abstract_type_with_throws_clause,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(-1)),
     "/test.gx" => r#"
         mod inner;
-        let result = {
-            catch(e) {
-                let chain = e.0;
-                select chain.error {
-                    `ArrayIndexError(_) => -1
-                }
-            };
+        let caught = 0;
+        let r = {
+            catch(e) caught <- select e.0.error { `ArrayIndexError(_) => -1 };
             inner::get_value(inner::make(1))
-        }
+        };
+        let result = filter(caught, |c| c != 0)
     "#,
     "/test/inner.gxi" => r#"
         type T;
@@ -745,14 +728,32 @@ run!(
         let make = |x: i64| -> T T({ value: x });
         let get_value = |t: T| -> i64 {
             let a = [t.0.value + 41];
-            a[0]?
+            a[t.0.value]?
         }
     "#; FuseExpect::Jit);
+
+// An implementation that raises what its `val` does not declare is
+// refused.
+run!(
+    an_undeclared_raise_is_refused,
+    refused("in throws clause"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/m.gx" => "let f = |x: i64| -> i64 select x { 0 => error(`Zero)?, n => n }"
+; FuseExpect::None);
+
+run!(
+    a_raise_of_another_error_is_refused,
+    refused("in throws clause"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64 throws Error<ErrChain<`A>>",
+    "/test/m.gx" => "let f = |x: i64| -> i64 select x { 0 => error(`Zero)?, n => n }"
+; FuseExpect::None);
 
 // Two modules with separate abstract types, combined by the caller.
 run!(
     abstract_type_two_modules_combined,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
+    is(Value::I64(15)),
     "/test.gx" => r#"
         mod mod_a;
         mod mod_b;
@@ -860,7 +861,7 @@ run!(
 // construct and read it — nominal without being hidden.
 run!(
     abstract_public_newtype,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(43))),
+    is(Value::I64(43)),
     "/test.gx" => r#"
         mod inner;
         let t = inner::T(42);
@@ -878,7 +879,7 @@ run!(
 // payload pattern.
 run!(
     abstract_pattern_let,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    is(Value::I64(42)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::get(inner::make(42))
@@ -896,7 +897,7 @@ run!(
 
 run!(
     abstract_pattern_select,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::sign(inner::make(42))
@@ -920,7 +921,7 @@ run!(
 // their tags: `T as _` is a runtime type test, also on a union.
 run!(
     abstract_type_test_union,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
         mod a;
         mod b;
@@ -973,7 +974,7 @@ run!(
 // A destructuring `let` implements every `val` it binds.
 run!(
     interface_val_by_destructuring,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    is(Value::I64(3)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::a + inner::b
@@ -991,7 +992,7 @@ run!(
 // by destructuring lands after that `let`, where the body can name it.
 run!(
     interface_type_anchored_after_destructuring,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    is(Value::I64(3)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::a + inner::c + inner::b
@@ -1033,43 +1034,21 @@ run!(
 
 // An error in an interface item carries the item's position and file.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [structure/low] This test repeats modules.rs's compile_error
-// helper line for line: the VFS table, TestCtx::start with a VfsResolver, then
-// compiling `{ mod test; test::result }` for its error. Move compile_error into
-// graphix_package_core::testing beside `refusal`, and call it from both files. Found by
-// reading; not run. (tests-modules-image-10)
 async fn interface_error_is_placed() -> Result<()> {
     use graphix_compiler::expr::{ParserContext, Source};
-    let tbl = ahash::AHashMap::from_iter(
-        [
+    let e = graphix_package_core::testing::compile_error(
+        &[
             ("/test.gx", "mod inner;\nlet result = 0"),
             ("/test/inner.gxi", "val x: i64;\nimpl Nope for i64"),
             ("/test/inner.gx", "let x = 1"),
-        ]
-        .map(|(p, t)| {
-            (
-                netidx_core::path::Path::from(p),
-                graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(t)),
-            )
-        }),
-    );
-    let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let resolver = graphix_compiler::expr::VfsResolver::new(tbl);
-    let ctx = graphix_package_core::testing::TestCtx::start(
-        graphix_package_core::testing::config(
-            tx,
-            &crate::TEST_REGISTER,
-            vec![resolver],
-            |_| {},
-        )?,
+        ],
+        "{ mod test; test::result }",
+        crate::TEST_REGISTER,
     )
     .await?;
-    let e =
-        ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await.unwrap_err();
     let pc = e.downcast_ref::<ParserContext>().expect("a placed error");
     assert_eq!(pc.pos.line, 2, "{e:#}");
     assert!(matches!(&pc.ori.source, Source::Vfs(n) if n == "/test/inner"), "{e:#}");
-    ctx.shutdown().await;
     Ok(())
 }
 
@@ -1077,7 +1056,7 @@ async fn interface_error_is_placed() -> Result<()> {
 // it by meaning, not by spelling.
 run!(
     interface_trait_redeclared_with_renamed_tvar,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))),
+    is(Value::I64(7)),
     "/test.gx" => r#"
         mod inner;
         let result = inner::Pick::pick(1, 7)
@@ -1112,7 +1091,7 @@ run!(
 // signature spells out: `Collection::map` returns `self<'b>`, an array.
 run!(
     signature_holds_a_filled_application,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => r#"
         mod inner;
         let result = array::len(inner::f(1))
@@ -1211,7 +1190,7 @@ run!(
 // public newtype, constructed, read and matched from outside.
 run!(
     abstract_type_public_without_interface,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(10))),
+    is(Value::I64(10)),
     "/test.gx" => r#"
         mod inner;
         let u = inner::T(5);
@@ -1224,7 +1203,7 @@ run!(
 // The same under a parent whose interface re-exports the module.
 run!(
     abstract_type_public_under_an_interface,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
+    is(Value::I64(5)),
     "/test.gx" => r#"
         mod outer;
         let result = outer::sub::T(5).0
@@ -1292,7 +1271,7 @@ run!(
 // orders it, as the rest of the signature decides.
 run!(
     open_union_pairs_by_the_rest_of_the_signature,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    is(Value::I64(2)),
     "/test.gx" => "mod m; let result = m::f(1, 2)",
     "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a) -> 'a;",
     "/test/m.gx" => "let f = |x: ['b, 'a], y: 'a| -> 'a y"
@@ -1320,7 +1299,7 @@ run!(
 
 run!(
     ground_union_matches_an_unnormalized_binding,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => r#"
         let b = false;
         let y = never();
@@ -1337,7 +1316,7 @@ run!(
 // cell maps to the signature's 'a, so their union is 'a.
 run!(
     union_of_open_cells_implements_a_variable,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    is(Value::I64(1)),
     "/test.gx" => "mod m; let result = m::pick(true, 1, 2)",
     "/test/m.gxi" => "val pick: fn<'a: Any>(b: bool, x: 'a, y: 'a) -> 'a;",
     "/test/m.gx" => "let pick = |b, x, y| select b { true => x, false => y }"
@@ -1381,13 +1360,6 @@ run!(
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
 ; FuseExpect::None);
 
-// CR claude for claude: [test-gap/low] The comment above says a declared inner bound
-// holds at the call, but this fixture calls only `m::f([1])`, which passes with or
-// without `'b: Int`. Pin the refusal too: `m::f([1.5])` is refused today ("unbound
-// within Int"), and nothing would notice if the interface's inner bound were lost at
-// the call. probe:
-// design/review-2026-10-19/repro/tests-modules-image-bound-inside-bound-call.sh
-// (tests-modules-image-08)
 run!(
     a_declared_bound_inside_a_bound_holds,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1)]),
@@ -1395,6 +1367,14 @@ run!(
     "/test/m.gxi" => "val f: fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a;",
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
 );
+
+run!(
+    a_declared_bound_inside_a_bound_refuses_at_the_call,
+    refused("unbound within Int"),
+    "/test.gx" => "mod m; let result = m::f([1.5])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a;",
+    "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
+; FuseExpect::None);
 
 // A predicate the implementation needs of a compound signature type asks
 // it of the variables inside: Array<'a> is discernible only if 'a is.
@@ -1408,8 +1388,25 @@ run!(
 
 run!(
     a_compound_signature_type_with_its_bounds_checks,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    is(Value::Bool(true)),
     "/test.gx" => "mod m; let result = m::eq([1], [1])",
     "/test/m.gxi" => "val eq: fn<'a: Discernible>(x: Array<'a>, y: Array<'a>) -> bool;",
     "/test/m.gx" => "let eq = 'a: Discernible |x: Array<'a>, y: Array<'a>| -> bool x == y"
 );
+
+// An implementation that calls a function it is handed at types of its
+// own choosing (a rank-2 parameter) does not implement a signature that
+// hands it a function at one type.
+run!(
+    rank2_parameter_does_not_implement_a_monomorphic_one,
+    refused("the implementation picks 'b at each call of the function it is handed"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::f(|x: i64| x * 2)
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(g: fn(x: i64) -> i64) -> f64;
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |g: fn<'b: Number>(x: 'b) -> 'b| -> f64 g(2.5)
+    "#; FuseExpect::None);

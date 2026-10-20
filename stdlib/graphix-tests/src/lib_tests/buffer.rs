@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, prints},
+};
 use netidx::subscriber::Value;
 
 const BYTES_ROUND_TRIP: &str = r#"
@@ -398,9 +401,7 @@ const DECODE_WRITES_ONCE_PER_FIRE: &str = r#"{
   select step { 7 => (n, x), _ => never() }
 }"#;
 
-run!(decode_writes_once_per_fire, DECODE_WRITES_ONCE_PER_FIRE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:2, u8:7]"
-});
+run!(decode_writes_once_per_fire, DECODE_WRITES_ONCE_PER_FIRE, prints("[i64:2, u8:7]"));
 
 // A decode that cannot finish writes nothing, and the length it lacked
 // arriving later does not run it again: x keeps its initial 0, d stays
@@ -420,8 +421,8 @@ const DECODE_UNFINISHED_WRITES_NOTHING: &str = r#"{
   select step { 5 => (c, x, got_d), _ => never() }
 }"#;
 
-run!(decode_unfinished_writes_nothing, DECODE_UNFINISHED_WRITES_NOTHING, |v: Result<
-    &Value,
->| {
-    format!("{}", v.unwrap()) == "[i64:1, u8:0, false]"
-});
+run!(
+    decode_unfinished_writes_nothing,
+    DECODE_UNFINISHED_WRITES_NOTHING,
+    prints("[i64:1, u8:0, false]")
+);

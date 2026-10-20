@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::literal;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval_modes, refused},
+    testing::{FuseExpect, eval_modes, prints, refused},
 };
 use netidx::subscriber::Value;
 
@@ -57,10 +57,7 @@ run!(json_optional_fields_read_exactly, r#"{
     let r: Result<{small: [i8, null]}, [`JsonErr(string), `InvalidCast(string)]> =
         json::read("{\"small\": 300}");
     (w, select r { error as e => "[e]", _ => "read" })
-}"#, |v: Result<&Value>| {
-    format!("{}", v.unwrap())
-        == r#"[[["small", i8:7], ["weights", [f64:1., f64:2.]]], "error:`InvalidCast(\"can't cast 300 to [i8, null]: no primitive conversion\")"]"#
-}; FuseExpect::Jit);
+}"#, prints(r#"[[["small", i8:7], ["weights", [f64:1., f64:2.]]], "error:`InvalidCast(\"can't cast 300 to [i8, null]: no primitive conversion\")"]"#); FuseExpect::Jit);
 
 run!(json_read_bytes, r#"{
     let b = json::write_bytes(42)$;
@@ -89,9 +86,7 @@ run!(json_nested, r#"{
     type Nested = {items: Array<i64>, meta: {count: i64}};
     let obj: Nested = json::read(json::write_str({items: [1, 2], meta: {count: 2}})$)?;
     obj
-}"#, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == r#"[["items", [i64:1, i64:2]], ["meta", [["count", i64:2]]]]"#
-}; FuseExpect::None);
+}"#, prints(r#"[["items", [i64:1, i64:2]], ["meta", [["count", i64:2]]]]"#); FuseExpect::None);
 
 // json over a tcp stream, read back from the other end.
 run!(json_stream_tcp, r#"{
@@ -342,3 +337,68 @@ run!(composite_casts_by_form, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"["Ready", "string", "A", [i64:1, "x"]]"#)
 }; FuseExpect::Jit);
+
+// A writer reads a value's kind markers, never its data form: a union
+// member is the one the value is (a struct beside an array of pairs, a
+// tuple of pairs beside null, an inline struct under a nullable), and a
+// list's elements keep their type (x-kind-markers-01, t-rep-03).
+run!(writers_choose_members_by_kind, r#"{
+    let f: [{a: i64}, Array<(string, i64)>] = {a: 1};
+    let c: [((string, i64), (string, i64)), null] = (("a", 1), ("b", 2));
+    let l: List<Array<(string, i64)>> = [<[("a", 1)]>];
+    let o: [{a: Array<(string, i64)>, b: i64}, null] = {a: [("k", 1)], b: 7};
+    let t = toml::write_str({v: f})$;
+    "[json::write_str(f)$] [json::write_str(c)$] [json::write_str(l)$] [json::write_str(o)$] [str::trim(t)]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s
+        == "{\"a\":1} [[\"a\",1],[\"b\",2]] [[[\"a\",1]]] {\"a\":[[\"k\",1]],\"b\":7} [v]\na = 1")
+}; FuseExpect::Jit);
+
+// A datetime or duration map key is written as such a value is, so the
+// map reads back into its type (x-rerun-3-01).
+run!(time_map_keys_read_back, r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let m: Map<datetime, i64> = {datetime:"2020-01-01T00:00:00Z" => 1};
+    let d: Map<duration, i64> = {duration:1.5s => 2};
+    let m2: Result<Map<datetime, i64>, E> = json::read(json::write_str(m)$);
+    let d2: Result<Map<duration, i64>, E> = json::read(json::write_str(d)$);
+    (json::write_str(m)$, m2$ == m, json::write_str(d)$, d2$ == d)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string()
+        == r#"["{\"2020-01-01T00:00:00+00:00\":1}", true, "{\"1.5\":2}", true]"#)
+}; FuseExpect::Jit);
+
+// A number past f64's range is an error, never a NaN the text never held
+// (x-engine-collections-05).
+run!(json_number_out_of_range, r#"{
+    let r: Result<f64, [`JsonErr(string), `InvalidCast(string)]> = json::read("1e400");
+    select r { error as e => "[e]", v => "[v]" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.starts_with("error:`JsonErr(\"number out of range"))
+}; FuseExpect::Jit);
+
+/// Bytes are written as an array: under the deepest arrays json::read
+/// takes, a bytes leaf is one container too many, refused on write
+/// (x-rerun-3-03).
+#[tokio::test(flavor = "multi_thread")]
+async fn written_bytes_count_as_a_container() -> Result<()> {
+    let program = |n: usize| {
+        let typ = format!("{}bytes{}", "Array<".repeat(n), ">".repeat(n));
+        let v = format!("{}bytes:AQID{}", "[".repeat(n), "]".repeat(n));
+        format!(
+            "{{ let v: {typ} = {v}; \
+             select json::write_str(v) {{ \
+               error as e => \"WRITE [e]\", \
+               s => {{ let r: Result<{typ}, [`JsonErr(string), `InvalidCast(string)]> = json::read(s); \
+                 select r {{ error as e => \"READ [e]\", _ => \"ok\" }} }} \
+             }} }}"
+        )
+    };
+    let deepest = eval_modes(&program(126), crate::TEST_REGISTER).await?;
+    assert_eq!(deepest, Ok(Value::String(literal!("ok"))));
+    match eval_modes(&program(127), crate::TEST_REGISTER).await? {
+        Ok(Value::String(s)) if s.starts_with("WRITE") => (),
+        r => panic!("{r:?}"),
+    }
+    Ok(())
+}

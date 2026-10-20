@@ -60,10 +60,10 @@ impl TVar {
     }
 
     /// Bind an unbound cell once its writers are checked: to ⊥ when only
-    /// ⊥ was produced into it ([`TCell::bottom_fed`]), whatever bounds
+    /// ⊥ was produced into it ([`CellFact::BottomFed`]), whatever bounds
     /// it, else as [`Self::settle_witness`].
     ///
-    /// [`TCell::bottom_fed`]: super::tvar::TCell::bottom_fed
+    /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
     pub fn settle(&self, env: &Env) -> Result<()> {
         if self.cell().read().facts.contains(CellFact::BottomFed) {
             return self.settle_bottom();
@@ -121,17 +121,11 @@ impl TVar {
         self.settle_bottom()
     }
 
-    // CR claude for claude: [readability/low] This and not_function print `self.name`
-    // raw, so a minted cell shows as '_4611686018427395646, where every other
-    // diagnostic shortens it with tvar::ShortName. Format the name through ShortName in
-    // both. probe:
-    // design/review-2026-10-19/repro/x-typecheck-generics-not-concrete-raw-name.gx
-    // (x-typecheck-generics-07)
     fn not_concrete(&self) -> anyhow::Error {
         anyhow::anyhow!(
             "the type '{} must be fully known here, a type-directed operation reads it: \
              annotate it",
-            self.name
+            super::tvar::ShortName(&self.name)
         )
     }
 
@@ -139,7 +133,7 @@ impl TVar {
         anyhow::anyhow!(
             "the type '{} must be a function here, an operation reads its signature: \
              annotate it",
-            self.name
+            super::tvar::ShortName(&self.name)
         )
     }
 

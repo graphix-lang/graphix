@@ -3,7 +3,7 @@ use crate::{env::Env, print_as_written, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use netidx_derive::Pack;
-use netidx_value::{Typ, Value};
+use netidx_value::Value;
 use smallvec::{SmallVec, smallvec};
 use std::fmt;
 use triomphe::Arc;
@@ -169,17 +169,7 @@ impl StructurePattern {
             // select unifies through `Type::any_as_tvar` to narrow past it.
             Self::Ignore => Ok(Type::Any),
             Self::Bind(_) => Ok(Type::empty_tvar()),
-            // CR claude for claude: [bug/low] A pattern literal is typed by a second
-            // rule, here and in the compiler's Literal pattern compile
-            // (node/pattern.rs), not by node/compiler.rs::constant_type, which types
-            // expression literals. So `error:1` types as the primitive `error`: over
-            // [i64, Error<string>] the dead arm `error:1 => 1` is accepted where `1.5
-            // => 1` is refused. And `abstract:..` is accepted as a pattern although the
-            // expression form is refused ("an abstract value literal has no type").
-            // Fix: move constant_type into graphix-types and use it in both places.
-            // probe: design/review-2026-10-19/repro/t-parser-b-literal-pattern-type.sh
-            // (t-parser-b-03)
-            Self::Literal(v, _) => Ok(Type::Primitive(Typ::get(v).into())),
+            Self::Literal(v, _) => Type::of_literal(v),
             Self::Tuple { all: _, binds } => {
                 let a = binds
                     .iter()
@@ -480,6 +470,25 @@ pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Resu
     })
 }
 
+/// A struct pattern's fields in the order they print (as written when
+/// printing as written), each with its pattern, or `None` for a pun.
+pub(super) fn printed_fields(
+    binds: &[(ArcStr, StructurePattern, WrittenAt)],
+) -> SmallVec<[(&ArcStr, Option<&StructurePattern>); 16]> {
+    let mut fields: SmallVec<[_; 16]> = binds
+        .iter()
+        .map(|(name, pat, at)| {
+            let pun = matches!(pat, StructurePattern::Bind(n) if n.name == *name)
+                && !parser::is_reserved_binding(name);
+            (at, (name, (!pun).then_some(pat)))
+        })
+        .collect();
+    if print_as_written() {
+        fields.sort_by_key(|(at, _)| at.order());
+    }
+    fields.into_iter().map(|(_, f)| f).collect()
+}
+
 impl fmt::Display for StructurePattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))
@@ -561,19 +570,11 @@ impl StructurePattern {
                 Ok(())
             }
             StructurePattern::Struct { exhaustive, all: _, binds } => {
-                let mut written: SmallVec<[_; 16]> = binds.iter().collect();
-                if print_as_written() {
-                    written.sort_by_key(|(_, _, at)| at.order());
-                }
                 write!(f, "{{ ")?;
-                for (i, (name, pat, _)) in written.iter().enumerate() {
+                for (i, (name, pat)) in printed_fields(binds).into_iter().enumerate() {
                     match pat {
-                        StructurePattern::Bind(n)
-                            if n.name == *name && !parser::is_reserved_binding(name) =>
-                        {
-                            write!(f, "{name}")?
-                        }
-                        pat => write!(f, "{name}: {pat}")?,
+                        None => write!(f, "{name}")?,
+                        Some(pat) => write!(f, "{name}: {pat}")?,
                     }
                     if !exhaustive || i < binds.len() - 1 {
                         write!(f, ", ")?

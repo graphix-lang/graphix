@@ -12,7 +12,7 @@ type TextInput = {
   font: &[Font, null]
 };
 
-// A non-null #size must be finite, positive and at most 4096 pixels.
+/// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_input: fn(
   ?#placeholder: &string,
   ?#on_input: [fn(s: string) -> Any, null],

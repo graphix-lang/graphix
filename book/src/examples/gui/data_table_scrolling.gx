@@ -21,15 +21,9 @@ let base = "/local/graphix/data_table_scrolling";
 // Drive every metric off one clock so all rows update in lockstep.
 let tick = time::timer(duration:2.s, true);
 
-// CR claude for claude: [readability/low] The `f64:` prefix is redundant on a float
-// literal (`0.` is already f64). It appears 14 times in this file and also in
-// data_table_virtual, data_table_editable and data_table_dashboard, while
-// data_table_sparkline writes plain `30.0`. Remove them all; with the prefixes
-// stripped, all four files still pass --expand. Found by reading; the stripped files
-// were checked with graphix --expand. (examples-gui-04)
-let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
-let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
-let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
+let rand01 = || rand::rand(#start: 0., #end: 1., #clock: tick);
+let rand100 = || rand::rand(#start: 0., #end: 100., #clock: tick);
+let rand_mbps = || rand::rand(#start: 0., #end: 1000., #clock: tick);
 
 let publish_host = |name: string| {
     net::publish("[base]/host-[name]/cpu_pct", rand100());
@@ -47,16 +41,16 @@ let publish_host = |name: string| {
 array::map(host_ids, publish_host);
 
 let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
-    "cpu_pct"       => progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &f64:90.),
-    "mem_pct"       => progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &f64:90.),
-    "disk_pct"      => progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &f64:90.),
-    "net_in_mbps"   => text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &f64:110.),
-    "net_out_mbps"  => text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &f64:110.),
-    "load_1m"       => sparkline_column(#name: "load_1m",    #history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &f64:120.),
-    "load_5m"       => sparkline_column(#name: "load_5m",    #history_seconds: f64:300., #display_name: "Load 5m",  #width: &f64:120.),
-    "load_15m"      => sparkline_column(#name: "load_15m",   #history_seconds: f64:900., #display_name: "Load 15m", #width: &f64:120.),
-    "error_count"   => text_column(    #name: "error_count", #display_name: "Errors",   #width: &f64:100.),
-    "request_count" => text_column(    #name: "request_count",#display_name: "Requests",#width: &f64:110.),
+    "cpu_pct"       => progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &90.),
+    "mem_pct"       => progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &90.),
+    "disk_pct"      => progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &90.),
+    "net_in_mbps"   => text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &110.),
+    "net_out_mbps"  => text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &110.),
+    "load_1m"       => sparkline_column(#name: "load_1m",    #history_seconds: 60.,  #display_name: "Load 1m",  #width: &120.),
+    "load_5m"       => sparkline_column(#name: "load_5m",    #history_seconds: 300., #display_name: "Load 5m",  #width: &120.),
+    "load_15m"      => sparkline_column(#name: "load_15m",   #history_seconds: 900., #display_name: "Load 15m", #width: &120.),
+    "error_count"   => text_column(    #name: "error_count", #display_name: "Errors",   #width: &100.),
+    "request_count" => text_column(    #name: "request_count",#display_name: "Requests",#width: &110.),
     other => other
 });
 
@@ -79,6 +73,6 @@ let layout = column(
     #icon: &icon::icon,
     #title: &"Data Table — Scrolling",
     #theme: &`CatppuccinMocha,
-    #size: &mut {width: f64:900., height: f64:400.},
+    #size: &mut {width: 900., height: 400.},
     &layout
 )]

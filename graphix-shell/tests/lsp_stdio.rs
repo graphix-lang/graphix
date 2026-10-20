@@ -73,3 +73,44 @@ fn a_burst_of_edits_is_checked_once() {
     assert!(child.wait().unwrap().success());
     assert_eq!(publishes, 1, "{EDITS} queued edits");
 }
+
+/// A frame whose body is no JSON-RPC message is skipped: the server
+/// answers what follows it and shuts down cleanly.
+#[test]
+fn a_malformed_message_is_skipped() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_graphix"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run graphix lsp");
+    let mut out = Vec::new();
+    let init = json!({"processId": null, "capabilities": {}});
+    Message::Request(Request::new(RequestId::from(1), "initialize".into(), init))
+        .write(&mut out)
+        .unwrap();
+    Message::Notification(Notification::new("initialized".into(), json!({})))
+        .write(&mut out)
+        .unwrap();
+    for bad in [&b"not json at all"[..], b"[1,2,3]"] {
+        out.extend_from_slice(
+            format!("Content-Length: {}\r\n\r\n", bad.len()).as_bytes(),
+        );
+        out.extend_from_slice(bad);
+    }
+    Message::Request(Request::new(RequestId::from(2), "shutdown".into(), json!(null)))
+        .write(&mut out)
+        .unwrap();
+    Message::Notification(Notification::new("exit".into(), json!(null)))
+        .write(&mut out)
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&out).unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut shut_down = false;
+    while let Some(msg) = Message::read(&mut stdout).unwrap() {
+        shut_down |= matches!(msg, Message::Response(r) if r.id == RequestId::from(2));
+    }
+    assert!(shut_down, "the shutdown after a malformed message was not answered");
+    assert!(child.wait().unwrap().success());
+}

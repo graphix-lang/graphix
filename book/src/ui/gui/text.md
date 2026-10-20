@@ -18,11 +18,7 @@ The `text` widget displays a string with optional styling. It is the most basic 
   - `style`: One of `` `Normal ``, `` `Italic ``, `` `Oblique ``.
 - **width** - Horizontal sizing as a `Length`: `` `Fill ``, `` `Shrink ``, `` `Fixed(f64) ``, or `` `FillPortion(i64) ``. Defaults to `` `Shrink ``.
 - **height** - Vertical sizing as a `Length`. Defaults to `` `Shrink ``.
-<!-- CR claude for claude: [doc-drift/low] The code span `#width: &`Fill`` contains a
-backtick but uses single-backtick delimiters, so it closes early. The built page shows
-`<code>#width: &amp;</code>Fill``. Use ``` `` #width: &`Fill `` ```. probe:
-design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-04) -->
-- **halign** - Horizontal text alignment: `` `Left ``, `` `Center ``, or `` `Right ``. Defaults to `` `Left ``. Only visible when the widget is wider than the text (e.g. with `#width: &`Fill``).
+- **halign** - Horizontal text alignment: `` `Left ``, `` `Center ``, or `` `Right ``. Defaults to `` `Left ``. Only visible when the widget is wider than the text (e.g. with `` #width: &`Fill ``).
 - **valign** - Vertical text alignment: `` `Top ``, `` `Center ``, or `` `Bottom ``. Defaults to `` `Top ``.
 
 The positional argument is a reference to the string to display. Because it is a reference, the text updates reactively when the underlying value changes.

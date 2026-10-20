@@ -331,11 +331,12 @@ impl Siblings {
     // Control::rebuilds to move (Siblings::decide), and this probe's tuple is now
     // decided by the analysis. Probe (quick, --no-fusion, taskset 0-3): auto 1.13 s ->
     // 0.33 s (off 0.33 s). Pin: lang::par_attrs::an_open_verdict_waits_for_a_bind.
-    pub fn decide<'a, R: Rt, E: UserEvent>(
+    pub(crate) fn decide<'a, R: Rt, E: UserEvent>(
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         n: usize,
         children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+        sites: analysis::Sites,
     ) {
         if self.decided() || n < 2 || ctx.fork_mode() == ParMode::Off {
             return;
@@ -349,7 +350,7 @@ impl Siblings {
             return;
         }
         ctx.control.verdict_asked();
-        match analysis::independent(children, ctx) {
+        match analysis::independent(children, ctx, sites) {
             Some(v) => {
                 let _ = self.decided.set(v);
             }
@@ -390,6 +391,14 @@ struct Measured {
 }
 
 impl ForkSite {
+    /// The site of a run a block plan made, whose statements the plan
+    /// already found independent.
+    pub fn planned() -> Self {
+        let site = Self::default();
+        site.1.decided_by_analysis(Some(true));
+        site
+    }
+
     /// Decide whether the site's `n` children are independent
     /// ([`Siblings::decide`]); dependent ones always run in order.
     // XCR claude for claude: [perf/medium] An Undecided verdict is asked for again
@@ -446,7 +455,7 @@ impl ForkSite {
         n: usize,
         children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ) {
-        self.1.decide(ctx, n, children)
+        self.1.decide(ctx, n, children, analysis::Sites::Statements)
     }
 
     /// The site's verdict, which an image carries: a warm start's first
@@ -735,7 +744,7 @@ impl SlotSite {
         n: usize,
         children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ) {
-        self.siblings.decide(ctx, n, children)
+        self.siblings.decide(ctx, n, children, analysis::Sites::Slots)
     }
 
     /// Decide the siblings again at the next update: the slots' callee
@@ -997,10 +1006,27 @@ impl LoopSite {
             && ticks() < self.until.load(Ordering::Relaxed)
     }
 
-    /// How many of `n` slots to time before deciding about the rest;
-    /// `None` while another run is deciding, when this one runs in order.
-    pub(crate) fn probes(&self, n: usize) -> Option<usize> {
-        self.probe.try_lock().map(|p| p.probes(n))
+    /// How many of `n` slots to time, as one run, before deciding about
+    /// the rest, `timed` slots already timed; `None` while another run is
+    /// deciding, when this one runs in order. A slot timed alone carries
+    /// the run's fixed cost, so while the estimate is unknown or under
+    /// `T / PROBE_BATCH` a probe times at least [`PROBE_BATCH`] slots; a
+    /// settled loop of dearer slots probes the one it asks for.
+    pub(crate) fn probes(
+        &self,
+        cal: &Calibration,
+        n: usize,
+        timed: usize,
+    ) -> Option<usize> {
+        self.probe.try_lock().map(|p| match p.probes(n).saturating_sub(timed) {
+            0 => 0,
+            k if p.hist.n == 0
+                || cal.floor(p.hist.p75()).saturating_mul(PROBE_BATCH as u64) < cal.t =>
+            {
+                k.max(PROBE_BATCH).min(n)
+            }
+            k => k,
+        })
     }
 
     /// The range size for the `n` slots that `probes` left, or `None`
@@ -1095,14 +1121,18 @@ mod tests {
         let cal = Calibration { t: 1 << 10, shift: 4 };
         let l = LoopSite::default();
         assert!(!l.untimed(3), "a fresh site times its loops");
-        assert_eq!(l.probes(3), Some(3));
+        assert_eq!(l.probes(&cal, 3, 0), Some(3));
         // slots at T/64: loops under 128 slots cannot pay for a fork
         let probes: Probes = [(1 << 4, 4)].into_iter().collect();
         assert_eq!(l.grain(&cal, &probes, 0), None);
         assert!(l.untimed(127));
         assert!(!l.untimed(128), "a long enough loop is timed");
         let guard = l.probe.lock();
-        assert_eq!(l.probes(3), None, "a site being decided is not probed again");
+        assert_eq!(
+            l.probes(&cal, 3, 0),
+            None,
+            "a site being decided is not probed again"
+        );
         drop(guard);
         l.until.store(ticks(), Ordering::Relaxed);
         assert!(!l.untimed(3), "a stretch over, the site probes again");
@@ -1149,5 +1179,25 @@ mod tests {
         }
         assert!(h.n < Hist::DECAY);
         assert_eq!(h.p75(), 2);
+    }
+
+    /// A kernel loop's probe runs a batch of slots only while its slots
+    /// are unknown or cheap: a settled loop of dear slots probes one and
+    /// forks the rest.
+    #[test]
+    fn loop_site_batches_only_cheap_probes() {
+        let cal = Calibration { t: 1 << 10, shift: 4 };
+        let heavy = LoopSite::default();
+        assert_eq!(heavy.probes(&cal, 32, 0), Some(PROBE_BATCH));
+        assert_eq!(heavy.probes(&cal, 8, 0), Some(8));
+        heavy.grain(&cal, &Probes::from_slice(&[(1 << 12, 4)]), 28);
+        assert_eq!(heavy.probes(&cal, 32, 0), Some(1));
+        let cheap = LoopSite::default();
+        cheap.grain(&cal, &Probes::from_slice(&[(1 << 4, 4)]), 28);
+        assert_eq!(cheap.probes(&cal, 32, 0), Some(PROBE_BATCH));
+        let unsettled = LoopSite::default();
+        unsettled.grain(&cal, &Probes::from_slice(&[(1 << 12, 1)]), 31);
+        assert_eq!(unsettled.probes(&cal, 32, 0), Some(3));
+        assert_eq!(unsettled.probes(&cal, 32, 3), Some(0));
     }
 }

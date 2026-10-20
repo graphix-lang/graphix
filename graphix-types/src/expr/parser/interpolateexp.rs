@@ -33,7 +33,9 @@ parser! {
         impl Intp {
             fn to_expr(self) -> Expr {
                 match self {
-                    Intp::Lit(pos, end, s) => text(&s).to_expr(pos).ending(end),
+                    Intp::Lit(pos, end, s) => {
+                        text(&s).to_expr(pos).ending(end).written_as(StrForm::Text)
+                    }
                     Intp::Expr(s) => s,
                 }
             }

@@ -373,7 +373,7 @@ impl<X: GXExt> InputHandlerW<X> {
         if let Some(v) = t.handle_ref.last.take() {
             t.set_handle(v).await?
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     async fn send_next(&mut self) -> Result<()> {
@@ -382,7 +382,7 @@ impl<X: GXExt> InputHandlerW<X> {
             && let Some(v) = self.queued.pop_front()
         {
             debug!("sending event: {v}");
-            h.call_answered(ValArray::from_iter_exact([v.clone()].into_iter())).await?;
+            h.call_answered(ValArray::from_iter_exact([v.clone()].into_iter()))?;
             self.in_flight = Some((h.answer, v));
         }
         Ok(())

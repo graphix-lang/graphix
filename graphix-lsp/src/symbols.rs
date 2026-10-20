@@ -6,17 +6,21 @@ use crate::{
     state::ServerState,
     text::zero_based,
     uri::{path_to_uri, uri_to_path},
+    workspace::{FileKind, summarize},
 };
 use arcstr::ArcStr;
 use graphix_compiler::{
     SourcePosition,
-    expr::{ExprKind, Name, Origin, SigKind, Source, StructurePattern, parser},
+    expr::{ExprKind, Name, SigKind, StructurePattern},
     typ::Type,
 };
 use lsp_types::{
     DocumentSymbol, Location, Position, Range, SymbolInformation, SymbolKind, Uri,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Debug)]
 pub(crate) struct Symbol {
@@ -82,21 +86,10 @@ pub(crate) fn of_exprs(exprs: &[graphix_compiler::expr::Expr]) -> Vec<Symbol> {
     exprs.iter().filter_map(item).collect()
 }
 
-/// The top-level declarations of a `.gx` or `.gxi` text; none when it
-/// does not parse.
-// CR claude for claude: [structure/low] This is workspace::summarize again minus the
-// `mod` names: same shebang strip, Origin, .gx/.gxi dispatch and of_exprs/of_sig. Two
-// copies of the per-file summary can drift between document and workspace symbols.
-// Delete it and call `summarize(path, kind, text).1`, with the FileKind derived from
-// the extension in one place that scan shares. Found by reading; not run. (lsp-04)
-fn declared(path: &Path, text: ArcStr) -> Vec<Symbol> {
-    let text = parser::without_shebang(&text);
-    let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
-    if path.extension().is_some_and(|e| e == "gxi") {
-        parser::parse_sig(ori).map(|sig| of_sig(&sig)).unwrap_or_default()
-    } else {
-        parser::parse(ori).map(|exprs| of_exprs(&exprs)).unwrap_or_default()
-    }
+/// The top-level declarations of an open buffer, a program unless it is
+/// an interface; none when it does not parse.
+fn declared(path: &Path, text: ArcStr) -> Arc<[Symbol]> {
+    summarize(path, FileKind::of(path).unwrap_or(FileKind::Gx), text).1
 }
 
 impl ServerState {
@@ -112,7 +105,7 @@ impl ServerState {
         let (Some(doc), Some(file)) = (self.document(uri), uri_to_path(uri)) else {
             return vec![];
         };
-        let text = ArcStr::from(doc.text.as_str());
+        let text = doc.text.clone();
         let checked = self.checked_for(&file);
         let typ = |s: &Symbol| {
             let binds = checked.iter().flat_map(|c| c.ide.binds.iter());
@@ -169,9 +162,8 @@ impl ServerState {
             // scan's
             let (uri, text, symbols) = match self.documents.get(path) {
                 Some(doc) => {
-                    let text = ArcStr::from(doc.text.as_str());
-                    let symbols: std::sync::Arc<[Symbol]> =
-                        declared(path, text.clone()).into();
+                    let text = doc.text.clone();
+                    let symbols = declared(path, text.clone());
                     (doc.uri.clone(), text, symbols)
                 }
                 None => {

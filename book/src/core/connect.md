@@ -9,7 +9,7 @@ right side to flow to the name on the left side. Consider,
 ```graphix
 let x = "off";
 x <- sys::time::timer(duration:1.0s, false) ~ "on";
-print(x)
+x
 ```
 
 This program will first print `off`, and after 1 second it will print `on`. Note
@@ -18,7 +18,7 @@ current value of the expression on the right (called the sample operator). The
 graph we created looks like,
 
 ```
-const("off") ────────────────> "x" ──────> print
+const("off") ────────────────> "x" ──────> output
                                  ▲
                                  │
                                  │
@@ -35,13 +35,13 @@ and it won't stop other parts of the program from being evaluated,
 ```graphix
 let x = 0;
 x <- x + 1;
-print(x)
+x
 ```
 
 This program will print all the i64s from 0 to MAX and then will wrap around. It
 will print numbers forever. You might notice, and you might wonder, why does it
-start from zero, shouldn't it start from 1? After all we increment x BEFORE the
-print right? Well, no, not actually, it will start at 0, for the same reason
+start from zero, shouldn't it start from 1? After all we increment x BEFORE it
+is printed, right? Well, no, not actually, it will start at 0, for the same reason
 this infinite loop won't lock up the program or cause other expressions not to
 be evaluated. Graphix programs are evaluated in cycles, a batch of updates from
 the network, timers, and other IO is processed into a set of all events that
@@ -54,16 +54,13 @@ happen yet, because it didn't. In the above case the event loop would never
 wait, because there is always work to do adding 1 to `x`, however it will still
 check for other events every cycle.
 
-<!-- CR claude for claude: [doc-drift/low] Connect is the only way to make a cycle in
-the graph, not the only way to loop. recursion.md presents recursion as the way to write
-a traversal (a stateless tail recursion is a native loop), and `array::map`/`fold`
-iterate in one cycle. A connect loop takes a cycle per step and breaks when its input
-moves (semantics.md's `len`). Reword this and overview.md's "only looping construct"
-sentence, and point to the collection functions and recursion. Found by reading; not
-run. (book-core-13) -->
 When combined with other operations, specifically select, connect becomes a
-powerful general looping construct, and is the only way to write a loop in
-Graphix. A quick example,
+looping construct that runs one step per cycle: connect is the only way to
+make a cycle in the graph. To iterate over a collection, use the collection
+functions (`array::map`, `array::fold`, ...) or recursion
+([Recursion](../functions/recursion.md)), which compute the whole result in one
+cycle; a connect loop takes a cycle per step and starts over when its input
+moves mid-loop. A quick example,
 
 ```graphix
 let count = {

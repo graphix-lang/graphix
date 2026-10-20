@@ -2,7 +2,7 @@ use crate::{
     expr::{
         Expr, ExprKind, Name, Pattern, StructurePattern, WrittenAt, WrittenForm,
         parser::{
-            csep, expr, fldname, fname_noting,
+            ONE_TUPLE, csep, expr, fldname, fname_noting,
             grow::{grow, refusal, refuse},
             ident, interpolated, is_reserved_binding, name, not_prefix, raw_string,
             sep_by_tok, sep_by1_tok, spaces, spaces1, spstring, sptoken, typ,
@@ -113,7 +113,7 @@ where
     )
         .then(move |(mut binds, end): (LPooled<Vec<StructurePattern>>, _)| {
             if binds.len() < 2 {
-                refuse(end, "tuples must have at least 2 elements").right()
+                refuse(end, ONE_TUPLE).right()
             } else {
                 let all = all.clone();
                 let binds = Arc::from_iter(binds.drain(..));
@@ -163,7 +163,7 @@ where
         structure_pattern_or(),
         sptoken(')'),
     )
-        .map(move |(name, bind, _)| StructurePattern::Abstract {
+        .map(move |((name, _), bind, _)| StructurePattern::Abstract {
             all: all.clone(),
             name,
             bind: Arc::new(bind),

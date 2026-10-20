@@ -1,13 +1,13 @@
 use super::{
-    csep, fldname, fname, fname_noting,
+    ONE_TUPLE, csep, fldname, fname, fname_noting,
     grow::{because, grow, refuse},
     ident,
     lambdaexp::{LABELED_FIRST, labeled_first},
-    not_prefix, path_root, sep_by_tok, sep_by1_tok, sort_unique, spaces, spaces1,
-    spstring, sptoken, typname,
+    not_prefix, path_root, sep_by_tok, sep_by1_tok, sep_by1_tok_trailing, sort_unique,
+    spaces, spaces1, spstring, sptoken, typname,
 };
 use crate::{
-    expr::{ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt, get_origin},
+    expr::{ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt, WrittenPath, get_origin},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use arcstr::{ArcStr, literal};
@@ -26,7 +26,7 @@ use poolshark::local::LPooled;
 use std::str::FromStr;
 use triomphe::Arc;
 
-pub(super) fn typath<I>() -> impl Parser<I, Output = ModPath>
+pub(super) fn typath<I>() -> impl Parser<I, Output = (ModPath, WrittenPath)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -35,22 +35,25 @@ where
     (
         spaces().with(path_root()),
         // a type path is written as a value path is: no space inside it
-        sep_by1(choice((fname_noting(false), typname())), string("::")),
+        sep_by1(
+            (position(), choice((fname_noting(false), typname())))
+                .map(|(pos, n)| Name::written(n, pos)),
+            string("::"),
+        ),
     )
-        .then(
-            |(mut root, mut parts): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
-                let capitalized = parts
-                    .last()
-                    .and_then(|p| p.chars().next())
-                    .is_some_and(char::is_uppercase);
-                if capitalized {
-                    root.extend(parts.drain(..));
-                    value(ModPath::from(root.drain(..))).right()
-                } else {
-                    because("type names must be capitalized").left()
-                }
-            },
-        )
+        .then(|(mut root, mut parts): (LPooled<Vec<Name>>, LPooled<Vec<Name>>)| {
+            let capitalized = parts
+                .last()
+                .and_then(|p| p.name.chars().next())
+                .is_some_and(char::is_uppercase);
+            if capitalized {
+                root.extend(parts.drain(..));
+                let at = WrittenPath(root.iter().filter_map(|n| n.at.get()).collect());
+                value((ModPath::from(root.drain(..).map(|n| n.name)), at)).right()
+            } else {
+                because("type names must be capitalized").left()
+            }
+        })
 }
 
 /// A primitive type's name. `map` and `abstract` name no type here.
@@ -231,8 +234,9 @@ where
             optional(
                 attempt(spaces1().with(string("throws"))).with(spaces1()).with(typ()),
             ),
+            position(),
         ))
-        .then(|(constraints, mut args, rtype, throws)| {
+        .then(|(constraints, mut args, rtype, throws, end)| {
             let vargs = match args.pop() {
                 None => None,
                 Some(Either::Right(t)) => Some(t),
@@ -248,14 +252,14 @@ where
                 Either::Left(t) => t,
                 Either::Right(_) => unreachable!(),
             }));
-            // CR claude for claude: [bug/low] A function type may repeat an argument
-            // name, `fn(#a: i64, #a: string) -> string`, though the lambda form is
-            // refused ("arguments must have unique names"). No call can satisfy such a
-            // type: `g(#a: 1)` gives "type mismatch string does not contain i64", and
-            // both labels give "duplicate argument #a". Refuse a repeated name here
-            // with the lambda's message. probe:
-            // design/review-2026-10-19/repro/t-parser-b-fntype-dup-labels.gx Also
-            // reported as (tests-parser-03). (t-parser-b-05)
+            let named_before = |(i, a): (usize, &FnArgType)| {
+                a.name().is_some_and(|n| args[..i].iter().any(|b| b.name() == Some(n)))
+            };
+            if args.iter().enumerate().any(named_before) {
+                const UNIQUE: &str = "arguments must have unique names";
+                super::grow::note_reason(end, None, CompactString::const_new(UNIQUE));
+                return because(UNIQUE).left();
+            }
             if !labeled_first(args.iter().map(|a| a.is_labeled())) {
                 return because(LABELED_FIRST).left();
             }
@@ -337,15 +341,21 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(token('('), sptoken(')'), sep_by1_tok(typ(), csep(), token(')'))).map(
-        |mut exps: LPooled<Vec<Type>>| {
-            if exps.len() == 1 {
-                exps.pop().unwrap()
-            } else {
-                Type::Tuple(Arc::from_iter(exps.drain(..)))
-            }
-        },
+    (
+        between(
+            token('('),
+            sptoken(')'),
+            sep_by1_tok_trailing(typ(), csep(), token(')')),
+        ),
+        position(),
     )
+        .then(|((mut exps, trailing), end): ((LPooled<Vec<Type>>, bool), _)| {
+            match exps.len() {
+                1 if trailing => refuse(end, ONE_TUPLE).right(),
+                1 => value(exps.pop().unwrap()).left(),
+                _ => value(Type::Tuple(Arc::from_iter(exps.drain(..)))).left(),
+            }
+        })
 }
 
 pub(super) fn typref<I>() -> impl Parser<I, Output = Type>
@@ -369,7 +379,7 @@ where
         }),
     )
         .map(
-            |(pos, n, params): (SourcePosition, ModPath, Option<LPooled<Vec<Type>>>)| {
+            |(pos, (n, _), params): (_, (ModPath, _), Option<LPooled<Vec<Type>>>)| {
                 let params = params
                     .map(|mut a| Arc::from_iter(a.drain(..)))
                     .unwrap_or_else(|| Arc::from_iter([]));

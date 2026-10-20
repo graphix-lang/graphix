@@ -28,12 +28,13 @@ use log::error;
 use netidx_core::atomic_id;
 use netidx_value::FromValue;
 use netidx_value::{ValArray, Value};
-use poolshark::global::{GPooled, Pool};
+use poolshark::global::GPooled;
 use serde_derive::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::{fmt, future, path::PathBuf, sync::Arc};
 use tokio::{
     sync::{
+        Notify,
         mpsc::{self as tmpsc},
         oneshot,
     },
@@ -41,8 +42,10 @@ use tokio::{
 };
 
 mod gx;
+mod reconcile;
 mod rt;
 use gx::GX;
+pub use reconcile::{keep_equal, reconcile};
 pub use rt::GXRt;
 
 /// Trait to extend the event loop
@@ -378,7 +381,7 @@ impl<X: GXExt> Callable<X> {
     /// cycle, or, when that cycle queued writes (a handler's `<-`), at the
     /// end of the next, so their updates come first. A later output of
     /// the call site answers nothing.
-    pub async fn call_answered(&self, args: ValArray) -> Result<()> {
+    pub fn call_answered(&self, args: ValArray) -> Result<()> {
         check_args(&self.typ, &self.env, &args)?;
         self.send(args, true)
     }
@@ -393,7 +396,7 @@ impl<X: GXExt> Callable<X> {
 
     /// Call the lambda with args, unchecked here: the runtime refuses,
     /// and logs, a call whose arguments do not fit.
-    pub async fn call_unchecked(&self, args: ValArray) -> Result<()> {
+    pub fn call_unchecked(&self, args: ValArray) -> Result<()> {
         self.send(args, false)
     }
 
@@ -481,14 +484,12 @@ enum ToGX<X: GXExt> {
         id: ExprId,
         res: oneshot::Sender<Option<String>>,
     },
-    /// Snapshot the compiler-env and runtime-ref registry sizes.
-    // CR claude for claude: [readability/low] The doc line above belongs to EnvStats,
-    // which has none. Program hands out the construction-time program root once
-    // (GXHandle::program). Move the line to EnvStats and give Program its own. Found by
-    // reading; not run. (rt-07)
+    /// Hand out the program compiled at construction, once. See
+    /// [`GXHandle::program`].
     Program {
         res: oneshot::Sender<(Option<Result<ProgramRoot, String>>, Env)>,
     },
+    /// Snapshot the compiler-env and runtime-ref registry sizes.
     EnvStats {
         res: oneshot::Sender<EnvStats>,
     },
@@ -592,6 +593,8 @@ struct GXHandleInner<X: GXExt> {
     /// Shared (cloned from `ctx.control`) interrupt/abort control. See
     /// [`GXHandle::interrupt`] / [`GXHandle::abort`].
     control: triomphe::Arc<Control>,
+    /// Wakes the run loop to see an abort.
+    aborted: triomphe::Arc<Notify>,
 }
 
 impl<X: GXExt> Drop for GXHandleInner<X> {
@@ -686,7 +689,7 @@ impl<X: GXExt> GXHandle<X> {
     /// Shut the runtime down, breaking any wedged loop first. Borrows
     /// `&self`, so it can be called while commands are in flight; pending
     /// commands resolve to errors. Dropping the last handle also does this.
-    // CR claude for claude: [bug/medium] abort only sets Control's flag. An idle run
+    // XCR claude for claude: [bug/medium] abort only sets Control's flag. An idle run
     // loop sees it only when some source next wakes the select!, so its claim that
     // pending commands resolve to errors fails: a pending wait_settled hangs, and the
     // runtime keeps every node, server, subscription and timer alive until then. Fix:
@@ -695,8 +698,14 @@ impl<X: GXExt> GXHandle<X> {
     // which also retires the send loop's 100 ms poll. probe:
     // design/review-2026-10-19/repro/rt-runtime-api.rs (abort_answers_a_pending_settle)
     // (rt-03)
+    // 2026-10-19 claude: GXHandleInner and the run loop share a Notify: abort()
+    // notifies it, the run loop's select! and do_cycle's send loop wait on it (the send
+    // loop's 100 ms poll is gone; an aborted runtime sends what has room and waits for
+    // nothing). Fails if undone: graphix-rt/tests/runtime_api.rs
+    // abort_answers_a_pending_settle.
     pub fn abort(&self) {
-        self.0.control.abort()
+        self.0.control.abort();
+        self.0.aborted.notify_one()
     }
 
     async fn exec<R, F: FnOnce(oneshot::Sender<R>) -> ToGX<X>>(&self, f: F) -> Result<R> {
@@ -963,6 +972,20 @@ impl<X: GXExt> GXHandle<X> {
         }
     }
 
+    // XCR claude for claude: [risk/medium] Writing a variable through a Ref compiled, set
+    // and dropped on each call made two GUI data_table tests time out about one
+    // full-suite run in fifteen; writing with GXHandle::set on the bind id ran 20 runs
+    // clean, so the tests now do that. Find whether a write through a Ref can be lost
+    // when the Ref drops before the write lands (the drop's unref racing the queued
+    // set), and pin it with a loop of compile_ref/set/drop under load. Reported by the
+    // 10-19 GUI/TUI CR-fix agent; not reproduced in isolation. (ref-drop-race-01)
+    // 2026-10-19 claude: Not reproduced. A Set is queued for the next cycle and a Delete
+    // only removes the Ref's own node (its reads), never a write or the variable's other
+    // readers. The pin the CR asked for, graphix-rt/tests/runtime_api.rs
+    // a_write_through_a_dropped_ref_lands (300 compile_ref/set/drop rounds, each waiting
+    // for its value), ran 10 times under a concurrent graphix-tests load with no loss.
+    // The data_table timeouts more likely came from the data-form writes rt-01 now
+    // refuses.
     /// Compile a ref to a bind id
     ///
     /// This will NOT return an error if the id isn't in the environment.
@@ -1024,9 +1047,7 @@ impl<X: GXExt> GXHandle<X> {
         &self,
         sets: impl IntoIterator<Item = (BindId, Value)>,
     ) -> Result<()> {
-        static SETS: std::sync::LazyLock<Pool<Vec<(BindId, Value)>>> =
-            std::sync::LazyLock::new(|| Pool::new(16, 8192));
-        let mut batch = SETS.take();
+        let mut batch = gx::SETS.take();
         batch.extend(sets);
         self.0
             .tx
@@ -1158,27 +1179,38 @@ impl<X: GXExt> GXConfig<X> {
     /// registered in `ctx`), or restores it from the registration image,
     /// then compiles `program` when one is given. With no root the
     /// runtime holds the language alone.
+    /// Do what [`start`](Self::start) does before the first cycle, compile
+    /// the root and the program and send their images, and run nothing:
+    /// an error when the program did not compile.
+    pub async fn compile(self) -> Result<()> {
+        GX::new(self).await?.program_compiled()
+    }
+
     pub async fn start(self) -> Result<GXHandle<X>> {
         // The handle and the running `ExecState` share the control.
         let control = self.ctx.control.clone();
+        let aborted = triomphe::Arc::new(Notify::new());
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();
-        let task = task::spawn(async move {
-            match GX::new(self).await {
-                Ok(bs) => {
-                    let _ = init_tx.send(Ok(()));
-                    if let Err(e) = bs.run(rx).await {
-                        error!("run loop exited with error {e:?}")
+        let task = task::spawn({
+            let aborted = aborted.clone();
+            async move {
+                match GX::new(self).await {
+                    Ok(bs) => {
+                        let _ = init_tx.send(Ok(()));
+                        if let Err(e) = bs.run(rx, &aborted).await {
+                            error!("run loop exited with error {e:?}")
+                        }
                     }
-                }
-                Err(e) => {
-                    let _ = init_tx.send(Err(e));
-                }
-            };
+                    Err(e) => {
+                        let _ = init_tx.send(Err(e));
+                    }
+                };
+            }
         });
         let st = std::time::Instant::now();
         init_rx.await??;
         log::info!("runtime start wait: {:?}", st.elapsed());
-        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, control })))
+        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, control, aborted })))
     }
 }

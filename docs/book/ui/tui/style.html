@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -200,6 +200,7 @@ modifiers. Most widgets accept style parameters to customize their appearance.</
   `Rgb({ r: i64, g: i64, b: i64 }),
   `Indexed(i64)
 ];
+
 </code></pre>
 <p>Use <code>Reset</code> to return to the terminal’s default color. Use <code>Rgb</code> for 24-bit true
 color, or <code>Indexed</code> for 256-color palette indices.</p>
@@ -216,6 +217,7 @@ color, or <code>Indexed</code> for 256-color palette indices.</p>
   `Hidden,
   `CrossedOut
 ];
+
 </code></pre>
 <h2 id="the-style-type"><a class="header" href="#the-style-type">The Style Type</a></h2>
 <p>A <code>Style</code> combines foreground color, background color, underline color, and
@@ -227,6 +229,7 @@ modifiers:</p>
   add_modifier: [Array&lt;Modifier&gt;, null],
   sub_modifier: [Array&lt;Modifier&gt;, null]
 };
+
 </code></pre>
 <h2 id="creating-styles"><a class="header" href="#creating-styles">Creating Styles</a></h2>
 <p>Use the <code>tui::style</code> function to create styles. All parameters are optional:</p>
@@ -237,6 +240,7 @@ modifiers:</p>
   ?#add_modifier: [Array&lt;Modifier&gt;, null],
   ?#sub_modifier: [Array&lt;Modifier&gt;, null]
 ) -&gt; Style;
+
 </code></pre>
 <p>Examples:</p>
 <pre><code class="language-graphix">// Red foreground
@@ -257,20 +261,14 @@ tui::style()
 <h2 id="spans-and-lines"><a class="header" href="#spans-and-lines">Spans and Lines</a></h2>
 <p>Styles are commonly used with <code>Span</code> and <code>Line</code> types to create styled text.</p>
 <h3 id="spans"><a class="header" href="#spans">Spans</a></h3>
-<!-- CR claude for claude: [structure/low] The type blocks on this page are hand copies
-of tui/mod.gxi and have drifted. `val span` takes `content: string` in the gxi, not `s`,
-and `val line` takes `spans`, not `v`. input.md copies input_handler.gxi the same way,
-and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
-(MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
-and `{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
-reading; not run. (book-ui-b-05) -->
 <p>A <code>Span</code> is a piece of text with a single style:</p>
 <pre><code class="language-graphix">type Span = {
   style: Style,
   content: string
 };
 
-val span: fn(?#style: Style, s: string) -&gt; Span;
+val span: fn(?#style: Style, content: string) -&gt; Span;
+
 </code></pre>
 <p>Example:</p>
 <pre><code class="language-graphix">// Create a red "Error:" span
@@ -293,7 +291,8 @@ type Line = {
   spans: [Array&lt;Span&gt;, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array&lt;Span&gt;, string]) -&gt; Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], spans: [Array&lt;Span&gt;, string]) -&gt; Line;
+
 </code></pre>
 <p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
 simple string (which will use the line’s style).</p>

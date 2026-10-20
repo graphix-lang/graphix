@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-0733e318.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -220,17 +220,7 @@ val layout: fn(
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong>direction</strong> - <code>Horizontal</code> or <code>Vertical</code> (default: <code>Vertical</code>)</li>
-</ul>
-<!-- CR claude for claude: [doc-drift/medium] This bullet does not say what focus does.
-`LayoutW::handle_event` sends every event, keys and mouse alike, only to the focused
-child, which defaults to 0. An `input_handler` in any other child hears nothing, and a
-click over pane 2 goes to the focused pane. A new user who puts a handler in child 1
-without setting `#focused` gets silence. Fix: say so here (layout_nested_focus works
-only because it sets `#focused: &2` on the inner layout). Routing mouse events by
-position instead would be a separate design call. Found by reading; not run.
-(book-ui-a-02) -->
-<ul>
-<li><strong>focused</strong> - Index of the currently focused child (0-indexed)</li>
+<li><strong>focused</strong> - Index of the currently focused child (0-indexed, the first when not set). Every event, keys and mouse alike, goes only to the focused child: an <code>input_handler</code> in another child hears nothing, and a click over another pane goes to the focused one</li>
 <li><strong>flex</strong> - How leftover space is distributed when children don’t fill it: <code>Legacy</code>, <code>Start</code>, <code>End</code>, <code>Center</code>, <code>SpaceBetween</code>, <code>SpaceEvenly</code>, <code>SpaceAround</code></li>
 </ul>
 <h2 id="constraint-types"><a class="header" href="#constraint-types">Constraint Types</a></h2>

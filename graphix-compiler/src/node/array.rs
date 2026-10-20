@@ -192,6 +192,16 @@ pub(crate) fn array_index(elts: &ValArray, i: i64) -> Value {
     }
 }
 
+/// `src[i]`, shared by the node-walk and the JIT: [`array_index`] or
+/// [`bytes_index`] by the source's form, else the `ArrayIndexError`.
+pub(crate) fn value_index(src: &Value, i: i64) -> Value {
+    match src {
+        Value::Array(elts) => array_index(elts, i),
+        Value::Bytes(b) => bytes_index(b, i),
+        _ => err!(ERR_TAG, "expected an array"),
+    }
+}
+
 /// `bytes[i]`, with the rules of [`array_index`]: the `Value::U8` or
 /// the out-of-bounds error.
 pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
@@ -241,11 +251,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         let i = self.i.update(ctx);
         let tag = s.tag().join(i.tag());
         dense_gate!(self, tag, tag.is_bottom());
-        let v = s.with_value(|s| match (s, i.with_value(index_i64)) {
-            (_, None) => err!(ERR_TAG, "expected an integer"),
-            (Value::Array(elts), Some(i)) => array_index(elts, i),
-            (Value::Bytes(b), Some(i)) => bytes_index(b, i),
-            (_, Some(_)) => err!(ERR_TAG, "expected an array"),
+        let v = s.with_value(|s| match i.with_value(index_i64) {
+            None => err!(ERR_TAG, "expected an integer"),
+            Some(i) => value_index(s, i),
         });
         self.resident.set(TagValue::tagged(v, tag))
     }
