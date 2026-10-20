@@ -696,9 +696,16 @@ fn try_of(e: &Expr) -> Option<(&Expr, &TryWithExpr)> {
 /// join cell, publish the block's result.
 #[derive(Clone)]
 enum Write {
-    Let { pattern: StructurePattern, typ: Option<Type> },
-    Connect { name: ModPath, deref: bool },
-    Join(ArcStr),
+    Let {
+        pattern: StructurePattern,
+        typ: Option<Type>,
+    },
+    Connect {
+        name: ModPath,
+        deref: bool,
+    },
+    /// A try's join cell, typed as the write it stands for.
+    Join(ArcStr, Option<Type>),
     Result,
 }
 
@@ -921,9 +928,13 @@ impl Machine<'_> {
         }
         let e_cell = ArcStr::from(format_compact!("seqe{}", spec.id.inner()).as_str());
         self.decls.push(let_bind(pos, &e_cell, None, never(pos)));
-        let join = (!sink.is_empty()).then(|| {
+        // a try whose value only writes variables has each body write them,
+        // typed as they are
+        let direct =
+            !sink.is_empty() && sink.iter().all(|w| matches!(w, Write::Connect { .. }));
+        let join = (!sink.is_empty() && !direct).then(|| {
             let cell = ArcStr::from(format_compact!("seqj{}", spec.id.inner()).as_str());
-            // CR claude for claude: [bug/medium] Only a Write::Let sink gives the join
+            // XCR claude for claude: [bug/medium] Only a Write::Let sink gives the join
             // cell a type. A try nested as the last statement of an annotated `let v:
             // [i64, string] = try { .. }` body gets an untyped join cell, so does `x <-
             // try { .. }` with `x: [i64, string]`. The first writer then fixes the
@@ -933,15 +944,24 @@ impl Machine<'_> {
             // directly. probe:
             // design/review-2026-10-19/repro/t-seq-nested-try-join-type.gx and
             // design/review-2026-10-19/repro/t-seq-connect-try-join-type.gx (t-seq-04)
+            // 2026-10-19 claude: Write::Join carries the join cell's type, so a try
+            // nested as a typed let's value types its own join cell; a try whose value
+            // only writes variables has both bodies write them directly (no join cell).
+            // Pins: lang::seq_try::nested_try_join_takes_the_let_type,
+            // connected_try_writes_the_target_type (both refused by the review binary).
             let typ = match sink.first() {
-                Some(Write::Let { typ, .. }) => typ.clone(),
+                Some(Write::Let { typ, .. } | Write::Join(_, typ)) => typ.clone(),
                 _ => None,
             };
-            self.decls.push(let_bind(pos, &cell, typ, never(pos)));
-            cell
+            self.decls.push(let_bind(pos, &cell, typ.clone(), never(pos)));
+            (cell, typ)
         });
         let mut branch = Sink::new();
-        branch.extend(join.iter().map(|c| Write::Join(c.clone())));
+        match &join {
+            Some((c, typ)) => branch.push(Write::Join(c.clone(), typ.clone())),
+            None if direct => branch.extend(sink.iter().cloned()),
+            None => (),
+        }
         let mark = self.steps.len();
         let mut tails = self.lower_scoped(&body, &branch, visible)?;
         let with_entry = label(self.steps.len());
@@ -974,7 +994,7 @@ impl Machine<'_> {
         tails.extend(self.lower_scoped(&handler, &branch, &wvis)?);
         match join {
             None => Ok(tails),
-            Some(cell) => {
+            Some((cell, _)) => {
                 let value = guard(entry_fire(r#ref(pos, &cell), self.issue.pc));
                 let result = self.result;
                 let j =
@@ -1147,7 +1167,7 @@ fn writes(
                 *deref,
                 r#ref(pos, v),
             ),
-            Write::Join(cell) => connect(pos, cell, r#ref(pos, v)),
+            Write::Join(cell, _) => connect(pos, cell, r#ref(pos, v)),
             Write::Result => connect(pos, result, r#ref(pos, v)),
         })
     }

@@ -3,7 +3,10 @@
 
 use super::{dense_deltas::run_delta, refused_everywhere};
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, as_i64s, eval};
+use graphix_package_core::{
+    run,
+    testing::{Mode, as_i64s, eval},
+};
 use netidx_value::Value;
 
 const CLOCK: &str = r#"
@@ -347,3 +350,38 @@ async fn abort_while_errors_drain(mode: Mode) -> Result<()> {
 }
 
 modes!(abort_while_errors_drain);
+
+// A try nested as the value of an annotated let's try takes the let's
+// type: its with body may write the other member.
+run!(
+    nested_try_join_takes_the_let_type,
+    r#"{
+  let t = 1;
+  let bad = |x: i64| -> [i64, Error<`E>] error(`E);
+  seq t {
+    let v: [i64, string] = try {
+      try { bad(1)? } with(e) { "inner" }
+    } with(e) {
+      5
+    };
+    v
+  }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "inner")
+);
+
+// A try whose value is written to a variable has each body write it, at
+// its declared type.
+run!(
+    connected_try_writes_the_target_type,
+    r#"{
+  let t = 1;
+  let bad = |x: i64| -> [i64, Error<`E>] error(`E);
+  let x: [i64, string] = 0;
+  seq t {
+    x <- try { bad(1)? } with(e) { "fallback" };
+    x
+  }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "fallback")
+);
