@@ -159,6 +159,7 @@ impl fmt::Display for ArgKey {
 struct FnParams {
     binds: LPooled<Vec<BindId>>,
     formals: SmallVec<[((LambdaId, u32), Option<BindId>); 4]>,
+    args: SmallVec<[BindId; 4]>,
 }
 
 /// The call's argument nodes, keyed for signature lookups and iterating
@@ -2330,6 +2331,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let k = (lid, i as u32);
             params.formals.push((k, ctx.instance_fn_params.insert(k, id)));
             let param_binds = &mut params.binds;
+            let Some(arg) = self.args.get(&key) else { continue };
+            ctx.fn_param_args.insert(id, arg.spec.clone());
+            params.args.push(id);
             let Some(arg_node) = self.arg(&key) else { continue };
             match arg_node.view() {
                 _ if let Some(l) = lambda_literal(arg_node) => {
@@ -2363,6 +2367,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn unregister_fn_params(ctx: &mut CompileCtx<R, E>, mut params: FnParams) {
         for id in params.binds.drain(..) {
             ctx.bind_to_lambda.remove(&id);
+        }
+        for id in params.args.drain(..) {
+            ctx.fn_param_args.remove(&id);
         }
         for (k, prev) in params.formals.drain(..).rev() {
             match prev {

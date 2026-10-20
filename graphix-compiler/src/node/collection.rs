@@ -393,6 +393,8 @@ struct Callback {
     top_id: ExprId,
     /// The kernels a slot takes from the fused prototype.
     share: Option<SlotShare>,
+    /// The argument the callback was at the call, once a check saw it.
+    arg: Option<Arc<Expr>>,
 }
 
 impl Callback {
@@ -426,7 +428,7 @@ impl Callback {
             )
         }
         let id = name(callback, "callback")?;
-        let cb = Self { scope: scope.clone(), id, typ, top_id, share: None };
+        let cb = Self { scope: scope.clone(), id, typ, top_id, share: None, arg: None };
         Ok((name(source, "source")?, cb))
     }
 
@@ -436,12 +438,13 @@ impl Callback {
         self.typ.encode(buf)?;
         self.top_id.encode(buf)?;
         match &self.share {
-            None => Ok(buf.put_u8(0)),
+            None => buf.put_u8(0),
             Some(share) => {
                 buf.put_u8(1);
-                share.image_encode(buf)
+                share.image_encode(buf)?
             }
         }
+        self.arg.as_deref().cloned().encode(buf)
     }
 
     fn image_decode<R: Rt, E: UserEvent>(
@@ -456,11 +459,39 @@ impl Callback {
             0 => None,
             _ => Some(SlotShare::image_decode(ctx, buf)?),
         };
-        Ok(Self { scope, id, typ, top_id, share })
+        let arg = Option::<Expr>::decode(buf)?.map(Arc::new);
+        Ok(Self { scope, id, typ, top_id, share, arg })
+    }
+
+    fn see_arg<R: Rt, E: UserEvent>(&mut self, ctx: &CompileCtx<R, E>) {
+        if let Some(arg) = ctx.fn_param_args.get(&self.id) {
+            self.arg = Some(arg.clone());
+        }
     }
 
     /// A slot's argument: a variable only the slot's call reads, so no
     /// name in the environment.
+    // XCR claude for claude: [bug/low] The slot's synthetic argument is positioned
+    // at SourcePosition::default() with the SYNTHETIC origin. `array::map([1, 2,
+    // 3], dbg)` therefore still prints `line: 1, column: 1 dbg(collection_element):
+    // 1`, a place in no file, while `|x| dbg(x)` prints its own site. Give the
+    // argument the position and origin of what this instance's callback parameter
+    // was bound to at the call: the user's `dbg` argument, or at least the
+    // parameter binding that Callback::spec already looks up. probe:
+    // design/review-2026-10-19/repro/x-rerun-6-builtin-callback-position.gx
+    // (x-rerun-6-03)
+    // 2026-10-19 claude: Tried positioning the slot argument at the callback
+    // formal's binding (env.by_id(self.id)): for array::map that is the stdlib
+    // formal, which has no position either (it printed line 0, column 0). The
+    // user's argument spec at the call is what is needed, and Callback does not
+    // reach it; threading the call site's argument spec into the instance (or into
+    // Callback at its build) is the remaining work.
+    // 2026-10-20 claude: A call that binds an instance records each fn-typed
+    // argument spec by formal (CompileCtx::fn_param_args, beside
+    // instance_fn_params, while the instance checks); a collection callback takes
+    // it at typecheck1 (Callback::see_arg) and its slots are positioned there; the
+    // argument is imaged with the callback (REGISTRATION_FORMAT 77). Pin:
+    // lang::printing::dbg_as_a_callback_reports_its_argument (every mode).
     fn slot_arg<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut CompileCtx<R, E>,
@@ -468,23 +499,12 @@ impl Callback {
         typ: &Type,
     ) -> (BindId, Node<R, E>) {
         let id = BindId::new();
-        // CR claude for claude: [bug/low] The slot's synthetic argument is positioned
-        // at SourcePosition::default() with the SYNTHETIC origin. `array::map([1, 2,
-        // 3], dbg)` therefore still prints `line: 1, column: 1 dbg(collection_element):
-        // 1`, a place in no file, while `|x| dbg(x)` prints its own site. Give the
-        // argument the position and origin of what this instance's callback parameter
-        // was bound to at the call: the user's `dbg` argument, or at least the
-        // parameter binding that Callback::spec already looks up. probe:
-        // design/review-2026-10-19/repro/x-rerun-6-builtin-callback-position.gx
-        // (x-rerun-6-03)
-        // 2026-10-19 claude: Tried positioning the slot argument at the callback
-        // formal's binding (env.by_id(self.id)): for array::map that is the stdlib
-        // formal, which has no position either (it printed line 0, column 0). The
-        // user's argument spec at the call is what is needed, and Callback does not
-        // reach it; threading the call site's argument spec into the instance (or into
-        // Callback at its build) is the remaining work.
-        let spec =
-            genn::name_spec(name, SourcePosition::default(), genn::SYNTHETIC.clone());
+        let spec = match &self.arg {
+            Some(arg) => genn::name_spec(name, arg.pos, arg.ori.clone()),
+            None => {
+                genn::name_spec(name, SourcePosition::default(), genn::SYNTHETIC.clone())
+            }
+        };
         (id, Ref::new(ctx, id, typ.clone(), self.top_id, spec))
     }
 
@@ -506,7 +526,7 @@ impl Callback {
         args: SmallVec<[Node<R, E>; 2]>,
         kind: CallKind,
     ) -> Node<R, E> {
-        let (Self { scope, id, typ, top_id, share }, fty) =
+        let (Self { scope, id, typ, top_id, share, arg: _ }, fty) =
             (self, Type::Fn(self.typ.clone()));
         let call = match kind {
             CallKind::Prototype => {
@@ -1263,6 +1283,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
     }
 
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        self.callback.see_arg(ctx);
+        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
+    }
+
     fn typ(&self) -> &Type {
         &self.base.typ
     }
@@ -1654,6 +1679,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        self.callback.see_arg(ctx);
+        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
     }
 
     fn typ(&self) -> &Type {

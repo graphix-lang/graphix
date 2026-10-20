@@ -197,6 +197,27 @@ async fn dbg_fuses_under_native(mode: Mode) -> Result<()> {
 
 modes!(dbg_fuses_under_native);
 
+/// A builtin handed to a collection whole reports the place it was
+/// handed, in every engine and session.
+async fn dbg_as_a_callback_reports_its_argument(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let xs = [1, 2];
+        array::map(xs, dbg)
+    }"#;
+    let (_, out) = run_delta(code, mode).await?;
+    assert_eq!(
+        sorted_lines(&out),
+        [
+            "line: 3, column: 24 dbg(collection_element): 1",
+            "line: 3, column: 24 dbg(collection_element): 2"
+        ],
+        "{out}"
+    );
+    Ok(())
+}
+
+modes!(dbg_as_a_callback_reports_its_argument);
+
 /// A change of `#dest` alone neither prints nor fires, fused or not.
 async fn dest_alone_neither_prints_nor_fires(mode: Mode) -> Result<()> {
     let code = r#"{

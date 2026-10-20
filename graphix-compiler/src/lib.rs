@@ -1450,6 +1450,9 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// checked, by definition and position: what an instance-defined
     /// literal's recorded parameter calls name (`DefTable`).
     pub(crate) instance_fn_params: AHashMap<(LambdaId, u32), BindId>,
+    /// The argument each of those formals was bound to at its call, by
+    /// formal: where a collection callback's slots say they are.
+    pub(crate) fn_param_args: nohash::IntMap<BindId, triomphe::Arc<Expr>>,
     /// Def-gate nesting depth; a nested gate's cells are still
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
@@ -1637,6 +1640,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
             instance_fn_params: self.instance_fn_params.clone(),
+            fn_param_args: self.fn_param_args.clone(),
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             defaults_in_check: self.defaults_in_check.clone(),
@@ -1683,6 +1687,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             rec_defs: _,
             def_gate_params: _,
             instance_fn_params: _,
+            fn_param_args: _,
             def_gate_depth: _,
             resolving_lambdas: _,
             defaults_in_check: _,
@@ -1986,6 +1991,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 rec_defs: nohash::IntSet::default(),
                 def_gate_params: nohash::IntMap::default(),
                 instance_fn_params: AHashMap::default(),
+                fn_param_args: nohash::IntMap::default(),
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(Resolving::default()),
                 defaults_in_check: SmallVec::new(),
@@ -3196,6 +3202,7 @@ impl Saved {
             rec_defs: _,
             def_gate_params: _,
             instance_fn_params: _,
+            fn_param_args: _,
             def_gate_depth: _,
             resolving_lambdas: _,
             defaults_in_check: _,
