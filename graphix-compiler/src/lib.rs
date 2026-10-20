@@ -1803,44 +1803,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Whether `id` is a binding an earlier compile generalized: its
     /// check already made variables of a function it holds generic.
-    // XCR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
-    // cells too, so this answers true for a rank-2 parameter, for a binding annotated
-    // with `type F = fn<'b: ..>(..)`, for a struct holding one, and for a lambda
-    // literal's parameter checked against one. The `&mut` check in Bind then refuses
-    // them with 'made generic by an earlier compile' when no such compile exists.
-    // Inside a definition only the build refuses, so --check passes and graphix-fuzz
-    // check reports DIVERGENCE. A write through such a reference is still checked
-    // against the quantified type, so nothing needs refusing. Skip the cells that are
-    // quantifiers of a function type the binding's type holds (carried_out's
-    // bound_quantifiers walk finds them). The Connect refusal for these bindings shows
-    // the same wrong message. probe:
-    // design/review-2026-10-19/repro/x-typecheck-generics-generalized-earlier-quantifier.gx
-    // (x-typecheck-generics-05)
-    // 2026-10-19 claude: generalized_earlier skips the quantifier cells of function types
-    // the binding's type holds (callsite::bound_quantifiers). The probe runs and prints 1.
-    // Pin: lang::byref::mut_ref_to_a_rank2_parameter.
-    // 2026-10-19 claude: generalized_earlier walks the binding's type for quantifiers only
-    // when a generic cell is reached, and bound_quantifiers visits each shared node once
-    // (Type::shared_identity): walking it as a tree made deep_nesting's
-    // shared_type_dags_check_in_linear_time run past 15 s.
-    // 2026-10-20 claude: XCR review: Incomplete: the finding's fourth case, a lambda
-    // literal's parameter checked against a rank-2 formal, is still refused with the wrong
-    // message. 'let app = |g: fn<'b: Any>(y: 'b) -> 'b| g(1); app(|y| { let r = &mut y; y
-    // })' (and the probe header's own variant with '*r <- y') is refused by --check and the
-    // build: 'y was made generic by an earlier compile, and a writable reference to it
-    // would let a write narrow it' (debug binary at HEAD). There y's type is the bare
-    // quantifier cell, not a function type holding it, so bound_quantifiers over b.typ
-    // finds nothing to exempt. The rank-2 parameter, typedef and struct variants now run
-    // (probe prints 1; the type F variant prints 4; the struct variant prints 1).
-    // generalized_earlier needs to tell a GENERIC cell that is a rank-2 quantifier the
-    // binding was checked under from one an earlier compile generalized (e.g. by the cell's
-    // origin or by the formal's quantifiers reaching the literal's parameters), and the pin
-    // set wants this case beside mut_ref_to_a_rank2_parameter.
-    // 2026-10-20 claude: generalized_earlier skips a generic cell a rank-2 formal's
-    // quantifier gate holds (TVar::is_quantifier_rigid): a lambda literal's parameter
-    // checked against fn<'b: Any>(y: 'b) -> 'b has the quantifier itself as its type. Pin:
-    // lang::byref::mut_ref_to_a_rank2_argument_parameter (app(|y| { let r = &mut y; y });
-    // the pre-fix binary refuses it with 'made generic by an earlier compile').
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| {
             let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
