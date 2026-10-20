@@ -9,14 +9,7 @@ before they propagate further.
 All terminal events are represented by the `Event` type:
 
 ```graphix
-type Event = [
-  `FocusGained,
-  `FocusLost,
-  `Key(KeyEvent),
-  `Mouse(MouseEvent),
-  `Paste(string),
-  `Resize(i64, i64)
-];
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:event}}
 ```
 
 - `FocusGained` / `FocusLost`: Terminal window focus changes (enabled while the display runs, independently of mouse input)
@@ -30,46 +23,15 @@ type Event = [
 Keyboard events contain detailed information about key presses:
 
 ```graphix
-type KeyEvent = {
-  code: KeyCode,
-  kind: KeyEventKind,
-  modifiers: Array<KeyModifier>,
-  state: Array<KeyEventState>
-};
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:key_event}}
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:key_event_state}}
 ```
 
 ### Key Codes
 
 ```graphix
-type KeyCode = [
-  `Backspace,
-  `Enter,
-  `Left,
-  `Right,
-  `Up,
-  `Down,
-  `Home,
-  `End,
-  `PageUp,
-  `PageDown,
-  `Tab,
-  `BackTab,
-  `Delete,
-  `Insert,
-  `F(i64),
-  `Char(string),
-  `Null,
-  `Esc,
-  `CapsLock,
-  `ScrollLock,
-  `NumLock,
-  `PrintScreen,
-  `Pause,
-  `Menu,
-  `KeypadBegin,
-  `Media(MediaKeyCode),
-  `Modifier(ModifierKeyCode)
-];
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:key_code}}
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:key_code_parts}}
 ```
 
 Character keys use `Char(string)`, e.g., `Char("a")` or `Char("A")`.
@@ -78,11 +40,7 @@ Function keys use `F(i64)`, e.g., `F(1)` for F1.
 ### Key Event Kind
 
 ```graphix
-type KeyEventKind = [
-  `Press,
-  `Repeat,
-  `Release
-];
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:key_event_kind}}
 ```
 
 Most applications only care about `Press` events, and must say so: a
@@ -114,14 +72,7 @@ let modal = |e: Event| { on_press(e, keys); e ~ `Stop };
 ### Key Modifiers
 
 ```graphix
-type KeyModifier = [
-  `Shift,
-  `Control,
-  `Alt,
-  `Super,
-  `Hyper,
-  `Meta
-];
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:key_modifier}}
 ```
 
 The `modifiers` array contains all modifiers held during the key event.
@@ -170,29 +121,7 @@ tui::mouse <- true
 Mouse events contain position and action information:
 
 ```graphix
-type MouseEvent = {
-  column: i64,
-  kind: MouseEventKind,
-  modifiers: Array<KeyModifier>,
-  row: i64
-};
-
-type MouseEventKind = [
-  `Down(MouseButton),
-  `Up(MouseButton),
-  `Drag(MouseButton),
-  `Moved,
-  `ScrollDown,
-  `ScrollUp,
-  `ScrollLeft,
-  `ScrollRight
-];
-
-type MouseButton = [
-  `Left,
-  `Right,
-  `Middle
-];
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/input_handler.gxi:mouse}}
 ```
 
 ## Creating Input Handlers

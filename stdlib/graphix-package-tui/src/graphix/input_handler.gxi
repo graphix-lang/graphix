@@ -1,4 +1,5 @@
 use super::Tui;
+// ANCHOR: key_code_parts
 type MediaKeyCode = [
   `Play,
   `Pause,
@@ -32,6 +33,8 @@ type ModifierKeyCode = [
   `IsoLevel5Shift
 ];
 
+// ANCHOR_END: key_code_parts
+// ANCHOR: key_code
 type KeyCode = [
   `Backspace,
   `Enter,
@@ -62,6 +65,8 @@ type KeyCode = [
   `Modifier(ModifierKeyCode)
 ];
 
+// ANCHOR_END: key_code
+// ANCHOR: key_modifier
 type KeyModifier = [
   `Shift,
   `Control,
@@ -71,18 +76,24 @@ type KeyModifier = [
   `Meta
 ];
 
+// ANCHOR_END: key_modifier
+// ANCHOR: key_event_kind
 type KeyEventKind = [
   `Press,
   `Repeat,
   `Release
 ];
 
+// ANCHOR_END: key_event_kind
+// ANCHOR: key_event_state
 type KeyEventState = [
   `Keypad,
   `CapsLock,
   `NumLock
 ];
 
+// ANCHOR_END: key_event_state
+// ANCHOR: key_event
 type KeyEvent = {
   code: KeyCode,
   kind: KeyEventKind,
@@ -90,6 +101,8 @@ type KeyEvent = {
   state: Array<KeyEventState>
 };
 
+// ANCHOR_END: key_event
+// ANCHOR: mouse
 type MouseButton = [
   `Left,
   `Right,
@@ -114,6 +127,8 @@ type MouseEvent = {
   row: i64
 };
 
+// ANCHOR_END: mouse
+// ANCHOR: event
 type Event = [
   `FocusGained,
   `FocusLost,
@@ -123,6 +138,7 @@ type Event = [
   `Resize(i64, i64)
 ];
 
+// ANCHOR_END: event
 type InputHandler = {
   child: &Tui,
   enabled: &[bool, null],

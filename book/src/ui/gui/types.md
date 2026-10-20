@@ -9,22 +9,7 @@ The GUI library defines a set of shared types used across all widgets. These typ
 Controls how a widget is sized along a single axis:
 
 ```graphix
-type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
-```
-
-- `` `Fill `` -- expand to fill all available space.
-- `` `FillPortion(n) `` -- fill proportionally. Two widgets with `FillPortion(1)` and `FillPortion(2)` split space 1:2.
-- `` `Shrink `` -- take only as much space as the content needs.
-- `` `Fixed(px) `` -- exact size in logical pixels.
-
-Most layout widgets accept `#width` and `#height` parameters of type `&Length`:
-
-```graphix,ignore
-column(
-  #width: &`Fill,
-  #height: &`Fixed(300.0),
-  &[...]
-)
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:length}}
 ```
 
 ### Padding
@@ -32,11 +17,7 @@ column(
 Controls spacing between a widget's border and its content:
 
 ```graphix
-type Padding = [
-  `All(f64),
-  `Axis({x: f64, y: f64}),
-  `Each({top: f64, right: f64, bottom: f64, left: f64})
-];
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:padding}}
 ```
 
 - `` `All(px) `` -- uniform padding on all sides.
@@ -60,11 +41,7 @@ container(
 A width/height pair used for window dimensions:
 
 ```graphix
-type Size = { width: f64, height: f64 };
-```
-
-```graphix
-window(#size: &mut { width: 1024.0, height: 768.0 }, &content)
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:size}}
 ```
 
 ### HAlign and VAlign
@@ -72,8 +49,7 @@ window(#size: &mut { width: 1024.0, height: 768.0 }, &content)
 Horizontal and vertical alignment for positioning content within a container:
 
 ```graphix
-type HAlign = [`Left, `Center, `Right];
-type VAlign = [`Top, `Center, `Bottom];
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:align}}
 ```
 
 ```graphix
@@ -113,13 +89,7 @@ Colors are used in custom themes and per-widget style overrides. See the [themin
 Fonts are described by family, weight, and style:
 
 ```graphix
-type FontFamily = [`SansSerif, `Serif, `Monospace, `Name(string)];
-type FontWeight = [
-  `Thin, `ExtraLight, `Light, `Normal, `Medium,
-  `SemiBold, `Bold, `ExtraBold, `Black
-];
-type FontStyle = [`Normal, `Italic, `Oblique];
-type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:font}}
 ```
 
 - `FontFamily` selects the font. `` `Name(string) `` allows loading a specific named font.
@@ -140,11 +110,7 @@ text(
 Controls which axes a scrollable widget allows scrolling on:
 
 ```graphix
-type ScrollDirection = [`Vertical, `Horizontal, `Both];
-```
-
-```graphix
-scrollable(#direction: &`Both, &content)
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:scroll_direction}}
 ```
 
 ### TooltipPosition
@@ -152,15 +118,7 @@ scrollable(#direction: &`Both, &content)
 Controls where a tooltip appears relative to its target widget:
 
 ```graphix
-type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
-```
-
-```graphix
-tooltip(
-  #position: &`Top,
-  #tip: &text(&"Tooltip text"),
-  &button(&text(&"Hover me"))
-)
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:tooltip_position}}
 ```
 
 ### ContentFit
@@ -168,21 +126,7 @@ tooltip(
 Controls how an image or SVG is scaled within its bounds:
 
 ```graphix
-type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
-```
-
-- `` `Fill `` -- stretch to fill the bounds exactly (may distort).
-- `` `Contain `` -- scale to fit within bounds, preserving aspect ratio.
-- `` `Cover `` -- scale to cover bounds, preserving aspect ratio (may crop).
-- `` `None `` -- no scaling, display at original size.
-- `` `ScaleDown `` -- like `` `Contain `` but never scales up.
-
-## The Widget Type
-
-`Widget` is a union of all individual widget types. Most widget constructor functions return `Widget`, which means you can freely mix different widget types in arrays and containers:
-
-```graphix
-{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:widget}}
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:content_fit}}
 ```
 
 You do not normally construct `Widget` variants directly. Each widget module exports a constructor function (e.g., `gui::text::text(...)`, `gui::button::button(...)`) that returns `Widget`. This means a column's children array has type `Array<Widget>` and can contain any mix of widgets:

@@ -8,27 +8,7 @@ modifiers. Most widgets accept style parameters to customize their appearance.
 The `Color` type defines available colors:
 
 ```graphix
-type Color = [
-  `Reset,
-  `Black,
-  `Red,
-  `Green,
-  `Yellow,
-  `Blue,
-  `Magenta,
-  `Cyan,
-  `Gray,
-  `DarkGray,
-  `LightRed,
-  `LightGreen,
-  `LightYellow,
-  `LightBlue,
-  `LightMagenta,
-  `LightCyan,
-  `White,
-  `Rgb({ r: i64, g: i64, b: i64 }),
-  `Indexed(i64)
-];
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/mod.gxi:color}}
 ```
 
 Use `Reset` to return to the terminal's default color. Use `Rgb` for 24-bit true
@@ -39,17 +19,7 @@ color, or `Indexed` for 256-color palette indices.
 Text modifiers change the appearance of text:
 
 ```graphix
-type Modifier = [
-  `Bold,
-  `Dim,
-  `Italic,
-  `Underlined,
-  `SlowBlink,
-  `RapidBlink,
-  `Reversed,
-  `Hidden,
-  `CrossedOut
-];
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/mod.gxi:modifier}}
 ```
 
 ## The Style Type
@@ -58,13 +28,7 @@ A `Style` combines foreground color, background color, underline color, and
 modifiers:
 
 ```graphix
-type Style = {
-  fg: [Color, null],
-  bg: [Color, null],
-  underline_color: [Color, null],
-  add_modifier: [Array<Modifier>, null],
-  sub_modifier: [Array<Modifier>, null]
-};
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/mod.gxi:style_type}}
 ```
 
 ## Creating Styles
@@ -72,13 +36,7 @@ type Style = {
 Use the `tui::style` function to create styles. All parameters are optional:
 
 ```graphix
-val style: fn(
-  ?#fg: [Color, null],
-  ?#bg: [Color, null],
-  ?#underline_color: [Color, null],
-  ?#add_modifier: [Array<Modifier>, null],
-  ?#sub_modifier: [Array<Modifier>, null]
-) -> Style;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/mod.gxi:style}}
 ```
 
 Examples:
@@ -106,27 +64,10 @@ Styles are commonly used with `Span` and `Line` types to create styled text.
 
 ### Spans
 
-<!-- CR claude for claude: [structure/low] The type blocks on this page are hand copies
-of tui/mod.gxi and have drifted. `val span` takes `content: string` in the gxi, not `s`,
-and `val line` takes `spans`, not `v`. input.md copies input_handler.gxi the same way,
-and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
-(MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
-and `\{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
-reading; not run. (book-ui-b-05) -->
-<!-- 2026-10-19 claude: The two drifted names are fixed by hand (span's content, line's
-spans), and every type line on this page and in input.md now matches its gxi line for
-line. Still owed: ANCHOR markers in stdlib/graphix-package-tui/src/graphix/mod.gxi and
-input_handler.gxi (outside the docs pass) so these blocks become includes; input.md's
-copy still lacks KeyEventState, MediaKeyCode and ModifierKeyCode until then. -->
 A `Span` is a piece of text with a single style:
 
 ```graphix
-type Span = {
-  style: Style,
-  content: string
-};
-
-val span: fn(?#style: Style, content: string) -> Span;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/mod.gxi:span}}
 ```
 
 Example:
@@ -144,19 +85,7 @@ tui::span("Hello")
 A `Line` contains one or more spans with optional alignment:
 
 ```graphix
-type Alignment = [
-  `Left,
-  `Center,
-  `Right
-];
-
-type Line = {
-  style: Style,
-  alignment: [Alignment, null],
-  spans: [Array<Span>, string]
-};
-
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], spans: [Array<Span>, string]) -> Line;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/mod.gxi:line}}
 ```
 
 The `spans` field can be either an array of spans (for mixed styling) or a
