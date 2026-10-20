@@ -2647,52 +2647,6 @@ impl Type {
                                 tv.add_cell_constraint(constraint)
                             }
                         }
-                        // XCR claude for claude: [bug/medium] A bound checked against an
-                        // argument that is not a bare cell is checked only as the
-                        // argument stands: the open members of a union argument never
-                        // get it, as require_bounds gives them when a cell binds. So
-                        // Result<[i64, 'x], `E> accepts error(`Q) (its 'x binds to
-                        // Error<`Q>, although Result<[i64, Error<`Q>], `E> written out
-                        // is refused). A select over Result<[i64, 'x], `E> is also
-                        // refused because 'x is not a NoError cell. Fix: after
-                        // check_contains, hand the bound to the argument's open members
-                        // (require_bounds(&[constraint], arg)). probe:
-                        // design/review-2026-10-19/repro/x-kind-markers-noerror-open-member.sh
-                        // (x-kind-markers-04)
-                        // 2026-10-19 claude: A bound checked against a non-cell argument is
-                        // handed on with tvar::require_bounds after check_contains. An
-                        // interface's typedef-parameter bounds count the same way: fntyp.rs
-                        // param_bounds_of gives a NoError parameter's bound to the open
-                        // members of a union argument (TVar::open_members), else db's
-                        // Result<[null, 'v], ..> interface refused its implementation. Only
-                        // NoError is mirrored there; no other predicate bound sits on a
-                        // typedef parameter in the tree. Pins:
-                        // lang::types::unsound_acceptances_are_refused (NO_ERROR_OPEN_MEMBER
-                        // refused, NO_ERROR_OPEN_MEMBER_TOLD accepted).
-                        // 2026-10-20 claude: XCR review: The check side hands every predicate
-                        // bound to a union argument's open members (tvar::require_bounds
-                        // covers Concrete, Data, Singleton, OneNumber, NoError, Discernible,
-                        // Ordered), but the interface mirror fntyp.rs param_bounds_of hands on
-                        // only Type::NoError. So any other predicate bound on a typedef
-                        // parameter now makes a matching interface fail. Probe with the debug
-                        // binary: inner.gxi 'type T<'a: Discernible> = Array<'a>; val f: fn(x:
-                        // T<[i64, 'b]>) -> i64' with inner.gx 'type T<'a: Discernible> =
-                        // Array<'a>; let f = |x: T<[i64, 'b]>| -> i64 0' is refused with 'the
-                        // implementation requires 'b: Discernible, which the signature does
-                        // not declare'. The same files with NoError check clean. 'No other
-                        // predicate bound sits on a typedef parameter in the tree' is true of
-                        // the tree but not of user programs. param_bounds_of should mirror
-                        // every bound require_bounds hands on, with a pin for a non-NoError
-                        // bound.
-                        // 2026-10-20 claude: One rule: tvar::handed_bounds yields each
-                        // conjunct a bound hands an open cell of its argument; require_bounds
-                        // adds them, and fntyp.rs param_bounds_of collects them for every
-                        // bound a typedef parameter carries on a non-cell argument, not
-                        // NoError alone. The require_* walks take the sink; op.rs and map.rs
-                        // call require_bounds. Pin:
-                        // lang::modules::interface_typedef_bound_reaches_open_members (T<'a:
-                        // Discernible> at T<[i64, 'b]>; the pre-fix binary refuses it with
-                        // 'requires 'b: Discernible, which the signature does not declare').
                         _ if commit => {
                             constraint.check_contains(env, arg)?;
                             tvar::require_bounds(std::slice::from_ref(&constraint), arg)
