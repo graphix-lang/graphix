@@ -1061,49 +1061,6 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
     // parts fused is residue for its own reason.
     let before = report.len();
     fusion::for_each_node(node, &mut |n| {
-        // XCR claude for claude: [bug/medium] failure_for_source returns the last
-        // failure recorded for a source, which need not come from this node's attempt.
-        // For a handler-ful `?` under a select arm, the select records the arm-raise
-        // blocker and then "a region of type _ has no kernel return" from a second
-        // attempt at an open type, and #[native] reports only the second. Report the
-        // failure of the attempt on the walked node, or every distinct failure of the
-        // source. Find out why the select is tried a second time. Make
-        // arm_input_raise_node_walks match the blocker's text. probe:
-        // design/review-2026-10-19/repro/x-rerun-4-native-misreports-arm-raise.gx
-        // (x-rerun-4-02)
-        // 2026-10-19 claude: native_residue now reports every distinct failure
-        // recorded for a source (FusionStats::failures_for_source), so the repro's
-        // #[native] names the arm-raise blocker and the open-type failure both. Still
-        // open: why the select is tried a second time at an open type, and why
-        // lang::errors::arm_input_raise_node_walks records only the open-type failure
-        // (its region's type is an unbound cell there, so the blocker attempt never
-        // runs); its refusal text stays generic until that is understood.
-        // 2026-10-20 claude: The second attempt is the instance: the definition body
-        // is tried at its open type (no kernel return for _) and the instance at i64,
-        // where the arm-raise blocker applies; native_residue reports every distinct
-        // failure of the source, so the probe names the real blocker beside the
-        // open-type one. lang::errors::arm_input_raise_node_walks keeps its generic
-        // refusal text: there the region type is an unbound cell in the only attempt,
-        // so only that failure is recorded.
-        // 2026-10-20 claude: XCR review: The code change holds (native_residue reports
-        // every distinct failure through FusionStats::failures_for_source; the probe
-        // now lists the arm-raise blocker beside the open-type miss), but nothing pins
-        // it: lang::errors::arm_input_raise_node_walks still asserts only the generic
-        // 'did not fully fuse to native code', and no test contains the blocker text
-        // 'arm entry is the node-walk's', so reverting to the last failure passes
-        // every test. The fixture can name the blocker: with 'let v: i64 = { catch(e)
-        // ...; #[native] select x { ... } }' the same top-level program refuses with
-        // exactly the arm-raise blocker (debug binary at HEAD); unannotated, the
-        // select's type stays an unbound cell ('_7775: unbound') although both arms
-        // are i64-or-bottom, which is itself worth a look. Add a pin over the probe's
-        // function-body shape asserting both lines, and tighten
-        // arm_input_raise_node_walks with the annotation.
-        // 2026-10-20 claude: Pinned: lang::errors::arm_input_raise_node_walks
-        // annotates v: i64 and asserts the arm-raise blocker text, and
-        // lang::errors::arm_input_raise_in_a_body (the probe's function-body shape,
-        // two attempts) asserts it too, so reporting only the last failure fails it.
-        // The unannotated select's open type is the ok type of error(..)? over an
-        // error-only value: a free cell, not a checker miss.
         let mut failures = ctx.fusion.stats.failures_for_source(n.spec()).peekable();
         if failures.peek().is_none() {
             return;
