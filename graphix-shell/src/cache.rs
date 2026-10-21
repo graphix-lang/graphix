@@ -218,9 +218,7 @@ fn sources_record(probes: &[Probe]) -> Option<String> {
 /// Whether every source `record` lists is as the compile read it.
 fn sources_unchanged(record: &str) -> bool {
     record.lines().all(|line| match line.split_at_checked(1) {
-        Some(("-", path)) => {
-            fs::File::open(path).is_err_and(|e| names_nothing(&e))
-        }
+        Some(("-", path)) => fs::File::open(path).is_err_and(|e| names_nothing(&e)),
         Some(("+", rest)) => match rest.split_once(' ') {
             Some((want, path)) => {
                 fs::read(path).is_ok_and(|text| digest(&[&text]) == want)
