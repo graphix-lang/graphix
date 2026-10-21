@@ -186,54 +186,6 @@ impl Mode {
 
     /// Whether the runtime skips clean boundaries when the mode prunes for
     /// real: what `Unpruned` and the fuzzer's `Pair::Prune` compare against.
-    // XCR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
-    // audit off, and Mode::Unpruned is not in Mode::ALL. So the gate never checks that
-    // pruning changes nothing; only lang::prune's walk count touches it. A missed mark
-    // that alters an intermediate cycle passes every fixture: the standing-write hole
-    // in RtView::store_insert_standing is one, and GRAPHIX_PRUNE=audit catches it
-    // immediately. Fix: default Interp and Par to PruneMode::Audit here when
-    // GRAPHIX_PRUNE is unset (it walks everything, so it costs what Off does), and
-    // correct design/walk_pruning.md "Verifying it", which says the gate already
-    // audits. Found by reading; not run. (x-prune-03)
-    // 2026-10-19 claude: Mode::prune now gives Interp and Par PruneMode::Audit when
-    // GRAPHIX_PRUNE is unset (Jit modes stay On, Unpruned Off). Measured first:
-    // graphix-tests under GRAPHIX_PRUNE=audit passed whole (9348, 188 s against 211 s
-    // pruned), so the gate turns no fixture red. A missed mark now fails any node-walk
-    // fixture whose skip it would change. design/walk_pruning.md's 'Verifying it' is
-    // left to Eric's x-doc-drift-02, which covers the section's other unbuilt names.
-    // 2026-10-20 claude: XCR review: run! is fixed (Mode::prune gives Interp and Par
-    // PruneMode::Audit when GRAPHIX_PRUNE is unset), but graphix-fuzz shares
-    // Mode::prune: graphix-fuzz/src/lib.rs:505 and :6774 call
-    // ctx.control.set_prune_mode(mode.prune()), and Pair::Prune (lib.rs:1800) runs
-    // Run::plain(Mode::Unpruned) against Run::plain(Mode::Interp). Interp is now
-    // Audit, and Prune::update under Audit walks the child instead of riding the
-    // resident (graphix-compiler/src/node/prune.rs:133, audit()), so the fuzzer's
-    // 'pruned node-walk' never prunes: Pair::Prune compares Off against a full walk,
-    // and a skip that leaves state stale without changing that cycle's production
-    // (which audit does not flag, then heals by walking) is no longer differentially
-    // checked in the node-walk. Fix: keep the Audit default to run! (e.g. a separate
-    // fixture-only prune choice, or have the fuzzer pass PruneMode::On for Interp) and
-    // let the fuzzer's Interp prune for real. The same holds inside graphix-tests:
-    // lang::prune compares walks(code, Mode::Interp) against Mode::Unpruned for values
-    // (prune.rs:82-84, 134, 157, 210), and with Interp now auditing (walking every
-    // clean boundary) those value comparisons no longer exercise a pruned node-walk;
-    // only the walk counts (audit does not call note_boundary) still reflect pruning.
-    // 2026-10-20 claude: Mode::prune now audits only Par; Interp prunes for real, so
-    // the fuzzer's Pair::Prune (Interp against Unpruned) and lang::prune's value
-    // comparisons exercise a pruned node-walk again, and run! keeps an audited mode.
-    // run_delta reports boundaries walked and skipped. Fails if undone: lang::prune
-    // ticks_skip_the_idle_map* (Mode::Interp must skip at least 100 boundaries; under
-    // Audit it skips none).
-    // 2026-10-20 claude: Per Eric: fixtures audit by default and a test that measures
-    // pruning opts out. fixture_runtime sets Mode::fixture_prune (Audit in every mode
-    // unless GRAPHIX_PRUNE is set, Unpruned Off), so every run!, run_with_tempdir!,
-    // collect and eval_modes fixture audits every skip, JIT modes included;
-    // Mode::prune is real pruning again for every mode (the fuzzer's Pair::Prune and
-    // Pair::Par), and lang::prune's walks sets it in its setup. No run! fixture needs
-    // real pruning, so run! has no opt-out argument; one is a setup line. Gate green,
-    // graphix-tests 160 s audited against 159 s. Fails if undone: lang::prune
-    // idle_map_beside_a_ticking_counter, idle_map_in_a_walked_arm and
-    // idle_map_in_a_walked_instance fail when walks audits.
     pub fn prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
