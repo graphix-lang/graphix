@@ -239,44 +239,6 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         }
         tv.with_value(|v| {
             let [disc, payload] = match (p, v) {
-                // XCR claude for claude: [readability/low] The comment above is wrong:
-                // pack_value_to_u64 returns value_words' payload, which sign- or
-                // zero-extends narrow scalars, so no byte is padding.
-                // pack_value_to_u64's doc in emit/jit.rs says a None makes the caller
-                // substitute a tainted placeholder, but this arm panics. It also
-                // accepts Z32/Z64/V32/V64 for the fixed-width prim, so a varint in an
-                // i64/u64 slot would be relabeled rather than reported by `mismatch`.
-                // Drop the comment, fix that doc, and test the exact Value variant
-                // here. Found by reading; not run. (f-kernel-05)
-                // 2026-10-19 claude: The wrong padding comment is gone and
-                // pack_value_to_u64's doc says a None is reported as a mismatch. The
-                // exact-variant test is not taken: a v32/z32/v64/z64 parameter's
-                // ParamKind is the fixed-width Scalar prim, so a varint Value in its
-                // slot is the type's own, and an exact test would refuse it; only a
-                // slot that records the varint could tell. Review: drop the third
-                // item or make ParamKind carry varints.
-                // 2026-10-20 claude: XCR review: Comment and doc items are done, but
-                // the reason for not taking the exact-variant test is wrong:
-                // PrimType::from_typ maps no varint Typ (V32/Z32/V64/Z64 return None),
-                // so abi_kind gives a varint type AbiKind::Value and its param is
-                // ParamKind::Value, never ParamKind::Scalar. A varint Value in a
-                // Scalar slot is therefore always a class mismatch, and
-                // pack_value_to_u64 (via scalar_prim_of_value's collapse) relabels it
-                // instead of reporting it. pack_value_to_u64's new doc ('pack as their
-                // fixed-width prim, which is a varint type's own') repeats the error.
-                // Test the exact variant there (or use a prim-of-value that refuses
-                // varints).
-                // 2026-10-20 claude: The exact-variant test is taken:
-                // pack_value_to_u64 packs only a Value whose Typ is exactly the prim
-                // (PrimType::from_typ of Typ::get), so a varint in a Scalar slot is a
-                // mismatch and stage panics as for any other class mismatch; its doc
-                // says a varint is no register prim. compile_const, which must take a
-                // varint literal as its fixed-width prim (a literal compared against a
-                // varint's payload word over a value scrutinee), no longer goes
-                // through pack_value_to_u64 and keeps the collapsing
-                // scalar_prim_of_value. Pin: kernel.rs tests
-                // varints_fill_no_scalar_slot (Z32, V32, Z64, V64 against their
-                // fixed-width prims).
                 (ParamKind::Scalar(prim), v) => match pack_value_to_u64(v, *prim) {
                     Some(payload) => [prim_to_value_disc(*prim) as u64, payload],
                     None => mismatch(v),
