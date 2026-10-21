@@ -137,6 +137,16 @@ impl TVar {
         )
     }
 
+    /// Bind an unbound cell nothing will read to ⊥, whatever its bounds; a
+    /// bound one is untouched.
+    pub fn settle_unread(&self) {
+        let cell = self.cell();
+        let mut cell = cell.write();
+        if cell.binding.is_none() && !super::tvar::earlier_task(&cell) {
+            cell.binding = Some(Type::Bottom);
+        }
+    }
+
     /// Bind an unbound cell to ⊥; a bound one is untouched.
     fn settle_bottom(&self) -> Result<()> {
         let cell = self.cell();

@@ -413,7 +413,8 @@ impl Type {
 
     /// Whether the type holds `Any` or an open cell anywhere: a part a
     /// value-level predicate cannot be decided of.
-    pub(crate) fn holds_unknown(&self, env: &Env) -> bool {
+    #[doc(hidden)]
+    pub fn holds_unknown(&self, env: &Env) -> bool {
         self.holds(env, &mut Verdicts::new(), &|t| match t {
             Type::Any => Some(true),
             Type::TVar(tv) if tv.binding().is_none() => Some(true),

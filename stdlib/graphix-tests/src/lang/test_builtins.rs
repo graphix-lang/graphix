@@ -1,5 +1,6 @@
-// Fixtures over builtins only a test registers: Rust that panics, and a
-// function value retyped past the checker.
+// Fixtures over builtins only a test registers: Rust that panics, a
+// function value retyped past the checker, and a builtin's quantifier no
+// argument can carry a value of.
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
@@ -25,10 +26,17 @@ fn fc_identity(args: &[Value]) -> Option<Value> {
 
 fast_builtin!(Identity, IdentityEv, "test_identity", fc_identity);
 
+fn fc_last(args: &[Value]) -> Option<Value> {
+    args.last().cloned()
+}
+
+fast_builtin!(Last, LastEv, "test_last", fc_last);
+
 async fn run(code: &str, mode: Mode) -> Result<Vec<Value>> {
     let setup = |ctx: &mut TestState| {
         ctx.register_builtin::<PanicAt13>().unwrap();
         ctx.register_builtin::<Identity>().unwrap();
+        ctx.register_builtin::<Last>().unwrap();
     };
     Ok(run_delta_with(code, mode, setup, Duration::from_millis(700)).await?.values)
 }
@@ -80,4 +88,40 @@ async fn mistyped_function_value_is_refused(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(rust_panics_in_a_kernel, mistyped_function_value_is_refused);
+/// A builtin's `'a: Concrete` that only a handler the call does not pass
+/// holds is never read: the call is accepted with the handler omitted or
+/// null, and refused where a value of `'a` can arrive and nothing settles
+/// it (a handler whose argument is left open) or the result holds it.
+async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
+    let code = |ret: &str, call: &str| {
+        format!(
+            r#"{{
+                let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
+                    -> {ret} 'test_last;
+                {call}
+            }}"#
+        )
+    };
+    assert_eq!(run(&code("i64", "f(3)"), mode).await?, [Value::I64(3)]);
+    assert_eq!(run(&code("i64", "f(#h: null, 3)"), mode).await?, [Value::I64(3)]);
+    for (ret, call) in [
+        ("i64", "f(#h: |v| 0, 3)"),
+        ("['a, i64]", "f(3)"),
+        (
+            "i64",
+            "{ let g = 'b: Concrete |#h: [fn(v: 'b) -> i64, null] = null, x: i64| x; g(3) }",
+        ),
+    ] {
+        match run(&code(ret, call), mode).await {
+            Err(e) if format!("{e:#}").contains("must be fully known") => (),
+            r => panic!("{ret} {call}: {r:?}"),
+        }
+    }
+    Ok(())
+}
+
+modes!(
+    rust_panics_in_a_kernel,
+    mistyped_function_value_is_refused,
+    unread_quantifier_settles
+);

@@ -250,6 +250,16 @@ to and never refuse.
   and an open member takes only the members they leave (all of them when
   none are left, `contains.rs`), so `let r: [&i64, Error<E>] = parse(..)`
   offers 'b only `&i64`, which `Concrete` refuses, never `Error<E>`.
+- A builtin reads a quantifier only through the values of the arguments
+  that hold it. At a call, a quantifier of a builtin's signature that the
+  result and throws do not hold, and that no argument the call passes or
+  omits can carry a value of (none holds a function or an open part), is
+  never read: it settles to ⊥ whatever its bounds
+  (`CallSite::settle_unread`). So `sys::net::publish`'s `#on_write:
+  [fn(v: 'a) -> _, null] = null` keeps `'a: Concrete` and a call with no
+  handler is accepted; the builtin publishes without writes. A definition
+  written in Graphix gets no such settle: its body may read the variable
+  elsewhere (`cast<'a>(x)`).
 
 A definition's check runs no `typecheck1`, so its call sites record
 their terminal settle in the gate's frame (`CallSite::typecheck0` under

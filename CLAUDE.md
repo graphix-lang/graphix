@@ -482,7 +482,11 @@ builtin's `DATA_ARGS`/`DATA_RESULT` convert a store's keys and values
 both ways, and the builtin's
 `typecheck1` only extracts the type, never refuses
 (`design/tvar_constraints.md`); a builtin that wraps a function
-(`queuefn`) declares it `'a: Function` the same way. A definition's call sites settle with
+(`queuefn`) declares it `'a: Function` the same way. A builtin's quantifier that a
+call's result and throws do not hold, and no argument the call passes or
+omits can carry a value of (no function, no open part), settles to ⊥
+whatever its bounds (`CallSite::settle_unread`): `publish`'s handler is
+`[fn(v: 'a) -> _, null] = null` under `'a: Concrete`. A definition's call sites settle with
 the enclosing statement, the signature's cells exempt.
 
 **Collection intrinsics** (`node/collection.rs`,

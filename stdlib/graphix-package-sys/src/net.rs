@@ -2,8 +2,8 @@ use crate::netstate::{NetRpcWake, NetState, NetWrite};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FAILURE_TARGET, LambdaId, Node, Rt,
-    Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
+    UserEvent,
     effects::Effect,
     err, errf,
     expr::ExprId,
@@ -28,6 +28,7 @@ use netidx_derive::FromValue;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use poolshark::local::LPooled;
 use std::any::Any;
+use triomphe::Arc as TArc;
 
 fn as_path(v: Value) -> Option<Path> {
     match v.cast_to::<ArcStr>() {
@@ -672,20 +673,27 @@ macro_rules! list {
 list!(List, "sys_net_list", false);
 list!(ListTable, "sys_net_list_table", true);
 
-/// What a write is cast to for the handler: its argument type, `Any` where
-/// nothing constrains it (open, or settled to ⊥: the handler takes data
-/// as it comes), none where only a part is open (no cast makes that form).
-fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
-    resolved?.args.first().and_then(|a| match &a.typ {
-        Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
-            let t = &cb_ft.args[0].typ;
-            match t.with_deref(|t| matches!(t, None | Some(Type::Bottom))) {
-                true => Some(Type::Any),
-                false => castable(t).then(|| t.clone()),
-            }
-        }
-        _ => None,
+/// The handler's type: the function member of `#on_write`'s type.
+fn on_write_ftype(typ: &FnType) -> Option<TArc<FnType>> {
+    let member = |t: &Type| {
+        t.with_deref(|t| match t {
+            Some(Type::Fn(ft)) => Some(ft.clone()),
+            _ => None,
+        })
+    };
+    typ.args.first()?.typ.with_deref(|t| match t {
+        Some(Type::Set(ts)) => ts.iter().find_map(member),
+        Some(t) => member(t),
+        None => None,
     })
+}
+
+/// What a write is cast to for the handler: its argument type, none where
+/// the check settled it to ⊥ (no argument of the call is a handler).
+fn write_type(resolved: Option<&FnType>) -> Option<Type> {
+    let ft = on_write_ftype(resolved?)?;
+    let t = &ft.args.first()?.typ;
+    castable(t).then(|| t.clone())
 }
 
 #[derive(Debug)]
@@ -699,7 +707,10 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
     /// events (routed by the NetState pump)
     wid: BindId,
     on_write: genn::Callback<R, E>,
-    cast_typ: Option<Type>,
+    /// None when no handler can arrive: the publication takes no writes.
+    write_typ: Option<Type>,
+    /// The handler is a function now, not null.
+    handler: bool,
     out: TagValue,
 }
 
@@ -719,9 +730,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
             [_, _, _] => {
                 let typ = resolved.unwrap_or(typ);
                 let scope = scope.append_block("fn", LambdaId::new().inner());
-                let mftyp = match &typ.args[0].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected function not {t}"),
+                let Some(mftyp) = on_write_ftype(typ) else {
+                    bail!("expected a function or null not {}", typ.args[0].typ)
                 };
                 let on_write = genn::Callback::new(ctx, &scope, &mftyp, &["x"], top_id)?;
                 let wid = BindId::new();
@@ -732,7 +742,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                     top_id,
                     wid,
                     on_write,
-                    cast_typ: extract_publish_cast_type(resolved),
+                    write_typ: write_type(resolved),
+                    handler: false,
                     out: TagValue::phantom(),
                 }))
             }
@@ -748,16 +759,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
         let top_id = ExprId::decode(buf)?;
         let wid = BindId::decode(buf)?;
         let on_write = genn::Callback::image_decode(ctx, buf)?;
-        let cast_typ = Pack::decode(buf)?;
+        let write_typ = Pack::decode(buf)?;
         ctx.record_ref(wid, top_id);
         Ok(Box::new(Publish {
             slept: WakeBit::default(),
             current: None,
             top_id,
-
             wid,
             on_write,
-            cast_typ,
+            write_typ,
+            handler: false,
             out: TagValue::phantom(),
         }))
     }
@@ -773,7 +784,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
         self.wid.encode(buf)?;
         self.on_write.image_encode(buf)?;
-        self.cast_typ.encode(buf)
+        self.write_typ.encode(buf)
     }
 
     fn update(
@@ -785,7 +796,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             ($path:expr, $v:expr) => {{
                 let path = Path::from($path.clone());
                 let net = NetState::get(ctx);
-                match net.publish(ctx, path.clone(), $v.clone(), self.wid) {
+                let writes = self.write_typ.as_ref().map(|_| self.wid);
+                match net.publish(ctx, path.clone(), $v.clone(), writes) {
                     Err(e) => {
                         let e = errf!("PublishError", "{e:#}");
                         return self.out.set(TagValue::fired(e));
@@ -801,7 +813,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         let (pathv, path_fired) = seam_arg(ctx, &mut from[1]);
         let (val, val_fired) = seam_arg(ctx, &mut from[2]);
         if f_fired && let Some(v) = fv {
-            self.on_write.feed_fn(ctx, TagValue::fired(v));
+            self.handler = !matches!(v, Value::Null);
+            if self.handler {
+                self.on_write.feed_fn(ctx, TagValue::fired(v));
+            }
         }
         // a path that moved drops the publication even while the value is
         // bottom, so the next value goes to the new path
@@ -833,60 +848,70 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
-                    // the check holds the handler's argument concrete: a
-                    // type it could not settle takes no write
-                    let v = match &self.cast_typ {
-                        Some(typ) => coretraits::with_display_hooks(ctx, |env| {
-                            typ.cast_value(env, req.value.clone())
-                        }),
-                        // CR claude for eric: [bug/medium] A remote write reaches the
-                        // handler raw whenever its argument type is not concrete,
-                        // because #on_write's 'a has no bound (subscribe's target has
-                        // `'a: Concrete`). A handler taking a function, a reference or
-                        // an open type therefore takes whatever any netidx client
-                        // writes. A non-function written to `|f: fn(x: i64) -> i64|
-                        // f(1)` hits CallSite's `value .. is not a function` panic and
-                        // kills the runtime ('graphix runtime is dead'). Other shapes
-                        // bottom silently. Decide the rule: bound on_write's argument
-                        // `'a: Concrete` so every write is cast, or refuse a write here
-                        // when cast_typ is None and the type is not Any. probe:
-                        // design/review-2026-10-19/repro/x-panics-on-write-uncast.gx
-                        // (x-panics-02)
-                        // 2026-10-19 claude: The bound is in: net.gx/net.gxi declare
-                        // publish's on_write argument 'a: Concrete + Data and rpc's
-                        // 'args: Concrete + Data (the for-claude CRs
-                        // x-builtin-effects-02, gx-stdlib-01, sys-net-03 and
-                        // tests-lib-b2-01 asked for it), so the check refuses a
-                        // function, reference or open handler type, and Publish::update
-                        // now answers the writer with InvalidCast where cast_typ is
-                        // None instead of feeding the raw value. If that matches the
-                        // rule you want, delete this CR.
-                        // 2026-10-19 claude: Correction to the note above: publish's
-                        // on_write 'a is bounded Data only (Concrete refused the
-                        // omitted default, which leaves 'a open); an open handler type
-                        // takes no write, the writer is answered InvalidCast.
-                        None => {
-                            log::error!(
-                                target: FAILURE_TARGET,
-                                "a write of {} to {path} was refused: the write \
-                                 handler's argument type is not known; annotate it",
-                                req.value
-                            );
-                            errf!(
-                                literal!("InvalidCast"),
-                                "the write handler's argument type is not known"
-                            )
+                    // CR claude for eric: [bug/medium] A remote write reaches the
+                    // handler raw whenever its argument type is not concrete,
+                    // because #on_write's 'a has no bound (subscribe's target has
+                    // `'a: Concrete`). A handler taking a function, a reference or
+                    // an open type therefore takes whatever any netidx client
+                    // writes. A non-function written to `|f: fn(x: i64) -> i64|
+                    // f(1)` hits CallSite's `value .. is not a function` panic and
+                    // kills the runtime ('graphix runtime is dead'). Other shapes
+                    // bottom silently. Decide the rule: bound on_write's argument
+                    // `'a: Concrete` so every write is cast, or refuse a write here
+                    // when cast_typ is None and the type is not Any. probe:
+                    // design/review-2026-10-19/repro/x-panics-on-write-uncast.gx
+                    // (x-panics-02)
+                    // 2026-10-19 claude: The bound is in: net.gx/net.gxi declare
+                    // publish's on_write argument 'a: Concrete + Data and rpc's
+                    // 'args: Concrete + Data (the for-claude CRs
+                    // x-builtin-effects-02, gx-stdlib-01, sys-net-03 and
+                    // tests-lib-b2-01 asked for it), so the check refuses a
+                    // function, reference or open handler type, and Publish::update
+                    // now answers the writer with InvalidCast where cast_typ is
+                    // None instead of feeding the raw value. If that matches the
+                    // rule you want, delete this CR.
+                    // 2026-10-19 claude: Correction to the note above: publish's
+                    // on_write 'a is bounded Data only (Concrete refused the
+                    // omitted default, which leaves 'a open); an open handler type
+                    // takes no write, the writer is answered InvalidCast.
+                    // 2026-10-20 claude: The bound is now 'a: Concrete + Data on a
+                    // nullable handler, #on_write: [fn(v: 'a) -> _, null] = null
+                    // (Eric's ruling on x-builtin-effects-02): a call whose handler
+                    // cannot be given settles 'a to bottom
+                    // (CallSite::settle_unread, a builtin quantifier no argument
+                    // can carry a value of), and Publish then publishes without
+                    // writes. Every handler the check passes has a concrete, data
+                    // argument type, so every write is cast; the uncast path is
+                    // gone, and a write while the handler is null answers the
+                    // writer WriteError.
+
+                    // a write the handler cannot take is the writer's error
+                    let taken = match &self.write_typ {
+                        Some(typ) if self.handler => {
+                            let v = coretraits::with_display_hooks(ctx, |env| {
+                                typ.cast_value(env, req.value.clone())
+                            });
+                            match &v {
+                                Value::Error(_)
+                                    if !matches!(req.value, Value::Error(_)) =>
+                                {
+                                    Err(v)
+                                }
+                                _ => Ok(v),
+                            }
                         }
+                        Some(_) | None => Err(errf!(
+                            literal!("WriteError"),
+                            "{path} has no write handler"
+                        )),
                     };
-                    // a value the handler cannot take is the writer's error
-                    if let Value::Error(_) = &v
-                        && !matches!(req.value, Value::Error(_))
-                    {
-                        if let Some(reply) = req.send_result.take() {
-                            reply.send(v)
+                    match taken {
+                        Ok(v) => self.on_write.feed_arg(ctx, 0, TagValue::fired(v)),
+                        Err(e) => {
+                            if let Some(reply) = req.send_result.take() {
+                                reply.send(e)
+                            }
                         }
-                    } else {
-                        self.on_write.feed_arg(ctx, 0, TagValue::fired(v));
                     }
                 }
             }
@@ -910,7 +935,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.cast_typ = extract_publish_cast_type(Some(resolved));
+        self.write_typ = write_type(Some(resolved));
         Ok(())
     }
 

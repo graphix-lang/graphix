@@ -600,16 +600,18 @@ impl NetState {
         ctx: &mut ExecCtx<'_, R, E>,
         path: Path,
         value: Value,
-        write_id: BindId,
+        write_id: Option<BindId>,
     ) -> Result<Val> {
-        let writes_tx = self.0.writes_tx.clone();
+        let writes_tx = write_id.map(|_| self.0.writes_tx.clone());
         let val = self.handles(ctx)?.publisher.publish_with_flags_and_writes(
             PublishFlags::empty(),
             path,
             value,
-            Some(writes_tx),
+            writes_tx,
         )?;
-        self.0.routes.lock().writes.insert(val.id(), write_id);
+        if let Some(id) = write_id {
+            self.0.routes.lock().writes.insert(val.id(), id);
+        }
         Ok(val)
     }
 

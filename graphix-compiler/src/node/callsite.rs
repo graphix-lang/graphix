@@ -514,6 +514,12 @@ fn added_bound(env: &Env, q: &TVar, declared: &[Type]) -> Result<()> {
     Ok(())
 }
 
+/// Whether a value of `t` can carry a value of a cell its formal holds:
+/// a function may be called with one, an unknown part may be one.
+fn carries(env: &Env, t: &Type) -> bool {
+    t.holds_fn(env) || t.holds_unknown(env)
+}
+
 /// Fit a site's arguments to its signature: a placeholder for each
 /// defaulted label it omits; a missing or unknown label, or a wrong
 /// positional count, is refused.
@@ -1566,11 +1572,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
-    /// narrows the site's cells at its bind.
+    /// narrows the site's cells at its bind. `carriers` collects the
+    /// labels whose default can carry a value of a cell its type holds.
     fn check_omitted_defaults(
         &self,
         ctx: &mut CompileCtx<R, E>,
         ftype: &FnType,
+        carriers: &mut SmallVec<[ArcStr; 2]>,
     ) -> Result<bool> {
         let omitted = |name: &ArcStr| {
             self.args
@@ -1622,11 +1630,46 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     name,
                     expr,
                     &mut Refs::default(),
-                );
-                ctx.discard(node?);
+                )?;
+                if carries(&ctx.env, node.typ()) {
+                    carriers.push(name.clone());
+                }
+                ctx.discard(node);
             }
         }
         Ok(known)
+    }
+
+    /// A builtin reads a quantifier of its signature only through the
+    /// values of the arguments that hold it. One the result and throws do
+    /// not hold, and no argument this call passes or omits can carry a
+    /// value of, is never read here: it settles to ⊥ whatever its bounds.
+    fn settle_unread(&self, env: &Env, ftype: &FnType, carriers: &[ArcStr]) {
+        let mut read: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        ftype.rtype.reached_cells(&mut read);
+        ftype.throws.reached_cells(&mut read);
+        if let Some(t) = &ftype.vargs {
+            t.reached_cells(&mut read)
+        }
+        for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
+            let carried = match self.args.get(&key) {
+                Some(a) if a.stage.is_default() => {
+                    farg.label().is_some_and(|l| carriers.contains(l))
+                }
+                Some(a) => a.node.as_ref().is_none_or(|n| carries(env, n.typ())),
+                None => true,
+            };
+            if carried {
+                farg.typ.reached_cells(&mut read)
+            }
+        }
+        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ftype.collect_tvars(&mut tvs);
+        for (name, tv) in tvs.iter() {
+            if ftype.quantifiers.contains(name) && !read.contains_key(&tv.cell_addr()) {
+                tv.settle_unread()
+            }
+        }
     }
 
     fn init_prepared_bind(
@@ -3208,7 +3251,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         self.check_value_defaults(ctx, ftype)?;
         if fresh {
-            self.defaults_open = !self.check_omitted_defaults(ctx, ftype)?;
+            let mut carriers = SmallVec::new();
+            self.defaults_open =
+                !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
+            if !self.defaults_open && static_builtin(ctx, self).is_some() {
+                self.settle_unread(&ctx.env, ftype, &carriers);
+            }
         }
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an

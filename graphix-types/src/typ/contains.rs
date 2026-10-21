@@ -1058,6 +1058,15 @@ impl Type {
                  it: implement Cast for it where it is defined"
             ));
         }
+        // CR claude for claude: [bug/low] A rank-2 formal whose quantifier
+        // is bounded Data, |#h: fn<'a: Data>(v: 'a) -> i64|, refuses a
+        // monomorphic handler |v: (i64, string)| v.0 with "fn(v: (i64,
+        // string)) -> i64 is not data: a writer writes no function and no
+        // reference": bounded finds the Data cell inside the function type
+        // and code then judges the whole function. The refusal is right (the
+        // handler is not generic), the reason is wrong; with fn<'a:
+        // Concrete> the same call says "does not contain". Judge only the
+        // part of the type at the Data cell's position. (typ-data-rank2-01)
         let code = |t: &Type| t.holds_fn(env) || t.holds_ref(env);
         if either(&|tv| tv.requires_data()) && (code(self) || code(t)) {
             let t = if code(t) { t } else { self };
@@ -1467,6 +1476,20 @@ impl Type {
                 }
                 Ok(true)
             }
+            // CR claude for eric: [bug/low] Any on the left contains an open
+            // cell on the right without binding it, though any other type
+            // there binds the cell (the BIND rhs arm below) and the mirror
+            // arm above binds a left cell to Any. So a callback written |v:
+            // Any| leaves its formal's 'a open: under 'a: Concrete it is
+            // refused with "the type 'a must be fully known here ..
+            // annotate it" although it is annotated. sys::net::publish
+            // (#on_write: |v: Any| ..) and sys::net::rpc(#f: |a: Any| ..)
+            // are refused today; let f = 'a: Concrete |g: fn(v: 'a) -> i64|
+            // 0; f(|v: Any| 0) shows it, f(|v: [i64, string]| 0) binds 'a.
+            // Binding the cell to Any here would also decide cells under a
+            // covariant Any (let x: Any = y binds y's open cell), so this
+            // needs a ruling: bind in a contravariant position only, bind
+            // everywhere, or keep refusing an Any handler. (typ-any-bind-01)
             (Self::Any, _) => Ok(true),
             (
                 Self::Abstract { id: id0, params: p0 },

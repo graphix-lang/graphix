@@ -56,7 +56,7 @@ const NET_WRITE0: &str = r#"
 {
   let p = "/local/foo";
   let x = 42;
-  sys::net::publish(#on_write:|v| x <- cast<i64>(v)?, p, x);
+  sys::net::publish(#on_write:|v: i64| x <- v, p, x);
   let s: i64 = sys::net::subscribe(p)?;
   sys::net::write(p, once(s + 1));
   array::group(s, |n, _| n == 2)
@@ -722,19 +722,35 @@ run!(net_write_not_repeated_after_wake, r#"{
 }"#, is(Value::I64(1)); FuseExpect::None);
 
 // A write handler's argument and an rpc's are read from data: the check
-// refuses a function and a reference (an rpc's argument also a type it
-// cannot settle), and a write a handler's unsettled type cannot be cast
-// to answers the writer, never reaching the handler uncast
-// (x-builtin-effects-02, gx-stdlib-01, sys-net-03, tests-lib-b2-01,
-// tests-lib-b2-02).
-run!(net_on_write_open_type_takes_no_write, r#"{
+// refuses a function, a reference and a type it cannot settle, so every
+// write reaches the handler cast (x-builtin-effects-02, gx-stdlib-01,
+// sys-net-03, tests-lib-b2-01, tests-lib-b2-02).
+run!(net_on_write_open_type_refused, r#"{
     let n: i64 = -1;
-    let p = "/local/ow_open";
-    sys::net::publish(#on_write: |v: Array<'b>| n <- v ~ array::len(v), p, 0);
+    sys::net::publish(#on_write: |v: Array<'b>| n <- v ~ array::len(v), "/local/ow_open", 0);
+    n
+}"#, testing::refused("must be fully known"); FuseExpect::None);
+
+run!(net_on_write_inferred_part_refused, r#"{
+    let n: i64 = -1;
+    sys::net::publish(#on_write: |v| { let (a, b) = v; n <- a }, "/local/ow_part", 0);
+    n
+}"#, testing::refused("must be fully known"); FuseExpect::None);
+
+// A write while the handler is null reaches nothing; one after it arrives
+// is taken.
+run!(net_on_write_null_handler, r#"{
+    let n: i64 = 0;
+    let p = "/local/ow_null";
+    let armed = false;
+    let h = select armed { false => null, true => |v: i64| n <- v };
+    sys::net::publish(#on_write: h, p, 0);
     let s: i64 = sys::net::subscribe(p)$;
-    sys::net::write(p, once(s) ~ {a: 1, b: 2});
-    sys::time::after_idle(duration: 300.ms, s) ~ n
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(-1))); FuseExpect::None);
+    sys::net::write(p, once(s) ~ 5);
+    armed <- sys::time::after_idle(duration: 100.ms, once(s)) ~ true;
+    sys::net::write(p, sys::time::after_idle(duration: 200.ms, once(s)) ~ 7);
+    sys::time::after_idle(duration: 400.ms, s) ~ n
+}"#, is(Value::I64(7)); FuseExpect::None);
 
 run!(net_on_write_function_refused, r#"{
     let got = 0;
