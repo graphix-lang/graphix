@@ -195,54 +195,6 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             self.map = map;
             self.generation = generation;
             if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
-                // XCR claude for claude: [perf/low] [perf/low] A static bind runs in a
-                // forked task, and a nested bind forks inside it. Every join copies
-                // what the child accumulated: this `touched` list, and in
-                // `CompileCtx::join` also pending_refs, pending_settles and discarded.
-                // Since the child already holds what its own descendants joined into
-                // it, a resolution chain of depth d copies its whole subtree at every
-                // level: O(depth x instances). TaskJoin per call is 45 / 85 / 165 us at
-                // chain length 800 / 1600 / 3200 (debug). Fix: for accumulators whose
-                // order does not matter (touched keys, pending_refs, discarded), keep
-                // the larger collection and extend it with the smaller (swap first).
-                // For pending_settles, push the child's Vec as one chunk and flatten
-                // once where the frame drains. probe:
-                // design/review-2026-10-19/repro/x-perf-compile-nested-task-join.sh
-                // (x-perf-compile-03)
-                // 2026-10-20 claude: Done for touched (TrackedMap and TrackedSet join
-                // through absorb: the shorter list goes into the longer) and
-                // pending_refs (CompileCtx::join folds the smaller map into the
-                // larger). Probe (quick, TaskJoin per call at 800/1600/3200): 40/79/307
-                // us -> 13/20/40 us. What stands is pending_settles: its order is the
-                // settle order (sites first, first error wins), so it cannot be
-                // swapped, and a 3200 chain still moves 5.1M settles through joins
-                // (counted with a temporary print), the 40 us left. Chunked frames
-                // (push the child's frame whole, flatten where it drains) would close
-                // it; lambda.rs's gate pop/extend copies the same frames per nested
-                // definition.
-                // 2026-10-20 claude: TrackedMap/TrackedSet joins keep the larger
-                // touched list and copy the smaller in (absorb), and CompileCtx::join
-                // does the same for pending_refs and discarded. pending_settles still
-                // extends the parent frame with the child's (the chunk-and-flatten form
-                // is not done). Not re-measured.
-                // 2026-10-20 claude: XCR review: Incomplete by the notes' own account.
-                // touched, pending_refs and discarded now absorb smaller into larger,
-                // but CompileCtx::join (graphix-compiler/src/lib.rs,
-                // frame.extend(pending_settles.into_iter().flatten())) still copies the
-                // child's whole settle frame into the parent at every level, so a
-                // resolution chain still costs O(depth x instances) in settles: 5.1M
-                // settles moved at chain length 3200, the 40 us per join that remains.
-                // The finding's fix asked for this too (push the child's frame as one
-                // chunk and flatten once where the frame drains), and lambda.rs's gate
-                // pop/extend copies the same frames.
-                // 2026-10-20 claude: Settle frames are chunked:
-                // CompileCtx::pending_settles holds SettleFrame (a deque of chunks),
-                // and a join, a re-drive's leftovers and a gate's close append the
-                // child's frame by moving the shorter side's chunks, never its settles;
-                // the settle order is kept. The probe (debug, TaskJoin per call at
-                // 800/1600/3200): 5/7/7 us, from 56/84/171 at review. The gate's
-                // iter_mut over its frame to add the signature stays linear per
-                // definition. No pin (a cost); the probe is the check.
                 absorb(mine, &mut theirs)
             }
             return;
