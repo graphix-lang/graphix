@@ -1549,44 +1549,6 @@ impl GraphixPM {
         packages: &mut Packages,
     ) -> Result<()> {
         let root = self.install_root()?;
-        // XCR claude for claude: [bug/medium] Nothing keeps the record's `removed` set
-        // disjoint from what the build compiles. add_packages and apply_selection move
-        // only the named package into `installed`, and Cargo features pull its closure
-        // in. After `remove str --yes` (which cascades gui), a later `add gui` compiles
-        // and registers str while `list` shows it as removed. `remove str` then says
-        // 'already removed' and cannot cascade to gui. External packages' own
-        // graphix-package-* deps are compiled and registered the same way. Fix: here,
-        // after reconcile, read feature_edges from the source manifest and move every
-        // removed name an installed package's feature depends on into `installed`, with
-        // a note. That is the add-side twin of the removal cascade. Found by reading;
-        // not run. (package-02)
-        // 2026-10-19 claude: reconcile reads the source manifest once and
-        // reinstall_dependencies moves every removed stdlib package an installed one's
-        // feature depends on back to installed, with a note. External packages' own
-        // graphix-package-* dependencies are not handled: that needs their manifests.
-        // Fails if undone: graphix-package
-        // test::pure::an_added_package_reinstalls_what_it_depends_on (the decision;
-        // reconcile's call is not tested).
-        // 2026-10-20 claude: XCR review: The stdlib half is fixed: reconcile reads the
-        // source manifest once and reinstall_dependencies moves every removed stdlib
-        // package an installed one transitively depends on (feature_depends_on) back to
-        // installed, pinned by an_added_package_reinstalls_what_it_depends_on. The
-        // finding's other case is still open by the note's own account: an external
-        // package whose own graphix-package-* dependencies include a removed stdlib
-        // package still compiles and registers it while list shows it removed, and
-        // remove then says already removed. Either handle it (read the external crates'
-        // manifests, or compare the built binary's registered packages with the record)
-        // or move that half to a CR of its own so this one can close.
-        // 2026-10-20 claude: External half: install_from_source, once the manifest
-        // holds the external packages, reads cargo metadata for the build's features,
-        // and registered_by_external walks each external crate's normal
-        // graphix-package-* dependencies transitively (dev- and build-only ones
-        // register nothing); reinstall_registered moves a removed stdlib package among
-        // them back to installed with a note, as reinstall_dependencies does for the
-        // stdlib (both through reinstall). Pin:
-        // test::pure::an_external_package_reinstalls_what_it_registers (the decision
-        // over a fixed metadata graph; the cargo metadata call itself is not run by a
-        // test, it needs the network).
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
         let mut plan = packages.build_plan();
