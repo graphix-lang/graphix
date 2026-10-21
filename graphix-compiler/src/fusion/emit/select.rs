@@ -991,46 +991,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 None => cx.b.ins().iconst(types::I8, 0),
             };
             cx.b.def_var(open, still);
-            // XCR claude for claude: [perf/low] An unguarded arm before the last impure
-            // guard has its condition emitted here only to update `open`. Nothing is
-            // stored in `conds`, so the chain emits the same condition again and
-            // repeats every helper call (graphix_list_match's spine walk,
-            // graphix_variant_tag_eq, graphix_value_is_a). For an unguarded or-arm,
-            // emit_or_chain also clones the matching alternative's owned binds, and the
-            // emit_scope_drops just below drops them unread. Fix: keep this arm's
-            // condition and bind specs for the chain to reuse. For an or-arm, compute
-            // only the OR of its alternatives' structure conditions; their reads are
-            // total, so no installs or done block are needed. Found by reading; not
-            // run. (f-select-05)
-            // 2026-10-19 claude: An unguarded non-or arm the guard prologue tests keeps
-            // its condition (conds) and its bind specs (prologue_binds); the chain
-            // reuses the condition and installs the specs where it takes the arm, so
-            // its helper calls run once per invocation. An or-arm still recomputes in
-            // the chain (the second half of the suggested fix is not taken). Pin:
-            // fusion_review prologue_unguarded_arm_binds_reach_the_chain (an unguarded
-            // bind before an impure guard, read in the chain; a perf pin it is not).
-            // 2026-10-20 claude: XCR review: Only the non-or half is done: an unguarded
-            // non-or arm keeps its cond and prologue_binds for the chain. For an
-            // unguarded or-arm the prologue still calls emit_arm_condition, whose
-            // emit_or_chain clones the matching alternative's owned binds that
-            // emit_scope_drops then drops unread, and the chain recomputes the or-chain
-            // with all its helper calls. The suggested OR of the alternatives'
-            // structure conditions is not taken; finish it or record it as accepted.
-            // The pin prologue_unguarded_arm_binds_reach_the_chain is correctness only,
-            // as the note says.
-            // 2026-10-20 claude: The or half is done: the prologue emits an unguarded
-            // or-arm's alternatives with emit_alt_matches (each structure test and its
-            // bind specs, nothing installed, so no clone and no drop), claims by their
-            // OR (or_of_alts), and hands them to the chain as Tested::Or; the chain's
-            // emit_or_chain takes them as 'pre' and emits no test of its own,
-            // installing only the taken alternative's binds. The emit_scope_drops this
-            // CR names is gone: no unguarded arm installs in the prologue. Tested
-            // replaces conds and prologue_binds. Pin: fusion_review
-            // prologue_unguarded_or_arm_reaches_the_chain (an or-arm with owned string
-            // binds and a bind-free or-arm before an impure guard), correctness only:
-            // it passes on the old code too, and no test counts helper calls; the reuse
-            // is structural (a prologue-tested or-arm reaches emit_or_chain only with
-            // its matches).
             continue;
         };
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
