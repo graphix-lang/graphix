@@ -2372,9 +2372,10 @@ run!(
     let m = {"a" => |x| x, "b" => |x| x + 1};
     let g = m{"a"}$;
     let h = any(|x| x, |x| x + 1);
-    (array::map(fs, |f| f(1)), g(1), h(1))
+    let ks = [|x: i64| x * 2, |x| x];
+    (array::map(fs, |f| f(1)), g(1), h(1), array::map(ks, |k| k(5)))
 }"#,
-    prints("[[i64:1, i64:2], i64:1, i64:1]");
+    prints("[[i64:1, i64:2], i64:1, i64:1, [i64:10, i64:5]]");
     FuseExpect::None
 );
 
