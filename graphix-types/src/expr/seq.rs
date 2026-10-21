@@ -584,35 +584,6 @@ fn fn_position_args(
 }
 
 /// Whether a binding is a function: a trait method, or of a function type.
-// XCR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
-// false for an unannotated function parameter. fn_names then moves such a parameter
-// into the issue tuple, and desugar_queued captures it into the request, so
-// `array::map(xs, f)` in a seq inside `|f, t| ..` cannot resolve its callback and
-// node-walks (fused=2), while the annotated `|f: fn(x: i64) -> i64, t|` fuses
-// (fused=4). Keep an argument bare when the callee's declared parameter type at that
-// position is a function (known at lowering for builtins and lambda lets), as an inline
-// lambda is kept. probe: design/review-2026-10-19/repro/t-seq-fn-param-defuses.sh
-// (t-seq-05)
-// 2026-10-19 claude: fn_names keeps an argument bare when the callee, resolved at
-// lowering, declares a function at its position (positional by order, labeled by
-// label), whatever its own binding's type. Both of the probe's programs fuse 4 regions.
-// Pin: lang::seq_calls::unannotated_fn_param_issued_bare (#[native]; the review binary
-// refuses it).
-// 2026-10-20 claude: XCR review: Fixed for plain seq only. fn_names now keeps an
-// argument bare at a callee-declared function position, but desugar_queued still
-// captures an unannotated function parameter into the request (its capture fold tests
-// only is_function(env, bind), which is false for an unannotated param), and fn_names
-// then runs over the rewritten body where the name is already the capture cell. Probe
-// with the debug binary: the pin's program with seqq in place of seq, '|f, t| seqq t {
-// let y = #[native] array::map([1, 2, 3], f); y }', fails --expand with '#[native]
-// expression did not fully fuse', while the same with 'f: fn(x: i64) -> i64' fuses. The
-// finding named the desugar_queued capture path explicitly; the pin
-// unannotated_fn_param_issued_bare covers only seq.
-// 2026-10-20 claude: desugar_queued no longer captures a name passed where the callee
-// declares a function (fn_position_args, shared with fn_names), so it stays bare for
-// fn_names over the rewritten body. Pin:
-// lang::seq_calls::unannotated_fn_param_not_captured_by_seqq (#[native]; the pre-fix
-// binary refuses it with '#[native] expression did not fully fuse').
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
