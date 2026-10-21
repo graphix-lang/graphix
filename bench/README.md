@@ -89,33 +89,33 @@ outgrew the machine. The JIT runs them as one native loop.
 
 ## Results
 
-Quick build, `bench` CPU mode, best of 3 per mode (2026-10-13). `run.sh`
+Quick build, `bench` CPU mode, best of 3 per mode (2026-10-21). `run.sh`
 runs under the default fork mode, `auto`; the last column is the JIT
 with `GRAPHIX_PAR=off`:
 
 | bench             | jit      | node-walk | speedup | jit, serial |
 |-------------------|----------|-----------|---------|-------------|
-| `mandelbrot`      | 0.86 ms  | 9.15 s    | 10630x  | 1.17 ms     |
-| `tail_sum`        | 0.26 ms  | 2.36 s    | 8926x   | 0.26 ms     |
-| `leibniz_pi`      | 0.54 ms  | 3.56 s    | 6542x   | 0.49 ms     |
-| `fold_floatmath`  | 21.4 ms  | 4.32 s    | 202x    | 2.36 ms     |
-| `map_fold`        | 22.3 ms  | 3.16 s    | 142x    | 4.19 ms     |
-| `filter_fold`     | 22.5 ms  | 2.34 s    | 104x    | 3.54 ms     |
-| `fold_sum`        | 21.5 ms  | 2.09 s    | 97x     | 2.04 ms     |
-| `stream_stats`    | 79.5 ms  | 6.91 s    | 87x     | 81.1 ms     |
-| `composite_seams` | 59.1 ms  | 4.84 s    | 82x     | 27.3 ms     |
-| `list_map_fold`   | 71.0 ms  | 3.33 s    | 47x     | 55.2 ms     |
-| `list_fold_sum`   | 55.0 ms  | 2.11 s    | 38x     | 37.0 ms     |
-| `netidx_stream`   | 51.8 ms  | 0.65 s    | 13x     | 44.0 ms     |
-| `symbolic`        | 3.73 s   | 5.77 s    | 1.5x    | 3.65 s      |
+| `mandelbrot`      | 0.46 ms  | 5.65 s    | 12305x  | 1.07 ms     |
+| `tail_sum`        | 0.21 ms  | 2.56 s    | 11937x  | 0.22 ms     |
+| `leibniz_pi`      | 0.60 ms  | 3.53 s    | 5901x   | 0.44 ms     |
+| `fold_floatmath`  | 2.26 ms  | 3.89 s    | 1721x   | 2.53 ms     |
+| `symbolic`        | 11.3 ms  | 7.92 s    | 703x    | 15.0 ms     |
+| `filter_fold`     | 3.50 ms  | 2.23 s    | 639x    | 2.43 ms     |
+| `fold_sum`        | 2.47 ms  | 1.23 s    | 496x    | 1.78 ms     |
+| `map_fold`        | 4.17 ms  | 2.00 s    | 480x    | 4.45 ms     |
+| `composite_seams` | 34.4 ms  | 4.55 s    | 132x    | 29.3 ms     |
+| `list_fold_sum`   | 27.1 ms  | 1.30 s    | 48x     | 25.8 ms     |
+| `list_map_fold`   | 56.5 ms  | 2.09 s    | 37x     | 55.8 ms     |
+| `stream_stats`    | 50.6 ms  | 0.97 s    | 19x     | 51.6 ms     |
+| `netidx_stream`   | 227 ms   | 1.09 s    | 4.8x    | 218 ms      |
 
-Under `auto` the array benches pay for forking their 100k-slot
-`array::init` (60 chunks of cheap slots), which costs several times the
-serial loop. The list rows pay the flatten boundary (the list's cells to
-an array and back) around each native loop. `stream_stats` shows what
-fusing only the per-event compute buys on a stream; `netidx_stream`
-shows the same compute behind a real network round trip; `symbolic`
-shows a recursive-ADT workload whose `simplify` still node-walks.
+Under `auto` a loop forks only once the fork threshold is calibrated,
+on a thread the runtime starts with it; a loop before that runs in
+order, and nothing waits for it. The list rows pay the flatten boundary
+(the list's cells to an array and back) around each native loop.
+`stream_stats` shows what fusing only the per-event compute buys on a
+stream; `netidx_stream` shows the same compute behind a real network
+round trip; `symbolic` shows a recursive-ADT workload.
 Absolute times vary with machine load, the ratios less so.
 
 ## Benches

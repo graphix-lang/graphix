@@ -413,15 +413,14 @@ schedule, and turns serial when no split reaches `T` on both sides. A
 `SlotSite` keeps one per-slot histogram (the measured loop's total over
 its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
 is four times the lower quartile of nine latencies of handing an idle
-pool a job, measured on a thread of its own at the first use; a sample
+pool a job, measured on a thread of its own, started when a runtime
+under `Auto` is constructed (`GXHandle::start`; else at the first use,
+`cost::start_calibration`); a sample
 taken while any part is live is taken again, so forced work cannot
 inflate `T`, and one that finds the pool busy at every try keeps its
 contended latency: a pool that never goes idle raises `T`, never lowers
-it. Until it lands `Auto` forks nothing, except that a one-shot
-run of like items (a `ProbeSite`, a kernel loop) times its first item
-and, when the run is estimated at 100 ms or more, waits for it
-(`cost::calibration_for`; never on a pool worker, which the measurement
-needs). `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
+it. Until it lands `Auto` forks nothing and nothing waits for it.
+`GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
 
 **As built (phase 5).**
 
@@ -430,9 +429,9 @@ needs). `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
   and their first updates. Each is a `ProbeSite`: it runs the first
   slots of a growth in order, timing each (four until its estimate
   settles, then one per growth), and forks the rest when they are
-  estimated at `2T` or more. A one-shot growth, a program's first cycle
-  included, needs no history: `array::init(20000, ..)` forks in the
-  cycle that builds it.
+  estimated at `2T` or more. A one-shot growth needs no history: once
+  the calibration has landed, `array::init(20000, ..)` forks in the
+  cycle that builds it, a program's first cycle included.
 - **Ranges are capped:** at most four per worker, each at least
   `ceil(T / estimate)` slots. Each range is a branch, or a compile
   task, whose fork and merge cost grows with the writes it carries,
@@ -484,7 +483,12 @@ needs). `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
   them on P-cores) when it started with the runtime: the threads' start
   decides where the OS places them and so which ranges wait on E-cores.
   Four ranges per worker made it 1.39 s on twelve and 2.10 s against
-  1.90 s on four. Calibration starts at the first use, as before.
+  1.90 s on four. Calibration starts with the runtime anyway: started
+  at the first fork point, a run that waited for it took the
+  measurement's 18 ms (nine samples, each after a 2 ms park) into its
+  first cycle (`bench/fold_sum.gx`: 21 ms under `Auto` against 2 ms
+  serial), and a placement effect of this CPU and scheduler is no
+  reason to keep that.
 
 ## 6. Builtins and side effects
 

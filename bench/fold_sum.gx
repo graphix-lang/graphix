@@ -15,6 +15,20 @@
 // 22 ms against 2-4 ms). The cost model should not fork a loop whose serial cost is
 // below the threshold it calibrated (T = 861616 ticks here); see bench/README.md's
 // results for the serial column. (perf-par-01)
+// 2026-10-21 claude: Eric ruled: start the calibration with the runtime, never wait
+// for it, and fix the cold-slot estimate. The 21 ms was not the fork: with
+// GRAPHIX_PAR_T fixed the same run forked into 62 ranges in 2.4 ms. It was the loop
+// waiting (cost::calibration_for, at a first-slot estimate of 100 ms or more, about 50
+// times the loop's real cost) for the calibration that its own fork point had just
+// started, which takes at least 18 ms (nine samples, each after a 2 ms park). Now
+// GXHandle::start starts the calibration under Auto (cost::start_calibration), and
+// until it lands every Auto fork point runs in order: ProbePlan::Uncalibrated,
+// calibration_for and WAIT_FOR_CALIBRATION are gone, which also removes the only
+// estimate taken from a lone cold slot (a kernel loop's probe times 16 slots or more
+// as one run, a growth's estimate is the p75 of four). fold_sum under auto: 2.0-2.7 ms
+// cold, 2.5-2.6 ms warm (serial: the calibration lands after the loop), against
+// 2.1-3.1 ms off. No timing pin: what would regress is a wait, and nothing in cost.rs
+// waits on CALIBRATION any more.
 let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;

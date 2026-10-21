@@ -15,8 +15,8 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent, Scope,
-    UserEvent,
+    BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent,
+    ParMode, Scope, UserEvent, cost,
     env::Env,
     expr::{ExprId, Load, ModPath, Probe, ResolverFactory, ResolverRef},
     ide::Ide,
@@ -1161,6 +1161,9 @@ impl<X: GXExt> GXConfig<X> {
     pub async fn start(self) -> Result<GXHandle<X>> {
         // The handle and the running `ExecState` share the control.
         let control = self.ctx.control.clone();
+        if control.par_mode() == ParMode::Auto {
+            cost::start_calibration();
+        }
         let aborted = triomphe::Arc::new(Notify::new());
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();

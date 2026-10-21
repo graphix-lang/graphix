@@ -75,19 +75,27 @@ const T_FLOOR: Duration = Duration::from_micros(1);
 static CALIBRATION: OnceLock<Calibration> = OnceLock::new();
 
 /// The calibration, or `None` while it is being measured: until then
-/// nothing forks under `Auto`. The first call starts the measurement on
-/// a thread of its own.
+/// nothing forks under `Auto`, and nothing waits for it. The first call
+/// starts the measurement, unless [`start_calibration`] did.
 pub fn calibration() -> Option<&'static Calibration> {
-    static STARTED: AtomicBool = AtomicBool::new(false);
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
+    start_calibration();
+    CALIBRATION.get()
+}
+
+/// Start measuring the fork threshold on a thread of its own, once per
+/// process (`GRAPHIX_PAR_T` fixes it instead). A runtime that runs under
+/// `Auto` starts it when it is constructed, so the measurement is
+/// usually over by its first fork point.
+pub fn start_calibration() {
+    static STARTED: AtomicBool = AtomicBool::new(false);
     static FIXED: LazyLock<Option<u64>> = LazyLock::new(|| {
         std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok())
     });
     if let Some(t) = *FIXED {
-        fix_calibration(t);
-        return CALIBRATION.get();
+        return fix_calibration(t);
     }
     if !STARTED.load(Ordering::Relaxed) && !STARTED.swap(true, Ordering::Relaxed) {
         std::thread::Builder::new()
@@ -97,27 +105,10 @@ pub fn calibration() -> Option<&'static Calibration> {
             })
             .expect("spawn the calibration thread");
     }
-    None
 }
 
 /// How many times a sample of the calibration waits for an idle pool.
 const IDLE_TRIES: usize = 500;
-
-/// How long a run must be estimated to take to wait for the calibration
-/// rather than run in order: several times the measurement's length.
-const WAIT_FOR_CALIBRATION: Duration = Duration::from_millis(100);
-
-/// The calibration for a run of `n` more items like one that took
-/// `first`. A run long enough to pay for it waits for the measurement,
-/// so a one-shot growth forks in the cycle that builds it; a pool worker
-/// never waits, since the measurement needs a free one.
-pub fn calibration_for(n: usize, first: Duration) -> Option<&'static Calibration> {
-    calibration().or_else(|| {
-        let long =
-            first.as_nanos().saturating_mul(n as u128) >= WAIT_FOR_CALIBRATION.as_nanos();
-        (long && eval_pool().current_thread_index().is_none()).then(|| CALIBRATION.wait())
-    })
-}
 
 /// Fix the fork threshold at `t` ticks for the process, in place of the
 /// measurement, unless one landed already. A tiny `t` makes every
@@ -785,9 +776,6 @@ pub struct ProbeSite {
 /// ([`ProbeSite`]) and a kernel loop's ([`LoopSite`]) alike.
 pub enum ProbePlan {
     Serial,
-    /// Time the first item, then wait for the calibration if the rest is
-    /// long enough ([`calibration_for`]).
-    Uncalibrated,
     /// Run the first items in order, as many as the site's estimate still
     /// needs, timing them, then decide about the rest.
     Probe,
@@ -804,7 +792,7 @@ impl ProbePlan {
             ParMode::Off => Self::Serial,
             _ if n < 2 => Self::Serial,
             ParMode::Force => Self::Fork { grain: forced_grain(forced, n) },
-            ParMode::Auto if calibration().is_none() => Self::Uncalibrated,
+            ParMode::Auto if calibration().is_none() => Self::Serial,
             ParMode::Auto => Self::Probe,
         }
     }
@@ -864,22 +852,6 @@ impl ProbeSite {
                 Some(calibration().expect("a probe is planned once calibrated")),
                 self.probes(items.len()),
             ),
-            ProbePlan::Uncalibrated => {
-                let first;
-                (first, items) = items.split_at_mut(1);
-                let (t0, started) = (ticks(), Instant::now());
-                let r = probe(ctx, &mut first[0], at)?;
-                let (dt, took) = (ticks_since(t0), started.elapsed());
-                acc = join(acc, r);
-                at += 1;
-                match calibration_for(items.len(), took) {
-                    None => (None, 0),
-                    Some(cal) => {
-                        self.probed(cal, dt);
-                        (Some(cal), self.probes(items.len()))
-                    }
-                }
-            }
         };
         let grain = match cal {
             None => None,
@@ -933,18 +905,13 @@ impl LoopSite {
     }
 
     /// How many of `n` slots to time, as one run, before deciding about
-    /// the rest, `timed` slots already timed; `None` while another run is
-    /// deciding, when this one runs in order. A slot timed alone carries
+    /// the rest; `None` while another run is deciding, when this one runs
+    /// in order. A slot timed alone carries
     /// the run's fixed cost, so while the estimate is unknown or under
     /// `T / PROBE_BATCH` a probe times at least [`PROBE_BATCH`] slots; a
     /// settled loop of dearer slots probes the one it asks for.
-    pub(crate) fn probes(
-        &self,
-        cal: &Calibration,
-        n: usize,
-        timed: usize,
-    ) -> Option<usize> {
-        self.probe.try_lock().map(|p| match p.probes(n).saturating_sub(timed) {
+    pub(crate) fn probes(&self, cal: &Calibration, n: usize) -> Option<usize> {
+        self.probe.try_lock().map(|p| match p.probes(n) {
             0 => 0,
             k if p.hist.n == 0
                 || cal.floor(p.hist.p75()).saturating_mul(PROBE_BATCH as u64) < cal.t =>
@@ -1047,18 +1014,14 @@ mod tests {
         let cal = Calibration { t: 1 << 10, shift: 4 };
         let l = LoopSite::default();
         assert!(!l.untimed(3), "a fresh site times its loops");
-        assert_eq!(l.probes(&cal, 3, 0), Some(3));
+        assert_eq!(l.probes(&cal, 3), Some(3));
         // slots at T/64: loops under 128 slots cannot pay for a fork
         let probes: Probes = [(1 << 4, 4)].into_iter().collect();
         assert_eq!(l.grain(&cal, &probes, 0), None);
         assert!(l.untimed(127));
         assert!(!l.untimed(128), "a long enough loop is timed");
         let guard = l.probe.lock();
-        assert_eq!(
-            l.probes(&cal, 3, 0),
-            None,
-            "a site being decided is not probed again"
-        );
+        assert_eq!(l.probes(&cal, 3), None, "a site being decided is not probed again");
         drop(guard);
         l.until.store(ticks(), Ordering::Relaxed);
         assert!(!l.untimed(3), "a stretch over, the site probes again");
@@ -1114,16 +1077,15 @@ mod tests {
     fn loop_site_batches_only_cheap_probes() {
         let cal = Calibration { t: 1 << 10, shift: 4 };
         let heavy = LoopSite::default();
-        assert_eq!(heavy.probes(&cal, 32, 0), Some(PROBE_BATCH));
-        assert_eq!(heavy.probes(&cal, 8, 0), Some(8));
+        assert_eq!(heavy.probes(&cal, 32), Some(PROBE_BATCH));
+        assert_eq!(heavy.probes(&cal, 8), Some(8));
         heavy.grain(&cal, &Probes::from_slice(&[(1 << 12, 4)]), 28);
-        assert_eq!(heavy.probes(&cal, 32, 0), Some(1));
+        assert_eq!(heavy.probes(&cal, 32), Some(1));
         let cheap = LoopSite::default();
         cheap.grain(&cal, &Probes::from_slice(&[(1 << 4, 4)]), 28);
-        assert_eq!(cheap.probes(&cal, 32, 0), Some(PROBE_BATCH));
+        assert_eq!(cheap.probes(&cal, 32), Some(PROBE_BATCH));
         let unsettled = LoopSite::default();
         unsettled.grain(&cal, &Probes::from_slice(&[(1 << 12, 1)]), 31);
-        assert_eq!(unsettled.probes(&cal, 32, 0), Some(3));
-        assert_eq!(unsettled.probes(&cal, 32, 3), Some(0));
+        assert_eq!(unsettled.probes(&cal, 32), Some(3));
     }
 }

@@ -17,7 +17,7 @@ use graphix_types::{
 };
 use poolshark::local::LPooled;
 use rayon::prelude::*;
-use std::{any::Any, cell::Cell, time::Instant};
+use std::{any::Any, cell::Cell};
 
 /// A chunk: runs slots `lo..hi` of its loop over the kernel's `frame`
 /// and fills `out`.
@@ -154,45 +154,17 @@ pub(crate) unsafe fn run(
     let (at, grain) = match ProbePlan::of(mode(&loan), len, forced) {
         ProbePlan::Serial => return unsafe { in_order(chunk, frame, len, find, out) },
         ProbePlan::Fork { grain } => (0, Some(grain)),
-        plan @ (ProbePlan::Uncalibrated | ProbePlan::Probe) => 'auto: {
+        ProbePlan::Probe => {
             if site.untimed(len) {
                 return unsafe { in_order(chunk, frame, len, find, out) };
             }
+            let cal = cost::calibration().expect("a probe is planned once calibrated");
+            let Some(k) = site.probes(cal, len) else {
+                return unsafe { in_order(chunk, frame, len, find, out) };
+            };
             let mut probes = Probes::new();
-            let mut at = 0;
-            let cal = match plan {
-                ProbePlan::Probe => {
-                    cost::calibration().expect("a probe is planned once calibrated")
-                }
-                _ => {
-                    let mut r = Run::new(0, 1, find);
-                    let (t0, started) = (cost::ticks(), Instant::now());
-                    unsafe { run_here(chunk, frame, &mut r) };
-                    let (dt, took) = (cost::ticks_since(t0), started.elapsed());
-                    let aborted = r.aborted;
-                    runs.push(r);
-                    if aborted {
-                        return unsafe { finish(&mut runs, find, out) };
-                    }
-                    at = 1;
-                    match cost::calibration_for(len - 1, took) {
-                        None => break 'auto (1, None),
-                        Some(cal) => {
-                            probes.push((dt, 1));
-                            cal
-                        }
-                    }
-                }
-            };
-            // the first slot an uncalibrated loop timed is one of the probes
-            let Some(k) = site.probes(cal, len - at, probes.len()) else {
-                if at == 0 {
-                    return unsafe { in_order(chunk, frame, len, find, out) };
-                }
-                break 'auto (at, None);
-            };
             if k > 0 {
-                let mut r = Run::new(at, at + k, find);
+                let mut r = Run::new(0, k, find);
                 let t0 = cost::ticks();
                 unsafe { run_here(chunk, frame, &mut r) };
                 let each = cost::ticks_since(t0) / k as u64;
@@ -203,7 +175,7 @@ pub(crate) unsafe fn run(
                     return unsafe { finish(&mut runs, find, out) };
                 }
             }
-            (at + k, site.grain(cal, &probes, len - at - k))
+            (k, site.grain(cal, &probes, len - k))
         }
     };
     match grain {
