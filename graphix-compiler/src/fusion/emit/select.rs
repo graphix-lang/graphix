@@ -2062,56 +2062,6 @@ fn emit_structure_cond(
             let whole = |id| SelectArmBind::Value { id, kind: LocalKind::Value };
             Some(emit_list_pattern_cond(cx, p, (disc, payload), scrut_typ, whole, binds)?)
         }
-        // XCR claude for claude: [perf/medium] A slice, tuple or struct pattern over a
-        // nullable scrutinee de-fuses the whole select, because this arm lowers
-        // composite structure only over SelectScrut::Composite. Examples: `null as _ =>
-        // .., [s, rest..] => .., [] => ..` over `[Array<string>, null]`, and `(x, y)`
-        // over `[(i64, i64), null]`. The netidx-admin port writes that ladder in
-        // several panels. emit_arm_cond already lowers the same structure over a
-        // Value-kind union of composites: it selects the payload or a borrowed empty
-        // array and destructures it as the member. But that path is gated on an
-        // explicit type predicate. Fix: take that path here for any Value/Nullable
-        // scrutinee whose arm predicate freezes to Array/Tuple/Struct, and fold the
-        // explicit-predicate copy in emit_arm_cond into it. probe:
-        // design/review-2026-10-19/repro/f-select-nullable-composite-defuse.gx
-        // (f-select-02)
-        // 2026-10-19 claude: emit_structure_cond destructures a slice, tuple or struct
-        // pattern over an option of a composite (nullable_error_marked Some(false), a
-        // composite nullable_inner) through its payload, a null reading as the borrowed
-        // empty array, ANDed with the not-null test; emit_arm_cond's explicit
-        // composite-member path now takes a Nullable scrutinee too (the explicit
-        // spelling over an option). A result of a composite and a union of composites
-        // without an explicit test still refuse. Pin: fusion_review
-        // select_leaves_options_or_kinds_and_own_type_tests (o0..o3);
-        // select_slice_cover_union and select_tuple_union_member_native (renamed from
-        // _node_walks) now fuse.
-        // 2026-10-20 claude: XCR review: An option of a composite now destructures
-        // through its payload (o0..o3 pass). But the finding's defect is a composite
-        // pattern over a Nullable scrutinee, and a result of a composite is also
-        // AbiKind::Nullable (option_result_success); the new path is gated on
-        // nullable_error_marked Some(false), so '[(i64, i64), Error<E>]' with '(x, y)'
-        // still de-fuses, as does a Value-kind union of composites without an explicit
-        // test, and emit_arm_cond's explicit-predicate copy was extended rather than
-        // folded in as asked. Finish those or record them as accepted.
-        // 2026-10-20 claude: One path now: emit_member_cond tests that a value
-        // scrutinee is the composite member an arm's predicate names and destructures
-        // it, a failing value reading as the borrowed empty array. An option's or a
-        // result's composite is tested by its tag (disc == ARRAY, the one array the
-        // value may be), so a result of a composite destructures; any other member by
-        // type, a written predicate strictly (graphix_value_is_a), an inferred one
-        // through emit_inferred_guard_cond (the node-walk's shape test), so a union of
-        // composites without a written test destructures too. emit_arm_cond's
-        // explicit-predicate copy is gone: it calls emit_member_cond with written=true,
-        // and emit_structure_cond calls it for a slice, tuple or struct pattern over
-        // any value scrutinee. Pin: fusion_review
-        // select_composite_over_result_and_union (r0..r2 results, u0..u2 unions, u0 and
-        // u2 telling a tuple from an array of the same length), which fails with
-        // 'slice/tuple/struct select pattern over a non-composite scrutinee not
-        // lowerable' on the old select.rs; o0..o3 still pass. Left: a union of
-        // composites and null, '[(i64, i64), Array<i64>, null]', does not freeze
-        // (kernel_abi freezes a Set only as a primitive union, an option or result, all
-        // composites or all variants), so its select de-fuses before any pattern is
-        // lowered.
         p @ (StructPatternNode::Slice { .. }
         | StructPatternNode::SlicePrefix { .. }
         | StructPatternNode::SliceSuffix { .. }

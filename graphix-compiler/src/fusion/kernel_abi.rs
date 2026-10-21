@@ -314,6 +314,15 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // select refuses its scrutinee (type .. does not freeze concrete), so the
             // freeze step, this rule and the select lowering over a Value scrutinee all
             // need the change together. Reverted.
+            // 2026-10-21 claude: A union of composites and null, [(i64, i64),
+            // Array<i64>, null], is a case of this one: f-select-02 made the select
+            // lowering destructure a composite member of any value scrutinee
+            // (emit_member_cond in emit/select.rs: a tag test for an option's or a
+            // result's composite, graphix_value_is_a for a written member test, the
+            // node-walk's shape test for an inferred one), but that union does not
+            // freeze, so its select de-fuses before any pattern is lowered. Of the
+            // three changes this CR needs together, the select lowering's member tests
+            // now exist for composites; the freeze step and the abi_kind rule remain.
             let all_variants = members
                 .iter()
                 .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _, _)))));
