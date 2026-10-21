@@ -45,6 +45,16 @@ struct Metric {
     completed_self_ns: u64,
 }
 
+impl Metric {
+    fn merge(&mut self, other: &Metric) {
+        self.calls += other.calls;
+        self.self_ns += other.self_ns;
+        self.total_ns += other.total_ns;
+        self.failed_calls += other.failed_calls;
+        self.failed_ns += other.failed_ns;
+    }
+}
+
 #[derive(Default)]
 struct Instance {
     definition: Option<LambdaId>,
@@ -77,6 +87,9 @@ struct Profile {
     last: Instant,
     epoch_ns: u128,
     metrics: [Metric; PHASES.len()],
+    /// What the joined compile tasks cost on their own threads, by phase;
+    /// `metrics` is this thread's wall time alone.
+    tasks: [Metric; PHASES.len()],
     census: Option<Census>,
     /// The module whose code the running phase is working for, an index
     /// into `modules`; `None` is the root's own statements.
@@ -91,6 +104,7 @@ thread_local! {
         last: Instant::now(),
         epoch_ns: 0,
         metrics: [Metric::default(); PHASES.len()],
+        tasks: [Metric::default(); PHASES.len()],
         census: None,
         module: None,
         modules: Vec::new(),
@@ -136,6 +150,7 @@ pub fn phase(phase: Phase) -> Option<Span> {
         let start = Instant::now();
         if p.current.is_none() {
             p.metrics.fill(Metric::default());
+            p.tasks.fill(Metric::default());
             p.census = graphix_profile_instances().then(Census::default);
             p.epoch_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
             p.origin = start;
@@ -169,6 +184,7 @@ pub struct Task {
 
 struct TaskCosts {
     metrics: [Metric; PHASES.len()],
+    tasks: [Metric; PHASES.len()],
     modules: Vec<(ModPath, [u64; PHASES.len()])>,
     /// The task's census, its rows numbering signatures and callbacks
     /// in its own interning.
@@ -208,6 +224,7 @@ impl Task {
             last: now,
             epoch_ns: 0,
             metrics: [Metric::default(); PHASES.len()],
+            tasks: [Metric::default(); PHASES.len()],
             census: census.then(|| Census {
                 elaborating: elaborating.into_iter().collect(),
                 ..Census::default()
@@ -238,28 +255,23 @@ impl Task {
         });
         self.done = Some(TaskCosts {
             metrics: ran.metrics,
+            tasks: ran.tasks,
             modules: std::mem::take(&mut ran.modules),
             census,
         });
         r
     }
 
-    /// Merge what the task `self` cost into this thread's profile.
+    /// Merge what the task `self` cost into this thread's task costs.
     pub fn join(self) {
         let Some(t) = self.done else { return };
         PROFILE.with_borrow_mut(|p| {
             if p.current.is_none() {
                 return;
             }
-            p.switch(p.current, Instant::now());
-            for (m, tm) in p.metrics.iter_mut().zip(t.metrics.iter()) {
-                m.calls += tm.calls;
-                // a task's time is a finished descendant of whatever is open
-                m.self_ns += tm.self_ns;
-                m.completed_self_ns += tm.self_ns;
-                m.total_ns += tm.total_ns;
-                m.failed_calls += tm.failed_calls;
-                m.failed_ns += tm.failed_ns;
+            for (m, (tm, tt)) in p.tasks.iter_mut().zip(t.metrics.iter().zip(&t.tasks)) {
+                m.merge(tm);
+                m.merge(tt);
             }
             for (path, costs) in t.modules {
                 match p.modules.iter_mut().find(|(m, _)| *m == path) {
@@ -479,11 +491,12 @@ impl Drop for Span {
                     "PROFILE root={:?} thread={thread:?} start_ns={} duration_ns={elapsed}",
                     self.phase, p.epoch_ns,
                 );
-                for (phase, m) in PHASES.iter().zip(&p.metrics) {
-                    if m.calls > 0 {
+                for (phase, (m, t)) in PHASES.iter().zip(p.metrics.iter().zip(&p.tasks)) {
+                    if m.calls > 0 || t.self_ns > 0 {
                         eprintln!(
-                            "PROFILE phase={phase:?} thread={thread:?} calls={} self_ns={} total_ns={} failed_calls={} failed_ns={}",
+                            "PROFILE phase={phase:?} thread={thread:?} calls={} self_ns={} total_ns={} failed_calls={} failed_ns={} task_calls={} task_ns={} task_failed_calls={} task_failed_ns={}",
                             m.calls, m.self_ns, m.total_ns, m.failed_calls, m.failed_ns,
+                            t.calls, t.self_ns, t.failed_calls, t.failed_ns,
                         );
                     }
                 }

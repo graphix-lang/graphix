@@ -35,9 +35,12 @@ def read_instances(path):
         rows = root["instances"]
         for field, phase in [("graph", "InstanceGraph"), ("check", "InstanceCheck")]:
             metric = root["phases"].get(phase, {})
-            for suffix, metric_key in [("ns", "self_ns"), ("calls", "calls")]:
+            for suffix, thread_key, task_key in [
+                ("ns", "self_ns", "task_ns"),
+                ("calls", "calls", "task_calls"),
+            ]:
                 measured = sum(r[f"{field}_{suffix}"] for r in rows)
-                expected = metric.get(metric_key, 0)
+                expected = metric.get(thread_key, 0) + metric.get(task_key, 0)
                 if measured != expected:
                     raise ValueError(
                         f"instance accounting mismatch: {path}, root {root['start_ns']}, "
@@ -133,7 +136,8 @@ def report(roots):
         i["check_ns"] for r in roots for i in r["instances"]
     )
     result["census_ns"] = sum(
-        r["phases"].get("InstanceCensus", {}).get("self_ns", 0) for r in roots
+        sum(r["phases"].get("InstanceCensus", {}).get(k, 0) for k in ("self_ns", "task_ns"))
+        for r in roots
     )
     result["closed"] = sum(
         bool(i["signature"]) for r in roots for i in r["instances"]

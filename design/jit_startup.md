@@ -152,7 +152,11 @@ outermost span reports its start timestamp, wall duration, and phase
 counts. `self_ns` excludes nested spans; the self times sum exactly to
 the root duration. `total_ns` includes nested spans and must not be
 summed. `failed_ns` is the inclusive time of marked failed calls, a
-subset of `total_ns`.
+subset of `total_ns`. These are the root thread's wall time: a phase
+waiting on compile tasks it forked counts the wait. What the tasks
+spent on their own threads is the `task_*` columns, keyed by the phase
+that ran (the phase open at the fork for the task's own code), and the
+per-module costs count both.
 
 The probes cover source parsing, packed-AST decoding, graph construction,
 both typecheck passes, deferred settles, call-graph/effect/recursion
