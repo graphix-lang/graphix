@@ -72,15 +72,13 @@ time to cut scheduler noise, and prints the node-walk / JIT ratio. A
 node-walk cell of `fail` means the program produced no timing line and
 `timeout` means it exceeded the per-run limit.
 
-Every bench but four fuses its whole computation and says so with
+Every bench but two fuses its whole computation and says so with
 `#[native]`, which a build refuses where anything node-walks (the
 examples test builds every bench): the folds and maps over arrays and
-lists, `composite_seams`, the tail loops and `mandelbrot`. The other
-four probe the edge of fusion coverage: `stream_stats` and
+lists, `composite_seams`, the tail loops, `mandelbrot` and `symbolic`.
+The other two probe the edge of fusion coverage: `stream_stats` and
 `netidx_stream` have an async event spine that can never fuse (only the
-per-event sync compute does), and
-`symbolic` fuses `build`, `deriv` and `eval_at` over its recursive ADT
-while `simplify` node-walks.
+per-event sync compute does).
 
 The two scalar tail-loop benches (`tail_sum`, `leibniz_pi`) run 100k
 iterations: the node-walk keeps every activation of a tail loop
@@ -95,19 +93,19 @@ with `GRAPHIX_PAR=off`:
 
 | bench             | jit      | node-walk | speedup | jit, serial |
 |-------------------|----------|-----------|---------|-------------|
-| `mandelbrot`      | 0.46 ms  | 5.65 s    | 12305x  | 1.07 ms     |
-| `tail_sum`        | 0.21 ms  | 2.56 s    | 11937x  | 0.22 ms     |
-| `leibniz_pi`      | 0.60 ms  | 3.53 s    | 5901x   | 0.44 ms     |
-| `fold_floatmath`  | 2.26 ms  | 3.89 s    | 1721x   | 2.53 ms     |
-| `symbolic`        | 11.3 ms  | 7.92 s    | 703x    | 15.0 ms     |
-| `filter_fold`     | 3.50 ms  | 2.23 s    | 639x    | 2.43 ms     |
-| `fold_sum`        | 2.47 ms  | 1.23 s    | 496x    | 1.78 ms     |
-| `map_fold`        | 4.17 ms  | 2.00 s    | 480x    | 4.45 ms     |
-| `composite_seams` | 34.4 ms  | 4.55 s    | 132x    | 29.3 ms     |
-| `list_fold_sum`   | 27.1 ms  | 1.30 s    | 48x     | 25.8 ms     |
-| `list_map_fold`   | 56.5 ms  | 2.09 s    | 37x     | 55.8 ms     |
-| `stream_stats`    | 50.6 ms  | 0.97 s    | 19x     | 51.6 ms     |
-| `netidx_stream`   | 227 ms   | 1.09 s    | 4.8x    | 218 ms      |
+| `tail_sum`        | 0.16 ms  | 2.47 s    | 15368x  | 0.16 ms     |
+| `mandelbrot`      | 0.52 ms  | 5.73 s    | 11025x  | 0.80 ms     |
+| `leibniz_pi`      | 0.60 ms  | 3.56 s    | 5931x   | 0.49 ms     |
+| `fold_floatmath`  | 2.20 ms  | 3.27 s    | 1487x   | 2.20 ms     |
+| `filter_fold`     | 3.17 ms  | 1.98 s    | 626x    | 3.32 ms     |
+| `fold_sum`        | 2.19 ms  | 1.29 s    | 592x    | 2.74 ms     |
+| `symbolic`        | 16.8 ms  | 8.26 s    | 491x    | 9.79 ms     |
+| `map_fold`        | 4.29 ms  | 2.05 s    | 479x    | 3.98 ms     |
+| `composite_seams` | 15.8 ms  | 4.38 s    | 278x    | 21.0 ms     |
+| `list_map_fold`   | 35.1 ms  | 2.07 s    | 59x     | 35.8 ms     |
+| `list_fold_sum`   | 30.7 ms  | 1.33 s    | 43x     | 29.1 ms     |
+| `stream_stats`    | 53.5 ms  | 1.06 s    | 20x     | 53.9 ms     |
+| `netidx_stream`   | 198 ms   | 0.92 s    | 4.6x    | 187 ms      |
 
 Under `auto` a loop forks only once the fork threshold is calibrated,
 on a thread the runtime starts with it; a loop before that runs in
@@ -134,7 +132,7 @@ Absolute times vary with machine load, the ratios less so.
 | `mandelbrot`       | per-pixel escape-time, 100x75                    | yes           |
 | `stream_stats`     | per-tick sliding-window stats, 5000 events       | per-event compute only (async spine node-walks) |
 | `netidx_stream`    | same stats, each tick a real netidx round trip   | per-event compute only (round trip dominates) |
-| `symbolic`         | build/deriv/simplify/eval over a recursive ADT   | build, deriv, eval (simplify's tuple-of-variant patterns node-walk) |
+| `symbolic`         | build/deriv/simplify/eval over a recursive ADT   | yes           |
 
 `mandelbrot`'s per-pixel `iterate` is a recursive function called inside
 `array::init`'s callback (a nested recursive lambda); the whole hot loop
@@ -151,17 +149,18 @@ can't drop ticks).
 
 `symbolic` builds, differentiates, simplifies, and evaluates expression
 trees over a recursive ADT (`` `Num/`Var/`Add/`Mul ``). A recursive
-ADT is an opaque two-word value in a kernel, so `build`, `deriv` and
-`eval_at` fuse; `simplify`'s tuple-of-variant patterns
-(`` (`Num(x), `Num(y)) ``) do not lower, so it node-walks.
+ADT is an opaque two-word value in a kernel, so all four functions
+fuse, `simplify`'s tuple-of-variant patterns (`` (`Num(x), `Num(y)) ``)
+included.
 
 ## Parallel evaluation
 
 `bench/par.sh [iterations] [graphix]` runs the `par_*.gx` benches
 serially and under `GRAPHIX_PAR=auto`, pinned with taskset (serial and 4
 threads on the P-cores, 12 on the P- and E-cores; never the low-power
-cores), at normal priority. `par_symbolic` is `symbolic` with its seeds
-mapped under `#[parallel]`; `par_wide` is a node-walked map whose slots
+cores), at normal priority. `par_symbolic` is a fused map over 32 heavy
+slots, each folding 64 of `symbolic`'s trees, which the cost model
+decides to split unforced; `par_wide` is a node-walked map whose slots
 the cost model learns to fork, timed over its 60 cycles after the first;
 `par_growth` builds 20000 slots in one cycle, nearly all instance
 construction (both run `--no-fusion`: fused, each takes milliseconds);
@@ -170,18 +169,22 @@ loop forks as chunks, timed over the 10 cycles after the first. `par_chain`
 is a node-walked chain of 1000 distinct functions timed through its
 first cycle, where nothing pays for a fork: Auto must cost what serial
 does. Quick
-build, `max` mode, best of three (2026-10-04):
+build, `bench` mode, best of three (2026-10-21):
 
 | bench          | serial | auto P x4 | auto P+E x12 |
 |----------------|--------|-----------|--------------|
-| `par_growth`   | 2.13 s | 0.99 s    | 0.80 s       |
-| `par_mandel`   | 1.51 s | 0.45 s    | 0.23 s       |
-| `par_symbolic` | 4.14 s | 1.63 s    | 1.25 s       |
-| `par_wide`     | 5.29 s | 2.47 s    | 1.89 s       |
+| `par_growth`   | 2.02 s | 1.08 s    | 1.03 s       |
+| `par_mandel`   | 1.30 s | 0.42 s    | 0.24 s       |
+| `par_symbolic` | 0.69 s | 0.50 s    | 0.47 s       |
+| `par_wide`     | 7.65 s | 3.03 s    | 2.22 s       |
 
 Of `par_mandel`'s cycle, the fold over the grid, building its array and
 dropping the last one stay serial (8 ms of the 4-thread cycle's 45); the
 pixels run at about 92% of four cores.
+
+`par_symbolic` under `auto` runs half its slots in order: the loop
+probes 16 of the 32 slots as one timed run before it forks the rest, so
+forced (`#[parallel]`) its four-thread run takes 0.29 s.
 
 Hybrid cores make these noisy: which parts land on E-cores is the OS's
 choice (`design/parallel_eval.md` §5, measured not fixed), and

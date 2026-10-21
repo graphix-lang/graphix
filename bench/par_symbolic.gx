@@ -1,20 +1,22 @@
-// `symbolic` written to run in parallel: each seed's build -> deriv ->
-// simplify -> eval is independent, so the seeds map under `#[parallel]`
-// and the checksum folds after. simplify node-walks even with fusion on,
-// so the map's slots fork in both modes. Run under the default
-// GRAPHIX_PAR=auto (bench/par.sh); under `off` it is `symbolic` with a map
-// in place of the fold.
+// Few heavy slots: a fused map over k slots, each folding r seeds'
+// build -> deriv -> simplify -> eval, so the kernel loop's chunks are
+// independent and uneven in nothing but their trees. Nothing forces the
+// fork: under the default GRAPHIX_PAR=auto (bench/par.sh) the cost model
+// decides whether and how to split 32 expensive slots.
 mod symexpr;
 
 let n = 32;
 let k = 32;
+let r = 64;
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;
 
-let per_seed =
-  #[parallel] array::map(array::init(k, |i| i), |i| symexpr::run_one(n, seed + i));
-let result = array::fold(per_seed, 0.0, |acc, v| acc + v);
+let per_slot = #[native] array::map(array::init(k, |i| i), |i| {
+  let s = seed + i * r;
+  array::fold(array::init(r, |j| j), 0.0, |acc, j| acc + symexpr::run_one(n, s + j))
+});
+let result = array::fold(per_slot, 0.0, |acc, v| acc + v);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
-println("par_symbolic n=[n] k=[k] result=[result] elapsed_s=[elapsed]");
+println("par_symbolic n=[n] k=[k] r=[r] result=[result] elapsed_s=[elapsed]");
 sys::exit(elapsed ~ 0)

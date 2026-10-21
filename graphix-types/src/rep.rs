@@ -83,20 +83,20 @@ static WRAPPER: LazyLock<AbstractWrapper<Marker>> = LazyLock::new(|| {
     Abstract::register::<Marker>(id).expect("failed to register Marker")
 });
 
-static MARKS: LazyLock<[Value; 4]> = LazyLock::new(|| {
-    [Kind::Tuple, Kind::Struct, Kind::Variant, Kind::List]
-        .map(|k| WRAPPER.wrap(Marker(k)))
-});
+thread_local! {
+    static MARKS: [Value; 4] = [Kind::Tuple, Kind::Struct, Kind::Variant, Kind::List]
+        .map(|k| WRAPPER.wrap(Marker(k)));
+}
 
 /// Register the marker with netidx before any value decodes.
 #[doc(hidden)]
 pub fn register() {
-    LazyLock::force(&MARKS);
+    LazyLock::force(&WRAPPER);
 }
 
 /// The marker of the kind `k`, which opens every value of it.
 pub fn marker(k: Kind) -> Value {
-    MARKS[k as usize].clone()
+    MARKS.with(|m| m[k as usize].clone())
 }
 
 /// The kind `v` is marked as, if it is a tuple, struct, variant or list
