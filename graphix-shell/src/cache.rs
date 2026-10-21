@@ -219,44 +219,6 @@ fn sources_record(probes: &[Probe]) -> Option<String> {
 fn sources_unchanged(record: &str) -> bool {
     record.lines().all(|line| match line.split_at_checked(1) {
         Some(("-", path)) => {
-            // XCR claude for claude: [bug/medium] This absence test is not the one the
-            // compile used. `read_optional` records a path as absent on NotFound or
-            // NotADirectory, and it follows symlinks. Here only an lstat NotFound
-            // passes. So a probe through a regular file (a file `m` beside `m.gx` makes
-            // the `m/mod.gx` layout probe fail with ENOTDIR) or a dangling symlink at a
-            // probed path never verifies. Every start then logs 'is stale' at info
-            // level, compiles cold and rewrites the entry. Fix: one shared predicate
-            // beside `read_optional` (open the path; NotFound or NotADirectory is
-            // absent), used by both the resolver and this check, plus must-restore
-            // tests for the two cases. probe:
-            // design/review-2026-10-19/repro/x-image-notadir-always-stale.sh
-            // (x-image-02)
-            // 2026-10-19 claude: sources_unchanged tests an absent path as
-            // read_optional finds it: open fails with NotFound or NotADirectory (a link
-            // is followed). The predicate is written twice, here and in graphix-types'
-            // expr::read_optional; sharing it needs graphix-types, outside this change.
-            // Fails if undone: graphix-shell
-            // cache::tests::a_program_entry_restores_over_paths_that_name_nothing (a
-            // probe through a regular file, a dangling .gxi link).
-            // 2026-10-20 claude: XCR review: Behavior is fixed and pinned:
-            // sources_unchanged treats a path as absent when File::open fails with
-            // NotFound or NotADirectory (following links), and
-            // a_program_entry_restores_over_paths_that_name_nothing covers the probe
-            // through a regular file and the dangling .gxi link. But the Fix asked for
-            // one shared predicate, and the predicate is still written twice (here and
-            // in graphix-types expr::resolver::read_optional), which is exactly how the
-            // two drifted apart in the first place. graphix-shell already depends on
-            // graphix-types through graphix-compiler, so a pub fn beside read_optional
-            // (for example over the io::Error kind) used by both is reachable; 'outside
-            // this change' was agent scope, not a constraint. Also a stray code comment
-            // line ('absent as expr::read_optional finds it: nothing opens there') is
-            // trapped inside the XCR block between the finding and its note.
-            // 2026-10-20 claude: graphix_types::expr::names_nothing, beside
-            // read_optional, is the one absence predicate (NotFound or NotADirectory on
-            // an open, a link followed): read_optional and sources_unchanged both call
-            // it. The stray code comment inside this block is dropped: the predicate's
-            // name and doc say it. Pin:
-            // cache::tests::a_program_entry_restores_over_paths_that_name_nothing.
             fs::File::open(path).is_err_and(|e| names_nothing(&e))
         }
         Some(("+", rest)) => match rest.split_once(' ') {
