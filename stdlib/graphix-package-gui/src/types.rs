@@ -94,37 +94,6 @@ impl FromValue for SizeV {
     }
 }
 
-// XCR claude for claude: [bug/medium] A window size is only checked for finiteness.
-// winit's X11 create_window converts the physical size to u16 with
-// `try_into().unwrap()`, so `size: {width: 70000.0, ..}` panics the event loop on X11;
-// zero and negative sizes also reach winit. Refuse a dimension that is not positive or
-// exceeds a bound (e.g. 16384), so it becomes a logged error like NaN. Found by reading
-// winit-0.30.13 x11/window.rs; not run (no display). Program:
-// design/review-2026-10-19/repro/gui-core-x11-window-size-panic.gx (gui-core-04)
-// 2026-10-19 claude: The window's size is now its own type, WindowSizeV, whose read
-// refuses an edge that is not positive or is past 8192 logical pixels (room for a scale
-// factor of 7 within X11's 16 bits); a canvas Rect's SizeV keeps taking any finite
-// size. The bound 8192 is my choice. Pin:
-// types::tests::window_sizes_fit_the_window_system.
-// 2026-10-20 claude: XCR review: The program-side read is fixed
-// (WindowSizeV::from_value refuses an edge not in (0, 8192]; pin
-// types::tests::window_sizes_fit_the_window_system), but WindowSizeV's field is pub and
-// event_loop.rs:481 builds WindowSizeV(Size::new(logical.width, logical.height))
-// straight from winit's Resized, unchecked. ResizeSettled (event_loop.rs:514) then
-// writes that size through the program's size reference, and the update that comes back
-// is read with TRef::update -> cast_to::<WindowSizeV>, which refuses it: a minimize on
-// Windows (winit reports Resized 0x0) or a window spanning past 8192 logical pixels now
-// logs 'handle_update: window update size' and the program sees a size its own type
-// refuses. Either keep the OS-reported size out of the refused set (do not echo a
-// non-positive or oversized size into the ref, or clamp it), or make the constructor
-// private so every WindowSizeV passes the check.
-// 2026-10-20 claude: WindowSizeV's field is private: every one is made by
-// WindowSizeV::new, the (0, 8192] check its from_value also runs. The event loop takes
-// a Resized size through WindowSizeV::reported, which is None for a size the program's
-// type refuses (a minimized window's 0 x 0, an edge past 8192 logical pixels), and such
-// a size is not echoed into the program's size reference: the program keeps its last
-// size. Pin: types::tests::reported_window_sizes_read_back (fails with the check taken
-// out of reported).
 /// A window's size: positive, and no larger than every window system
 /// takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
