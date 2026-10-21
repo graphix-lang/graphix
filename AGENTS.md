@@ -383,7 +383,9 @@ is transparent to analyses (view, children, spec, `downcast_*`);
 `fusion::fuse` fuses its child inside it. `GRAPHIX_PRUNE=off|on|audit`
 (on by default; `Control::set_prune_mode`): the audit walks everything
 and panics where a skip would have changed a production or published;
-the fuzzer's `Pair::Prune` compares against `Mode::Unpruned`.
+the fuzzer's `Pair::Prune` compares against `Mode::Unpruned`; a test
+fixture audits every skip (`testing::Mode::fixture_prune`), and a test
+that measures pruning sets `Mode::prune` in its setup.
 
 **Session images** (`design/program_image.md`): the shell caches the
 session state before any cycle (`graphix-compiler/src/image/` over

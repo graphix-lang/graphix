@@ -166,6 +166,11 @@ impl Mode {
     // PruneMode::Audit, which panics where a skip would change a production, or add
     // Mode::Unpruned to run!. A manual sweep of the 71 async lib_tests fixtures under
     // GRAPHIX_PRUNE=audit, in both engines, finds nothing today. (tests-lib-b2-05)
+    // 2026-10-20 claude: Every fixture through fixture_runtime (run!,
+    // run_with_tempdir!, collect, eval_modes) now audits every skip in all four modes
+    // (Mode::fixture_prune, x-prune-03), so a skip that changes a production across an
+    // event source's sleep and wake panics in the gate; the fuzzer still excludes
+    // those programs from value comparison.
     pub const ALL: [Mode; 4] = [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar];
 
     pub fn flags(self) -> BitFlags<CFlag> {
@@ -179,9 +184,8 @@ impl Mode {
         matches!(self, Mode::Interp | Mode::Par | Mode::Unpruned)
     }
 
-    /// Whether the runtime skips clean boundaries, and audits the skips:
-    /// `Interp` prunes for real (what `Unpruned` and the fuzzer's
-    /// `Pair::Prune` compare against), `Par` audits every skip.
+    /// Whether the runtime skips clean boundaries when the mode prunes for
+    /// real: what `Unpruned` and the fuzzer's `Pair::Prune` compare against.
     // XCR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
     // audit off, and Mode::Unpruned is not in Mode::ALL. So the gate never checks that
     // pruning changes nothing; only lang::prune's walk count touches it. A missed mark
@@ -220,11 +224,31 @@ impl Mode {
     // run_delta reports boundaries walked and skipped. Fails if undone: lang::prune
     // ticks_skip_the_idle_map* (Mode::Interp must skip at least 100 boundaries; under
     // Audit it skips none).
+    // 2026-10-20 claude: Per Eric: fixtures audit by default and a test that measures
+    // pruning opts out. fixture_runtime sets Mode::fixture_prune (Audit in every mode
+    // unless GRAPHIX_PRUNE is set, Unpruned Off), so every run!, run_with_tempdir!,
+    // collect and eval_modes fixture audits every skip, JIT modes included;
+    // Mode::prune is real pruning again for every mode (the fuzzer's Pair::Prune and
+    // Pair::Par), and lang::prune's walks sets it in its setup. No run! fixture needs
+    // real pruning, so run! has no opt-out argument; one is a setup line. Gate green,
+    // graphix-tests 160 s audited against 159 s. Fails if undone: lang::prune
+    // idle_map_beside_a_ticking_counter, idle_map_in_a_walked_arm and
+    // idle_map_in_a_walked_instance fail when walks audits.
     pub fn prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
-            Mode::Par if std::env::var_os("GRAPHIX_PRUNE").is_none() => PruneMode::Audit,
             _ => PruneMode::from_env(),
+        }
+    }
+
+    /// A fixture's pruning: every skip audited, unless `GRAPHIX_PRUNE`
+    /// says otherwise. A fixture that measures pruning sets
+    /// [`Mode::prune`] in its setup.
+    pub fn fixture_prune(self) -> PruneMode {
+        match self {
+            Mode::Unpruned => PruneMode::Off,
+            _ if std::env::var_os("GRAPHIX_PRUNE").is_some() => PruneMode::from_env(),
+            _ => PruneMode::Audit,
         }
     }
 
@@ -270,7 +294,7 @@ where
     let ctx = TestCtx::start(
         config(tx, register, vec![VfsResolver::new(tbl)], |ctx| {
             ctx.control.set_par_mode(mode.par());
-            ctx.control.set_prune_mode(mode.prune());
+            ctx.control.set_prune_mode(mode.fixture_prune());
             setup(ctx)
         })?
         .flags(mode.flags()),
