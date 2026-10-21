@@ -660,46 +660,10 @@ fn emit_composite_pattern_cond_inner(
                     })
                 }
             },
-            // XCR claude for claude: [perf/medium] A string, null or union-typed scalar
-            // literal at a tuple/struct/array leaf, and a list pattern at a leaf,
-            // de-fuse the whole select. This arm accepts only a literal whose prim is
-            // the leaf's exact static type, and the nested-leaf arm below admits no
-            // Value-kind leaf except a variant. The same literals fuse at the top level
-            // (emit_structure_cond) and in a variant payload (emit_variant_cond). So
-            // `("quit", _)`, `(null, _)` and `(0, _)` over `[i64, null]` all node-walk.
-            // Fix: read such a leaf as borrowed Value words, as the Variant leaf does,
-            // and test it with one shared literal test (tag + typed payload compare,
-            // graphix_value_is_str, disc == NULL). Use that test in emit_structure_cond
-            // and emit_variant_cond too, which today each carry their own copy. probe:
-            // design/review-2026-10-19/repro/f-select-literal-leaf-defuse.gx
-            // (f-select-01)
             // The typed element read is total: a slot not of `prim`'s
             // family reads as 0, which a `0` literal would match. Only the
             // static type proves the read faithful; any other literal tests
             // the element's value.
-            // 2026-10-19 claude: Fixed with tests-select-02: a string, null or
-            // union-typed literal leaf tests the element's borrowed Value words through
-            // emit_value_leaf_cond, which emit_variant_cond's payload literals share
-            // (its two hand-written copies are gone). A list pattern at a leaf still
-            // refuses: its head binds read from the arm's scrutinee. Pin: fusion_review
-            // select_leaves_options_or_kinds_and_own_type_tests (t0..t2, t6..t8); the
-            // repro's f, g, h and k fuse, l (the list leaf) does not.
-            // 2026-10-20 claude: XCR review: The literal half is fixed
-            // (emit_value_leaf_cond, shared with emit_variant_cond; pin select_leaves
-            // t0..t2, t6..t8). The finding also names a list pattern at a leaf, and the
-            // note says it still refuses (its head binds read from the arm's
-            // scrutinee); the repro's l still node-walks the whole select. Either lower
-            // it or record the list-leaf gap as accepted somewhere other than this XCR.
-            // 2026-10-20 claude: The list half is lowered too: emit_list_pattern_cond
-            // takes the list's own words, its head and rest binds (ListHead, ListTail)
-            // carry them, and its whole bind is the caller's (the scrutinee's Value, a
-            // composite leaf's Elem, a payload's Payload), so a list pattern at a
-            // tuple, struct or array leaf, or in a variant payload, reads its leaf's
-            // borrowed words as the Variant leaf does. Pin: fusion_review
-            // select_list_pattern_leaves (l0 is the repro's l; l1..l4 cover a struct
-            // leaf, an array leaf, a whole bind at a leaf and a payload), which fails
-            // with 'nested pattern over a leaf of shape Some(Value) not lowerable' on
-            // the old select.rs.
             StructPatternNode::Literal(v)
                 if let Some(prim) = kernel_abi::scalar_prim_of_value(v)
                     && kernel_abi::scalar_prim(&leaf.typ) == Some(prim) =>
