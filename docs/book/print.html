@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4d794088.js";
+            window.path_to_searchindex_js = "searchindex-667d9618.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -4785,7 +4785,8 @@ of our code we can refer (statically) to <code>foo</code> as if it was a normal 
 we loaded at compile time. There are three sections required to define a dynamic
 module, they are required to be defined in order, sandbox, sig, and source,</p>
 <ul>
-<li>a <code>sandbox</code> statement, of which there are three types
+<li>
+<p>a <code>sandbox</code> statement, of which there are three types</p>
 <ul>
 <li><code>sandbox unrestricted;</code> no sandboxing, the dynamic module can access
 anything in it’s scope</li>
@@ -4797,19 +4798,9 @@ anything except the names listed. <code>sandbox blacklist [sys];</code> everythi
 except the <code>sys</code> package would be accessible</li>
 </ul>
 </li>
-</ul>
-<!-- CR claude for eric: [doc-drift/medium] This lists 'four possible statements' and
-documents `mod m: sig { ... }` for a sub-module. The sig parser (`sig_item`) accepts
-only `mod m` with no inline sig, so the documented form is a parse error at `:`. It also
-accepts `trait`, `impl ..;` and `use`, which are not listed. A dynamic module's source
-also cannot define `mod m { .. }` inline, so it is unclear how it could ever satisfy a
-sig's `mod m`. Decision needed: should inline sub-module sigs (and inline sub-module
-bodies) exist for dynamic modules? If not, the page should say dynamic modules have no
-sub-modules. Either way, update the statement list to the parser's.
-(book-modules-udt-11) -->
-<ul>
-<li>a <code>sig</code> statement is the type signature of the module. This is a special
-syntax for writing module type signatures. There are four possible statements,
+<li>
+<p>a <code>sig</code> statement is the type signature of the module, written as an
+<a href="#interface-files">interface</a> is. Its statements are,</p>
 <ul>
 <li>a val statement defines a value and it’s type, <code>val add: fn(x: i64) -&gt; i64</code> is
 an example of a val statement, it need not be a function it can be any type</li>
@@ -4820,14 +4811,18 @@ statement in Graphix (so it can be polymorphic, recursive, etc).</li>
 The loaded module must provide a concrete definition, but that definition is
 hidden from the loading code. This provides encapsulation - see the
 <a href="#abstract-types">Abstract Types</a> section for details.</li>
-<li>a mod statement defines a sub module of the dynamically loaded module. A sub
-module must have a sig. <code>mod m: sig { ... }</code> defines a sub module.</li>
+<li>a trait statement defines a trait, and an impl statement, <code>impl Show for T;</code>, declares an implementation the loaded module must provide.</li>
+<li>a use statement imports names the signature uses, e.g. <code>use sys::io::Read;</code></li>
 </ul>
+<p>A dynamic module has no sub-modules: its source is one piece of text, so
+it cannot declare a <code>mod</code>, and a <code>mod</code> in its sig is refused.</p>
 </li>
-<li>a <code>source</code> statement defines where the source code for the dynamic module will
+<li>
+<p>a <code>source</code> statement defines where the source code for the dynamic module will
 come from. It’s type must be a string. The source expression is part of the
 loading program, so it resolves in the enclosing scope — referencing <code>path</code>
-above works even though it appears inside the <code>mod foo dynamic</code> block.</li>
+above works even though it appears inside the <code>mod foo dynamic</code> block.</p>
+</li>
 </ul>
 <p>The <code>mod foo dynamic ...</code> expression returns a value of type,</p>
 <p><code>[null, Error&lt;`DynamicLoadError(string)&gt;]</code></p>

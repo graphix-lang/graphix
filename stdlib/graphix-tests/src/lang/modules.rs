@@ -81,6 +81,23 @@ const DYNAMIC_MODULE2: &str = r#"
 
 run!(dynamic_module2, DYNAMIC_MODULE2, is(Value::I64(4)); FuseExpect::Jit);
 
+// A dynamic module's source can declare no module, so a sig's `mod` is
+// refused when the program compiles, never at each load.
+run!(
+    dynamic_module_sig_mod_is_refused,
+    r#"
+{
+    let status = mod foo dynamic {
+        sandbox unrestricted;
+        sig { mod m; val x: i64 };
+        source "let x = 1"
+    };
+    status
+}
+"#,
+    refused("a dynamic module has no sub-modules")
+);
+
 /// A dynamic module `test` loaded under `sandbox`, its sig `foo` and `bar`
 /// with `sig` after them, its body the relay `foo` to `bar` with `body`
 /// after it: `test::bar` once the program writes `test::foo`, or the

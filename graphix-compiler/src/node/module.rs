@@ -1007,6 +1007,14 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         source: Arc<Expr>,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
+        if let Some(si) =
+            sig.items.iter().find(|si| matches!(si.kind, SigKind::Module(_)))
+        {
+            return Err(anyhow!(
+                "a dynamic module has no sub-modules, so its sig cannot declare `{si}`"
+            )
+            .context(ParserContext { ori: si.ori.clone(), pos: si.pos }));
+        }
         // the source expression compiles in the enclosing scope; only
         // the loaded text compiles under the module's own scope
         let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
