@@ -4318,10 +4318,6 @@
                 },
                 {
                   "type": "SYMBOL",
-                  "name": "string"
-                },
-                {
-                  "type": "SYMBOL",
                   "name": "triple_string"
                 },
                 {
@@ -4356,10 +4352,6 @@
                   {
                     "type": "SYMBOL",
                     "name": "_typed_value"
-                  },
-                  {
-                    "type": "SYMBOL",
-                    "name": "string"
                   },
                   {
                     "type": "SYMBOL",
@@ -4403,10 +4395,6 @@
                     {
                       "type": "SYMBOL",
                       "name": "_bytes_value"
-                    },
-                    {
-                      "type": "SYMBOL",
-                      "name": "string"
                     },
                     {
                       "type": "SYMBOL",
@@ -7544,14 +7532,6 @@
     [
       "type_path",
       "construct_path"
-    ],
-    [
-      "string",
-      "value_string"
-    ],
-    [
-      "value_string",
-      "interpolation"
     ],
     [
       "module",

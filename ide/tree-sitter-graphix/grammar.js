@@ -76,8 +76,6 @@ module.exports = grammar({
     [$.type_path, $.pattern_bind],
     [$.construct_path, $.module_path],
     [$.type_path, $.construct_path],
-    [$.string, $.value_string],
-    [$.value_string, $.interpolation],
     // Top-level keywords that overlap between expression and sig form:
     // `mod foo` parses as either a bodyless module declaration
     // (expression form) or a sig_module (interface form). Likewise
@@ -733,19 +731,19 @@ module.exports = grammar({
       seq(
         alias($._scalar_primitive, $.primitive_type),
         ':',
-        choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
+        choice($._typed_value, $.triple_string, $.value_string, $.raw_string),
       ),
       // `error:..`, `abstract:..`: an identifier head, which loses to a
       // binding (`let x: T`, `|a: T|`) wherever both parse
       prec.dynamic(-20, seq(
         $.identifier,
         ':',
-        choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
+        choice($._typed_value, $.triple_string, $.value_string, $.raw_string),
       )),
       seq(
         alias('bytes', $.primitive_type),
         ':',
-        optional(choice($._bytes_value, $.string, $.value_string, $.raw_string)),
+        optional(choice($._bytes_value, $.value_string, $.raw_string)),
       ),
     ),
 
@@ -1023,19 +1021,6 @@ module.exports = grammar({
       )),
       '"',
     ),
-
-    // CR claude for claude: [bug/low] A typed value literal whose string holds '['
-    // followed by '/' does not parse here, though the Graphix parser takes it: a
-    // generated program holding '&mut error:"[/..."' gave 'tree-sitter: ERROR at
-    // 3:13: "/"' at the '/'. Likely the literal '[' sends the parse down the
-    // interpolation branch, where '/' starts nothing, and the value_string branch
-    // does not recover (not confirmed). Found by the randomized
-    // graphix-types expr::test::tree_sitter_compat::ts_pp (shrunk case
-    // ByRef(Shared, Constant(Error(String("[/"))))); ts_expr fails on it too. To
-    // replay it, add 'cc 011f0989467e51c482c192ec755248ebadb93a9fa37e92c1407e4b1103ba9554'
-    // to graphix-types/proptest-regressions/expr/test.txt, and commit that line
-    // with the fix. After a fix, regenerate parser.c and bump the zed rev
-    // (zed_grammar_rev_is_current). (ts-value-string-01)
 
     // Non-interpolating string for value contexts (e.g., error:"[", bytes:"...").
     // Uses the SAME external content token as string (so the lexer produces one
