@@ -96,9 +96,10 @@ findings embed their program text, and the seed-replay gates never use
 the ring. The fuzz binary allocates with the system allocator, as the
 shell does: a child's memory, not its CPU, bounds a box's slots, and
 mimalloc held twice the memory (a 32-program batch: 330 MB on glibc,
-680-840 MB on mimalloc, ~5% less CPU). A child compiles on two threads
-and evaluates on two workers (`RAYON_NUM_THREADS`, `GRAPHIX_EVAL_THREADS`,
-set on every child unless the caller set them).
+680-840 MB on mimalloc, ~5% less CPU). A child compiles and evaluates
+on two workers (`GRAPHIX_EVAL_THREADS`) and builds JIT code on two
+threads (`RAYON_NUM_THREADS`), set on every child unless the caller set
+them.
 
 ## 3. The oracle
 

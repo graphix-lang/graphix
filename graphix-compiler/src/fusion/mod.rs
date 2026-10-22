@@ -1242,18 +1242,20 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
         .collect();
     drop(emission);
     let cx = crate::typ::tvar::TaskContext::current();
-    let mut results: Vec<(usize, anyhow::Result<()>)> = work
-        .par_iter_mut()
-        .map(|(i, n, task)| {
-            let _cx = cx.enter();
-            (
-                *i,
-                task.run_task(|task| {
-                    TypeMemo::enter(memo.clone(), || visit(n, Some(true), task))
-                }),
-            )
-        })
-        .collect();
+    let mut results: Vec<(usize, anyhow::Result<()>)> =
+        ctx.control.eval_pool().install(|| {
+            work.par_iter_mut()
+                .map(|(i, n, task)| {
+                    let _cx = cx.enter();
+                    (
+                        *i,
+                        task.run_task(|task| {
+                            TypeMemo::enter(memo.clone(), || visit(n, Some(true), task))
+                        }),
+                    )
+                })
+                .collect()
+        });
     for (_, _, task) in work.drain(..) {
         task.attr_census.lock().clear();
         ctx.join(task);

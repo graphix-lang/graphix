@@ -240,7 +240,7 @@ impl Drop for InTask {
 /// A compile's context on its thread: the task its cells belong to and
 /// the level they take. A job on a shared pool runs under its spawner's
 /// ([`Self::enter`]), never under the thread's: a worker blocked in a
-/// join runs jobs stolen from any compile in the process, and a job that
+/// join runs jobs stolen from any compile of its runtime, and a job that
 /// ran under the waiting task's context would create cells as that
 /// task's and have its decisions recorded as that task's foreign writes.
 #[derive(Debug, Clone, Copy)]

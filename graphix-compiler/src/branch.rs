@@ -825,7 +825,6 @@ struct Shared<'a, R: Rt, E: UserEvent> {
     image_decoder: &'a std::sync::OnceLock<crate::image::SharedDecoder>,
     libstate: &'a crate::LibState,
     core_hook_sites: &'a parking_lot::Mutex<crate::node::coretraits::CoreHookSites<R, E>>,
-    control: &'a triomphe::Arc<Control>,
     fork_depth: u8,
     par: graphix_types::stack::ParMode,
     fork: ForkFlags,
@@ -840,7 +839,6 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
             image_decoder: ctx.image_decoder,
             libstate: ctx.libstate,
             core_hook_sites: ctx.core_hook_sites,
-            control: ctx.control,
             fork_depth: ctx.fork_depth + 1,
             par: ctx.par,
             fork: ctx.fork,
@@ -860,7 +858,6 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
             libstate: self.libstate,
             rt: RtView::Fork(&mut b.rt),
             core_hook_sites: self.core_hook_sites,
-            control: self.control,
             event: &mut b.event,
             fork_depth: self.fork_depth,
             par: self.par,
@@ -956,7 +953,8 @@ where
         .map(|p| Part { branch: unsafe { Branch::new(ctx) }, part: Some(p), out: None })
         .collect();
     let shared = Shared::of(ctx);
-    let control = ctx.control;
+    let control = ctx.control.clone();
+    let control = &*control;
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(control, branches.len());
@@ -1045,7 +1043,8 @@ pub(crate) fn compile_each<R, E, P, F>(
         let cx: &mut CompileCtx<R, E> = ctx;
         parts.into_iter().map(|p| (cx.fork(), Some(p))).collect()
     };
-    let control = ctx.control;
+    let control = ctx.control.clone();
+    let control = &*control;
     control.build_forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(control, tasks.len());
@@ -1078,7 +1077,8 @@ where
     // both branches merged, in order, below
     let (mut left, mut right) = unsafe { (Branch::new(ctx), Branch::new(ctx)) };
     let shared = Shared::of(ctx);
-    let control = ctx.control;
+    let control = ctx.control.clone();
+    let control = &*control;
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(control, 2);

@@ -1370,6 +1370,10 @@ struct Registry<R: Rt, E: UserEvent> {
 /// compile in progress. The runtime half is [`ExecCtx`].
 pub struct CompileCtx<R: Rt, E: UserEvent> {
     registry: Arc<Registry<R, E>>,
+    /// Interrupt/abort control, shared with the runtime handle, and the
+    /// runtime's evaluation pool, which its compile tasks fork onto too.
+    /// See [`Control`].
+    pub control: Arc<Control>,
     tags: TrackedSet<ArcStr>,
     /// The language environment: typedefs, binds, lambdas.
     pub env: Env,
@@ -1484,9 +1488,6 @@ pub struct ExecState<R: Rt, E: UserEvent> {
     /// The call sites through which `Value` comparison and printing
     /// reach core-trait implementations, built on first use.
     pub(crate) core_hook_sites: Mutex<node::coretraits::CoreHookSites<R, E>>,
-    /// Interrupt/abort control, shared with the runtime handle. See
-    /// [`Control`].
-    pub control: Arc<Control>,
     /// The cycle's event.
     pub event: Event<E>,
 }
@@ -1513,7 +1514,6 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
     pub libstate: &'a LibState,
     pub rt: branch::RtView<'a, R>,
     pub(crate) core_hook_sites: &'a Mutex<node::coretraits::CoreHookSites<R, E>>,
-    pub control: &'a Arc<Control>,
     pub event: &'a mut Event<E>,
     /// How many forks this branch is below the cycle's root.
     pub(crate) fork_depth: u8,
@@ -1587,6 +1587,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     pub(crate) fn fork(&self) -> Self {
         Self {
             registry: self.registry.clone(),
+            control: self.control.clone(),
             tags: self.tags.fork(),
             env: self.env.fork(),
             lambda_defs: self.lambda_defs.fork(),
@@ -1634,6 +1635,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     pub(crate) fn join(&mut self, fork: Self) {
         let Self {
             registry: _,
+            control: _,
             tags,
             env,
             lambda_defs,
@@ -1930,6 +1932,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                     builtins: AHashMap::default(),
                     attributes: AHashMap::default(),
                 }),
+                control: Arc::new(Control::new()),
                 tags: TrackedSet::default(),
                 env: Env::default(),
                 lambda_defs: TrackedMap::default(),
@@ -1964,7 +1967,6 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             libstate: LibState::default(),
             rt,
             core_hook_sites: Mutex::new(node::coretraits::CoreHookSites::default()),
-            control: Arc::new(Control::new()),
             event: Event::new(user),
         };
         this.register_attribute::<Native>()?;
@@ -1973,8 +1975,8 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
 
     /// The view nodes run under.
     pub fn view(&mut self) -> ExecCtx<'_, R, E> {
-        let Self { cx, image_decoder, libstate, rt, core_hook_sites, control, event } =
-            self;
+        let Self { cx, image_decoder, libstate, rt, core_hook_sites, event } = self;
+        let (par, prune) = (cx.control.par_mode(), cx.control.prune_mode());
         let rt = branch::RtView::Root(rt);
         let cx = branch::CxView::Root(cx);
         ExecCtx {
@@ -1983,13 +1985,12 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             libstate,
             rt,
             core_hook_sites,
-            control,
             event,
             fork_depth: 0,
-            par: control.par_mode(),
+            par,
             fork: branch::ForkFlags::default(),
             boundary: None,
-            prune: control.prune_mode(),
+            prune,
         }
     }
 }
@@ -2080,7 +2081,6 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             libstate: self.libstate,
             rt: self.rt.reborrow(),
             core_hook_sites: self.core_hook_sites,
-            control: self.control,
             event,
             fork_depth: self.fork_depth,
             par: self.par,
@@ -3135,6 +3135,7 @@ impl Saved {
         // state a failed compile rolls back, or scratch
         let CompileCtx {
             registry: _,
+            control: _,
             tags,
             env,
             lambda_defs,

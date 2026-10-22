@@ -195,8 +195,9 @@ first error in order is the body's.
 **Ownership.** Each parallel statement is a compile task with a fresh id
 (`tvar::new_task`, entered by `InTask`); a nested fork runs in its
 parent's task. The task, the level and the module's foreign-write record
-are thread-locals, and rayon's pools are the process's: a worker blocked
-in a join runs jobs stolen from any compile, another runtime's included.
+are thread-locals, and a runtime compiles on its own pool
+(`Control::eval_pool`, which it evaluates on too): a worker blocked in a
+join runs jobs stolen from any of that runtime's compiles.
 So every job a compile puts on a pool enters its spawner's context
 (`tvar::TaskContext::enter`: `branch::Live` carries it to each part,
 `check_in_tasks` and `fusion::fuse_each` capture it) and sets the

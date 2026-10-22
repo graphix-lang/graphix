@@ -757,9 +757,10 @@ cores), 16 MB stacks, `stacker` growing segments as everywhere. A
 worker blocked in a join runs stolen jobs, so a shared pool would let
 one runtime's cycle wait on another's part, past its own interrupt;
 a pool per runtime keeps runtimes in one process isolated. Saturation
-(`Control::eval_saturated`) counts the runtime's own live parts. The compile
-pool's size (`RAYON_NUM_THREADS`) does not govern evaluation; the
-fuzzer sets both to two for its children.
+(`Control::eval_saturated`) counts the runtime's own live parts. Its
+compile tasks fork onto the same pool (`check_in_tasks`,
+`fusion::fuse_each`); `RAYON_NUM_THREADS` sizes only the JIT backend's
+threads. The fuzzer sets both to two for its children.
 
 **Stack budget.** Per cycle: the `Control` counts the grown segments
 live in its cycle, on every thread (`Control::grown`), and a segment

@@ -1035,7 +1035,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if self.charged.take() == Some(Arc::as_ptr(ctx.control) as usize) {
+        if self.charged.take() == Some(Arc::as_ptr(&ctx.control) as usize) {
             ctx.control.activation_died()
         }
         self.body.delete(ctx);

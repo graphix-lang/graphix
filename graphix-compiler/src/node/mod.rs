@@ -1204,13 +1204,15 @@ fn check_in_tasks<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let cx = TaskContext::current();
     let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
-    work.par_iter_mut()
-        .map(|(n, task, id)| {
-            let _cx = cx.with_task(*id).enter();
-            let r = task.run_task(|task| check(n, task));
-            statement_result(r, n, module)
-        })
-        .collect_into_vec(&mut results);
+    ctx.control.eval_pool().install(|| {
+        work.par_iter_mut()
+            .map(|(n, task, id)| {
+                let _cx = cx.with_task(*id).enter();
+                let r = task.run_task(|task| check(n, task));
+                statement_result(r, n, module)
+            })
+            .collect_into_vec(&mut results)
+    });
     for (_, task, _) in work.drain(..) {
         ctx.join(task);
     }

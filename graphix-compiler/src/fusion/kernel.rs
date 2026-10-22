@@ -287,7 +287,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        crate::stack::with_control(ctx.control, || self.free_state());
+        crate::stack::with_control(&ctx.control, || self.free_state());
         self.for_each_child_mut(&mut |node| node.delete(ctx));
     }
 
@@ -423,7 +423,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             mode: ctx.fork_mode(),
             body_mode: ctx.with_fork_flags(body, |ctx| ctx.fork_mode()),
             forced: ctx.fork.forced,
-            control: &**ctx.control,
+            control: &*ctx.control,
         };
         let mut run = |env: &crate::env::Env| {
             emit_helpers::with_deferred(|| {

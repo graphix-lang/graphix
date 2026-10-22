@@ -961,9 +961,10 @@ cycle, across workers; the compiler never pins threads.
   write not made (`tvar::decided`; annotate the binding it would
   decide; `design/parallel_compile.md`) A job a compile puts on a shared pool runs
   under its spawner's `tvar::TaskContext` (task, level; the thread's
-  foreign-write record set aside), never the thread's: a worker blocked
-  in a join runs jobs stolen from any compile in the process
-  (`branch::Live`, `check_in_tasks`, `fusion::fuse_each`). Every cell of an interface
+  foreign-write record set aside), never the thread's: a runtime
+  compiles on its own pool (`Control::eval_pool`), and a worker blocked
+  in a join runs jobs stolen from any of its compiles (`branch::Live`,
+  `check_in_tasks`, `fusion::fuse_each`). Every cell of an interface
   `val`'s function type is generic, a constructor trait's element
   included: a call copies it.
 - **References** (`design/place_references.md`): `&e` is read-only
