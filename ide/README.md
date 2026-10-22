@@ -113,7 +113,8 @@ The tree-sitter grammar requires Node.js and tree-sitter-cli:
 cd tree-sitter-graphix
 npm install
 npm run generate
-npm test        # ./check.sh: parse every .gx/.gxi here (and in ../netidx), compile the queries
+npm test        # ./check.sh: parse every .gx/.gxi here (and in ../netidx), compile the queries;
+                # GRAPHIX=<binary> names the graphix that decides what a refusal means
 ```
 
 ## Changing the language syntax
@@ -144,7 +145,8 @@ The gate for 1–3 is `cargo test -p graphix-types queries_compile`
 (every query compiles against the built grammar), the ts-compat
 proptests in the same module (the grammar parses the printer's
 canonical output) and `tree-sitter-graphix/check.sh` (every program in
-the repo; its count of files with errors should only go down). None of
+the repo, a fuzz bundle section by section; it counts the files
+tree-sitter refuses that `graphix fmt` parses, which should be zero). None of
 these sees a wrong tree shape or syntax the compiler refuses, so check
 new forms by eye with `tree-sitter parse`. 4 and 5 have no gate.
 
