@@ -35,7 +35,8 @@ use super::{
     },
     call::{CompositeSource, emit_drop_local, emit_owned_drop, owned_drop_kind},
     nodes::{
-        emit_bottom_placeholder, emit_bottom_placeholder_of_kind, widen_result_to_value,
+        emit_bottom_placeholder, emit_bottom_placeholder_of_kind, emit_never,
+        widen_result_to_value,
     },
     scalar::cast_u64_to_prim,
     select::{classify_select_scrutinee, emit_let_binds, emit_select_arms},
@@ -226,6 +227,12 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
             }
         }
         TailPosition::Leaf(n) => {
+            if let NodeView::Never(nv) = n.view() {
+                let kind = kernel_abi::abi_kind(ret)
+                    .ok_or_else(|| anyhow!("emit_clif: no never of {ret}"))?;
+                let cv = emit_never(cx, &nv.n, kind)?;
+                return emit_kernel_return(cx, ret, cv, CompositeSource::Owned);
+            }
             // Matched by the self BindId. Only a looping kernel jumps; a
             // stateful body has no loop head and calls itself natively.
             if let Some(own) = cx.ctx.self_call

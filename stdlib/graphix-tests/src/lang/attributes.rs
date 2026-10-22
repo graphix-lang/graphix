@@ -18,6 +18,29 @@ const TAIL_RECURSIVE_OK: &str = r#"
 
 run!(tail_recursive_ok, TAIL_RECURSIVE_OK, is(Value::I64(55)));
 
+// A `never()` arm is a pure standing bottom, so it leaves the body
+// stateless and the recursion one native loop.
+const TAIL_RECURSIVE_NEVER_ARM: &str = r#"
+{
+  #[tail_recursive]
+  let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, x if x < 0 => never(), x => f(x - 1, acc + x) };
+  f(10, 0)
+}
+"#;
+
+run!(tail_recursive_never_arm, TAIL_RECURSIVE_NEVER_ARM, is(Value::I64(55)); FuseExpect::Jit);
+
+// The loop reaching its `never()` arm returns bottom.
+const TAIL_RECURSIVE_NEVER_TAKEN: &str = r#"
+{
+  #[tail_recursive]
+  let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, 3 => never(), x => f(x - 1, acc + x) };
+  any(f(10, 0), -1)
+}
+"#;
+
+run!(tail_recursive_never_taken, TAIL_RECURSIVE_NEVER_TAKEN, is(Value::I64(-1)); FuseExpect::Jit);
+
 // fib recurses through `+` — non-tail on both self-calls.
 const TAIL_RECURSIVE_NON_TAIL: &str = r#"
 {

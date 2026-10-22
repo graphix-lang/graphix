@@ -32,9 +32,9 @@ use super::{
     },
     body::{BodyCx, ensure_owned_composite_src, fold_stale, node_composite_source},
     call::{CompositeSource, emit_drop_local},
-    flow::{emit_discard_result, emit_scope_drops},
+    flow::emit_scope_drops,
     lower::{freeze_node_typ, resolve_node_typ},
-    nodes::{emit_bottom_of_kind, emit_owned_value_operand_node},
+    nodes::{emit_bottom_of_kind, emit_never, emit_owned_value_operand_node},
     record::{KernelConst, NoMatchSite},
     scalar::{
         ElementRead, cast_u64_to_prim, compile_cmp, compile_const, element_read_helper,
@@ -1713,24 +1713,17 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         NodeView::Never(n) => Some(&n.n),
         _ => None,
     };
-    let (disc, payload) = if never_args.is_some() || matches!(body_frozen, Type::Bottom) {
-        let cv = emit_bottom_of_kind(cx, merge_shape.abi_kind())?;
-        let disc = match never_args {
-            Some(args) => {
-                for arg in args.iter() {
-                    let av = arg.emit_clif(cx)?;
-                    emit_discard_result(cx, arg, av)?;
-                }
-                cx.b.ins().bor_imm(cv.disc, STALE)
-            }
-            None => {
-                let produced = body.emit_clif(cx)?;
-                propagate_flags(cx.b, cv.disc, &[produced.disc])
-            }
-        };
-        (disc, cv.payload)
-    } else {
-        emit_select_arm_value(cx, body, &body_frozen, merge_shape)?
+    let (disc, payload) = match never_args {
+        Some(args) => {
+            let cv = emit_never(cx, args, merge_shape.abi_kind())?;
+            (cv.disc, cv.payload)
+        }
+        None if matches!(body_frozen, Type::Bottom) => {
+            let cv = emit_bottom_of_kind(cx, merge_shape.abi_kind())?;
+            let produced = body.emit_clif(cx)?;
+            (propagate_flags(cx.b, cv.disc, &[produced.disc]), cv.payload)
+        }
+        None => emit_select_arm_value(cx, body, &body_frozen, merge_shape)?,
     };
     // TAINT = OR(arm, scrutinee). Firing = OR(arm production, scrutinee
     // delivery, consulted guard productions), as the STALE AND-fold

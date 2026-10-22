@@ -708,19 +708,6 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::SeqMachine(_)
         | NodeView::SeqCapture(_)
         | NodeView::Any(_)
-        // CR claude for eric: [perf/medium] never() is classified ASYNC here, which
-        // marks any function with a `never()` arm (the idiom the book teaches for 'no
-        // value here') as stateful or async. Its tail recursion then gets no loop head
-        // and keeps one activation per level, and #[tail_recursive] refuses it with a
-        // misleading message about stateful builtins. OrNever, which delivers the same
-        // standing bottom, is PURE, and the select emitter already lowers a never() arm
-        // as a pure standing bottom. Deciding: should never() with pure args be PURE?
-        // That also changes what #[sync]/#[async] and the arm-sleep skip see. If yes,
-        // emit_body_tail needs the never-arm rule that emit_select_value_arm uses
-        // (consume the args, return a STALE bottom), shared as one helper, or the
-        // change would de-fuse. probe: design/review-2026-10-12/repro/f-select-05.gx
-        // (f-select-05)
-        | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         NodeView::Connect(c) => match own {
             OwnTargets::Bound(local) if !local(c.id) => LambdaFacts::EVENT,
@@ -736,6 +723,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         },
         NodeView::Module(m) if is_dynamic_module(m) => LambdaFacts::ASYNC,
         NodeView::Bind(_)
+        | NodeView::Never(_)
         | NodeView::Module(_)
         | NodeView::Block(_)
         | NodeView::MapQ(_)

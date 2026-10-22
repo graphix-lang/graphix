@@ -23,8 +23,8 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{
     abi::{
-        CompiledExpr, LocalKind, TAINT, const_stale_gate, is_tainted, prim_to_value_disc,
-        propagate_flags, scalar_disc, value_disc,
+        CompiledExpr, LocalKind, STALE, TAINT, const_stale_gate, is_tainted,
+        prim_to_value_disc, propagate_flags, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
@@ -1146,6 +1146,22 @@ pub(super) fn emit_bottom_placeholder_of_kind(
     let cv = emit_bottom_of_kind(cx, kind)?;
     let disc = propagate_flags(cx.b, cv.disc, governing_discs);
     Ok(CompiledExpr::new(disc, cv.payload))
+}
+
+/// `never(args)` as a value of ABI kind `kind`: its arguments run and
+/// are discarded, and it is a STALE bottom, so its fire is the
+/// enclosing select's scrutinee and consulted guards alone.
+pub(super) fn emit_never<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    args: &[Node<R, E>],
+    kind: AbiKind,
+) -> Result<CompiledExpr> {
+    let cv = emit_bottom_of_kind(cx, kind)?;
+    for arg in args.iter() {
+        let av = arg.emit_clif(cx)?;
+        super::flow::emit_discard_result(cx, arg, av)?;
+    }
+    Ok(CompiledExpr::new(cx.b.ins().bor_imm(cv.disc, STALE), cv.payload))
 }
 
 /// A fresh tainted placeholder of the given ABI kind: an owned empty

@@ -626,16 +626,6 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                 value: annotate_lambda(&b.value, &sig),
             };
             // a core trait's method runs inside a comparison or print
-            // CR claude for eric: [risk/low] The implicit #[sync] added here, together
-            // with never() being classified ASYNC (open CR f-select-05), refuses a
-            // core-trait impl that bottoms through the idiomatic never() arm: `impl Eq
-            // for T { let eq = |a, b| select a.0 { 0 => never(), n => n == b.0 } }`
-            // fails with '#[sync]: this function is async'. Yet design/traits.md's
-            // bottom-key rule exists for bottoming implementations, and the `$`
-            // spelling builds. Settle it with f-select-05, and add a never()-arm twin
-            // of traits::core_bottom_key_rule. probe:
-            // design/review-2026-10-19/repro/tests-fusion-traits-never-arm-core-impl-refused.gx
-            // (tests-fusion-traits-08)
             let dec = match (core, &m.dec) {
                 (false, dec) => dec.clone(),
                 (true, dec) => {

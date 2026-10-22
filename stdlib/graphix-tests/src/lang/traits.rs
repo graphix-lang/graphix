@@ -829,6 +829,30 @@ run!(
     ; FuseExpect::Jit
 );
 
+// The same rule with the bottom written as a `never()` arm: a pure
+// standing bottom, so the implicit `#[sync]` holds.
+run!(
+    core_bottom_key_rule_never_arm,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[T(0), T(1), T(2)]|false|true|true"),
+    "/test.gx" => r##"
+        type T = Abstract<i64>;
+        impl Ord for T {
+            let cmp = |x, y| select (x.0, y.0) {
+                (0, _) | (_, 0) => never(),
+                (a, b) if a < b => `Less,
+                (a, b) if a > b => `Greater,
+                _ => `Equal
+            }
+        };
+        impl Eq for T {
+            let eq = |x, y| select (x.0, y.0) { (0, _) | (_, 0) => never(), (a, b) => a == b }
+        };
+        let xs = array::sort(#dir: `Ascending, [T(2), T(0), T(1)]);
+        let result = "[xs]|[T(0) == T(1)]|[T(0) == T(0)]|[T(0) < T(1)]"
+    "##
+    ; FuseExpect::Jit
+);
+
 // An implementation method may be a builtin reference; the trait's
 // signature, instantiated at the target, annotates the lambda.
 run!(
