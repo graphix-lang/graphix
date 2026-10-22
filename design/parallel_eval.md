@@ -413,13 +413,11 @@ schedule, and turns serial when no split reaches `T` on both sides. A
 `SlotSite` keeps one per-slot histogram (the measured loop's total over
 its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
 is four times the lower quartile of nine latencies of handing an idle
-pool a job, measured on a thread of its own, started when a runtime
-under `Auto` is constructed (`GXHandle::start`; else at the first use,
-`cost::start_calibration`); a sample
-taken while any part is live is taken again, so forced work cannot
-inflate `T`, and one that finds the pool busy at every try keeps its
-contended latency: a pool that never goes idle raises `T`, never lowers
-it. Until it lands `Auto` forks nothing and nothing waits for it.
+pool a job, measured once per process on a thread of its own, against a pool of
+its own that nothing forks onto, as many workers as a runtime's, started when a
+runtime under `Auto` is constructed (`GXHandle::start`; else at the
+first use, `cost::start_calibration`). Until it lands `Auto` forks
+nothing and nothing waits for it.
 `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
 
 **As built (phase 5).**
@@ -753,9 +751,13 @@ wrapper entries, live activation blocks) count on the runtime's
 `Control` (`Control::invocations`, `live_self_blocks`), and so do its
 forks (`forks`) and its runs of compile tasks (`build_forks`).
 
-**The pool.** `branch::eval_pool`: one per process, shared by every
-runtime in it, `GRAPHIX_EVAL_THREADS` workers (default: the cores),
-16 MB stacks, `stacker` growing segments as everywhere. The compile
+**The pool.** `Control::eval_pool`: one per runtime, built at its first
+fork and dropped with it, `GRAPHIX_EVAL_THREADS` workers (default: the
+cores), 16 MB stacks, `stacker` growing segments as everywhere. A
+worker blocked in a join runs stolen jobs, so a shared pool would let
+one runtime's cycle wait on another's part, past its own interrupt;
+a pool per runtime keeps runtimes in one process isolated. Saturation
+(`Control::eval_saturated`) counts the runtime's own live parts. The compile
 pool's size (`RAYON_NUM_THREADS`) does not govern evaluation; the
 fuzzer sets both to two for its children.
 

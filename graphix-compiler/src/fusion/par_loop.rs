@@ -206,7 +206,7 @@ pub(crate) unsafe fn run(
             control.forked();
             let env = KERNEL_ENV.with(|c| c.get()) as usize;
             let generation = SELF_BLOCK_GEN.with(|c| c.get());
-            let live = Live::start(forked.len());
+            let live = Live::start(control, forked.len());
             branch::on_pool(control, || {
                 forked.par_iter_mut().with_max_len(1).for_each(|r| {
                     branch::as_part(control, None, &live, || {

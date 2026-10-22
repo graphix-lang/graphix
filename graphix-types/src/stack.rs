@@ -2,7 +2,7 @@ use enumflags2::bitflags;
 use std::{
     cell::Cell,
     sync::{
-        LazyLock,
+        LazyLock, OnceLock,
         atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -201,6 +201,28 @@ pub fn record_self_blocks(n: i64) {
     }
 }
 
+/// `GRAPHIX_EVAL_THREADS`, else one worker a core: the workers an
+/// evaluation pool is built with.
+pub fn eval_threads() -> usize {
+    static THREADS: LazyLock<usize> = LazyLock::new(|| {
+        std::env::var("GRAPHIX_EVAL_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map_or(1, |n| n.get())
+            })
+    });
+    *THREADS
+}
+
+/// `f` of the [`Control`] of the cycle running on this thread, `None`
+/// outside one.
+pub fn with_current_control<T>(f: impl FnOnce(Option<&Control>) -> T) -> T {
+    // SAFETY: see `current_control`.
+    f(current_control().map(|c| unsafe { &*c }))
+}
+
 /// The running cycle's [`Control`] on this thread; it outlives every
 /// segment the cycle grows.
 fn current_control() -> Option<*const Control> {
@@ -300,6 +322,11 @@ pub struct Control {
     /// Boundaries its cycles walked and skipped.
     walked: AtomicU64,
     skipped: AtomicU64,
+    /// The pool its cycles fork onto, built at the first fork: no other
+    /// runtime's parts run there, so none waits on another's.
+    pool: OnceLock<rayon::ThreadPool>,
+    /// Parts forked onto the pool and not yet finished.
+    live_parts: AtomicUsize,
 }
 
 /// How a runtime forks the independent subtrees of a cycle
@@ -392,7 +419,51 @@ impl Control {
             prune: AtomicU8::new(PruneMode::from_env() as u8),
             walked: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
+            pool: OnceLock::new(),
+            live_parts: AtomicUsize::new(0),
         }
+    }
+
+    /// This runtime's evaluation pool, built at the first call.
+    pub fn eval_pool(&self) -> &rayon::ThreadPool {
+        self.pool.get_or_init(|| {
+            let mut threads = eval_threads();
+            // a process short of address space or threads gets fewer workers
+            loop {
+                let built = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .stack_size(16 << 20)
+                    .thread_name(|i| format!("graphix-eval-{i}"))
+                    .build();
+                match built {
+                    Ok(pool) => break pool,
+                    Err(e) if threads > 1 => {
+                        log::warn!("the evaluation pool: {threads} workers: {e}");
+                        threads /= 2
+                    }
+                    Err(e) => panic!("the evaluation pool: {e}"),
+                }
+            }
+        })
+    }
+
+    /// The workers of this runtime's evaluation pool: those it has, else
+    /// those it will be built with.
+    pub fn eval_workers(&self) -> usize {
+        self.pool.get().map_or_else(eval_threads, |p| p.current_num_threads())
+    }
+
+    /// `n` parts forked onto the pool, or finished when negative.
+    pub fn add_live_parts(&self, n: isize) {
+        match n {
+            0.. => self.live_parts.fetch_add(n as usize, Ordering::Relaxed),
+            _ => self.live_parts.fetch_sub(n.unsigned_abs(), Ordering::Relaxed),
+        };
+    }
+
+    /// Whether every worker of the pool has a part to run.
+    pub fn eval_saturated(&self) -> bool {
+        self.live_parts.load(Ordering::Relaxed) >= self.eval_workers()
     }
 
     pub fn prune_mode(&self) -> PruneMode {
@@ -639,6 +710,18 @@ pub(crate) fn abort_current_control_budget() -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    // each runtime forks onto a pool of its own: no worker of one runs
+    // another's parts
+    #[test]
+    fn a_pool_per_runtime() {
+        let (a, b) = (Control::new(), Control::new());
+        assert!(!std::ptr::eq(a.eval_pool(), b.eval_pool()));
+        a.eval_pool().install(|| {
+            assert!(a.eval_pool().current_thread_index().is_some());
+            assert!(b.eval_pool().current_thread_index().is_none());
+        });
+    }
 
     #[test]
     fn budget_units() {

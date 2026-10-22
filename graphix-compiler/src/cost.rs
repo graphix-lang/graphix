@@ -2,10 +2,7 @@
 //! what a fork point measures of its children under [`ParMode::Auto`],
 //! and where it forks.
 
-use crate::{
-    ExecCtx, Node, Rt, UserEvent, analysis,
-    branch::{eval_pool, pool_idle, saturated},
-};
+use crate::{ExecCtx, Node, Rt, UserEvent, analysis, branch::saturated};
 use bytes::{Buf, BufMut};
 use graphix_types::stack::ParMode;
 use netidx_core::pack::{Pack, PackError};
@@ -107,9 +104,6 @@ pub fn start_calibration() {
     }
 }
 
-/// How many times a sample of the calibration waits for an idle pool.
-const IDLE_TRIES: usize = 500;
-
 /// Fix the fork threshold at `t` ticks for the process, in place of the
 /// measurement, unless one landed already. A tiny `t` makes every
 /// `Auto` site probe and then fork (the fuzzer's `Auto` runs).
@@ -123,23 +117,20 @@ pub fn fix_calibration(t: u64) {
 /// the job starting: the cost a fork pays when its right side is
 /// stolen.
 fn calibrate() -> Calibration {
-    let pool = eval_pool();
+    // a pool of its own, which nothing else forks onto, sized as a
+    // runtime's: how fast a worker wakes depends on how many sleep
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(graphix_types::stack::eval_threads())
+        .thread_name(|_| "graphix-par-calibrate-worker".into())
+        .build()
+        .expect("the calibration pool");
     let (tick0, start) = (ticks(), Instant::now());
     let mut wakes = [0u64; 9];
     for w in wakes.iter_mut() {
-        // a wake measures an idle pool: a sample taken while a part ran
-        // measures the part, so it is taken again, and one that never finds
-        // the pool idle keeps its last, which only raises T
-        for _ in 0..IDLE_TRIES {
-            // let the workers park
-            std::thread::sleep(Duration::from_millis(2));
-            let idle = pool_idle();
-            let t0 = ticks();
-            *w = pool.install(ticks).saturating_sub(t0);
-            if idle && pool_idle() {
-                break;
-            }
-        }
+        // let the worker park
+        std::thread::sleep(Duration::from_millis(2));
+        let t0 = ticks();
+        *w = pool.install(ticks).saturating_sub(t0);
     }
     wakes.sort_unstable();
     // contention only adds to a wake: the lower quartile is the pool's
@@ -623,7 +614,7 @@ pub(crate) const CHUNKS_PER_WORKER: usize = 16;
 pub(crate) fn forced_grain(forced: Option<u32>, n: usize) -> usize {
     match forced {
         None => 1,
-        Some(0) => n.div_ceil(crate::branch::eval_pool().current_num_threads()),
+        Some(0) => n.div_ceil(crate::branch::eval_workers()),
         Some(g) => g as usize,
     }
 }
@@ -631,7 +622,7 @@ pub(crate) fn forced_grain(forced: Option<u32>, n: usize) -> usize {
 /// The slots per range of `n` slots estimated at `est` ticks each, in
 /// at most `per_worker` ranges per worker.
 fn grain(cal: &Calibration, est: u64, n: usize, per_worker: usize) -> usize {
-    let workers = crate::branch::eval_pool().current_num_threads();
+    let workers = crate::branch::eval_workers();
     (cal.t.div_ceil(est.max(1)) as usize).max(n.div_ceil(workers * per_worker))
 }
 
@@ -972,7 +963,7 @@ mod tests {
     #[test]
     fn probe_site_decides_a_growth_in_its_cycle() {
         let cal = Calibration { t: 1 << 10, shift: 4 };
-        let workers = crate::branch::eval_pool().current_num_threads();
+        let workers = crate::branch::eval_workers();
         // items at 4T: four probes, then one per growth; the rest forks
         let mut p = ProbeSite::default();
         assert_eq!(p.probes(100), 4);

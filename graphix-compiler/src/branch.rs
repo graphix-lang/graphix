@@ -15,7 +15,9 @@ use crate::{
     typ::tvar::TaskContext,
 };
 use futures::channel::mpsc;
-use graphix_types::stack::{Control, ParMode, with_control};
+use graphix_types::stack::{
+    Control, ParMode, eval_threads, with_control, with_current_control,
+};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
@@ -27,10 +29,7 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
-    sync::{
-        LazyLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 use triomphe::Arc;
@@ -960,7 +959,7 @@ where
     let control = ctx.control;
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
-    let live = Live::start(branches.len());
+    let live = Live::start(control, branches.len());
     on_pool(control, || {
         branches.par_iter_mut().with_max_len(1).for_each(|b| {
             // a part may run on any thread of the pool
@@ -1049,7 +1048,7 @@ pub(crate) fn compile_each<R, E, P, F>(
     let control = ctx.control;
     control.build_forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
-    let live = Live::start(tasks.len());
+    let live = Live::start(control, tasks.len());
     on_pool(control, || {
         tasks.par_iter_mut().with_max_len(1).for_each(|(task, p)| {
             as_part(control, tokio.as_ref(), &live, || {
@@ -1082,7 +1081,7 @@ where
     let control = ctx.control;
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
-    let live = Live::start(2);
+    let live = Live::start(control, 2);
     let (ra, rb) = on_pool(control, || {
         rayon::join(
             || {
@@ -1126,96 +1125,55 @@ fn audit<R: Rt, E: UserEvent>(
 
 /// The process's evaluation pool: `GRAPHIX_EVAL_THREADS` threads (default
 /// one per core), shared by every runtime in the process.
-// CR claude for eric: [risk/low] Every runtime in the process forks onto this one pool.
-// A worker waiting in rayon::join runs stolen jobs while it waits, and those jobs can
-// belong to another runtime. If runtime B's part is long or wedged and a worker inside
-// runtime A's fork_join steals it, A's cycle cannot finish until B's part does.
-// GXHandle::interrupt on A does nothing there, because the stolen part polls B's
-// Control. In test processes, which run many runtimes in parallel, one wedged fixture
-// can stall unrelated ones. Decide between a pool per runtime (or no cross-runtime
-// stealing) and accepting the coupling; if it is accepted, state it in
-// design/parallel_eval.md's section on the pool for embedders that host several
-// runtimes. (x-concurrency-12)
-pub fn eval_pool() -> &'static rayon::ThreadPool {
-    static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
-        // resolved here: rayon resolves 0 through RAYON_NUM_THREADS, the
-        // compile pool's setting
-        let mut threads = std::env::var("GRAPHIX_EVAL_THREADS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism().map_or(1, |n| n.get())
-            });
-        // a process short of address space or threads gets fewer workers
-        loop {
-            let built = rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .stack_size(16 << 20)
-                .thread_name(|i| format!("graphix-eval-{i}"))
-                .build();
-            match built {
-                Ok(pool) => break pool,
-                Err(e) if threads > 1 => {
-                    log::warn!("the evaluation pool: {threads} workers: {e}");
-                    threads /= 2
-                }
-                Err(e) => panic!("the evaluation pool: {e}"),
-            }
-        }
-    });
-    &POOL
-}
-
-/// The parts forked onto the evaluation pool and not yet finished, over
-/// every runtime in the process.
-static LIVE_PARTS: AtomicUsize = AtomicUsize::new(0);
-
-/// Whether no part is forked onto the evaluation pool.
-pub(crate) fn pool_idle() -> bool {
-    LIVE_PARTS.load(Ordering::Relaxed) == 0
-}
-
-/// Whether every worker of the evaluation pool has a part to run. A
-/// fork made then only queues behind them, and a fork costs its
-/// branches and merge whether or not another worker takes a part.
+/// Whether every worker of the running cycle's evaluation pool has a
+/// part to run. A fork made then only queues behind them, and a fork
+/// costs its branches and merge whether or not another worker takes a
+/// part.
 pub(crate) fn saturated() -> bool {
-    LIVE_PARTS.load(Ordering::Relaxed) >= eval_pool().current_num_threads()
+    with_current_control(|c| c.is_some_and(Control::eval_saturated))
+}
+
+/// The workers of the running cycle's evaluation pool, else those a
+/// pool is built with.
+pub(crate) fn eval_workers() -> usize {
+    with_current_control(|c| c.map_or_else(eval_threads, Control::eval_workers))
 }
 
 /// `n` parts forked: each gives its share back when it finishes. Made
 /// on the forking thread, it carries that thread's compile context to
 /// the parts.
-pub(crate) struct Live {
+pub(crate) struct Live<'a> {
+    control: &'a Control,
     n: AtomicUsize,
     cx: TaskContext,
 }
 
-impl Live {
-    pub(crate) fn start(n: usize) -> Self {
-        LIVE_PARTS.fetch_add(n, Ordering::Relaxed);
-        Live { n: AtomicUsize::new(n), cx: TaskContext::current() }
+impl<'a> Live<'a> {
+    pub(crate) fn start(control: &'a Control, n: usize) -> Self {
+        control.add_live_parts(n as isize);
+        Live { control, n: AtomicUsize::new(n), cx: TaskContext::current() }
     }
 
     /// One part's share, given back when it drops.
-    pub(crate) fn part(&self) -> LivePart<'_> {
+    pub(crate) fn part(&self) -> LivePart<'_, 'a> {
         LivePart(self)
     }
 }
 
 /// A part's share of a [`Live`].
-pub(crate) struct LivePart<'a>(&'a Live);
+pub(crate) struct LivePart<'b, 'a>(&'b Live<'a>);
 
-impl Drop for LivePart<'_> {
+impl Drop for LivePart<'_, '_> {
     fn drop(&mut self) {
         self.0.n.fetch_sub(1, Ordering::Relaxed);
-        LIVE_PARTS.fetch_sub(1, Ordering::Relaxed);
+        self.0.control.add_live_parts(-1);
     }
 }
 
 /// A part that unwound, or never ran, gives its count back here.
-impl Drop for Live {
+impl Drop for Live<'_> {
     fn drop(&mut self) {
-        LIVE_PARTS.fetch_sub(*self.n.get_mut(), Ordering::Relaxed);
+        self.control.add_live_parts(-(*self.n.get_mut() as isize));
     }
 }
 
@@ -1223,7 +1181,7 @@ impl Drop for Live {
 /// from the runtime's own thread, so a cycle's serial work stays there,
 /// and joined in place by a fork already on the pool.
 pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
-    let pool = eval_pool();
+    let pool = control.eval_pool();
     if pool.current_thread_index().is_some() {
         return f();
     }

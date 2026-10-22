@@ -754,8 +754,9 @@ not a gap count.
 ## Parallel evaluation
 
 `design/parallel_eval.md`. A cycle's update pass forks independent
-subtrees onto the process's evaluation pool (`branch::eval_pool`,
-`GRAPHIX_EVAL_THREADS` workers): a block's runs, a call's arguments, a
+subtrees onto the runtime's own evaluation pool (`Control::eval_pool`,
+built at its first fork, `GRAPHIX_EVAL_THREADS` workers; runtimes in
+one process never run each other's parts): a block's runs, a call's arguments, a
 constructor's fields, an operator's operands, a collection's slots, a
 server's requests (`http::serve`, `sys::net` rpc: an instance of the
 handler per request, `branch::fork_instances`, forked whenever two are
