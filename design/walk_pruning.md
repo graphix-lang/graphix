@@ -55,7 +55,7 @@ argument refs and one stamp check instead of its callback's body.
 
 A `Prune` holds:
 
-- `id: PruneId`, an index into the runtime's boundary slab;
+- `boundary: BoundaryRef`, its place in the boundary tree (below);
 - `resident: TagValue`, the child's last production (a `Block` without
   catches returns its last child's production by reference today and
   keeps no resident: the statement boundary keeps it).
@@ -63,7 +63,7 @@ A `Prune` holds:
 Its update:
 
 ```
-if view == Cycle && !slab.dirty(id, cycle) { return resident.ride() }
+if view == Cycle && !boundary.dirty(cycle) { return resident.ride() }
 let tv = child.update(ctx);
 resident.set(tv)
 ```
@@ -73,16 +73,22 @@ and bottomness, so a skipped subtree delivers exactly what a walked
 subtree that nothing fed delivers under dense delivery
 (`design/dense_delivery.md`).
 
-## The slab
+## The boundary tree
 
-The boundary slab lives in the runtime beside `by_ref`:
+Each boundary is a `BoundaryRef` (`graphix-compiler/src/prune.rs`), an
+`Arc` built with its `Prune` (compile, instantiation, slot growth, image
+decode) and dropped with it, holding:
 
-- one entry per live boundary: `parent: Option<PruneId>`, `stamp`
-  (the last cycle it was marked) and `sticky: u32`;
-- allocated when a `Prune` is built (compile, instantiation, slot
-  growth, image decode), freed at its `delete`; a free list reuses ids.
+- `parent`, the enclosing boundary;
+- `stamp`, the last cycle it was marked;
+- `visited`, the last cycle a walk reached it, skipped or not.
 
-A boundary is dirty in cycle `c` iff `stamp == c` or `sticky > 0`.
+Both cycles are atomics.
+
+No runtime table: compiling makes a boundary without reaching the
+runtime, and nothing reuses one.
+
+A boundary is dirty in cycle `c` iff `stamp == c`.
 Stamps, not bits, so a cycle needs no clear pass and a mark is one
 store.
 
@@ -91,7 +97,7 @@ the first ancestor already stamped this cycle. Each mark is O(new
 ancestors), so a cycle's marking is O(boundaries marked).
 
 **Registration.** `by_ref: BindId -> [(ExprId, u32)]` becomes `BindId ->
-[(Reader, u32)]` with `Reader { root: ExprId, boundary: PruneId }`.
+[(Reader, u32)]` with `Reader { root: ExprId, boundary: Option<BoundaryRef> }`.
 `record_ref(id, top_id)` and `ref_var(id, top_id)` take a `Reader`.
 Every node that captures `top_id` to register later (RtVar, timers,
 Deref addressing, error handler binds, fs watch, db subscribe, net)
@@ -166,14 +172,14 @@ cycle runs because the publication marks it before the walk reaches it.
 `design/parallel_eval.md`. Two designs, to be measured (Eric):
 
 - **Atomic stamps.** `stamp` is an `AtomicU64` and `mark` stores
-  through to the root slab from any branch. Siblings never read what
+  through to the boundary from any branch. Siblings never read what
   another publishes (`analysis::plan_block`, `independent`), so a
   branch never marks a boundary a sibling is about to test; a mark
   inside a branch is visible to the branch's own later boundaries at
   once.
 - **Layered marks.** A branch's `ForkRt` keeps a delta set of the
   boundaries it marked this cycle; `dirty` reads the delta, then the
-  parent chain, then the root slab, as `store_get` does; the join
+  parent chain, then the boundary's own stamp, as `store_get` does; the join
   merges the delta upward in program order, as `RtOp`s replay.
 
 Both satisfy the same invariant; atomics cost a fence per mark, layered
@@ -186,7 +192,7 @@ stamps won and the layered marks are deleted (see "As built").
   register as any node does. A kernel already rides when no feeder
   triggered (`FusedKernel::update`); a skipped boundary does not reach
   it at all.
-- **Images.** `PruneId`s are not imaged. Decoding a `Prune` allocates
+- **Images.** Boundaries are not imaged. Decoding a `Prune` builds
   its boundary; decode-time registrations (`Callee::Imaged` held refs,
   `RtVar` decode, re-registered `ref_var` ids) take the decoding
   boundary's `Reader`. A lazily decoded instance body decodes into a
@@ -198,33 +204,18 @@ stamps won and the layered marks are deleted (see "As built").
 
 Pruning changes no output, so it has an exact oracle.
 
-- **`GRAPHIX_NO_PRUNE=1`** disables skipping (every `Prune` walks).
-- **`GRAPHIX_PRUNE_AUDIT=1`** walks every boundary and, where pruning
-  would have skipped one, asserts that the walk produced the ridden
-  resident and made no write, publication, registration, spawn or
-  timer (the runtime and event op counts before and after). A failure
-  names the boundary's spec: a missing mark.
-- **The fuzzer** gains `Pair::Prune`: the node-walk with pruning
-  against the node-walk without, per-cycle trace, bit for bit; and the
-  existing pairs run with pruning on.
-<!-- CR claude for eric: [test-gap/medium] No gate runs the prune audit:
-`testing::Mode::prune` is `PruneMode::from_env()`, which is `On` unless GRAPHIX_PRUNE is
-set, and nothing in the tree sets `PruneMode::Audit`. Only the fuzzer's `Pair::Prune`
-output comparison covers pruning. This section also names `GRAPHIX_NO_PRUNE`,
-`GRAPHIX_PRUNE_AUDIT`, `Control::boundaries_walked` and a slab, none of which were
-built. Decide whether `run!`'s interp mode should run under Audit, as designed here.
-Then rewrite this section and "The slab" to the build. Found by reading; not run.
-(x-doc-drift-02) -->
-<!-- 2026-10-19 claude: run!'s interp and par modes now run under PruneMode::Audit when
-GRAPHIX_PRUNE is unset (the for-claude x-prune-03 / c-prune-wake-03 asked for it;
-graphix-tests passed whole under audit first). The section's unbuilt names
-(GRAPHIX_NO_PRUNE, GRAPHIX_PRUNE_AUDIT, boundaries_walked, the slab) are untouched. -->
-<!-- 2026-10-20 claude: The 10-19 note is stale: run!'s Par mode alone runs under
-PruneMode::Audit now; Interp prunes for real, the mode Unpruned and the fuzzer's
-Pair::Prune compare against (x-prune-03). -->
-- **`run!`** runs pruned (the default); the audit runs in the plain
-  gate for the `lang` and `lib_tests` fixtures (a test helper sets it),
-  so the gate itself hunts missing marks.
+- **`GRAPHIX_PRUNE=off|on|audit`** (`PruneMode` on `Control`, `on` by
+  default): `off` walks every boundary; `audit` walks every boundary
+  and panics where one it would have skipped delivered anything but its
+  ridden resident, or published an entry that fires or differs from the
+  store. A failure names the boundary's spec: a missing mark.
+- **The fuzzer**'s `Pair::Prune` compares the pruned node-walk with
+  `Mode::Unpruned`, per-cycle trace, bit for bit; the other pairs run
+  pruned.
+- **`run!`** audits every skip in all four modes
+  (`testing::Mode::fixture_prune`, unless `GRAPHIX_PRUNE` is set), so
+  the plain gate hunts missing marks; a fixture that measures pruning
+  sets `Mode::prune` in its setup.
 - **Pins.** A runtime counter of boundaries walked and skipped
   (`Control::boundaries()`) pins the CR probes: an idle
   `array::map` of 2000 slots beside a ticking counter walks a constant
@@ -237,8 +228,8 @@ Pair::Prune compare against (x-prune-03). -->
   O(new ancestors) stamps. Every `let` publication pays the lookup.
 - A stamp check per boundary visited, and a `TagValue` resident per
   statement.
-- Slab upkeep at bind, slot growth and delete, which already walk
-  `refs`.
+- A boundary allocated per `Prune` built, at compile, bind and slot
+  growth.
 
 Measured before landing: the CR probes, the collection benches
 (`bench/collection`), the GUI suite's typecheck time (unchanged by
@@ -263,7 +254,7 @@ design), netidx-admin's milestone latency, and fuzzer throughput.
 
 **Boundaries** (`graphix-compiler/src/prune.rs`, `node/prune.rs`). A
 boundary is a `BoundaryRef`, an `Arc` holding its parent, an atomic stamp
-(the last cycle it was marked) and a sticky count; no slab, so compiling
+(the last cycle it was marked) and a visit stamp; no slab, so compiling
 makes one without reaching the runtime and an id is never reused. A
 `Prune` node wraps each block statement (`compile_block_children`, so
 module bodies and seq steps too), each select arm body and each instance
@@ -298,8 +289,9 @@ mark: they run under `Wake`.
 **Shared state.** An error handler keeps the boundaries of the nodes that
 poll it (`Catch`, `SeqGuard`: `ErrorHandler::polled_by`, released at
 delete); `raise`, `handled` and `abort` mark them, an ancestor's too where
-they move its nested count. Nothing needed `sticky` so far; the audit
-decides.
+they move its nested count. Nothing has needed to hold a boundary dirty
+across cycles (the design's `sticky`), so it was not built; the audit
+would find a node that does.
 
 **Fusion** steps into a boundary: `fusion::fuse` on a `Prune` fuses its
 child inside it (`Prune::fuse_child`), so a kernel replaces the child and
