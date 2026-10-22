@@ -48,13 +48,17 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     mem::ManuallyDrop,
-    sync::{LazyLock, OnceLock},
+    ptr,
+    sync::{
+        Arc as SArc, LazyLock, OnceLock, Weak,
+        atomic::{AtomicPtr, AtomicUsize, Ordering},
+    },
 };
 use triomphe::Arc;
 
 use super::{
     abi::{LocalKind, local_payload_ty},
-    arena::Arena,
+    arena::{Arena, Committed},
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
     lower::{
         Callees, EmittedBody, HelperFuncIds, KernelFns, SiteLayout, compile_into_function,
@@ -508,6 +512,10 @@ struct Generation {
     /// holds the record: the code refers to its constants by address,
     /// and a freed record's address can be another's.
     loaded: BTreeMap<usize, (Installed, Arc<BodyRecord>)>,
+    /// The code bytes of the records in `loaded`.
+    live: usize,
+    /// What the arena has committed.
+    committed: SArc<AtomicUsize>,
 }
 
 /// A record's function in a module, and its spill thunk's when it has
@@ -524,6 +532,21 @@ impl Drop for Generation {
         let module = unsafe { ManuallyDrop::take(&mut self.module) };
         *self.code.0.lock() = Some(module);
     }
+}
+
+/// A generation committing less than this never relocates its kernels.
+const RELOCATE_FLOOR: usize = 4 * 1024 * 1024;
+
+/// `GRAPHIX_JIT_RELOCATE=every`: every cycle's start moves every kernel
+/// into a fresh generation.
+static RELOCATE_EVERY: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("GRAPHIX_JIT_RELOCATE").is_ok_and(|v| v == "every"));
+
+/// The code bytes a record installs: its function, thunk and chunks.
+fn code_len(rec: &BodyRecord) -> usize {
+    rec.bytes.len()
+        + rec.thunk().map_or(0, |t| t.bytes.len())
+        + rec.chunks().iter().map(|c| c.bytes.len()).sum::<usize>()
 }
 
 /// The arena a generation reserves unless `GRAPHIX_JIT_ARENA` (bytes) says
@@ -552,7 +575,7 @@ static ARENA_SIZE: LazyLock<Result<usize, CompactString>> = LazyLock::new(|| {
 });
 
 impl Generation {
-    fn new(isa: &OwnedTargetIsa, arena: usize) -> Result<Self> {
+    fn new(isa: &OwnedTargetIsa, arena: usize, jit: &SArc<AtomicUsize>) -> Result<Self> {
         let _profile = profile::phase(Phase::JitInit);
         let mut builder = JITBuilder::with_isa(isa.clone(), default_libcall_names());
         // One contiguous reservation: colocated (Linkage::Local) calls use a
@@ -580,8 +603,10 @@ impl Generation {
         // arena::tests::a_reservation_commits_only_what_is_allocated (Windows only),
         // the other arena tests, graphix-shell jit_arena_rotation and jit_unavailable
         // (run on the VM too). UPSTREAM.md has the region/cranelift-jit entry.
+        let committed = SArc::new(AtomicUsize::new(0));
+        let counted = Committed { generation: committed.clone(), jit: jit.clone() };
         builder.memory_provider(Box::new(
-            Arena::new(arena)
+            Arena::new(arena, counted)
                 .map_err(|e| anyhow!("jit arena reservation failed: {e}"))?,
         ));
         // Helpers resolve by pointer under the registry's symbol name, never
@@ -607,7 +632,15 @@ impl Generation {
             symbols,
             symbol_counter: 0,
             loaded: BTreeMap::new(),
+            live: 0,
+            committed,
         })
+    }
+
+    /// Whether most of what the arena committed is code nothing reaches.
+    fn mostly_dead(&self) -> bool {
+        let committed = self.committed.load(Ordering::Relaxed);
+        committed >= RELOCATE_FLOOR && self.live * 4 < committed
     }
 
     /// Drop the records only this generation holds: no kernel, cache or
@@ -615,11 +648,18 @@ impl Generation {
     /// once it has.
     fn sweep(&mut self) {
         loop {
-            let before = self.loaded.len();
-            self.loaded.retain(|_, (_, rec)| Arc::count(rec) > 1);
-            if self.loaded.len() == before {
+            let mut freed = 0;
+            self.loaded.retain(|_, (_, rec)| {
+                let held = Arc::count(rec) > 1;
+                if !held {
+                    freed += code_len(rec);
+                }
+                held
+            });
+            if freed == 0 {
                 break;
             }
+            self.live -= freed;
         }
     }
 
@@ -669,6 +709,7 @@ impl Generation {
         }
         self.define_record(rec, id, thunk, &chunks, id, &callees)?;
         let installed = Installed { id, thunk };
+        self.live += code_len(rec);
         self.loaded.insert(key, (installed, rec.clone()));
         Ok(installed)
     }
@@ -818,7 +859,7 @@ fn maybe_dump_clif(func: &Function, label: &str) {
 /// when the region is emitted, the entry once its pass links.
 #[derive(Clone)]
 pub struct WrappedKernel {
-    entry: Arc<OnceLock<Entry>>,
+    entry: SArc<KernelEntry>,
     /// Per-instance state words the root body claimed. The runtime
     /// `FusedKernel` passes a zeroed buffer of this size in wire slot 1.
     pub(crate) state_words: usize,
@@ -878,40 +919,57 @@ impl WrappedKernel {
     }
 }
 
-/// A linked region's wrapper.
-struct Entry {
-    fn_ptr: *const u8,
-    /// The code `fn_ptr` and everything it calls live in.
-    _code: Arc<CodeOwner>,
-    /// The wrapper's record, and through it the region's bodies: what
-    /// an image writes for this kernel.
-    wrapper: Arc<BodyRecord>,
+/// A region's entry point: placed when its pass links, moved by a
+/// relocation at a cycle's start (`design/jit_memory.md`).
+pub(crate) struct KernelEntry {
+    /// The wrapper's code; null until the pass links.
+    fn_ptr: AtomicPtr<u8>,
+    /// The generation `fn_ptr` lives in, kept alive while it does.
+    code: Mutex<Option<Arc<CodeOwner>>>,
+    /// The wrapper's record, and through it the region's bodies: what an
+    /// image writes for this kernel and a relocation installs.
+    wrapper: OnceLock<Arc<BodyRecord>>,
 }
 
-// SAFETY: `fn_ptr` points into `code`, which it keeps alive; the code is
-// immutable once finalized.
-unsafe impl Send for Entry {}
-unsafe impl Sync for Entry {}
+impl KernelEntry {
+    fn new() -> SArc<Self> {
+        SArc::new(Self {
+            fn_ptr: AtomicPtr::new(ptr::null_mut()),
+            code: Mutex::new(None),
+            wrapper: OnceLock::new(),
+        })
+    }
+
+    /// Point the kernel at `fn_ptr` in `code`, at its link or a move.
+    fn place(&self, fn_ptr: *const u8, code: Arc<CodeOwner>) {
+        let old = self.code.lock().replace(code);
+        self.fn_ptr.store(fn_ptr.cast_mut(), Ordering::Release);
+        drop(old)
+    }
+
+    fn lives_in(&self, code: &Arc<CodeOwner>) -> bool {
+        self.code.lock().as_ref().is_some_and(|c| Arc::ptr_eq(c, code))
+    }
+}
 
 /// The uniform Rust-side signature the wrapper presents.
 pub(crate) type WrapperFn = unsafe extern "C" fn(args: *const u64, out: *mut u64);
 
 impl WrappedKernel {
-    fn entry(&self) -> &Entry {
-        self.entry.get().expect("a kernel runs after its fusion pass links")
-    }
-
-    /// The wrapper entry point.
+    /// The wrapper entry point, read at each call: a relocation moves it
+    /// between cycles.
     ///
     /// # Safety
     /// Callers pass the `(args, out)` layout of the kernel's ABI.
     pub(crate) unsafe fn fn_ptr(&self) -> WrapperFn {
-        unsafe { std::mem::transmute(self.entry().fn_ptr) }
+        let f = self.entry.fn_ptr.load(Ordering::Acquire);
+        assert!(!f.is_null(), "a kernel runs after its fusion pass links");
+        unsafe { std::mem::transmute::<*mut u8, WrapperFn>(f) }
     }
 
     /// The wrapper's record.
     pub(crate) fn wrapper(&self) -> &Arc<BodyRecord> {
-        &self.entry().wrapper
+        self.entry.wrapper.get().expect("a kernel's wrapper is recorded at its link")
     }
 }
 
@@ -942,7 +1000,7 @@ enum PendingOf {
         chunks: Vec<ChunkFn>,
     },
     /// A region's wrapper, and where its entry goes.
-    Wrapper { entry: Arc<OnceLock<Entry>> },
+    Wrapper { entry: SArc<KernelEntry> },
 }
 
 /// The emission caches, layered like [`Names`]: lambda kernel bodies by
@@ -1387,13 +1445,30 @@ pub struct Jit {
     // finalized page is never written again) and cranelift's per-function declarations,
     // ~6KB per compile in all; it returns only when the generation retires, and a
     // retired generation stays while any kernel installed in it lives.
+    // 2026-10-22 claude: Relocation built (design/jit_memory.md): a kernel's entry is a
+    // movable KernelEntry; a link that retired a generation or left the current one
+    // mostly dead (4MB committed, under a quarter live) marks, and GX::do_cycle's start
+    // (FusionCtx::relocate_kernels) reinstalls every live kernel outside the current
+    // generation from its record and repoints it, so the old module and its arena drop.
+    // Pins: jit_retention.rs live_kernels_leave_dead_generations (a fused program
+    // answers through 2500 compiles; peak committed < 8MB, ~10MB and no move with the
+    // mark off), jit_arena_rotation.rs (survivors leave an exhausted arena; kernels
+    // moved every cycle compute the same). The graphix-tests suite passes under
+    // GRAPHIX_JIT_RELOCATE=every (9759/0). Soak: a GRAPHIX_JIT_RELOCATE=every lane in
+    // the next combined campaign.
     records: BTreeMap<FuncId, Recorded>,
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
     in_flight: Option<InFlight>,
     /// Wrappers an image decode restored, installed together when its
     /// session ends ([`Self::install_restored`]).
-    restored: Vec<(Arc<BodyRecord>, Arc<OnceLock<Entry>>)>,
+    restored: Vec<(Arc<BodyRecord>, SArc<KernelEntry>)>,
+    /// Every entry placed, for a relocation to find the live ones.
+    entries: Vec<Weak<KernelEntry>>,
+    /// A relocation is due at the next cycle's start.
+    relocate: bool,
+    /// What every live generation's arena has committed.
+    committed: SArc<AtomicUsize>,
 }
 
 /// A batch whose functions compile on threads of their own.
@@ -1412,7 +1487,8 @@ impl Jit {
     pub fn new() -> Result<Self> {
         let shared = Arc::new(EmitShared::new()?);
         let arena = *ARENA_SIZE.as_ref().map_err(|e| anyhow!("{e}"))?;
-        let generation = Generation::new(&shared.isa, arena)?;
+        let committed = SArc::new(AtomicUsize::new(0));
+        let generation = Generation::new(&shared.isa, arena, &committed)?;
         Ok(Self {
             shared,
             generation,
@@ -1421,6 +1497,9 @@ impl Jit {
             records: BTreeMap::new(),
             in_flight: None,
             restored: Vec::new(),
+            entries: Vec::new(),
+            relocate: false,
+            committed,
         })
     }
 
@@ -1504,7 +1583,7 @@ impl Jit {
     ) -> Result<()> {
         let mut compiled = compiled.into_iter();
         let mut next = || compiled.next().expect("one result per function");
-        let mut regions: Vec<(Arc<BodyRecord>, Arc<OnceLock<Entry>>)> = Vec::new();
+        let mut regions: Vec<(Arc<BodyRecord>, SArc<KernelEntry>)> = Vec::new();
         // a region's parent is never cached: only its wrapper names it
         let mut parents: LPooled<Vec<FuncId>> = LPooled::take();
         for p in pending {
@@ -1637,9 +1716,10 @@ impl Jit {
             regions.iter().map(|(w, _)| w.clone()).collect();
         let (ptrs, code) = self.install(&wrappers)?;
         for ((wrapper, entry), fn_ptr) in regions.into_iter().zip(ptrs) {
-            let linked =
-                entry.set(Entry { fn_ptr, _code: code.clone(), wrapper }).is_ok();
+            let linked = entry.wrapper.set(wrapper).is_ok();
             debug_assert!(linked, "a region links once");
+            entry.place(fn_ptr, code.clone());
+            self.entries.push(SArc::downgrade(&entry));
         }
         Ok(())
     }
@@ -1681,10 +1761,11 @@ impl Jit {
     ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
         match self.generation.install(wrappers) {
             Ok(p) => Ok((p, self.generation.code.clone())),
-            Err(e) => match Generation::new(&self.shared.isa, arena) {
+            Err(e) => match Generation::new(&self.shared.isa, arena, &self.committed) {
                 Ok(g) => {
                     self.generation = g;
                     self.retired += 1;
+                    self.relocate = true;
                     Err(e)
                 }
                 Err(fresh) => {
@@ -1706,6 +1787,48 @@ impl Jit {
             self.records.remove(id);
         }
         self.generation.sweep();
+        self.entries.retain(|e| e.strong_count() > 0);
+        self.relocate |= self.generation.mostly_dead();
+    }
+
+    /// What every live generation's arena has committed.
+    pub(crate) fn committed(&self) -> usize {
+        self.committed.load(Ordering::Relaxed)
+    }
+
+    /// Move every live kernel that is not in the current generation into
+    /// it, retiring the current one first when it is mostly dead; a
+    /// retired generation is freed with its last kernel. Only where no
+    /// code of this JIT runs: a cycle's start. Returns how many moved.
+    pub(crate) fn relocate(&mut self) -> Result<usize> {
+        if !(self.relocate || *RELOCATE_EVERY) {
+            return Ok(0);
+        }
+        self.relocate = false;
+        debug_assert!(self.in_flight.is_none(), "a batch compiling at a cycle's start");
+        if *RELOCATE_EVERY || self.generation.mostly_dead() {
+            self.generation =
+                Generation::new(&self.shared.isa, self.arena, &self.committed)?;
+            self.retired += 1;
+        }
+        self.entries.retain(|e| e.strong_count() > 0);
+        let current = self.generation.code.clone();
+        let moving: LPooled<Vec<SArc<KernelEntry>>> = self
+            .entries
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|e| e.wrapper.get().is_some() && !e.lives_in(&current))
+            .collect();
+        drop(current);
+        for batch in moving.chunks(super::super::LINK_BATCH) {
+            let wrappers: LPooled<Vec<Arc<BodyRecord>>> =
+                batch.iter().filter_map(|e| e.wrapper.get().cloned()).collect();
+            let (ptrs, code) = self.install(&wrappers)?;
+            for (entry, fn_ptr) in batch.iter().zip(ptrs) {
+                entry.place(fn_ptr, code.clone());
+            }
+        }
+        Ok(moving.len())
     }
 
     /// The wrapped kernel a region restored from an image dispatches,
@@ -1719,7 +1842,7 @@ impl Jit {
         state_self_blocks: Vec<kernel_abi::SelfBlock>,
         meets_abstract: bool,
     ) -> Result<WrappedKernel> {
-        let entry = Arc::new(OnceLock::new());
+        let entry = KernelEntry::new();
         self.restored.push((wrapper.clone(), entry.clone()));
         Ok(WrappedKernel {
             entry,
@@ -1753,11 +1876,9 @@ impl Jit {
                 batch.iter().map(|(r, _)| r.clone()).collect();
             let (ptrs, code) = self.install(&records)?;
             for ((wrapper, entry), fn_ptr) in batch.iter().zip(ptrs) {
-                let _ = entry.set(Entry {
-                    fn_ptr,
-                    _code: code.clone(),
-                    wrapper: wrapper.clone(),
-                });
+                let _ = entry.wrapper.set(wrapper.clone());
+                entry.place(fn_ptr, code.clone());
+                self.entries.push(SArc::downgrade(entry));
             }
         }
         Ok(())
@@ -2038,7 +2159,7 @@ fn compile_region_inner(
     );
     // Phase 3: the parent's wrapper.
     let (wrapper_id, func) = emit_wrapper(em, kernel, parent_fid)?;
-    let entry = Arc::new(OnceLock::new());
+    let entry = KernelEntry::new();
     em.pending.push(Pending {
         id: wrapper_id,
         func,

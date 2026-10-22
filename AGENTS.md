@@ -898,11 +898,18 @@ node graph IS the IR — there is no parallel typed IR
   on exhaustion the link reinstalls its records in a fresh one, twice the
 size while a fresh one cannot hold the batch; a
   generation's code is freed when it and every kernel installed into it
-  have dropped (each `WrappedKernel` holds its code). A deleted
-  definition's kernels, every body a layout binds to them, and the
-  records no kernel reaches are forgotten at the next link
-  (`FusionCtx::link`); only a cached body's ids stay named. Pin:
-  `graphix-rt/tests/jit_retention.rs`. Pin:
+  have dropped (each `WrappedKernel`'s `KernelEntry` holds its code). A
+  deleted definition's kernels, every body a layout binds to them, and
+  the records no kernel reaches are forgotten at the next link
+  (`FusionCtx::link`); only a cached body's ids stay named. A link that
+  retired a generation, or left the current one mostly dead (4MB
+  committed, under a quarter live), marks a relocation: at the next
+  cycle's start (`GX::do_cycle`, `FusionCtx::relocate_kernels`) every
+  live kernel outside the current generation is reinstalled there from
+  its record and its entry repointed, so the old module drops. No JIT
+  code runs outside a cycle's update pass, and a kernel reads its entry
+  at each call (`design/jit_memory.md`). Pins:
+  `graphix-rt/tests/jit_retention.rs`, `jit_arena_rotation.rs`. Pin:
   `graphix-shell/tests/jit_arena_rotation.rs`. A two-word value never
   crosses the helper seam by value: a pointer in, an out-pointer back,
   through `HelperRefs::call` alone (`design/helper_abi_portability.md`),
@@ -1300,6 +1307,7 @@ compile, so unscoped prints are gigabytes.
 | `GXDBG_TYPEREF=1` | scope table dump on an "undefined type" refusal |
 | `GXDBG_LETBIND=1` / `GXDBG_REF=1` | let publication decisions / every read (delivered, standing, miss) |
 | `GRAPHIX_ELAB_AUDIT=1` / `=bt` | each elaboration refusal of what the check accepted (a type-system bug), with a backtrace |
+| `GRAPHIX_JIT_RELOCATE=every` | every cycle's start moves every live kernel into a fresh JIT generation (stress for relocation) |
 | `GRAPHIX_JIT_ARENA=<bytes>` | the arena a JIT generation reserves (256MB by default; outside a page..2GiB, fusion is unavailable) |
 | `GRAPHIX_DISABLE_PACKED_AST=1` | module resolution parses source even where a packed AST is available |
 | `GRAPHIX_FUSION_DISCOVERY=1` | `run!` asserts no `FuseExpect` and prints each fixture's observed level (`FUSEMAP`) |

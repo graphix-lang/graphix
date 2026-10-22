@@ -1,7 +1,6 @@
 # JIT memory
 
-Status: eviction built 2026-10-22 (f-jit-04); relocation designed
-2026-10-22, not built
+Status: eviction and relocation built 2026-10-22 (f-jit-04)
 Pins: `graphix-rt/tests/jit_retention.rs`,
 `graphix-shell/tests/jit_arena_rotation.rs`
 
@@ -52,7 +51,7 @@ module drops. Today a module drops when its arena is exhausted and every
 kernel installed in it has dropped, so one surviving kernel pins it for
 good.
 
-## Relocation (designed)
+## Relocation
 
 A kernel's entry becomes movable. A generation that is mostly dead
 retires, and its surviving kernels are reinstalled into the current
@@ -62,7 +61,7 @@ and the whole module drops: code, arena and cranelift's bookkeeping.
 ### When it is safe
 
 A relocation runs at the start of a cycle, before any node updates
-(`GX::do_cycle`, before `apply_deferred`). Nothing runs then:
+(`GX::do_cycle` calls `FusionCtx::relocate_kernels` first). Nothing runs then:
 
 - kernels run only inside a cycle's update pass;
 - the evaluation pool's parts of a cycle join before the cycle ends;
@@ -81,37 +80,30 @@ hook run from outside a cycle.
 
 ### The entry
 
-```rust
-pub(crate) struct KernelEntry {
-    /// The wrapper's code; null until its pass links.
-    fn_ptr: AtomicPtr<u8>,
-    /// The generation `fn_ptr` lives in.
-    code: Mutex<Option<Arc<CodeOwner>>>,
-    /// What the kernel installs from, wherever it lives.
-    wrapper: OnceLock<triomphe::Arc<BodyRecord>>,
-}
-```
+`KernelEntry` (`emit/jit.rs`) holds the wrapper's code pointer (an
+`AtomicPtr`, null until the pass links), the `CodeOwner` of the
+generation it lives in, and the wrapper's record, which is what a
+relocation installs.
 
 - A `WrappedKernel` holds a `std::sync::Arc<KernelEntry>`, which is
   shared by its clones (collection slots take the prototype's).
-- The hot path is one `Acquire` load of `fn_ptr`, as cheap as today's
-  `OnceLock` read.
+- The hot path is one `Acquire` load of the pointer.
 - The `Jit` keeps a `std::sync::Weak` to every entry it set, pruned of
   dead ones at each link. That is how a relocation finds the
   survivors.
 
 ### The mark
 
-After the link and sweep, `FusionCtx::link` marks a relocation when
-either holds:
+A relocation is marked when either holds:
 
-- a retired generation still has live entries. Arena exhaustion
-  already retires the current generation mid-link and installs the
-  batch in a fresh one. The old one's survivors now move at the next
-  cycle start instead of pinning it.
+- a generation retired. Arena exhaustion retires the current
+  generation mid-link and installs the batch in a fresh one
+  (`Jit::try_install`); the old one's survivors move at the next cycle
+  start instead of pinning it.
 - the current generation is mostly dead: its committed arena is at
   least 4MB and its live code (the code bytes of its `loaded` records,
-  kept up to date at load and sweep) is under a quarter of that.
+  kept up to date at load and sweep) is under a quarter of that. This
+  is checked after each link's sweep (`Jit::forget`).
 
 The quarter keeps the cost amortized. A relocation copies the live
 bytes, and at most a quarter of what was committed is live, so every
@@ -120,8 +112,7 @@ program from ever relocating.
 
 ### The move
 
-`ExecState` gets one call, `relocate_kernels`, which `do_cycle` makes
-first when the mark is set:
+`Jit::relocate`, when the mark is set:
 
 1. If the current generation is mostly dead, retire it and start a
    fresh one of the configured size.
@@ -140,19 +131,21 @@ If an install fails, its entries keep their old code, which their
 code stays valid.
 
 `FusionStats` counts relocations and the kernels moved, and snapshots
-the committed arena. `GRAPHIX_JIT_RELOCATE=every` marks at every link
-and relocates every generation at every cycle start, for stress runs.
+the committed arena. `GRAPHIX_JIT_RELOCATE=every` retires the current
+generation and moves every live kernel at every cycle start, for
+stress runs.
 
 ### Tests
 
-- `jit_retention.rs` keeps a long-lived fused program running while it
-  compiles and drops a few thousand times. It asserts that the
-  committed arena stays bounded, that relocations happened, and that
-  the program's value is right after each one.
+- `jit_retention.rs` (`live_kernels_leave_dead_generations`) keeps a
+  fused program answering through 2500 compiles of others. It asserts
+  that relocations happened, that the committed arena peaks under 8MB
+  (about 10MB unrelocated), and that the program's value is right
+  throughout.
 - `jit_arena_rotation.rs`: after an exhaustion, the old generation's
-  survivors move at the next cycle, and the program's total is still
-  right.
-- The whole `run!` suite under `GRAPHIX_JIT_RELOCATE=every`, once, and
-  as a fuzz lane in the next soak. Every kernel moves every cycle, so
-  any state or address that depends on where the code lives shows up
-  as a divergence.
+  survivors move at the next cycle and the total is still right; and a
+  multi-cycle program, a loop's slot state included, answers the same
+  with every kernel moved every cycle.
+- `GRAPHIX_JIT_RELOCATE=every` is a stress mode for the whole `run!`
+  suite and for a soak lane: every kernel moves every cycle, so any
+  state or address that depends on where the code lives diverges.

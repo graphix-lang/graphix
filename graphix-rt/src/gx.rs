@@ -485,6 +485,8 @@ impl<X: GXExt> GX<X> {
             !self.ctx.view().deferred_pending(),
             "compiled references left unreplayed"
         );
+        // no kernel runs between cycles
+        self.ctx.fusion.relocate_kernels();
         self.ctx.view().apply_deferred();
         // A variable takes one delivery a cycle: what waited lands first,
         // each variable's oldest write, then this cycle's input, which waits

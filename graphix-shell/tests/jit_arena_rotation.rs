@@ -1,10 +1,11 @@
 //! A full JIT arena retires its module and the link reinstalls in a
 //! fresh one: with an arena that holds one link's regions but not two,
 //! the program still fuses and runs to its value, and the rotation says
-//! so.
+//! so. The retired module's kernels move to the fresh one at the next
+//! cycle's start (`design/jit_memory.md`).
 
 mod common;
-use common::{CACHE_LOG, Ran, graphix, program_image};
+use common::{Ran, graphix, program_image};
 use std::path::Path;
 
 /// Regions for two links.
@@ -29,10 +30,16 @@ fn program(calling: bool) -> String {
     s
 }
 
+/// What the image cache does, and every relocation.
+const LOG: (&str, &str) =
+    ("RUST_LOG", "warn,graphix_shell::cache=info,graphix_compiler::fusion=info");
+
+const MOVED: &str = "JIT kernels out of retired generations";
+
 /// Run `program` with an arena of `arena` bytes, caching its image under
 /// `dir`; it computed its total when it succeeded.
 fn run(dir: &Path, program: &str, arena: &str) -> Ran {
-    graphix(dir, program, &[], &[CACHE_LOG, ("GRAPHIX_JIT_ARENA", arena)])
+    graphix(dir, program, &[], &[LOG, ("GRAPHIX_JIT_ARENA", arena)])
 }
 
 fn arena_rotates(calling: bool) {
@@ -56,6 +63,7 @@ fn arena_rotates(calling: bool) {
         cold_log.contains("JIT code arena exhausted: retired generation"),
         "a 192KB arena never rotated:\n{cold_log}"
     );
+    assert!(cold_log.contains(MOVED), "the retired kernels never moved:\n{cold_log}");
     // the warm start installs the restored regions into the same arena
     assert!(
         warm.status.success(),
@@ -110,4 +118,27 @@ fn unbuildable_jit_runs_unfused() {
     assert!(ran.status.success(), "{}", ran.stderr);
     // the arena cannot be reserved, or the test proves nothing
     assert!(ran.log.contains("fusion is unavailable"), "{}", ran.log);
+}
+
+/// Every kernel moves to a fresh generation at every cycle's start, and
+/// the program's kernels, a loop's slot state included, answer as before.
+#[test]
+fn kernels_moved_every_cycle_compute_the_same() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = "let clock = sys::time::timer(duration:1.ms, true);\n\
+         let n = 0;\n\
+         n <- clock ~ n + 1;\n\
+         let f = |a: i64, i: i64| a * i + 1;\n\
+         let r = #[native] f(n, 7);\n\
+         let xs = array::init(n % 5 + 1, |i| i);\n\
+         let s = #[native] array::fold(array::map(xs, |x| x * n), 0, |a, x| a + x);\n\
+         sys::exit(select (n, r, s) { (33, 232, 198) => 0, (33, _, _) => 1, _ => never() })\n";
+    let env = [LOG, ("GRAPHIX_JIT_RELOCATE", "every")];
+    let ran = graphix(dir.path(), program, &["--no-cache"], &env);
+    assert!(ran.status.success(), "{}\n{}", ran.stderr, ran.log);
+    assert!(
+        ran.log.matches(MOVED).count() >= 30,
+        "the kernels did not move every cycle:\n{}",
+        ran.log
+    );
 }

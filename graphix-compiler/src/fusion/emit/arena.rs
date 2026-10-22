@@ -5,7 +5,13 @@ use anyhow::anyhow;
 use cranelift_jit::{BranchProtection, JITMemoryKind, JITMemoryProvider};
 use cranelift_module::{ModuleError, ModuleResult};
 use region::Protection;
-use std::io;
+use std::{
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use wasmtime_internal_jit_icache_coherence::{clear_cache, pipeline_flush_mt};
 
 fn icache(e: impl std::fmt::Display) -> ModuleError {
@@ -37,21 +43,55 @@ impl Segment {
     }
 }
 
+/// What an arena has committed, counted where its owners read it: its
+/// generation's count, and its JIT's across every live generation.
+#[derive(Clone)]
+pub(super) struct Committed {
+    pub(super) generation: Arc<AtomicUsize>,
+    pub(super) jit: Arc<AtomicUsize>,
+}
+
+impl Committed {
+    fn add(&self, n: usize) {
+        self.generation.fetch_add(n, Ordering::Relaxed);
+        self.jit.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn sub(&self, n: usize) {
+        self.generation.fetch_sub(n, Ordering::Relaxed);
+        self.jit.fetch_sub(n, Ordering::Relaxed);
+    }
+}
+
 pub(super) struct Arena {
     /// None once freed.
     reservation: Option<os::Reservation>,
     size: usize,
     committed: usize,
+    counted: Committed,
     /// The segments not finalized yet, in address order; the last one
     /// ends at `committed`. A finalized segment is never written again.
     open: Vec<Segment>,
 }
 
 impl Arena {
-    pub(super) fn new(size: usize) -> io::Result<Self> {
+    pub(super) fn new(size: usize, counted: Committed) -> io::Result<Self> {
         let size = align_up(size, region::page::size());
         let reservation = Some(os::Reservation::new(size)?);
-        Ok(Self { reservation, size, committed: 0, open: Vec::new() })
+        Ok(Self { reservation, size, committed: 0, counted, open: Vec::new() })
+    }
+
+    fn release(&mut self) {
+        self.open.clear();
+        if self.reservation.take().is_some() {
+            self.counted.sub(self.committed);
+        }
+    }
+}
+
+impl Drop for Arena {
+    fn drop(&mut self) {
+        self.release()
     }
 }
 
@@ -98,6 +138,7 @@ impl JITMemoryProvider for Arena {
                     }),
                 }
                 self.committed += grow;
+                self.counted.add(grow);
                 self.open.len() - 1
             }
         };
@@ -107,8 +148,7 @@ impl JITMemoryProvider for Arena {
     }
 
     unsafe fn free_memory(&mut self) {
-        self.open.clear();
-        self.reservation = None;
+        self.release()
     }
 
     fn finalize(&mut self, branch_protection: BranchProtection) -> ModuleResult<()> {
@@ -225,9 +265,25 @@ mod os {
 mod tests {
     use super::*;
 
+    fn counted() -> Committed {
+        Committed { generation: Arc::default(), jit: Arc::default() }
+    }
+
+    #[test]
+    fn released_memory_is_uncounted() {
+        let c = counted();
+        let mut arena = Arena::new(1 << 20, c.clone()).unwrap();
+        arena.allocate(5000, 8, JITMemoryKind::Writable).unwrap();
+        let page = region::page::size();
+        assert_eq!(c.jit.load(Ordering::Relaxed), align_up(5000, page));
+        drop(arena);
+        assert_eq!(c.jit.load(Ordering::Relaxed), 0);
+        assert_eq!(c.generation.load(Ordering::Relaxed), 0);
+    }
+
     #[test]
     fn allocations_are_aligned_and_disjoint() {
-        let mut arena = Arena::new(1 << 20).unwrap();
+        let mut arena = Arena::new(1 << 20, counted()).unwrap();
         let mut last: Option<(usize, usize)> = None;
         for read_only in [false, true, false] {
             for log2 in 0..8 {
@@ -251,7 +307,7 @@ mod tests {
 
     #[test]
     fn a_finalized_segment_is_never_written_again() {
-        let mut arena = Arena::new(1 << 20).unwrap();
+        let mut arena = Arena::new(1 << 20, counted()).unwrap();
         let a = arena.allocate(8, 8, JITMemoryKind::ReadOnly).unwrap();
         arena.finalize(BranchProtection::None).unwrap();
         let b = arena.allocate(8, 8, JITMemoryKind::ReadOnly).unwrap();
@@ -265,7 +321,7 @@ mod tests {
 
     #[test]
     fn an_allocation_past_the_reservation_fails() {
-        let mut arena = Arena::new(1 << 20).unwrap();
+        let mut arena = Arena::new(1 << 20, counted()).unwrap();
         arena.allocate(900_000, 1, JITMemoryKind::Writable).unwrap();
         arena.allocate(200_000, 1, JITMemoryKind::Writable).unwrap_err();
         unsafe { arena.free_memory() };
@@ -292,7 +348,7 @@ mod tests {
         }
         let before = private_bytes();
         let mut arenas: Vec<Arena> =
-            (0..64).map(|_| Arena::new(256 << 20).unwrap()).collect();
+            (0..64).map(|_| Arena::new(256 << 20, counted()).unwrap()).collect();
         for a in &mut arenas {
             a.allocate(4096, 16, JITMemoryKind::Executable).unwrap();
         }

@@ -165,11 +165,17 @@ pub struct FusionStats {
     /// one, and its ~256MB arena is freed when the last kernel compiled
     /// into it drops.
     pub jit_generations: usize,
+    /// Cycle starts that moved live kernels out of a retired generation
+    /// ([`FusionCtx::relocate_kernels`]), and the kernels they moved.
+    pub jit_relocations: usize,
+    pub jit_kernels_moved: usize,
     /// What the JIT holds now, not a count across compiles: its records,
     /// cached bodies, layouts, kernel signatures and names
     /// ([`FusionCtx::stats`]). Code that was deleted holds none of it
     /// after the next link.
     pub retained: usize,
+    /// The bytes every live generation's arena has committed now.
+    pub jit_committed: usize,
 }
 
 impl FusionStats {
@@ -181,13 +187,18 @@ impl FusionStats {
             rejected_before_emit,
             failed,
             jit_generations,
+            jit_relocations,
+            jit_kernels_moved,
             retained: _,
+            jit_committed: _,
         } = other;
         self.attempted += attempted;
         self.fused += fused;
         self.rejected_before_emit += rejected_before_emit;
         self.failed.extend(failed);
         self.jit_generations += jit_generations;
+        self.jit_relocations += jit_relocations;
+        self.jit_kernels_moved += jit_kernels_moved;
     }
 
     fn record_failure(&mut self, spec: &Expr, reason: &str) {
@@ -608,13 +619,33 @@ impl FusionCtx {
 
     /// The outcome counters, and what the JIT retains now.
     pub fn stats(&self) -> FusionStats {
-        let retained = match (&*self.emission.lock(), &*self.jit.lock()) {
+        let (retained, jit_committed) = match (&*self.emission.lock(), &*self.jit.lock())
+        {
             (EmissionSlot::Root(Some(em)), JitSlot::Built(jit)) => {
-                em.retained() + jit.retained()
+                (em.retained() + jit.retained(), jit.committed())
             }
-            _ => 0,
+            _ => (0, 0),
         };
-        FusionStats { retained, ..self.stats.clone() }
+        FusionStats { retained, jit_committed, ..self.stats.clone() }
+    }
+
+    /// Move the live kernels out of the generations a link marked
+    /// (`design/jit_memory.md`). The runtime calls this at a cycle's
+    /// start, where no kernel of this context runs.
+    pub fn relocate_kernels(&mut self) {
+        let mut jit = self.jit.lock();
+        let JitSlot::Built(jit) = &mut *jit else { return };
+        let retired = jit.retired();
+        match jit.relocate() {
+            Ok(0) => (),
+            Ok(moved) => {
+                log::info!("moved {moved} JIT kernels out of retired generations");
+                self.stats.jit_relocations += 1;
+                self.stats.jit_kernels_moved += moved;
+            }
+            Err(e) => log::warn!("relocating JIT kernels: {e:#}"),
+        }
+        self.stats.jit_generations += jit.retired() - retired;
     }
 
     /// The definition `id` was deleted: the next link forgets its kernels.
