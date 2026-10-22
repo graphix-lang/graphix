@@ -165,13 +165,24 @@ pub struct FusionStats {
     /// one, and its ~256MB arena is freed when the last kernel compiled
     /// into it drops.
     pub jit_generations: usize,
+    /// What the JIT holds now, not a count across compiles: its records,
+    /// cached bodies, layouts, kernel signatures and names
+    /// ([`FusionCtx::stats`]). Code that was deleted holds none of it
+    /// after the next link.
+    pub retained: usize,
 }
 
 impl FusionStats {
     /// Add a compile task's counts after this one's.
     fn join(&mut self, other: Self) {
-        let Self { attempted, fused, rejected_before_emit, failed, jit_generations } =
-            other;
+        let Self {
+            attempted,
+            fused,
+            rejected_before_emit,
+            failed,
+            jit_generations,
+            retained: _,
+        } = other;
         self.attempted += attempted;
         self.fused += fused;
         self.rejected_before_emit += rejected_before_emit;
@@ -446,6 +457,8 @@ pub struct FusionCtx {
     pub(crate) top_id: Option<ExprId>,
     /// The collection prototype or slot walk in progress, if any.
     pub(crate) share: Option<share::Share>,
+    /// Definitions deleted since the last link, whose kernels it forgets.
+    dead: Vec<LambdaId>,
 }
 
 impl FusionCtx {
@@ -459,11 +472,13 @@ impl FusionCtx {
             stats: FusionStats::default(),
             top_id: self.top_id,
             share: None,
+            dead: Vec::new(),
         }
     }
 
-    pub(crate) fn join(&mut self, fork: Self) {
+    pub(crate) fn join(&mut self, mut fork: Self) {
         self.stats.join(fork.stats);
+        self.dead.append(&mut fork.dead);
         match fork.emission.into_inner() {
             EmissionSlot::Task(task) => self
                 .emission
@@ -575,9 +590,38 @@ impl FusionCtx {
     }
 
     /// Compile and install every region fused since the last link; a
-    /// region's kernel has its entry from here on.
+    /// region's kernel has its entry from here on. Then forget what the
+    /// definitions deleted since can no longer call, and the code no
+    /// kernel reaches.
     pub(crate) fn link(&mut self) {
-        self.with_jit(emit::Jit::link)
+        self.with_jit(emit::Jit::link);
+        let EmissionSlot::Root(Some(em)) = self.emission.get_mut() else {
+            return self.dead.clear();
+        };
+        let mut jit = self.jit.lock();
+        let JitSlot::Built(jit) = &mut *jit else { return };
+        let mut funcs: LPooled<Vec<cranelift_module::FuncId>> = LPooled::take();
+        em.forget(&self.dead, &mut funcs);
+        self.dead.clear();
+        jit.forget(&funcs);
+    }
+
+    /// The outcome counters, and what the JIT retains now.
+    pub fn stats(&self) -> FusionStats {
+        let retained = match (&*self.emission.lock(), &*self.jit.lock()) {
+            (EmissionSlot::Root(Some(em)), JitSlot::Built(jit)) => {
+                em.retained() + jit.retained()
+            }
+            _ => 0,
+        };
+        FusionStats { retained, ..self.stats.clone() }
+    }
+
+    /// The definition `id` was deleted: the next link forgets its kernels.
+    pub(crate) fn forget_def(&mut self, id: LambdaId) {
+        if !matches!(self.emission.get_mut(), EmissionSlot::Root(None)) {
+            self.dead.push(id)
+        }
     }
 
     /// Start compiling every region fused since the last link while
@@ -613,6 +657,7 @@ impl FusionCtx {
             stats: FusionStats::default(),
             top_id: None,
             share: None,
+            dead: Vec::new(),
         }
     }
 }

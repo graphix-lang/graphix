@@ -872,7 +872,7 @@ impl<X: GXExt> GX<X> {
                     });
                 }
                 ToGX::FusionStats { res } => {
-                    let _ = res.send(self.ctx.fusion.stats.clone());
+                    let _ = res.send(self.ctx.fusion.stats());
                 }
                 ToGX::CycleReady { res } => {
                     let _ = res.send(self.cycle_ready());

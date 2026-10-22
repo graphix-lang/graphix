@@ -198,24 +198,32 @@ pub(super) struct Names {
     base: Option<Arc<Names>>,
     /// The first id this table mints.
     first: u32,
-    /// Each function's signature and whether calls to it are colocated.
-    funcs: Vec<(Signature, bool)>,
+    /// The next id this table mints.
+    next: u32,
+    /// Each function's signature and whether calls to it are colocated,
+    /// by id; a link keeps only the ids a cache can hand out again.
+    funcs: AHashMap<u32, (Signature, bool)>,
 }
 
 impl Names {
     fn over(base: Arc<Names>) -> Self {
-        Self { first: base.next(), funcs: Vec::new(), base: Some(base) }
+        Self {
+            first: base.next,
+            next: base.next,
+            funcs: AHashMap::new(),
+            base: Some(base),
+        }
     }
 
     fn next(&self) -> u32 {
-        self.first + self.funcs.len() as u32
+        self.next
     }
 
     fn sig(&self, id: FuncId) -> &(Signature, bool) {
         let i = id.as_u32();
-        match i.checked_sub(self.first) {
-            Some(i) => &self.funcs[i as usize],
-            None => self
+        match i >= self.first {
+            true => self.funcs.get(&i).expect("a function is named while it lives"),
+            false => self
                 .base
                 .as_ref()
                 .expect("an id below a table's first is its base's")
@@ -224,8 +232,10 @@ impl Names {
     }
 
     fn func(&mut self, sig: &Signature, colocated: bool) -> FuncId {
-        self.funcs.push((sig.clone(), colocated));
-        FuncId::from_u32(self.next() - 1)
+        let id = self.next;
+        self.next += 1;
+        self.funcs.insert(id, (sig.clone(), colocated));
+        FuncId::from_u32(id)
     }
 
     /// A function the module defines: a body, a thunk or a wrapper.
@@ -600,6 +610,19 @@ impl Generation {
         })
     }
 
+    /// Drop the records only this generation holds: no kernel, cache or
+    /// caller's record reaches their code, and a record's callees go
+    /// once it has.
+    fn sweep(&mut self) {
+        loop {
+            let before = self.loaded.len();
+            self.loaded.retain(|_, (_, rec)| Arc::count(rec) > 1);
+            if self.loaded.len() == before {
+                break;
+            }
+        }
+    }
+
     fn next_symbol(&mut self, fn_name: &str) -> CompactString {
         self.symbol_counter += 1;
         format_compact!("{fn_name}__kir_{}", self.symbol_counter)
@@ -933,6 +956,8 @@ struct Caches {
     /// The first layout id this layer mints; 0 is the layout-independent
     /// id.
     first_layout: u32,
+    /// The next layout id this layer mints.
+    next_layout: u32,
     /// Region layout -> id.
     layout_ids: BTreeMap<SmallVec<[KernelKey; 8]>, u32>,
     /// The lambda kernels' signatures ([`crate::fusion::KernelCacheKey`]).
@@ -941,15 +966,17 @@ struct Caches {
 
 impl Caches {
     fn over(base: Arc<Caches>) -> Self {
-        Self { first_layout: base.next_layout(), base: Some(base), ..Self::default() }
+        let next = base.next_layout;
+        Self {
+            first_layout: next,
+            next_layout: next,
+            base: Some(base),
+            ..Self::default()
+        }
     }
 
     fn is_empty(&self) -> bool {
         self.by_kernel.is_empty() && self.layout_ids.is_empty() && self.kernels.is_empty()
-    }
-
-    fn next_layout(&self) -> u32 {
-        self.first_layout + self.layout_ids.len() as u32
     }
 
     fn by_kernel(&self, key: &CacheKey) -> Option<&CachedBody> {
@@ -967,7 +994,8 @@ impl Caches {
         if let Some(id) = self.layout(&layout) {
             return id;
         }
-        let id = self.next_layout();
+        let id = self.next_layout;
+        self.next_layout += 1;
         self.layout_ids.insert(layout, id);
         id
     }
@@ -1004,7 +1032,7 @@ pub(crate) struct Emission {
 impl Emission {
     pub(crate) fn new(shared: Arc<EmitShared>) -> Self {
         let names = Names::over(shared.helper_table.clone());
-        let caches = Caches { first_layout: 1, ..Caches::default() };
+        let caches = Caches { first_layout: 1, next_layout: 1, ..Caches::default() };
         Self {
             shared,
             names,
@@ -1097,7 +1125,14 @@ impl Emission {
         } = fork;
         let first = names.first;
         let to = self.names.next();
-        let Caches { base: _, by_kernel, first_layout, layout_ids, kernels } = caches;
+        let Caches {
+            base: _,
+            by_kernel,
+            first_layout,
+            next_layout: _,
+            layout_ids,
+            kernels,
+        } = caches;
         // a kernel the task built that this one has: the task's calls go
         // to this one's body
         let mut same: LPooled<AHashMap<KernelKey, KernelKey>> = LPooled::take();
@@ -1164,7 +1199,10 @@ impl Emission {
             cached.thunk_id = renumber(cached.thunk_id);
             self.caches.by_kernel.insert(key, cached);
         }
-        self.names.funcs.extend(names.funcs);
+        self.names
+            .funcs
+            .extend(names.funcs.into_iter().map(|(i, f)| (i - first + to, f)));
+        self.names.next = to + (names.next - first);
         for mut p in pending {
             if moved.contains_key(&p.id.as_u32()) {
                 continue;
@@ -1190,7 +1228,8 @@ impl Emission {
         while let Some(base) = self.names.base.take() {
             match Arc::try_unwrap(base) {
                 Ok(mut base) => {
-                    base.funcs.append(&mut self.names.funcs);
+                    base.funcs.extend(self.names.funcs.drain());
+                    base.next = self.names.next;
                     self.names = base;
                 }
                 Err(base) => {
@@ -1205,6 +1244,7 @@ impl Emission {
                     base.by_kernel.append(&mut self.caches.by_kernel);
                     base.layout_ids.append(&mut self.caches.layout_ids);
                     base.kernels.append(&mut self.caches.kernels);
+                    base.next_layout = self.caches.next_layout;
                     self.caches = base;
                 }
                 Err(base) => {
@@ -1213,6 +1253,57 @@ impl Emission {
                 }
             }
         }
+    }
+
+    /// The cached bodies, layouts, kernel signatures and names held.
+    pub(crate) fn retained(&self) -> usize {
+        let Caches { by_kernel, layout_ids, kernels, .. } = &self.caches;
+        by_kernel.len() + layout_ids.len() + kernels.len() + self.names.funcs.len()
+    }
+
+    /// Forget the kernels of the definitions in `dead`, and every body a
+    /// region layout binds to one of them, pushing their bodies' and
+    /// thunks' ids to `funcs`. A kernel's key is its address, so a layout
+    /// naming a forgotten kernel goes too, before the address is reused.
+    pub(crate) fn forget(&mut self, dead: &[LambdaId], funcs: &mut Vec<FuncId>) {
+        self.thaw();
+        debug_assert!(
+            self.caches.base.is_none(),
+            "forgetting while a fork holds a layer"
+        );
+        let caches = &mut self.caches;
+        let mut kernels: LPooled<AHashSet<KernelKey>> = LPooled::take();
+        caches.kernels.retain(|(id, ..), info| {
+            let gone = dead.contains(id);
+            if gone {
+                kernels.insert(kernel_abi::kernel_key(&info.kernel));
+            }
+            !gone
+        });
+        let bound: LPooled<AHashSet<u32>> = caches
+            .layout_ids
+            .iter()
+            .filter(|(layout, _)| layout.iter().any(|k| kernels.contains(k)))
+            .map(|(_, id)| *id)
+            .collect();
+        caches.by_kernel.retain(|key, body| {
+            let gone = kernels.contains(&key.kernel) || bound.contains(&key.layout);
+            if gone {
+                funcs.extend([body.func_id, body.thunk_id]);
+            }
+            !gone
+        });
+        // a layout no cached body is keyed by binds nothing, and only a
+        // cached body or its thunk is named after its link
+        let used: LPooled<AHashSet<u32>> =
+            caches.by_kernel.keys().map(|key| key.layout).collect();
+        caches.layout_ids.retain(|_, id| used.contains(id));
+        let named: LPooled<AHashSet<u32>> = caches
+            .by_kernel
+            .values()
+            .flat_map(|b| [b.func_id.as_u32(), b.thunk_id.as_u32()])
+            .collect();
+        self.names.funcs.retain(|id, _| named.contains(id));
     }
 
     /// Build the function `id` with `sig` through `emit`. A failed build
@@ -1271,7 +1362,7 @@ pub struct Jit {
     arena: usize,
     /// Every compiled kernel body and spill thunk, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
-    // CR claude for eric: [perf/low] Nothing ever removes entries from this map, from
+    // XCR claude for eric: [perf/low] Nothing ever removes entries from this map, from
     // the root Emission's Caches (by_kernel, kernels, layout_ids) or from the current
     // Generation's `loaded`, except on a failed region or a generation retirement. Each
     // record holds machine code, consts (values, types with their pinned typedefs) and
@@ -1283,6 +1374,19 @@ pub struct Jit {
     // key the cache (for example from ctx.discard of a definition). Alternatively,
     // decide that a context's fusion memory is unbounded by design and say so in
     // design/final_jit_architecture.md. (f-jit-04)
+    // 2026-10-22 claude: Eric 2026-10-22: option 1. Lambda::delete queues its LambdaId
+    // (FusionCtx::forget_def); after each full link FusionCtx::link evicts the
+    // definition's kernels and by_kernel bodies, every layout naming one of its kernels
+    // and the bodies keyed by it (a KernelKey is an address), unused layouts, the
+    // evicted bodies' records, and Names down to the cached bodies' ids (Names is now a
+    // map); a region parent's record is dropped after its batch; Generation::sweep
+    // drops loaded records nothing else holds. Measured over 2000 compile+drop cycles:
+    // records, loaded, caches and names stay flat (they grew per compile before). Pin:
+    // graphix-rt/tests/jit_retention.rs (fails with eviction off: 169 -> 2401). Still
+    // growing per compile, inside the generation: one 4KB arena page per link (a
+    // finalized page is never written again) and cranelift's per-function declarations,
+    // ~6KB per compile in all; it returns only when the generation retires, and a
+    // retired generation stays while any kernel installed in it lives.
     records: BTreeMap<FuncId, Recorded>,
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
@@ -1401,6 +1505,8 @@ impl Jit {
         let mut compiled = compiled.into_iter();
         let mut next = || compiled.next().expect("one result per function");
         let mut regions: Vec<(Arc<BodyRecord>, Arc<OnceLock<Entry>>)> = Vec::new();
+        // a region's parent is never cached: only its wrapper names it
+        let mut parents: LPooled<Vec<FuncId>> = LPooled::take();
         for p in pending {
             let c = next()?;
             let mut callees = Vec::new();
@@ -1491,8 +1597,11 @@ impl Jit {
                         callees,
                         kernel: p.kernel,
                     });
-                    if let Some(tid) = tid {
-                        self.records.insert(tid, Recorded::Thunk(record.clone()));
+                    match tid {
+                        Some(tid) => {
+                            self.records.insert(tid, Recorded::Thunk(record.clone()));
+                        }
+                        None => parents.push(p.id),
                     }
                     self.records.insert(p.id, Recorded::Body(record));
                 }
@@ -1520,6 +1629,9 @@ impl Jit {
                     regions.push((record, entry));
                 }
             }
+        }
+        for id in parents.drain(..) {
+            self.records.remove(&id);
         }
         let wrappers: LPooled<Vec<Arc<BodyRecord>>> =
             regions.iter().map(|(w, _)| w.clone()).collect();
@@ -1580,6 +1692,20 @@ impl Jit {
                 }
             },
         }
+    }
+
+    /// The records held, by id and by the current generation.
+    pub(crate) fn retained(&self) -> usize {
+        self.records.len() + self.generation.loaded.len()
+    }
+
+    /// Forget the records of `funcs`, bodies and thunks no cache hands
+    /// out any more, and drop the code no kernel reaches.
+    pub(crate) fn forget(&mut self, funcs: &[FuncId]) {
+        for id in funcs {
+            self.records.remove(id);
+        }
+        self.generation.sweep();
     }
 
     /// The wrapped kernel a region restored from an image dispatches,

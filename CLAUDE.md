@@ -714,7 +714,11 @@ node graph IS the IR — there is no parallel typed IR
   on exhaustion the link reinstalls its records in a fresh one, twice the
 size while a fresh one cannot hold the batch; a
   generation's code is freed when it and every kernel installed into it
-  have dropped (each `WrappedKernel` holds its code). Pin:
+  have dropped (each `WrappedKernel` holds its code). A deleted
+  definition's kernels, every body a layout binds to them, and the
+  records no kernel reaches are forgotten at the next link
+  (`FusionCtx::link`); only a cached body's ids stay named. Pin:
+  `graphix-rt/tests/jit_retention.rs`. Pin:
   `graphix-shell/tests/jit_arena_rotation.rs`. A two-word value never
   crosses the helper seam by value: a pointer in, an out-pointer back,
   through `HelperRefs::call` alone (`design/helper_abi_portability.md`),
