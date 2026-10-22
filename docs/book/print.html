@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6f15a235.js";
+            window.path_to_searchindex_js = "searchindex-4d794088.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -4432,7 +4432,9 @@ use sys::io::Read;
 <p>A <code>use</code> in the interface applies to the implementation automatically —
 don’t repeat it in the <code>.gx</code> file. It is a private import, not a
 re-export: it does not make the imported names part of the module’s
-public API.</p>
+public API. The reverse is not true: an interface sees only what it
+imports or declares itself, so a type it names must be imported here
+even when the implementation imports it too.</p>
 <h2 id="a-complete-example"><a class="header" href="#a-complete-example">A Complete Example</a></h2>
 <p>Let’s create a simple math utilities module with an interface.</p>
 <p><strong>math.gxi</strong> (interface):</p>
@@ -7005,8 +7007,10 @@ val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError
 
 /// Publish the specifed value at the specified path. A write to it is cast
 /// to #on_write's argument type, and a value that does not cast answers the
-/// writer with the cast's error.
-val publish: fn&lt;'v: Data, 'a: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+/// writer with the cast's error. Without a handler the publication takes no
+/// writes, and while the handler is null a write answers the writer with an
+/// error.
+val publish: fn&lt;'v: Data, 'a: Concrete + Data&gt;(?#on_write:[fn(v: 'a) -&gt; _ throws 'e, null], path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers-and-time-arithmetic"><a class="header" href="#systime---timers-and-time-arithmetic">sys::time - Timers and Time Arithmetic</a></h1>

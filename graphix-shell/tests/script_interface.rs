@@ -100,6 +100,26 @@ async fn contradicting_definitions_are_refused() -> Result<()> {
     Ok(())
 }
 
+// A script's interface names only what it imports or declares itself,
+// as a module's does.
+#[tokio::test(flavor = "multi_thread")]
+async fn interface_names_resolve_in_the_interface() -> Result<()> {
+    let cases = [
+        ("type Foo = i64;\nlet v: Foo = 1;\nv\n", "val v: Foo;\n"),
+        (
+            "use str::Escape;\nlet v: [Escape, null] = null;\nv\n",
+            "type W = [Escape, null];\nval v: W;\n",
+        ),
+    ];
+    for (gx, gxi) in cases {
+        for e in verdicts(gx, gxi).await? {
+            let e = e.expect("a name only the script gives was accepted");
+            assert!(e.contains("undefined type"), "{e}");
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn matching_interface_checks() -> Result<()> {
     let dir = tempfile::tempdir()?;

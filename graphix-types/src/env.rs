@@ -1624,6 +1624,33 @@ impl Env {
         })
     }
 
+    /// This env with only what an interface states at `scope`: the
+    /// imports keyed `import`, the globs `glob` keeps and the types and
+    /// traits `declared` names.
+    pub fn interface_view(
+        &self,
+        scope: &ModPath,
+        import: impl Fn(&str) -> bool,
+        glob: impl Fn(&Glob) -> bool,
+        declared: impl Fn(&str) -> bool,
+    ) -> Env {
+        let mut view = self.clone();
+        if let Some(sn) = self.names.get(scope) {
+            let sn = ScopeNames {
+                imports: retain(&sn.imports, |k, _| import(k)),
+                globs: Arc::new(sn.globs.iter().filter(|g| glob(g)).cloned().collect()),
+            };
+            view.names.insert(scope.clone(), sn);
+        }
+        if let Some(defs) = view.typedefs.get_mut_cow(scope) {
+            *defs = retain(defs, |k, _| declared(k));
+        }
+        if let Some(traits) = view.traits.get_mut_cow(scope) {
+            *traits = retain(traits, |k, _| declared(k));
+        }
+        view
+    }
+
     /// Register a glob (`use m::*`) source module at `scope`.
     /// Idempotent.
     pub fn import_glob(&mut self, scope: &ModPath, src: Glob) {

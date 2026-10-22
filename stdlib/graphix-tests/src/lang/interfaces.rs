@@ -1442,3 +1442,40 @@ run!(
     "/test/inner.gx" => r#"
         let f = |g: fn<'b: Number>(x: 'b) -> 'b| -> f64 g(2.5)
     "#; FuseExpect::None);
+
+// An interface's names resolve through what it imports or declares
+// itself, never through the implementation's imports or types.
+run!(
+    interface_name_through_implementation_use_is_refused,
+    refused("undefined type T"),
+    "/test.gx" => "mod other; mod inner; let result = inner::v",
+    "/test/other.gx" => "type T = i64",
+    "/test/inner.gxi" => "val v: T",
+    "/test/inner.gx" => "use super::other::T; let v: T = 1"
+);
+
+run!(
+    interface_typedef_body_through_implementation_use_is_refused,
+    refused("undefined type T"),
+    "/test.gx" => "mod other; mod inner; let result = inner::v",
+    "/test/other.gx" => "type T = i64",
+    "/test/inner.gxi" => "type U = T; val v: U",
+    "/test/inner.gx" => "use super::other::T; let v: U = 1"
+);
+
+run!(
+    interface_name_of_an_implementation_type_is_refused,
+    refused("undefined type T"),
+    "/test.gx" => "mod inner; let result = inner::v",
+    "/test/inner.gxi" => "val v: T",
+    "/test/inner.gx" => "type T = i64; let v: T = 1"
+);
+
+run!(
+    interface_use_names_its_types,
+    is(Value::I64(1)),
+    "/test.gx" => "mod other; mod inner; let result = inner::v",
+    "/test/other.gx" => "type T = i64",
+    "/test/inner.gxi" => "use super::other::T; type U = T; val v: U",
+    "/test/inner.gx" => "let v: U = 1"
+; FuseExpect::None);

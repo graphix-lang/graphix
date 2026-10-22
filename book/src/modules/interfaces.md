@@ -82,7 +82,9 @@ use sys::io::Read;
 A `use` in the interface applies to the implementation automatically —
 don't repeat it in the `.gx` file. It is a private import, not a
 re-export: it does not make the imported names part of the module's
-public API.
+public API. The reverse is not true: an interface sees only what it
+imports or declares itself, so a type it names must be imported here
+even when the implementation imports it too.
 
 ## A Complete Example
 

@@ -53,6 +53,21 @@ enum UseInstall {
 /// Resolve one item of a `use` against the namespace table
 /// ([`crate::env::Env::names`]): its module prefix, then a glob source
 /// or an explicit [`ImportEntry`].
+/// The glob the `use` item `item` installs at `scope`; `None` when it
+/// is no glob.
+fn use_glob(env: &Env, scope: &ModPath, item: &UseItem) -> Result<Option<Glob>> {
+    if !item.is_glob() {
+        return Ok(None);
+    }
+    let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
+    let Some((_, prefix)) = parts.split_last() else { bail!("use: empty path") };
+    Ok(Some(match env.use_anchor(scope, prefix)? {
+        None => bail!("a glob needs a path prefix"),
+        Some(UseAnchor::Chain(a)) => Glob::Chain(ModPath(Path::from(ArcStr::from(a)))),
+        Some(UseAnchor::Module(m)) => Glob::Module(m),
+    }))
+}
+
 fn resolve_use_item(
     env: &mut Env,
     pos: crate::SourcePosition,
@@ -72,14 +87,10 @@ fn resolve_use_item(
     if compiled_here {
         return Ok(UseInstall::Nothing);
     }
-    let anchor = env.use_anchor(&scope.lexical, prefix)?;
-    if item.is_glob() {
-        return match anchor {
-            None => bail!("a glob needs a path prefix"),
-            Some(UseAnchor::Chain(a)) => Ok(UseInstall::Glob(Glob::Chain(modpath(a)))),
-            Some(UseAnchor::Module(m)) => Ok(UseInstall::Glob(Glob::Module(m))),
-        };
+    if let Some(g) = use_glob(env, &scope.lexical, item)? {
+        return Ok(UseInstall::Glob(g));
     }
+    let anchor = env.use_anchor(&scope.lexical, prefix)?;
     let (target, keyword_anchored) = match anchor {
         Some(UseAnchor::Chain(a)) => (modpath(a), true),
         Some(UseAnchor::Module(m)) => (m, false),
@@ -505,6 +516,90 @@ fn check_hidden_typedef(
     Ok(())
 }
 
+/// The env as the interface `sig` of the names at `scope` sees it: the
+/// names it imports and the types and traits it declares, never what
+/// the implementation adds there.
+fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
+    let mut imports: LPooled<AHashSet<&str>> = LPooled::take();
+    let mut globs: LPooled<Vec<Glob>> = LPooled::take();
+    let mut declared: LPooled<AHashSet<&str>> = LPooled::take();
+    for si in sig.items.iter() {
+        match &si.kind {
+            SigKind::Use { names, .. } => {
+                for item in names.iter() {
+                    match use_glob(env, scope, item)? {
+                        Some(g) => globs.push(g),
+                        None => imports.extend(item.bound_name()),
+                    }
+                }
+            }
+            SigKind::TypeDef(td) => {
+                declared.insert(td.name.as_str());
+            }
+            SigKind::Trait(t) => {
+                declared.insert(t.name.as_str());
+            }
+            SigKind::Bind(_) | SigKind::Impl(_) | SigKind::Module(_) => (),
+        }
+    }
+    Ok(env.interface_view(
+        scope,
+        |k| imports.contains(k),
+        |g| globs.contains(g),
+        |n| declared.contains(n),
+    ))
+}
+
+/// Refuse a name the interface item `si` writes that the interface
+/// neither imports nor declares: each resolves in `view`
+/// ([`interface_env`]) alone, which fills its cell. `val` is a `val`
+/// item's declared type.
+fn check_interface_names(
+    view: &Env,
+    scope: &ModPath,
+    si: &SigItem,
+    val: Option<&Type>,
+) -> Result<()> {
+    match &si.kind {
+        SigKind::Bind(_) => val.map_or(Ok(()), |t| t.resolve_names_only_in(view)),
+        SigKind::TypeDef(td) => {
+            let Some(def) =
+                view.typedefs.get(scope).and_then(|m| m.get(td.name.as_str()))
+            else {
+                return Ok(());
+            };
+            for (_, c) in def.params().iter() {
+                c.as_ref().map_or(Ok(()), |c| c.resolve_names_only_in(view))?
+            }
+            def.typ().resolve_names_only_in(view)?;
+            match (&td.body, &def.rep) {
+                (TypeDefBody::Abstract(None), _) | (_, None) => Ok(()),
+                (_, Some(rep)) => rep.resolve_names_only_in(view),
+            }
+        }
+        SigKind::Trait(t) => {
+            let Some(id) = view.traits.get(scope).and_then(|m| m.get(t.name.as_str()))
+            else {
+                return Ok(());
+            };
+            let def = view.trait_def(*id).expect("a declared trait's def");
+            def.methods
+                .iter()
+                .try_for_each(|m| Type::Fn(m.typ.clone()).resolve_names_only_in(view))
+        }
+        SigKind::Impl(im) => {
+            if view.lookup_trait(scope, &im.trait_name)?.is_none() {
+                bail!("no trait `{}` in the interface's scope", im.trait_name)
+            }
+            im.target.scope_refs(scope).resolve_names_only_in(view)?;
+            im.constraints
+                .iter()
+                .try_for_each(|(_, c)| c.scope_refs(scope).resolve_names_only_in(view))
+        }
+        SigKind::Module(_) | SigKind::Use { .. } => Ok(()),
+    }
+}
+
 /// Check the implementation against `sig`, adding the proxies it links;
 /// their references are recorded once every item matched, and a refused
 /// check adds none.
@@ -537,8 +632,20 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     nodes: &[Node<R, E>],
 ) -> Result<()> {
     // the interface's types and traits first: a val's type names them
+    let view = interface_env(&ctx.env, &scope.lexical, sig)?;
     for si in sig.items.iter() {
+        let val = match &si.kind {
+            SigKind::Bind(BindSig { name, .. }) => ctx
+                .env
+                .binds
+                .get(&scope.lexical)
+                .and_then(|m| m.get(name.name.as_str()))
+                .and_then(|id| ctx.env.by_id.get(id))
+                .map(|b| &b.typ),
+            _ => None,
+        };
         check_redefinition(&scope.lexical, si, nodes)
+            .and_then(|()| check_interface_names(&view, &scope.lexical, si, val))
             .map_err(|e| e.context(ParserContext { ori: si.ori.clone(), pos: si.pos }))?;
     }
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
@@ -695,12 +802,16 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
     scope: &ModPath,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
+    let view = interface_env(&ctx.env, scope, sig)?;
     for si in sig.items.iter() {
         let at = |e: anyhow::Error| {
             let ori = si.ori.clone();
             e.context(ParserContext { ori, pos: si.pos })
         };
         let missing = || at(anyhow!("sig item {si} is missing an implementation"));
+        if !matches!(si.kind, SigKind::Bind(_)) {
+            check_interface_names(&view, scope, si, None).map_err(at)?
+        }
         match &si.kind {
             SigKind::Bind(BindSig { name, typ: declared }) => {
                 let bind = ctx
@@ -717,6 +828,7 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                 if let Type::Fn(ft) = &declared {
                     ft.generalize(0)
                 }
+                check_interface_names(&view, scope, si, Some(&declared)).map_err(at)?;
                 if let Err(e) = declared.sig_matches(&ctx.env, &bind.typ) {
                     let typ = format_with_flags(PrintFlag::DerefTVars, || {
                         format_compact!("{}", bind.typ)

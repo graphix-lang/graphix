@@ -934,6 +934,23 @@ impl TypeRef {
             }
         }
     }
+
+    /// Refuse this name, a type or a trait, unless `env` resolves it,
+    /// whatever its cell holds; an empty cell is filled from `env`.
+    pub fn resolve_only_in(&self, env: &Env) -> Result<()> {
+        use crate::env::TypeName;
+        let Some(hit) = env.resolve_type_name(&self.scope, &self.name)? else {
+            return Err(UnresolvableRef::error(self, env));
+        };
+        let mut cell = self.resolved.lock();
+        if let Resolution::Open = &*cell {
+            *cell = match hit {
+                TypeName::Def(d) => Resolution::Def(sync::Arc::downgrade(&d)),
+                TypeName::Trait(id) => Resolution::Trait(id),
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for TypeRef {
@@ -2409,23 +2426,41 @@ impl Type {
     /// (inferred, not written) not.
     #[doc(hidden)]
     pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) {
-        fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>, out: &mut Vec<TypeRef>) {
+        self.for_each_written_name(&mut |tr| {
+            if !tr.names_something(env) {
+                out.push(tr.clone())
+            }
+        })
+    }
+
+    /// [`TypeRef::resolve_only_in`] of every name this written type holds,
+    /// as [`Self::unresolved_names`] walks them; the first refusal.
+    pub fn resolve_names_only_in(&self, env: &Env) -> Result<()> {
+        let mut res = Ok(());
+        self.for_each_written_name(&mut |tr| {
+            if res.is_ok() {
+                res = tr.resolve_only_in(env)
+            }
+        });
+        res
+    }
+
+    fn for_each_written_name(&self, f: &mut impl FnMut(&TypeRef)) {
+        fn go(t: &Type, seen: &mut IntSet<usize>, f: &mut impl FnMut(&TypeRef)) {
             ensure_sufficient(|| match t {
                 Type::Ref(tr) => {
-                    if !tr.names_something(env) {
-                        out.push((**tr).clone())
-                    }
-                    tr.params.iter().for_each(|p| go(p, env, seen, out))
+                    f(tr);
+                    tr.params.iter().for_each(|p| go(p, seen, f))
                 }
                 Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
-                    tv.cell_constraints().iter().for_each(|c| go(c, env, seen, out))
+                    tv.cell_constraints().iter().for_each(|c| go(c, seen, f))
                 }
                 Type::TVar(_) => (),
-                Type::Fn(ft) => ft.for_each_type(&mut |t| go(t, env, seen, out)),
-                t => t.for_each_child(&mut |c| go(c, env, seen, out)),
+                Type::Fn(ft) => ft.for_each_type(&mut |t| go(t, seen, f)),
+                t => t.for_each_child(&mut |c| go(c, seen, f)),
             })
         }
-        go(self, env, &mut LPooled::take(), out)
+        go(self, &mut LPooled::take(), f)
     }
 
     /// Fill the resolution cell of every `Type::Ref` reachable from

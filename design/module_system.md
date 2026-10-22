@@ -160,7 +160,14 @@ Unchanged in role: `use`, `type`, `trait` and `mod` in the `.gxi` apply
 to the `.gx` automatically (requiring duplication is ceremony), spliced
 into its body. The `.gx` may not define a type or trait its interface
 defines: only a hidden type (`type T;`) takes a definition there, an
-abstract with the declared parameters (`module.rs::check_redefinition`). A private
+abstract with the declared parameters (`module.rs::check_redefinition`).
+The reverse does not hold: a name the `.gxi` writes resolves through
+what the `.gxi` imports and declares, the prelude and other modules'
+paths, never through the `.gx`'s imports or its own types, so an
+interface means one thing whatever its implementation imports. The
+interface check resolves each item's names in that view
+(`module.rs::interface_env`, `check_interface_names`) and refuses one it
+does not give; a script's interface alike. A private
 item is visible to the defining module and its descendants, uniformly
 for values and types — a private type in a public lambda's body is the
 module's own business when the body is instance-elaborated elsewhere.

@@ -1,10 +1,2 @@
-// CR claude for eric: [structure/low] This interface names ImageSource without
-// importing it. It resolves only through icon.gx's `use gui::ImageSource`, so dropping
-// that use from the .gx breaks the interface with "undefined type ImageSource ...
-// icon.gxi". Every GUI example's `mod icon` goes through here. Fix: move the `use` into
-// this .gxi (module_system.md: a .gxi use applies to the .gx) and remove it from
-// icon.gx. Decide whether a .gxi's type names may resolve through the implementation's
-// imports at all. probe:
-// design/review-2026-10-19/repro/examples-gui-gxi-type-via-impl-use.sh
-// (examples-gui-01)
+use gui::ImageSource;
 val icon: ImageSource

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-6f15a235.js";
+            window.path_to_searchindex_js = "../../searchindex-4d794088.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -214,8 +214,10 @@ val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError
 
 /// Publish the specifed value at the specified path. A write to it is cast
 /// to #on_write's argument type, and a value that does not cast answers the
-/// writer with the cast's error.
-val publish: fn&lt;'v: Data, 'a: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+/// writer with the cast's error. Without a handler the publication takes no
+/// writes, and while the handler is null a write answers the writer with an
+/// error.
+val publish: fn&lt;'v: Data, 'a: Concrete + Data&gt;(?#on_write:[fn(v: 'a) -&gt; _ throws 'e, null], path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 
                     </main>
