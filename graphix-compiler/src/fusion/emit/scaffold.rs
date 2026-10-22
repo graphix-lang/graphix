@@ -19,7 +19,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
+    Block, InstBuilder, MemFlagsData, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::Variable;
 use nohash::IntSet;
@@ -149,7 +149,7 @@ fn carry_disc(
     src_disc: ClifValue,
     mask: i64,
 ) -> ClifValue {
-    let sb = cx.b.ins().band_imm(src_disc, mask);
+    let sb = cx.b.ins().band_imm_u(src_disc, mask);
     cx.b.ins().bor(base, sb)
 }
 
@@ -344,8 +344,8 @@ impl LoopFrame {
         let init = cx.born_flag();
         let init = cx.b.ins().bor(init, new);
         let standing = {
-            let born = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
-            let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, cx.ctx.wake_flag, 0);
+            let born = cx.b.ins().icmp_imm_s(IntCC::NotEqual, init, 0);
+            let no_wake = cx.b.ins().icmp_imm_s(IntCC::Equal, cx.ctx.wake_flag, 0);
             let genuine = cx.b.ins().band(born, no_wake);
             let clear = cx.b.ins().iconst(types::I64, !STALE);
             let keep = cx.b.ins().iconst(types::I64, -1);
@@ -463,7 +463,7 @@ impl Accs {
     /// Fold one slot's disc into the accumulators.
     fn fold(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.taint);
-        let t = cx.b.ins().band_imm(disc, TAINT);
+        let t = cx.b.ins().band_imm_u(disc, TAINT);
         let n = cx.b.ins().bor(cur, t);
         cx.b.def_var(self.taint, n);
         self.fold_stale(cx, disc);
@@ -473,7 +473,7 @@ impl Accs {
     /// acc carry, so an acc-ignoring callback recovers.
     fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.stale);
-        let sb = cx.b.ins().band_imm(disc, STALE);
+        let sb = cx.b.ins().band_imm_u(disc, STALE);
         let n = cx.b.ins().band(cur, sb);
         cx.b.def_var(self.stale, n);
     }
@@ -512,10 +512,10 @@ impl SlotFlags {
         };
         let word = word.0;
         let entered = |cx: &mut BodyCx, addr: ClifValue| {
-            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-            let lenp1 = cx.b.ins().band_imm(stored, !FORGOT);
-            let none = cx.b.ins().icmp_imm(IntCC::Equal, lenp1, 0);
-            let len = cx.b.ins().iadd_imm(lenp1, -1);
+            let stored = cx.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0);
+            let lenp1 = cx.b.ins().band_imm_u(stored, !FORGOT);
+            let none = cx.b.ins().icmp_imm_s(IntCC::Equal, lenp1, 0);
+            let len = cx.b.ins().iadd_imm_s(lenp1, -1);
             let zero = cx.b.ins().iconst(types::I64, 0);
             cx.b.ins().select(none, zero, len)
         };
@@ -535,22 +535,22 @@ impl SlotFlags {
         r.disc = cx.b.ins().bor(r.disc, t);
         // the slots' fold says whether a slot fired
         let slots_acc = cx.b.use_var(self.accs.stale);
-        let src_word = cx.b.ins().band_imm(src, FIRE_TEST);
-        let src_taint = cx.b.ins().band_imm(src, TAINT);
+        let src_word = cx.b.ins().band_imm_u(src, FIRE_TEST);
+        let src_taint = cx.b.ins().band_imm_u(src, TAINT);
         r.disc = cx.b.ins().bor(r.disc, src_taint);
         let acc = if self.kind == LoopKind::Fold {
-            let rs = cx.b.ins().band_imm(r.disc, STALE);
+            let rs = cx.b.ins().band_imm_u(r.disc, STALE);
             cx.b.ins().band(rs, slots_acc)
         } else {
             slots_acc
         };
-        let fired_word = cx.b.ins().band_imm(acc, FIRE_TEST);
-        r.disc = cx.b.ins().band_imm(r.disc, !STALE);
+        let fired_word = cx.b.ins().band_imm_u(acc, FIRE_TEST);
+        r.disc = cx.b.ins().band_imm_u(r.disc, !STALE);
         let stale = self.exact_stale(cx, fired_word, src_word, src_taint);
         // A fresh-tainted source is an event none of the firing terms
         // can see (no resize, quiet slots, not empty): fire it here.
-        let tainted = cx.b.ins().icmp_imm(IntCC::NotEqual, src_taint, 0);
-        let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
+        let tainted = cx.b.ins().icmp_imm_s(IntCC::NotEqual, src_taint, 0);
+        let src_fired = cx.b.ins().icmp_imm_s(IntCC::Equal, src_word, 0);
         let fresh_taint = cx.b.ins().band(tainted, src_fired);
         let zero = cx.b.ins().iconst(types::I64, 0);
         let stale = cx.b.ins().select(fresh_taint, zero, stale);
@@ -570,20 +570,20 @@ impl SlotFlags {
         src_taint: ClifValue,
     ) -> ClifValue {
         let (len, addr) = (self.len, self.word);
-        let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-        let lenp1 = cx.b.ins().iadd_imm(len, 1);
-        let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
+        let stored = cx.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0);
+        let lenp1 = cx.b.ins().iadd_imm_s(len, 1);
+        let valid = cx.b.ins().icmp_imm_s(IntCC::Equal, src_taint, 0);
         // A tainted source is never a resize and forgets the length: the
         // source's return is one, whether or not a slot fires. Its slots
         // stay entered.
         let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
         let resized = cx.b.ins().band(resized, valid);
-        let forgot = cx.b.ins().bor_imm(stored, FORGOT);
+        let forgot = cx.b.ins().bor_imm_u(stored, FORGOT);
         let recorded = cx.b.ins().select(valid, lenp1, forgot);
-        cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
-        let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
-        let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
-        let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
+        cx.b.ins().store(MemFlagsData::trusted(), recorded, addr, 0);
+        let slot_fired = cx.b.ins().icmp_imm_s(IntCC::Equal, fired_word, 0);
+        let src_fired = cx.b.ins().icmp_imm_s(IntCC::Equal, src_word, 0);
+        let empty = cx.b.ins().icmp_imm_s(IntCC::Equal, len, 0);
         let src_empty = cx.b.ins().band(src_fired, empty);
         let src_counts = cx.b.ins().bor(resized, src_empty);
         let src_counts = if self.kind == LoopKind::PassThrough {
@@ -977,7 +977,7 @@ where
             cx.env.truncate(lp.mark);
             s.accs.fold(cx, value.disc);
             let disc = clean_disc(cx.b, value.disc);
-            let is_null = cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
+            let is_null = cx.b.ins().icmp_imm_s(IntCC::Equal, disc, value_disc::NULL);
             let push_block = cx.b.create_block();
             let advance = cx.b.create_block();
             cx.b.ins().brif(is_null, advance, &[], push_block, &[]);
@@ -1150,13 +1150,13 @@ impl FoldAcc<'_> {
         let base = match self {
             FoldAcc::Value { .. } => {
                 const KEEP: i64 = !TAG_MASK as i64 | TAINT | STALE;
-                return cx.b.ins().band_imm(from_disc, KEEP);
+                return cx.b.ins().band_imm_u(from_disc, KEEP);
             }
             FoldAcc::Scalar(p) => scalar_disc(cx.b, *p),
             FoldAcc::Composite { .. } => cx.b.ins().iconst(types::I64, value_disc::ARRAY),
             FoldAcc::Str => cx.b.ins().iconst(types::I64, value_disc::STRING),
         };
-        let t = cx.b.ins().band_imm(from_disc, TAINT | STALE);
+        let t = cx.b.ins().band_imm_u(from_disc, TAINT | STALE);
         cx.b.ins().bor(base, t)
     }
 }
@@ -1252,8 +1252,8 @@ where
 fn deliver_acc_to_new_slot(cx: &mut BodyCx, disc: Variable) {
     if let Some(s) = cx.env.slot {
         let d = cx.b.use_var(disc);
-        let fired = cx.b.ins().band_imm(d, !STALE);
-        let new = cx.b.ins().icmp_imm(IntCC::NotEqual, s.new, 0);
+        let fired = cx.b.ins().band_imm_u(d, !STALE);
+        let new = cx.b.ins().icmp_imm_s(IntCC::NotEqual, s.new, 0);
         let d = cx.b.ins().select(new, fired, d);
         cx.b.def_var(disc, d);
     }
@@ -1316,7 +1316,7 @@ where
     if init_src == CompositeSource::Owned {
         cx.call_helper("graphix_valarray_drop", &[init_cv.payload])?;
     }
-    let c0 = cx.b.ins().band_imm(init_cv.disc, TAINT | STALE);
+    let c0 = cx.b.ins().band_imm_u(init_cv.disc, TAINT | STALE);
     cx.b.def_var(carry, c0);
     let lp = open_loop(cx, len, arr.disc, &facts.sites, flags.entered)?;
     let (bound, new_fields) = lp.run(
@@ -1359,7 +1359,7 @@ where
     for d in discs.iter() {
         flags.accs.fold_stale(cx, *d);
     }
-    let c = cx.b.ins().band_imm(new_disc, TAINT | STALE);
+    let c = cx.b.ins().band_imm_u(new_disc, TAINT | STALE);
     cx.b.def_var(carry, c);
     for (f, v) in new_fields.iter().zip(vars.iter()) {
         cx.b.def_var(*v, f.payload);
@@ -1417,7 +1417,7 @@ fn found_vars(cx: &mut BodyCx) -> (Variable, Variable, Variable) {
 fn branch_take(cx: &mut BodyCx, cond: ClifValue, found: Variable) -> (Block, Block) {
     let not_found = {
         let found = cx.b.use_var(found);
-        cx.b.ins().icmp_imm(IntCC::Equal, found, 0)
+        cx.b.ins().icmp_imm_s(IntCC::Equal, found, 0)
     };
     let take = cx.b.ins().band(cond, not_found);
     let take_block = cx.b.create_block();
@@ -1515,7 +1515,8 @@ where
             cx.env.truncate(lp.mark);
             s.accs.fold(cx, disc);
             let clean = clean_disc(cx.b, disc);
-            let non_null = cx.b.ins().icmp_imm(IntCC::NotEqual, clean, value_disc::NULL);
+            let non_null =
+                cx.b.ins().icmp_imm_s(IntCC::NotEqual, clean, value_disc::NULL);
             let (discard, advance) = branch_take(cx, non_null, found_var);
             cx.b.def_var(result_disc_var, clean);
             cx.b.def_var(result_payload_var, payload);

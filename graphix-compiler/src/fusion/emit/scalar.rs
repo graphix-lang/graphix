@@ -12,7 +12,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow};
 use cranelift_codegen::ir::{
-    Endianness, InstBuilder, MemFlags, Type as ClifType, Value as ClifValue,
+    Endianness, InstBuilder, MemFlagsData, Type as ClifType, Value as ClifValue,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -210,14 +210,14 @@ pub(super) fn scalar_to_payload_i64(
         PrimType::F32 => {
             let bits = b.ins().bitcast(
                 types::I32,
-                MemFlags::new().with_endianness(Endianness::Little),
+                MemFlagsData::new().with_endianness(Endianness::Little),
                 v,
             );
             b.ins().uextend(types::I64, bits)
         }
         PrimType::F64 => b.ins().bitcast(
             types::I64,
-            MemFlags::new().with_endianness(Endianness::Little),
+            MemFlagsData::new().with_endianness(Endianness::Little),
             v,
         ),
     }
@@ -308,11 +308,11 @@ pub(super) fn compile_cmp(
     if operand_typ.is_float() {
         // Graphix's total order (`Value::partial_cmp`): NaN == NaN and
         // NaN sorts below every non-NaN. `fcmp Unordered x x` tests NaN;
-        // fcmp yields an I8 0/1, so `bxor_imm(v, 1)` is NOT.
+        // fcmp yields an I8 0/1, so `bxor_imm_u(v, 1)` is NOT.
         let l_nan = b.ins().fcmp(FloatCC::Unordered, l, l);
         let r_nan = b.ins().fcmp(FloatCC::Unordered, r, r);
-        let not_l_nan = b.ins().bxor_imm(l_nan, 1);
-        let not_r_nan = b.ins().bxor_imm(r_nan, 1);
+        let not_l_nan = b.ins().bxor_imm_u(l_nan, 1);
+        let not_r_nan = b.ins().bxor_imm_u(r_nan, 1);
         let ord_eq = b.ins().fcmp(FloatCC::Equal, l, r);
         let both_nan = b.ins().band(l_nan, r_nan);
         let eq = b.ins().bor(ord_eq, both_nan);
@@ -324,11 +324,11 @@ pub(super) fn compile_cmp(
         let gt = b.ins().bor(ord_gt, nan_gt);
         match op {
             CmpOp::Eq => eq,
-            CmpOp::Ne => b.ins().bxor_imm(eq, 1),
+            CmpOp::Ne => b.ins().bxor_imm_u(eq, 1),
             CmpOp::Lt => lt,
             CmpOp::Gt => gt,
-            CmpOp::Lte => b.ins().bxor_imm(gt, 1),
-            CmpOp::Gte => b.ins().bxor_imm(lt, 1),
+            CmpOp::Lte => b.ins().bxor_imm_u(gt, 1),
+            CmpOp::Gte => b.ins().bxor_imm_u(lt, 1),
         }
     } else {
         let cc = if operand_typ.is_signed() || operand_typ == PrimType::Bool {
@@ -428,13 +428,13 @@ pub(super) fn cast_u64_to_prim(
             let bits32 = b.ins().ireduce(types::I32, raw);
             b.ins().bitcast(
                 types::F32,
-                MemFlags::new().with_endianness(Endianness::Little),
+                MemFlagsData::new().with_endianness(Endianness::Little),
                 bits32,
             )
         }
         PrimType::F64 => b.ins().bitcast(
             types::F64,
-            MemFlags::new().with_endianness(Endianness::Little),
+            MemFlagsData::new().with_endianness(Endianness::Little),
             raw,
         ),
     }

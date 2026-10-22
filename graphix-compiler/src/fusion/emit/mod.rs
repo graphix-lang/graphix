@@ -21,6 +21,7 @@
 //! the wrapper/packer seams. The runtime calls through [`WrappedKernel`].
 
 mod abi;
+mod arena;
 mod body;
 mod call;
 mod flow;

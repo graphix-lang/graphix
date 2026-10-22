@@ -892,7 +892,8 @@ node graph IS the IR — there is no parallel typed IR
   Cranelift's single-pass register allocator: linear compile time,
   worse code, one region still.
   One JITModule + 256MB
-  arena per generation, built on the first fusion (a fusion-off context
+  arena per generation (reserved, committed as code installs, on every
+  host: `emit/arena.rs`), built on the first fusion (a fusion-off context
   never builds one); an install that fails retires the generation, and
   on exhaustion the link reinstalls its records in a fresh one, twice the
 size while a fresh one cannot hold the batch; a
@@ -1295,7 +1296,7 @@ compile, so unscoped prints are gigabytes.
 | `GXDBG_TYPEREF=1` | scope table dump on an "undefined type" refusal |
 | `GXDBG_LETBIND=1` / `GXDBG_REF=1` | let publication decisions / every read (delivered, standing, miss) |
 | `GRAPHIX_ELAB_AUDIT=1` / `=bt` | each elaboration refusal of what the check accepted (a type-system bug), with a backtrace |
-| `GRAPHIX_JIT_ARENA=<bytes>` | the arena a JIT generation reserves (256MB by default) |
+| `GRAPHIX_JIT_ARENA=<bytes>` | the arena a JIT generation reserves (256MB by default; outside a page..2GiB, fusion is unavailable) |
 | `GRAPHIX_DISABLE_PACKED_AST=1` | module resolution parses source even where a packed AST is available |
 | `GRAPHIX_FUSION_DISCOVERY=1` | `run!` asserts no `FuseExpect` and prints each fixture's observed level (`FUSEMAP`) |
 | `GXDBG_SLOT=1` | per-slot production tags and the collection fold decision |

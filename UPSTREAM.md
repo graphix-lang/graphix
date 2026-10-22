@@ -8,6 +8,26 @@ dependency, delete the workaround and its entry.
 Each entry: the crate and version, what is wrong, how to reproduce it,
 the state of a fix, and Graphix's side.
 
+## cranelift-jit 0.137 / region 3.0.2: the arena commits its whole reservation on Windows
+
+- **Bug.** `ArenaMemoryProvider::new_with_size` reserves through
+  `region::alloc`, which on Windows calls `VirtualAlloc` with
+  `MEM_COMMIT | MEM_RESERVE` (region `src/os/windows.rs`). Each arena
+  charges its full size against the commit limit (RAM plus page file),
+  where on Linux it is address space only. cranelift-jit's own comment
+  says so and points at region-rs PR #34.
+- **Repro.** On Windows 11, 64 `ArenaMemoryProvider::new_with_size(256 <<
+  20)` raise the process's `PrivateUsage` by 16,416 MB; the same 64 of
+  Graphix's arena raise it by 0 MB. Where the page file cannot grow, the
+  reservations fail.
+- **Upstream fix.** region's Windows `alloc` reserving only (region-rs
+  PR #34), or cranelift-jit's arena reserving with `MEM_RESERVE` and
+  committing each segment as it allocates.
+- **Graphix's side.** Worked around (a few fusing runtimes exhaust the
+  page file and run unfused): `fusion/emit/arena.rs` is Graphix's own
+  `JITMemoryProvider`, reserving the arena and committing a page run per
+  allocation on every host. Not reported.
+
 ## calamine 0.34: the ods reader is dense over a sheet's used area
 
 - **Bug.** calamine reads every ods table when the workbook opens, as a

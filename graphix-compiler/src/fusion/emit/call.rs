@@ -17,8 +17,8 @@ use crate::{
 use anyhow::{Result, anyhow};
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, Inst, InstBuilder, MemFlags, StackSlotData, StackSlotKind,
-    Value as ClifValue, condcodes::IntCC, types,
+    Block, BlockArg, FuncRef, Inst, InstBuilder, MemFlagsData, StackSlotData,
+    StackSlotKind, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use poolshark::local::LPooled;
@@ -121,8 +121,8 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         {
             hold_owned(cx, &mut drops, (k, cv));
         }
-        cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
-        cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
+        cx.b.ins().stack_store(types::I64, disc, slot, (16 * i) as i32);
+        cx.b.ins().stack_store(types::I64, payload, slot, (16 * i + 8) as i32);
     }
     release_owned(cx, drops.len());
     let arg_discs =
@@ -135,7 +135,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     for (i, d) in arg_discs.iter().enumerate() {
         let t = is_tainted(cx.b, *d);
         let t64 = cx.b.ins().uextend(types::I64, t);
-        let bit = cx.b.ins().ishl_imm(t64, i as i64);
+        let bit = cx.b.ins().ishl_imm_u(t64, i as i64);
         taint_mask = cx.b.ins().bor(taint_mask, bit);
     }
     // Bit `i` set = the arg is present but did not fire this cycle.
@@ -143,8 +143,8 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     // every input is born; a wake delivers standing inputs stale.
     let genuine = {
         let (init, wake) = (cx.born_flag(), cx.ctx.wake_flag);
-        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
-        let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
+        let init_b = cx.b.ins().icmp_imm_s(IntCC::NotEqual, init, 0);
+        let no_wake = cx.b.ins().icmp_imm_s(IntCC::Equal, wake, 0);
         cx.b.ins().band(init_b, no_wake)
     };
     // an `Io` call answers its trigger alone: every other argument reads
@@ -156,10 +156,10 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     let stale_mask = {
         let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
         for (i, d) in arg_discs.iter().enumerate() {
-            let s = cx.b.ins().band_imm(*d, FIRE_TEST);
-            let sb = cx.b.ins().icmp_imm(IntCC::NotEqual, s, 0);
+            let s = cx.b.ins().band_imm_u(*d, FIRE_TEST);
+            let sb = cx.b.ins().icmp_imm_s(IntCC::NotEqual, s, 0);
             let s64 = cx.b.ins().uextend(types::I64, sb);
-            let bit = cx.b.ins().ishl_imm(s64, i as i64);
+            let bit = cx.b.ins().ishl_imm_u(s64, i as i64);
             stale_mask = cx.b.ins().bor(stale_mask, bit);
         }
         let zero = cx.b.ins().iconst(types::I64, 0);
@@ -167,7 +167,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         match trigger {
             Some(t) => {
                 let others = (u64::MAX >> (64 - args.len())) & !(1u64 << t);
-                cx.b.ins().bor_imm(stale_mask, others as i64)
+                cx.b.ins().bor_imm_u(stale_mask, others as i64)
             }
             None => stale_mask,
         }
@@ -218,7 +218,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
     // The returned disc's TAINT/STALE bits are the production's tag.
-    let tagbits = cx.b.ins().band_imm(raw0, TAINT | STALE);
+    let tagbits = cx.b.ins().band_imm_u(raw0, TAINT | STALE);
     match ret_abi {
         Some(AbiKind::Scalar(p)) => {
             // A bottom's placeholder payload is harmless garbage, guarded
@@ -260,7 +260,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             let bad = match expected_disc {
                 Some(exp) => {
                     let clean0 = clean_disc(cx.b, raw0);
-                    let mismatch = cx.b.ins().icmp_imm(IntCC::NotEqual, clean0, exp);
+                    let mismatch = cx.b.ins().icmp_imm_s(IntCC::NotEqual, clean0, exp);
                     cx.b.ins().bor(t, mismatch)
                 }
                 None => t,
@@ -272,7 +272,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             // violation; the helper does not return. A bottom's
             // placeholder pair owns nothing and passes.
             {
-                let untainted = cx.b.ins().icmp_imm(IntCC::Equal, t, 0);
+                let untainted = cx.b.ins().icmp_imm_s(IntCC::Equal, t, 0);
                 let bad_shape_bl = cx.b.create_block();
                 let cont_bl = cx.b.create_block();
                 cx.b.ins().brif(untainted, bad_shape_bl, &[], cont_bl, &[]);
@@ -440,9 +440,9 @@ fn emit_site_block(
                 ));
             };
             let base = cx.site_ptr();
-            let word = cx.b.ins().iadd_imm(base, off as i64);
+            let word = cx.b.ins().iadd_imm_s(base, off as i64);
             // Our own block can be null; the helper maps null to null.
-            let live = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+            let live = cx.b.ins().icmp_imm_s(IntCC::NotEqual, base, 0);
             let zero = cx.b.ins().iconst(types::I64, 0);
             let word = cx.b.ins().select(live, word, zero);
             // The size is read at run time from `site_block_words`: our own
@@ -499,10 +499,10 @@ fn claim_callee_block(
         }
     };
     let i = cx.b.use_var(idx);
-    let off = cx.b.ins().imul_imm(i, (layout.words as i64) * 8);
+    let off = cx.b.ins().imul_imm_s(i, (layout.words as i64) * 8);
     let addr = cx.b.ins().iadd(table, off);
     // a null table is a body with no memory, whose callees have none
-    let live = cx.b.ins().icmp_imm(IntCC::NotEqual, table, 0);
+    let live = cx.b.ins().icmp_imm_s(IntCC::NotEqual, table, 0);
     let zero = cx.b.ins().iconst(types::I64, 0);
     Ok(cx.b.ins().select(live, addr, zero))
 }
@@ -743,11 +743,11 @@ fn emit_kernel_dispatch(
     let grow_bl = cx.b.create_block();
     let call = cx.call_helper("graphix_stack_check", &[])?;
     let flag = call[0];
-    let interrupted = cx.b.ins().icmp_imm(IntCC::Equal, flag, 0);
+    let interrupted = cx.b.ins().icmp_imm_s(IntCC::Equal, flag, 0);
     cx.b.ins().brif(interrupted, abort_bl, &[], direct_bl, &[]);
     cx.b.switch_to_block(direct_bl);
     cx.b.seal_block(direct_bl);
-    let direct = cx.b.ins().icmp_imm(IntCC::Equal, flag, 1);
+    let direct = cx.b.ins().icmp_imm_s(IntCC::Equal, flag, 1);
     cx.b.ins().brif(direct, call_bl, &[], grow_bl, &[]);
     cx.b.switch_to_block(abort_bl);
     cx.b.seal_block(abort_bl);
@@ -772,13 +772,13 @@ fn emit_kernel_dispatch(
     ));
     let base = cx.b.ins().stack_addr(types::I64, slot, 0);
     for (i, v) in clif_args.iter().enumerate() {
-        cx.b.ins().store(MemFlags::trusted(), *v, base, (8 * i) as i32);
+        cx.b.ins().store(MemFlagsData::trusted(), *v, base, (8 * i) as i32);
     }
-    let out = cx.b.ins().iadd_imm(base, (8 * n) as i64);
+    let out = cx.b.ins().iadd_imm_s(base, (8 * n) as i64);
     let thunk = cx.b.ins().func_addr(types::I64, callee.thunk);
     cx.call_helper("graphix_grow_stack", &[thunk, base, out])?;
-    let r0 = cx.b.ins().load(types::I64, MemFlags::trusted(), out, 0);
-    let r1 = cx.b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+    let r0 = cx.b.ins().load(types::I64, MemFlagsData::trusted(), out, 0);
+    let r1 = cx.b.ins().load(types::I64, MemFlagsData::trusted(), out, 8);
     cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
     Ok(())
 }
@@ -846,7 +846,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // `pending_exit` with the flag still set so `FusedKernel::update`
     // discards.
     {
-        let pending = cx.b.ins().icmp_imm(IntCC::Equal, r0, 0);
+        let pending = cx.b.ins().icmp_imm_s(IntCC::Equal, r0, 0);
         let abort_bl = cx.b.create_block();
         let cont_bl = cx.b.create_block();
         cx.b.ins().brif(pending, abort_bl, &[], cont_bl, &[]);

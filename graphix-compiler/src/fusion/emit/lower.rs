@@ -21,7 +21,7 @@ use cranelift_codegen::{
         AbiParam, Block, FuncRef, Function, InstBuilder, Signature, StackSlot,
         StackSlotData, StackSlotKind, Value as ClifValue, types,
     },
-    isa::CallConv,
+    isa::{CallConv, TargetFrontendConfig},
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::FuncId;
@@ -77,6 +77,7 @@ pub(super) fn compile_into_function<'a>(
     names: &'a RefCell<&'a mut Names>,
     body: &'a BodySource<'a>,
     callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
+    frontend: TargetFrontendConfig,
 ) -> Result<EmittedBody> {
     let spec = &body.spec;
     let entry = b.create_block();
@@ -191,6 +192,7 @@ pub(super) fn compile_into_function<'a>(
         lambda_call_sites: spec.lambda_call_sites,
         self_call: callees.self_call,
         type_env: spec.type_env,
+        frontend,
         claims: match spec.role {
             BodyRole::Parent => Channel::State,
             BodyRole::Callee(_) => Channel::Site,
@@ -204,7 +206,7 @@ pub(super) fn compile_into_function<'a>(
     // A wedged native loop aborts on interrupt; the kernel keeps its last result.
     if let Some((_, iters)) = loop_head {
         let i = b.use_var(iters);
-        let next = b.ins().iadd_imm(i, 1);
+        let next = b.ins().iadd_imm_s(i, 1);
         b.def_var(iters, next);
         emit_interrupt_check_every(b, &mut env, &lower, i)?;
     }
@@ -310,15 +312,15 @@ pub(super) struct CtxWord {
 
 impl CtxWord {
     pub(super) fn decode(b: &mut FunctionBuilder, word: ClifValue) -> Self {
-        let born = b.ins().band_imm(word, kernel_abi::CTX_BORN);
-        let w = b.ins().band_imm(word, kernel_abi::CTX_WAKE);
-        let wake = b.ins().ushr_imm(w, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
+        let born = b.ins().band_imm_u(word, kernel_abi::CTX_BORN);
+        let w = b.ins().band_imm_u(word, kernel_abi::CTX_WAKE);
+        let wake = b.ins().ushr_imm_u(w, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
         Self { born, wake }
     }
 
     pub(super) fn encode(self, b: &mut FunctionBuilder) -> ClifValue {
         let wake =
-            b.ins().ishl_imm(self.wake, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
+            b.ins().ishl_imm_u(self.wake, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
         b.ins().bor(self.born, wake)
     }
 }
@@ -543,6 +545,8 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) self_call: Option<OwnCall<'a>>,
     /// Type-resolution env snapshot ([`resolve_node_typ`]).
     pub(super) type_env: &'a Env,
+    /// The target an outlined chunk is finalized for.
+    pub(super) frontend: TargetFrontendConfig,
 }
 
 impl LowerCtx<'_> {
@@ -646,8 +650,8 @@ impl<'a> HelperRefs<'a> {
                         .next()
                         .unwrap_or_else(|| panic!("helper `{name}`: too few args"));
                     let s = slot(b);
-                    b.ins().stack_store(*w, s, 0);
-                    b.ins().stack_store(*payload, s, 8);
+                    b.ins().stack_store(types::I64, *w, s, 0);
+                    b.ins().stack_store(types::I64, *payload, s, 8);
                     wire.push(b.ins().stack_addr(types::I64, s, 0));
                 } else {
                     wire.push(*w);
@@ -666,8 +670,8 @@ impl<'a> HelperRefs<'a> {
         let call = b.ins().call(f, &wire);
         Ok(match out {
             Some(s) => smallvec::smallvec![
-                b.ins().stack_load(types::I64, s, 0),
-                b.ins().stack_load(types::I64, s, 8)
+                b.ins().stack_load(types::I64, types::I64, s, 0),
+                b.ins().stack_load(types::I64, types::I64, s, 8)
             ],
             None => b.inst_results(call).iter().copied().collect(),
         })
@@ -754,7 +758,7 @@ mod tests {
             refs.call(&mut b, "graphix_value_add", &[disc, payload, disc, payload])?;
         }
         b.ins().return_(&[]);
-        b.finalize();
+        b.finalize(super::super::jit::host_isa()?.frontend_config());
         let bytes: u32 = func.sized_stack_slots.values().map(|s| s.size).sum();
         assert!(bytes <= 48, "helper spill frame grew to {bytes} bytes");
         Ok(())

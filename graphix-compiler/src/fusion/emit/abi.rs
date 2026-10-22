@@ -107,7 +107,7 @@ pub(super) fn propagate_taint(
 ) -> ClifValue {
     let mut disc = base;
     for op in operands {
-        let t = b.ins().band_imm(*op, TAINT);
+        let t = b.ins().band_imm_u(*op, TAINT);
         disc = b.ins().bor(disc, t);
     }
     disc
@@ -121,9 +121,9 @@ pub(super) fn propagate_stale(
     operands: &[ClifValue],
 ) -> ClifValue {
     let Some((first, rest)) = operands.split_first() else { return base };
-    let mut all = b.ins().band_imm(*first, STALE);
+    let mut all = b.ins().band_imm_u(*first, STALE);
     for op in rest {
-        let s = b.ins().band_imm(*op, STALE);
+        let s = b.ins().band_imm_u(*op, STALE);
         all = b.ins().band(all, s);
     }
     b.ins().bor(base, all)
@@ -146,20 +146,20 @@ pub(super) fn taint_if(
     base: ClifValue,
     cond: ClifValue,
 ) -> ClifValue {
-    let tainted = b.ins().bor_imm(base, TAINT);
+    let tainted = b.ins().bor_imm_u(base, TAINT);
     b.ins().select(cond, tainted, base)
 }
 
 /// True (I8 bool) iff the disc's [`TAINT`] bit is set.
 pub(super) fn is_tainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    let t = b.ins().band_imm(disc, TAINT);
-    b.ins().icmp_imm(IntCC::NotEqual, t, 0)
+    let t = b.ins().band_imm_u(disc, TAINT);
+    b.ins().icmp_imm_s(IntCC::NotEqual, t, 0)
 }
 
 /// True (I8 bool) iff the disc's [`TAINT`] bit is clear.
 pub(super) fn is_untainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    let t = b.ins().band_imm(disc, TAINT);
-    b.ins().icmp_imm(IntCC::Equal, t, 0)
+    let t = b.ins().band_imm_u(disc, TAINT);
+    b.ins().icmp_imm_s(IntCC::Equal, t, 0)
 }
 
 /// [`is_untainted`] widened to `I64` for a helper argument.
@@ -171,8 +171,8 @@ pub(super) fn emit_untainted_i64(b: &mut FunctionBuilder, disc: ClifValue) -> Cl
 /// True (I8 bool) iff neither [`TAINT`] nor [`FIRE_TEST`] is set: the
 /// value fired this cycle.
 pub(super) fn is_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    let m = b.ins().band_imm(disc, TAINT | FIRE_TEST);
-    b.ins().icmp_imm(IntCC::Equal, m, 0)
+    let m = b.ins().band_imm_u(disc, TAINT | FIRE_TEST);
+    b.ins().icmp_imm_s(IntCC::Equal, m, 0)
 }
 
 /// OR [`STALE`] into a constant's `disc` when `born_flag` is 0: a
@@ -182,15 +182,15 @@ pub(super) fn const_stale_gate(
     born_flag: ClifValue,
     disc: ClifValue,
 ) -> ClifValue {
-    let not_init = b.ins().icmp_imm(IntCC::Equal, born_flag, 0);
-    let staled = b.ins().bor_imm(disc, STALE);
+    let not_init = b.ins().icmp_imm_s(IntCC::Equal, born_flag, 0);
+    let staled = b.ins().bor_imm_u(disc, STALE);
     b.ins().select(not_init, staled, disc)
 }
 
 /// Strip [`TAINT`] and [`STALE`], leaving the netidx discriminant: a
 /// flagged disc is an invalid tag to a `Value` helper or a tag compare.
 pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    b.ins().band_imm(disc, !(TAINT | STALE))
+    b.ins().band_imm_u(disc, !(TAINT | STALE))
 }
 
 /// The kind of an owned non-scalar local.

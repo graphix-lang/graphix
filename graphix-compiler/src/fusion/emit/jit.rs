@@ -27,14 +27,14 @@ use cranelift_codegen::{
     control::ControlPlane,
     ir::{
         AbiParam, ExtFuncData, ExternalName, FuncRef, Function, GlobalValue,
-        GlobalValueData, InstBuilder, MemFlags, Signature, UserExternalName,
+        GlobalValueData, InstBuilder, MemFlagsData, Signature, UserExternalName,
         UserExternalNameRef, UserFuncName, Value as ClifValue, immediates::Imm64, types,
     },
     isa::{CallConv, OwnedTargetIsa, TargetIsa},
     settings::{self, Configurable},
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
+use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{
     DataId, FuncId, Linkage, Module, ModuleError, ModuleReloc, ModuleRelocTarget,
     default_libcall_names,
@@ -54,6 +54,7 @@ use triomphe::Arc;
 
 use super::{
     abi::{LocalKind, local_payload_ty},
+    arena::Arena,
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
     lower::{
         Callees, EmittedBody, HelperFuncIds, KernelFns, SiteLayout, compile_into_function,
@@ -107,7 +108,7 @@ struct Compiled {
 }
 
 /// The host ISA every module compiles for.
-fn host_isa() -> Result<OwnedTargetIsa> {
+pub(super) fn host_isa() -> Result<OwnedTargetIsa> {
     isa_with(|_| Ok(()))
 }
 
@@ -388,7 +389,7 @@ fn backend(
         .map_err(|e| anyhow!("compile: {}", e.inner))?;
     let code = ctx.compiled_code().expect("compiled above");
     let bytes: Box<[u8]> = code.code_buffer().into();
-    let align = code.buffer.alignment as u64;
+    let align = code.buffer.min_alignment as u64;
     let relocs = code
         .buffer
         .relocs()
@@ -523,11 +524,22 @@ const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
 /// relocation reaches ±2GiB.
 const JIT_ARENA_MAX: usize = 2 * 1024 * 1024 * 1024 - 1;
 
-static ARENA_SIZE: LazyLock<usize> =
-    LazyLock::new(|| match std::env::var("GRAPHIX_JIT_ARENA") {
-        Ok(v) => v.parse().unwrap_or(JIT_ARENA_RESERVE),
-        Err(_) => JIT_ARENA_RESERVE,
-    });
+/// The arena a generation reserves first: `GRAPHIX_JIT_ARENA` (bytes),
+/// from a page to [`JIT_ARENA_MAX`]; any other value leaves the JIT
+/// unbuildable.
+static ARENA_SIZE: LazyLock<Result<usize, CompactString>> = LazyLock::new(|| {
+    let Ok(v) = std::env::var("GRAPHIX_JIT_ARENA") else {
+        return Ok(JIT_ARENA_RESERVE);
+    };
+    let page = region::page::size();
+    match v.parse::<usize>() {
+        Ok(n) if (page..=JIT_ARENA_MAX).contains(&n) => Ok(n),
+        Ok(_) => Err(format_compact!(
+            "GRAPHIX_JIT_ARENA={v} is outside {page}..={JIT_ARENA_MAX}"
+        )),
+        Err(e) => Err(format_compact!("GRAPHIX_JIT_ARENA={v}: {e}")),
+    }
+});
 
 impl Generation {
     fn new(isa: &OwnedTargetIsa, arena: usize) -> Result<Self> {
@@ -536,7 +548,7 @@ impl Generation {
         // One contiguous reservation: colocated (Linkage::Local) calls use a
         // ±2GiB PC-relative relocation and finalize panics if two functions
         // land further apart. `GRAPHIX_JIT_ARENA` (bytes) overrides the size.
-        // CR claude for eric: [risk/low] On Windows this reservation is a commit.
+        // XCR claude for eric: [risk/low] On Windows this reservation is a commit.
         // ArenaMemoryProvider allocates through region::alloc, which there calls
         // VirtualAlloc with MEM_COMMIT | MEM_RESERVE. Each fusing context (one Jit
         // each, plus every retired generation still held by a kernel) therefore charges
@@ -547,8 +559,19 @@ impl Generation {
         // first and commits per segment, or one arena shared across a process's
         // contexts. Separately, GRAPHIX_JIT_ARENA should be clamped to the 2GiB
         // colocated-call range and a malformed value reported, not ignored. (f-jit-05)
+        // 2026-10-22 claude: Eric 2026-10-22: option 2, and we follow cranelift anyway.
+        // Cranelift is 0.137 (JITMemoryKind is exported from 0.134); the generation's
+        // memory is now emit/arena.rs's Arena, which reserves on every host and commits
+        // a page run per allocation (Windows: VirtualAlloc MEM_RESERVE, then
+        // MEM_COMMIT). Measured on the win11 VM: 64 of cranelift's 256MB arenas raised
+        // PrivateUsage by 16,416 MB, 64 of ours by 0 MB. GRAPHIX_JIT_ARENA outside a
+        // page..2GiB, or malformed, now fails Jit::new with the reason in the 'fusion
+        // is unavailable' warning. Regression pins:
+        // arena::tests::a_reservation_commits_only_what_is_allocated (Windows only),
+        // the other arena tests, graphix-shell jit_arena_rotation and jit_unavailable
+        // (run on the VM too). UPSTREAM.md has the region/cranelift-jit entry.
         builder.memory_provider(Box::new(
-            ArenaMemoryProvider::new_with_size(arena)
+            Arena::new(arena)
                 .map_err(|e| anyhow!("jit arena reservation failed: {e}"))?,
         ));
         // Helpers resolve by pointer under the registry's symbol name, never
@@ -1202,10 +1225,11 @@ impl Emission {
     ) -> Result<Function> {
         let mut func =
             Function::with_name_signature(UserFuncName::user(0, id.as_u32()), sig);
+        let frontend = self.shared.isa.frontend_config();
         let mut b = FunctionBuilder::new(&mut func, &mut self.builder_ctx);
         match emit(&mut self.names, &self.shared.helpers, &mut b) {
             Ok(()) => {
-                b.finalize();
+                b.finalize(frontend);
                 Ok(func)
             }
             Err(e) => {
@@ -1243,6 +1267,8 @@ pub struct Jit {
     generation: Generation,
     /// Generations retired so far.
     retired: usize,
+    /// The arena a fresh generation reserves first.
+    arena: usize,
     /// Every compiled kernel body and spill thunk, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
     // CR claude for eric: [perf/low] Nothing ever removes entries from this map, from
@@ -1277,14 +1303,17 @@ struct InFlight {
 unsafe impl Send for Jit {}
 
 impl Jit {
-    /// Errs if cranelift cannot target the host ISA.
+    /// Errs if cranelift cannot target the host ISA or `GRAPHIX_JIT_ARENA`
+    /// is not a size it can use.
     pub fn new() -> Result<Self> {
         let shared = Arc::new(EmitShared::new()?);
-        let generation = Generation::new(&shared.isa, *ARENA_SIZE)?;
+        let arena = *ARENA_SIZE.as_ref().map_err(|e| anyhow!("{e}"))?;
+        let generation = Generation::new(&shared.isa, arena)?;
         Ok(Self {
             shared,
             generation,
             retired: 0,
+            arena,
             records: BTreeMap::new(),
             in_flight: None,
             restored: Vec::new(),
@@ -1512,7 +1541,7 @@ impl Jit {
         &mut self,
         wrappers: &[Arc<BodyRecord>],
     ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
-        let mut arena = *ARENA_SIZE;
+        let mut arena = self.arena;
         loop {
             let e = match self.try_install(wrappers, arena) {
                 Ok(r) => return Ok(r),
@@ -1983,6 +2012,7 @@ fn emit_kernel_body(
     let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
     let chunks: RefCell<Vec<ChunkFn>> = RefCell::new(Vec::new());
     let mut emitted = None;
+    let frontend = em.shared.isa.frontend_config();
     let func = em.build(func_id, sig.clone(), |names, helpers, b| {
         // Import in `funcids` order so the funcref numbering is deterministic.
         let mut callee_refs: BTreeMap<KernelKey, KernelFns<FuncRef>> = BTreeMap::new();
@@ -2019,6 +2049,7 @@ fn emit_kernel_body(
             &names,
             body_emitter,
             callee_layouts,
+            frontend,
         )?);
         Ok(())
     });
@@ -2115,14 +2146,14 @@ fn emit_trampoline(
                 // store. Or make Jit::new refuse big-endian targets so they run
                 // unfused. The comment above this load should then state the real
                 // invariant. (f-jit-06)
-                b.ins().load(p.value_type, MemFlags::trusted(), args, (8 * i) as i32)
+                b.ins().load(p.value_type, MemFlagsData::trusted(), args, (8 * i) as i32)
             })
             .collect();
         let call = b.ins().call(target_ref, &vals);
         let results: SmallVec<[ClifValue; 2]> =
             b.inst_results(call).iter().copied().collect();
         for (i, r) in results.iter().enumerate() {
-            b.ins().store(MemFlags::trusted(), *r, out, (8 * i) as i32);
+            b.ins().store(MemFlagsData::trusted(), *r, out, (8 * i) as i32);
         }
         b.ins().return_(&[]);
         Ok(())

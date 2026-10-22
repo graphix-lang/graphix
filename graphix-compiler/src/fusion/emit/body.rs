@@ -18,7 +18,8 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, InstBuilder, MemFlags, TrapCode, Value as ClifValue, condcodes::IntCC, types,
+    Block, InstBuilder, MemFlagsData, TrapCode, Value as ClifValue, condcodes::IntCC,
+    types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::DataId;
@@ -173,8 +174,8 @@ pub(super) fn emit_interrupt_check_every(
     ctx: &LowerCtx,
     i: ClifValue,
 ) -> Result<()> {
-    let masked = b.ins().band_imm(i, POLL_EVERY - 1);
-    let due = b.ins().icmp_imm(IntCC::Equal, masked, 0);
+    let masked = b.ins().band_imm_u(i, POLL_EVERY - 1);
+    let due = b.ins().icmp_imm_s(IntCC::Equal, masked, 0);
     let poll_bl = b.create_block();
     let cont = b.create_block();
     b.ins().brif(due, poll_bl, &[], cont, &[]);
@@ -351,10 +352,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub(crate) fn first_use(&mut self, word: Option<StateWord>) -> ClifValue {
         let init = self.born_flag();
         let Some(StateWord(addr)) = word else { return init };
-        let stored = self.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-        let first = self.b.ins().icmp_imm(IntCC::Equal, stored, 0);
+        let stored = self.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0);
+        let first = self.b.ins().icmp_imm_s(IntCC::Equal, stored, 0);
         let one = self.b.ins().iconst(types::I64, 1);
-        self.b.ins().store(MemFlags::trusted(), one, addr, 0);
+        self.b.ins().store(MemFlagsData::trusted(), one, addr, 0);
         let first = self.b.ins().uextend(types::I64, first);
         self.b.ins().bor(init, first)
     }
@@ -377,7 +378,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// Address a claimed offset in this body's channel.
     pub(crate) fn claimed_word(&mut self, off: i32) -> StateWord {
         let base = self.ctx.claims_channel().ptr;
-        let addr = self.b.ins().iadd_imm(base, off as i64);
+        let addr = self.b.ins().iadd_imm_s(base, off as i64);
         if self.ctx.claims == Channel::Site {
             self.b.ins().trapz(base, TrapCode::HEAP_OUT_OF_BOUNDS);
         }
@@ -522,7 +523,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 call[0]
             };
             let i = self.b.use_var(*fidx);
-            let o = self.b.ins().ishl_imm(i, 3);
+            let o = self.b.ins().ishl_imm_u(i, 3);
             word = self.b.ins().iadd(dir, o);
         }
         Ok(word)
@@ -601,12 +602,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             let word0 = match r.anchor {
                 TruncAnchor::State(off) => {
                     let sp = self.state_ptr();
-                    self.b.ins().iadd_imm(sp, off as i64)
+                    self.b.ins().iadd_imm_s(sp, off as i64)
                 }
                 TruncAnchor::Site(off) => {
                     let base = self.site_ptr();
                     self.b.ins().trapz(base, TrapCode::HEAP_OUT_OF_BOUNDS);
-                    self.b.ins().iadd_imm(base, off as i64)
+                    self.b.ins().iadd_imm_s(base, off as i64)
                 }
             };
             {
@@ -624,7 +625,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 } else {
                     match r.leaf {
                         TruncLeaf::Table { stride } => {
-                            let words = cx.b.ins().imul_imm(len, stride as i64);
+                            let words = cx.b.ins().imul_imm_s(len, stride as i64);
                             let own0 = cx.b.ins().iconst(types::I64, 0);
                             cx.call_helper(
                                 "graphix_slot_state_table",
@@ -667,7 +668,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             (f.idx_var, base)
         };
         let i = self.b.use_var(idx_var);
-        let off = self.b.ins().ishl_imm(i, 3);
+        let off = self.b.ins().ishl_imm_u(i, 3);
         Some(StateWord(self.b.ins().iadd(table, off)))
     }
 
@@ -1006,9 +1007,9 @@ pub(super) fn fold_stale(
     disc: ClifValue,
     mask: ClifValue,
 ) -> ClifValue {
-    let vs = b.ins().band_imm(disc, STALE);
+    let vs = b.ins().band_imm_u(disc, STALE);
     let folded = b.ins().band(vs, mask);
-    let cleaned = b.ins().band_imm(disc, !STALE);
+    let cleaned = b.ins().band_imm_u(disc, !STALE);
     b.ins().bor(cleaned, folded)
 }
 

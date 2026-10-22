@@ -272,7 +272,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         },
         // A standing bottom scrutinee does not re-fire the select.
         &mut |cx| {
-            let s = cx.b.ins().band_imm(scrut_disc, STALE);
+            let s = cx.b.ins().band_imm_u(scrut_disc, STALE);
             emit_select_bottom_value(cx, merge_shape, merge, s)
         },
         &mut |cx, stale_bits| {
@@ -983,7 +983,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         };
         install_arm_binds(cx, &binds, scrut, Some(mask))?;
         let gcv = g.node.emit_clif(cx)?;
-        let gs = cx.b.ins().band_imm(gcv.disc, STALE);
+        let gs = cx.b.ins().band_imm_u(gcv.disc, STALE);
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
@@ -1121,7 +1121,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 // accumulator (a constant in it fires at an init or a wake)
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
-                    let gs = cx.b.ins().band_imm(gcv.disc, STALE);
+                    let gs = cx.b.ins().band_imm_u(gcv.disc, STALE);
                     let cur = cx.b.use_var(acc);
                     let n = cx.b.ins().band(cur, gs);
                     cx.b.def_var(acc, n);
@@ -1182,7 +1182,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         drop_prologue(cx)?;
         // The undecidable outcome is fresh iff a consumed input fired:
         // the scrutinee or a consulted guard.
-        let ss = cx.b.ins().band_imm(sdisc, STALE);
+        let ss = cx.b.ins().band_imm_u(sdisc, STALE);
         let af = cx.b.use_var(acc);
         let undet_stale = cx.b.ins().band(ss, af);
         emit_undet(cx, undet_stale)?;
@@ -1241,7 +1241,7 @@ fn emit_inferred_guard_cond(
             let disc = clean_disc(cx.b, scrut.disc());
             let mut cond = cx.b.ins().iconst(types::I8, 0);
             for prim in prims.iter() {
-                let matches = cx.b.ins().icmp_imm(IntCC::Equal, disc, prim as i64);
+                let matches = cx.b.ins().icmp_imm_s(IntCC::Equal, disc, prim as i64);
                 cond = cx.b.ins().bor(cond, matches);
             }
             cond
@@ -1367,7 +1367,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                         match (kernel_abi::nullable_error_marked(&scrut_typ), exact, tag)
                         {
                             // `[T, null]` tested for `T`: "is a T" is "is not null"
-                            (Some(false), true, _) => Some(cx.b.ins().icmp_imm(
+                            (Some(false), true, _) => Some(cx.b.ins().icmp_imm_s(
                                 IntCC::NotEqual,
                                 cd,
                                 value_disc::NULL,
@@ -1437,7 +1437,7 @@ fn emit_null_cond(cx: &mut BodyCx, scrut: SelectScrut, typ: &Type) -> Result<Cli
             kind: ValueKind::Nullable | ValueKind::Value, disc, ..
         } => {
             let disc = clean_disc(cx.b, disc);
-            Ok(cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL))
+            Ok(cx.b.ins().icmp_imm_s(IntCC::Equal, disc, value_disc::NULL))
         }
         _ => bail!("emit_clif: null predicate over {typ}"),
     }
@@ -1731,7 +1731,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     let base = clean_disc(cx.b, disc);
     let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
     let d = propagate_stale(cx.b, d, &[disc]);
-    let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
+    let scrut_stale = cx.b.ins().band_imm_u(scrut_disc, STALE);
     let d = fold_stale(cx.b, d, scrut_stale);
     let d = fold_stale(cx.b, d, guards_stale);
     // Drop the arm's owned pattern binds; the widening above made the
@@ -2052,12 +2052,12 @@ fn emit_member_cond(
         match (kernel_abi::nullable_inner(scrut_typ).filter(composite), pred) {
             (Some(inner), pred) if !written || pred.as_ref() == Some(&inner) => {
                 let cd = clean_disc(cx.b, disc);
-                (cx.b.ins().icmp_imm(IntCC::Equal, cd, value_disc::ARRAY), inner)
+                (cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY), inner)
             }
             (_, Some(pred)) if written => {
                 let typ = cx.interned_type(&pred_typ.resolve_tvars())?;
                 let call = cx.call_helper("graphix_value_is_a", &[typ, disc, payload])?;
-                (cx.b.ins().icmp_imm(IntCC::NotEqual, call[0], 0), pred)
+                (cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0), pred)
             }
             (_, Some(pred)) => {
                 let test = match emit_inferred_guard_cond(cx, pred_typ, scrut, scrut_typ)?
@@ -2205,7 +2205,7 @@ fn placeholder_for_kind(
         LocalKind::Value => AbiKind::Value,
     };
     let cv = emit_bottom_of_kind(cx, abi)?;
-    Ok((cx.b.ins().bor_imm(cv.disc, STALE), cv.payload))
+    Ok((cx.b.ins().bor_imm_u(cv.disc, STALE), cv.payload))
 }
 
 /// An or-pattern alternative's structure condition (`None`: it takes

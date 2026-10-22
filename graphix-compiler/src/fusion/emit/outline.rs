@@ -25,8 +25,8 @@ use crate::{
 };
 use anyhow::Result;
 use cranelift_codegen::ir::{
-    FuncRef, Function, InstBuilder, MemFlags, StackSlotData, StackSlotKind, UserFuncName,
-    Value as ClifValue, types,
+    FuncRef, Function, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind,
+    UserFuncName, Value as ClifValue, types,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::FuncId;
@@ -99,14 +99,14 @@ pub(super) fn emit_outlined(
     ];
     let bases = tables.iter().map(|t| t.base);
     for (i, v) in header.into_iter().chain(bases).enumerate() {
-        cx.b.ins().store(MemFlags::trusted(), v, fbase, word(i));
+        cx.b.ins().store(MemFlagsData::trusted(), v, fbase, word(i));
     }
     let base = HEADER + tables.len();
     for (i, vv) in locals.iter().enumerate() {
         let disc = cx.b.use_var(vv.disc);
         let payload = cx.b.use_var(vv.payload);
-        cx.b.ins().store(MemFlags::trusted(), disc, fbase, word(base + 2 * i));
-        cx.b.ins().store(MemFlags::trusted(), payload, fbase, word(base + 2 * i + 1));
+        cx.b.ins().store(MemFlagsData::trusted(), disc, fbase, word(base + 2 * i));
+        cx.b.ins().store(MemFlagsData::trusted(), payload, fbase, word(base + 2 * i + 1));
     }
     let chunk_ref = cx.ctx.names.borrow().import_func(id, cx.b.func);
     let chunk = cx.b.ins().func_addr(types::I64, chunk_ref);
@@ -131,7 +131,7 @@ pub(super) fn emit_outlined(
     cx.b.switch_to_block(cont_bl);
     cx.b.seal_block(cont_bl);
     let out = |cx: &mut BodyCx, i: usize| {
-        cx.b.ins().load(types::I64, MemFlags::trusted(), obase, word(i))
+        cx.b.ins().load(types::I64, MemFlagsData::trusted(), obase, word(i))
     };
     let taint = out(cx, 0);
     let cur = cx.b.use_var(accs.taint);
@@ -242,7 +242,7 @@ fn emit_chunk(
     let params = b.block_params(entry);
     let (frame, lo, hi, out) = (params[0], params[1], params[2], params[3]);
     let load = |b: &mut FunctionBuilder, ty, i| {
-        b.ins().load(ty, MemFlags::trusted(), frame, word(i))
+        b.ins().load(ty, MemFlagsData::trusted(), frame, word(i))
     };
     let ctx_word = load(&mut b, types::I64, CTX);
     let state = load(&mut b, types::I64, STATE);
@@ -326,6 +326,7 @@ fn emit_chunk(
         lambda_call_sites: p.lambda_call_sites,
         self_call: p.self_call,
         type_env: p.type_env,
+        frontend: p.frontend,
     };
     let mut ccx = BodyCx { b: &mut b, env: &mut env, ctx: &ctx };
     let slots = Range { lo, hi, out, src, src_disc, len, entered };
@@ -340,7 +341,7 @@ fn emit_chunk(
         b.ins().return_(&[]);
     }
     b.seal_all_blocks();
-    b.finalize();
+    b.finalize(p.frontend);
     p.chunks.borrow_mut().push(ChunkFn { id, func, consts: consts.into_inner() });
     Ok((id, pending))
 }
@@ -372,7 +373,8 @@ fn emit_range(
     let sink = match kind {
         // the invoker took the range's buf, on its own thread
         SinkKind::Buf => {
-            let buf = cx.b.ins().load(types::I64, MemFlags::trusted(), r.out, word(2));
+            let buf =
+                cx.b.ins().load(types::I64, MemFlagsData::trusted(), r.out, word(2));
             open_buf(cx, BufKind::Value, buf);
             Sink::Buf(buf)
         }
@@ -395,7 +397,7 @@ fn emit_range(
     let closed =
         cx.ctx.closed_frame.borrow_mut().take().expect("the loop closed its frame");
     let store = |cx: &mut BodyCx, v, i| {
-        cx.b.ins().store(MemFlags::trusted(), v, r.out, word(i));
+        cx.b.ins().store(MemFlagsData::trusted(), v, r.out, word(i));
     };
     let taint = cx.b.use_var(accs.taint);
     store(cx, taint, 0);

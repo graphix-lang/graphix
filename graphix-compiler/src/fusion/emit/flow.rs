@@ -44,21 +44,6 @@ use super::{
 
 /// True only when no node in the subtree could carry an effect or
 /// diagnostic. CallSite and Qop (`?` and `$`) keep their statements live.
-// CR claude for eric: [bug/medium] A handler-less `?` counts as effect-free here, so
-// block_live drops a non-tail statement that holds one (`e?;` or an unused `let k =
-// e?;`). The kernel then never logs the unhandled error, but the node-walk evaluates
-// the statement and logs it under FAILURE_TARGET. A failure that `--no-fusion` reports
-// disappears in the default fused run. This breaks the rule that `$` and handler-less
-// `?` log a swallowed error from both backends, and design/distributed_jit.md
-// contradicts itself here: it calls these diagnostics "not effects" but also says both
-// engines log them. One fix is to keep any statement that holds a handler-less `?` live
-// (emit its error check and the graphix_swallowed_error log, then discard the value).
-// The other is to rule that a dead `?` is silent and make the node-walk match. Either
-// way, add a pin that captures FAILURE_TARGET in both modes. probe:
-// design/review-2026-10-12/repro/x-rerun-6-05.gx (x-rerun-6-05)
-// 2026-10-14 codex: Both Qop and OrNever now keep their statements live. The test
-// fusion_diagnostics::unused_qops_still_report_errors pins both diagnostics
-// in all four modes; reverting the liveness change loses both JIT reports.
 pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| {
@@ -267,7 +252,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // A fired scrutinee is one of this select's own fires; on the tail
     // spine the accumulator is the only channel that carries it to the
     // return. band keeps a fired bit cleared across iterations.
-    let scrut_stale_bit = cx.b.ins().band_imm(scrut_disc, STALE);
+    let scrut_stale_bit = cx.b.ins().band_imm_u(scrut_disc, STALE);
     let cur = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
     let n = cx.b.ins().band(cur, scrut_stale_bit);
     cx.b.def_var(cx.ctx.tail.tail_scrut_stale_acc, n);
@@ -596,7 +581,7 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
     let clean = clean_disc(cx.b, cv.disc);
-    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, sink.bad_disc());
+    let is_err = cx.b.ins().icmp_imm_s(IntCC::Equal, clean, sink.bad_disc());
     let fresh = is_fresh(cx.b, cv.disc);
     let deliverable = cx.b.ins().band(is_err, fresh);
     let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
@@ -654,7 +639,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // `clean(disc) == sink.bad_disc()` means bottom (mask taint first —
     // a tainted disc is not a structural Error).
     let clean = clean_disc(cx.b, disc);
-    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, sink.bad_disc());
+    let is_err = cx.b.ins().icmp_imm_s(IntCC::Equal, clean, sink.bad_disc());
     // Delivery requires a fresh error: a tainted error is a phantom
     // computed from placeholders and a stale one never fired.
     let fresh = is_fresh(cx.b, disc);

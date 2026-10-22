@@ -40,11 +40,22 @@ netidx-derive = { workspace = true }
 netidx-value = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }
+region = { workspace = true }
 rayon = { workspace = true }
 smallvec = { workspace = true }
 stacker = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+wasmtime-internal-jit-icache-coherence = { workspace = true }
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

@@ -245,12 +245,12 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         && prim.is_integer()
         && node_int_div_may_bottom(lhs, rhs)
     {
-        let is_zero = cx.b.ins().icmp_imm(IntCC::Equal, r, 0);
+        let is_zero = cx.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
         // `x % -1` is `x % 1`, 0, without the MIN ÷ -1 the hardware traps on
         let (bad, divisor_one) = match (prim.is_signed(), op) {
             (false, _) => (is_zero, is_zero),
             (true, ArithOp::Mod) => {
-                let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
+                let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
                 (is_zero, cx.b.ins().bor(is_zero, is_neg1))
             }
             (true, _) => {
@@ -260,8 +260,8 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
                     PrimType::I32 => i32::MIN as i64,
                     _ => i64::MIN,
                 };
-                let is_min = cx.b.ins().icmp_imm(IntCC::Equal, l, min);
-                let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
+                let is_min = cx.b.ins().icmp_imm_s(IntCC::Equal, l, min);
+                let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
                 let overflow = cx.b.ins().band(is_min, is_neg1);
                 let bad = cx.b.ins().bor(is_zero, overflow);
                 (bad, bad)
@@ -391,7 +391,7 @@ fn emit_checked_int_arith<R: Rt, E: UserEvent>(
     let ty = prim_to_clif(prim);
     let (value, bad) = match op {
         ArithOp::Div | ArithOp::Mod => {
-            let mut bad = cx.b.ins().icmp_imm(IntCC::Equal, r, 0);
+            let mut bad = cx.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
             if signed {
                 let min: i64 = match prim {
                     PrimType::I8 => i8::MIN as i64,
@@ -399,8 +399,8 @@ fn emit_checked_int_arith<R: Rt, E: UserEvent>(
                     PrimType::I32 => i32::MIN as i64,
                     _ => i64::MIN,
                 };
-                let is_min = cx.b.ins().icmp_imm(IntCC::Equal, l, min);
-                let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
+                let is_min = cx.b.ins().icmp_imm_s(IntCC::Equal, l, min);
+                let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
                 let overflow = cx.b.ins().band(is_min, is_neg1);
                 bad = cx.b.ins().bor(bad, overflow);
             }
@@ -439,7 +439,7 @@ fn emit_checked_int_arith<R: Rt, E: UserEvent>(
                     let a = cx.b.ins().bxor(l, v);
                     let b = cx.b.ins().bxor(r, v);
                     let both = cx.b.ins().band(a, b);
-                    cx.b.ins().icmp_imm(IntCC::SignedLessThan, both, 0)
+                    cx.b.ins().icmp_imm_s(IntCC::SignedLessThan, both, 0)
                 }
                 false => cx.b.ins().icmp(IntCC::UnsignedLessThan, v, l),
             };
@@ -453,7 +453,7 @@ fn emit_checked_int_arith<R: Rt, E: UserEvent>(
                     let a = cx.b.ins().bxor(l, r);
                     let b = cx.b.ins().bxor(l, v);
                     let both = cx.b.ins().band(a, b);
-                    cx.b.ins().icmp_imm(IntCC::SignedLessThan, both, 0)
+                    cx.b.ins().icmp_imm_s(IntCC::SignedLessThan, both, 0)
                 }
                 false => cx.b.ins().icmp(IntCC::UnsignedLessThan, l, r),
             };
@@ -465,12 +465,12 @@ fn emit_checked_int_arith<R: Rt, E: UserEvent>(
                 // the high word is not the low word's sign
                 true => {
                     let hi = cx.b.ins().smulhi(l, r);
-                    let sign = cx.b.ins().sshr_imm(v, 63);
+                    let sign = cx.b.ins().sshr_imm_u(v, 63);
                     cx.b.ins().icmp(IntCC::NotEqual, hi, sign)
                 }
                 false => {
                     let hi = cx.b.ins().umulhi(l, r);
-                    cx.b.ins().icmp_imm(IntCC::NotEqual, hi, 0)
+                    cx.b.ins().icmp_imm_s(IntCC::NotEqual, hi, 0)
                 }
             };
             (v, bad)
@@ -580,7 +580,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
             let call = cx.call_helper("graphix_value_eq", &args)?;
             let eq = call[0];
             match op {
-                CmpOp::Ne => cx.b.ins().bxor_imm(eq, 1),
+                CmpOp::Ne => cx.b.ins().bxor_imm_u(eq, 1),
                 _ => eq,
             }
         }
@@ -593,7 +593,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
                 CmpOp::Lte => IntCC::SignedLessThanOrEqual,
                 _ => IntCC::SignedGreaterThanOrEqual,
             };
-            cx.b.ins().icmp_imm(cc, ord, 0)
+            cx.b.ins().icmp_imm_s(cc, ord, 0)
         }
     };
     drop_operands(cx, &[l, r])?;
@@ -1161,7 +1161,7 @@ pub(super) fn emit_never<R: Rt, E: UserEvent>(
         let av = arg.emit_clif(cx)?;
         super::flow::emit_discard_result(cx, arg, av)?;
     }
-    Ok(CompiledExpr::new(cx.b.ins().bor_imm(cv.disc, STALE), cv.payload))
+    Ok(CompiledExpr::new(cx.b.ins().bor_imm_u(cv.disc, STALE), cv.payload))
 }
 
 /// A fresh tainted placeholder of the given ABI kind: an owned empty
