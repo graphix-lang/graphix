@@ -18,9 +18,10 @@ use graphix_rt::{CompExp, GXExt, GXHandle, Ref};
 use iced_core::{InputMethod, clipboard, mouse, window};
 use iced_runtime::user_interface;
 use iced_wgpu::wgpu;
+use indexmap::IndexMap;
 use log::error;
 use netidx::publisher::Value;
-use nohash::{IntMap, IntSet};
+use nohash::{BuildNoHashHasher, IntMap, IntSet};
 use poolshark::local::LPooled;
 use std::{
     cell::RefCell,
@@ -109,8 +110,9 @@ struct GuiHandler<X: GXExt> {
     gpu: Option<GpuState>,
     rt: tokio::runtime::Handle,
     stop: Option<Stop>,
-    /// One per window open, its surface and interface state inside.
-    windows: IntMap<BindId, TrackedWindow<X>>,
+    /// One per window open, its surface and interface state inside, in
+    /// the order they opened.
+    windows: IndexMap<BindId, TrackedWindow<X>, BuildNoHashHasher<BindId>>,
     win_to_bid: AHashMap<WindowId, BindId>,
     /// Windows the user closed: kept closed until the program drops them
     /// from its root array.
@@ -223,7 +225,7 @@ impl<X: GXExt> GuiHandler<X> {
 
     /// Drop a window, and the GPU with the last one.
     fn remove(&mut self, bid: BindId) {
-        if let Some(tw) = self.windows.remove(&bid) {
+        if let Some(tw) = self.windows.shift_remove(&bid) {
             self.win_to_bid.remove(&tw.window_id());
         }
         if self.windows.is_empty() {
@@ -624,7 +626,7 @@ pub(crate) fn run<X: GXExt>(
         gpu: None,
         rt,
         stop: Some(stop),
-        windows: IntMap::default(),
+        windows: IndexMap::default(),
         win_to_bid: AHashMap::default(),
         closed: IntSet::default(),
         pending: IntMap::default(),

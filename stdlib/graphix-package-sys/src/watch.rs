@@ -22,7 +22,6 @@ use graphix_package_core::{CachedVals, Invocation, RtVar, seam_arg, seam_tick};
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::IntoValue;
 use netidx_value::{FromValue, ValArray, Value};
-use nohash::IntSet;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
 use std::{
@@ -480,32 +479,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
     }
 }
 
-fn extract_bind_ids(v: &Value, out: &mut IntSet<BindId>) {
+/// The watches `v` holds, a watch or an array or map of them, onto
+/// `out` in the order `v` holds them, each once.
+fn extract_bind_ids(v: &Value, out: &mut Vec<BindId>) {
+    let mut add = |v: &Value| {
+        if let Value::Abstract(a) = v
+            && let Some(wv) = a.downcast_ref::<WatchValue>()
+            && !out.contains(&wv.bind_id)
+        {
+            out.push(wv.bind_id)
+        }
+    };
     match v {
-        Value::Abstract(a) => {
-            if let Some(wv) = a.downcast_ref::<WatchValue>() {
-                out.insert(wv.bind_id);
-            }
-        }
-        Value::Array(arr) => {
-            for elem in arr.iter() {
-                if let Value::Abstract(a) = elem {
-                    if let Some(wv) = a.downcast_ref::<WatchValue>() {
-                        out.insert(wv.bind_id);
-                    }
-                }
-            }
-        }
-        Value::Map(m) => {
-            for (_, val) in m.clone().into_iter() {
-                if let Value::Abstract(a) = &val {
-                    if let Some(wv) = a.downcast_ref::<WatchValue>() {
-                        out.insert(wv.bind_id);
-                    }
-                }
-            }
-        }
-        _ => (),
+        Value::Array(arr) => arr.iter().for_each(add),
+        Value::Map(m) => m.clone().into_iter().for_each(|(_, v)| add(&v)),
+        v => add(v),
     }
 }
 
@@ -559,7 +547,9 @@ pub(crate) type WatchEvents = WatchStream<EventsKind>;
 pub(crate) struct WatchStream<K: WatchKind> {
     var: RtVar,
     cached: CachedVals,
-    bind_ids: IntSet<BindId>,
+    /// The watches, in the order the argument holds them: a cycle's
+    /// events of several are output in this order.
+    bind_ids: Vec<BindId>,
     out: TagValue,
     /// Asleep since the last update: the first update after watches again.
     slept: WakeBit,
@@ -581,7 +571,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
         Ok(Box::new(Self {
             var: RtVar::new(ctx, top_id),
             cached: CachedVals::new(from),
-            bind_ids: IntSet::default(),
+            bind_ids: Vec::new(),
             out: TagValue::phantom(),
             slept: WakeBit::default(),
             kind: PhantomData,
@@ -598,7 +588,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
         Ok(Box::new(Self {
             var,
             cached,
-            bind_ids: IntSet::default(),
+            bind_ids: Vec::new(),
             out: TagValue::phantom(),
             slept: WakeBit::default(),
             kind: PhantomData,
@@ -608,7 +598,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
 
 impl<K: WatchKind> WatchStream<K> {
     fn unwatch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        for bid in self.bind_ids.drain() {
+        for bid in self.bind_ids.drain(..) {
             ctx.release_var(bid, self.var.top_id());
         }
     }

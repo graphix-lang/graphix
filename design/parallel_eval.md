@@ -704,35 +704,25 @@ one in a task of its own (`build_site`), and puts it back in the shared
 pool when it returns (`return_site`); a site whose entry went stale
 meanwhile is deleted.
 
-<!-- CR claude for eric: [doc-drift/low] This paragraph lists the id-dependent sites as
-'to fix before phase 4', but phase 4 and later have shipped and none of them changed.
-The sites are: WatchValue and SubscriptionValue ordered and hashed by bind_id,
-WatchStream::update emitting a cycle's events in IntSet order, the gui event loop's
-windows in an IntMap<BindId>, '_<TVarId> names in error text, and sorted_tvars breaking
-ties by TVarId. Now that branches and compile tasks mint ids in parallel, these orders
-vary from run to run. Decide per site: fix it (order by a node-local creation sequence
-or an insertion-ordered map) or record it as accepted with the reason. Then rewrite the
-table to match, and refresh its stale file:line references. (x-parallel-07) -->
 **Ids.** Ids minted in parallel are unique (global atomics,
-T/ids.rs:138) but their values depend on scheduling. That is acceptable
+T/ids.rs:187) but their values depend on scheduling. That is acceptable
 only if nothing observable depends on id order or value. The phase 1
 audit found the cycle loop, event delivery and every runtime map in the
 compiler order-free (lookups, or iteration into sets; `GX.nodes` is an
 `IndexMap` in insertion order). References and functions have
 no order (`Ordered` refuses them; `==` compares them by identity), so
 their ids reach no sort, ordering or map key, and a reference prints as
-`&ref`. What does depend on ids, to fix before phase 4 mints them in
-parallel:
+`&ref`. The sites that did depend on ids, each fixed or accepted:
 
-| site | depends on | reaches |
-|---|---|---|
-| watch and db subscription handles `Ord`/`Hash` by `BindId` (S/sys/watch.rs:218, S/db/subscribe.rs:47) | id order | the same for those handles |
-| a watch stream queues one cycle's events in `IntSet` order (S/sys/watch.rs, `WatchStream::update`) | id value | the order in which events of different watches arriving in one cycle are output |
-| an inferred tvar is named `'_<TVarId>` (T/typ/tvar.rs:497), synthesized names carry ids (T/expr/seq.rs, `block_component`, `#seam`, `qfn`) | id value | error text that becomes a value (a dynamic module's compile error, `QueueFnErr`) |
-| `sorted_tvars` breaks name ties by `TVarId` (T/typ/fntyp.rs:284) | id order | constraint order in diagnostics |
-| GUI windows iterated from an `IntMap<BindId, ..>` (S/gui/event_loop.rs:126, 407) | id value | the order of several windows' messages |
+| site | depends on | reaches | verdict |
+|---|---|---|---|
+| a watch stream output one cycle's events of several watches in `IntSet` order | id value | the order of those events | fixed: in the order its argument holds the watches (S/sys/watch.rs:484, `extract_bind_ids`) |
+| GUI windows iterated from an `IntMap<BindId, ..>` | id value | the order of several windows' messages | fixed: an `IndexMap` in the order they opened (S/gui/event_loop.rs:115) |
+| watch and db subscription handles `Ord`/`Hash` by `BindId` (S/sys/watch.rs:233, S/db/subscribe.rs:56) | id order | sorting those handles, a map keyed by them | accepted: a handle is an identity, and Rust-backed handles order by identity (most by `Arc` address, which varies between runs serially too): consistent within a run, arbitrary across runs |
+| an inferred tvar is named `'_<TVarId>` (T/typ/tvar.rs:715), synthesized names carry ids (`block_component` T/lib.rs:317, `#seam` C/node/coretraits.rs:319, `qfn` S/core/queuefn.rs:549) | id value | error text that becomes a value (a dynamic module's compile error, `QueueFnErr`) | accepted: error text is not a contract |
+| `sorted_tvars` breaks name ties by `TVarId` (T/typ/fntyp.rs:284) | id order | constraint order in diagnostics | accepted: diagnostics only |
 
-Compile-time paths sort by id for stable image bytes (C/image/registration.rs:101) and kernel input order (C/fusion/mod.rs:501); neither is observable.
+Compile-time paths sort by id for stable image bytes (C/image/registration.rs:103) and kernel input order (C/fusion/mod.rs:656); neither is observable.
 
 ## 9. Threads
 
