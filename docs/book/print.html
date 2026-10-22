@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cd4d8aef.js";
+            window.path_to_searchindex_js = "searchindex-2e39f07a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -2419,7 +2419,11 @@ the block writes, directly or through a function it calls, also remains
 live when read, so queued <code>count &lt;- count + 1</code> operations can accumulate
 rather than overwrite one another with an old count. Taking <code>&amp;state</code>
 refers to the original state. A write through a reference does not make
-anything live: the reference’s target stays what it was captured as.</p>
+anything live: the reference’s target stays what it was captured as. So a
+body that writes through a reference and reads the target by name,
+<code>*r &lt;- a + 1</code> with <code>r = &amp;mut a</code>, reads <code>a</code> from each request’s snapshot,
+and queued requests overwrite one another. Read through the reference
+too: <code>*r &lt;- *r + 1</code> reads the target live and accumulates.</p>
 <p>Keep persistent effects such as subscriptions and <code>tui::suspend</code> outside
 the block; steps can update their inputs and wait for their responses.</p>
 <h2 id="errors"><a class="header" href="#errors">Errors</a></h2>

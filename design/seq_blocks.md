@@ -616,7 +616,10 @@ is never redirected into a snapshot, and a capture the body writes
 through a function it calls is a `SeqCapture` the analysis sets live
 from the steps' summaries (`dependency_summaries.md` §4); a
 dereferenced write uses the queued reference handle and makes no
-capture live.
+capture live. A reference's target is a value no analysis knows in
+general, so a body that writes `*r` and reads the target by name reads
+its snapshot; reading through the reference (`*r <- *r + 1`) is live
+(Eric 2026-10-22, x-engine-seq-errors-04).
 
 The queue is `core::queue` clocked by a credit variable: one initial
 credit starts the first request; each block output returns one; an

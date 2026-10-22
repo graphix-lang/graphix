@@ -2163,18 +2163,6 @@ fn plan_machines<R: Rt, E: UserEvent>(
                 written.union(&s.writes);
             });
             for (id, c) in caps.iter() {
-                // CR claude for eric: [risk/medium] A write through a reference never
-                // makes a seqq capture live (Vars::names skips reference targets on
-                // purpose). A body doing `*r <- a + 1` with `r = &mut a` reads `a` from
-                // the enqueue-time snapshot on every run, so three queued requests all
-                // write 1: a ends at 1 while `direct <- direct + 1` beside it reaches
-                // 3. That is the read-modify-write loss live captures exist to prevent
-                // (seq_blocks.md §8). The summaries already count a deref write as
-                // every variable for step timing. Either count it here too (every
-                // capture live once a step writes through a reference), or document
-                // that such a body reads its enqueue-time value. probe:
-                // design/review-2026-10-19/repro/x-engine-seq-errors-seqq-ref-write-stale-capture.gx
-                // (x-engine-seq-errors-04)
                 let live = written.names(&c.live_id);
                 c.is_live.store(live, Ordering::Relaxed);
                 if live {

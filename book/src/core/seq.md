@@ -246,7 +246,11 @@ the block writes, directly or through a function it calls, also remains
 live when read, so queued `count <- count + 1` operations can accumulate
 rather than overwrite one another with an old count. Taking `&state`
 refers to the original state. A write through a reference does not make
-anything live: the reference's target stays what it was captured as.
+anything live: the reference's target stays what it was captured as. So a
+body that writes through a reference and reads the target by name,
+`*r <- a + 1` with `r = &mut a`, reads `a` from each request's snapshot,
+and queued requests overwrite one another. Read through the reference
+too: `*r <- *r + 1` reads the target live and accumulates.
 
 Keep persistent effects such as subscriptions and `tui::suspend` outside
 the block; steps can update their inputs and wait for their responses.

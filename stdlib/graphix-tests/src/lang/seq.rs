@@ -791,6 +791,26 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:1]")
 );
 
+// A write through a reference makes no capture live: three queued
+// requests reading the target through the reference accumulate, while
+// reading it by name reads each request's snapshot.
+run!(
+    seqq_ref_write_reads_live_only_through_the_ref,
+    r#"{
+    let step = 0;
+    step <- select step { n if n < 60 => n + 1, _ => never() };
+    let request = select step { 1 | 2 | 3 => step, _ => never() };
+    let open = step > 10;
+    let a = 0;
+    let r = &mut a;
+    let b = 0;
+    let s = &mut b;
+    let done = seqq request { until open; *r <- *r + 1; *s <- b + 1; request };
+    sys::time::after_idle(duration:100.ms, (a, b))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:3, i64:1]")
+);
+
 // A `{ .. }` statement of declarations alone is no step, and neither is a
 // `let rec`, a try's included.
 run!(seq_declaration_block_refused, r#"seq { { type T = i64; use str }; 1 }"#, refused("a declaration is not a seq step"); FuseExpect::None);
