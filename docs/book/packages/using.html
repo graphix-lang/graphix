@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-667d9618.js";
+            window.path_to_searchindex_js = "../searchindex-cd4d8aef.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -257,8 +257,8 @@ rebuilding.</p>
 <p>To update a third-party package to a new <strong>major</strong> version, edit the version
 in <code>packages.toml</code> directly and run <code>graphix package rebuild</code>.</p>
 <h2 id="package-storage"><a class="header" href="#package-storage">Package Storage</a></h2>
-<p>The package list is stored in <code>packages.toml</code> in your platform’s data
-directory:</p>
+<p>The package list is stored in <code>packages.toml</code> in the Graphix data
+directory, the same one that holds your init modules:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -267,7 +267,7 @@ directory:</p>
 <tbody>
 <tr><td>Linux</td><td><code>~/.local/share/graphix/packages.toml</code></td></tr>
 <tr><td>macOS</td><td><code>~/Library/Application Support/graphix/packages.toml</code></td></tr>
-<tr><td>Windows</td><td><code>%APPDATA%\graphix\packages.toml</code></td></tr>
+<tr><td>Windows</td><td><code>%LOCALAPPDATA%\graphix\packages.toml</code></td></tr>
 </tbody>
 </table>
 </div>

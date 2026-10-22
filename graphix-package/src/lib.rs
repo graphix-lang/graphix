@@ -279,9 +279,7 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
 }
 
 fn graphix_data_dir() -> Result<PathBuf> {
-    Ok(dirs::data_local_dir()
-        .ok_or_else(|| anyhow!("can't find your data dir"))?
-        .join("graphix"))
+    graphix_rt::data_dir().ok_or_else(|| anyhow!("can't find your data dir"))
 }
 
 fn packages_toml_path() -> Result<PathBuf> {

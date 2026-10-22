@@ -23,7 +23,6 @@ enumflags2 = { workspace = true }
 triomphe = { workspace = true }
 crates_io_api = { workspace = true }
 cp_r = { workspace = true }
-dirs = { workspace = true }
 fd-lock = { workspace = true }
 graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
 graphix-derive = { version = "0.9.0", path = "../graphix-derive" }

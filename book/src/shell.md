@@ -264,7 +264,7 @@ The complete module search path, in order of priority:
 3. **GRAPHIX_MODPATH** entries (from the environment variable)
 4. **Platform-specific init directory**:
    - Linux: `~/.local/share/graphix`
-   - Windows: `%APPDATA%\graphix`
+   - Windows: `%LOCALAPPDATA%\graphix`
    - macOS: `~/Library/Application Support/graphix`
 
 The shell searches these paths in order, returning the first match found.

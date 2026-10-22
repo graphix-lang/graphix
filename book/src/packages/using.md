@@ -134,14 +134,14 @@ in `packages.toml` directly and run `graphix package rebuild`.
 
 ## Package Storage
 
-The package list is stored in `packages.toml` in your platform's data
-directory:
+The package list is stored in `packages.toml` in the Graphix data
+directory, the same one that holds your init modules:
 
 | Platform | Location |
 |----------|----------|
 | Linux | `~/.local/share/graphix/packages.toml` |
 | macOS | `~/Library/Application Support/graphix/packages.toml` |
-| Windows | `%APPDATA%\graphix\packages.toml` |
+| Windows | `%LOCALAPPDATA%\graphix\packages.toml` |
 
 The file has two tables. `[stdlib]` lists the standard library packages by
 name, the installed ones and the ones you removed (they track the shell's

@@ -46,9 +46,9 @@ $ graphix test.gx
 ## Module Load Path
 
 The graphix shell reads the `GRAPHIX_MODPATH` environment variable at startup
-and appends it's contents to the built in list of module paths. The syntax is a
-comma separated list of paths. Paths that start with `netidx:` are netidx paths,
-otherwise file paths are expected. The comma separator can be escaped with `\`.
+and searches its entries after the program's own directory and before the
+Graphix init directory. The syntax is a comma separated list of paths. Paths
+that start with `netidx:` are netidx paths, otherwise file paths are expected. The comma separator can be escaped with `\`.
 For example,
 
 ```
@@ -68,20 +68,11 @@ By default the module resolve path has several entries,
 - the parent directory of the program file passed on the command line. e.g. if
   we are running `/home/user/test.gx` then Graphix will look for modules in
   `/home/user`
-
-<!-- CR claude for eric: [doc-drift/low] The documented Windows path
-`%APPDATA%\Roaming\graphix` is wrong. `search_path` in graphix-rt uses
-`dirs::data_dir()`, which is `%APPDATA%` (already `...\AppData\Roaming`), so the path is
-`%APPDATA%\graphix`. The package manager (`graphix_data_dir` in graphix-package) uses
-`dirs::data_local_dir()`, which is `%LOCALAPPDATA%`, while packages/using.md documents
-`%APPDATA%\graphix\packages.toml`. On Windows, init modules and packages.toml therefore
-live in different trees, and the book gets both wrong. Also, GRAPHIX_MODPATH is searched
-before the data directory, not 'appended'. Decide whether one directory function should
-serve both, then document the real paths and search order. (book-modules-udt-18) -->
+- the entries of `GRAPHIX_MODPATH`, in order
 - the Graphix init directory. This is a platform specific directory where you
   can put Graphix modules.
   - On Linux `~/.local/share/graphix`
-  - On Windows `%APPDATA%\Roaming\graphix`
+  - On Windows `%LOCALAPPDATA%\graphix`
   - On Mac OS `~/Library/Application Support/graphix`
 
 In REPL mode, which is when it's given no argument, the `graphix` command will

@@ -1051,10 +1051,16 @@ pub fn search_path(
             .map_err(|e| e.context("GRAPHIX_MODPATH"))?,
         Err(_) => vec![],
     };
-    if let Some(dd) = dirs::data_dir() {
-        res.push(graphix_compiler::expr::FilesResolver::new(dd.join("graphix"), None));
+    if let Some(dd) = data_dir() {
+        res.push(graphix_compiler::expr::FilesResolver::new(dd, None));
     }
     Ok(res)
+}
+
+/// Graphix's directory for the user's modules (`init`) and the package
+/// manager's files: the platform's local data directory.
+pub fn data_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("graphix"))
 }
 
 /// The directories [`search_path`] searches, in order, for its file
@@ -1062,7 +1068,7 @@ pub fn search_path(
 pub fn search_dirs() -> Vec<PathBuf> {
     let mp = std::env::var("GRAPHIX_MODPATH").unwrap_or_default();
     let mut res: Vec<PathBuf> = graphix_compiler::expr::modpath_dirs(&mp).collect();
-    res.extend(dirs::data_dir().map(|dd| dd.join("graphix")));
+    res.extend(data_dir());
     res
 }
 

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-667d9618.js";
+            window.path_to_searchindex_js = "searchindex-cd4d8aef.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -4272,9 +4272,9 @@ m::hello
 </code></pre>
 <h2 id="module-load-path"><a class="header" href="#module-load-path">Module Load Path</a></h2>
 <p>The graphix shell reads the <code>GRAPHIX_MODPATH</code> environment variable at startup
-and appends it’s contents to the built in list of module paths. The syntax is a
-comma separated list of paths. Paths that start with <code>netidx:</code> are netidx paths,
-otherwise file paths are expected. The comma separator can be escaped with <code>\</code>.
+and searches its entries after the program’s own directory and before the
+Graphix init directory. The syntax is a comma separated list of paths. Paths
+that start with <code>netidx:</code> are netidx paths, otherwise file paths are expected. The comma separator can be escaped with <code>\</code>.
 For example,</p>
 <pre><code>GRAPHIX_MODPATH=netidx:/foo,/home/user/graphix-modules,/very/str\,ange/path
 </code></pre>
@@ -4291,22 +4291,12 @@ For example,</p>
 <li>the parent directory of the program file passed on the command line. e.g. if
 we are running <code>/home/user/test.gx</code> then Graphix will look for modules in
 <code>/home/user</code></li>
-</ul>
-<!-- CR claude for eric: [doc-drift/low] The documented Windows path
-`%APPDATA%\Roaming\graphix` is wrong. `search_path` in graphix-rt uses
-`dirs::data_dir()`, which is `%APPDATA%` (already `...\AppData\Roaming`), so the path is
-`%APPDATA%\graphix`. The package manager (`graphix_data_dir` in graphix-package) uses
-`dirs::data_local_dir()`, which is `%LOCALAPPDATA%`, while packages/using.md documents
-`%APPDATA%\graphix\packages.toml`. On Windows, init modules and packages.toml therefore
-live in different trees, and the book gets both wrong. Also, GRAPHIX_MODPATH is searched
-before the data directory, not 'appended'. Decide whether one directory function should
-serve both, then document the real paths and search order. (book-modules-udt-18) -->
-<ul>
+<li>the entries of <code>GRAPHIX_MODPATH</code>, in order</li>
 <li>the Graphix init directory. This is a platform specific directory where you
 can put Graphix modules.
 <ul>
 <li>On Linux <code>~/.local/share/graphix</code></li>
-<li>On Windows <code>%APPDATA%\Roaming\graphix</code></li>
+<li>On Windows <code>%LOCALAPPDATA%\graphix</code></li>
 <li>On Mac OS <code>~/Library/Application Support/graphix</code></li>
 </ul>
 </li>
@@ -5035,7 +5025,7 @@ utils::helper()
 <li><strong>Platform-specific init directory</strong>:
 <ul>
 <li>Linux: <code>~/.local/share/graphix</code></li>
-<li>Windows: <code>%APPDATA%\graphix</code></li>
+<li>Windows: <code>%LOCALAPPDATA%\graphix</code></li>
 <li>macOS: <code>~/Library/Application Support/graphix</code></li>
 </ul>
 </li>
@@ -16682,8 +16672,8 @@ rebuilding.</p>
 <p>To update a third-party package to a new <strong>major</strong> version, edit the version
 in <code>packages.toml</code> directly and run <code>graphix package rebuild</code>.</p>
 <h2 id="package-storage"><a class="header" href="#package-storage">Package Storage</a></h2>
-<p>The package list is stored in <code>packages.toml</code> in your platform’s data
-directory:</p>
+<p>The package list is stored in <code>packages.toml</code> in the Graphix data
+directory, the same one that holds your init modules:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -16692,7 +16682,7 @@ directory:</p>
 <tbody>
 <tr><td>Linux</td><td><code>~/.local/share/graphix/packages.toml</code></td></tr>
 <tr><td>macOS</td><td><code>~/Library/Application Support/graphix/packages.toml</code></td></tr>
-<tr><td>Windows</td><td><code>%APPDATA%\graphix\packages.toml</code></td></tr>
+<tr><td>Windows</td><td><code>%LOCALAPPDATA%\graphix\packages.toml</code></td></tr>
 </tbody>
 </table>
 </div>
