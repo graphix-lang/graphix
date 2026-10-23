@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-8fa68ad6.js";
+            window.path_to_searchindex_js = "../../searchindex-2dec865e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -180,9 +180,10 @@
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
-/// Write the value to the specified path. When its arm wakes, the write
-/// attaches to the path again and writes only when the value or the path
-/// fires.
+/// Write the value to the specified path. Values that fire while the path
+/// is bottom or invalid queue, the most recent 1024, and are written in
+/// order when a valid path arrives. When its arm wakes, the write attaches
+/// to the path again and writes only when the value or the path fires.
 val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path

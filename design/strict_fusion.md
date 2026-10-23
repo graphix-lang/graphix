@@ -77,9 +77,10 @@ a fast fn was easy to forget after declaring Sync + stateless; now the
 invalid combinations are unrepresentable and declaring a builtin
 stateless puts the fast-fn question in the author's face. The `Option`
 keeps the stateless fact (the JIT's native tail loop, a sleep-free arm)
-for the pure builtins that can never be fast fns, the partial-delivery
-producers (opt's short-circuits, `divide`, `filter_err`), whose result
-depends on which args arrived while a fast fn sees every arg present.
+for a pure builtin that can never be a fast fn: a raw `Apply` that answers
+before all its args arrive, where a fast fn sees every arg present. The
+stdlib has none today (opt's short-circuits and `filter_err` hold their
+last answer, so they are `Sync`; `divide` has a fast fn).
 An effect is never `Stateless`: an arm holding only stateless calls
 skips sleep and is slept at its re-entry, where a `Stateless` call
 recomputes its value by running `eval` again, which for an effect would
@@ -118,8 +119,8 @@ that was an accident of the code shape.
 
 The stdlib is converted maximally (~110 fast fns across core, array,
 map, list, str, re, hbs, sys::time, sys paths, the json/toml/pack
-writers). What remains is out by rule, not by gap: the partial-delivery
-producers, the stateful family (`count`/`uniq`/`once`/`take`/`skip`/
+writers). What remains is out by rule, not by gap: opt's short-circuits
+and `filter_err`, which hold their last answer, the stateful family (`count`/`uniq`/`once`/`take`/`skip`/
 `hold`/`window`/`group`), the lambda-taking HOFs, effects, and the
 json/toml/pack readers (async by design). The pure aggregates (`sum`/
 `min`/`max`/`mean`/`product`/`and`/`or`) and the pure option builtins

@@ -40,8 +40,8 @@ born view, a seq step entered for its next run.
 | rpc `call` | remints the reply ID; keeps the result | as above |
 | `timer` | cancels the armed fire; keeps the run; clears its output | re-arms the run if fires remain |
 | `after_idle` | cancels a pending wait; clears its output | resumes a pending wait |
-| `throttle` | cancels the pending emission; keeps the held value and the window the last emission opened | — |
-| `range`, `iter` | remints the delivery ID (the stream in flight is aborted); keeps the output | — |
+| `throttle` | pauses the pending emission (its timer starts again at the next update); keeps the held value and the window the last emission opened; clears the output | — |
+| `range`, `iter` | remints the delivery ID (the stream in flight is aborted); clears the output | — |
 | `queue`, `iterq` | takes back sent-undelivered values; keeps contents and credits | sends again |
 | `queuefn` | keeps the queue and its credit; a wrapper site drops its own queued calls | — |
 | `once`, `take`, `skip`, `uniq`, `hold`, `count`, `filter` | nothing | — |

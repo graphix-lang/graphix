@@ -65,6 +65,22 @@ const NET_WRITE0: &str = r#"
 
 run!(net_write0, NET_WRITE0, prints("[i64:42, i64:43]"); FuseExpect::None);
 
+// Values that fire before the path is known are written, in order, when
+// it arrives.
+const NET_WRITE_QUEUED: &str = r#"
+{
+  let got: Array<i64> = [];
+  sys::net::publish(#on_write: |v: i64| got <- v ~ array::push(got, v), "/local/wq", 0);
+  let v = array::iter([1, 2, 3]);
+  let p: string = never();
+  p <- select v { 3 => "/local/wq", _ => never() };
+  sys::net::write(p, v);
+  select array::len(got) { 3 => got, _ => never() }
+}
+"#;
+
+run!(net_write_queued, NET_WRITE_QUEUED, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
+
 const NET_WRITE1: &str = r#"
 {
   let p = "/local/foo";

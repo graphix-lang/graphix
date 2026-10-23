@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8fa68ad6.js";
+            window.path_to_searchindex_js = "../searchindex-2dec865e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -195,6 +195,13 @@ type BinResponse = {
 
 /// A request to a server: `body` is the body as text, null when it is
 /// empty or not UTF-8; `raw` is the body as sent.
+/// What a `serve` handler answers a request with.
+type Reply = {
+    body: string,
+    headers: Array&lt;(string, string)&gt;,
+    status: u16
+};
+
 type Request = {
     body: [string, null],
     headers: Array&lt;(string, string)&gt;,
@@ -263,7 +270,7 @@ val serve: fn(
     ?#key: [bytes, null],
     ?#max_connections: i64,
     ?#max_body: i64,
-    #handler: fn(req: Request) -&gt; Response throws 'e
+    #handler: fn(req: Request) -&gt; Reply throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
 
 mod rest;

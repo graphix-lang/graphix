@@ -878,23 +878,9 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
         self.var.release(ctx)
     }
 
-    // CR claude for claude: [bug/medium] This sleep (and range's Seq::sleep) remints the
-    // delivery id but keeps `out`. A re-entered arm therefore emits the last element
-    // again as a fired value. design/async_sleep_outputs.md lists iter/range deliveries
-    // as an event source whose output does not survive the sleep for exactly this
-    // reason, but its audit table says they keep the output. In the probe the re-raised
-    // 11 sends the arm back to sleep, and the program flips forever: about 490k values
-    // in 3 s from the CLI. Decide the class. As an event source, clear `out` here as
-    // Timer::sleep does and fix the table. As state (the restart builtins re-show their
-    // value, pinned by wake_resumes_quietly), fix the bullet. Pin the re-entry either
-    // way. probe: design/review-2026-10-19/repro/x-engine-firing-reentry-reraise.gx
-    // Also reported as (x-node-contract-04), (x-builtin-effects-05).
-    // (x-engine-firing-02)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Treat iter/range as the event source async_sleep_outputs.md says: clear
-    // `out` at sleep; fix the table; pin the re-entry.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
+        self.out = TagValue::phantom();
     }
 
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
@@ -2206,17 +2192,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
         Ok(Box::new(FilterErr::default()))
     }
 
-    // CR claude for claude: [structure/low] filter_err holds no cross-invocation state.
-    // CLAUDE.md and design/strict_fusion.md name it, with divide and opt's
-    // short-circuits, as a partial-delivery producer classified
-    // Effect::Stateless(None). No builtin is classified Stateless(None): divide is
-    // Stateless(Some), and this and opt's OrElse are Sync. Either make this
-    // Stateless(None), as the docs say, or drop the Option from Effect::Stateless and
-    // correct both docs. As it stands, the payload has a variant nothing uses. Found by
-    // reading; not run. (core-lib-04)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Make filter_err Stateless(None) or drop the Option and fix both docs,
-    // whichever the code wants.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_filter_err";
 
@@ -3074,6 +3049,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
+        self.out = TagValue::phantom();
     }
 
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
@@ -3090,6 +3066,9 @@ enum Run {
     Open { last: Instant },
     /// emitted at `last`; `tid`'s timer releases the value held
     Pending { last: Instant, tid: BindId },
+    /// emitted at `last`, a value held across a sleep: its timer starts
+    /// again at the next update
+    Held { last: Instant },
 }
 
 #[derive(Debug)]
@@ -3221,6 +3200,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 maybe_schedule!(last)
             }
         }
+        if let Run::Held { last } = self.run {
+            maybe_schedule!(last)
+        }
         if up1 {
             match self.run {
                 Run::Idle => {
@@ -3228,7 +3210,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                     emit!()
                 }
                 Run::Open { last } => maybe_schedule!(last),
-                Run::Pending { .. } => (),
+                Run::Pending { .. } | Run::Held { .. } => (),
             }
         }
         if let Run::Pending { tid, .. } = self.run
@@ -3247,42 +3229,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         }
     }
 
-    // CR claude for claude: [bug/medium] A sleep while an emission is pending
-    // (Run::Pending) releases the timer and resets to Run::Idle, so the held value is
-    // never delivered. Nothing restarts it at the wake, because the input's fire was
-    // already seen. In the probe x stands at 2 and the throttle shows 0 for the rest of
-    // the run; without the sleep it reaches 2 after the rate. This breaks throttle's
-    // own contract ("the most recent update will always be delivered") and
-    // design/async_sleep_outputs.md's rule that an event source's pending wait resumes
-    // at the wake, though that doc's audit table records the cancel. `out` is also
-    // kept, so the re-entry re-emits the old value as a fresh one. Fix: do what
-    // AfterIdle does. At sleep, remember `last`, set a slept flag and clear `out`; at
-    // the next update run maybe_schedule!(last). Then fix the table and pin it. probe:
-    // design/review-2026-10-19/repro/x-engine-firing-throttle-sleep.gx
-    // (x-engine-firing-01)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Do what AfterIdle does (with x-builtin-effects-04); fix the table; pin
-    // it.
-    // CR claude for claude: [bug/medium] Throttle's sleep cancels the pending emission
-    // and keeps `out`. At the wake, the select re-emits the stale last value as a new
-    // event, and the held latest value is never delivered. The probe shows (0, 6us)
-    // then (0, 301 ms), and the held 3 is lost; after_idle in the same arm delivers (3,
-    // 503 ms). design/async_sleep_outputs.md contradicts itself here: its rule bullet
-    // makes throttle's pending emission a pausing event source whose output does not
-    // survive, while its audit table says the emission is cancelled. throttle's doc
-    // promises that the latest update is always delivered. If the bullet is the rule:
-    // clear out at sleep, remember the pending value (a slept flag, as AfterIdle has),
-    // and re-arm its timer at the next update. Then fix the table row. probe:
-    // design/review-2026-10-19/repro/x-builtin-effects-throttle-sleep.gx
-    // (x-builtin-effects-04)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Do what AfterIdle does: clear out at sleep, keep the pending value,
-    // re-arm at the next update; fix the table row.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         if let Run::Pending { last, .. } = self.run {
-            self.run = Run::Open { last };
+            self.run = Run::Held { last };
         }
+        self.out = TagValue::phantom();
     }
 
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
@@ -3440,19 +3392,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
             Some(t) => ctx.ref_targets(t, &v),
             None => v.clone(),
         };
-        // CR claude for claude: [perf/low] This compares a collection element by element
-        // even when it is the same allocation as the last one: netidx-value's
-        // ValArray::eq has no pointer shortcut. So `uniq(t ~ rows)` over a stale
-        // 100000-element array costs 0.33 ms per fire. A same-allocation fast path
-        // (here, or in ValArray/Map eq) makes it O(1). It is sound only if every Eq
-        // impl is reflexive, which a user Eq on an abstract type need not be, so that
-        // needs a ruling. probe:
-        // design/review-2026-10-19/repro/x-perf-runtime-uniq-same-array.sh
-        // (x-perf-runtime-05)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Take the pointer fast path only where no abstract value can be inside
-        // (user Eq need not be reflexive).
-        let changed = coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref());
+        // one allocation is one value when every equality is structural:
+        // a core Eq implementation need not be reflexive
+        let same_alloc = |l: &Value| match (l, &cmp) {
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len() && std::ptr::eq(a[..].as_ptr(), b[..].as_ptr())
+            }
+            _ => false,
+        };
+        let changed = match last.as_ref() {
+            Some(l) if !coretraits::hooks_live(&ctx.env) && same_alloc(l) => false,
+            _ => coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref()),
+        };
         if changed {
             *last = Some(cmp);
             out.set(TagValue::fired(v))
@@ -3575,20 +3526,6 @@ impl Printer {
         .unwrap();
         coretraits::with_display_hooks(ctx, |env| {
             match (self, v) {
-                // CR claude for claude: [bug/low] This arm picks raw output by the value,
-                // not by the type. A bare variant shares its runtime form with a
-                // string, so `println(`A)` prints `A`, while `println(`B(1))`,
-                // `println([`A])` and `log(`A)` all print the backtick: a value of one
-                // type `[`A, `B(i64)]` is printed in two notations. `typ` is in hand
-                // here, so print raw only when the site's type says string, and send
-                // everything else through TVal. `perform` reaches the same code, so the
-                // node-walk and fused output stay the same. One decision is needed:
-                // what a string under `Any`, or under a union that also holds a bare
-                // variant, should print. probe:
-                // design/review-2026-10-12/repro/book-stdlib-11.gx (book-stdlib-11)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Print raw only when the site's type is string; under Any
-                // or a union with a bare variant, print through TVal.
                 (Self::Print | Self::Println, Value::String(s)) => write!(line, "{s}"),
                 (_, v) => write!(line, "{}", TVal { env, typ, v }),
             }

@@ -27,7 +27,7 @@ use netidx_core::{
 use netidx_derive::FromValue;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use poolshark::local::LPooled;
-use std::any::Any;
+use std::{any::Any, collections::VecDeque};
 use triomphe::Arc as TArc;
 
 fn as_path(v: Value) -> Option<Path> {
@@ -60,11 +60,15 @@ fn list_response(value: &Value) -> Option<Value> {
     }
 }
 
+/// Values that fire while no path is known, the most recent kept.
+const WRITE_QUEUE: usize = 1024;
+
 /// The value written to a path. Values that fire before the path is
-/// known queue and are written, in order, when it arrives.
+/// known queue, the last [`WRITE_QUEUE`] of them, and are written in
+/// order when it arrives.
 #[derive(Debug)]
 pub(crate) struct Write {
-    dv: Either<(Path, Dval), Vec<Value>>,
+    dv: Either<(Path, Dval), VecDeque<Value>>,
     /// Set by `sleep`, taken by the next update: the target is found again
     /// from the present path.
     slept: WakeBit,
@@ -84,7 +88,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Write {
-            dv: Either::Right(vec![]),
+            dv: Either::Right(VecDeque::new()),
             slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
@@ -97,7 +101,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let _ = buf;
         Ok(Box::new(Write {
-            dv: Either::Right(vec![]),
+            dv: Either::Right(VecDeque::new()),
             slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
@@ -112,22 +116,11 @@ impl Write {
         }
     }
 
-    /// Drop the target; what fires next queues.
+    /// Drop the target, if there is one; what fires next queues.
     fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug/medium] release() replaces self.dv with an empty
-        // Right(vec![]) even when it already holds the queue. update calls it on every
-        // path arrival before the drain, so the drain loop never writes a queued value.
-        // Every value that fires while the path is bottom or invalid is pushed without
-        // bound and then thrown away, and only the standing value reaches the new path.
-        // Write's doc promises those values are written in order. Decide which is
-        // meant. Either keep the queue across release (and bound it), or drop the queue
-        // and make dv an Option<(Path, Dval)> that writes only the standing value,
-        // which also ends the unbounded growth. Either way the doc and image_encode
-        // follow. probe: design/review-2026-10-12/repro/sys-net-10.gx (sys-net-10)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Keep the queue across release and bound it, matching Write's doc.
-        if let Either::Left((_, dv)) =
-            std::mem::replace(&mut self.dv, Either::Right(vec![]))
+        if self.dv.is_left()
+            && let Either::Left((_, dv)) =
+                std::mem::replace(&mut self.dv, Either::Right(VecDeque::new()))
         {
             NetState::get(ctx).release(dv)
         }
@@ -187,7 +180,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 }
             };
             match &mut self.dv {
-                Either::Right(q) => q.push(val),
+                Either::Right(q) => {
+                    if q.len() == WRITE_QUEUE {
+                        q.pop_front();
+                    }
+                    q.push_back(val)
+                }
                 Either::Left((_, dv)) => {
                     dv.write(val);
                 }

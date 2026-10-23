@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8fa68ad6.js";
+            window.path_to_searchindex_js = "searchindex-2dec865e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -6355,7 +6355,7 @@ trait Read {
         }
     };
 
-    // CR claude for claude: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
+    // CR claude for eric: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
     // copies everything read so far, so a Graphix-defined stream reads in time
     // quadratic in its length: 64 MB took 3.8 s against 1.3 s for 32 MB. read_exact's
     // default does the same. Push the chunks onto an Array&lt;bytes&gt; and `buffer::concat`
@@ -6370,6 +6370,13 @@ trait Read {
     // Each is a dependency or surface choice.
     // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
     // needed. Use a recursive chunk list flattened at the end (no new dependency).
+    // 2026-10-23 claude: Back to Eric: the triage note's recursive chunk list does not
+    // help. Flattening it still concatenates growing buffers (quadratic), and the
+    // linear form is one buffer::concat over an Array&lt;bytes&gt;, which needs an append
+    // core does not have. Options: sys depends on graphix-package-array (array::push in
+    // these defaults; a package-graph change), a core builtin that appends to an Array
+    // (surface), or accept it (only a program-defined Read impl's default
+    // read_all/read_exact pays it; the built-in streams read in Rust).
     /// Read the stream to its end and return everything it produced as
     /// one value. Reads re-arm themselves until the stream ends, so a
     /// stream that never ends (a socket the peer holds open) never
@@ -6601,6 +6608,9 @@ val is_dir: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
 val metadata: fn(?#follow_symlinks: bool, path: string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
 
 /// readdir reads a directory and returns an array of directory entries.
+/// It fails when the directory itself cannot be read; an entry below it
+/// that cannot be read (an unreadable subdirectory, a file removed during
+/// the walk) is left out.
 val readdir: fn(
     ?#max_depth: i64,
     ?#min_depth: i64,
@@ -6992,9 +7002,10 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
-/// Write the value to the specified path. When its arm wakes, the write
-/// attaches to the path again and writes only when the value or the path
-/// fires.
+/// Write the value to the specified path. Values that fire while the path
+/// is bottom or invalid queue, the most recent 1024, and are written in
+/// order when a valid path arrives. When its arm wakes, the write attaches
+/// to the path again and writes only when the value or the path fires.
 val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
@@ -7155,6 +7166,13 @@ type BinResponse = {
 
 /// A request to a server: `body` is the body as text, null when it is
 /// empty or not UTF-8; `raw` is the body as sent.
+/// What a `serve` handler answers a request with.
+type Reply = {
+    body: string,
+    headers: Array&lt;(string, string)&gt;,
+    status: u16
+};
+
 type Request = {
     body: [string, null],
     headers: Array&lt;(string, string)&gt;,
@@ -7223,7 +7241,7 @@ val serve: fn(
     ?#key: [bytes, null],
     ?#max_connections: i64,
     ?#max_body: i64,
-    #handler: fn(req: Request) -&gt; Response throws 'e
+    #handler: fn(req: Request) -&gt; Reply throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
 
 mod rest;

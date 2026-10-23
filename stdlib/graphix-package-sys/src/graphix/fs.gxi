@@ -81,6 +81,9 @@ val is_dir: fn(path: string) -> Result<string, `IOError(string)>;
 val metadata: fn(?#follow_symlinks: bool, path: string) -> Result<Metadata, `IOError(string)>;
 
 /// readdir reads a directory and returns an array of directory entries.
+/// It fails when the directory itself cannot be read; an entry below it
+/// that cannot be read (an unreadable subdirectory, a file removed during
+/// the walk) is left out.
 val readdir: fn(
     ?#max_depth: i64,
     ?#min_depth: i64,

@@ -1,9 +1,10 @@
 type Table = { rows: Array<string>, columns: Array<string> };
 type RpcArg<'a> = { default: 'a, doc: string };
 
-/// Write the value to the specified path. When its arm wakes, the write
-/// attaches to the path again and writes only when the value or the path
-/// fires.
+/// Write the value to the specified path. Values that fire while the path
+/// is bottom or invalid queue, the most recent 1024, and are written in
+/// order when a valid path arrives. When its arm wakes, the write attaches
+/// to the path again and writes only when the value or the path fires.
 val write: fn<'a: Data>(path: string, value: 'a) -> Result<_, `WriteError(string)>;
 
 /// subscribe to the specified path

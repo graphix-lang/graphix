@@ -431,3 +431,31 @@ run_with_tempdir! {
         Ok(())
     }
 }
+
+// An unreadable directory below the root is left out; the rest is read.
+#[cfg(unix)]
+run_with_tempdir! {
+    name: test_readdir_skips_an_unreadable_subdirectory,
+    code: r#"sys::fs::readdir(#max_depth: 2, "{}")"#,
+    setup: |temp_dir| {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_dir.path();
+        fs::write(root.join("a.txt"), "a").await?;
+        fs::create_dir(root.join("locked")).await?;
+        fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o000)).await?;
+        root.to_path_buf()
+    },
+    expect: |v: Value| -> Result<()> {
+        let entries = extract_direntry_array(&v)?;
+        let names: HashSet<String> = entries
+            .iter()
+            .filter_map(|e| match struct_field(e, "file_name") {
+                Some(Value::String(s)) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(names.contains("a.txt"), "{names:?}");
+        assert!(names.contains("locked"), "{names:?}");
+        Ok(())
+    }
+}

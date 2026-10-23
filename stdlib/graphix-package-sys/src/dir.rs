@@ -40,18 +40,14 @@ fn blocking_walkdir(args: ReadDirArgs) -> Result<GPooled<Vec<DirEntry>>> {
         .follow_root_links(follow_root_symlink)
         .same_file_system(same_filesystem);
     let mut ents = ENTS.take();
+    // only the root unreadable fails the read; below it, what cannot
+    // be read is left out
     for r in rd {
-        // CR claude for claude: [bug/low] One walkdir error below the root, such as an
-        // unreadable subdirectory or an entry removed mid-walk, turns the whole readdir
-        // into an IOError and discards every readable entry. With max_depth > 1 over a
-        // real tree this is common. Fail only when the root itself cannot be read (an
-        // error at depth 0). Below the root, either skip failed entries or return them
-        // beside the entries, which changes the signature. probe:
-        // design/review-2026-10-12/repro/sys-io-12.gx (needs the chmod 000 setup in its
-        // header) (sys-io-12)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Fail only at the root; skip failed entries below it.
-        ents.push(r?);
+        match r {
+            Ok(e) => ents.push(e),
+            Err(e) if e.depth() == 0 => return Err(e.into()),
+            Err(_) => (),
+        }
     }
     Ok(ents)
 }

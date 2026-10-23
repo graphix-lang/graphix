@@ -10,8 +10,7 @@ run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "hello [req.method]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     };
     let server = http::serve(
         #addr: "127.0.0.1:0",
@@ -31,8 +30,7 @@ run!(https_round_trip, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
     let handler = |req: http::Request| {{
         body: "hello [req.method]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     }};
     let server = http::serve(
         #addr: "127.0.0.1:0",
@@ -57,8 +55,7 @@ run!(https_beside_a_silent_client, { let cd = crate::lib_tests::cert_dir(); form
     let handler = |req: http::Request| {{
         body: "hello [req.method]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     }};
     let server = http::serve(
         #addr: "127.0.0.1:0",
@@ -80,8 +77,7 @@ run!(http_status_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "created [req.method]",
         headers: [],
-        status: u16:201,
-        url: ""
+        status: u16:201
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -96,8 +92,7 @@ run!(http_invalid_status_is_500, r#"{
     let handler = |req: http::Request| {
         body: "[req.method]",
         headers: [],
-        status: u16:1000,
-        url: ""
+        status: u16:1000
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -112,8 +107,7 @@ run!(http_invalid_header_is_500, r#"{
     let handler = |req: http::Request| {
         body: "[req.method]",
         headers: [("not a header", "x")],
-        status: u16:200,
-        url: ""
+        status: u16:200
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -130,8 +124,7 @@ run!(http_raising_handler_then_good, r#"{
     let handler = |req: http::Request| {
         body: "hi [req.body?]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -149,8 +142,7 @@ run!(http_abandoned_request_then_good, r#"{
     let handler = |req: http::Request| {
         body: "hi [req.body$]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -168,7 +160,7 @@ run!(http_raises_answer_their_own_requests, r#"{
         let late = sys::time::after_idle(duration:300.ms, req.path);
         let p = select req.path { "/a" => late, p => p };
         let e: Result<string, `Bad(string)> = error(`Bad(p));
-        { body: e?, headers: [], status: u16:200, url: "" }
+        { body: e?, headers: [], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -188,7 +180,7 @@ run!(http_raises_answer_their_own_requests, r#"{
 run!(http_concurrent_requests_pair, r#"{
     let handler = |req: http::Request| {
         let page = sys::time::after_idle(duration:50.ms, "page [req.path]");
-        { body: page, headers: [], status: u16:200, url: "" }
+        { body: page, headers: [], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -208,7 +200,7 @@ run!(http_sequential_requests_pair, r#"{
     let handler = |req: http::Request| {
         hits <- req ~ hits + 1;
         let page = sys::time::after_idle(duration:50.ms, "page [req.path]");
-        { body: page, headers: [("x-hits", "[hits]")], status: u16:200, url: "" }
+        { body: page, headers: [("x-hits", "[hits]")], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -225,7 +217,7 @@ run!(http_sequential_requests_pair, r#"{
 run!(http_async_handler_answers, r#"{
     let handler = |req: http::Request| {
         let page = sys::time::after_idle(duration:50.ms, "p [req.path]");
-        { body: "[req.method] [page]", headers: [], status: u16:200, url: "" }
+        { body: "[req.method] [page]", headers: [], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -242,8 +234,7 @@ run!(http_restart_same_address, r#"{
     let handler = |req: http::Request| {
         body: "ok [req.path]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     };
     let mc = 10;
     let server = http::serve(#addr: "127.0.0.1:0", #max_connections: mc, #handler: handler)$;
@@ -263,8 +254,7 @@ run!(http_max_body, r#"{
     let handler = |req: http::Request| {
         body: "[req.body]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     };
     let server = http::serve(#addr: "127.0.0.1:0", #max_body: 4, #handler: handler)$;
     let addr = http::server_addr(server);
@@ -280,8 +270,7 @@ run!(http_raw_body, r#"{
     let handler = |req: http::Request| {
         body: "[req.body] [req.raw == bytes:/+4=]",
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -300,8 +289,7 @@ run!(http_rest_post, r#"{
         {
             body: "[req.method] [has("content-type", "application/json")] [has("authorization", "Bearer t")] [req.body$]",
             headers: [],
-            status: u16:200,
-            url: ""
+            status: u16:200
         }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
@@ -321,7 +309,7 @@ run!(http_serve_waits_for_its_cert, r#"{
         #addr: "127.0.0.1:0",
         #cert: cert,
         #key: null,
-        #handler: |req: http::Request| {body: "plain", headers: [], status: u16:200, url: ""}
+        #handler: |req: http::Request| {body: "plain", headers: [], status: u16:200}
     );
     any(server ~ "started", sys::time::timer(duration:200.ms, false) ~ "waiting")
 }"#, |v: Result<&Value>| {
@@ -337,7 +325,7 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
     n <- sys::time::timer(duration:300.ms, false) ~ 1;
     n <- sys::time::timer(duration:600.ms, false) ~ 2;
     let addr = select n { 0 => "127.0.0.1:0", _ => never() };
-    let handler = |req: http::Request| {body: "hello", headers: [], status: u16:200, url: ""};
+    let handler = |req: http::Request| {body: "hello", headers: [], status: u16:200};
     let v = select n % 2 == 0 {
         true => http::server_addr(http::serve(#addr: addr, #handler: handler)$),
         false => "asleep"
@@ -369,7 +357,7 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn http_silent_socket_releases_its_permit() -> Result<()> {
     const CODE: &str = r#"{
-    let handler = |req: http::Request| {body: "served", headers: [], status: u16:200, url: ""};
+    let handler = |req: http::Request| {body: "served", headers: [], status: u16:200};
     let server = http::serve(#addr: "127.0.0.1:0", #max_connections: 1, #handler: handler)$;
     let addr = http::server_addr(server);
     let silent = sys::tcp::connect(addr)$;
@@ -397,8 +385,7 @@ run!(http_rest_caller_header_replaces_default, r#"{
     let srv = http::serve(#addr: "127.0.0.1:0", #handler: |req: http::Request| {
         body: str::join(#sep: "|", array::map(array::filter(req.headers, |(k, _)| (k == "content-type") || (k == "accept")), |(k, v)| "[k]=[v]")),
         headers: [],
-        status: u16:200,
-        url: ""
+        status: u16:200
     })$;
     let addr = http::server_addr(srv);
     let client = http::default_client(addr)$;
@@ -425,7 +412,7 @@ run!(http_error_names_its_cause, r#"{
 run!(http_500_body_carries_no_markers, r#"{
     let handler = |req: http::Request| {
         let e: Result<string, `Internal(string)> = error(`Internal(req.path));
-        { body: e?, headers: [], status: u16:200, url: "" }
+        { body: e?, headers: [], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);

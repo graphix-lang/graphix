@@ -16,6 +16,13 @@ type BinResponse = {
 
 /// A request to a server: `body` is the body as text, null when it is
 /// empty or not UTF-8; `raw` is the body as sent.
+/// What a `serve` handler answers a request with.
+type Reply = {
+    body: string,
+    headers: Array<(string, string)>,
+    status: u16
+};
+
 type Request = {
     body: [string, null],
     headers: Array<(string, string)>,
@@ -84,7 +91,7 @@ val serve: fn(
     ?#key: [bytes, null],
     ?#max_connections: i64,
     ?#max_body: i64,
-    #handler: fn(req: Request) -> Response throws 'e
+    #handler: fn(req: Request) -> Reply throws 'e
 ) -> Result<Server, `HTTPError(string)> throws 'e;
 
 mod rest;

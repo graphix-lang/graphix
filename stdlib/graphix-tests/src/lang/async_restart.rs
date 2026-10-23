@@ -445,7 +445,40 @@ async fn range_over_a_late_bound(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// An iter's last element is an event, which does not survive its arm's
+// sleep: the re-entry emits nothing it delivered before.
+async fn iter_reentry_emits_no_old_element(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let on = true;
+        let out = select on { true => array::iter([10, 11, 12, 13]), false => -1 };
+        on <- select out { 11 => false, -1 => true, _ => never() };
+        out
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [10, 11, -1]);
+    Ok(())
+}
+
+// A throttle's held value waits out its arm's sleep and is delivered at
+// the wake, the window since the last emission long past.
+async fn throttle_holds_across_a_sleep(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let n = 0;
+        n <- sys::time::timer(duration:5.ms, 3) ~ n + 1;
+        let off = select n { 3 => true, _ => never() };
+        let on = true;
+        on <- off ~ false;
+        on <- sys::time::after_idle(duration:300.ms, off) ~ true;
+        select on { true => throttle(#rate: duration:200.ms, n), false => never() }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [0, 3]);
+    Ok(())
+}
+
 modes!(
+    iter_reentry_emits_no_old_element,
+    throttle_holds_across_a_sleep,
     wake_keeps_a_calls_result,
     wake_keeps_a_standing_count,
     wake_resumes_a_count,

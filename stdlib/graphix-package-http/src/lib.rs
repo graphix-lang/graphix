@@ -499,14 +499,6 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
         headers: ValArray,
         status: u16,
     }
-    // CR claude for claude: [readability/low] The handler's reply reads only body,
-    // headers and status, but serve's signature types the handler as returning the
-    // client's Response. So every handler must write a `url` the server throws away:
-    // all the graphix-tests http fixtures write `url: ""`, and leaving it out is a type
-    // error. Give serve its own reply type `{body, headers, status}` in mod.gxi. Found
-    // by running a handler without url (refused by the check). (http-sqlite-db1-04)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Give serve its own reply type {body, headers, status}.
     let Fields { body, headers, status } = match v.clone().cast_to::<Fields>() {
         Ok(f) => f,
         Err(e) => {
