@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-2dec865e.js";
+            window.path_to_searchindex_js = "../../searchindex-74662863.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -181,7 +181,8 @@
 /// A keyboard shortcut combining modifier keys with a character key.
 type Shortcut;
 
-/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S").
+/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S"),
+/// with Ctrl, Alt or Super: a key alone or with Shift is text a user types.
 /// Returns an error for invalid keys.
 val shortcut: fn(
   ?#ctrl: bool,

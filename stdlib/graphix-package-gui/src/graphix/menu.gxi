@@ -2,7 +2,8 @@ use super::{Length, Widget};
 /// A keyboard shortcut combining modifier keys with a character key.
 type Shortcut;
 
-/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S").
+/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S"),
+/// with Ctrl, Alt or Super: a key alone or with Shift is text a user types.
 /// Returns an error for invalid keys.
 val shortcut: fn(
   ?#ctrl: bool,

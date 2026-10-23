@@ -416,38 +416,20 @@ async fn context_menu_renders() -> Result<()> {
     Ok(())
 }
 
-/// Sizes text cannot be laid out at, and coordinates that are not
-/// numbers, are refused as updates and the last good ones kept.
+/// Sizes text cannot be laid out at are refused as updates and the last
+/// good ones kept.
 #[tokio::test(flavor = "current_thread")]
-async fn bad_sizes_and_coordinates_are_refused() -> Result<()> {
-    use crate::widgets::{
-        canvas::{CanvasShape, CanvasW},
-        text::TextW,
-    };
+async fn bad_text_sizes_are_refused() -> Result<()> {
+    use crate::widgets::text::TextW;
     use graphix_rt::NoExt;
 
     let retained_value = |h: &GuiTestHarness| {
-        let widget = h.root.w.as_any();
-        if let Some(text) = widget.downcast_ref::<TextW<NoExt>>() {
-            text.text_size().expect("explicit text size")
-        } else {
-            let canvas = widget.downcast_ref::<CanvasW<NoExt>>().expect("canvas");
-            match canvas.shapes().expect("shapes") {
-                [CanvasShape::Circle { center, .. }] => center.0.x,
-                _ => panic!("one circle"),
-            }
-        }
+        let text = h.root.w.as_any().downcast_ref::<TextW<NoExt>>().expect("text");
+        text.text_size().expect("explicit text size")
     };
     for (decls, widget, var, bad) in [
         ("let s = 16.0", r#"text(#size: &s, &"t")"#, "test::s", Value::F64(0.0)),
         ("let s = 16.0", r#"text(#size: &s, &"t")"#, "test::s", Value::F64(-2.0)),
-        (
-            "let x = 10.0",
-            "canvas(#width: &`Fixed(100.0), #height: &`Fixed(100.0), \
-             &[`Circle({center: {x, y: 10.0}, radius: 5.0, fill: null, stroke: null})])",
-            "test::x",
-            Value::F64(f64::NAN),
-        ),
     ] {
         let code = format!("{IMPORTS};\n{decls};\nlet result = {widget}");
         let mut h = GuiTestHarness::new(&code).await?;

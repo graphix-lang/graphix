@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-2dec865e.js";
+            window.path_to_searchindex_js = "searchindex-74662863.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -11664,7 +11664,8 @@ mod icon;
 <h2 id="layout-types"><a class="header" href="#layout-types">Layout Types</a></h2>
 <h3 id="length"><a class="header" href="#length">Length</a></h3>
 <p>Controls how a widget is sized along a single axis:</p>
-<pre><code class="language-graphix">type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
+<pre><code class="language-graphix">/// `` `FillPortion(n) `` shares the space by weight, `n` from 1 to 255.
+type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
 
 </code></pre>
 <h3 id="padding"><a class="header" href="#padding">Padding</a></h3>
@@ -15304,14 +15305,6 @@ type ColumnType = [
 ///   ever subscribe.
 type Source = [`Netidx([null, string, Map&lt;string, Any&gt;]), string, Map&lt;string, Any&gt;];
 
-// CR claude for claude: [structure/low] `on_resize` is the one GUI callback a caller must
-// pass by reference (`#on_resize: &amp;|w| ..`). Every other callback, including this
-// struct's on_edit/on_click, is a plain `[fn, null]` that the builder wraps itself
-// (`on_select: &amp;on_select` in data_table). Take `#on_resize: [fn(width: f64) -&gt; Any,
-// null] = null` in the column builders and store `on_resize: &amp;on_resize`; the Rust side
-// still reads a ref. Found by reading; not run. (gx-ui-06)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Take the plain [fn, null] form.
 type ColumnSpec = {
     name: string,
     typ: ColumnType,
@@ -15385,7 +15378,7 @@ val text_column: fn(
     ?#on_edit: [fn(#path: string, #value: Any) -&gt; Any, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#on_resize: [fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
 
@@ -15395,7 +15388,7 @@ val toggle_column: fn(
     ?#on_edit: [fn(#path: string, #value: bool) -&gt; Any, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#on_resize: [fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
 
@@ -15407,7 +15400,7 @@ val combo_column: fn(
     ?#on_edit: [fn(#path: string, #value: string) -&gt; Any, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#on_resize: [fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
 
@@ -15420,7 +15413,7 @@ val spin_column: fn(
     ?#on_edit: [fn(#path: string, #value: f64) -&gt; Any, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#on_resize: [fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
 
@@ -15429,7 +15422,7 @@ val progress_column: fn(
     #name: string,
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#on_resize: [fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
 
@@ -15440,7 +15433,7 @@ val button_column: fn(
     ?#on_click: [fn(#path: string, #value: Any) -&gt; Any, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#on_resize: [fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
 
@@ -15457,7 +15450,7 @@ val sparkline_column: fn(
     ?#max: [f64, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#on_resize: [fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
 </code></pre>
@@ -16410,7 +16403,8 @@ widgets, no netidx subscriptions.</li>
 /// A keyboard shortcut combining modifier keys with a character key.
 type Shortcut;
 
-/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S").
+/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S"),
+/// with Ctrl, Alt or Super: a key alone or with Shift is text a user types.
 /// Returns an error for invalid keys.
 val shortcut: fn(
   ?#ctrl: bool,

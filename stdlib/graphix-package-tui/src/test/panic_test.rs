@@ -625,6 +625,24 @@ let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
     Ok(())
 }
 
+/// A line breaks at a pair whose difference overflows; the finite
+/// segments on either side still draw.
+#[tokio::test]
+async fn an_overflowing_pair_breaks_the_line() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::chart::{axis, chart, dataset};
+let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
+    #y_axis: &axis({min: 0.0, max: 10.0}),
+    &[dataset(#graph_type: &`Line, &[(1.0, 1.0), (4.0, 4.0), (-1e308, -1e308), (1e308, 1e308), (6.0, 6.0), (9.0, 9.0)])])
+"#,
+    )
+    .await?;
+    let drawn = h.render_lines()?;
+    assert!(drawn.iter().any(|l| !l.trim().is_empty()), "{drawn:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn chart_samples_labels_to_fit() -> Result<()> {
     for height in [50, 400] {

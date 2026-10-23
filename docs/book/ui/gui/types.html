@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-2dec865e.js";
+            window.path_to_searchindex_js = "../../searchindex-74662863.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -179,7 +179,8 @@
 <h2 id="layout-types"><a class="header" href="#layout-types">Layout Types</a></h2>
 <h3 id="length"><a class="header" href="#length">Length</a></h3>
 <p>Controls how a widget is sized along a single axis:</p>
-<pre><code class="language-graphix">type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
+<pre><code class="language-graphix">/// `` `FillPortion(n) `` shares the space by weight, `n` from 1 to 255.
+type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
 
 </code></pre>
 <h3 id="padding"><a class="header" href="#padding">Padding</a></h3>

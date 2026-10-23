@@ -115,13 +115,20 @@ struct DatasetW<X: GXExt> {
     p: DatasetProps<X>,
     data_ref: Ref<X>,
     data: Vec<(f64, f64)>,
+    /// Where a line breaks: each index starts a segment the point before
+    /// it cannot be joined to (their difference overflows).
+    breaks: Vec<usize>,
 }
 
 impl<X: GXExt> DatasetW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
         let p = DatasetProps::compile(gx, &v).await.context("dataset")?;
-        let mut t =
-            Self { p, data_ref: gx.compile_field(&v, "data").await?, data: vec![] };
+        let mut t = Self {
+            p,
+            data_ref: gx.compile_field(&v, "data").await?,
+            data: vec![],
+            breaks: vec![],
+        };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(&v)?;
         }
@@ -140,6 +147,14 @@ impl<X: GXExt> DatasetW<X> {
                 self.data.push((x, y));
             }
         }
+        self.breaks.clear();
+        for (i, pair) in self.data.windows(2).enumerate() {
+            if !(pair[1].0 - pair[0].0).is_finite()
+                || !(pair[1].1 - pair[0].1).is_finite()
+            {
+                self.breaks.push(i + 1);
+            }
+        }
         Ok(())
     }
 
@@ -151,30 +166,24 @@ impl<X: GXExt> DatasetW<X> {
         Ok(())
     }
 
-    fn build(&self) -> Dataset<'_> {
-        let p = &self.p;
+    /// The datasets this series draws as: one, or for a line one per
+    /// segment between its breaks, the first carrying the name.
+    fn build(&self) -> impl Iterator<Item = Dataset<'_>> {
         let connected =
-            matches!(p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line)));
-        let overflow = connected
-            && self.data.windows(2).any(|pair| {
-                !(pair[1].0 - pair[0].0).is_finite()
-                    || !(pair[1].1 - pair[0].1).is_finite()
-            });
-        // CR claude for claude: [bug/low] [bug/low] When any adjacent pair's difference
-        // overflows, the whole Line dataset is dropped, so one outlier near ±f64::MAX
-        // erases every finite segment on screen. canvas drops only the offending shape,
-        // and a scatter keeps its finite points. overflowing_chart_line_is_empty uses
-        // two points, so it cannot tell "drop the segment" from "drop the series".
-        // Decide the rule: clamp coordinates to the axis bounds widened by one span, or
-        // split the series at the overflowing pair. Compute it in set_data rather than
-        // rescanning on every draw, and add a test with finite points on both sides of
-        // the outlier. Found by reading; not run. (tests-tui-08)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Split the series at the overflowing pair, computed in set_data; test
-        // points on both sides.
-        let data = if overflow { &[][..] } else { &self.data };
+            matches!(self.p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line)));
+        let breaks: &[usize] = if connected { &self.breaks } else { &[] };
+        let starts = std::iter::once(0).chain(breaks.iter().copied());
+        let ends = breaks.iter().copied().chain(std::iter::once(self.data.len()));
+        starts
+            .zip(ends)
+            .enumerate()
+            .map(|(i, (s, e))| self.segment(&self.data[s..e], i == 0))
+    }
+
+    fn segment<'a>(&'a self, data: &'a [(f64, f64)], named: bool) -> Dataset<'a> {
+        let p = &self.p;
         let mut ds = Dataset::default().data(data);
-        if let Some(Some(LineV(l))) = &p.name.t {
+        if named && let Some(Some(LineV(l))) = &p.name.t {
             ds = ds.name(into_borrowed_line(l));
         }
         if let Some(Some(m)) = p.marker.t {
@@ -244,7 +253,7 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
         let mut chart =
-            Chart::new(self.datasets.iter().map(|(_, d)| d.build()).collect());
+            Chart::new(self.datasets.iter().flat_map(|(_, d)| d.build()).collect());
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }

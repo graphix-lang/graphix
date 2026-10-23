@@ -19,6 +19,9 @@ use triomphe::Arc;
 static FONT_NAMES: LazyLock<Mutex<HashSet<&'static str>>> =
     LazyLock::new(Default::default);
 
+/// The largest weight a `FillPortion` takes.
+const MAX_PORTION: u16 = 255;
+
 #[derive(Clone, Copy, Debug)]
 pub struct LengthV(pub Length);
 
@@ -35,7 +38,12 @@ impl FromValue for LengthV {
         Ok(Self(match v.cast_to::<Repr>()? {
             Repr::Fill => Length::Fill,
             Repr::Shrink => Length::Shrink,
-            Repr::FillPortion(n) => Length::FillPortion(n),
+            // iced sums a row's weights in a u16 (UPSTREAM.md), so one
+            // weight stays small enough that 256 siblings cannot overflow it
+            Repr::FillPortion(n @ 1..=MAX_PORTION) => Length::FillPortion(n),
+            Repr::FillPortion(n) => {
+                bail!("a FillPortion weight is 1 to {MAX_PORTION}, not {n}")
+            }
             Repr::Fixed(n) => Length::Fixed(n),
         }))
     }

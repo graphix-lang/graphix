@@ -44,6 +44,22 @@ async fn line_renders() -> Result<()> {
     render_all(&mut h).await
 }
 
+/// A shape with a non-finite field is left out; the others draw.
+#[tokio::test(flavor = "current_thread")]
+async fn a_non_finite_shape_is_left_out() -> Result<()> {
+    let mut h = canvas_harness(
+        1,
+        concat!(
+            "`Line({from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 50.0}, ",
+            "color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.5}), ",
+            "`Line({from: {x: 0.0, y: 0.0 / 0.0}, to: {x: 100.0, y: 50.0}, ",
+            "color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.5})",
+        ),
+    )
+    .await?;
+    render_all(&mut h).await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_fill_only() -> Result<()> {
     let mut h = canvas_harness(

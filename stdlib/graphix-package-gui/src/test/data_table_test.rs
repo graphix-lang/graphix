@@ -1235,7 +1235,7 @@ let log = 0.0;
 let on_w = |new_w: f64| log <- new_w;
 let w = 100.0;
 let tbl = { rows: ["r0"], columns: [
-        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: &on_w)
+        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: on_w)
     ] };
 let result = data_table(
 #table: &tbl
@@ -2156,7 +2156,7 @@ async fn a_width_ref_wins_over_a_drag() -> Result<()> {
 let w = 100.0;
 let clamp = |x: f64| w <- select x > 150.0 { true => 150.0, false => x };
 let tbl = { rows: ["r0"], columns: [
-        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: &clamp)
+        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: clamp)
     ] };
 let result = data_table(#table: &tbl)
 "#;
@@ -2184,7 +2184,7 @@ let w = 100.0;
 let resize = |x: f64| null;
 let on_w: [fn(width: f64) -> Any, null] = null;
 let tbl = { rows: ["r0"], columns: [
-        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: &on_w)
+        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: on_w)
     ] };
 let result = data_table(#table: &tbl)
 "#;

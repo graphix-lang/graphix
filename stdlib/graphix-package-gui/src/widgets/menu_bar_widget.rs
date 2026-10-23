@@ -557,6 +557,13 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                 // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
                 // ruling needed. Refuse modifier-less and Shift-only shortcuts; a
                 // focused text widget owns Ctrl+C/V/X/Z/A.
+                // 2026-10-23 claude: Half done: menu::shortcut refuses a key with no
+                // Ctrl, Alt or Super (a plain or Shift-only key is typed text), so
+                // shortcut("/") no longer fires on typing. Open: a focused text widget
+                // still sees Ctrl+C/V/X/Z/A beside the menu's action; the menu bar runs
+                // before its siblings in iced's Column, so telling it a text widget has
+                // focus needs a focus query (iced's operation::focusable) at the key
+                // event.
                 let items = self.descs.iter().flat_map(|m| m.items.iter());
                 if let Some(id) = shortcut_action(items, key, modified_key, *modifiers) {
                     state.open_menu = None;

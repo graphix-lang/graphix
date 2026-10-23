@@ -119,19 +119,33 @@ pub(crate) enum PathSegment {
     Close,
 }
 
-// CR claude for claude: [bug/medium] ShapeVec reads every shape through Finite, so one
-// NaN or infinite field in one shape refuses the whole update. The canvas then keeps
-// drawing its previous frame, and every update carrying that value is refused and
-// logged. CheckedPath already skips just a shape with non-finite geometry at draw time,
-// and the chart widget drops non-finite points. Choose one rule: skip the bad shape
-// (read plain numbers, check the remaining scalars in draw_shape) or drop it here while
-// reading. probe: design/review-2026-10-19/repro/gui-widgets-a-canvas-nan-freezes.rs
-// (gui-widgets-a-04)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Skip the bad shape, as CheckedPath and the chart do.
-#[derive(Clone, Debug, FromValue)]
-#[value(shape = "graphix_compiler::rep::GraphixShape")]
+/// The shapes of a canvas update; one that does not read (a non-finite
+/// field) is left out, as a chart leaves out a non-finite point, and the
+/// rest draw.
+#[derive(Clone, Debug)]
 pub(crate) struct ShapeVec(pub Vec<CanvasShape>);
+
+impl FromValue for ShapeVec {
+    fn from_value(v: Value) -> Result<Self> {
+        let Value::Array(a) = v else {
+            anyhow::bail!("expected an array of shapes, got {v}")
+        };
+        let mut shapes = Vec::with_capacity(a.len());
+        let mut skipped = 0;
+        for s in a.iter() {
+            match CanvasShape::from_value(s.clone()) {
+                Ok(s) => shapes.push(s),
+                Err(_) => skipped += 1,
+            }
+        }
+        if skipped > 0 {
+            log::warn!(
+                "canvas: {skipped} shape(s) skipped: a field is not a finite number"
+            );
+        }
+        Ok(Self(shapes))
+    }
+}
 
 graphix_rt::props! {
     struct Props {

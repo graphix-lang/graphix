@@ -38,6 +38,7 @@ type Widget = [
 
 // ANCHOR_END: widget
 // ANCHOR: length
+/// `` `FillPortion(n) `` shares the space by weight, `n` from 1 to 255.
 type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
 
 // ANCHOR_END: length

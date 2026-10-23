@@ -121,3 +121,13 @@ the state of a fix, and Graphix's side.
   reader of a busy path can see a value twice or out of order (Eric's
   open CRs sys-net-01 and x-concurrency-07 in
   `stdlib/graphix-package-sys/src/netstate.rs`).
+
+## iced_core 0.14: flex layout sums FillPortion weights in a u16
+
+- **Bug.** `iced_core::layout::flex` adds a row's or column's
+  `FillPortion` weights in a `u16`: two children at `FillPortion(40000)`
+  overflow it, panicking a debug build, and in release the wrapped sum
+  can be 0, which the fill share then divides by.
+- **Graphix's side.** Worked around: `LengthV` reads a weight only from
+  1 to 255 (`stdlib/graphix-package-gui/src/types.rs`), so up to 257
+  siblings cannot overflow the sum. Not reported.
