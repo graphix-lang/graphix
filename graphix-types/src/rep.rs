@@ -416,7 +416,7 @@ pub fn strip_with<E>(
                     }
                     (!out.is_empty()).then(|| array(out))
                 }
-                // CR claude for eric: [bug/medium] Stripping the keys can merge two of
+                // CR claude for claude: [bug/medium] Stripping the keys can merge two of
                 // them. "A" and `A both become "A", and (1, 2) and [1, 2] both become
                 // [1, 2]. Map::from_iter then keeps one entry, so pack/json/toml/net/db
                 // writes of a Map<[string, `A], V> lose entries with no error. A db
@@ -426,7 +426,10 @@ pub fn strip_with<E>(
                 // whose stripped keys collide instead of dropping entries. probe:
                 // design/review-2026-10-19/repro/x-kind-markers-data-key-collision.sh
                 // (x-kind-markers-02)
-                // CR claude for eric: [bug/medium] Keys that differ in memory but
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. to_data refuses a map whose stripped keys collide (with
+                // t-rep-02).
+                // CR claude for claude: [bug/medium] Keys that differ in memory but
                 // share a data form ("A" and `A, [1, 2] and (1, 2)) strip to one key,
                 // and Map::from_iter keeps one entry without a word. Every writer goes
                 // through to_data, so json, pack, toml, hbs, sys::net and db silently
@@ -442,6 +445,9 @@ pub fn strip_with<E>(
                 // asks the same question (refuse such key types at the check, or have
                 // to_data refuse a map whose stripped keys collide); this CR's fix is
                 // the second option. Re-addressed so the two are ruled together.
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Take this CR's fix (refuse a map whose stripped keys
+                // collide), which is x-kind-markers-02's second option.
                 Value::Map(m) => {
                     let mut kvs: Option<LPooled<Vec<(Value, Value)>>> = None;
                     for (i, (k, e)) in m.into_iter().enumerate() {

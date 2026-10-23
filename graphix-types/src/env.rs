@@ -670,7 +670,7 @@ impl Env {
         if flags.contains(CFlag::WarningsAreErrors) {
             return Err(anyhow!("{message}").at(spec));
         }
-        // CR claude for eric: [risk/low] Warnings are published only while compiling,
+        // CR claude for claude: [risk/low] Warnings are published only while compiling,
         // and a program restored from its session image compiles nothing. So a script
         // prints 'WARNING: .. error raised by ? will not be caught' on its first run
         // and never again, which is when a user reruns it to read the warning (probe:
@@ -679,6 +679,9 @@ impl Env {
         // Either record a program compile's warnings in the program image entry and
         // replay them through `publish_warning` on restore, or rule that warnings come
         // from `--check`/the LSP and say so. (x-errors-09)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Record a program compile's warnings in its image entry and replay
+        // them through publish_warning on restore.
         self.publish_warning(&spec.ori, pos, end, message);
         Ok(())
     }
@@ -927,7 +930,7 @@ impl Env {
         depth: usize,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
-        // CR claude for eric: [perf/low] A reference to a name bound d block levels
+        // CR claude for claude: [perf/low] A reference to a name bound d block levels
         // out runs `lookup_at` at every level. Each level hashes and copies a scope
         // prefix of length O(d) (`names.get`, `module_at`, and the caller's `binds`
         // lookup), and each call also recomputes `mod_root`. That makes one reference
@@ -947,6 +950,9 @@ impl Env {
         // and modules (a key-type change to the env's maps) or a per-compile (scope,
         // name) memo that every bind must invalidate. Real programs nest a few blocks,
         // so this is a cost-versus-churn call: readdressed to eric.
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Real programs nest a few blocks: try the per-compile (scope, name)
+        // memo; if it is churn, close as acceptable.
         for level in chain_levels(from) {
             if let Some(t) = self.lookup_at(origin, level, n, depth, f)? {
                 return Ok(Some(t));
@@ -1817,7 +1823,7 @@ impl Env {
                 rep: rep.clone(),
                 public,
             };
-            // CR claude for eric: [bug/medium] Every instance of a function body that
+            // CR claude for claude: [bug/medium] Every instance of a function body that
             // declares an abstract type re-inserts its AbstractRep with a fresh Arc,
             // even when the representation is unchanged. Two statements that call such
             // a function elaborate in parallel compile tasks, and Env::join then sees
@@ -1841,6 +1847,9 @@ impl Env {
             // lang::modules::body_abstract_type_from_two_statements. The trait half still
             // panics (x-typecheck-patterns-local-trait-fork-panic.gx); refusing a trait in a
             // function body is the open ruling c-module-traits-06, so re-addressed.
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+            // needed. The trait half closes with c-module-traits-06 (refuse a trait in a
+            // function body).
 
             // the check above refused a changed representation, so an
             // entry of the same publicity is this one: writing it again would

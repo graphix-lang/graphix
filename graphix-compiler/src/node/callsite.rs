@@ -847,7 +847,7 @@ pub(crate) fn carried_out(
 /// Every type variable under `t` by name, with whether each occurrence
 /// is data: never under a function, a reference, a typedef application,
 /// a nominal type or a constructor application. Bindings are walked.
-// CR claude for eric: [bug/medium] A variable held under an abstract type, a typedef
+// CR claude for claude: [bug/medium] A variable held under an abstract type, a typedef
 // application or a reference is not widenable, so the first argument checked fixes it.
 // Labeled arguments are always checked first, and the syntax forces them before
 // positional ones. As a result, `db::cursor::new(#prefix: "aa", t)` with `t:
@@ -860,6 +860,9 @@ pub(crate) fn carried_out(
 // to nominal types and applications, or the check order changes. Separately, the
 // mismatch prints the opaque tree as `<abstract#id>` instead of `Tree<..>`. probe:
 // design/review-2026-10-12/repro/http-sqlite-db1-08.gx (http-sqlite-db1-08)
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+// Check the arguments that hold a variable invariantly first, so call order stops
+// deciding; print abstract types by name in the mismatch.
 fn data_positions(
     t: &Type,
     data: bool,
@@ -2893,7 +2896,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // body decodes, as a cold compile's registrations do; the site holds
         // them until the body decodes and registers its own (recorded, so a
         // failed read unwinds them)
-        // CR claude for eric: [perf/medium] Every imaged site flattens and registers
+        // CR claude for claude: [perf/medium] Every imaged site flattens and registers
         // its whole subtree's reads here (ImagedRefs::flat, recomputed per site).
         // materialize releases them, and each imaged site in the decoded body then
         // registers its own subtree again. A call chain of depth N costs O(N^2) at its
@@ -2907,6 +2910,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // boundary. The `held` field's doc still describes the old rule. probe:
         // design/review-2026-10-19/repro/c-callsite-warm-chain-quadratic.sh
         // (c-callsite-04)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Take the fix: memoize the flat reads per instance in the shared
+        // table and pass the held set down at materialize.
         if let Callee::Imaged { instance, refs, .. } = &site.callee {
             let held: Box<[BindId]> =
                 refs.flat(*instance).refed.iter().copied().collect();

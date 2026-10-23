@@ -654,7 +654,7 @@ impl<X: GXExt> GX<X> {
     }
 
     /// Readers of `id` update this cycle.
-    // CR claude for eric: [perf/low] A delivery costs O(readers of the id), not
+    // CR claude for claude: [perf/low] A delivery costs O(readers of the id), not
     // O(boundaries that run). Each Reader costs an `updated` entry and a mark, even one
     // already stamped or asleep, and notify_set and mark_readers do the same. Every seq
     // step reads the machine's pc (`seqpc ~! v` in --expand), so each step transition
@@ -665,6 +665,9 @@ impl<X: GXExt> GX<X> {
     // every step to register a read of pc. probe:
     // design/review-2026-10-19/repro/x-perf-runtime-seq-pc-readers.sh
     // (x-perf-runtime-04)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Group readers by root so `updated` is touched once per root; drop the
+    // per-step pc read if the lowering does not need it.
     fn wake_readers(&mut self, id: &BindId) {
         let cycle = self.ctx.rt.cycle;
         if let Some(readers) = self.ctx.rt.by_ref.get(id) {
@@ -1130,7 +1133,7 @@ impl<X: GXExt> GX<X> {
                     .map(|n| nodes.push(n))
                 }
             };
-            // CR claude for eric: [bug/medium] Only the check warns on unused imports;
+            // CR claude for claude: [bug/medium] Only the check warns on unused imports;
             // `load_program`, the run's compile, has no such pass. Under `-W error`,
             // `graphix --check f.gx` refuses `use array::map;` unused while `graphix
             // f.gx` runs it without a word, so the check no longer predicts the build.
@@ -1138,6 +1141,9 @@ impl<X: GXExt> GX<X> {
             // both `check_inner` and `load_program`), or rule that unused imports are a
             // check-only lint that WarningsAreErrors leaves alone. probe:
             // design/review-2026-10-19/repro/shell-werror-check-vs-run.sh (shell-03)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Run the unused-import pass where check and load_program
+            // share it.
             let res = res.and_then(|()| {
                 self.ctx.env.unused_imports_since(&env).try_for_each(|(key, e)| {
                     let mut end = e.name_at;

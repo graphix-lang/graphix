@@ -173,7 +173,7 @@ where
         between(sptoken('|'), sptoken('|'), lambda_args()),
         optional(attempt(spaces().with(string("->")).with(typ()))),
         optional(attempt(spaces1().with(string("throws")).with(spaces1()).with(typ()))),
-        // CR claude for eric: [readability/low] A lambda body requires whitespace after
+        // CR claude for claude: [readability/low] A lambda body requires whitespace after
         // the closing `|`, and `select` requires it after the keyword (as does
         // `until`). `seq(t)`, `catch(e)` and `f(x)` do not. So `|x|x + 1` and
         // `select(x) { .. }` are refused. The first gets a long expected-token list,
@@ -184,6 +184,9 @@ where
         // `note_reason` like `separator` has, and make the tree-sitter grammar agree.
         // Probes: design/review-2026-10-12/repro/t-parser-a-lambda-no-space.gx; `let x
         // = select(1) { _ => 2 }`. (t-parser-a-12)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Accept them (spaces() after `|`, `select`, `until`), matching the
+        // tree-sitter grammar.
         spaces1().with(choice((
             attempt(token('\'').with(fname()).skip(not_followed_by(sptoken(':'))))
                 .map(LambdaBody::Builtin),

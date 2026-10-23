@@ -947,7 +947,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
                 a.typ.resolve_tvars().normalize()
             }
-            // CR claude for eric: [bug/medium] This refusal comes only at typecheck1.
+            // CR claude for claude: [bug/medium] This refusal comes only at typecheck1.
             // `trait Mk { val make: fn(x: i64) -> self }; .. Mk::make(1)` passes
             // --check (no diagnostic in the editor) and then fails the build here,
             // which is a check/build disagreement that graphix-fuzz reports as a
@@ -958,6 +958,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             // design/review-2026-10-19/repro/tests-fusion-traits-self-only-result-check-parity.gx
             // Also reported as (x-typecheck-generics-04), (x-typecheck-patterns-08).
             // (tests-fusion-traits-03)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+            // needed. Refuse a self-only-result method outside core at the trait declaration
+            // (with t-parser-b-04).
             None => {
                 bailat!(
                     self.spec,

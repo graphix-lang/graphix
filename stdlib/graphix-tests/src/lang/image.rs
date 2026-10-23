@@ -567,7 +567,7 @@ async fn program_image_restores_fork_control() -> Result<()> {
     Ok(())
 }
 
-// CR claude for eric: [perf/low] A warm (restored) program's first cycle forks once
+// CR claude for claude: [perf/low] A warm (restored) program's first cycle forks once
 // less than the cold one when two collection loops stand side by side. Under
 // ParMode::Force, `(array::map([1, 2, 3], |x| x * 2), array::map([4, 5], |x| x + 1))`
 // forks 42 times cold and 41 warm (30 of them are the environment's: `42` alone forks
@@ -579,6 +579,9 @@ async fn program_image_restores_fork_control() -> Result<()> {
 // fork less than a cold one, or should the decode keep the fork? The pins compare
 // what the attributes change instead of cold and warm counts. Found 2026-10-13.
 // (image-fork-01)
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+// needed. Investigate whether the first-dispatch decode runs unforked; a warm start
+// should fork as the cold one.
 /// `#[serial]` restores with the program: under `Force`, which forks at
 /// every fork point, the program forks less with it than without it,
 /// cold and warm alike.

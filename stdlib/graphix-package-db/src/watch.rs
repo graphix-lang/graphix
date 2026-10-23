@@ -35,7 +35,7 @@ impl Watches {
         prefix: &[u8],
         tx: mpsc::UnboundedSender<Change>,
     ) -> Registered {
-        // CR claude for eric: [perf/medium] This exclusive lock is taken on the runtime
+        // CR claude for claude: [perf/medium] This exclusive lock is taken on the runtime
         // thread (DbSubscribe::update -> spawn_watch). It waits for every write in
         // flight on the tree, and watch::write holds the lock for the whole sled
         // operation: an apply_batch, a commit's transaction, an import. A subscription
@@ -46,6 +46,8 @@ impl Watches {
         // register on a blocking thread and fire the subscription once registered,
         // giving up "registered in the cycle the subscription fires". probe:
         // design/review-2026-10-19/repro/db2-subscribe-blocks-runtime.gx (db2-01)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Register without blocking: the list behind its own short mutex.
         self.0.write().push(Watch { prefix: prefix.into(), tx: tx.clone() });
         Registered { watches: self.clone(), tx }
     }

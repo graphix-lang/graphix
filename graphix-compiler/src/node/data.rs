@@ -1113,7 +1113,7 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         let top_id = self.spec.id;
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {
-                // CR claude for eric: [bug/high] Over a union of same-shaped structs,
+                // CR claude for claude: [bug/high] Over a union of same-shaped structs,
                 // struct_field_type returns the union of the members' field types. That
                 // is a read type, and here it is used as the type a write must fit. `{s
                 // with a: k}` with s: [{a: i64, b: string}, {a: string, b: i64}] = {a:
@@ -1127,6 +1127,10 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
                 // members agree. Pin as must-reject. probe:
                 // design/review-2026-10-19/repro/c-data-map-union-field-write.sh
                 // (c-data-map-01)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. A write must fit every member's field type (the sound
+                // reading); refuse `&mut` field steps over a union unless all members
+                // agree. Pin as must-reject.
                 let (i, typ) = struct_field_type(ctx, &styp, &rep.name)?;
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
                 if check {

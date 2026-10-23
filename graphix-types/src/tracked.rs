@@ -205,7 +205,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             return;
         };
         for k in touched.drain(..) {
-            // CR claude for eric: [risk/medium] The only guard against a fork
+            // CR claude for claude: [risk/medium] The only guard against a fork
             // overwriting a sibling's write is this debug_assert. In a release build
             // the loop below keeps the later-joined value, so a registry with an
             // aggregate value (Env::impls holds one Vec per trait) silently loses the
@@ -214,6 +214,8 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             // release (one comparison per written key) or key Env::impls by
             // implementation so that independent registrations never share a key. Found
             // by reading; not run. (t-env-02)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Make the check an assert! in release.
             let same = |a: Option<&V>, b: Option<&V>| match (a, b) {
                 (None, None) => true,
                 (Some(a), Some(b)) => a.same_value(b),

@@ -46,7 +46,7 @@ async fn build_backend() -> Result<StdArc<dyn LspBackend>> {
             .context("registering stdlib modules")?;
     // The stdlib layer, shared by every per-project check.
     let base_resolvers: Vec<ResolverRef> = vec![vfs];
-    // CR claude for eric: [bug/medium] This search path is built without the CLI's
+    // CR claude for claude: [bug/medium] This search path is built without the CLI's
     // resolver factories, and GXConfig gets none either. A GRAPHIX_MODPATH `netidx:/x`
     // entry therefore becomes FilesResolver("netidx:/x"): the editor reports
     // "netidx:/x/remote.gx ...: no such file" for a module `graphix --check` loads from
@@ -54,6 +54,8 @@ async fn build_backend() -> Result<StdArc<dyn LspBackend>> {
     // `netidx` factory map here and in GXConfig::resolver_factories. If not, skip a
     // scheme with no factory, with a warning, rather than searching a bogus directory.
     // probe: design/review-2026-10-19/repro/lsp-netidx-modpath.py (lsp-03)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Share main.rs's netidx factory map with the server, as --check uses it.
     let search = graphix_rt::search_path(&Default::default(), &mut ctx.libstate)?;
     // A check runs CFlag::CheckOnly, which never fuses.
     let flags = BitFlags::from(CFlag::WarnUnhandled);

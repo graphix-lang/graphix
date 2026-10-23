@@ -38,7 +38,7 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // any other key type stores each value tagged by its type and
 // self-delimiting.
 
-// CR claude for eric: [bug/medium] Keys arrive stripped: a bare variant is a String and
+// CR claude for claude: [bug/medium] Keys arrive stripped: a bare variant is a String and
 // a payload variant an Array, and the tagged encoding orders by type first. So a tree
 // keyed by [`Z(i64), `A] puts `Z(1) before `A, although `A < `Z(1) in the language and
 // the gxi promises the language's order for first/last/get_lt/get_gt/cursor::range.
@@ -46,7 +46,9 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // key), or change the documented order. probe:
 // design/review-2026-10-19/repro/x-kind-markers-db-variant-key-order.sh
 // (x-kind-markers-03)
-// CR claude for eric: [bug/high] Keys reach this function in data form (the tree
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+// Encode variant keys tag first from the marked key (with http-sqlite-db1-01).
+// CR claude for claude: [bug/high] Keys reach this function in data form (the tree
 // builtins list them in DATA_ARGS), and data form drops the kind markers. So members of
 // a union key type that share a data form become one key: `A and "A", (1, 2) and [<1,
 // 2>], a struct and its array of pairs. Inserting `A overwrites "A", and a tuple key
@@ -61,6 +63,9 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // probe: design/review-2026-10-19/repro/http-sqlite-db1-db-key-data-form.gx,
 // design/review-2026-10-19/repro/http-sqlite-db1-db-key-tuple-as-list.gx
 // (http-sqlite-db1-01)
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+// Encode from the language form with a tag byte per kind marker; drop keys from
+// DATA_ARGS; bump META_VERSION; pin.
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {

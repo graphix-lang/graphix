@@ -85,7 +85,7 @@ impl InputReader {
     ) -> Result<Signal> {
         match output {
             Output::Custom(cdc) => match (&mut cdc.stop).await {
-                // CR claude for eric: [bug/medium] A display that ended normally
+                // CR claude for claude: [bug/medium] A display that ended normally
                 // (tui::exit, or the user closing a GUI's last window) is reported as
                 // Ctrl-C, and since the Ctrl-C exit-code fix a script then exits 130,
                 // the SIGINT status. In the REPL it also interrupts the runtime. Give
@@ -99,7 +99,10 @@ impl InputReader {
                 // exit 0 here would make a TUI Ctrl-C exit 0 too; it waits on the
                 // ruling for what status a program-requested stop has, and then Stop
                 // carrying its reason.
-                // CR claude for eric: [bug/high] A display's `Ok(())` stop is read as
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage:
+                // no ruling needed. With tui-core-01: a program-requested stop exits
+                // 0; Stop carries its reason.
+                // CR claude for claude: [bug/high] A display's `Ok(())` stop is read as
                 // Ctrl-C, so a script whose TUI quits through `tui::exit` exits 130,
                 // the SIGINT status, as if it had been interrupted. Every TUI app's
                 // normal quit key (input_basic.gx, netidx-admin's `q`) now ends the
@@ -114,11 +117,14 @@ impl InputReader {
                 // pin it beside interrupt_wedge.rs's Ctrl-C status test. probe:
                 // design/review-2026-10-19/repro/tui-core-exit-status-130.gx Also
                 // reported as (x-rerun-5-02). (tui-core-01)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. A program-requested stop exits 0: Stop carries
+                // Ended::{Interrupted, Requested}; pin beside interrupt_wedge.rs.
                 Ok(Ok(())) => Ok(Signal::CtrlC),
                 Ok(Err(e)) => Err(e.context("the display failed")),
                 Err(_) => bail!("the display died"),
             },
-            // CR claude for eric: [bug/medium] With a stdin that is not a terminal, a
+            // CR claude for claude: [bug/medium] With a stdin that is not a terminal, a
             // REPL line that produces a value leaves the output as `Output::Text`. From
             // then on, this arm waits only for Ctrl-C and never polls the line reader
             // again. Later piped lines are never compiled, and EOF (the reader's
@@ -132,6 +138,9 @@ impl InputReader {
             // when the next line or EOF lands is lost. Option two: on EOF, keep
             // streaming the last output until `sys::exit` or a signal, but still read
             // the lines before it. Also reported as (x-rerun-1-03). (x-fix-tools-03)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Option one: with a non-terminal stdin keep reading lines
+            // while text output shows; EOF is Ctrl-D.
             Output::EmptyScript | Output::Text(_) => {
                 tokio::signal::ctrl_c().await?;
                 Ok(Signal::CtrlC)

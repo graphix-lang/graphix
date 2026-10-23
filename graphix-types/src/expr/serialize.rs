@@ -186,7 +186,7 @@ fn put_header(buf: &mut BytesMut) {
     buf.put_slice(VERSION.as_bytes());
 }
 
-// CR claude for eric: [risk/low] A blob is accepted whenever the writer's
+// CR claude for claude: [risk/low] A blob is accepted whenever the writer's
 // `CARGO_PKG_VERSION` matches. The AST's enums (`ExprKind`, `Type`, the patterns) use
 // derived `Pack`, which writes variant indices. So a variant inserted between two
 // builds at the same version string decodes as different kinds (one operator read as
@@ -195,6 +195,9 @@ fn put_header(buf: &mut BytesMut) {
 // 'same compiler build', which nothing checks. Add a format key to the header: a
 // hand-bumped constant like `image::REGISTRATION_FORMAT`, pinned by a test over the
 // enum layouts, or a build-time hash of the AST types. (t-expr-core-07)
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+// Add a hand-bumped AST format key to the header, pinned by a test over the enum
+// layouts.
 fn check_magic(bytes: &mut &[u8]) -> Result<()> {
     if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
         bail!("packed AST: bad magic header");

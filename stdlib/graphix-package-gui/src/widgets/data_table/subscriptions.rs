@@ -639,7 +639,7 @@ impl<X: GXExt> DataTableW<X> {
             roles.push(role);
         }
         inner.cells.insert((row.clone(), col.clone()), id);
-        // CR claude for eric: [bug/low] First problem: when the subscription already
+        // CR claude for claude: [bug/low] First problem: when the subscription already
         // exists (the cell is held as a SortMarker of a sorted column), adding the Grid
         // role here requests no BEGIN_WITH_LAST update. A row scrolling back into view
         // therefore fires no on_update and gets no initial sparkline point, although
@@ -652,6 +652,8 @@ impl<X: GXExt> DataTableW<X> {
         // declare #value as Any (this refuses existing handlers annotated Primitive) or
         // cast to Primitive and drop the values that fail. That choice is a decision on
         // the API. (gui-datatable-13)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Do the first fix; cast to Primitive and drop values that fail.
         inner.dvals.entry(id).or_insert_with(|| {
             dval.updates(UpdatesFlags::BEGIN_WITH_LAST, self.update_tx.clone());
             dval

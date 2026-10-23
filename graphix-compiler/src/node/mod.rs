@@ -154,7 +154,7 @@ macro_rules! deref_typ {
                     Some(t) => $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,
-                    // CR claude for eric: [bug/medium] A cell with a structural bound
+                    // CR claude for claude: [bug/medium] A cell with a structural bound
                     // reaches this arm unread. `'a: {x: i64} |s: 'a| s.x`, `'a: (i64,
                     // i64) |t: 'a| t.0` and `'a: fn(x: i64) -> i64 |g: 'a| g(1)` are
                     // all refused with "needs its type known here: annotate the
@@ -165,6 +165,9 @@ macro_rules! deref_typ {
                     // enough. Then pin it. probe:
                     // design/review-2026-10-19/repro/x-rerun-4-bound-reads.gx
                     // (x-rerun-4-01)
+                    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23
+                    // triage: no ruling needed. Read through the bound: an unbound cell
+                    // with a single structural conjunct is read as that conjunct here.
                     None => anyhow::bail!(
                         "reading a {} needs its type known here: annotate the binding",
                         $name
@@ -1098,7 +1101,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
             let spec = ctx.shared_spec(e.clone());
             compile_module(ctx, flags, spec, scope, top_id, name, value, predeclared)
         }
-        // CR claude for eric: [bug/medium] A `let` is accepted as a block's last
+        // CR claude for claude: [bug/medium] A `let` is accepted as a block's last
         // statement. The block then takes the let's bound type (Block::typ is the last
         // child's, Bind::typ is the value's), but Bind::update produces only the
         // phantom. So `{ let a = 1; let b = a + 1 }` checks as i64 and never produces,
@@ -1108,6 +1111,9 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         // value the let's value as a seq's is. probe:
         // design/review-2026-10-19/repro/c-node-mod-block-ending-in-let.gx
         // (c-node-mod-02)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Refuse a trailing let in a non-seq block, as a trailing catch is
+        // refused, with a reason naming it.
         ExprKind::Bind(_) => {
             compiler::compile_statement_expr(ctx, flags, e.clone(), scope, top_id)
         }

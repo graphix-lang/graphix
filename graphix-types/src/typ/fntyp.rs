@@ -991,7 +991,7 @@ impl FnType {
     /// deeper: the definition at `depth` closed over them. A cell a
     /// binding lowered above it is its environment's.
     #[doc(hidden)]
-    // CR claude for eric: [perf/low] A chain of closures that each return the previous
+    // CR claude for claude: [perf/low] A chain of closures that each return the previous
     // one (`let x1 = |a: i64| x0; let x2 = |a: i64| x1; ..`) checks in quadratic time
     // and memory: 2500 lets take 18 s and 5000 lets went past a 6 GB cap in --check.
     // Each definition re-walks the whole nested signature here (`reached_cells`), and
@@ -1000,6 +1000,9 @@ impl FnType {
     // at a nested fn type a closed definition already generalized, and let a copy share
     // a nested fn type that reaches no cell it must freshen. probe:
     // design/review-2026-10-19/repro/x-stack-flat-chain-quadratic.sh (x-stack-03)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Stop generalize/claim at a nested fn type a closed definition already
+    // generalized; share nested fn types that reach no cell.
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);

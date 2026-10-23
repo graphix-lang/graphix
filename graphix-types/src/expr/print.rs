@@ -1977,7 +1977,7 @@ impl PrettyDisplay for ExprKind {
             TupleRef { source, field } => {
                 pretty_postfix(buf, source, &format_compact!(".{field}"))
             }
-            // CR claude for eric: [bug/medium] The index (and a map key, slice
+            // CR claude for claude: [bug/medium] The index (and a map key, slice
             // bounds, map-literal keys, string splices) is printed by its flat Display,
             // not laid out. A long index never breaks: browser.gx formats to a
             // 92-column `structure.columns[slot_item(..)]$;` line. A decorated index
@@ -2000,6 +2000,8 @@ impl PrettyDisplay for ExprKind {
             // Display (inside the literal, at column 0): refusing comments in a splice
             // is a grammar rule, and printing without them loses them, so this needs a
             // ruling.
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Refuse comments inside a string splice.
             ArrayRef { source, i } => pretty_lookup(buf, source, "[", i, "]"),
             MapRef { source, key } => pretty_lookup(buf, source, "{", key, "}"),
             ArraySlice { source, start, end } => {

@@ -406,7 +406,7 @@ impl AbstractId {
             return Self::of(scope, name);
         }
         let stable: ModPath = parts().filter(|p| !p.starts_with('#')).collect();
-        // CR claude for eric: [bug/medium] A module declared inside a block or function
+        // CR claude for claude: [bug/medium] A module declared inside a block or function
         // body has scope `/#do../m`. Here its types are keyed by `/m::T` alone, because
         // the `#` parts are dropped unless the last part is one. So two different
         // dynamic modules named `m` in two blocks mint one nominal type. With equal
@@ -419,6 +419,9 @@ impl AbstractId {
         // design/review-2026-10-19/repro/t-expr-core-abstract-id-shared.gx,
         // design/review-2026-10-19/repro/t-expr-core-abstract-id-refused.gx
         // (t-expr-core-01)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Key a module whose scope crosses a `#` component by its declaration
+        // (origin and position).
         let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
         let place = match in_body {
             false => return Self::of(&stable, name),
@@ -1042,7 +1045,7 @@ pub enum Type {
     /// The conjunct `'a: Concrete`: whatever binds the cell is fully known,
     /// with no open cell and no ⊥ in it, so a type-directed builtin can act
     /// on it. Legal only as a constraint.
-    // CR claude for eric: [structure/medium] Concrete, Function, Singleton, OneNumber,
+    // CR claude for claude: [structure/medium] Concrete, Function, Singleton, OneNumber,
     // Discernible and Ordered are each a Type variant that is "legal only as a
     // constraint". Yet every type walk (print, matches, setops, normalize, cast, tval,
     // contains, fusion, pattern) lists all six, often in both pair orders, and they can
@@ -1055,6 +1058,8 @@ pub enum Type {
     // cannot be written. (x-dup-07)
     // 2026-10-18 claude: `Data` (the writers' bound) was added beside these, through the
     // same thirty arms.
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Take Type::Bound(BoundKind).
     Concrete,
     /// The conjunct `'a: Data`: whatever binds the cell is data a writer
     /// can write: no reference, no function and no abstract type without

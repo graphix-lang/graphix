@@ -1489,7 +1489,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }
         if let Some(handler) = self.handler() {
             let etyp = match self.strip {
-                // CR claude for eric: [bug/low] The raised type is the operand minus
+                // CR claude for claude: [bug/low] The raised type is the operand minus
                 // what passes through. For an operand typed Any (or [Any, null]),
                 // Strip::of picks the error form, because Any holds an error. What
                 // passes through is still Any, so the difference is the empty set.
@@ -1505,6 +1505,10 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
                 // (c-error-op-04), and an instance strips what its definition decided
                 // (the check table's aux row). An Any operand still takes the error
                 // form, so this CR's question stands.
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Refuse `?` on an Any operand with a message naming the
+                // operand and its type (annotate it), as Strip::of's open-operand
+                // message does.
                 Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
                 Strip::Null => NULL_ERR.clone(),
             };
@@ -1593,7 +1597,7 @@ impl Receipts {
 
     /// Acknowledge every raise not taken yet, so no enclosing handler
     /// waits on them; their deliveries are passed over.
-    // CR claude for eric: [bug/high] give_up acks raises whose deliveries have not
+    // CR claude for claude: [bug/high] give_up acks raises whose deliveries have not
     // landed yet. A delivery that then lands while the catch is asleep is never seen by
     // take, so `arrived` lags `acked` after the wake. The next real raises are then
     // passed over as given up, and handled() is never called for them. The ancestors'
@@ -1606,6 +1610,9 @@ impl Receipts {
     // at its wake the errors delivered while it slept, and make the handler and
     // Receipts agree. probe:
     // design/review-2026-10-19/repro/c-error-op-receipts-sleep-stall.gx (c-error-op-01)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Take the counting fix; the wake question follows wake catch-up: a catch
+    // hears, once, the deliveries that landed while it slept, and Receipts agree.
     fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
         while self.acked < handler.raised() {
             self.acked += 1;

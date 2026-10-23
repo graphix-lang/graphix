@@ -1154,7 +1154,7 @@ impl TVar {
         }
         s.cell = o_cell;
         drop(s);
-        // CR claude for eric: [risk/low] `lower` skips a generic cell, which is right
+        // CR claude for claude: [risk/low] `lower` skips a generic cell, which is right
         // for a binding (a scheme bound into a cell is still a scheme). A merge is
         // different: it welds two cells into one, and the survivor must take the
         // shallower level. When `other` is generic (a pattern-predicate cell, a frozen
@@ -1174,6 +1174,8 @@ impl TVar {
         // environment-owned cell's weld from a quantifier's (the impl<'a> Display for
         // Box<'a> case that must stay generic for each call's dispatch), which is a
         // typing rule, and no program reaches the hazard today.
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Find a route first; with none, close it.
         lower(&Type::TVar(other.clone()), level);
     }
 
@@ -1773,7 +1775,7 @@ impl Type {
     /// met again, it answers what its first visit is answering.
     fn concrete_holds_seen(&self, seen: &mut AHashSet<usize>) -> bool {
         ensure_sufficient(|| match self {
-            // CR claude for eric: [bug/low] The Type::Fn arm below walks the signature
+            // CR claude for claude: [bug/low] The Type::Fn arm below walks the signature
             // with for_each_part, throws slot included. A fn type that throws nothing
             // has `throws: ⊥`, and this arm reads that as a ⊥ value. So `fn(x: i64) ->
             // i64` fails Concrete (a type-directed read is refused with "'b: unbound
@@ -1785,6 +1787,9 @@ impl Type {
             // every Type::Fn, in concrete_holds and require_concrete together, with the
             // must-reject family updated to match. The alternative, skipping the throws
             // slot, admits targets that can only fail at run time. (t-tvar-10)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Concrete refuses every Type::Fn, in concrete_holds and
+            // require_concrete; update the must-reject family.
             Type::Bottom | Type::ByRef(..) => false,
             Type::TVar(tv) => {
                 !seen.insert(tv.cell_addr())

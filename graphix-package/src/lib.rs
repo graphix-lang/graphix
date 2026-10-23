@@ -1515,7 +1515,7 @@ impl GraphixPM {
 
     /// Delete the scratch build dir and unpack a fresh graphix-shell source
     /// tree for `version`.
-    // CR claude for eric: [perf/medium] Every add, remove, update and build-standalone
+    // CR claude for claude: [perf/medium] Every add, remove, update and build-standalone
     // recompiles the whole shell dependency tree in release mode from scratch.
     // prepare_source deletes the entire build dir. install_from_source runs `cargo
     // install --path` with no --target-dir, so cargo uses a new temporary target dir.
@@ -1529,6 +1529,9 @@ impl GraphixPM {
     // one that is already removed. It should decide the removal set from the record
     // first and unpack only when there is a real stdlib removal whose cascade needs the
     // feature graph. (package-05)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Keep one target dir at graphix_data_dir()/target for install and
+    // standalone builds; fix the remove_packages unpack.
     async fn prepare_source(&self, version: &str) -> Result<PathBuf> {
         println!("Unpacking graphix-shell source...");
         let build_dir = graphix_data_dir()?.join("build");
@@ -1575,7 +1578,7 @@ impl GraphixPM {
         let _ = fs::copy(&self.exe, self.exe.with_file_name(&backup_name)).await;
         // Stdlib packages are selected by Cargo feature; `core` is always compiled.
         println!("Building graphix with updated packages (this may take a while)...");
-        // CR claude for eric: [risk/medium] `cargo install` without --locked ignores
+        // CR claude for claude: [risk/medium] `cargo install` without --locked ignores
         // the source's Cargo.lock (cargo-install(1)), so every add, remove or update
         // re-resolves the whole dependency tree to the newest semver-compatible
         // releases. A broken upstream patch release then makes every package operation
@@ -1585,6 +1588,9 @@ impl GraphixPM {
         // copy the binary over self.exe (one build path for both commands), or accept
         // the drift. --locked alone fails once an external dep is added. Found by
         // reading; not run. (package-03)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Build with cargo build --release in source_dir (keeps the lock) and
+        // copy the binary, one path for both commands.
         let mut cmd = Command::new(&self.cargo);
         cmd.arg("install")
             .arg("--root")

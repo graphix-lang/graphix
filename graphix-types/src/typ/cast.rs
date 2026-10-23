@@ -767,7 +767,7 @@ impl Type {
                                 None => out.push((k.clone(), v.clone())),
                             }
                         }
-                        // CR claude for eric: [bug/low] Keys that convert to the same
+                        // CR claude for claude: [bug/low] Keys that convert to the same
                         // key collapse here, the last one winning, with no error.
                         // cast<Map<i64, string>>({"1" => "a", "01" => "b", "1.5" =>
                         // "c"}) is {1 => "b"}, and the array-of-pairs path below does
@@ -776,6 +776,9 @@ impl Type {
                         // probe:
                         // design/review-2026-10-19/repro/t-cast-setops-map-key-merge.gx
                         // (t-cast-setops-09)
+                        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23
+                        // triage: no ruling needed. Refuse when the rebuilt map has
+                        // fewer entries: a lossy cast is an InvalidCast.
                         Ok(changed.then(|| Value::Map(Map::from_iter(out.drain(..)))))
                     }
                     v if let Some(a) = rep::array_elems(v) => {
@@ -2196,7 +2199,7 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
             }
             Some(Value::Bytes(bytes::Bytes::copy_from_slice(&bytes).into()))
         }
-        // CR claude for eric: [doc-drift/low] The primitive `array` reads a map as its
+        // CR claude for claude: [doc-drift/low] The primitive `array` reads a map as its
         // [k, v] pairs here, but Type::Array refuses a map ("not an array"), while
         // Type::Map reads an array of pairs. CLAUDE.md's list of class-leaving casts
         // names none of these, nor list-to-array. cast<array>(m) works and
@@ -2205,6 +2208,9 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
         // Value::Map here). Then list the crossings in CLAUDE.md. probe:
         // design/review-2026-10-19/repro/t-cast-setops-map-array-class.gx
         // (t-cast-setops-11)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. A map reads as its pairs for both targets (add the arm to
+        // Type::Array); list the crossings in CLAUDE.md.
         (Value::Array(_) | Value::Map(_), Typ::Map | Typ::Array) => v.cast(t),
         (Value::String(s), t) => parse(s, t),
         (_, Typ::String) => printed(&v),

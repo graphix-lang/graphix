@@ -812,7 +812,7 @@ fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
 
 /// A non-containment report that formats lazily: callers probe these
 /// errors, and rendering a large type eagerly is tree-cost.
-// CR claude for eric: [readability/low] A mismatch names a typedef by its
+// CR claude for claude: [readability/low] A mismatch names a typedef by its
 // expansion: `let s: Shape = ..; let q: i64 = s`, or `|s: Shape| -> i64 s`, says
 // 'i64 does not contain [`Circle(f64), `Rect(f64, f64)]' where it should say Shape.
 // The reference node's type is a cell that the bind's `contains` bound to the
@@ -838,6 +838,9 @@ fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
 // and is a typing change; (b) a print-only side channel, the written type beside the
 // bind for messages, which touches every bind for one message; (c) accept that a
 // mismatch prints a typedef by its expansion.
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+// needed. Option (c), unless (b) turns out cheap: accept that a mismatch prints a
+// typedef by its expansion.
 #[derive(Debug)]
 pub struct TypeMismatch {
     expected: Type,

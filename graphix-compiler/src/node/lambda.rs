@@ -664,7 +664,7 @@ impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 
-// CR claude for eric: [risk/low] A function value still orders by its LambdaId once it
+// CR claude for claude: [risk/low] A function value still orders by its LambdaId once it
 // is widened to Any. Parallel compile, slot builds and forked branches mint those ids
 // in any order, so a `Map<Any, _>` keyed by closures, or a sort over an `Array<Any>`
 // holding them, iterates in a different order on each forced run (GRAPHIX_PAR=off is
@@ -675,6 +675,9 @@ impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 // functions nondeterministic like references and mark such traces Excluded in the
 // oracle. probe: design/review-2026-10-12/repro/x-rerun-7-05-any-fn-key-order.gx
 // (x-rerun-7-05)
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+// Functions have no order (Ordered refuses them); under Any rule them nondeterministic
+// like references and mark such traces Excluded.
 impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))
@@ -1905,7 +1908,7 @@ fn check_defaults<R: Rt, E: UserEvent>(
         }
         DefOrigin::Runtime => return Ok(()),
     };
-    // CR claude for eric: [bug/high] An open parameter type is only narrowed by its
+    // CR claude for claude: [bug/high] An open parameter type is only narrowed by its
     // default's conjuncts here, never linked to the default's type. In `let mk = |z| {
     // let g = |#d = z, x| [d, x]; g }` nothing then reaches z's cell, and mk's gate
     // settles z to ⊥ in its DefTable. The call check reopens that vacuous ⊥ and accepts
@@ -1918,6 +1921,9 @@ fn check_defaults<R: Rt, E: UserEvent>(
     // default reads generic rather than settling it to ⊥. probe:
     // design/review-2026-10-19/repro/x-typecheck-generics-default-reads-outer-param.gx
     // (x-typecheck-generics-01)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Tie an open parameter to its default's type when that type holds an
+    // enclosing gate's cell, so the check agrees with the build.
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
         let mut node = ctx.with_restored(def.env.clone(), |ctx| {
@@ -2075,7 +2081,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             let _at = AtLevel::enter(level);
             types.typ(self.spec.id)
         };
-        // CR claude for eric: [doc-drift/low] A missing row makes this lambda run its
+        // CR claude for claude: [doc-drift/low] A missing row makes this lambda run its
         // full definition check inside the instance. CallSite::typecheck0_instance does
         // the same when there is no ftype row. DefTable::record drops every row whose
         // ExprId two nodes share, for example a default argument compiled at two
@@ -2085,6 +2091,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // up only as slower compiles. Either state the per-node rule in CLAUDE.md ('a
         // node whose id two nodes share has no row and is checked'), or report every
         // such fallback under GRAPHIX_ELAB_AUDIT. (c-lambda-04)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Report every per-node fallback under GRAPHIX_ELAB_AUDIT and state the
+        // per-node rule in CLAUDE.md.
         let Some(row) = row else { return self.typecheck0(ctx) };
         {
             let _at = AtLevel::enter(level);

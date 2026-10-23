@@ -124,7 +124,7 @@ parser! {
                 attempt(string("\"\"\"")),
                 string("\"\"\""),
                 (
-                    // CR claude for eric: [bug/medium] A string that spans lines keeps
+                    // CR claude for claude: [bug/medium] A string that spans lines keeps
                     // the `\r` of every CRLF line ending, in all three forms: a plain
                     // string (`chunk_part`), a template (`triple_run`) and a raw string
                     // (`raw_string`). Only this opener newline is CRLF-aware. So the
@@ -136,6 +136,9 @@ parser! {
                     // probe:
                     // design/review-2026-10-19/repro/t-parser-a-crlf-string-values.sh
                     // (t-parser-a-01)
+                    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage:
+                    // no ruling needed. Read CRLF as LF before parsing, as rustc does;
+                    // pin both endings.
                     optional(attempt(string("\r\n")).or(string("\n"))),
                     many(choice((
                         splice_part(),

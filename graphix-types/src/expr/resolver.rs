@@ -401,7 +401,7 @@ fn resolve_from_vfs(
         packed: e.packed.clone(),
     };
     // a program's own `mod str` is its module, not the str package
-    // CR claude for eric: [bug/medium] This exception loads a script's own `mod map;`
+    // CR claude for claude: [bug/medium] This exception loads a script's own `mod map;`
     // from map.gx, but the compile then refuses it with "duplicate module definition
     // map" because the registered package already owns `/map`. So every package name is
     // unusable as a root module, and the message blames a duplicate the user never
@@ -411,6 +411,9 @@ fn resolve_from_vfs(
     // The resolver test a_package_root_is_not_a_files_module pins resolution only.
     // probe: design/review-2026-10-19/repro/t-format-resolver-package-named-module.sh
     // (t-format-resolver-01)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Refuse a root module named like a package, with a message saying it names
+    // a package.
     if matches!(parent.source, Source::File(_) | Source::Netidx(_))
         && scope.0 == Path::root()
         && r.packages.contains(&**name)

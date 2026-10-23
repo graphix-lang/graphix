@@ -1647,7 +1647,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let issued = format_compact!("seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
-    // CR claude for eric: [perf/low] Every issue tuple, and `any(pc, once(args))`,
+    // CR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
     // carries pc, whose type is the set of all step labels. Each call site therefore
     // costs the check O(steps): 250/500/1000 call steps check in 0.25/1.07/7.1 s
     // (debug), against 0.07/0.10/0.13 s for constant writes. The tuple only needs an
@@ -1661,6 +1661,8 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     // fusion but checks in 36 s at 1000 steps. Plain pc is kept: the choice is
     // check time on long seqs against fusion at every call step, or a cheaper check
     // of pc's union.
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Find a cheaper check of pc's union that keeps plain pc (and the fusion).
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a

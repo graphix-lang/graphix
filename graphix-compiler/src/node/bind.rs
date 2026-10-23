@@ -184,7 +184,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     ) -> Result<Node<R, E>> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let annotation = match annotation {
-            // CR claude for eric: [bug/medium] The parser makes a separate cell for
+            // CR claude for claude: [bug/medium] The parser makes a separate cell for
             // every `'a` in a type, and only `typexp::fntype` and `Lambda::compile`
             // alias same-named ones. This annotation never goes through
             // `Type::alias_tvars`, so its same-named variables are tied together only
@@ -200,6 +200,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             // accepted. Either seed `known` with the enclosing definition's declared
             // quantifiers, or refuse the shadowing name. probe:
             // design/review-2026-10-12/repro/t-tvar-04.gx (t-tvar-04)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Do the aliasing fix; refuse a body annotation's quantifier
+            // name that shadows an enclosing definition's declared quantifier.
             Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
             None => None,
         };

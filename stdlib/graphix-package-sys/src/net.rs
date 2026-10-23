@@ -114,7 +114,7 @@ impl Write {
 
     /// Drop the target; what fires next queues.
     fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for eric: [bug/medium] release() replaces self.dv with an empty
+        // CR claude for claude: [bug/medium] release() replaces self.dv with an empty
         // Right(vec![]) even when it already holds the queue. update calls it on every
         // path arrival before the drain, so the drain loop never writes a queued value.
         // Every value that fires while the path is bottom or invalid is pushed without
@@ -124,6 +124,8 @@ impl Write {
         // and make dv an Option<(Path, Dval)> that writes only the standing value,
         // which also ends the unbounded growth. Either way the doc and image_encode
         // follow. probe: design/review-2026-10-12/repro/sys-net-10.gx (sys-net-10)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Keep the queue across release and bound it, matching Write's doc.
         if let Either::Left((_, dv)) =
             std::mem::replace(&mut self.dv, Either::Right(vec![]))
         {

@@ -340,7 +340,7 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         // a handler's action runs on its errors, not at an entry
         NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
         NodeView::Connect(c) if reads_nothing(&c.node) => warn(&c.spec, "this write"),
-        // CR claude for eric: [bug/medium] This warns on every Async/Io builtin call
+        // CR claude for claude: [bug/medium] This warns on every Async/Io builtin call
         // over constants, but the standing interests re-attach or resume at a wake: net
         // subscribe/list/publish/rpc, timers, watches. For those the warning is false,
         // and its advice tells the user to rewrite correct code. A constant-path
@@ -351,6 +351,9 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         // does not carry it. probe:
         // design/review-2026-10-19/repro/sys-net-birth-only-warning-subscribe.gx
         // (sys-net-04)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Add a builtin fact (resumes at a wake) and skip the warning for
+        // builtins that carry it.
         NodeView::CallSite(cs)
             if cs.arg_nodes().all(|a| reads_nothing(a)) && acts_on_the_world(ctx, cs) =>
         {
@@ -654,7 +657,7 @@ impl Reach {
                     )?
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
-                // CR claude for eric: [bug/low] A slice arm claims its length on the
+                // CR claude for claude: [bug/low] A slice arm claims its length on the
                 // ladder only when array_len_coverage holds, which means every element
                 // pattern is irrefutable. Element literals and variant heads are never
                 // pooled per length. `[] => .., [true] => .., [false] => .., [_, _, ..]
@@ -668,6 +671,9 @@ impl Reach {
                 // in CLAUDE.md's Sets and coverage section. probe:
                 // design/review-2026-10-12/repro/x-typecheck-patterns-07.gx
                 // (x-typecheck-patterns-07)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Option (a): pool exact-length slice arms per (kind,
+                // len) and claim the length when the group completes.
                 if unguarded && sp.array_len_coverage(env, explicit).is_some() {
                     let mut done: SmallVec<[Type; 2]> = SmallVec::new();
                     for l in self.ladders.iter_mut() {
@@ -1836,7 +1842,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         &scrut,
                     ) {
                         Err(_) => *d = true,
-                        // CR claude for eric: [bug/medium] A partial struct pattern
+                        // CR claude for claude: [bug/medium] A partial struct pattern
                         // that completes against no struct member keeps its inferred
                         // predicate, the exact struct of the fields it names. Over Any
                         // the arm `{a, ..}` therefore matches {a: 1} but not {a: 1, b:
@@ -1850,6 +1856,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         // probe:
                         // design/review-2026-10-19/repro/x-typecheck-patterns-partial-struct-over-any.gx
                         // (x-typecheck-patterns-05)
+                        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+                        // needed. Match the top-level partial struct by name, as the nested one does.
                         Ok(None) => (),
                         Ok(Some(t)) => {
                             pat.structure_predicate.realign(&ctx.env, &t)?;

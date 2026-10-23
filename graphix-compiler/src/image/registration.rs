@@ -347,7 +347,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
             return Err(PackError::InvalidFormat);
         }
         bytes.advance(MAGIC.len());
-        // CR claude for eric: [risk/medium] Nothing in an image says which build wrote
+        // CR claude for claude: [risk/medium] Nothing in an image says which build wrote
         // it. This reader checks the magic, this hand-bumped format byte, the seal and
         // the ISA. The image's native code binds libcalls by their index in this
         // build's LibCall::all_libcalls() and helpers by name, and it assumes this
@@ -364,10 +364,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         // the helper table, the libcall list and the crate versions. The other option
         // is to document on RegistrationImage that an image must come from the same
         // executable. (c-image-04)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Take the fix: a build fingerprint in the header (helper table +
+        // libcall list + crate versions hashed at build), refused on mismatch like the
+        // ISA.
         if bytes.get_u8() != REGISTRATION_FORMAT {
             return Err(PackError::InvalidFormat);
         }
-        // CR claude for eric: [perf/low] `image::sealed` runs crc32 over every byte of
+        // CR claude for claude: [perf/low] `image::sealed` runs crc32 over every byte of
         // the entry before anything decodes, so a warm start reads the whole mapped
         // file, including the instance heap and instances never reached. The admin
         // image is about 10 MB, 7 MB of it heap. design/program_image.md and
@@ -377,6 +381,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         // here, each heap instance checked by its instance-table entry at
         // `materialize`), or keep the whole-file seal and correct the doc and the
         // `load` comment after measuring the cost on the target. (x-image-07)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Measure the whole-file crc on the admin image (cold page cache); if it
+        // matters seal per region, else correct design/program_image.md and the load
+        // comment.
         if !image::sealed(&image, MAGIC.len() + 1) {
             warn!("the image is corrupt: its checksum does not match");
             return Err(PackError::InvalidFormat);

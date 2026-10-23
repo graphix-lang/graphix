@@ -469,7 +469,7 @@ impl<X: GXExt> Shell<X> {
             let mut image = RegistrationImage::default();
             // a fusion profile is of this process's compile, so it never
             // starts from the program's entry
-            // CR claude for eric: [bug/low] A restored program entry compiles
+            // CR claude for claude: [bug/low] A restored program entry compiles
             // nothing, so the warnings its compile emitted through `Env::warn`
             // (`CFlag::WarnUnhandled`'s unhandled `?`, unused imports) are shown on the
             // cold run only. The same program with the same flags prints different
@@ -481,6 +481,9 @@ impl<X: GXExt> Shell<X> {
             // 2026-10-13 claude: Same question as x-errors-09 (for eric, graphix-types
             // env.rs Env::warn): replay a restored program's warnings from its entry, or
             // rule that warnings come from --check and the LSP. Waiting on that ruling.
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Store the compile's warnings in the program entry and
+            // replay them on restore (with x-errors-09), so warm and cold agree.
             if !self.fusion_stats
                 && let Some(entry) = c.load(Entry::Program)
             {
@@ -748,7 +751,7 @@ impl<X: GXExt> Shell<X> {
                                             .with_deref(|t| t.cloned())
                                             .unwrap_or_else(|| e.typ.clone());
                                         format_with_flags(
-                                            // CR claude for eric: [bug/medium] Without
+                                            // CR claude for claude: [bug/medium] Without
                                             // `DerefTVars`, the REPL's type line prints
                                             // inferred variables by name and never
                                             // shows their bindings: `[1, 2]` shows `-:
@@ -767,6 +770,9 @@ impl<X: GXExt> Shell<X> {
                                             // rewrite those book sections. probe:
                                             // design/review-2026-10-19/repro/book-core-repl-type-display.sh
                                             // (book-core-02)
+                                            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23
+                                            // triage: no ruling needed. Restore DerefTVars | ReplacePrims
+                                            // so the REPL matches the book.
                                             PrintFlag::ReplacePrims,
                                             || println!("-: {}", typ)
                                         );

@@ -542,7 +542,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                 modifiers,
                 ..
             }) => {
-                // CR claude for eric: [bug/medium] A shortcut fires here whatever has
+                // CR claude for claude: [bug/medium] A shortcut fires here whatever has
                 // the keyboard focus. Nothing checks focus or capture, and iced's
                 // Column hands the key to every child, so a focused text_input or
                 // text_editor handles the same key too. menu::shortcut accepts a key
@@ -554,6 +554,9 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                 // text widget or the menu owns Ctrl+C/V/X/Z/A. No pin covers a shortcut
                 // beside a focused text widget. Found by reading; not run.
                 // (gui-widgets-b-01)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Refuse modifier-less and Shift-only shortcuts; a
+                // focused text widget owns Ctrl+C/V/X/Z/A.
                 let items = self.descs.iter().flat_map(|m| m.items.iter());
                 if let Some(id) = shortcut_action(items, key, modified_key, *modifiers) {
                     state.open_menu = None;

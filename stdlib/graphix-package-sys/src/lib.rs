@@ -398,7 +398,7 @@ impl Halves {
     }
 
     /// Borrow the whole stream under both locks; `None` if it is closed.
-    // CR claude for eric: [bug/medium] Every whole-stream borrow ends the stream's line
+    // CR claude for claude: [bug/medium] Every whole-stream borrow ends the stream's line
     // readers permanently, including those by fs::fstat and fs::truncate, which change
     // nothing a reader depends on. take sends stop_lines and line_reader returns.
     // IoLines keeps its finished Reading and ignores the same handle, so that site
@@ -410,6 +410,9 @@ impl Halves {
     // after a seek, from the new position, where design/async_sleep_outputs.md now
     // lists seek as a stop: decide which a seek should do. probe:
     // design/review-2026-10-19/repro/sys-io-fstat-stops-lines.gx (sys-io-02)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Make the stop a pause for a take that puts the stream back; a seek reads on
+    // from the new position.
     pub(crate) async fn take(&self) -> Option<Whole<'_>> {
         let mut r = self.r.lock().await;
         let mut w = self.w.lock().await;

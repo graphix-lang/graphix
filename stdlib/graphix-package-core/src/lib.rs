@@ -878,7 +878,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
         self.var.release(ctx)
     }
 
-    // CR claude for eric: [bug/medium] This sleep (and range's Seq::sleep) remints the
+    // CR claude for claude: [bug/medium] This sleep (and range's Seq::sleep) remints the
     // delivery id but keeps `out`. A re-entered arm therefore emits the last element
     // again as a fired value. design/async_sleep_outputs.md lists iter/range deliveries
     // as an event source whose output does not survive the sleep for exactly this
@@ -890,6 +890,9 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
     // way. probe: design/review-2026-10-19/repro/x-engine-firing-reentry-reraise.gx
     // Also reported as (x-node-contract-04), (x-builtin-effects-05).
     // (x-engine-firing-02)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Treat iter/range as the event source async_sleep_outputs.md says: clear
+    // `out` at sleep; fix the table; pin the re-entry.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
     }
@@ -2203,7 +2206,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
         Ok(Box::new(FilterErr::default()))
     }
 
-    // CR claude for eric: [structure/low] filter_err holds no cross-invocation state.
+    // CR claude for claude: [structure/low] filter_err holds no cross-invocation state.
     // CLAUDE.md and design/strict_fusion.md name it, with divide and opt's
     // short-circuits, as a partial-delivery producer classified
     // Effect::Stateless(None). No builtin is classified Stateless(None): divide is
@@ -2211,6 +2214,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     // Stateless(None), as the docs say, or drop the Option from Effect::Stateless and
     // correct both docs. As it stands, the payload has a variant nothing uses. Found by
     // reading; not run. (core-lib-04)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Make filter_err Stateless(None) or drop the Option and fix both docs,
+    // whichever the code wants.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_filter_err";
 
@@ -3241,7 +3247,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         }
     }
 
-    // CR claude for eric: [bug/medium] A sleep while an emission is pending
+    // CR claude for claude: [bug/medium] A sleep while an emission is pending
     // (Run::Pending) releases the timer and resets to Run::Idle, so the held value is
     // never delivered. Nothing restarts it at the wake, because the input's fire was
     // already seen. In the probe x stands at 2 and the throttle shows 0 for the rest of
@@ -3254,7 +3260,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     // the next update run maybe_schedule!(last). Then fix the table and pin it. probe:
     // design/review-2026-10-19/repro/x-engine-firing-throttle-sleep.gx
     // (x-engine-firing-01)
-    // CR claude for eric: [bug/medium] Throttle's sleep cancels the pending emission
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Do what AfterIdle does (with x-builtin-effects-04); fix the table; pin
+    // it.
+    // CR claude for claude: [bug/medium] Throttle's sleep cancels the pending emission
     // and keeps `out`. At the wake, the select re-emits the stale last value as a new
     // event, and the held latest value is never delivered. The probe shows (0, 6us)
     // then (0, 301 ms), and the held 3 is lost; after_idle in the same arm delivers (3,
@@ -3266,6 +3275,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     // and re-arm its timer at the next update. Then fix the table row. probe:
     // design/review-2026-10-19/repro/x-builtin-effects-throttle-sleep.gx
     // (x-builtin-effects-04)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Do what AfterIdle does: clear out at sleep, keep the pending value,
+    // re-arm at the next update; fix the table row.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         if let Run::Pending { last, .. } = self.run {
@@ -3428,7 +3440,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
             Some(t) => ctx.ref_targets(t, &v),
             None => v.clone(),
         };
-        // CR claude for eric: [perf/low] This compares a collection element by element
+        // CR claude for claude: [perf/low] This compares a collection element by element
         // even when it is the same allocation as the last one: netidx-value's
         // ValArray::eq has no pointer shortcut. So `uniq(t ~ rows)` over a stale
         // 100000-element array costs 0.33 ms per fire. A same-allocation fast path
@@ -3437,6 +3449,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         // needs a ruling. probe:
         // design/review-2026-10-19/repro/x-perf-runtime-uniq-same-array.sh
         // (x-perf-runtime-05)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Take the pointer fast path only where no abstract value can be inside
+        // (user Eq need not be reflexive).
         let changed = coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref());
         if changed {
             *last = Some(cmp);
@@ -3560,7 +3575,7 @@ impl Printer {
         .unwrap();
         coretraits::with_display_hooks(ctx, |env| {
             match (self, v) {
-                // CR claude for eric: [bug/low] This arm picks raw output by the value,
+                // CR claude for claude: [bug/low] This arm picks raw output by the value,
                 // not by the type. A bare variant shares its runtime form with a
                 // string, so `println(`A)` prints `A`, while `println(`B(1))`,
                 // `println([`A])` and `log(`A)` all print the backtick: a value of one
@@ -3571,6 +3586,9 @@ impl Printer {
                 // what a string under `Any`, or under a union that also holds a bare
                 // variant, should print. probe:
                 // design/review-2026-10-12/repro/book-stdlib-11.gx (book-stdlib-11)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Print raw only when the site's type is string; under Any
+                // or a union with a bare variant, print through TVal.
                 (Self::Print | Self::Println, Value::String(s)) => write!(line, "{s}"),
                 (_, v) => write!(line, "{}", TVal { env, typ, v }),
             }

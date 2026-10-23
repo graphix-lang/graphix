@@ -221,7 +221,7 @@ impl TxnState {
         })?;
         match res {
             Ok(()) => {
-                // CR claude for eric: [bug/low] commit applies the transaction and then
+                // CR claude for claude: [bug/low] commit applies the transaction and then
                 // flushes. If the flush fails (disk full, an I/O error), the program
                 // gets a DbErr although every write is already applied and visible.
                 // That contradicts the gxi's "all writes become visible atomically, or
@@ -232,6 +232,9 @@ impl TxnState {
                 // calls db::flush as it does after every other write), or commit is
                 // durable and a flush failure after the apply comes back as its own
                 // outcome, documented as "committed, not yet durable". (db2-07)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Commit is not durable, like every other write: drop the
+                // flush; the gxi says call db::flush.
                 self.db.flush()?;
                 Ok(Value::Null)
             }

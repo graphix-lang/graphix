@@ -159,7 +159,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         }
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         require_bounds(&[Type::Ordered], &ktype);
-        // CR claude for eric: [perf/low] The chain fix that SeqLit::typecheck0_with
+        // CR claude for claude: [perf/low] The chain fix that SeqLit::typecheck0_with
         // got (one element is its own union; the unshared cell binds with no occurs
         // walk) is missing from this copy of the same code. Here a let chain `x_i = {1
         // => x_(i-1)}` checks in quadratic time: 0.59 / 2.3 / 9.0 s at n = 1000 / 2000
@@ -184,6 +184,9 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         // alone would be linear, but it stops refusing a value whose map type nothing
         // judged (one only an annotation wrote): a checker rule, so readdressed for
         // that ruling.
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Keep the rule (a value's map type is judged); make the judgment
+        // linear, e.g. memoize map_key_failure per type content key.
         let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
         let bound = match &self.typ {
             Type::Map { key, value } => {

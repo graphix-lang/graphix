@@ -1239,7 +1239,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     /// An instance checks this node as its definition's check did.
-    // CR claude for eric: [structure/low] Module::typecheck0_instance runs the full
+    // CR claude for claude: [structure/low] Module::typecheck0_instance runs the full
     // typecheck0, which checks every child statement with its full typecheck0 and not
     // typecheck0_instance. A `mod m;` inside a function body (`let f = |y| { mod m;
     // m::x + y }` compiles and runs) is therefore re-checked for each instance, Binds
@@ -1250,6 +1250,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     // and `trait` in a function body as Impl::compile refuses `impl` (a declaration
     // does not belong to an activation), or walk the children with typecheck0_instance
     // here. (c-module-traits-06)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Refuse `mod` and `trait` in a function body, as `impl` there is refused
+    // (also closes x-typecheck-patterns-04's trait half).
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -1318,7 +1321,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         };
         if let Some((v, tag)) = src {
             src_tag = tag;
-            // CR claude for eric: [bug/low] The body is torn down before the value is
+            // CR claude for claude: [bug/low] The body is torn down before the value is
             // inspected. An error from the source, which typecheck0 accepts as `string
             // | error`, unloads a working module: interface vals stop following their
             // implementation ("5 0" in the repro) and the status reads "unexpected
@@ -1327,6 +1330,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             // refuse an error-typed source or document the teardown. probe:
             // design/review-2026-10-19/repro/c-module-traits-dyn-source-error-tears-down.gx
             // (c-module-traits-06)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+            // needed. A source error reports and keeps the last good load: clear only when
+            // a string is about to compile.
             self.clear_compiled(ctx);
             match v {
                 Value::String(s) => {

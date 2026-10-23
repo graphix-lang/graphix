@@ -83,7 +83,7 @@ function M.setup_lsp()
   end
 end
 
--- CR claude for eric: [risk/low] nvim and Zed read the Helix-dialect queries through
+-- CR claude for claude: [risk/low] nvim and Zed read the Helix-dialect queries through
 -- symlinks. nvim-treesitter's indent module reads
 -- @indent.begin/@indent.end/@indent.dedent/@indent.branch and Zed's reads @indent/@end,
 -- so the shared indents.scm (@indent, @outdent, @extend) gives no auto-indent in
@@ -94,6 +94,8 @@ end
 -- translated capture names), or keep one set and state the limits in ide/README.md;
 -- either way, point url at the local checkout so the grammar and queries come from one
 -- revision. (ide-tooling-10)
+-- 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+-- Point url at the local checkout; state the editor limits in ide/README.md.
 local install_info = {
   url = "https://github.com/graphix-lang/graphix",
   files = { "src/parser.c", "src/scanner.c" },

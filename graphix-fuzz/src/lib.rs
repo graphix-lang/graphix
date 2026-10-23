@@ -247,7 +247,7 @@ impl Outcome {
             // counter drift); RuntimeErr messages are mode-dependent
             (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
-            // CR claude for eric: [risk/medium] Any two timeouts agree here, but a
+            // CR claude for claude: [risk/medium] Any two timeouts agree here, but a
             // node-walk ActivationBudget/StackBudget beside a JIT Deadline is not a
             // race between two descents. The JIT's native tail loop counts no
             // activations, so for any recursion deeper than the budget the node-walk
@@ -261,6 +261,9 @@ impl Outcome {
             // divergence. probe:
             // design/review-2026-10-19/repro/fuzz-lib-a-budget-vs-deadline.sh
             // (fuzz-lib-a-03)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Make (ActivationBudget, Deadline) Unsure, and rerun the
+            // node-walk once with the budget raised at slow_budget.
             (Timeout(_), Timeout(_)) => true,
             _ => false,
         }
@@ -277,7 +280,7 @@ impl Outcome {
         use Outcome::*;
         match (s, self, other) {
             (Strength::Final, Trace(a), Trace(b)) => a.agrees_final(b),
-            // CR claude for eric: [test-gap/medium] At Strength::Kind a Trace agrees
+            // CR claude for claude: [test-gap/medium] At Strength::Kind a Trace agrees
             // with a Timeout, and Oracle::settle returns Agree before its ladder. So an
             // Excluded program whose warm restore wedges the runtime (an image_decode
             // of a sys::net, process or timer builtin that blocks) agrees with its cold
@@ -287,6 +290,9 @@ impl Outcome {
             // slow retry, then the reference again, agreeing only if the reference also
             // times out), or, if Excluded hangs are too noisy for that, write the
             // exception into graphix_fuzz.md. (fuzz-lib-a-08)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Send a one-sided Timeout at Kind through the ladder as
+            // graphix_fuzz.md says.
             (Strength::Kind, Trace(_) | Timeout(_), Trace(_) | Timeout(_)) => true,
             _ => self.agrees_with(other),
         }
@@ -520,7 +526,7 @@ async fn start_session(
     match tokio::time::timeout(timeout, init).await {
         Ok(Ok(ctx)) => Ok(Started { ctx, rx, sink, exit }),
         Ok(Err(e)) => Err(Outcome::RuntimeErr(format!("runtime init failed: {e:?}"))),
-        // CR claude for eric: [test-gap/low] A construction timeout (the program's
+        // CR claude for claude: [test-gap/low] A construction timeout (the program's
         // compile or check) becomes the same Timeout(Deadline) as an evaluator wedge.
         // Every pair runs the same checker, so the hang is always symmetric and agrees.
         // In the sessions it ends as SLOW, or, for a deadlock, as a Pair::Warm
@@ -533,6 +539,10 @@ async fn start_session(
         // Pair::Twin once it is confirmed at slow_budget, and whether a typemorph base
         // or probe that hangs again at the slow budget counts as a finding.
         // (fuzz-lib-a-05)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Give construction timeouts their own containment, a finding once
+        // confirmed at slow_budget; a typemorph subject hung at the slow budget is a
+        // finding.
         Err(_) => Err(Outcome::Timeout(Containment::Deadline)),
     }
 }
@@ -828,7 +838,7 @@ async fn drive_inner(
                 // The embedder timeline has cycles between building the
                 // callable and the first dispatch; back-to-back dispatch
                 // would let a reference delivered at init reach the instance.
-                // CR claude for eric: [test-gap/medium] These gap compiles' events land
+                // CR claude for claude: [test-gap/medium] These gap compiles' events land
                 // in the first dispatch epoch's segment, so Epoch::anchor anchors that
                 // epoch at a gap compile, and its offsets count control cycles and vary
                 // per run (4-6 for the same program). Later dispatch epochs anchor at
@@ -841,6 +851,9 @@ async fn drive_inner(
                 // Exact tier (Pair::Route alone needs Final). probe:
                 // design/review-2026-10-19/repro/fuzz-lib-a-dispatch-gap-anchor.sh
                 // (fuzz-lib-a-04)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Discard the gap compiles' segment; return same-route
+                // dispatch pairs to Exact where they agree.
                 for _ in 0..3 {
                     step_or_timeout!(
                         ctx.rt.compile(ArcStr::from("i64:0")),
@@ -868,7 +881,7 @@ async fn drive_inner(
     let mut trace = trace::Trace::from_segments(&segs, eid);
     // Exact tier only. The runtime runs on past a capped trace, so the
     // capture stops at the last segment's cycle.
-    // CR claude for eric: [test-gap/low] Prints are captured only at the Exact tier, so
+    // CR claude for claude: [test-gap/low] Prints are captured only at the Exact tier, so
     // a program with any sys::/http::/json::read marker has its print output (fused Io
     // calls included) compared nowhere. Trace::agrees_final already compares prints as
     // a per-epoch multiset without offsets, so capturing them for FinalValues too costs
@@ -876,6 +889,8 @@ async fn drive_inner(
     // Decide whether FinalValues programs capture prints (`tier !=
     // OracleTier::Excluded`). probe:
     // design/review-2026-10-19/repro/fuzz-lib-a-finalvalues-prints.sh (fuzz-lib-a-05)
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Capture prints for FinalValues programs (tier != Excluded).
     if tier == OracleTier::Exact {
         let mut lines = Vec::new();
         for (epoch, seg) in segs.iter().enumerate() {
@@ -1704,7 +1719,7 @@ pub async fn check_verdict(
         }
         match o.settle(pair).await {
             Settled::Agree => (),
-            // CR claude for eric: [test-gap/medium] A drop here ends the whole check,
+            // CR claude for claude: [test-gap/medium] A drop here ends the whole check,
             // so any program whose engine pair drops (CONTAINED, JIT ASSERTION, SLOW,
             // NONDETERMINISTIC) never runs its groups 1-3. The JIT's cold and warm
             // image sessions and the forked runs are never made. For a deep tail
@@ -1716,6 +1731,9 @@ pub async fn check_verdict(
             // the check unsure'). probe:
             // design/review-2026-10-19/repro/fuzz-lib-a-drop-ends-check.sh
             // (fuzz-lib-a-01)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Record the drop, continue with the remaining pairs, Unsure
+            // only if none diverged; update graphix_fuzz.md.
             Settled::Drop => return (None, Verdict::Unsure),
             Settled::Diverge(reference, tested) => {
                 let d =
@@ -2142,7 +2160,7 @@ impl<'a> Oracle<'a> {
             }
             // A wedge sits at ~0% CPU; seconds of burn are an honestly slow
             // reference, which refutes nothing
-            // CR claude for eric: [risk/medium] This drop reads only the reference's
+            // CR claude for claude: [risk/medium] This drop reads only the reference's
             // CPU burn. A node-walk that loops forever inside one cycle beside a JIT
             // trace burns CPU like an honestly slow one, so it lands here as
             // SLOW/unsure and is never recorded. design/graphix_fuzz.md calls fusion
@@ -2158,6 +2176,9 @@ impl<'a> Oracle<'a> {
             // "asymmetric timeout" text in Divergence::bisect then describes only an
             // idle-wedged or starved reference; its comment about a heavy terminating
             // program is the case this branch already drops. (fuzz-lib-a-07)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Add the progress signal (cycle reached at first timeout vs
+            // slow rerun); a reference stuck on one cycle is recorded.
             if run == ra
                 && matches!(a, Outcome::Timeout(_))
                 && burned >= Duration::from_secs(5)
@@ -2174,7 +2195,7 @@ impl<'a> Oracle<'a> {
         }
         // a reference that disagrees with itself is nondeterminism
         let again = run_one(self.code, ra, budget).await;
-        // CR claude for eric: [risk/medium] This is the only Drop exit in settle that
+        // CR claude for claude: [risk/medium] This is the only Drop exit in settle that
         // prints nothing. The CONTAINED, JIT ASSERTION and SLOW drops each eprintln a
         // label and the program, so `graphix-fuzz check` ends with "UNSURE ...
         // nondeterminism decided it (see above)" and nothing is above it. Campaigns and
@@ -2191,6 +2212,8 @@ impl<'a> Oracle<'a> {
         // is in (fuzz-main-aux-03's fix, which also canonicalizes references and abstract
         // payloads in traces). Left for Eric: whether an Exact-tier self-disagreement
         // becomes a finding class of its own.
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Make an Exact-tier self-disagreement a finding class of its own.
         if !again.agrees_at(&a, s) {
             eprintln!(
                 "NONDETERMINISTIC — the reference disagreed with its rerun; not recorded"
@@ -3638,7 +3661,7 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
         };
         let trusted = match v {
             Verdict::Ran | Verdict::Excluded => true,
-            // CR claude for eric: [test-gap/high] A recorded `reject` is trusted on its
+            // CR claude for claude: [test-gap/high] A recorded `reject` is trusted on its
             // class alone. Nothing records or compares which refusal a reject pin gets,
             // so a pin refused for the wrong reason stays green. Today 2 of the 79
             // reject pins pass on a parse error: nested-bind-stmt-dead-elim-aug2026/05
@@ -3653,6 +3676,9 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
             // subject, or drop it. probe:
             // design/review-2026-10-19/repro/fuzz-lib-b-reject-pin-reasons.sh
             // (fuzz-lib-b-01)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. Store and compare each reject pin's normalized cause; a
+            // parse error regresses any pin; restore or drop the 16 pins one by one.
             Verdict::Contained | Verdict::Rejected => {
                 !bless && recorded.get(entries[i].0) == Some(&v)
             }
@@ -4560,7 +4586,7 @@ pub fn apply_mem_limit() {
             let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
             // best effort: a hard limit already below `limit` makes this
             // EPERM, and the subject timeout is the real guard
-            // CR claude for eric: [risk/low] On macOS, RLIMIT_AS is an alias of
+            // CR claude for claude: [risk/low] On macOS, RLIMIT_AS is an alias of
             // RLIMIT_RSS, which the kernel does not enforce. This call therefore caps
             // nothing on katana, the fleet's darwin host (32 workers, 16GB). A subject
             // whose memory grows without deep recursion, such as an array doubled every
@@ -4571,6 +4597,9 @@ pub fn apply_mem_limit() {
             // aborts above the limit, or the parent polls its children's RSS. At
             // minimum, document that darwin hosts run uncapped and size their workers
             // for that. (fuzz-main-aux-09)
+            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+            // ruling needed. A darwin child watches its own RSS (task_info) and aborts
+            // above the cap; document it in graphix_fuzz.md.
             unsafe { libc::setrlimit(libc::RLIMIT_AS, &rl) };
         }
     }

@@ -552,7 +552,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                     return;
                 }
-                // CR claude for eric: [perf/low] Each ToGui::Update walks every widget
+                // CR claude for claude: [perf/low] Each ToGui::Update walks every widget
                 // of every window: each widget compares the id with each of its refs
                 // and recurses into its children, through Child::update and
                 // Children::update. A cycle costs updates x widgets x props comparisons
@@ -562,6 +562,9 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 // and children compile and cleared when they recompile, so an update
                 // goes to its owner only. Or keep the walk and accept the cost. The
                 // index has to track widget recompiles. (gui-core-08)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. Build the IntMap<ExprId, owner> index, maintained on
+                // widget recompile.
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!(target: FAILURE_TARGET, "handle_update: {e:?}");

@@ -142,7 +142,7 @@ impl TrackedFires {
         fill(&mut r);
         let old = mem::take(&mut per_arm[i]);
         Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
-        // CR claude for eric: [perf/medium] refresh rebuilds `all` from every arm's
+        // CR claude for claude: [perf/medium] refresh rebuilds `all` from every arm's
         // map and then retains `pending`, at every deselect. A seq machine deselects at
         // every step completion, so a run of S steps costs O(S^2). observe_except also
         // reads every tracked id with read_var on every update, whether or not anything
@@ -174,6 +174,9 @@ impl TrackedFires {
         // each update) would be answered by the same per-node dirty bits as Eric's walk
         // pruning on x-perf-runtime-01: an arm's tracked input that nothing set stays
         // clean. Readdressed to Eric with x-alloc-06 so the design is made once.
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Check whether walk pruning's marks now answer observe_except's
+        // per-update reads; if they do, close.
         for id in per_arm[i].iter() {
             if !old.contains(id) {
                 *all.entry(*id).or_default() += 1;

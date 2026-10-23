@@ -286,7 +286,7 @@ start() {
         cargo build --profile soak -p graphix-fuzz --manifest-path "$repo/Cargo.toml"
         binary="$build/soak/graphix-fuzz"
     fi
-    # CR claude for eric: [perf/low] This gate runs the whole regression corpus. The
+    # CR claude for claude: [perf/low] This gate runs the whole regression corpus. The
     # soak launched below then runs `print_regression` again with the same binary
     # (main.rs `soak` arm) before it hunts, and `wait_for_gate` waits for that second
     # run. Every launch pays the gate twice, at 4x on scale-4 boxes. wait_for_gate's
@@ -295,6 +295,9 @@ start() {
     # when soak.sh already gated (an env flag), or drop this line and make the soak's
     # gate run fusecheck and stop on mismatches. Found by reading; not run.
     # (fuzz-main-aux-05)
+    # 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    # needed. Skip the soak's in-process gate when soak.sh already gated (env flag),
+    # and fix wait_for_gate's comment.
     "$binary" regress
 
     mkdir -p "$dir/state" "$dir/corpus"

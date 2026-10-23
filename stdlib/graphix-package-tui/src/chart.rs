@@ -160,7 +160,7 @@ impl<X: GXExt> DatasetW<X> {
                 !(pair[1].0 - pair[0].0).is_finite()
                     || !(pair[1].1 - pair[0].1).is_finite()
             });
-        // CR claude for eric: [bug/low] [bug/low] When any adjacent pair's difference
+        // CR claude for claude: [bug/low] [bug/low] When any adjacent pair's difference
         // overflows, the whole Line dataset is dropped, so one outlier near ±f64::MAX
         // erases every finite segment on screen. canvas drops only the offending shape,
         // and a scatter keeps its finite points. overflowing_chart_line_is_empty uses
@@ -169,6 +169,9 @@ impl<X: GXExt> DatasetW<X> {
         // split the series at the overflowing pair. Compute it in set_data rather than
         // rescanning on every draw, and add a test with finite points on both sides of
         // the outlier. Found by reading; not run. (tests-tui-08)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Split the series at the overflowing pair, computed in set_data; test
+        // points on both sides.
         let data = if overflow { &[][..] } else { &self.data };
         let mut ds = Dataset::default().data(data);
         if let Some(Some(LineV(l))) = &p.name.t {

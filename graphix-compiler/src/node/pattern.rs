@@ -429,7 +429,7 @@ impl StructPatternNode {
             out.push(Leaf { id: *id, typ: typ.clone(), fresh: false });
             return Ok(());
         }
-        // CR claude for eric: [bug/medium] A capture takes the narrowed predicate,
+        // CR claude for claude: [bug/medium] A capture takes the narrowed predicate,
         // whose cells hold the union of each position's parts over every member, so it
         // loses which member it came from. `a@ (_, _)` over U = [(i64, string),
         // (string, i64)] is ([i64, string], [i64, string]), and `h(a)` with `h: |u: U|`
@@ -441,6 +441,9 @@ impl StructPatternNode {
         // refines the CLAUDE.md capture rule, so it needs your call. probe:
         // design/review-2026-10-19/repro/c-pattern-capture-loses-member.gx
         // (c-pattern-04)
+        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+        // needed. Type a whole bind as the union of the reaching members its position
+        // can match; keep per-cell unions for plain binds.
         for id in self.whole_binds() {
             out.push(Leaf { id, typ: typ.normalize(), fresh: true })
         }
@@ -1332,7 +1335,7 @@ impl StructPatternNode {
         let shape = expand(env, typ);
         let shaped = match (self, &shape) {
             (
-                // CR claude for eric: [bug/low] covers returns false for every Or,
+                // CR claude for claude: [bug/low] covers returns false for every Or,
                 // whatever the type. A nested or-pattern in a let or a lambda parameter
                 // is therefore always refused as refutable, even when its alternatives
                 // cover every member of the written union: `let (`A | `B, x) = p` over
@@ -1347,6 +1350,10 @@ impl StructPatternNode {
                 // or-patterns are select-only. probe:
                 // design/review-2026-10-12/repro/c-pattern-06.gx Also reported as
                 // (t-parser-b-04). (c-pattern-06)
+                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                // ruling needed. An Or covers a type when every member is covered by
+                // some alternative (Reach::arm's per-member test), as or_patterns.md
+                // promises.
                 Self::Or { .. }
                 | Self::Literal(_)
                 | Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }

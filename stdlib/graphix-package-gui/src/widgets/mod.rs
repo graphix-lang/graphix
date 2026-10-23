@@ -648,7 +648,7 @@ macro_rules! flex_widget {
                     w = w.$align_set(a.0);
                 }
                 for (_, child) in &self.children.ws {
-                    // CR claude for eric: [bug/medium] Row and Column pass their
+                    // CR claude for claude: [bug/medium] Row and Column pass their
                     // children's FillPortion weights to iced's flex layout, which sums
                     // them in a u16 (iced_core layout/flex.rs). Two children at
                     // `FillPortion(40000) panic a debug build ('attempt to add with
@@ -659,6 +659,9 @@ macro_rules! flex_widget {
                     // per row here). probe:
                     // design/review-2026-10-19/repro/gui-widgets-a-fill-portion-overflow.rs
                     // (gui-widgets-a-02)
+                    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
+                    // ruling needed. Bound the weights (per child in LengthV, per row), and
+                    // add an UPSTREAM.md entry for iced's u16 sum.
                     w = w.push(child.view());
                 }
                 w.into()

@@ -41,7 +41,7 @@ trait Read {
         }
     };
 
-    // CR claude for eric: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
+    // CR claude for claude: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
     // copies everything read so far, so a Graphix-defined stream reads in time
     // quadratic in its length: 64 MB took 3.8 s against 1.3 s for 32 MB. read_exact's
     // default does the same. Push the chunks onto an Array<bytes> and `buffer::concat`
@@ -54,6 +54,8 @@ trait Read {
     // needs one of: sys depending on graphix-package-array for array::push, a core
     // builtin that appends to an Array, or a recursive chunk list flattened at the end.
     // Each is a dependency or surface choice.
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Use a recursive chunk list flattened at the end (no new dependency).
     /// Read the stream to its end and return everything it produced as
     /// one value. Reads re-arm themselves until the stream ends, so a
     /// stream that never ends (a socket the peer holds open) never
