@@ -170,7 +170,7 @@ pub struct FusionStats {
     pub jit_relocations: usize,
     pub jit_kernels_moved: usize,
     /// What the JIT holds now, not a count across compiles: its records,
-    /// cached bodies, layouts, kernel signatures and names
+    /// cached bodies, kernel signatures and names
     /// ([`FusionCtx::stats`]). Code that was deleted holds none of it
     /// after the next link.
     pub retained: usize,
@@ -961,8 +961,7 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
     /// The root's call sites.
     pub(crate) sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
     /// Every callee in the closure, in discovery order, by kernel
-    /// identity: fn indices and the region layout are stable across
-    /// processes.
+    /// identity.
     pub(crate) callees: LPooled<Vec<(kernel_abi::KernelKey, Arc<KernelSig>)>>,
     /// Each callee's body, self-call info and own call sites, by kernel
     /// identity.

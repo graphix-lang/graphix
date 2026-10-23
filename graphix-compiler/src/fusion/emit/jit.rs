@@ -973,16 +973,6 @@ impl WrappedKernel {
     }
 }
 
-/// A compiled kernel body's identity in an [`Emission`]'s cache: a body
-/// bakes its sibling kernels' FuncIds, which depend on the region's
-/// ordered kernel list, so only identical layouts may share a
-/// compilation. A body with no sibling sites uses layout 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct CacheKey {
-    kernel: KernelKey,
-    layout: u32,
-}
-
 /// A function emitted and not yet compiled.
 pub(crate) struct Pending {
     id: FuncId,
@@ -1003,59 +993,30 @@ enum PendingOf {
     Wrapper { entry: SArc<KernelEntry> },
 }
 
-/// The emission caches, layered like [`Names`]: lambda kernel bodies by
-/// key, region layouts, and the lambda kernels' signatures.
+/// The emission caches, layered like [`Names`]: lambda kernel bodies
+/// and the lambda kernels' signatures.
 #[derive(Default)]
 struct Caches {
     base: Option<Arc<Caches>>,
-    /// Lambda kernel bodies; the entry holds the `Arc` so the key's
-    /// address cannot be reused by a later allocation.
-    by_kernel: BTreeMap<CacheKey, CachedBody>,
-    /// The first layout id this layer mints; 0 is the layout-independent
-    /// id.
-    first_layout: u32,
-    /// The next layout id this layer mints.
-    next_layout: u32,
-    /// Region layout -> id.
-    layout_ids: BTreeMap<SmallVec<[KernelKey; 8]>, u32>,
+    /// Lambda kernel bodies, one build per kernel wherever it is called
+    /// from; the entry holds the `Arc` so the key's address cannot be
+    /// reused by a later allocation.
+    by_kernel: BTreeMap<KernelKey, CachedBody>,
     /// The lambda kernels' signatures ([`crate::fusion::KernelCacheKey`]).
     kernels: BTreeMap<crate::fusion::KernelCacheKey, LambdaCallInfo>,
 }
 
 impl Caches {
     fn over(base: Arc<Caches>) -> Self {
-        let next = base.next_layout;
-        Self {
-            first_layout: next,
-            next_layout: next,
-            base: Some(base),
-            ..Self::default()
-        }
+        Self { base: Some(base), ..Self::default() }
     }
 
     fn is_empty(&self) -> bool {
-        self.by_kernel.is_empty() && self.layout_ids.is_empty() && self.kernels.is_empty()
+        self.by_kernel.is_empty() && self.kernels.is_empty()
     }
 
-    fn by_kernel(&self, key: &CacheKey) -> Option<&CachedBody> {
+    fn by_kernel(&self, key: &KernelKey) -> Option<&CachedBody> {
         self.by_kernel.get(key).or_else(|| self.base.as_ref()?.by_kernel(key))
-    }
-
-    fn layout(&self, layout: &SmallVec<[KernelKey; 8]>) -> Option<u32> {
-        self.layout_ids
-            .get(layout)
-            .copied()
-            .or_else(|| self.base.as_ref()?.layout(layout))
-    }
-
-    fn intern_layout(&mut self, layout: SmallVec<[KernelKey; 8]>) -> u32 {
-        if let Some(id) = self.layout(&layout) {
-            return id;
-        }
-        let id = self.next_layout;
-        self.next_layout += 1;
-        self.layout_ids.insert(layout, id);
-        id
     }
 
     fn kernel(&self, key: &crate::fusion::KernelCacheKey) -> Option<&LambdaCallInfo> {
@@ -1090,7 +1051,7 @@ pub(crate) struct Emission {
 impl Emission {
     pub(crate) fn new(shared: Arc<EmitShared>) -> Self {
         let names = Names::over(shared.helper_table.clone());
-        let caches = Caches { first_layout: 1, next_layout: 1, ..Caches::default() };
+        let caches = Caches::default();
         Self {
             shared,
             names,
@@ -1183,14 +1144,7 @@ impl Emission {
         } = fork;
         let first = names.first;
         let to = self.names.next();
-        let Caches {
-            base: _,
-            by_kernel,
-            first_layout,
-            next_layout: _,
-            layout_ids,
-            kernels,
-        } = caches;
+        let Caches { base: _, by_kernel, kernels } = caches;
         // a kernel the task built that this one has: the task's calls go
         // to this one's body
         let mut same: LPooled<AHashMap<KernelKey, KernelKey>> = LPooled::take();
@@ -1210,26 +1164,10 @@ impl Emission {
                 }
             }
         }
-        // a task's layout lists name this one's kernels where it has them,
-        // so a body the task shares with this one keys to this one's layout
-        let mut layouts: LPooled<AHashMap<u32, u32>> = LPooled::take();
-        let mut by_id: LPooled<Vec<(u32, SmallVec<[KernelKey; 8]>)>> =
-            layout_ids.into_iter().map(|(l, id)| (id, l)).collect();
-        by_id.sort_unstable_by_key(|(id, _)| *id);
-        for (id, mut l) in by_id.drain(..) {
-            for k in l.iter_mut() {
-                *k = same.get(k).copied().unwrap_or(*k);
-            }
-            layouts.insert(id, self.caches.intern_layout(l));
-        }
-        let layout = |l: u32| if l >= first_layout { layouts[&l] } else { l };
         let mut moved: LPooled<AHashMap<u32, FuncId>> = LPooled::take();
-        let mut kept: LPooled<Vec<(CacheKey, CachedBody)>> = LPooled::take();
+        let mut kept: LPooled<Vec<(KernelKey, CachedBody)>> = LPooled::take();
         for (key, cached) in by_kernel {
-            let key = CacheKey {
-                kernel: same.get(&key.kernel).copied().unwrap_or(key.kernel),
-                layout: layout(key.layout),
-            };
+            let key = same.get(&key).copied().unwrap_or(key);
             match self.caches.by_kernel(&key) {
                 // the task's callers sized their blocks by its body's layout
                 Some(have) if same_layout(&have.site_layout, &cached.site_layout) => {
@@ -1300,9 +1238,7 @@ impl Emission {
             match Arc::try_unwrap(base) {
                 Ok(mut base) => {
                     base.by_kernel.append(&mut self.caches.by_kernel);
-                    base.layout_ids.append(&mut self.caches.layout_ids);
                     base.kernels.append(&mut self.caches.kernels);
-                    base.next_layout = self.caches.next_layout;
                     self.caches = base;
                 }
                 Err(base) => {
@@ -1313,16 +1249,15 @@ impl Emission {
         }
     }
 
-    /// The cached bodies, layouts, kernel signatures and names held.
+    /// The cached bodies, kernel signatures and names held.
     pub(crate) fn retained(&self) -> usize {
-        let Caches { by_kernel, layout_ids, kernels, .. } = &self.caches;
-        by_kernel.len() + layout_ids.len() + kernels.len() + self.names.funcs.len()
+        let Caches { by_kernel, kernels, .. } = &self.caches;
+        by_kernel.len() + kernels.len() + self.names.funcs.len()
     }
 
-    /// Forget the kernels of the definitions in `dead`, and every body a
-    /// region layout binds to one of them, pushing their bodies' and
-    /// thunks' ids to `funcs`. A kernel's key is its address, so a layout
-    /// naming a forgotten kernel goes too, before the address is reused.
+    /// Forget the kernels of the definitions in `dead` and their bodies,
+    /// pushing the bodies' and thunks' ids to `funcs`. A cached body
+    /// that calls one keeps its code in its record tree.
     pub(crate) fn forget(&mut self, dead: &[LambdaId], funcs: &mut Vec<FuncId>) {
         self.thaw();
         debug_assert!(
@@ -1338,24 +1273,14 @@ impl Emission {
             }
             !gone
         });
-        let bound: LPooled<AHashSet<u32>> = caches
-            .layout_ids
-            .iter()
-            .filter(|(layout, _)| layout.iter().any(|k| kernels.contains(k)))
-            .map(|(_, id)| *id)
-            .collect();
         caches.by_kernel.retain(|key, body| {
-            let gone = kernels.contains(&key.kernel) || bound.contains(&key.layout);
+            let gone = kernels.contains(key);
             if gone {
                 funcs.extend([body.func_id, body.thunk_id]);
             }
             !gone
         });
-        // a layout no cached body is keyed by binds nothing, and only a
-        // cached body or its thunk is named after its link
-        let used: LPooled<AHashSet<u32>> =
-            caches.by_kernel.keys().map(|key| key.layout).collect();
-        caches.layout_ids.retain(|_, id| used.contains(id));
+        // only a cached body or its thunk is named after its link
         let named: LPooled<AHashSet<u32>> = caches
             .by_kernel
             .values()
@@ -1992,7 +1917,7 @@ fn compile_region(
     meets_abstract: bool,
 ) -> Result<WrappedKernel> {
     let mut build_profile = profile::phase(Phase::JitBuild);
-    let mut fresh: SmallVec<[(CacheKey, Arc<KernelSig>); 8]> = SmallVec::new();
+    let mut fresh: SmallVec<[(KernelKey, Arc<KernelSig>); 8]> = SmallVec::new();
     let mark = em.pending.len();
     let r = compile_region_inner(
         em,
@@ -2024,14 +1949,12 @@ fn compile_region_inner(
     callees: &[(KernelKey, Arc<KernelSig>)],
     emitters: &AHashMap<KernelKey, BodySource>,
     meets_abstract: bool,
-    fresh: &mut SmallVec<[(CacheKey, Arc<KernelSig>); 8]>,
+    fresh: &mut SmallVec<[(KernelKey, Arc<KernelSig>); 8]>,
 ) -> Result<WrappedKernel> {
-    // Phase 1: declare every kernel in the closure. A callee body with no
-    // sibling sites keys on layout 0; the parent is fresh per attempt and
-    // never cached.
-    let layout_id =
-        em.caches.intern_layout(callees.iter().map(|(key, _)| *key).collect());
-    // CR claude for eric: [perf/medium] Any body that calls another kernel is keyed by
+    // Phase 1: declare every kernel in the closure. A callee body is
+    // cached by its kernel; the parent is fresh per attempt and never
+    // cached.
+    // XCR claude for eric: [perf/medium] Any body that calls another kernel is keyed by
     // this region's layout, the interned ordered callee list. Regions with different
     // callee lists therefore never share it, and the identical body is emitted,
     // compiled, installed and imaged once per such region. The probe compiles `outer`
@@ -2043,21 +1966,17 @@ fn compile_region_inner(
     // guards something (a cached body binding other callees?), name it in the CacheKey
     // doc, whose FuncId reason is stale. probe:
     // design/review-2026-10-19/repro/f-jit-layout-recompile.gx (f-jit-02)
-    let layout_of = |key: KernelKey| -> u32 {
-        let ext_sites = emitters.get(&key).is_some_and(|e| {
-            e.spec
-                .lambda_call_sites
-                .values()
-                .any(|info| kernel_abi::kernel_key(&info.kernel) != key)
-        });
-        if ext_sites { layout_id } else { 0 }
-    };
     // Insertion order fixes the funcref numbering; a pointer-ordered map
     // makes it ASLR-dependent.
+    // 2026-10-22 claude: Eric 2026-10-22: key by kernel alone. Bodies are cached by
+    // KernelKey; CacheKey, layout_ids, intern_layout, layout_of, join's layout remap
+    // and f-jit-04's layout-bound eviction are deleted. Nothing region-dependent is
+    // left in a cached body: sibling FuncIds are one per cache entry, callee site
+    // blocks are held to one size per kernel by publish_site_block_words, a body's
+    // callees follow from its KernelCacheKey (resolution fingerprint), DynCall bases
+    // are gone, and region parents are never cached. The probe links outer once (was
+    // 10), same output as --no-fusion. Pin: graphix-shell/tests/shared_bodies.rs.
     let mut funcids: LPooled<Vec<(KernelKey, Declared)>> = LPooled::take();
-    // Seeded only from this region's own cache keys: another layout
-    // variant of a body may have a different SiteLayout, and sizing
-    // blocks from it is an out-of-bounds write.
     let mut callee_layouts: LPooled<AHashMap<KernelKey, SiteLayout>> = LPooled::take();
     let parent_key = kernel_abi::kernel_key(kernel);
     let parent_sig = kernel_signature(&*em.shared.isa, kernel)?;
@@ -2067,11 +1986,11 @@ fn compile_region_inner(
         Declared { func: parent_fid, thunk: None, sig: parent_sig, height: 0 },
     ));
     for (key, k) in callees {
-        let key = CacheKey { kernel: *key, layout: layout_of(*key) };
+        let key = *key;
         let entry = match em.caches.by_kernel(&key) {
             Some(e) => {
                 if let Some(l) = e.site_layout.as_ref() {
-                    callee_layouts.insert(key.kernel, l.clone());
+                    callee_layouts.insert(key, l.clone());
                 }
                 Declared {
                     func: e.func_id,
@@ -2099,7 +2018,7 @@ fn compile_region_inner(
                 Declared { func, thunk: Some(thunk), sig, height: 0 }
             }
         };
-        funcids.push((key.kernel, entry));
+        funcids.push((key, entry));
     }
     // Phase 2: emit the fresh callee bodies in topological order over
     // the static call edges, callees first, so a caller can read its
@@ -2121,9 +2040,9 @@ fn compile_region_inner(
             .unwrap_or(0)
     };
     for (key, _) in order.iter() {
-        let Some(body) = emitters.get(&key.kernel) else { continue };
-        let h = height_of(&funcids, body, key.kernel);
-        if let Some((_, d)) = funcids.iter_mut().find(|(p, _)| *p == key.kernel) {
+        let Some(body) = emitters.get(key) else { continue };
+        let h = height_of(&funcids, body, *key);
+        if let Some((_, d)) = funcids.iter_mut().find(|(p, _)| p == key) {
             d.height = h;
         }
         if let Some(cached) = em.caches.by_kernel.get_mut(key) {
@@ -2135,7 +2054,7 @@ fn compile_region_inner(
         d.height = h;
     }
     for (key, k) in order.iter() {
-        let body = emitters.get(&key.kernel).ok_or_else(|| {
+        let body = emitters.get(key).ok_or_else(|| {
             anyhow!(
                 "no body emitter recorded for kernel `{}` — discovery must record \
                  every callee body",
@@ -2145,7 +2064,7 @@ fn compile_region_inner(
         let (emitted, pending) =
             emit_kernel_body(em, k, &funcids, body, &callee_layouts)?;
         em.pending.push(pending);
-        callee_layouts.insert(key.kernel, emitted.site_layout.clone());
+        callee_layouts.insert(*key, emitted.site_layout.clone());
         if let Some(cached) = em.caches.by_kernel.get_mut(key) {
             cached.site_layout = Some(emitted.site_layout);
         }
@@ -2178,10 +2097,10 @@ fn compile_region_inner(
 /// The fresh callees in definition order: a depth-first postorder over
 /// the static call edges between them, rooted in declaration order.
 fn def_order(
-    fresh: &[(CacheKey, Arc<KernelSig>)],
+    fresh: &[(KernelKey, Arc<KernelSig>)],
     emitters: &AHashMap<KernelKey, BodySource>,
-) -> LPooled<Vec<(CacheKey, Arc<KernelSig>)>> {
-    let pos = |k: KernelKey| fresh.iter().position(|(c, _)| c.kernel == k);
+) -> LPooled<Vec<(KernelKey, Arc<KernelSig>)>> {
+    let pos = |k: KernelKey| fresh.iter().position(|(c, _)| *c == k);
     let edges_of = |k: KernelKey| -> SmallVec<[usize; 8]> {
         let mut out: SmallVec<[usize; 8]> = emitters
             .get(&k)
@@ -2200,19 +2119,19 @@ fn def_order(
         out
     };
     let mut done: LPooled<AHashSet<usize>> = LPooled::take();
-    let mut order: LPooled<Vec<(CacheKey, Arc<KernelSig>)>> = LPooled::take();
+    let mut order: LPooled<Vec<(KernelKey, Arc<KernelSig>)>> = LPooled::take();
     let mut stack: LPooled<Vec<(usize, SmallVec<[usize; 8]>, usize)>> = LPooled::take();
     for root in 0..fresh.len() {
         if !done.insert(root) {
             continue;
         }
-        stack.push((root, edges_of(fresh[root].0.kernel), 0));
+        stack.push((root, edges_of(fresh[root].0), 0));
         while let Some((i, es, next)) = stack.pop() {
             match es.get(next).copied() {
                 Some(q) => {
                     stack.push((i, es, next + 1));
                     if done.insert(q) {
-                        stack.push((q, edges_of(fresh[q].0.kernel), 0));
+                        stack.push((q, edges_of(fresh[q].0), 0));
                     }
                 }
                 None => order.push(fresh[i].clone()),

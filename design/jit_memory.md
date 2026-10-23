@@ -19,19 +19,16 @@ each part is let go, and how a generation's code space comes back.
   target and constants by recipe (`emit/record.rs`). A record is
   self-contained: it can be installed into any generation.
 - **Emission caches.** The lambda kernels' signatures by
-  `KernelCacheKey`, their bodies by `(KernelKey, layout)`, the region
-  layouts, and `Names` (each id's signature).
+  `KernelCacheKey`, their bodies by `KernelKey` (one build per kernel,
+  whichever regions call it), and `Names` (each id's signature).
 
 ## Eviction (built)
 
 A deleted definition queues its `LambdaId` (`FusionCtx::forget_def`).
 After each full link, `FusionCtx::link` forgets the following:
 
-- the definition's kernels and their cached bodies;
-- every layout that names one of those kernels, and the bodies keyed by
-  it. A `KernelKey` is an address, so a stale layout could match a
-  later kernel allocated at the same address;
-- layouts that no cached body uses;
+- the definition's kernels and their cached bodies. A live body that
+  calls one keeps the callee's code through its own record tree;
 - the evicted bodies' records;
 - `Names`, down to the cached bodies' ids.
 

@@ -715,8 +715,8 @@ node graph IS the IR — there is no parallel typed IR
 size while a fresh one cannot hold the batch; a
   generation's code is freed when it and every kernel installed into it
   have dropped (each `WrappedKernel`'s `KernelEntry` holds its code). A
-  deleted definition's kernels, every body a layout binds to them, and
-  the records no kernel reaches are forgotten at the next link
+  deleted definition's kernels and bodies, and the records no kernel
+  reaches, are forgotten at the next link
   (`FusionCtx::link`); only a cached body's ids stay named. A link that
   retired a generation, or left the current one mostly dead (4MB
   committed, under a quarter live), marks a relocation: at the next

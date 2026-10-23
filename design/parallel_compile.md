@@ -151,8 +151,8 @@ subtrees, fuse in compile tasks (`fusion::fuse_each`), each against a
 fork of the context, joined in order:
 
 - emission state (`emit::Emission`: the names functions are emitted
-  against, the lambda-kernel signatures and bodies, region layouts and
-  the functions waiting) is per task: a fork freezes the parent's
+  against, the lambda-kernel signatures and bodies, and the functions
+  waiting) is per task: a fork freezes the parent's
   layers into an `Arc` both extend; a task mints ids from the frozen
   table's next, and its join shifts its ids after the parent's (the
   callee names in its CLIF rewritten with `reset_user_func_name`), a
