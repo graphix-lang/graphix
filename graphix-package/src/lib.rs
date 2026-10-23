@@ -120,14 +120,24 @@ pub trait CustomDisplay<X: GXExt>: Any {
     async fn batch_done(&mut self);
 }
 
-/// How a custom display tells the shell it is done: `Ok` when the
-/// program asked to end, the error when the display cannot go on. A
-/// display that drops it unsent has died, which the shell reports too.
-pub type Stop = oneshot::Sender<Result<()>>;
+/// Why a custom display ended without failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// The user interrupted it (Ctrl-C): a script exits as interrupted.
+    Interrupted,
+    /// The program asked to end (`tui::exit`), or its last window closed:
+    /// a script exits successfully.
+    Requested,
+}
+
+/// How a custom display tells the shell it is done: why, or the error
+/// when the display cannot go on. A display that drops it unsent has
+/// died, which the shell reports too.
+pub type Stop = oneshot::Sender<Result<Ended>>;
 
 /// A live custom display plus the channel the shell watches for it to stop.
 pub struct Cdc<X: GXExt> {
-    pub stop: oneshot::Receiver<Result<()>>,
+    pub stop: oneshot::Receiver<Result<Ended>>,
     pub custom: Box<dyn CustomDisplay<X>>,
 }
 

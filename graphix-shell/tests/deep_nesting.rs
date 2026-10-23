@@ -171,20 +171,6 @@ fn program(shape: &str, d: usize) -> String {
             let pat = format!("{}x{}", "{a: ".repeat(d), "}".repeat(d));
             format!("let v = {v};\nlet x = select v {{ {pat} => x }}")
         }
-        // CR claude for claude: [bug/low] The bool form of this shape, `select (true,
-        // (true, .. 1)) { (true | false, (true | false, .. x)) => x }`, is refused as
-        // non-exhaustive ('missing match cases: no arm covers (bool, (bool, ..') from
-        // eleven levels on, though its one arm matches every value: LiteralPool
-        // enumerates a group's combinations of heads and gives up past
-        // MAX_POOL_COMBINATIONS (1024, graphix-compiler/src/node/select.rs), so eleven
-        // bool positions never complete. Ten levels check. The same holds for any arm set
-        // over eleven or more independent bool or variant-head positions. Decide whether
-        // coverage over many positions must be complete (a per-position decision where
-        // positions are independent, as a lone or-arm's are) or the cap is the rule, then
-        // document it. Found by the deep_nesting orpat case at depth 331; this shape now
-        // uses integer literals, which never pool. (pool-cap-01)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Keep the cap and document it in CLAUDE.md's Sets and coverage.
         "orpat" => {
             let v = format!("{}1{}", "(1, ".repeat(d), ")".repeat(d));
             let pat = format!("{}x{}", "(1 | 2, ".repeat(d), ")".repeat(d));

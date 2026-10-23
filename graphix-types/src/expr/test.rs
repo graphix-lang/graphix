@@ -377,9 +377,16 @@ fn modpath() -> impl Strategy<Value = ModPath> {
 
 fn constant() -> impl Strategy<Value = Expr> {
     (value(), str_form()).prop_map(|(v, form)| {
-        let string = matches!(v, Value::String(_));
+        // a line ending in source reads as LF, so no raw string holds a CRLF
+        let form = match &v {
+            Value::String(s) if form == StrForm::Raw && s.contains("\r\n") => {
+                Some(StrForm::Quoted)
+            }
+            Value::String(_) => Some(form),
+            _ => None,
+        };
         let mut e = ExprKind::Constant(v).to_expr_nopos();
-        if string {
+        if let Some(form) = form {
             e.str_form = form;
         }
         e

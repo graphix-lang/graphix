@@ -13,7 +13,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Context, Result};
 use graphix_compiler::{BindId, FAILURE_TARGET};
-use graphix_package::Stop;
+use graphix_package::{Ended, Stop};
 use graphix_rt::{CompExp, GXExt, GXHandle, Ref};
 use iced_core::{InputMethod, clipboard, mouse, window};
 use iced_runtime::user_interface;
@@ -233,7 +233,7 @@ impl<X: GXExt> GuiHandler<X> {
         }
     }
 
-    fn finish(&mut self, event_loop: &ActiveEventLoop, result: Result<()>) {
+    fn finish(&mut self, event_loop: &ActiveEventLoop, result: Result<Ended>) {
         self.windows.clear();
         self.win_to_bid.clear();
         self.pending.clear();
@@ -458,7 +458,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 self.remove(bid);
             }
             if self.windows.is_empty() {
-                self.finish(event_loop, Ok(()));
+                self.finish(event_loop, Ok(Ended::Requested));
             }
             return;
         }
@@ -502,7 +502,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
             ToGui::Stop(tx) => {
                 if !tx.is_closed() {
                     let _ = tx.send(());
-                    self.finish(event_loop, Ok(()));
+                    self.finish(event_loop, Ok(Ended::Requested));
                 }
             }
             ToGui::ResizeRenderTick(window_id) => {

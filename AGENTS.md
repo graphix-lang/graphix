@@ -1069,7 +1069,9 @@ cycle, across workers; the compiler never pins threads.
   (payload irrefutable) and or-patterns of them pool per position
   inside composite patterns, keyed by path (a partial struct pattern
   against the one member holding its fields, the rest any value), and an arm under a type
-  test pools only a member the test holds; an or-arm narrows later arms per
+  test pools only a member the test holds; a group whose combinations of
+  heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
+  positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over
   a scrutinee its shape covers; set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the

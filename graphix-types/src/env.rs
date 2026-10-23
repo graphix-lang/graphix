@@ -540,6 +540,9 @@ pub struct Env {
     /// other only through their interfaces.
     #[doc(hidden)]
     pub hidden_impls: Arc<Vec<ModPath>>,
+    /// How many warnings compiles under this env published; tasks share
+    /// their parent's count.
+    pub warned: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Env {
@@ -564,6 +567,7 @@ impl Env {
             typedefs: self.typedefs.clone(),
             traits: self.traits.clone(),
             hidden_impls: self.hidden_impls.clone(),
+            warned: self.warned.clone(),
         }
     }
 
@@ -586,6 +590,7 @@ impl Env {
             package_roots,
             ide,
             hidden_impls: _,
+            warned: _,
         } = fork;
         self.by_id.join(by_id);
         self.byref_chain.join(byref_chain);
@@ -634,6 +639,7 @@ impl Env {
             package_roots: _,
             ide: _,
             hidden_impls: _,
+            warned: _,
         } = other;
         mem::swap(&mut self.binds, binds);
         mem::swap(&mut self.modules, modules);
@@ -670,18 +676,6 @@ impl Env {
         if flags.contains(CFlag::WarningsAreErrors) {
             return Err(anyhow!("{message}").at(spec));
         }
-        // CR claude for claude: [risk/low] Warnings are published only while compiling,
-        // and a program restored from its session image compiles nothing. So a script
-        // prints 'WARNING: .. error raised by ? will not be caught' on its first run
-        // and never again, which is when a user reruns it to read the warning (probe:
-        // design/review-2026-10-12/repro/x-errors-09.gx, three runs without
-        // --no-cache). This makes a cold start and a warm start visibly different.
-        // Either record a program compile's warnings in the program image entry and
-        // replay them through `publish_warning` on restore, or rule that warnings come
-        // from `--check`/the LSP and say so. (x-errors-09)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Record a program compile's warnings in its image entry and replay
-        // them through publish_warning on restore.
         self.publish_warning(&spec.ori, pos, end, message);
         Ok(())
     }
@@ -710,6 +704,7 @@ impl Env {
         end: SourcePosition,
         message: impl fmt::Display,
     ) {
+        self.warned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.ide.sink() {
             None => self
                 .ide
@@ -2000,6 +1995,7 @@ impl Env {
             package_roots: _,
             ide: _,
             hidden_impls: _,
+            warned: _,
         } = self;
         names.retain(|s, _| !under(s));
         let binds: LPooled<Vec<BindId>> = by_id

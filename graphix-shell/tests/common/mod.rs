@@ -61,6 +61,8 @@ pub const CACHE_LOG: (&str, &str) = ("RUST_LOG", "warn,graphix_shell::cache=info
 pub fn program_image(ran: &Ran) -> (bool, bool) {
     let lines = || ran.log.lines().filter(|l| l.contains("Program image "));
     let written = lines().any(|l| l.contains("written to"));
-    let loaded = lines().any(|l| !l.contains("written to") && !l.ends_with("is stale"));
+    let loaded = lines().any(|l| {
+        l.contains("INFO") && !l.contains("written to") && !l.ends_with("is stale")
+    });
     (written, loaded)
 }

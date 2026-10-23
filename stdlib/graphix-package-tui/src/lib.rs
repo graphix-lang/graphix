@@ -29,7 +29,7 @@ use graphix_compiler::{
     rep,
     typ::FnType,
 };
-use graphix_package::{CustomDisplay, Stop};
+use graphix_package::{CustomDisplay, Ended, Stop};
 use graphix_package_core::{
     CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState, seam_tick,
 };
@@ -712,7 +712,7 @@ impl TuiControl {
             std::mem::replace(&mut *state, StopState::PendingExit)
         {
             *state = StopState::Idle;
-            let _ = stop.send(Ok(()));
+            let _ = stop.send(Ok(Ended::Requested));
         }
     }
 
@@ -720,13 +720,13 @@ impl TuiControl {
         let mut state = self.0.stop.lock();
         match std::mem::replace(&mut *state, StopState::Idle) {
             StopState::PendingExit => {
-                let _ = stop.send(Ok(()));
+                let _ = stop.send(Ok(Ended::Requested));
             }
             _ => *state = StopState::Running(stop),
         }
     }
 
-    fn finish(&self, result: Result<()>) {
+    fn finish(&self, result: Result<Ended>) {
         if let StopState::Running(stop) =
             std::mem::replace(&mut *self.0.stop.lock(), StopState::Idle)
         {
@@ -1254,7 +1254,7 @@ async fn display<X: GXExt>(
             dirty |= matches!(e, Event::Resize(..));
             match term.reading(screen.event(&e), &mut liveness, &mut pending).await? {
                 Some(Ok(true)) => (),
-                Some(Ok(false)) | None => control.finish(Ok(())),
+                Some(Ok(false)) | None => control.finish(Ok(Ended::Interrupted)),
                 Some(Err(e)) => error!("error handling event {e:?}"),
             }
             continue;
@@ -1275,7 +1275,7 @@ async fn display<X: GXExt>(
                     match term.reading(screen.update(id, v), &mut liveness, &mut pending).await? {
                         Some(Ok(())) => (),
                         Some(Err(e)) => error!("error handling update {e:?}"),
-                        None => control.finish(Ok(())),
+                        None => control.finish(Ok(Ended::Interrupted)),
                     }
                 },
             },

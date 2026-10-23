@@ -20,7 +20,7 @@ use graphix_package_core::ProgramArgs;
 use graphix_rt::{
     CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt, ProgramImage, RegistrationImage,
 };
-use input::InputReader;
+use input::{InputReader, Read};
 use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
@@ -469,21 +469,6 @@ impl<X: GXExt> Shell<X> {
             let mut image = RegistrationImage::default();
             // a fusion profile is of this process's compile, so it never
             // starts from the program's entry
-            // CR claude for claude: [bug/low] A restored program entry compiles
-            // nothing, so the warnings its compile emitted through `Env::warn`
-            // (`CFlag::WarnUnhandled`'s unhandled `?`, unused imports) are shown on the
-            // cold run only. The same program with the same flags prints different
-            // diagnostics depending on cache state. Fix: store the compile's warnings
-            // in the program entry and print them again on restore. They are fixed by
-            // the key and the verified sources. The simpler alternative is to write no
-            // program entry for a compile that warned. probe:
-            // design/review-2026-10-12/repro/shell-04-warm-drops-warnings.sh (shell-04)
-            // 2026-10-13 claude: Same question as x-errors-09 (for eric, graphix-types
-            // env.rs Env::warn): replay a restored program's warnings from its entry, or
-            // rule that warnings come from --check and the LSP. Waiting on that ruling.
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Store the compile's warnings in the program entry and
-            // replay them on restore (with x-errors-09), so warm and cold agree.
             if !self.fusion_stats
                 && let Some(entry) = c.load(Entry::Program)
             {
@@ -720,7 +705,7 @@ impl<X: GXExt> Shell<X> {
                     }
                 },
                 code = terminated.recv() => break 'repl Ok(code),
-                input = input.read_line(&mut output, &mut newenv) => {
+                input = input.read_line(&mut output, &mut newenv, script) => {
                     match input {
                         // with no display up the error is the input's own
                         Err(e) if script || matches!(output, Output::None) => break Err(e),
@@ -730,15 +715,20 @@ impl<X: GXExt> Shell<X> {
                             gx.interrupt();
                             output.clear().await;
                         }
+                        // a program that ended its display ended successfully
+                        Ok(Read::Ended) if script => break Ok(None),
+                        Ok(Read::Ended) => output.clear().await,
                         // the status a shell reports for SIGINT
-                        Ok(Signal::CtrlC) if script => break Ok(Some(128 + 2)),
-                        Ok(Signal::CtrlC) => {
+                        Ok(Read::Signal(Signal::CtrlC)) if script => break Ok(Some(128 + 2)),
+                        Ok(Read::Signal(Signal::CtrlC)) => {
                             // Interrupt first: a wedged runtime cannot serve `output.clear()`.
                             gx.interrupt();
                             output.clear().await;
                         }
-                        Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break Ok(None),
-                        Ok(Signal::Success(line)) => {
+                        Ok(Read::Signal(Signal::CtrlD | Signal::ExternalBreak(_))) => {
+                            break Ok(None)
+                        }
+                        Ok(Read::Signal(Signal::Success(line))) => {
                             match gx.compile(ArcStr::from(line)).await {
                                 Err(e) => eprintln!("error: {e:?}"),
                                 Ok(res) => {
@@ -751,29 +741,7 @@ impl<X: GXExt> Shell<X> {
                                             .with_deref(|t| t.cloned())
                                             .unwrap_or_else(|| e.typ.clone());
                                         format_with_flags(
-                                            // CR claude for claude: [bug/medium] Without
-                                            // `DerefTVars`, the REPL's type line prints
-                                            // inferred variables by name and never
-                                            // shows their bindings: `[1, 2]` shows `-:
-                                            // Array<'_7721>`, `{"a" => 1}` shows `-:
-                                            // Map<'_7721, '_7722>`, `error(`Foo)` shows
-                                            // `-: Error<'a>`. The book's transcripts
-                                            // (getting_started, fundamental_types,
-                                            // reading_types "Auto Parameters",
-                                            // polymorphism, recursion) show and explain
-                                            // the deref'd readout (`'a: unbound: Number
-                                            // + Singleton`, `Array<'a: i64>`). Decide
-                                            // which readout the REPL prints. Then
-                                            // either restore `PrintFlag::DerefTVars |
-                                            // PrintFlag::ReplacePrims` here, or resolve
-                                            // bound variables before printing and
-                                            // rewrite those book sections. probe:
-                                            // design/review-2026-10-19/repro/book-core-repl-type-display.sh
-                                            // (book-core-02)
-                                            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23
-                                            // triage: no ruling needed. Restore DerefTVars | ReplacePrims
-                                            // so the REPL matches the book.
-                                            PrintFlag::ReplacePrims,
+                                            PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                                             || println!("-: {}", typ)
                                         );
                                         output.clear().await;

@@ -60,3 +60,68 @@ fn an_abstract_value_reads_before_any_is_minted() {
     let refused = r#""refused: error:`PackErr(\"InvalidFormat\")""#;
     assert_eq!(ran.stdout.trim(), refused, "{}", ran.stderr);
 }
+
+/// A REPL whose stdin is a pipe goes on reading lines while a value
+/// shows, so a later line runs and EOF ends the shell.
+#[test]
+fn piped_lines_are_all_read() {
+    use std::{io::Write, process::Stdio, time::Duration};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let run = |input: &'static str| {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_graphix"))
+            .arg("--no-netidx")
+            .arg("--no-cache")
+            .env("XDG_CACHE_HOME", dir.path().join("cache"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn graphix");
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                let out = child.wait_with_output().unwrap();
+                break (status, String::from_utf8_lossy(&out.stdout).into_owned());
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("the shell did not end on {input:?}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let (status, out) = run("1 + 1\nsys::exit(3)\n");
+    assert_eq!(status.code(), Some(3), "{out}");
+    assert!(out.contains('2'), "{out}");
+    let (status, out) = run("1 + 1\n");
+    assert_eq!(status.code(), Some(0), "{out}");
+}
+
+/// The run warns of an unused import as the check does, so under
+/// `-W error` the two agree.
+#[test]
+fn an_unused_import_is_refused_by_the_run_as_by_the_check() {
+    let program =
+        "use array::map;\nsys::exit(sys::time::after_idle(duration:50.ms, 0));\n1\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    for args in [&["-W", "error", "--check"][..], &["-W", "error", "--no-cache"][..]] {
+        let ran = graphix(dir.path(), program, args, &[]);
+        assert!(!ran.status.success(), "{args:?} accepted it:\n{}", ran.stderr);
+        assert!(ran.stderr.contains("unused import `map`"), "{args:?}:\n{}", ran.stderr);
+    }
+}
+
+/// A restored program compiles nothing, so one whose compile warned keeps
+/// no image: every run compiles it and warns again.
+#[test]
+fn a_program_that_warned_warns_at_every_run() {
+    let program =
+        "use array::map;\nsys::exit(sys::time::after_idle(duration:50.ms, 0));\n1\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    for i in 0..3 {
+        let ran = graphix(dir.path(), program, &[], &[CACHE_LOG]);
+        assert!(ran.stderr.contains("unused import `map`"), "run {i}:\n{}", ran.stderr);
+        assert_eq!(program_image(&ran).1, false, "run {i} restored:\n{}", ran.log);
+    }
+}

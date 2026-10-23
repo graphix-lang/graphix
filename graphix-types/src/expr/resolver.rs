@@ -14,7 +14,7 @@ use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use futures::future::{Future, join_all};
 use indexmap::IndexMap;
-use log::info;
+use log::{info, warn};
 use netidx_core::path::Path;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -255,11 +255,19 @@ pub fn parse_modpath(
 ) -> Result<Vec<ResolverRef>> {
     let mut res: Vec<ResolverRef> = vec![];
     for l in modpath_entries(s) {
-        let scheme = l
-            .split_once(':')
-            .and_then(|(scheme, rest)| factories.get(scheme).map(|f| f(libstate, rest)));
+        // a scheme is a word of two letters or more; `C:` is a drive
+        let scheme = l.split_once(':').filter(|(s, _)| {
+            *s != "file" && s.len() > 1 && s.chars().all(|c| c.is_ascii_alphabetic())
+        });
         match scheme {
-            Some(r) => res.push(r.with_context(|| format_compact!("{l}"))?),
+            Some((scheme, rest)) => match factories.get(scheme) {
+                Some(f) => {
+                    res.push(f(libstate, rest).with_context(|| format_compact!("{l}"))?)
+                }
+                None => warn!(
+                    "GRAPHIX_MODPATH: no resolver reads {scheme}: here, so {l} is skipped"
+                ),
+            },
             None => {
                 let path = l.strip_prefix("file:").unwrap_or(&l);
                 res.push(FilesResolver::new(PathBuf::from_str(path)?, None))
@@ -1255,6 +1263,18 @@ mod test {
             }
             k => panic!("not a resolved module: {k:?}"),
         }
+    }
+
+    /// An entry whose scheme no resolver reads is skipped, never searched
+    /// as a directory; a drive letter is no scheme.
+    #[test]
+    fn modpath_skips_an_unread_scheme() {
+        let factories = AHashMap::default();
+        let mut libstate = crate::LibState::default();
+        let r =
+            parse_modpath(&factories, &mut libstate, r"netidx:/x,C:\gx,/lib").unwrap();
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert!(format!("{:?}", r[0]).contains("gx"), "{:?}", r[0]);
     }
 
     /// Only the separator is escaped in a module path list.

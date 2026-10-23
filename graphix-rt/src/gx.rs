@@ -378,12 +378,21 @@ impl<X: GXExt> GX<X> {
         {
             let st = Instant::now();
             let probes = cfg.program_image.as_ref().map(|_| Probes::default());
+            let warned = t.ctx.env.warned.load(std::sync::atomic::Ordering::Relaxed);
             match t.load_program(&source, probes.as_ref()).await {
                 Ok(root) => {
                     t.program = Some(Ok(root));
                     info!("program init time: {:?}", st.elapsed());
+                    // a restored program compiles nothing, so a program that
+                    // warned keeps no image: its warnings print at every run
+                    let quiet =
+                        t.ctx.env.warned.load(std::sync::atomic::Ordering::Relaxed)
+                            == warned;
                     if let (Some(tx), Some(probes)) = (cfg.program_image, probes) {
-                        let image = t.registration_image();
+                        let image = match quiet {
+                            true => t.registration_image(),
+                            false => Err(anyhow!("the program's compile warned")),
+                        };
                         let sources = probes.take();
                         let _ =
                             tx.send(image.map(|image| ProgramImage { image, sources }));
@@ -1133,30 +1142,7 @@ impl<X: GXExt> GX<X> {
                     .map(|n| nodes.push(n))
                 }
             };
-            // CR claude for claude: [bug/medium] Only the check warns on unused imports;
-            // `load_program`, the run's compile, has no such pass. Under `-W error`,
-            // `graphix --check f.gx` refuses `use array::map;` unused while `graphix
-            // f.gx` runs it without a word, so the check no longer predicts the build.
-            // Either do this pass where both paths share it (after `compile_script`, in
-            // both `check_inner` and `load_program`), or rule that unused imports are a
-            // check-only lint that WarningsAreErrors leaves alone. probe:
-            // design/review-2026-10-19/repro/shell-werror-check-vs-run.sh (shell-03)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Run the unused-import pass where check and load_program
-            // share it.
-            let res = res.and_then(|()| {
-                self.ctx.env.unused_imports_since(&env).try_for_each(|(key, e)| {
-                    let mut end = e.name_at;
-                    end.column += key.chars().count() as i32;
-                    self.ctx.env.warn_at(
-                        flags,
-                        &e.ori,
-                        e.name_at,
-                        end,
-                        format_args!("unused import `{key}`"),
-                    )
-                })
-            });
+            let res = res.and_then(|()| self.warn_unused_imports(&env, flags));
             if let Err(e) = res.with_context(|| ori.clone()) {
                 for mut n in nodes.drain(..) {
                     n.delete(&mut self.ctx.view());
@@ -1200,6 +1186,26 @@ impl<X: GXExt> GX<X> {
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
 
+    /// Warn of each import a compile since `since` added that no lookup
+    /// went through, the check and the run alike.
+    fn warn_unused_imports(
+        &self,
+        since: &graphix_compiler::env::Env,
+        flags: BitFlags<CFlag>,
+    ) -> Result<()> {
+        self.ctx.env.unused_imports_since(since).try_for_each(|(key, e)| {
+            let mut end = e.name_at;
+            end.column += key.chars().count() as i32;
+            self.ctx.env.warn_at(
+                flags,
+                &e.ori,
+                e.name_at,
+                end,
+                format_args!("unused import `{key}`"),
+            )
+        })
+    }
+
     /// Compile the program in `source`, adding every place its module
     /// resolution looked to `probes`.
     async fn load_program(
@@ -1223,7 +1229,8 @@ impl<X: GXExt> GX<X> {
         let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
-        let n = graphix_compiler::compile_script(
+        let before = self.ctx.env.clone();
+        let mut n = graphix_compiler::compile_script(
             &mut self.ctx.view(),
             self.flags,
             &scope,
@@ -1232,6 +1239,10 @@ impl<X: GXExt> GX<X> {
             sig.as_ref(),
         )
         .with_context(|| ori.clone())?;
+        if let Err(e) = self.warn_unused_imports(&before, self.flags) {
+            n.delete(&mut self.ctx.view());
+            return Err(e.context(ori.clone()));
+        }
         let typ = n.typ().clone();
         self.nodes.insert(id, n);
         self.ctx.rt.updated.insert(id, true);

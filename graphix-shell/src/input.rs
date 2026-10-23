@@ -1,6 +1,7 @@
 use super::{Env, Output, completion::BComplete};
 use anyhow::{Error, Result, bail};
 use futures::{StreamExt, channel::mpsc};
+use graphix_package::Ended;
 use graphix_rt::GXExt;
 use reedline::{
     DefaultPrompt, DefaultPromptSegment, Emacs, IdeMenu, KeyCode, KeyModifiers,
@@ -9,6 +10,13 @@ use reedline::{
 };
 use std::io::IsTerminal;
 use tokio::{sync::oneshot, task};
+
+/// What the shell reads next: a line editor signal, or the display that
+/// showed the output ended because the program asked it to.
+pub(super) enum Read {
+    Signal(Signal),
+    Ended,
+}
 
 pub(super) struct InputReader {
     go: Option<oneshot::Sender<Option<Env>>>,
@@ -82,80 +90,45 @@ impl InputReader {
         &mut self,
         output: &mut Output<X>,
         env: &mut Option<Env>,
-    ) -> Result<Signal> {
+        script: bool,
+    ) -> Result<Read> {
         match output {
             Output::Custom(cdc) => match (&mut cdc.stop).await {
-                // CR claude for claude: [bug/medium] A display that ended normally
-                // (tui::exit, or the user closing a GUI's last window) is reported as
-                // Ctrl-C, and since the Ctrl-C exit-code fix a script then exits 130,
-                // the SIGINT status. In the REPL it also interrupts the runtime. Give
-                // this case its own Signal: in a script, break with `Ok(None)` (exit
-                // 0); in the REPL, clear the output without interrupting. probe:
-                // design/review-2026-10-19/repro/gui-core-display-stop-exits-130.gx
-                // (exits 130). (gui-core-02)
-                // 2026-10-19 claude: Readdressed: this is tui-core-01's question (for
-                // eric, the CR below). The TUI sends the same Ok(()) for a Ctrl-C
-                // keypress (Screen::event) and for tui::exit, so mapping this arm to
-                // exit 0 here would make a TUI Ctrl-C exit 0 too; it waits on the
-                // ruling for what status a program-requested stop has, and then Stop
-                // carrying its reason.
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage:
-                // no ruling needed. With tui-core-01: a program-requested stop exits
-                // 0; Stop carries its reason.
-                // CR claude for claude: [bug/high] A display's `Ok(())` stop is read as
-                // Ctrl-C, so a script whose TUI quits through `tui::exit` exits 130,
-                // the SIGINT status, as if it had been interrupted. Every TUI app's
-                // normal quit key (input_basic.gx, netidx-admin's `q`) now ends the
-                // process unsuccessfully, so `graphix app.gx && next` never runs
-                // `next`. Found by reading: the GUI's `finish(event_loop, Ok(()))` when
-                // the last window closes takes this same arm. The TUI sends the same
-                // `Ok(())` for a Ctrl-C keypress (`Screen::event`) and for `tui::exit`
-                // (`TuiControl::request_exit`), so this arm cannot tell them apart.
-                // Decide what status a program-requested stop should have (0 seems
-                // right). Then make `Stop` carry the reason (e.g. `Ended::{Interrupted,
-                // Requested}`), map Requested to a successful end in script mode, and
-                // pin it beside interrupt_wedge.rs's Ctrl-C status test. probe:
-                // design/review-2026-10-19/repro/tui-core-exit-status-130.gx Also
-                // reported as (x-rerun-5-02). (tui-core-01)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. A program-requested stop exits 0: Stop carries
-                // Ended::{Interrupted, Requested}; pin beside interrupt_wedge.rs.
-                Ok(Ok(())) => Ok(Signal::CtrlC),
+                Ok(Ok(Ended::Interrupted)) => Ok(Read::Signal(Signal::CtrlC)),
+                Ok(Ok(Ended::Requested)) => Ok(Read::Ended),
                 Ok(Err(e)) => Err(e.context("the display failed")),
                 Err(_) => bail!("the display died"),
             },
-            // CR claude for claude: [bug/medium] With a stdin that is not a terminal, a
-            // REPL line that produces a value leaves the output as `Output::Text`. From
-            // then on, this arm waits only for Ctrl-C and never polls the line reader
-            // again. Later piped lines are never compiled, and EOF (the reader's
-            // `Signal::CtrlD`) is never seen. The shell hangs until it is signalled:
-            // `printf '1 + 1\nsys::exit(0)\n' | graphix -n` prints 2 and never exits
-            // (probe: design/review-2026-10-12/repro/x-fix-tools-03.sh). Piped input
-            // needs a rule, and the choice decides what a piped session prints. Option
-            // one: for a non-terminal stdin, keep reading lines while a text output is
-            // showing, so a new line replaces the output the way Enter does after
-            // Ctrl-C, and treat EOF as Ctrl-D. The cost is that a value still arriving
-            // when the next line or EOF lands is lost. Option two: on EOF, keep
-            // streaming the last output until `sys::exit` or a signal, but still read
-            // the lines before it. Also reported as (x-rerun-1-03). (x-fix-tools-03)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Option one: with a non-terminal stdin keep reading lines
-            // while text output shows; EOF is Ctrl-D.
+            // a REPL's piped lines go on being read while a value shows, a
+            // new one replacing it, as Enter does after Ctrl-C at a terminal
+            Output::Text(_) if !script && !std::io::stdin().is_terminal() => {
+                tokio::select! {
+                    r = tokio::signal::ctrl_c() => {
+                        r?;
+                        Ok(Read::Signal(Signal::CtrlC))
+                    }
+                    r = self.next_line(env) => r.map(Read::Signal),
+                }
+            }
             Output::EmptyScript | Output::Text(_) => {
                 tokio::signal::ctrl_c().await?;
-                Ok(Signal::CtrlC)
+                Ok(Read::Signal(Signal::CtrlC))
             }
-            Output::None => {
-                if let Some(tx) = self.go.take() {
-                    let _ = tx.send(env.take());
-                }
-                match self.recv.next().await {
-                    None => bail!("input stream ended"),
-                    Some((go, sig)) => {
-                        self.go = Some(go);
-                        sig
-                    }
-                }
+            Output::None => self.next_line(env).await.map(Read::Signal),
+        }
+    }
+
+    /// The next line the reader takes, started over `env` if none is
+    /// being read.
+    async fn next_line(&mut self, env: &mut Option<Env>) -> Result<Signal> {
+        if let Some(tx) = self.go.take() {
+            let _ = tx.send(env.take());
+        }
+        match self.recv.next().await {
+            None => bail!("input stream ended"),
+            Some((go, sig)) => {
+                self.go = Some(go);
+                sig
             }
         }
     }
