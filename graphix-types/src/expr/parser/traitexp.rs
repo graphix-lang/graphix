@@ -62,18 +62,6 @@ where
                 let self_index = ft.args.iter().position(|a| {
                     matches!(&a.kind, FnArgKind::Positional { name: Some(n) } if &**n == "self")
                 });
-                // CR claude for claude: [bug/medium] Any trait may declare a method whose
-                // only `self` is its result, but only core Cast::from_value has a
-                // caller (the runtime). In a user trait (`val mk: fn(x: i64) -> self`)
-                // the trait and the impl check, then every call, a default body's
-                // included, is refused with "Mk::mk called without its self argument".
-                // Either refuse this form outside core traits at the declaration, or
-                // dispatch such a call on its expected result type. probe:
-                // design/review-2026-10-19/repro/t-parser-b-self-result-uncallable.gx
-                // (t-parser-b-04)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Refuse this form outside core traits at the declaration,
-                // with a message naming why (with tests-fusion-traits-03).
                 if self_index.is_none() && !ft.rtype.mentions_self() {
                     return refuse(
                         end,

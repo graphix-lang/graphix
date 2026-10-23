@@ -41,6 +41,19 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
     .prop_map(ArcStr::from)
 }
 
+/// `e` with no comment anywhere, as a string's splice holds it.
+fn uncommented(e: &Expr) -> Expr {
+    let mut e = e.map_children(&mut |c| uncommented(c));
+    if let Some(d) = e.dec.clone()
+        && !d.comments.is_empty()
+    {
+        e.dec = (!d.attrs.is_empty()).then(|| {
+            Arc::new(Decorations { comments: Arc::from_iter([]), attrs: d.attrs.clone() })
+        });
+    }
+    e
+}
+
 /// `"..[e].."` or `"""..\[e].."""`: text runs as the parser leaves them
 /// (merged, never empty) around one or more splices.
 fn interpolation(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Expr> {
@@ -57,7 +70,7 @@ fn interpolation(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Ex
                 if !t.is_empty() {
                     args.push(text(t))
                 }
-                args.push(e)
+                args.push(uncommented(&e))
             }
             if !last.is_empty() {
                 args.push(text(last))
@@ -71,12 +84,20 @@ fn interpolation(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Ex
 }
 
 /// A doc's text: lines, and none ends in a `\r`, which ends a line.
+/// Doc text; no line opens with `/`, which would print as `////`, a
+/// plain comment.
 fn doc_text() -> impl Strategy<Value = ArcStr> {
     prop_oneof![
         3 => any::<String>(),
         1 => "[ab \\n\\t\\x07\\[\\]]{0,12}",
     ]
-    .prop_map(ArcStr::from)
+    .prop_map(|s| {
+        let lines: Vec<String> = s
+            .split('\n')
+            .map(|l| if l.starts_with('/') { format!(" {l}") } else { l.to_string() })
+            .collect();
+        ArcStr::from(lines.join("\n"))
+    })
 }
 
 /// A seq trigger the head reads bare: a name, or a prefix operator over one.

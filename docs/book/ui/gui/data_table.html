@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-4c2f682b.js";
+            window.path_to_searchindex_js = "../../searchindex-8fa68ad6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -247,12 +247,14 @@ type ColumnType = [
 ///   ever subscribe.
 type Source = [`Netidx([null, string, Map&lt;string, Any&gt;]), string, Map&lt;string, Any&gt;];
 
-// CR claude for eric: [structure/low] `on_resize` is the one GUI callback a caller must
+// CR claude for claude: [structure/low] `on_resize` is the one GUI callback a caller must
 // pass by reference (`#on_resize: &amp;|w| ..`). Every other callback, including this
 // struct's on_edit/on_click, is a plain `[fn, null]` that the builder wraps itself
 // (`on_select: &amp;on_select` in data_table). Take `#on_resize: [fn(width: f64) -&gt; Any,
 // null] = null` in the column builders and store `on_resize: &amp;on_resize`; the Rust side
 // still reads a ref. Found by reading; not run. (gx-ui-06)
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+// Take the plain [fn, null] form.
 type ColumnSpec = {
     name: string,
     typ: ColumnType,

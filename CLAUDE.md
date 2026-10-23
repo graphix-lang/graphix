@@ -295,7 +295,9 @@ undecorated `use` statements merges into one per root and visibility, a
 sorted tree with every shared prefix written once, where no item reads or
 binds what another binds or reads (a glob merges with nothing); a blank line stands
 around every file-level item that spans lines; primitives in a union
-print first, in canonical order. Layout: a value follows its head
+print first, in canonical order; an item's comments print above its
+attributes, and a comment under an arm's `=>` or a field's `name:`
+moves above the arm or the field. Layout: a value follows its head
 (`let x =`, `<-`, `name:`, `=>`) on the head's line when it fits or
 opens with a bracket whose first line fits, else it moves under the
 head; a lambda head that does not fit lists one argument to a line; a

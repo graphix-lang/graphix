@@ -87,14 +87,14 @@ fn a_block_is_in_the_scripts_package() {
 }
 
 #[test]
-fn a_module_named_like_a_package_is_a_duplicate() {
+fn a_module_named_like_a_package_is_refused() {
     let [check, run] = verdicts(
         &format!("mod str;\n{EXIT}println(\"[str::x]\")\n"),
         &[("str.gx", "let x = 41\n")],
     );
     for (mode, r) in [("--check", check), ("the run", run)] {
         let e = r.err().unwrap_or_else(|| panic!("{mode} accepted a second `str`"));
-        assert!(e.contains("duplicate module definition str"), "{mode}: {e}");
+        assert!(e.contains("`str` is the name of a package"), "{mode}: {e}");
     }
 }
 

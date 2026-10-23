@@ -29,7 +29,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{CoreTrait, FnArgKind, FnType, TVar, Type, TypeRef, seed_conjuncts},
+    typ::{CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, seed_conjuncts},
     wrap,
 };
 use ahash::{AHashMap, AHashSet};
@@ -92,8 +92,19 @@ pub(crate) fn method_decl(
     m: &TraitMethod,
     tref: &Type,
     scope: &ModPath,
+    trait_name: &str,
     pos: SourcePosition,
 ) -> Result<TraitMethodSig> {
+    if m.self_index.is_none()
+        && CoreTrait::of_id(TraitId::of(scope, trait_name)).is_none()
+    {
+        bail!(
+            "trait method {} takes no `self` argument, so no call can dispatch it: \
+             only a core trait's method, which the runtime calls, may return `self` \
+             alone",
+            m.name.name
+        )
+    }
     let mut requires: SmallVec<[ArcStr; 2]> = SmallVec::new();
     for a in m.attrs.iter() {
         let kind = DefAssertionKind::from_name(&a.name)
@@ -261,7 +272,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         let mut sigs = t
             .methods
             .iter()
-            .map(|m| method_decl(&ctx.env, m, &tref, &scope.lexical, spec.pos))
+            .map(|m| method_decl(&ctx.env, m, &tref, &scope.lexical, &t.name, spec.pos))
             .collect::<Result<LPooled<Vec<_>>>>()
             .at(&spec)?;
         let def = ctx
@@ -947,20 +958,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
                 a.typ.resolve_tvars().normalize()
             }
-            // CR claude for claude: [bug/medium] This refusal comes only at typecheck1.
-            // `trait Mk { val make: fn(x: i64) -> self }; .. Mk::make(1)` passes
-            // --check (no diagnostic in the editor) and then fails the build here,
-            // which is a check/build disagreement that graphix-fuzz reports as a
-            // type-system bug. No call can ever dispatch such a method. Decide whether
-            // the declaration is refused (trait registration) or the call is refused in
-            // the check (CallSite::typecheck0 on a dispatcher whose method has no
-            // self_index), and pin it with a run! fixture in traits.rs. probe:
-            // design/review-2026-10-19/repro/tests-fusion-traits-self-only-result-check-parity.gx
-            // Also reported as (x-typecheck-generics-04), (x-typecheck-patterns-08).
-            // (tests-fusion-traits-03)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-            // needed. Refuse a self-only-result method outside core at the trait declaration
-            // (with t-parser-b-04).
             None => {
                 bailat!(
                     self.spec,

@@ -1,6 +1,6 @@
 use super::{
     GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr,
-    grow::{grow, note_reason},
+    grow::{grow, note_reason, refuse},
     sptoken,
 };
 use crate::expr::{Expr, ExprKind, StrForm};
@@ -67,8 +67,19 @@ parser! {
                 .to_expr(pos),
             }
         }
+        // a splice prints on its string's line, where no comment can stand
+        let spliced = |e: Expr| {
+            let commented = e.fold(false, &mut |c, e| {
+                c || e.dec.as_ref().is_some_and(|d| !d.comments.is_empty())
+            });
+            match commented {
+                true => refuse(e.pos, "a comment cannot stand inside a string's splice")
+                    .right(),
+                false => value(Intp::Expr(e)).left(),
+            }
+        };
         let interp_part = || attempt(
-            between(token('['), sptoken(']'), expr()).map(Intp::Expr)
+            between(token('['), sptoken(']'), expr()).then(spliced)
         );
         // A `[` that opens no well-formed `[expr]` ends the string parse;
         // the note names the escape.
@@ -102,7 +113,7 @@ parser! {
         let splice_part = || attempt(string("\\["))
             .with(expr())
             .skip(sptoken(']'))
-            .map(Intp::Expr);
+            .then(spliced);
         let triple_run = || (
             position(),
             many1::<CompactString, _, _>(satisfy(|c| c != '"' && c != '\\')),
@@ -124,22 +135,7 @@ parser! {
                 attempt(string("\"\"\"")),
                 string("\"\"\""),
                 (
-                    // CR claude for claude: [bug/medium] A string that spans lines keeps
-                    // the `\r` of every CRLF line ending, in all three forms: a plain
-                    // string (`chunk_part`), a template (`triple_run`) and a raw string
-                    // (`raw_string`). Only this opener newline is CRLF-aware. So the
-                    // same program computes different strings from an LF file and a
-                    // CRLF file: `"""\nab\ncd"""` has length 5 vs 6. A Windows checkout
-                    // with core.autocrlf changes the program's values. Decide the rule:
-                    // either read CRLF as LF before parsing (as rustc does), or fold
-                    // `\r\n` to `\n` in each string parser. Then pin both endings.
-                    // probe:
-                    // design/review-2026-10-19/repro/t-parser-a-crlf-string-values.sh
-                    // (t-parser-a-01)
-                    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage:
-                    // no ruling needed. Read CRLF as LF before parsing, as rustc does;
-                    // pin both endings.
-                    optional(attempt(string("\r\n")).or(string("\n"))),
+                    optional(token('\n')),
                     many(choice((
                         splice_part(),
                         triple_escape(),

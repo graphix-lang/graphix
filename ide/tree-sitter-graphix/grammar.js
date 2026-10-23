@@ -1257,7 +1257,7 @@ module.exports = grammar({
     _field_name: $ => choice(
       $.identifier,
       alias(choice(
-        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'until',
+        'true', 'false', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'until',
         'trait', 'impl', 'pub', 'self', 'super', 'package',
         'type',
         'fn', 'cast', 'never', 'if', 'use', 'rec', 'catch', 'try', 'any',

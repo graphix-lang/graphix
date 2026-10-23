@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4c2f682b.js";
+            window.path_to_searchindex_js = "searchindex-8fa68ad6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -3359,7 +3359,7 @@ names.</p>
 duration:1.5s
 </code></pre>
 <p>Control keywords (<code>let</code>, <code>select</code>, <code>cast</code>, …) and the literal words
-(<code>true</code>, <code>false</code>, <code>null</code>, <code>ok</code>) still can’t name bindings, and so can’t
+(<code>true</code>, <code>false</code>, <code>null</code>) still can’t name bindings, and so can’t
 be used as field shorthand — write those fields explicitly
 (<code>{ type: v }</code>, <code>x.type</code>). <code>bytes</code> is the one primitive that also can’t
 bind: its literal payload is base64, whose alphabet overlaps
@@ -6355,7 +6355,7 @@ trait Read {
         }
     };
 
-    // CR claude for eric: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
+    // CR claude for claude: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
     // copies everything read so far, so a Graphix-defined stream reads in time
     // quadratic in its length: 64 MB took 3.8 s against 1.3 s for 32 MB. read_exact's
     // default does the same. Push the chunks onto an Array&lt;bytes&gt; and `buffer::concat`
@@ -6368,6 +6368,8 @@ trait Read {
     // needs one of: sys depending on graphix-package-array for array::push, a core
     // builtin that appends to an Array, or a recursive chunk list flattened at the end.
     // Each is a dependency or surface choice.
+    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
+    // needed. Use a recursive chunk list flattened at the end (no new dependency).
     /// Read the stream to its end and return everything it produced as
     /// one value. Reads re-arm themselves until the stream ends, so a
     /// stream that never ends (a socket the peer holds open) never
@@ -15284,12 +15286,14 @@ type ColumnType = [
 ///   ever subscribe.
 type Source = [`Netidx([null, string, Map&lt;string, Any&gt;]), string, Map&lt;string, Any&gt;];
 
-// CR claude for eric: [structure/low] `on_resize` is the one GUI callback a caller must
+// CR claude for claude: [structure/low] `on_resize` is the one GUI callback a caller must
 // pass by reference (`#on_resize: &amp;|w| ..`). Every other callback, including this
 // struct's on_edit/on_click, is a plain `[fn, null]` that the builder wraps itself
 // (`on_select: &amp;on_select` in data_table). Take `#on_resize: [fn(width: f64) -&gt; Any,
 // null] = null` in the column builders and store `on_resize: &amp;on_resize`; the Rust side
 // still reads a ref. Found by reading; not run. (gx-ui-06)
+// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
+// Take the plain [fn, null] form.
 type ColumnSpec = {
     name: string,
     typ: ColumnType,

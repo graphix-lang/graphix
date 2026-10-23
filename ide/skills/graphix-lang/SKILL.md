@@ -673,7 +673,7 @@ away the element it had in hand. Build the final row there:
 - Primitive type names are legal binding and field names; control
   keywords and literal words are not (`{type: v}` written explicitly);
   `bytes` is field-only.
-- Reserved words in a name position are reported by the parser ("`ok`
+- Reserved words in a name position are reported by the parser ("`null`
   is a reserved word"); parse errors point at the furthest point reached.
 - `use` imports a NAME, never a module's contents: `use sys::net` gives
   `net::subscribe`, not `subscribe`.

@@ -144,7 +144,8 @@ bool tree_sitter_graphix_external_scanner_scan(
     return false;
   }
 
-  // `///` to the end of its line, only on a line of its own. A leading
+  // `///` to the end of its line, only on a line of its own, and never
+  // `////`. A leading
   // byte-order mark, which the lexer skips, still counts as a column,
   // so one column more than the whitespace is a line start too.
   if (valid_symbols[DOC_COMMENT] && lexer->lookahead == '/') {
@@ -153,7 +154,8 @@ bool tree_sitter_graphix_external_scanner_scan(
       if (lexer->lookahead != '/') return false;
       lexer->advance(lexer, false);
     }
-    if (!line_start) return false;
+    // four slashes or more are a plain comment
+    if (!line_start || lexer->lookahead == '/') return false;
     while (!lexer->eof(lexer) && lexer->lookahead != '\n') {
       lexer->advance(lexer, false);
     }

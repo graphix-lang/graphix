@@ -690,6 +690,18 @@ run!(
     ; FuseExpect::None; build_only
 );
 
+// A method whose only `self` is its result has no call that could
+// dispatch it, so outside core its declaration is refused, by the check
+// as by the build.
+run!(
+    self_only_result_method_refused,
+    refused("trait method mk takes no `self` argument"),
+    "/test.gx" => r##"
+        trait Mk { val mk: fn(x: i64) -> self };
+        let result = 0
+    "##
+);
+
 // `dbg` is diagnostic output, which `#[pure]` allows.
 run!(
     core_method_dbg_allowed,

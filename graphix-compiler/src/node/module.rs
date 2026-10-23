@@ -301,7 +301,9 @@ fn bind_sig_item(
             let mut sigs = t
                 .methods
                 .iter()
-                .map(|m| traits::method_decl(env, m, &tref, &scope.lexical, si.pos))
+                .map(|m| {
+                    traits::method_decl(env, m, &tref, &scope.lexical, &t.name, si.pos)
+                })
                 .collect::<Result<LPooled<Vec<_>>>>()?;
             env.deftrait(
                 &scope.lexical,

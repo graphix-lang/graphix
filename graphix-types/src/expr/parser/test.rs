@@ -93,6 +93,61 @@ fn triple_string() {
     assert!(parse_one("\"\"\"a \\] b\"\"\"").is_err());
 }
 
+// A CRLF line ending reads as LF in every string form, so a program
+// computes the same values from either checkout.
+#[test]
+fn crlf_reads_as_lf() {
+    for src in [
+        "\"\"\"\nab\ncd\"\"\"",
+        "\"ab\ncd\"",
+        "r#\"ab\ncd\"#",
+        "{\n  let x = \"ab\ncd\";\n  x\n}",
+    ] {
+        let crlf = src.replace('\n', "\r\n");
+        assert_eq!(parse_one(src).unwrap(), parse_one(&crlf).unwrap(), "case: {src:?}");
+    }
+    let e = parse_one("\"\"\"\r\nab\r\ncd\"\"\"").unwrap();
+    assert!(
+        matches!(&e.kind, ExprKind::Constant(Value::String(s)) if &**s == "ab\ncd"),
+        "{e:?}"
+    );
+}
+
+// A string's splice prints on the string's line, so no comment stands
+// inside one, at its top or deeper.
+#[test]
+fn a_splice_holds_no_comment() {
+    for src in [
+        "\"a [\n// c\nx] b\"",
+        "\"a [select x {\n// c\n0 => 1, _ => 2}] b\"",
+        "\"\"\"a \\[\n// c\nx] b\"\"\"",
+    ] {
+        assert!(parse_one(src).is_err(), "{src}");
+    }
+    let msg = format!("{:#}", parse_one("\"a [\n// c\nx] b\"").unwrap_err());
+    assert!(msg.contains("a comment cannot stand inside a string's splice"), "{msg}");
+    assert!(parse_one("\"a [x] b\"").is_ok());
+}
+
+// A lambda body and a `select` or `until` operand need no space before
+// them, as a call's arguments need none.
+#[test]
+fn no_space_before_a_body_or_operand() {
+    for (tight, spaced) in [
+        ("|x|x + 1", "|x| x + 1"),
+        ("|x|-x", "|x| -x"),
+        ("|x||y|x + y", "|x| |y| x + y"),
+        ("select(1) { _ => 2 }", "select (1) { _ => 2 }"),
+        ("seq t { until(x); 1 }", "seq t { until (x); 1 }"),
+    ] {
+        assert_eq!(
+            parse_one(tight).unwrap(),
+            parse_one(spaced).unwrap(),
+            "case: {tight}"
+        );
+    }
+}
+
 // A comment is legal only on its own line directly above an expression,
 // where it is captured into that expression's `dec`.
 
@@ -1965,10 +2020,22 @@ fn or_patterns_parse() {
 // A reserved word in a name position is named in the error when the
 // failure lies on its line or before it.
 
+// Four slashes or more are a plain comment, as in Rust.
+#[test]
+fn a_slash_banner_is_a_comment() {
+    let e = parse_one("////////\n//// section\n1").unwrap();
+    assert_eq!(comments_of(&e), [literal!("//////"), literal!("// section")]);
+}
+
+#[test]
+fn ok_is_a_name() {
+    assert!(parse_one("{ let ok = 1; ok }").is_ok());
+}
+
 #[test]
 fn reserved_word_as_a_name_is_named() {
-    let msg = parse_program("let x = 1;\nlet ok = 2");
-    assert!(msg.contains("`ok` is a reserved word"), "{msg}");
+    let msg = parse_program("let x = 1;\nlet any = 2");
+    assert!(msg.contains("`any` is a reserved word"), "{msg}");
     assert!(msg.contains("line: 2, column: 5"), "{msg}");
     // A construct keyword's refusal as a name earns no note.
     let msg = parse_program("let x = { let mod = 1; mod }");

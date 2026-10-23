@@ -1977,31 +1977,6 @@ impl PrettyDisplay for ExprKind {
             TupleRef { source, field } => {
                 pretty_postfix(buf, source, &format_compact!(".{field}"))
             }
-            // CR claude for claude: [bug/medium] The index (and a map key, slice
-            // bounds, map-literal keys, string splices) is printed by its flat Display,
-            // not laid out. A long index never breaks: browser.gx formats to a
-            // 92-column `structure.columns[slot_item(..)]$;` line. A decorated index
-            // prints its comments at column 0, with a trailing space after `{`:
-            // `a[select i { ` / `// first` / `0 => 0, _ => i - 1 }]`. The guard accepts
-            // this because it reparses. Fix: print source, `[`, the index through
-            // fmt_pretty nested one step, then `]` and the suffix; do the same for
-            // MapRef, ArraySlice and Map keys. For splices, refuse comments inside them
-            // or print them without comments. probe:
-            // design/review-2026-10-19/repro/x-formatter-index-flat-display.gx
-            // (x-formatter-02)
-            // 2026-10-19 claude: Done for the index, the map key, the slice bounds, the
-            // map literal's keys and a decorated update source (t-print-04's sites):
-            // pretty_lookup lays the source out, then the index flat on its last line
-            // where it fits, else like a lone argument (hugging a bracketed one); the
-            // slice puts its bounds on lines of their own. The index parser now takes
-            // whitespace before the closing bracket of a slice with no end
-            // (array_index_suffix). Test: format.rs indices_and_keys_are_laid_out.
-            // Left: a comment inside a string splice still prints through the flat
-            // Display (inside the literal, at column 0): refusing comments in a splice
-            // is a grammar rule, and printing without them loses them, so this needs a
-            // ruling.
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Refuse comments inside a string splice.
             ArrayRef { source, i } => pretty_lookup(buf, source, "[", i, "]"),
             MapRef { source, key } => pretty_lookup(buf, source, "{", key, "}"),
             ArraySlice { source, start, end } => {
@@ -2500,8 +2475,6 @@ fn write_template<'a>(
             match c {
                 '\\' => write!(f, "\\\\")?,
                 '\t' => write!(f, "\\t")?,
-                // a CR before a LF is that line's own break, kept as written
-                '\r' if chars.peek() == Some(&'\n') => write!(f, "\r")?,
                 '\r' => write!(f, "\\r")?,
                 '\0' => write!(f, "\\0")?,
                 '"' => {
@@ -2557,8 +2530,10 @@ fn str_constant_pieces(
     s: &str,
     form: StrForm,
 ) -> fmt::Result {
-    // the parser reads any character back verbatim in either form
+    // the parser reads any character back verbatim in either form, but
+    // a line ending, which reads as LF
     let form = match form {
+        StrForm::Raw if s.contains("\r\n") => StrForm::Quoted,
         form if print_as_written() => form,
         _ if s.contains('\n') && raw_writable(s) => StrForm::Raw,
         _ => StrForm::Quoted,

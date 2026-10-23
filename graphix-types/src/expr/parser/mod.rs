@@ -116,20 +116,6 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
     let reserved = [
         "true",
         "false",
-        // CR claude for claude: [doc-drift/low] `ok` is reserved, but no parser
-        // production, type or value literal uses it (netidx-value has no `Value::Ok`
-        // any more). So `let ok = check(x)` and `{ ok, err }` are refused with "`ok` is
-        // a reserved word" for a word the language does not use.
-        // book/src/udt/structs.md also lists `ok` among the literal words (`true`,
-        // `false`, `null`, `ok`), and `let x = ok` does not read it as a literal.
-        // Either drop `ok` from this list, from the book and from the graphix-lang
-        // skill's example, and switch `reserved_word_as_a_name_is_named` to a used
-        // reserved word such as `abort`. Or, if it is held for a planned feature, say
-        // so here and correct the book's sentence. (tests-parser-08)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Drop `ok` from the reserved words, the book and the skill; switch the
-        // test to a used reserved word.
-        "ok",
         "null",
         "bytes",
         "Array",
@@ -311,17 +297,11 @@ where
     I::Range: Range,
 {
     attempt(
-        // CR claude for claude: [readability/low] Any third slash makes a doc comment
-        // here, so a `////...` banner line in a .gx is refused ("`///` is a doc
-        // comment, legal only in a .gxi interface file"), and in a .gxi it becomes a
-        // doc starting with `/`. Rust treats four or more slashes as a plain comment.
-        // Decide whether a doc is exactly `///` not followed by `/` (then test for that
-        // here and in doc_comment) or whether the refusal stands. Found by running
-        // `graphix --check` on a file starting with `//////`. Also reported as
-        // (tests-parser-04). (t-parser-b-07)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. A doc comment is exactly `///` not followed by `/`, as Rust.
-        (position(), string("//"), optional(attempt(token('/'))))
+        (
+            position(),
+            string("//"),
+            optional(attempt(token('/').skip(not_followed_by(token('/'))))),
+        )
             .then(move |(pos, _, doc)| match doc {
                 None if !grow::starts_line(pos) => {
                     grow::note_reason(
@@ -469,7 +449,11 @@ where
             }
         }
     }
-    let line = attempt((position(), look_ahead(string("///")))).then(|(pos, _)| {
+    let line = attempt((
+        position(),
+        look_ahead(string("///").skip(not_followed_by(token('/')))),
+    ))
+    .then(|(pos, _)| {
         if grow::starts_line(pos) {
             return string("///").with(line_text()).left();
         }
@@ -1069,7 +1053,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), attempt(string("until").skip(not_prefix()).with(spaces1())).with(expr()))
+    (position(), attempt(string("until").skip(not_prefix()).with(spaces())).with(expr()))
         .map(|(pos, e)| ExprKind::Until(Arc::new(e)).to_expr(pos))
 }
 
@@ -1213,30 +1197,12 @@ where
 {
     (
         position(),
-        attempt(string("select").with(not_prefix())).with(spaces1()).with((
+        attempt(string("select").with(not_prefix())).with(spaces()).with((
             expr(),
             between(
                 sptoken('{'),
                 sptoken('}'),
                 spaces().with(sep_by1_tok(
-                    // CR claude for claude: [readability/low] `decorate` merges the
-                    // comments above an arm's pattern with those the body captured
-                    // below `=>`. The struct-field parser does the same with comments
-                    // under `name:`. leading_decorations also splits comments and
-                    // attributes into two lists. As a result `graphix fmt` moves a
-                    // comment written below `1 =>` above the pattern, and turns
-                    // `#[sync]` followed by `// note` into `// note` followed by
-                    // `#[sync]`. The per-node guard accepts this, and CLAUDE.md's
-                    // Formatter normalizations do not list it. Options: refuse
-                    // decorations after `=>` and after `name:`; keep the body's
-                    // decorations apart so the printer can put them back; or keep the
-                    // move and add it to CLAUDE.md's list. Either way, keeping comments
-                    // and attributes as one ordered list would preserve their order.
-                    // (x-formatter-03)
-                    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23
-                    // triage: no ruling needed. Keep comments and attributes as one
-                    // ordered list and keep body decorations apart so the printer puts
-                    // them back.
                     (leading_decorations(), pattern(), spstring("=>").with(expr()))
                         .map(|(dec, pat, body)| (pat, decorate(body, dec))),
                     csep(),
@@ -1367,7 +1333,7 @@ where
         attempt(spaces1().with(string("with")).skip(space()))
             .with(struct_fields())
             .map(Tail::With),
-        // CR claude for claude: [bug/medium] A trailing `;` before `}` parses as an empty
+        // CR claude for eric: [bug/medium] A trailing `;` before `}` parses as an empty
         // last statement, a NoOp. So `{ e; }` gets past the two-expression rule that
         // refuses `{ e }`, and the block's value becomes a ⊥ Nop. The checker accepts
         // it against any declared return type, and at run time it never produces. A seq
@@ -1379,6 +1345,15 @@ where
         // (tests-parser-01)
         // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
         // needed. Refuse the empty last position with a reason naming the stray `;`.
+        // 2026-10-23 claude: Not obvious after all, so back to Eric: the trailing ';'
+        // is a used form. book/src/examples/gui/data_table_basic.gx and
+        // data_table_dashboard.gx write effect-only function bodies as {
+        // net::publish(..); net::publish(..); }, whose value is the NoOp (never
+        // produces), and format.rs pins an_empty_statement_is_its_semicolon. Refusing
+        // it breaks those; dropping the NoOp makes such a body produce its last
+        // publish's value. Options: keep it (a block ending in ';' has no value, typed
+        // bottom like never(), documented in book/src/core/block.md), or refuse it and
+        // rewrite the examples.
         semisep()
             .with(sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
                 ExprKind::NoOp.to_expr(pos).ending(pos)
@@ -1614,6 +1589,8 @@ macro_rules! parse_all {
     ($text:expr, $ori:expr, $p:expr) => {{
         let text: &str = $text;
         let text = text.strip_prefix(BOM).unwrap_or(text);
+        let mut lf: LPooled<String> = LPooled::take();
+        let text = crlf_as_lf(text, &mut lf);
         let _profile = profile::phase(Phase::Parse);
         let quick = grow::parsing(text, || {
             ($p).skip(spaces())
@@ -1664,6 +1641,22 @@ where
 
 /// The byte-order mark every parse skips.
 const BOM: char = '\u{feff}';
+
+/// `text` with every CRLF line ending read as LF, as rustc reads source,
+/// so a file means the same whatever its checkout's line endings. Only a
+/// line ending ever moves: lines and columns are unchanged.
+fn crlf_as_lf<'a>(text: &'a str, buf: &'a mut LPooled<String>) -> &'a str {
+    if !text.contains("\r\n") {
+        return text;
+    }
+    for (i, line) in text.split("\r\n").enumerate() {
+        if i > 0 {
+            buf.push('\n');
+        }
+        buf.push_str(line);
+    }
+    buf.as_str()
+}
 
 /// The length of the byte-order mark and then the `#!` line a program
 /// text may start with, the line's newline excluded; 0 when there is

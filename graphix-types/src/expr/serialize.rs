@@ -180,24 +180,39 @@ fn codec_error(e: PackError) -> anyhow::Error {
 /// The graphix-types version that writes and reads blobs.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const fn fnv1a(mut h: u64, s: &str) -> u64 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        h ^= b[i] as u64;
+        h = h.wrapping_mul(0x100000001b3);
+        i += 1;
+    }
+    h
+}
+
+/// The sources of every type a blob holds: derived `Pack` writes variant
+/// indices, so two builds read each other's blobs only from the same
+/// definitions, whatever their version strings say.
+const LAYOUT: u64 = {
+    let mut h = 0xcbf29ce484222325;
+    h = fnv1a(h, include_str!("mod.rs"));
+    h = fnv1a(h, include_str!("binop.rs"));
+    h = fnv1a(h, include_str!("modpath.rs"));
+    h = fnv1a(h, include_str!("pattern.rs"));
+    h = fnv1a(h, include_str!("serialize.rs"));
+    h = fnv1a(h, include_str!("../typ/mod.rs"));
+    h = fnv1a(h, include_str!("../typ/fntyp.rs"));
+    fnv1a(h, include_str!("../typ/tvar.rs"))
+};
+
 fn put_header(buf: &mut BytesMut) {
     buf.put_slice(MAGIC);
     pack::encode_varint(VERSION.len() as u64, buf);
     buf.put_slice(VERSION.as_bytes());
+    buf.put_u64(LAYOUT);
 }
 
-// CR claude for claude: [risk/low] A blob is accepted whenever the writer's
-// `CARGO_PKG_VERSION` matches. The AST's enums (`ExprKind`, `Type`, the patterns) use
-// derived `Pack`, which writes variant indices. So a variant inserted between two
-// builds at the same version string decodes as different kinds (one operator read as
-// another) with no error. That can happen when the AST-packing build-dependency and the
-// compiler come from different sources (git and registry). `unpack_module`'s doc claims
-// 'same compiler build', which nothing checks. Add a format key to the header: a
-// hand-bumped constant like `image::REGISTRATION_FORMAT`, pinned by a test over the
-// enum layouts, or a build-time hash of the AST types. (t-expr-core-07)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Add a hand-bumped AST format key to the header, pinned by a test over the enum
-// layouts.
 fn check_magic(bytes: &mut &[u8]) -> Result<()> {
     if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
         bail!("packed AST: bad magic header");
@@ -212,6 +227,12 @@ fn check_magic(bytes: &mut &[u8]) -> Result<()> {
     if theirs != VERSION {
         bail!(
             "packed AST written by graphix-types {theirs}, read by {VERSION}: rebuild \
+             the package with this compiler"
+        )
+    }
+    if bytes.len() < 8 || bytes.get_u64() != LAYOUT {
+        bail!(
+            "packed AST written by another build of graphix-types {VERSION}: rebuild \
              the package with this compiler"
         )
     }
@@ -354,6 +375,19 @@ mod test {
     #[test]
     fn a_self_constrained_quantifier_packs() {
         rt("let f: fn<'a: [i64, Array<'a>]>(x: 'a) -> 'a = g");
+    }
+
+    /// A blob from another build of the AST types is refused, whatever
+    /// version it names.
+    #[test]
+    fn another_layout_is_refused() {
+        let e = crate::expr::parser::parse_one("1 + 2").unwrap();
+        let mut packed =
+            BytesMut::from(&pack_module(std::slice::from_ref(&e)).unwrap()[..]);
+        let at = MAGIC.len() + 1 + VERSION.len();
+        packed[at] ^= 1;
+        let err = unpack_module(&packed, Arc::new(Origin::default())).unwrap_err();
+        assert!(format!("{err}").contains("another build"), "{err}");
     }
 
     #[test]
