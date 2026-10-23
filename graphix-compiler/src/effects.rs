@@ -15,6 +15,9 @@ pub struct LambdaFacts {
     pub effect: EffectKind,
     pub stateless: bool,
     pub io: bool,
+    /// It reaches an `Effect::Io` builtin whose act is not diagnostic
+    /// output ([`IoCall::diagnostic`]): `io` without `dbg`.
+    pub world: bool,
     /// It may raise, or write a binding it does not own: an event an arm
     /// holding it delivers once, so the arm sleeps rather than re-run it
     /// fresh at each selection.
@@ -29,22 +32,26 @@ impl Default for LambdaFacts {
 }
 
 impl LambdaFacts {
-    pub const PURE: Self =
-        Self { effect: EffectKind::Sync, stateless: true, io: false, event: false };
+    pub const PURE: Self = Self {
+        effect: EffectKind::Sync,
+        stateless: true,
+        io: false,
+        world: false,
+        event: false,
+    };
     pub const ASYNC: Self =
-        Self { effect: EffectKind::Async, stateless: false, io: false, event: false };
-    pub const STATEFUL: Self =
-        Self { effect: EffectKind::Sync, stateless: false, io: false, event: false };
-    pub const IO: Self =
-        Self { effect: EffectKind::Sync, stateless: true, io: true, event: false };
-    pub const EVENT: Self =
-        Self { effect: EffectKind::Sync, stateless: true, io: false, event: true };
+        Self { effect: EffectKind::Async, stateless: false, ..Self::PURE };
+    pub const STATEFUL: Self = Self { stateless: false, ..Self::PURE };
+    pub const IO: Self = Self { io: true, world: true, ..Self::PURE };
+    pub const DIAGNOSTIC: Self = Self { io: true, ..Self::PURE };
+    pub const EVENT: Self = Self { event: true, ..Self::PURE };
 
     pub fn join(self, other: Self) -> Self {
         Self {
             effect: self.effect.join(other.effect),
             stateless: self.stateless && other.stateless,
             io: self.io || other.io,
+            world: self.world || other.world,
             event: self.event || other.event,
         }
     }
@@ -52,6 +59,12 @@ impl LambdaFacts {
     /// Sync and stateless: what a tail loop's single activation needs.
     pub fn is_pure(self) -> bool {
         self.effect.is_sync() && self.stateless
+    }
+
+    /// What `#[pure]` asserts: what [`Self::sleeps`] refuses, but
+    /// diagnostic output.
+    pub fn is_pure_function(self) -> bool {
+        self.is_pure() && !self.world && !self.event
     }
 
     /// Whether code with these facts must sleep with its arm: anything
@@ -130,6 +143,9 @@ pub enum Effect {
 pub struct IoCall {
     pub result: crate::FastFn,
     pub trigger: usize,
+    /// Its act is diagnostic output (`dbg`), which a `#[pure]` body may
+    /// hold, with a warning.
+    pub diagnostic: bool,
 }
 
 impl Effect {
@@ -147,6 +163,7 @@ impl Effect {
             Effect::Async => LambdaFacts::ASYNC,
             Effect::Sync => LambdaFacts::STATEFUL,
             Effect::Stateless(_) => LambdaFacts::PURE,
+            Effect::Io(Some(IoCall { diagnostic: true, .. })) => LambdaFacts::DIAGNOSTIC,
             Effect::Io(_) => LambdaFacts::IO,
         }
     }

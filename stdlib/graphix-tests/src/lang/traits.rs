@@ -2,10 +2,13 @@
 // dispatch over a union self type.
 
 use anyhow::Result;
+use arcstr::{ArcStr, literal};
+use graphix_compiler::CFlag;
+use tokio::sync::mpsc;
 
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, TestState, is, prints, refused},
+    testing::{FuseExpect, Mode, TestCtx, TestState, config, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -686,6 +689,49 @@ run!(
     "##
     ; FuseExpect::None; build_only
 );
+
+// `dbg` is diagnostic output, which `#[pure]` allows.
+run!(
+    core_method_dbg_allowed,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[K(1), K(2), K(3)]"),
+    "/test.gx" => r##"
+        type K = Abstract<i64>;
+        impl Ord for K {
+            let cmp = |a, b| dbg(select (a.0 < b.0, a.0 > b.0) {
+                (true, _) => `Less,
+                (_, true) => `Greater,
+                _ => `Equal
+            })
+        };
+        let result = "[array::sort([K(3), K(1), K(2)])]"
+    "##
+);
+
+// ..with a warning that it prints as often as the function runs, once
+// per definition; a definition without `dbg` warns of nothing.
+async fn pure_dbg_warns(mode: Mode) -> Result<()> {
+    let (tx, _rx) = mpsc::channel(100);
+    let flags = mode.flags() | CFlag::WarningsAreErrors;
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
+    .await?;
+    ctx.rt.compile(literal!("{ #[pure] let f = |x: i64| x + 1; f(1) }")).await?;
+    for code in [
+        "{ #[pure] let f = |x: i64| dbg(x) + 1; f(1) }",
+        "{ type K = Abstract<i64>; impl Display for K { let fmt = |k| dbg(\"[k.0]\") }; \"[K(1)]\" }",
+    ] {
+        let error = ctx.rt.compile(ArcStr::from(code)).await.unwrap_err();
+        assert!(format!("{error:#}").contains("prints with `dbg`"), "{code}: {error:#}");
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(pure_dbg_warns);
 
 // A trait declares what every body of a method must be; an
 // implementation's body and the default inherit it.

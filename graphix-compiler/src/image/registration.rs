@@ -15,8 +15,8 @@ use super::{
     Restored, SharedDecoder, defs, nodes, scope_decode, scope_encode,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CompileCtx, DefAssertion, DefAssertionKind, ExecCtx,
-    ExecState, LambdaId, LambdaInstanceId, Node, Rt, Saved, Scope, UserEvent,
+    BindId, BitFlags, BuiltinBindInfo, CompileCtx, DefAssertion, DefAssertionKind,
+    ExecCtx, ExecState, LambdaId, LambdaInstanceId, Node, Rt, Saved, Scope, UserEvent,
     env::Env,
     expr::{Expr, ExprId, ModPath},
     image,
@@ -153,7 +153,7 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
         self.batch_connect_targets.encode(buf)?;
         self.tags.encode(buf)?;
         encode_varint(self.def_assertions.len() as u64, buf);
-        for DefAssertion { id, kind, spec } in &self.def_assertions {
+        for DefAssertion { id, kind, spec, .. } in &self.def_assertions {
             id.encode(buf)?;
             kind.encode(buf)?;
             spec.encode(buf)?;
@@ -190,7 +190,8 @@ fn restore_tables<R: Rt, E: UserEvent>(
         let id = LambdaId::decode(buf)?;
         let kind = DefAssertionKind::decode(buf)?;
         let spec = Expr::decode(buf)?;
-        pending.push(DefAssertion { id, kind, spec });
+        let (flags, warned) = (BitFlags::empty(), false);
+        pending.push(DefAssertion { id, kind, spec, flags, warned });
     }
     Ok(())
 }

@@ -49,7 +49,10 @@ Score::score(21)
 `#[pure]` holds a body to a pure function of its arguments: no state
 (`count`, a `<-` to its own bindings), nothing that acts on the world
 (`println`), no raise to a handler, nothing async, and no callee that
-does any of these. `#[sync]` holds it to the same cycle only.
+does any of these. `dbg` is allowed, for debugging, with a warning: a
+pure function may run more often than the program reads its result,
+so the lines it prints say how often it ran, not how often it was
+needed. `#[sync]` holds a body to the same cycle only.
 
 Trait declarations are legal in `.gx` files and in `.gxi` interface
 files; an interface's declaration applies to the implementation file

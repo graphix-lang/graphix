@@ -545,7 +545,8 @@ node graph IS the IR — there is no parallel typed IR
   THE advertised performance model (an argument a fused call is fed by
   the node-walk is residue; bound outside the annotation it is an
   input); `#[sync]`/`#[async]`/`#[pure]` assert analysis facts
-  (`#[pure]`: nothing that makes an arm sleep), and
+  (`#[pure]`: nothing that makes an arm sleep but `dbg`, which warns),
+  and
   `#[tail_recursive]` analysis's gate plus the loop fusion built
   (`analysis::check_tail_loops`; unchecked where fusion does not run).
 - **Bottom is dense** (`design/dense_delivery.md`,

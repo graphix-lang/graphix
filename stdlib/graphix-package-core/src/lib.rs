@@ -3679,12 +3679,15 @@ fn emit_line<R: Rt, E: UserEvent>(
 }
 
 macro_rules! printer {
-    ($type:ident, $name:literal, $printer:expr, $result:ident) => {
+    ($type:ident, $name:literal, $printer:expr, $result:ident, $diagnostic:literal) => {
         struct $type;
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
-            const EFFECT: Effect =
-                Effect::Io(Some(IoCall { result: $result, trigger: 1 }));
+            const EFFECT: Effect = Effect::Io(Some(IoCall {
+                result: $result,
+                trigger: 1,
+                diagnostic: $diagnostic,
+            }));
             const NAME: &str = $name;
 
             fn init<'a, 'b, 'c, 'd>(
@@ -3720,10 +3723,10 @@ macro_rules! printer {
     };
 }
 
-printer!(Dbg, "core_dbg", Printer::Dbg, dbg_result);
-printer!(Log, "core_log", Printer::Log, null_result);
-printer!(Print, "core_print", Printer::Print, null_result);
-printer!(Println, "core_println", Printer::Println, null_result);
+printer!(Dbg, "core_dbg", Printer::Dbg, dbg_result, true);
+printer!(Log, "core_log", Printer::Log, null_result, false);
+printer!(Print, "core_print", Printer::Print, null_result, false);
+printer!(Println, "core_println", Printer::Println, null_result, false);
 
 crate::fast_builtin!(
     /// `array::len` — registered here (the array package binds the name)

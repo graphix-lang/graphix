@@ -963,6 +963,10 @@ pub(crate) struct DefAssertion {
     pub(crate) kind: DefAssertionKind,
     /// The decorated statement, for error positions.
     pub(crate) spec: Expr,
+    /// The compile's flags, for a warning the check makes.
+    pub(crate) flags: BitFlags<CFlag>,
+    /// A `#[pure]` that holds only diagnostic output has warned of it.
+    pub(crate) warned: bool,
 }
 
 /// Trait implemented by graphix attributes (`#[name]` / `#[name(args)]`).

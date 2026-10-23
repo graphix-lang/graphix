@@ -75,7 +75,7 @@ every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and `#[async]` asserts the opposite.
 `#[pure]` asserts more than `#[sync]`: the function is a pure function of its
 arguments, with no state, no effect such as `println`, and no raise to a
-handler. Like `#[tail_recursive]` they never change how the function compiles — they
+handler; `dbg` is allowed, with a warning. Like `#[tail_recursive]` they never change how the function compiles — they
 only fail the compile when the compiler disagrees with your expectation.
 
 The check needs a call to look at. A function called only through a

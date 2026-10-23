@@ -304,7 +304,9 @@ the operator — uniformity over per-site behaviour.
 `#[sync]` of every body (`TraitMethod::attrs`, `TraitMethodDef::
 requires`, validated by `traits::method_decl`): an implementation's
 method and the default are compiled carrying the assertion, which the
-analysis verifies like a written one. The core traits require
+analysis verifies like a written one. `#[pure]` allows diagnostic
+output (`IoCall::diagnostic`, `dbg`; `LambdaFacts::world` is Io
+without it) and warns of it once per definition. The core traits require
 `#[pure]`: how many times a hook runs is the consumer's implementation
 detail, and two engines must agree, so a stateful or effectful method
 has no meaning.

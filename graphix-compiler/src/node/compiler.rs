@@ -273,7 +273,13 @@ fn compile_inner<R: Rt, E: UserEvent>(
         let mut pending = ctx.def_assertions.lock();
         for kind in def_asserts.drain(..) {
             if !pending.iter().any(|a| a.id == id && a.kind == kind) {
-                pending.push(DefAssertion { id, kind, spec: spec.clone() });
+                pending.push(DefAssertion {
+                    id,
+                    kind,
+                    spec: spec.clone(),
+                    flags,
+                    warned: false,
+                });
             }
         }
         return Ok(node);

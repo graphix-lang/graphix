@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b785ee7a.js";
+            window.path_to_searchindex_js = "searchindex-4c2f682b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -3032,7 +3032,7 @@ every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and <code>#[async]</code> asserts the opposite.
 <code>#[pure]</code> asserts more than <code>#[sync]</code>: the function is a pure function of its
 arguments, with no state, no effect such as <code>println</code>, and no raise to a
-handler. Like <code>#[tail_recursive]</code> they never change how the function compiles — they
+handler; <code>dbg</code> is allowed, with a warning. Like <code>#[tail_recursive]</code> they never change how the function compiles — they
 only fail the compile when the compiler disagrees with your expectation.</p>
 <p>The check needs a call to look at. A function called only through a
 value chosen at runtime (<code>let g = select b { true =&gt; f, false =&gt; h }; g(x)</code>) is checked when that call first reaches it; the program is
@@ -3785,7 +3785,10 @@ Score::score(21)
 <p><code>#[pure]</code> holds a body to a pure function of its arguments: no state
 (<code>count</code>, a <code>&lt;-</code> to its own bindings), nothing that acts on the world
 (<code>println</code>), no raise to a handler, nothing async, and no callee that
-does any of these. <code>#[sync]</code> holds it to the same cycle only.</p>
+does any of these. <code>dbg</code> is allowed, for debugging, with a warning: a
+pure function may run more often than the program reads its result,
+so the lines it prints say how often it ran, not how often it was
+needed. <code>#[sync]</code> holds a body to the same cycle only.</p>
 <p>Trait declarations are legal in <code>.gx</code> files and in <code>.gxi</code> interface
 files; an interface’s declaration applies to the implementation file
 automatically, like a <code>type</code>, and must not be repeated there.</p>

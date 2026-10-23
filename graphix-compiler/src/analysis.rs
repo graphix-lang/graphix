@@ -397,6 +397,20 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
             let a = pending.remove(i);
             return Err(anyhow!("{msg}").at(&a.spec));
         }
+        let a = &mut pending[i];
+        if a.kind == DefAssertionKind::Pure && !a.warned && def_facts(d).io {
+            a.warned = true;
+            let (pos, end) = (a.spec.pos, a.spec.end.0);
+            ctx.env.warn(
+                a.flags,
+                &a.spec,
+                pos,
+                end,
+                "#[pure]: this function prints with `dbg`, and it may run more often \
+                 than the program reads its result (a comparison, a sort, a map \
+                 lookup, a kernel recomputing), as many times as each engine needs",
+            )?;
+        }
         // an instance a later analysis reaches can still make the
         // function async; the other facts are the definition's alone
         match pending[i].kind {
@@ -433,13 +447,13 @@ fn assertion_failure<R: Rt, E: UserEvent>(
     let effect = d.facts.lock().effect;
     let said = |s: &str| Some(CompactString::from(s));
     match kind {
-        DefAssertionKind::Pure => def_facts(d).sleeps().then(|| {
+        DefAssertionKind::Pure => (!def_facts(d).is_pure_function()).then(|| {
             CompactString::from(
                 "#[pure]: this function is not a pure function of its arguments — its \
                  body holds state (a stateful builtin such as `count`, a `<-` to one \
                  of its own bindings), acts on the world (an Io builtin such as \
-                 `println`), raises to a handler or writes a binding it does not own, \
-                 is async, or reaches such a callee",
+                 `println`; `dbg` is allowed), raises to a handler or writes a binding \
+                 it does not own, is async, or reaches such a callee",
             )
         }),
         DefAssertionKind::Sync => effect.is_async().then(|| {
