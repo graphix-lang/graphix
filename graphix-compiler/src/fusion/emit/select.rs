@@ -958,7 +958,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             continue;
         };
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-        let mut pcond = emit_arm_condition(
+        let pcond = emit_arm_condition(
             cx,
             pat,
             scrut,
@@ -968,15 +968,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             None,
             &mut binds,
         )?;
-        if !pat.explicit_type_predicate
-            && let Some(typed) =
-                emit_inferred_guard_cond(cx, &pat.type_predicate, scrut, scrut_typ)?
-        {
-            pcond = Some(match pcond {
-                Some(shape) => cx.b.ins().band(shape, typed),
-                None => typed,
-            });
-        }
         let mask = match pcond {
             Some(c) => cx.b.ins().band(c, reached),
             None => reached,
@@ -1264,17 +1255,6 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     {
         return Ok((Some(m.0), m.1));
     }
-    // The chain has excluded earlier arms. The guard prologue has not,
-    // so it also tests the inferred predicate before delivering binds.
-    // CR claude for eric: [readability/low] The comment above says the guard prologue
-    // has not excluded earlier arms. It has: every prologue bind is masked by `open`,
-    // which drops values an earlier arm claimed. So the stated reason for
-    // emit_inferred_guard_cond is gone, and while narrowing is sound that test only
-    // repeats the reach mask. Where shallow_discriminant cannot reduce the predicate,
-    // it costs a graphix_inferred_type_matches call per invocation. Decide whether it
-    // stays as a deliberate mirror of the node-walk's shape_matches, and say so, or
-    // delete it. Then rewrite this comment to match. Found by reading; not run.
-    // (f-select-06)
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate
         || type_test_is_trivial(cx, pat, scrut_typ)
     {
