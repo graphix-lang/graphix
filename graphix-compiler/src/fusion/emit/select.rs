@@ -1061,30 +1061,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         }
         cx.b.switch_to_block(matched);
         cx.b.seal_block(matched);
-        // CR claude for eric: [perf/low] An arm with an impure guard reuses the
-        // prologue's condition here but installs its owned binds a second time. The
-        // prologue already cloned the payload for the guard and dropped it. The arm
-        // therefore pays two payload clones per invocation, even when its body never
-        // reads the bind. In the kernel for `A(xs) if array::len(xs) > lim => 1`, the
-        // clone helper runs in the prologue, again in arm 1's matched block, and again
-        // in arm 2. The control without the guard runs it twice. Fix: keep the
-        // prologue's installed binds alive into the chain for a non-or arm and drop
-        // them on the guard-false and undetermined exits, or never clone a bind the arm
-        // body does not read. This is the remaining half of f-select-13. (x-rerun-3-04)
-        // the arm installs what its body reads, and a guard it runs here; a
-        // guard the prologue ran read its own copies
-        // 2026-10-16 claude: The second fix offered here is in (see f-select-06): an
-        // arm installs only the binds its body, or a guard it runs itself, reads, so
-        // the A(xs) if array::len(xs) > lim => 1 arm no longer clones xs in its matched
-        // block.
-        // 2026-10-17 claude: The first fix offered here is in too (f-select-06): a
-        // non-or arm the guard prologue ran keeps the prologue's masked binds into the
-        // chain, its body reads them, and every exit drops them (an arm's exit, the
-        // miss and undecided blocks; a tail terminator drops the env). Both halves are
-        // done, so this arm clones its payload once per invocation. The A(xs) if
-        // array::len(xs) > lim => array::len(xs) kernel calls the clone helper once
-        // where it called it twice. Pin
-        // lang::fusion::native_guard_and_body_share_a_bind.
         let mut reads = Refs::default();
         body.refs(&mut reads);
         if let Some(g) = &pat.guard
