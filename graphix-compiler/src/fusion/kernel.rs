@@ -319,47 +319,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>(),
             );
         }
-        // CR claude for eric: [perf/medium] A kernel whose last result was bottom, or
-        // that has a bottom feeder, runs again on every cycle that reaches it, even
-        // when no feeder fired. The dense node-walk reaches every awake node each
-        // cycle, so this means every cycle of the program. Example: a 300k-slot map
-        // with one `$`-bottomed slot re-runs every slot on each of 100 unrelated ticks.
-        // That takes 2.4 s, against 0.18 s for the same loop without the bottom slot
-        // (probe: design/review-2026-10-12/repro/tests-lang-rest-b-05.gx;
-        // GRAPHIX_DBG_INVOKE shows fired=[false] 100 times). Always riding a bottom
-        // resident would be wrong if a feeder can go from bottom to a stale value
-        // without firing. The cheaper fix is to keep one bit per feeder recording
-        // whether it was bottom at the last run, and to invoke only on a fire, a change
-        // in that mask, init or wake. That mask holds no values, but it is wrapper
-        // state that decides whether the kernel runs, and strict fusion limits such
-        // state, so the decision is yours. (tests-lang-rest-b-04)
-        // CR claude for eric: [perf/medium] This gate runs the whole region, every
-        // loop included, on every update while any feeder stands bottom or the resident
-        // is bottom, even when nothing fired. A region that reads a never()-initialized
-        // let and sits in a busy statement redoes all its work each cycle (probe:
-        // design/review-2026-10-12/repro/f-kernel-03.gx, 202 runs of a 1M fold vs 1
-        // when z is null). A rerun is only needed when a feeder's bottomness changed
-        // quietly since the last run. Keep the feeders' bottom mask (and the resident's
-        // bottomness) from the last non-pending run, gate on `any_updated || init ||
-        // woke || mask changed`, drop `any_bottom` and `resident.is_bottom()` from the
-        // gate, and update the 'Strict consumers and kernels' paragraph of
-        // design/async_sleep_outputs.md to match. Also reported as (x-perf-runtime-02).
-        // (f-kernel-03)
-        // 2026-10-16 claude: The fix proposed here is the one tests-lang-rest-b-04
-        // (just above, for eric) asks Eric to rule on: a per-feeder bottom mask is
-        // wrapper state that decides whether the kernel runs, which strict fusion
-        // limits. Readdressed to eric so the two are ruled together; once ruled, the
-        // change is the gate edit described here plus the design/async_sleep_outputs.md
-        // paragraph.
-        // CR claude for eric: [perf/low] The two CRs above (tests-lang-rest-b-04,
-        // f-kernel-03) cite a probe that walk pruning now hides. Its kernel's statement
-        // is never marked, so the walk skips it: 0.15 s, against 3.0 s with
-        // GRAPHIX_PRUNE=off. The cost remains wherever the walk reaches the statement.
-        // With count(n) in the same tuple, the 300k-slot bottom map is invoked 100
-        // times with fired=[false], taking 2-3 s against 0.15 s. Rule on the gate with
-        // this probe. probe:
-        // design/review-2026-10-19/repro/x-rerun-4-bottom-kernel-walked.gx
-        // (x-rerun-4-05)
         if !(any_updated
             || any_bottom
             || ctx.event.init()
