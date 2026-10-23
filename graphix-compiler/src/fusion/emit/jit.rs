@@ -2293,25 +2293,14 @@ fn emit_trampoline(
         }
         let args = b.block_params(entry)[0];
         let out = b.block_params(entry)[1];
-        // Loading a scalar payload at its narrow CLIF type is sound because
-        // the packer stores the sign/zero-extended form.
+        // A narrow scalar payload loads from its slot's low bytes: the
+        // packer writes the extended word, and graphix builds only for
+        // little-endian hosts.
         let vals: SmallVec<[ClifValue; 16]> = target_sig
             .params
             .iter()
             .enumerate()
             .map(|(i, p)| {
-                // CR claude for eric: [risk/low] This loads a narrow scalar (bool,
-                // i8..i32, u8..u32, f32) from the first bytes of a slot the Rust packer
-                // wrote as a native u64, and the result loop below stores narrow
-                // results into u64 out slots the same way. Both are correct only on
-                // little-endian hosts. On a big-endian target Cranelift supports
-                // (s390x), a `true` input reads as false and 5i32 as 0, so the JIT
-                // diverges from the node-walk, against the claim that fusion runs on
-                // every host Cranelift supports. Two fixes: load an I64 and ireduce it
-                // (bitcast for f32), and uextend/sextend results to I64 before the
-                // store. Or make Jit::new refuse big-endian targets so they run
-                // unfused. The comment above this load should then state the real
-                // invariant. (f-jit-06)
                 b.ins().load(p.value_type, MemFlagsData::trusted(), args, (8 * i) as i32)
             })
             .collect();
