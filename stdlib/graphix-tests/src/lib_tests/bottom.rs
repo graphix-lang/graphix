@@ -315,14 +315,16 @@ async fn bottom_scrutinee_consults_no_guard(mode: Mode) -> Result<()> {
 
 modes!(strict_bottom, strict_sample, bottom_scrutinee_consults_no_guard);
 
-/// `x` and `xs` stand until 20ms and then go bottom; `y` turns 1 at 80ms.
+/// `x` and `xs` stand until 20ms and then go bottom; `y` turns 1 the
+/// cycle after, from `t`: two timers' fires reach the runtime in no set
+/// order under load.
 const GOES_AT_20MS: &str = r#"
   let t = 0;
   t <- sys::time::timer(duration:20.ms, false) ~ 1;
   let x = select t { 0 => 7, _ => never() };
   let xs: Array<i64> = select t { 0 => [7], _ => never() };
   let y = 0;
-  y <- sys::time::timer(duration:80.ms, false) ~ 1;
+  y <- select t { 0 => never(), n => n };
 "#;
 
 /// Every value `(y, expr)` delivers, in each mode, over [`GOES_AT_20MS`].
