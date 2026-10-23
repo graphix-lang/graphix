@@ -32,6 +32,25 @@ do not override it. Inside a default body the trait's other methods
 are visible bare (`show(s)` above), as are the items of the declaring
 module.
 
+A trait can require something of every body of a method by writing
+`#[pure]` or `#[sync]` above its `val`. Each implementation's body, and
+the default, then carries that assertion, and a body that breaks it
+fails the compile:
+
+```graphix
+trait Score {
+    #[pure]
+    val score: fn(self) -> i64
+};
+impl Score for i64 { let score = |x| x * 2 };
+Score::score(21)
+```
+
+`#[pure]` holds a body to a pure function of its arguments: no state
+(`count`, a `<-` to its own bindings), nothing that acts on the world
+(`println`), no raise to a handler, nothing async, and no callee that
+does any of these. `#[sync]` holds it to the same cycle only.
+
 Trait declarations are legal in `.gx` files and in `.gxi` interface
 files; an interface's declaration applies to the implementation file
 automatically, like a `type`, and must not be repeated there.
@@ -189,10 +208,10 @@ Three traits are built into core and consulted by the language
 itself:
 
 ```graphix
-trait Eq { val eq: fn(self, other: self) -> bool };
+trait Eq { #[pure] val eq: fn(self, other: self) -> bool };
 type Ordering = [`Less, `Equal, `Greater];
-trait Ord { val cmp: fn(self, other: self) -> Ordering };
-trait Display { val fmt: fn(self) -> string };
+trait Ord { #[pure] val cmp: fn(self, other: self) -> Ordering };
+trait Display { #[pure] val fmt: fn(self) -> string };
 ```
 
 `==` and `!=` consult `Eq`; `<`, `>`, `<=` and `>=` consult `Ord`;
@@ -237,9 +256,10 @@ println({fg: red, n: 3})
 
 Outside core only an abstract type may implement a core trait (the
 rule of the previous section). A core trait's method runs inside the
-comparison or the print, so it is implicitly `#[sync]` — a body that
-waits on a timer is a compile error — and a method that produces no
-value makes the comparison produce none.
+comparison or the print, as many times as the comparison needs, a sort
+or a map lookup included, so core declares it `#[pure]`: a body that
+counts, prints or waits on a timer is a compile error. A method that
+produces no value makes the comparison produce none.
 
 Because the implementation rides the value, a MAP is keyed by the
 user's `Ord`:
@@ -287,7 +307,9 @@ abstract type only through its implementation of the core trait `Cast`:
 
 ```graphix,ignore
 trait Cast {
+    #[pure]
     val to_value: fn(self) -> Any;
+    #[pure]
     val from_value: fn(v: Any) -> Result<self, `InvalidCast(string)>
 };
 ```

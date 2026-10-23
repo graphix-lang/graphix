@@ -95,7 +95,17 @@ pub(super) async fn run_delta_fused(
     mode: Mode,
     expect: FuseExpect,
 ) -> Result<(Vec<Value>, String)> {
-    let d = run_delta_with(code, mode, |_| (), Duration::from_millis(700)).await?;
+    run_delta_fused_with(code, mode, |_| (), expect).await
+}
+
+/// [`run_delta_fused`] over a context `setup` prepares.
+pub(super) async fn run_delta_fused_with(
+    code: &str,
+    mode: Mode,
+    setup: impl FnOnce(&mut TestState),
+    expect: FuseExpect,
+) -> Result<(Vec<Value>, String)> {
+    let d = run_delta_with(code, mode, setup, Duration::from_millis(700)).await?;
     #[cfg(debug_assertions)]
     if matches!(mode, Mode::Jit | Mode::JitPar) {
         graphix_package_core::testing::check_fuse_expectation(

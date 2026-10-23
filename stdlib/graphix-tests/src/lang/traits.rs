@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, is, prints, refused},
+    testing::{FuseExpect, Mode, TestState, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -651,15 +651,133 @@ run!(
     ; FuseExpect::Jit
 );
 
-// A core trait method runs inside the comparison, so it is implicitly
-// `#[sync]`: an async body is a compile error.
+// A core trait method runs inside the comparison as often as the
+// comparison needs it, so core declares it `#[pure]`: an async body, a
+// stateful one and one that acts on the world are compile errors.
 run!(
     core_method_async_refused,
-    refused("this function is async"),
+    refused("#[pure]: this function is not a pure function"),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Display for Key { let fmt = |k| sys::time::timer(duration:0.01s, false) ~ k.0 };
         let result = "[Key("a")]"
+    "##
+    ; FuseExpect::None; build_only
+);
+
+run!(
+    core_method_state_refused,
+    refused("#[pure]: this function is not a pure function"),
+    "/test.gx" => r##"
+        type K = Abstract<i64>;
+        impl Display for K { let fmt = |a| "k[count(a)]" };
+        let result = "[K(5)]"
+    "##
+    ; FuseExpect::None; build_only
+);
+
+run!(
+    core_method_io_refused,
+    refused("#[pure]: this function is not a pure function"),
+    "/test.gx" => r##"
+        type K = Abstract<i64>;
+        impl Eq for K { let eq = |a, b| { println("eq"); a.0 == b.0 } };
+        let result = K(1) == K(1)
+    "##
+    ; FuseExpect::None; build_only
+);
+
+// A trait declares what every body of a method must be; an
+// implementation's body and the default inherit it.
+run!(
+    trait_requirement_holds_an_impl,
+    refused("#[pure]: this function is not a pure function"),
+    "/test.gx" => r##"
+        trait Score {
+            #[pure]
+            val score: fn(self) -> i64
+        };
+        impl Score for i64 { let score = |x| count(x) + x };
+        let result = Score::score(3)
+    "##
+    ; FuseExpect::None; build_only
+);
+
+run!(
+    trait_requirement_holds_the_default,
+    refused("#[pure]: this function is not a pure function"),
+    "/test.gx" => r##"
+        trait Score {
+            #[pure]
+            val score: fn(self) -> i64 = |x| count(x)
+        };
+        impl Score for i64;
+        let result = Score::score(3)
+    "##
+    ; FuseExpect::None; build_only
+);
+
+run!(
+    trait_requirement_sync,
+    refused("#[sync]: this function is async"),
+    "/test.gx" => r##"
+        trait Later {
+            #[sync]
+            val later: fn(self) -> i64
+        };
+        impl Later for i64 {
+            let later = |x| sys::time::after_idle(duration:1.ms, x)
+        };
+        let result = Later::later(3)
+    "##
+    ; FuseExpect::None; build_only
+);
+
+run!(
+    trait_requirement_met,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))),
+    "/test.gx" => r##"
+        trait Score {
+            #[pure]
+            val score: fn(self) -> i64;
+            #[pure]
+            val twice: fn(self) -> i64 = |x| Score::score(x) * 2
+        };
+        impl Score for i64 { let score = |x| x + 1 };
+        let result = Score::twice(3) - 1
+    "##
+);
+
+run!(
+    trait_requirement_names_an_assertion,
+    refused("#[native] on trait method score: a method requires only #[pure] or #[sync]"),
+    "/test.gx" => r##"
+        trait Score {
+            #[native]
+            val score: fn(self) -> i64
+        };
+        let result = 0
+    "##
+);
+
+// `#[pure]` asserts it of any function, as `#[sync]` does.
+run!(
+    pure_definition_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r##"
+        #[pure]
+        let f = |x: i64| x + 1;
+        let result = f(1)
+    "##
+);
+
+run!(
+    pure_definition_refused,
+    refused("#[pure]: this function is not a pure function"),
+    "/test.gx" => r##"
+        #[pure]
+        let f = |x: i64| { println(x); x };
+        let result = f(1)
     "##
     ; FuseExpect::None; build_only
 );
@@ -830,7 +948,7 @@ run!(
 );
 
 // The same rule with the bottom written as a `never()` arm: a pure
-// standing bottom, so the implicit `#[sync]` holds.
+// standing bottom, so `#[pure]` holds.
 run!(
     core_bottom_key_rule_never_arm,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[T(0), T(1), T(2)]|false|true|true"),
@@ -2016,11 +2134,12 @@ run!(dispatch_on_a_never_produced_self_is_bottom, r#"{
 // orders, renders and keys an abstract value built over a late input
 // only once the input has produced.
 const HOOKS_ON_LATE_INPUT: &str = r#"{
+    let note = |s: string| -> string 'test_note;
     type K = Abstract<i64>;
-    impl Eq for K { let eq = |a, b| { println("eq [a.0] [b.0]"); a.0 == b.0 } };
+    impl Eq for K { let eq = |a, b| { note("eq [a.0] [b.0]"); a.0 == b.0 } };
     impl Ord for K {
         let cmp = |a, b| {
-            println("cmp [a.0] [b.0]");
+            note("cmp [a.0] [b.0]");
             select (a.0, b.0) {
                 (x, y) if x < y => `Less,
                 (x, y) if x > y => `Greater,
@@ -2028,7 +2147,7 @@ const HOOKS_ON_LATE_INPUT: &str = r#"{
             }
         }
     };
-    impl Display for K { let fmt = |k| { println("fmt [k.0]"); "K[k.0]" } };
+    impl Display for K { let fmt = |k| { note("fmt [k.0]"); "K[k.0]" } };
     let clock = array::iter([1, 2]);
     (
         #[native] (K(clock) == K(1)),
@@ -2039,17 +2158,24 @@ const HOOKS_ON_LATE_INPUT: &str = r#"{
 }"#;
 
 async fn hooks_on_late_input(mode: Mode) -> Result<()> {
-    let (values, out) =
-        super::dense_deltas::run_delta_fused(HOOKS_ON_LATE_INPUT, mode, FuseExpect::Jit)
-            .await?;
+    let notes = super::test_builtins::Notes::default();
+    let setup = |ctx: &mut TestState| notes.install(ctx);
+    let (values, _) = super::dense_deltas::run_delta_fused_with(
+        HOOKS_ON_LATE_INPUT,
+        mode,
+        setup,
+        FuseExpect::Jit,
+    )
+    .await?;
     let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
     assert_eq!(
         values,
         [r#"[true, true, "K1", i64:2]"#, r#"[false, false, "K2", i64:2]"#],
         "{mode:?}"
     );
-    let mut lines: Vec<&str> = out.lines().collect();
+    let mut lines = notes.take();
     lines.sort_unstable();
+    let out = lines.join("\n");
     assert_eq!(
         lines,
         [

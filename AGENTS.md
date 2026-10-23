@@ -728,7 +728,8 @@ node graph IS the IR — there is no parallel typed IR
   `#[native]` asserts zero node-walk residue at a source location and is
   THE advertised performance model (an argument a fused call is fed by
   the node-walk is residue; bound outside the annotation it is an
-  input); `#[sync]`/`#[async]` assert analysis facts, and
+  input); `#[sync]`/`#[async]`/`#[pure]` assert analysis facts
+  (`#[pure]`: nothing that makes an arm sleep), and
   `#[tail_recursive]` analysis's gate plus the loop fusion built
   (`analysis::check_tail_loops`; unchecked where fusion does not run).
 - **Bottom is dense** (`design/dense_delivery.md`,
@@ -1136,7 +1137,11 @@ cycle, across workers; the compiler never pins threads.
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,
   operators, printers, both engines), and core `Cast` the casts and
   writers (no structural default, never called by a program); a method
-  may take `self` only in its result, and no call dispatches it. A quantifier bounded by
+  may take `self` only in its result, and no call dispatches it. A
+  method's `#[pure]`/`#[sync]` (above its `val`) is asserted of every
+  body, each impl's and the default (`traits::method_decl`); core's
+  methods are `#[pure]`, since a hook runs as often as its consumer
+  needs. A quantifier bounded by
   constructor traits alone (`'c: Collection`) is a constructor applied
   (`'c<'c#elem>`), as a trait-typed parameter (`c: Collection`) is, and
   an interface's bounds pair with the implementation's through the

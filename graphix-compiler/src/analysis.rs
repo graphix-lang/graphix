@@ -400,7 +400,7 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
         // an instance a later analysis reaches can still make the
         // function async; the other facts are the definition's alone
         match pending[i].kind {
-            DefAssertionKind::Sync => i += 1,
+            DefAssertionKind::Sync | DefAssertionKind::Pure => i += 1,
             DefAssertionKind::TailRecursive => due.0.push(pending.remove(i)),
             DefAssertionKind::Async => drop(pending.remove(i)),
         }
@@ -411,10 +411,11 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
 /// The heads of the refusals only a build makes: a definition
 /// assertion (`assertion_failure`), `#[parallel]` (`check_parallel`) or
 /// `#[native]`, which `--check` (`CFlag::CheckOnly`) leaves unverified.
-const BUILD_ONLY_REFUSALS: [&str; 5] = [
+const BUILD_ONLY_REFUSALS: [&str; 6] = [
     "#[parallel] has nothing to run in parallel",
     "#[sync]:",
     "#[async]:",
+    "#[pure]:",
     "#[tail_recursive]:",
     "#[native] expression did not fully fuse",
 ];
@@ -432,6 +433,15 @@ fn assertion_failure<R: Rt, E: UserEvent>(
     let effect = d.facts.lock().effect;
     let said = |s: &str| Some(CompactString::from(s));
     match kind {
+        DefAssertionKind::Pure => def_facts(d).sleeps().then(|| {
+            CompactString::from(
+                "#[pure]: this function is not a pure function of its arguments — its \
+                 body holds state (a stateful builtin such as `count`, a `<-` to one \
+                 of its own bindings), acts on the world (an Io builtin such as \
+                 `println`), raises to a handler or writes a binding it does not own, \
+                 is async, or reaches such a callee",
+            )
+        }),
         DefAssertionKind::Sync => effect.is_async().then(|| {
             CompactString::from(
                 "#[sync]: this function is async — its body reaches an async builtin \

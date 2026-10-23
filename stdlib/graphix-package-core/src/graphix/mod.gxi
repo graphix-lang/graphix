@@ -17,26 +17,29 @@ type Ordering = [`Less, `Equal, `Greater];
 /// Equality. `==` and `!=` consult the implementation of the operand
 /// type — and of every type nested inside it — falling back to the
 /// structural comparison of values where there is none. Outside core
-/// only an abstract type may implement it. The method is implicitly
-/// `#[sync]`: it runs inside the comparison.
+/// only an abstract type may implement it. The method runs inside the
+/// comparison, as often as the comparison needs it, so it is `#[pure]`.
 trait Eq {
     /// true if the two values are equal
+    #[pure]
     val eq: fn(self, other: self) -> bool
 };
 
 /// Ordering. `<`, `>`, `<=` and `>=` consult the implementation the
 /// way `==` consults `Eq`, and so do `array::sort`, `min`/`max` and map
-/// keys. Implicitly `#[sync]`.
+/// keys. `#[pure]`, as `Eq` is.
 trait Ord {
     /// the order of `self` relative to `other`
+    #[pure]
     val cmp: fn(self, other: self) -> Ordering
 };
 
 /// Printing. String interpolation, `print`/`println`, `dbg` and `log`
 /// consult the implementation the way `==` consults `Eq`, everywhere
-/// in the printed type. Implicitly `#[sync]`.
+/// in the printed type. `#[pure]`, as `Eq` is.
 trait Display {
     /// the printed form of `self`
+    #[pure]
     val fmt: fn(self) -> string
 };
 
@@ -48,11 +51,13 @@ trait Display {
 /// type, where its representation is visible, implements it, and a
 /// method it leaves out is the representation itself: `impl Cast for T
 /// {}` reads and writes `T` as its representation. Casts and writers
-/// call the methods, a program never does. Implicitly `#[sync]`.
+/// call the methods, a program never does, so they are `#[pure]`.
 trait Cast {
     /// the data `self` is written as
+    #[pure]
     val to_value: fn(self) -> Any;
     /// the value `v` reads as, or why it can't
+    #[pure]
     val from_value: fn(v: Any) -> Result<self, `InvalidCast(string)>
 };
 

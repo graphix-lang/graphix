@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2e39f07a.js";
+            window.path_to_searchindex_js = "../searchindex-b785ee7a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -201,6 +201,21 @@ never a program.</p>
 do not override it. Inside a default body the trait’s other methods
 are visible bare (<code>show(s)</code> above), as are the items of the declaring
 module.</p>
+<p>A trait can require something of every body of a method by writing
+<code>#[pure]</code> or <code>#[sync]</code> above its <code>val</code>. Each implementation’s body, and
+the default, then carries that assertion, and a body that breaks it
+fails the compile:</p>
+<pre><code class="language-graphix">trait Score {
+    #[pure]
+    val score: fn(self) -&gt; i64
+};
+impl Score for i64 { let score = |x| x * 2 };
+Score::score(21)
+</code></pre>
+<p><code>#[pure]</code> holds a body to a pure function of its arguments: no state
+(<code>count</code>, a <code>&lt;-</code> to its own bindings), nothing that acts on the world
+(<code>println</code>), no raise to a handler, nothing async, and no callee that
+does any of these. <code>#[sync]</code> holds it to the same cycle only.</p>
 <p>Trait declarations are legal in <code>.gx</code> files and in <code>.gxi</code> interface
 files; an interface’s declaration applies to the implementation file
 automatically, like a <code>type</code>, and must not be repeated there.</p>
@@ -317,10 +332,10 @@ A trait declared only in the <code>.gx</code> file is private to that module.</p
 <h2 id="the-core-traits-eq-ord-and-display"><a class="header" href="#the-core-traits-eq-ord-and-display">The Core Traits: Eq, Ord and Display</a></h2>
 <p>Three traits are built into core and consulted by the language
 itself:</p>
-<pre><code class="language-graphix">trait Eq { val eq: fn(self, other: self) -&gt; bool };
+<pre><code class="language-graphix">trait Eq { #[pure] val eq: fn(self, other: self) -&gt; bool };
 type Ordering = [`Less, `Equal, `Greater];
-trait Ord { val cmp: fn(self, other: self) -&gt; Ordering };
-trait Display { val fmt: fn(self) -&gt; string };
+trait Ord { #[pure] val cmp: fn(self, other: self) -&gt; Ordering };
+trait Display { #[pure] val fmt: fn(self) -&gt; string };
 </code></pre>
 <p><code>==</code> and <code>!=</code> consult <code>Eq</code>; <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code> and <code>&gt;=</code> consult <code>Ord</code>;
 string interpolation, <code>print</code>, <code>println</code>, <code>dbg</code> and <code>log</code> consult
@@ -357,9 +372,10 @@ println({fg: red, n: 3})
 </code></pre>
 <p>Outside core only an abstract type may implement a core trait (the
 rule of the previous section). A core trait’s method runs inside the
-comparison or the print, so it is implicitly <code>#[sync]</code> — a body that
-waits on a timer is a compile error — and a method that produces no
-value makes the comparison produce none.</p>
+comparison or the print, as many times as the comparison needs, a sort
+or a map lookup included, so core declares it <code>#[pure]</code>: a body that
+counts, prints or waits on a timer is a compile error. A method that
+produces no value makes the comparison produce none.</p>
 <p>Because the implementation rides the value, a MAP is keyed by the
 user’s <code>Ord</code>:</p>
 <pre><code class="language-graphix">type T = Abstract&lt;i64&gt;;
@@ -397,7 +413,9 @@ shape: a cast, a typed read (<code>json::read</code>, <code>pack::read</code>,
 <code>pack::write_bytes</code>, <code>sys::net::publish</code>, a <code>db</code> insert) reach an
 abstract type only through its implementation of the core trait <code>Cast</code>:</p>
 <pre><code class="language-graphix ignore">trait Cast {
+    #[pure]
     val to_value: fn(self) -&gt; Any;
+    #[pure]
     val from_value: fn(v: Any) -&gt; Result&lt;self, `InvalidCast(string)&gt;
 };
 </code></pre>

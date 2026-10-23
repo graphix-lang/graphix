@@ -73,7 +73,9 @@ does not (it takes a reference, say) fails the compile. With
 Two related assertions document a function's timing: `#[sync]` asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and `#[async]` asserts the opposite.
-Like `#[tail_recursive]` they never change how the function compiles — they
+`#[pure]` asserts more than `#[sync]`: the function is a pure function of its
+arguments, with no state, no effect such as `println`, and no raise to a
+handler. Like `#[tail_recursive]` they never change how the function compiles — they
 only fail the compile when the compiler disagrees with your expectation.
 
 The check needs a call to look at. A function called only through a

@@ -784,6 +784,7 @@ macro_rules! trait_decl {
                     option::of($inner),
                     $doc,
                     comments(),
+                    any::<bool>(),
                 ),
                 0..4,
             ),
@@ -792,10 +793,17 @@ macro_rules! trait_decl {
                 let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
                 let methods = methods
                     .into_iter()
-                    .filter(|(n, _, _, _, _)| seen.insert(n.clone()))
-                    .map(|(name, typ, default, doc, comments)| TraitMethod {
+                    .filter(|(n, _, _, _, _, _)| seen.insert(n.clone()))
+                    .map(|(name, typ, default, doc, comments, pure)| TraitMethod {
                         comments,
                         doc: Doc(doc),
+                        attrs: match pure {
+                            true => Arc::from_iter([Attr {
+                                name: literal!("pure"),
+                                args: Arc::from_iter([]),
+                            }]),
+                            false => Arc::from_iter([]),
+                        },
                         name: name.into(),
                         typ,
                         self_index: Some(0),

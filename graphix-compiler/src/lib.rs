@@ -930,23 +930,25 @@ pub type AttributeCheckFn<R, E> = fn(&CompileCtx<R, E>, &Attr, &Node<R, E>) -> R
 pub type AttributeTargetFn<R, E> = fn(&Attr, &Node<R, E>) -> Result<()>;
 
 /// A definition assertion (`#[tail_recursive]` / `#[sync]` /
-/// `#[async]`), verified at the tail of `analysis::analyze` once the
+/// `#[async]` / `#[pure]`), verified at the tail of `analysis::analyze` once the
 /// definition is reached; until then it stays pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub enum DefAssertionKind {
     Sync,
     Async,
     TailRecursive,
+    Pure,
 }
 
 impl DefAssertionKind {
-    const ALL: [Self; 3] = [Self::Sync, Self::Async, Self::TailRecursive];
+    const ALL: [Self; 4] = [Self::Sync, Self::Async, Self::TailRecursive, Self::Pure];
 
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Sync => "sync",
             Self::Async => "async",
             Self::TailRecursive => "tail_recursive",
+            Self::Pure => "pure",
         }
     }
 

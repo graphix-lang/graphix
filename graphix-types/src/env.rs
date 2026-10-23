@@ -292,12 +292,24 @@ pub struct TraitMethodDef {
     /// Index of the `self` parameter in `typ.args`; `None` when `self` is
     /// only the result.
     pub self_index: Option<usize>,
+    /// The definition assertions every body of the method carries, an
+    /// implementation's and the default's (`pure`, `sync`).
+    pub requires: Arc<[ArcStr]>,
     /// The dispatcher binding at `path::name`, resolved to an
     /// implementation by the self argument's type.
     pub dispatcher: BindId,
     /// The default body's binding, when the method has one and the
     /// declaring implementation has compiled it.
     pub default: Option<BindId>,
+}
+
+/// A method as [`Env::deftrait`] declares it.
+pub struct TraitMethodSig {
+    pub name: ArcStr,
+    pub pos: SourcePosition,
+    pub typ: Arc<FnType>,
+    pub self_index: Option<usize>,
+    pub requires: Arc<[ArcStr]>,
 }
 
 /// Which trait method a dispatcher binding stands for
@@ -1156,7 +1168,7 @@ impl Env {
         &mut self,
         scope: &ModPath,
         name: &ArcStr,
-        methods: impl Iterator<Item = (ArcStr, SourcePosition, Arc<FnType>, Option<usize>)>,
+        methods: impl Iterator<Item = TraitMethodSig>,
         doc: Option<ArcStr>,
         pos: SourcePosition,
         ori: Arc<Origin>,
@@ -1175,7 +1187,9 @@ impl Env {
         self.modules.insert_cow(path.clone());
         let mut defs: LPooled<Vec<TraitMethodDef>> = LPooled::take();
         let (mut applied, mut bare) = (false, false);
-        for (mname, mpos, typ, self_index) in methods {
+        for TraitMethodSig { name: mname, pos: mpos, typ, self_index, requires } in
+            methods
+        {
             Type::Fn(typ.clone()).self_shape(&mut applied, &mut bare);
             if applied && bare {
                 bail!(
@@ -1199,6 +1213,7 @@ impl Env {
                 name: mname,
                 typ,
                 self_index,
+                requires,
                 dispatcher,
                 default: None,
             });

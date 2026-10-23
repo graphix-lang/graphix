@@ -1,11 +1,13 @@
 // Fixtures over builtins only a test registers: Rust that panics, a
 // function value retyped past the checker, and a builtin's quantifier no
-// argument can carry a value of.
+// argument can carry a value of; and `test_note`, which other fixtures
+// register to watch what runs.
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
+use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{
-    fast_builtin,
+    CachedArgs, CachedVals, EvalCached, fast_builtin,
     testing::{Mode, TestState},
 };
 use netidx_value::Value;
@@ -19,6 +21,44 @@ fn fc_panic_at_13(args: &[Value]) -> Option<Value> {
 }
 
 fast_builtin!(PanicAt13, PanicAt13Ev, "test_panic_at_13", fc_panic_at_13);
+
+/// The lines `test_note` took, shared with the test through the
+/// context's libstate.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Notes(triomphe::Arc<parking_lot::Mutex<Vec<String>>>);
+
+impl Notes {
+    /// Register `test_note` on `ctx`, writing here.
+    pub(super) fn install(&self, ctx: &mut TestState) {
+        ctx.libstate.set(self.clone());
+        ctx.register_builtin::<CachedArgs<Note>>().unwrap();
+    }
+
+    pub(super) fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.0.lock())
+    }
+}
+
+/// `test_note(s)` records `s` and returns it. It declares itself
+/// stateless, which it is to the program, so a `#[pure]` body can hold
+/// it: a test sees how often that body ran.
+#[derive(Debug, Default)]
+pub(super) struct Note;
+
+graphix_package_core::unit_image_state!(Note);
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for Note {
+    const NAME: &str = "test_note";
+    const EFFECT: Effect = Effect::Stateless(None);
+
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        let v = from.value(0)?;
+        if let (Some(notes), Value::String(s)) = (ctx.libstate.get::<Notes>(), v) {
+            notes.0.lock().push(s.to_string());
+        }
+        Some(v.clone())
+    }
+}
 
 fn fc_identity(args: &[Value]) -> Option<Value> {
     Some(args[0].clone())

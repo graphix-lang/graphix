@@ -246,6 +246,9 @@ pub struct TraitExpr {
 pub struct TraitMethod {
     pub comments: Comments,
     pub doc: Doc,
+    /// What every implementation of the method must be (`#[pure]`,
+    /// `#[sync]`): definition assertions its bodies inherit.
+    pub attrs: Arc<[Attr]>,
     pub name: Name,
     pub typ: Arc<FnType>,
     /// Index of the positional `self` parameter in `typ.args` — the
@@ -1566,6 +1569,7 @@ impl Expr {
                 methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
                     comments: m.comments.clone(),
                     doc: m.doc.clone(),
+                    attrs: m.attrs.clone(),
                     name: m.name.clone(),
                     typ: m.typ.clone(),
                     self_index: m.self_index,

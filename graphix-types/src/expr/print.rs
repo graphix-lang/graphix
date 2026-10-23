@@ -924,6 +924,15 @@ impl fmt::Display for TraitMethod {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write_comments_flat(f, self.comments.lines())?;
         write_doc_flat(f, &self.comments, &self.doc)?;
+        if !self.attrs.is_empty()
+            && self.doc.0.is_none()
+            && !shows_comments(self.comments.lines())
+        {
+            writeln!(f)?;
+        }
+        for a in self.attrs.iter() {
+            writeln!(f, "{a}")?;
+        }
         write!(f, "val {}: {}", self.name, self.typ)?;
         match &self.default {
             None => Ok(()),
@@ -936,6 +945,9 @@ impl PrettyDisplay for TraitMethod {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         write_comments(buf, self.comments.lines())?;
         self.doc.fmt_pretty_inner(buf)?;
+        for a in self.attrs.iter() {
+            writeln!(buf, "{a}")?;
+        }
         write!(buf, "val {}: ", self.name)?;
         self.typ.fmt_pretty(buf)?;
         match &self.default {
@@ -966,6 +978,7 @@ impl PrettyDisplay for TraitExpr {
     fn decorated(&self) -> bool {
         self.methods.iter().any(|m| {
             m.doc.0.is_some()
+                || !m.attrs.is_empty()
                 || shows_comments(m.comments.lines())
                 || m.default.as_ref().is_some_and(decorated)
         })

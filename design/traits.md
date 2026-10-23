@@ -278,9 +278,12 @@ and rebuilt when the implementation list changed, so an impl a dynamic
 module loads later is consulted; a POOL per key so a re-entrant
 comparison (an impl whose body compares its own
 type) mints a fresh site per activation. Every dispatch delivers its
-arguments FIRED: a dispatch is a fresh logical invocation. Core-trait methods are implicitly `#[sync]`, with
-prototype call sites on the `Impl` node (`NodeView::Impl`) so the
-effect analysis covers and enforces it — no timers in `fmt`.
+arguments FIRED: a dispatch is a fresh logical invocation. A dispatch runs as often as its consumer
+compares or prints (a sort, a map's rebalance, the self-probes, a
+kernel recomputing a stale part), so core declares every core-trait
+method `#[pure]`; prototype call sites on the `Impl` node
+(`NodeView::Impl`) put each method under the effect analysis, which
+enforces it.
 
 **THE BOTTOM-KEY RULE.** A bottoming implementation inside a Value
 comparison cannot bottom the chunkmap, and a structural fallback per
@@ -297,9 +300,18 @@ structurally with a warning (printing has no algebra to preserve).
 the bottom-key rule like every other consumer rather than bottoming
 the operator — uniformity over per-site behaviour.
 
-**Trust and consistency.** No purity policing — Rust does not forbid
-consulting a global in an `Ord` impl and neither do we; an impl that
-is not a consistent total order corrupts its maps exactly as in Rust.
+**Declared requirements.** A trait method may require `#[pure]` or
+`#[sync]` of every body (`TraitMethod::attrs`, `TraitMethodDef::
+requires`, validated by `traits::method_decl`): an implementation's
+method and the default are compiled carrying the assertion, which the
+analysis verifies like a written one. The core traits require
+`#[pure]`: how many times a hook runs is the consumer's implementation
+detail, and two engines must agree, so a stateful or effectful method
+has no meaning.
+
+**Trust and consistency.** Purity is checked; consistency is not: an
+impl that is not a consistent total order corrupts its maps exactly as
+in Rust.
 An `Ord`-keyed map consults `Ord` only (like `BTreeMap`); keeping `Eq`
 consistent with it is the implementor's duty. A core-trait
 implementation for a Rust-backed abstract is REFUSED

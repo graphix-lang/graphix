@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2e39f07a.js";
+            window.path_to_searchindex_js = "../searchindex-b785ee7a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -237,7 +237,9 @@ does not (it takes a reference, say) fails the compile. With
 <p>Two related assertions document a function’s timing: <code>#[sync]</code> asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and <code>#[async]</code> asserts the opposite.
-Like <code>#[tail_recursive]</code> they never change how the function compiles — they
+<code>#[pure]</code> asserts more than <code>#[sync]</code>: the function is a pure function of its
+arguments, with no state, no effect such as <code>println</code>, and no raise to a
+handler. Like <code>#[tail_recursive]</code> they never change how the function compiles — they
 only fail the compile when the compiler disagrees with your expectation.</p>
 <p>The check needs a call to look at. A function called only through a
 value chosen at runtime (<code>let g = select b { true =&gt; f, false =&gt; h }; g(x)</code>) is checked when that call first reaches it; the program is

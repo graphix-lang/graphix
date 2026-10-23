@@ -16,13 +16,13 @@ use super::{
     lambda::LambdaDef,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, SourcePosition,
-    TagValue, Update, UserEvent, bailat,
-    env::{Env, Glob, ImplDef, Map, TraitDef, TraitMethodRef},
+    BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
+    SourcePosition, TagValue, Update, UserEvent, bailat,
+    env::{Env, Glob, ImplDef, Map, TraitDef, TraitMethodRef, TraitMethodSig},
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
         ImplExpr, LambdaExpr, ModPath, Name, Origin, Pattern, SelectExpr,
-        StructurePattern, TraitExpr, WrittenAt,
+        StructurePattern, TraitExpr, TraitMethod, WrittenAt,
     },
     ide::ModuleRefSite,
     image::{
@@ -82,6 +82,45 @@ fn implements(env: &Env, declared: &FnType, implemented: &Type) -> Result<()> {
         Some(ft) => declared.sig_matches(env, &ft),
         None => bail!("{implemented} is not a function"),
     }
+}
+
+/// A trait method as the trait declares it: its signature
+/// ([`method_sig`]) and what every body of it must be, the effect
+/// assertions written above it.
+pub(crate) fn method_decl(
+    env: &Env,
+    m: &TraitMethod,
+    tref: &Type,
+    scope: &ModPath,
+    pos: SourcePosition,
+) -> Result<TraitMethodSig> {
+    let mut requires: SmallVec<[ArcStr; 2]> = SmallVec::new();
+    for a in m.attrs.iter() {
+        let kind = DefAssertionKind::from_name(&a.name)
+            .filter(|k| matches!(k, DefAssertionKind::Pure | DefAssertionKind::Sync));
+        if kind.is_none() || !a.args.is_empty() {
+            bail!(
+                "{a} on trait method {}: a method requires only #[pure] or #[sync]",
+                m.name.name
+            )
+        }
+        if requires.contains(&a.name) {
+            bail!("{a} is written twice on trait method {}", m.name.name)
+        }
+        requires.push(a.name.clone());
+    }
+    Ok(TraitMethodSig {
+        name: m.name.name.clone(),
+        pos: m.name.pos_or(pos),
+        typ: Arc::new(method_sig(env, &m.typ, tref, scope)?),
+        self_index: m.self_index,
+        requires: Arc::from_iter(requires),
+    })
+}
+
+/// `requires` as the attributes that assert it of a body.
+fn required_attrs(requires: &[ArcStr]) -> impl Iterator<Item = Attr> + '_ {
+    requires.iter().map(|name| Attr { name: name.clone(), args: Arc::from_iter([]) })
 }
 
 /// The method signature, a fresh copy, instantiated at an
@@ -219,17 +258,12 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let tref = trait_ref(&scope.lexical, &t.name, spec.pos, &spec.ori);
-        let mut sigs: LPooled<Vec<(ArcStr, SourcePosition, Arc<FnType>, Option<usize>)>> =
-            LPooled::take();
-        for m in t.methods.iter() {
-            let ft = method_sig(&ctx.env, &m.typ, &tref, &scope.lexical)?;
-            sigs.push((
-                m.name.name.clone(),
-                m.name.pos_or(spec.pos),
-                Arc::new(ft),
-                m.self_index,
-            ));
-        }
+        let mut sigs = t
+            .methods
+            .iter()
+            .map(|m| method_decl(&ctx.env, m, &tref, &scope.lexical, spec.pos))
+            .collect::<Result<LPooled<Vec<_>>>>()
+            .at(&spec)?;
         let def = ctx
             .env
             .deftrait(
@@ -261,7 +295,12 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                 let mut e = body.clone();
                 e.id = ExprId::new();
                 e.kind = ExprKind::Bind(Arc::new(b));
-                e.dec = None;
+                e.dec = (!d.requires.is_empty()).then(|| {
+                    Arc::new(Decorations {
+                        comments: Arc::from_iter([]),
+                        attrs: Arc::from_iter(required_attrs(&d.requires)),
+                    })
+                });
                 exprs.push(e);
             }
         }
@@ -601,7 +640,6 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             impl_head(&ctx.env, &scope.lexical, &trait_def, im, false).at(&spec)?;
         let bscope = scope.append_block("impl", spec.id.inner());
         ctx.env.import_glob(&bscope.lexical, Glob::Module(trait_def.path.clone()));
-        let core = CoreTrait::of_id(trait_id).is_some();
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         let mut provided: LPooled<AHashSet<ArcStr>> = LPooled::take();
         for m in im.methods.iter() {
@@ -625,20 +663,18 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                 typ: b.typ.clone().or_else(|| Some(Type::Fn(Arc::new(sig.clone())))),
                 value: annotate_lambda(&b.value, &sig),
             };
-            // a core trait's method runs inside a comparison or print
-            let dec = match (core, &m.dec) {
-                (false, dec) => dec.clone(),
-                (true, dec) => {
-                    let sync = Attr { name: literal!("sync"), args: Arc::from_iter([]) };
-                    let (comments, attrs) = match dec {
-                        Some(d) => (d.comments.clone(), d.attrs.clone()),
-                        None => (Arc::from_iter([]), Arc::from_iter([])),
-                    };
-                    Some(Arc::new(Decorations {
-                        comments,
-                        attrs: Arc::from_iter(attrs.iter().cloned().chain([sync])),
-                    }))
-                }
+            let dec = match &m.dec {
+                _ if decl.requires.is_empty() => m.dec.clone(),
+                None => Some(Arc::new(Decorations {
+                    comments: Arc::from_iter([]),
+                    attrs: Arc::from_iter(required_attrs(&decl.requires)),
+                })),
+                Some(d) => Some(Arc::new(Decorations {
+                    comments: d.comments.clone(),
+                    attrs: Arc::from_iter(
+                        d.attrs.iter().cloned().chain(required_attrs(&decl.requires)),
+                    ),
+                })),
             };
             let mut e = m.clone();
             e.kind = ExprKind::Bind(Arc::new(b));
