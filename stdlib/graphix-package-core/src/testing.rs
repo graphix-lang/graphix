@@ -158,19 +158,6 @@ pub enum Mode {
 }
 
 impl Mode {
-    // CR claude for eric: [test-gap/medium] Every run!, run_with_tempdir!, collect and
-    // eval_modes fixture runs pruned, and graphix-fuzz's oracle_tier excludes every
-    // sys::time, sys::net, process or listener program from value comparison,
-    // Pair::Prune included. So walk pruning across sleep and wake of event sources has
-    // no differential check anywhere. Under debug_assertions, consider giving Interp
-    // PruneMode::Audit, which panics where a skip would change a production, or add
-    // Mode::Unpruned to run!. A manual sweep of the 71 async lib_tests fixtures under
-    // GRAPHIX_PRUNE=audit, in both engines, finds nothing today. (tests-lib-b2-05)
-    // 2026-10-20 claude: Every fixture through fixture_runtime (run!,
-    // run_with_tempdir!, collect, eval_modes) now audits every skip in all four modes
-    // (Mode::fixture_prune, x-prune-03), so a skip that changes a production across an
-    // event source's sleep and wake panics in the gate; the fuzzer still excludes
-    // those programs from value comparison.
     pub const ALL: [Mode; 4] = [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar];
 
     pub fn flags(self) -> BitFlags<CFlag> {

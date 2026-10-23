@@ -850,42 +850,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
-                    // CR claude for eric: [bug/medium] A remote write reaches the
-                    // handler raw whenever its argument type is not concrete,
-                    // because #on_write's 'a has no bound (subscribe's target has
-                    // `'a: Concrete`). A handler taking a function, a reference or
-                    // an open type therefore takes whatever any netidx client
-                    // writes. A non-function written to `|f: fn(x: i64) -> i64|
-                    // f(1)` hits CallSite's `value .. is not a function` panic and
-                    // kills the runtime ('graphix runtime is dead'). Other shapes
-                    // bottom silently. Decide the rule: bound on_write's argument
-                    // `'a: Concrete` so every write is cast, or refuse a write here
-                    // when cast_typ is None and the type is not Any. probe:
-                    // design/review-2026-10-19/repro/x-panics-on-write-uncast.gx
-                    // (x-panics-02)
-                    // 2026-10-19 claude: The bound is in: net.gx/net.gxi declare
-                    // publish's on_write argument 'a: Concrete + Data and rpc's
-                    // 'args: Concrete + Data (the for-claude CRs
-                    // x-builtin-effects-02, gx-stdlib-01, sys-net-03 and
-                    // tests-lib-b2-01 asked for it), so the check refuses a
-                    // function, reference or open handler type, and Publish::update
-                    // now answers the writer with InvalidCast where cast_typ is
-                    // None instead of feeding the raw value. If that matches the
-                    // rule you want, delete this CR.
-                    // 2026-10-19 claude: Correction to the note above: publish's
-                    // on_write 'a is bounded Data only (Concrete refused the
-                    // omitted default, which leaves 'a open); an open handler type
-                    // takes no write, the writer is answered InvalidCast.
-                    // 2026-10-20 claude: The bound is now 'a: Concrete + Data on a
-                    // nullable handler, #on_write: [fn(v: 'a) -> _, null] = null
-                    // (Eric's ruling on x-builtin-effects-02): a call whose handler
-                    // cannot be given settles 'a to bottom
-                    // (CallSite::settle_unread, a builtin quantifier no argument
-                    // can carry a value of), and Publish then publishes without
-                    // writes. Every handler the check passes has a concrete, data
-                    // argument type, so every write is cast; the uncast path is
-                    // gone, and a write while the handler is null answers the
-                    // writer WriteError.
 
                     // a write the handler cannot take is the writer's error
                     let taken = match &self.write_typ {

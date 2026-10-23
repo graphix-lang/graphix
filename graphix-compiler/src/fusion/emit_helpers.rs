@@ -993,30 +993,6 @@ safe fn graphix_value_cmp(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) 
 }
 
 /// Value equality; borrows both operands.
-// XCR claude for eric: [bug/medium] A kernel recomputes its stale parts at every
-// invocation, so a core-trait impl a value helper reaches (this one, graphix_value_cmp,
-// the interpolation's Display push, the map-key helpers) runs again whenever any other
-// input of the kernel fires. With `impl Eq for K { let eq = |a, b| { println("eq");
-// a.0 == b.0 } }`, `let one = once(5); let tick =
-// cast<i64>(sys::time::timer(duration:5.ms, 3))$; #[native] (K(one) == K(5), tick +
-// 1)` prints `eq` at every tick fused and once under --no-fusion; a stateful fmt
-// (`count`) makes the values diverge. Strict fusion admits pure computation only, but
-// nothing checks that the Eq/Ord/Display impls a region can meet
-// (lowering::meets_abstract) are pure. Two ways out: the checker refuses an effect or
-// state in a core-trait impl (a value hook is a pure function of its operands), or
-// fusion refuses a region meeting an abstract type whose impls are not Stateless by
-// their DefTable facts (Any meets every impl). Which rule do we want?
-// (x-fusion-hooks-01)
-// 2026-10-23 claude: Eric ruled that a trait declares what every body of a method must
-// be: #[pure] or #[sync] above its val (TraitMethod::attrs, traits::method_decl),
-// asserted of each impl's body and the default; core's Eq/Ord/Display/Cast methods are
-// #[pure] (no state, no Io, no raise to a handler, nothing async), replacing the
-// implicit #[sync]. The example here (a count in fmt) is refused at the build, so a
-// hook is a pure function of its operands and a kernel recomputing a stale part runs
-// one again to the same answer. Pins: lang::traits::core_method_state_refused,
-// core_method_io_refused,
-// trait_requirement_holds_an_impl/holds_the_default/sync/met/names_an_assertion,
-// pure_definition_holds/refused.
 safe fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> u8 {
     if l.is_bottom() || r.is_bottom() {
         return 0;

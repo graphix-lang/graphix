@@ -116,22 +116,6 @@ impl EvalCachedAsync for TcpAcceptEv {
     type Args = Arc<TcpListener>;
 
     const NAME: &str = "sys_tcp_accept";
-    // CR claude for eric: [bug/medium] With `Calls::Latest`, a trigger that arrives
-    // while an accept's reply is completed but not yet delivered makes
-    // `CachedArgsAsync::renew` release the reply id. The reply is then dropped as
-    // stale, and the `TcpStream` it carries is closed: the client was accepted and then
-    // hung up on. `Calls` reserves Latest for an eval that loses nothing when dropped,
-    // and a completed accept loses a connection (an accept aborted while still pending
-    // is harmless, since the client stays in the backlog). With a 200us accept trigger,
-    // 1001 clients connect and the server holds only about 983 streams. Fix: either
-    // `Calls::Fifo`, so each trigger accepts one connection in order, which is what the
-    // tcp.gxi doc promises, or have a renewed site still deliver or bank a completed
-    // reply whose value owns a resource. CLAUDE.md lists `accept` under Latest, so the
-    // choice is a semantics decision. probe:
-    // design/review-2026-10-12/repro/x-builtin-effects-11.gx (x-builtin-effects-11)
-    // 2026-10-16 claude: Implemented the second option under sys-io-08 (a renewed site
-    // still delivers a completed reply; Latest kept, CLAUDE.md updated). Pin
-    // lib_tests::tcp::tcp_accept_busy_trigger. Keep it, or rule Fifo instead.
     const CALLS: Calls = Calls::Latest;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

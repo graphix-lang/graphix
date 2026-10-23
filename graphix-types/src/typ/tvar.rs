@@ -2097,25 +2097,6 @@ impl Type {
                 && !p.is_empty()
             {
                 let p: LPooled<Vec<&Type>> = p.iter().collect();
-                // CR claude for eric: [bug/high] A cell under an abstract type's
-                // parameters cannot take the union of its parts: abstract parameters
-                // are invariant, and Type::is_a compares them exactly. Over [Box<bool>,
-                // Box<i64>] the inferred arm `Box(b)` becomes Box<[bool, i64]>, which
-                // matches no value of either member. `select x { Box(b) => "box [b]", _
-                // => "other" }` answers "other" for Box(true) and Box(3) in every
-                // engine, while the checker types b as [i64, bool] and keeps later arms
-                // live. The written-union form `[Box<bool>, Box<i64>] as Box(b)` is
-                // refused ("test the tag first"). Either make the predicate the set of
-                // matching members, each tested on its own, or refuse the inferred form
-                // the same way. probe:
-                // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-bind-two-insts.gx
-                // (x-typecheck-patterns-02)
-                // 2026-10-19 claude: c-pattern-02's fix resolves the reported behaviour: the
-                // inferred Box(b) arm tests the tag at run time, so it matches Box(true) and
-                // Box(3) (the probe prints ["box true", "box 3", "other"]), and b is [bool,
-                // i64]. The predicate still reads Box<[bool, i64]>; the remaining question is
-                // only whether to spell it as the Set of instantiations instead. Pin:
-                // lang::select::abstract_pattern_over_two_instantiations.
                 Type::union_exact(env, &p)?.contains(env, &Type::TVar(c.clone()))?;
             }
         }

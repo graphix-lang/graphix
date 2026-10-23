@@ -777,16 +777,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for eric: [bug/low] `code as i32` wraps, and Unix keeps only the
-        // low 8 bits: sys::exit(256) exits with status 0, a failure reported as
-        // success. Code 2^32 does the same through the cast. Decide the rule: map a
-        // code outside 0..=255 to 1 (or refuse it with a logged failure and exit 1),
-        // use i32::try_from in place of `as`, and state the range on `val exit` in
-        // mod.gxi. Ran: sys::exit(after_idle(50.ms, 256)) exited 0. (sys-net-05)
-        // 2026-10-19 claude: The claude twin (x-panics-07) is fixed: Exit::update
-        // maps a code outside 0..=255 to 1 (u8::try_from) for the ExitRequest path
-        // and process::exit alike, and val exit in sys mod.gxi states it. If that is
-        // the rule, delete this CR.
         if let Some(Value::I64(code)) = from
             .get_mut(0)
             .and_then(|n| seam_tick(n.update(ctx)))

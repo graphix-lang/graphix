@@ -581,28 +581,6 @@ impl Generation {
         // One contiguous reservation: colocated (Linkage::Local) calls use a
         // ±2GiB PC-relative relocation and finalize panics if two functions
         // land further apart. `GRAPHIX_JIT_ARENA` (bytes) overrides the size.
-        // XCR claude for eric: [risk/low] On Windows this reservation is a commit.
-        // ArenaMemoryProvider allocates through region::alloc, which there calls
-        // VirtualAlloc with MEM_COMMIT | MEM_RESERVE. Each fusing context (one Jit
-        // each, plus every retired generation still held by a kernel) therefore charges
-        // 256MB against the commit limit. On Linux it is only address space. A dozen
-        // parallel contexts (the run! test modes, an embedder with several runtimes)
-        // can exhaust the page file, so Jit::new fails and those contexts run silently
-        // unfused. Options: a smaller arena on Windows, a memory provider that reserves
-        // first and commits per segment, or one arena shared across a process's
-        // contexts. Separately, GRAPHIX_JIT_ARENA should be clamped to the 2GiB
-        // colocated-call range and a malformed value reported, not ignored. (f-jit-05)
-        // 2026-10-22 claude: Eric 2026-10-22: option 2, and we follow cranelift anyway.
-        // Cranelift is 0.137 (JITMemoryKind is exported from 0.134); the generation's
-        // memory is now emit/arena.rs's Arena, which reserves on every host and commits
-        // a page run per allocation (Windows: VirtualAlloc MEM_RESERVE, then
-        // MEM_COMMIT). Measured on the win11 VM: 64 of cranelift's 256MB arenas raised
-        // PrivateUsage by 16,416 MB, 64 of ours by 0 MB. GRAPHIX_JIT_ARENA outside a
-        // page..2GiB, or malformed, now fails Jit::new with the reason in the 'fusion
-        // is unavailable' warning. Regression pins:
-        // arena::tests::a_reservation_commits_only_what_is_allocated (Windows only),
-        // the other arena tests, graphix-shell jit_arena_rotation and jit_unavailable
-        // (run on the VM too). UPSTREAM.md has the region/cranelift-jit entry.
         let committed = SArc::new(AtomicUsize::new(0));
         let counted = Committed { generation: committed.clone(), jit: jit.clone() };
         builder.memory_provider(Box::new(
@@ -1345,42 +1323,6 @@ pub struct Jit {
     arena: usize,
     /// Every compiled kernel body and spill thunk, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
-    // XCR claude for eric: [perf/low] Nothing ever removes entries from this map, from
-    // the root Emission's Caches (by_kernel, kernels, layout_ids) or from the current
-    // Generation's `loaded`, except on a failed region or a generation retirement. Each
-    // record holds machine code, consts (values, types with their pinned typedefs) and
-    // a KernelSig. A long-lived context that keeps compiling new definitions (each REPL
-    // input, an embedder's repeated GXHandle::compile, a dynamic module's recompile)
-    // therefore keeps every kernel it ever fused, even after the nodes that used it are
-    // deleted. A record can be dropped once no cache entry can hand out its FuncId as a
-    // callee. That means tying eviction to the death of the definition whose LambdaIds
-    // key the cache (for example from ctx.discard of a definition). Alternatively,
-    // decide that a context's fusion memory is unbounded by design and say so in
-    // design/final_jit_architecture.md. (f-jit-04)
-    // 2026-10-22 claude: Eric 2026-10-22: option 1. Lambda::delete queues its LambdaId
-    // (FusionCtx::forget_def); after each full link FusionCtx::link evicts the
-    // definition's kernels and by_kernel bodies, every layout naming one of its kernels
-    // and the bodies keyed by it (a KernelKey is an address), unused layouts, the
-    // evicted bodies' records, and Names down to the cached bodies' ids (Names is now a
-    // map); a region parent's record is dropped after its batch; Generation::sweep
-    // drops loaded records nothing else holds. Measured over 2000 compile+drop cycles:
-    // records, loaded, caches and names stay flat (they grew per compile before). Pin:
-    // graphix-rt/tests/jit_retention.rs (fails with eviction off: 169 -> 2401). Still
-    // growing per compile, inside the generation: one 4KB arena page per link (a
-    // finalized page is never written again) and cranelift's per-function declarations,
-    // ~6KB per compile in all; it returns only when the generation retires, and a
-    // retired generation stays while any kernel installed in it lives.
-    // 2026-10-22 claude: Relocation built (design/jit_memory.md): a kernel's entry is a
-    // movable KernelEntry; a link that retired a generation or left the current one
-    // mostly dead (4MB committed, under a quarter live) marks, and GX::do_cycle's start
-    // (FusionCtx::relocate_kernels) reinstalls every live kernel outside the current
-    // generation from its record and repoints it, so the old module and its arena drop.
-    // Pins: jit_retention.rs live_kernels_leave_dead_generations (a fused program
-    // answers through 2500 compiles; peak committed < 8MB, ~10MB and no move with the
-    // mark off), jit_arena_rotation.rs (survivors leave an exhausted arena; kernels
-    // moved every cycle compute the same). The graphix-tests suite passes under
-    // GRAPHIX_JIT_RELOCATE=every (9759/0). Soak: a GRAPHIX_JIT_RELOCATE=every lane in
-    // the next combined campaign.
     records: BTreeMap<FuncId, Recorded>,
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
@@ -1954,28 +1896,6 @@ fn compile_region_inner(
     // Phase 1: declare every kernel in the closure. A callee body is
     // cached by its kernel; the parent is fresh per attempt and never
     // cached.
-    // XCR claude for eric: [perf/medium] Any body that calls another kernel is keyed by
-    // this region's layout, the interned ordered callee list. Regions with different
-    // callee lists therefore never share it, and the identical body is emitted,
-    // compiled, installed and imaged once per such region. The probe compiles `outer`
-    // 10 times for one KernelSig, against once for the leaf `inner`. The key's reason
-    // (DynCall bases making sibling FuncIds region-dependent, 685a35c89) is gone: Names
-    // mints one FuncId per cache entry, and publish_site_block_words already holds
-    // every build of a body to one layout. Keying bodies by KernelKey alone would
-    // delete layout_ids/intern_layout and join's layout remap. If the layout still
-    // guards something (a cached body binding other callees?), name it in the CacheKey
-    // doc, whose FuncId reason is stale. probe:
-    // design/review-2026-10-19/repro/f-jit-layout-recompile.gx (f-jit-02)
-    // Insertion order fixes the funcref numbering; a pointer-ordered map
-    // makes it ASLR-dependent.
-    // 2026-10-22 claude: Eric 2026-10-22: key by kernel alone. Bodies are cached by
-    // KernelKey; CacheKey, layout_ids, intern_layout, layout_of, join's layout remap
-    // and f-jit-04's layout-bound eviction are deleted. Nothing region-dependent is
-    // left in a cached body: sibling FuncIds are one per cache entry, callee site
-    // blocks are held to one size per kernel by publish_site_block_words, a body's
-    // callees follow from its KernelCacheKey (resolution fingerprint), DynCall bases
-    // are gone, and region parents are never cached. The probe links outer once (was
-    // 10), same output as --no-fusion. Pin: graphix-shell/tests/shared_bodies.rs.
     let mut funcids: LPooled<Vec<(KernelKey, Declared)>> = LPooled::take();
     let mut callee_layouts: LPooled<AHashMap<KernelKey, SiteLayout>> = LPooled::take();
     let parent_key = kernel_abi::kernel_key(kernel);
