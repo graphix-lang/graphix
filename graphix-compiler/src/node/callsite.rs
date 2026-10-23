@@ -3316,7 +3316,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             true => types.ftype(self.spec.id),
             false => None,
         };
-        let Some(ftype) = ftype else { return self.typecheck0(ctx) };
+        let Some(ftype) = ftype else {
+            if self.ftype.is_none() {
+                super::lambda::elab_audit::fallback(&self.spec);
+            }
+            return self.typecheck0(ctx);
+        };
         wrap!(self.fnode, self.fnode.typecheck0_instance(ctx, types))?;
         fill_omitted(&mut self.args, &ftype)?;
         // a lambda argument learns its parameters' types from the formal

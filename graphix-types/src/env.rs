@@ -1823,33 +1823,6 @@ impl Env {
                 rep: rep.clone(),
                 public,
             };
-            // CR claude for claude: [bug/medium] Every instance of a function body that
-            // declares an abstract type re-inserts its AbstractRep with a fresh Arc,
-            // even when the representation is unchanged. Two statements that call such
-            // a function elaborate in parallel compile tasks, and Env::join then sees
-            // two writes to one id: the debug build panics in TrackedMap::join with "a
-            // fork's write to AbstractId(..) would replace a write made since the
-            // fork". `--check` passes, and `cargo test` runs with these asserts on.
-            // Keep the existing entry when the check above found the representation
-            // unchanged (and publicity unchanged), so the second write is a no-op. A
-            // trait declared in a function body hits the same assert on Env::modules
-            // (design/review-2026-10-19/repro/x-typecheck-patterns-local-trait-fork-panic.gx);
-            // refuse a trait in a function body, as an impl there is refused. probe:
-            // design/review-2026-10-19/repro/x-typecheck-patterns-local-abstract-fork-panic.gx
-            // (x-typecheck-patterns-04)
-            // 2026-10-20 claude: The abstract half is fixed: deftype keeps an existing
-            // AbstractRep of the same publicity (the check above it refused a changed
-            // representation), so instances in parallel statements write nothing, and
-            // Env::abstract_rep judges visibility with a minted component (#fn.., #do..)
-            // standing for every instance of it (under_some_instance), so an instance whose
-            // scope differs from the registering one still sees its own type, cold and warm
-            // (lang::image::function_body_abstract_type_is_one_type). Pin:
-            // lang::modules::body_abstract_type_from_two_statements. The trait half still
-            // panics (x-typecheck-patterns-local-trait-fork-panic.gx); refusing a trait in a
-            // function body is the open ruling c-module-traits-06, so re-addressed.
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-            // needed. The trait half closes with c-module-traits-06 (refuse a trait in a
-            // function body).
 
             // the check above refused a changed representation, so an
             // entry of the same publicity is this one: writing it again would

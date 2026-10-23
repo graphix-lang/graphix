@@ -8,7 +8,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent, View, bailat,
     env::Env,
-    expr::{At, Expr, ExprId, ExprKind, Pattern, union_members},
+    expr::{At, Expr, ExprId, ExprKind, Pattern, StructurePattern, union_members},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     image::{
@@ -340,20 +340,6 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         // a handler's action runs on its errors, not at an entry
         NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
         NodeView::Connect(c) if reads_nothing(&c.node) => warn(&c.spec, "this write"),
-        // CR claude for claude: [bug/medium] This warns on every Async/Io builtin call
-        // over constants, but the standing interests re-attach or resume at a wake: net
-        // subscribe/list/publish/rpc, timers, watches. For those the warning is false,
-        // and its advice tells the user to rewrite correct code. A constant-path
-        // sys::net::subscribe in a re-entered arm warns, yet delivers at every entry. A
-        // constant `sys::time::timer(10.ms, true)` in an arm warns, yet keeps ticking
-        // after each re-entry. The builtin needs a fact of its own for this (e.g. a
-        // BuiltIn const saying it resumes at a wake) that this check consults. Effect
-        // does not carry it. probe:
-        // design/review-2026-10-19/repro/sys-net-birth-only-warning-subscribe.gx
-        // (sys-net-04)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Add a builtin fact (resumes at a wake) and skip the warning for
-        // builtins that carry it.
         NodeView::CallSite(cs)
             if cs.arg_nodes().all(|a| reads_nothing(a)) && acts_on_the_world(ctx, cs) =>
         {
@@ -381,7 +367,7 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
         return matches!(
             ctx.builtin_effect(b),
             crate::Effect::Async | crate::Effect::Io(_)
-        );
+        ) && !ctx.builtin_resumes(b);
     }
     let NodeView::Ref(r) = cs.fnode().view() else { return false };
     ctx.bind_to_lambda
@@ -1842,22 +1828,24 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         &scrut,
                     ) {
                         Err(_) => *d = true,
-                        // CR claude for claude: [bug/medium] A partial struct pattern
-                        // that completes against no struct member keeps its inferred
-                        // predicate, the exact struct of the fields it names. Over Any
-                        // the arm `{a, ..}` therefore matches {a: 1} but not {a: 1, b:
-                        // 2} or {b: 2, a: 1}: the `..` is silently ignored, while one
-                        // level down (`({a, ..}, n)` over (Any, i64)) the same pattern
-                        // matches by name. An unannotated scrutinee is refused with
-                        // "non exhaustive struct matches require type annotations", but
-                        // Any passes. Either refuse a partial struct pattern that
-                        // nothing completed, here and after the deferred completion, or
-                        // make the top-level test match by name as the nested one does.
-                        // probe:
-                        // design/review-2026-10-19/repro/x-typecheck-patterns-partial-struct-over-any.gx
-                        // (x-typecheck-patterns-05)
-                        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-                        // needed. Match the top-level partial struct by name, as the nested one does.
+                        // a partial struct over Any has no struct type to
+                        // complete it, so its test would be the exact struct
+                        // of the fields it names
+                        Ok(None)
+                            if matches!(
+                                spec_pat.structure_predicate,
+                                StructurePattern::Struct { exhaustive: false, .. }
+                            ) && scrut
+                                .with_deref(|t| matches!(t, Some(Type::Any))) =>
+                        {
+                            bailat!(
+                                self.spec,
+                                "the partial struct pattern {} over {scrut} has no \
+                                 struct type to complete it: test the struct's type \
+                                 first (`{{a: i64, b: string}} as {{a, ..}}`)",
+                                spec_pat.structure_predicate
+                            )
+                        }
                         Ok(None) => (),
                         Ok(Some(t)) => {
                             pat.structure_predicate.realign(&ctx.env, &t)?;

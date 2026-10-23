@@ -18,18 +18,6 @@ use std::fmt::{self, Write};
 /// members nobody wrote first and then the written ones as written.
 fn set_members(s: &[Type]) -> SmallVec<[&Type; 16]> {
     let mut members: SmallVec<[&Type; 16]> = s.iter().collect();
-    // CR claude for claude: [doc-drift/low] Only variants and refs carry a written
-    // position, so every other member (array, tuple, struct, map, fn) sorts as None and
-    // prints ahead of the variants. `[`Zed, Array<i64>, `Alpha(i64), {x: i64}, string,
-    // (i64, i64)]` formats as `[string, Array<i64>, (i64, i64), { x: i64 }, `Zed,
-    // `Alpha(i64)]`. CLAUDE.md promises only that primitives print first. Either record
-    // a position on every union member, or say in CLAUDE.md that unpositioned members
-    // print first in canonical order. probe:
-    // design/review-2026-10-19/repro/t-cast-setops-fmt-union-order.gx
-    // (t-cast-setops-12)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Say in CLAUDE.md that unpositioned members print first in canonical
-    // order.
     if print_as_written() {
         members.sort_by_key(|t| match t {
             Type::Variant(_, _, at) => at.get().map(|p| (p.line, p.column)),

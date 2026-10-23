@@ -1240,27 +1240,27 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
-    /// An instance checks this node as its definition's check did.
-    // CR claude for claude: [structure/low] Module::typecheck0_instance runs the full
-    // typecheck0, which checks every child statement with its full typecheck0 and not
-    // typecheck0_instance. A `mod m;` inside a function body (`let f = |y| { mod m;
-    // m::x + y }` compiles and runs) is therefore re-checked for each instance, Binds
-    // and CallSites included, instead of taking its definition's types, against the
-    // rule that an instance does not check again. A module file cannot see the
-    // function's locals, so the re-check is redundant work and gives no different
-    // answer. `trait` in a function body is accepted the same way. Either refuse `mod`
-    // and `trait` in a function body as Impl::compile refuses `impl` (a declaration
-    // does not belong to an activation), or walk the children with typecheck0_instance
-    // here. (c-module-traits-06)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Refuse `mod` and `trait` in a function body, as `impl` there is refused
-    // (also closes x-typecheck-patterns-04's trait half).
+    /// A static body's statements take their definition's types, as a
+    /// block's do; its signature is checked against them again.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
-        _types: &mut crate::node::lambda::InstanceTypes,
+        types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0(ctx)
+        if let Body::Dynamic { .. } = self.body {
+            return self.typecheck0(ctx);
+        }
+        let _task = InTask::enter(self.task);
+        let Self { env, nodes, catches, top_id, proxy, scope, sig, .. } = self;
+        ctx.with_restored_mut(env, |ctx| {
+            super::typecheck_in_order(ctx, nodes, catches, false, |n, ctx| {
+                n.typecheck0_instance(ctx, types)
+            })
+        })
+        .and_then(|()| check_sig(ctx, *top_id, proxy, scope, sig, nodes))
+        .with_context(|| format_compact!("compiling module {}", scope.lexical))?;
+        self.proxy_lambda_defs(ctx);
+        Ok(())
     }
 
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
@@ -1323,21 +1323,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         };
         if let Some((v, tag)) = src {
             src_tag = tag;
-            // CR claude for claude: [bug/low] The body is torn down before the value is
-            // inspected. An error from the source, which typecheck0 accepts as `string
-            // | error`, unloads a working module: interface vals stop following their
-            // implementation ("5 0" in the repro) and the status reads "unexpected
-            // error". Decide whether a source error only reports and keeps the last
-            // good load: if so, clear only when a string is about to compile; if not,
-            // refuse an error-typed source or document the teardown. probe:
-            // design/review-2026-10-19/repro/c-module-traits-dyn-source-error-tears-down.gx
-            // (c-module-traits-06)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-            // needed. A source error reports and keeps the last good load: clear only when
-            // a string is about to compile.
-            self.clear_compiled(ctx);
+            // a source that is no program reports, and the last good load
+            // runs on
             match v {
                 Value::String(s) => {
+                    self.clear_compiled(ctx);
                     let compiled = self.compile_source(ctx, s);
                     ctx.apply_deferred();
                     if let Err(e) = compiled {

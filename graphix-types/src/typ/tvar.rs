@@ -772,7 +772,7 @@ pub fn require_bounds(cons: &[Type], t: &Type) {
 pub(crate) fn handed_bounds(cons: &[Type], t: &Type, hand: &mut dyn FnMut(&TVar, Type)) {
     for c in cons {
         match c {
-            Type::Concrete => t.require_everywhere(c, true, hand, &mut LPooled::take()),
+            Type::Concrete => t.require_everywhere(c, false, hand, &mut LPooled::take()),
             Type::Data => t.require_everywhere(c, false, hand, &mut LPooled::take()),
             Type::Singleton => t.require_singleton(hand),
             Type::OneNumber => t.require_one_number(hand),
@@ -1763,8 +1763,9 @@ impl Type {
         !self.has_unbound() && self.concrete_holds()
     }
 
-    /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ and no
-    /// reference anywhere (a value read from data can't be one), bound
+    /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥, no
+    /// reference and no function anywhere (a value read from data can't
+    /// be one), bound
     /// cells judged by their bindings, open cells admitted (a bind hands
     /// them the conjunct).
     pub(crate) fn concrete_holds(&self) -> bool {
@@ -1775,32 +1776,14 @@ impl Type {
     /// met again, it answers what its first visit is answering.
     fn concrete_holds_seen(&self, seen: &mut AHashSet<usize>) -> bool {
         ensure_sufficient(|| match self {
-            // CR claude for claude: [bug/low] The Type::Fn arm below walks the signature
-            // with for_each_part, throws slot included. A fn type that throws nothing
-            // has `throws: ⊥`, and this arm reads that as a ⊥ value. So `fn(x: i64) ->
-            // i64` fails Concrete (a type-directed read is refused with "'b: unbound
-            // within Concrete"), while `fn(x: i64) -> i64 throws `E` holds and the read
-            // fails at run time with InvalidCast "not a function" (probe:
-            // design/review-2026-10-12/repro/t-tvar-10.gx). Every Concrete target in
-            // the stdlib is a data read, and data cannot hold a function, just as it
-            // cannot hold a reference. The suggested rule is that Concrete refuses
-            // every Type::Fn, in concrete_holds and require_concrete together, with the
-            // must-reject family updated to match. The alternative, skipping the throws
-            // slot, admits targets that can only fail at run time. (t-tvar-10)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Concrete refuses every Type::Fn, in concrete_holds and
-            // require_concrete; update the must-reject family.
             Type::Bottom | Type::ByRef(..) => false,
             Type::TVar(tv) => {
                 !seen.insert(tv.cell_addr())
                     || tv.binding().is_none_or(|b| b.concrete_holds_seen(seen))
             }
             t if node_addr(t).is_some_and(|n| !seen.insert(n)) => true,
-            Type::Fn(ft) => {
-                let mut holds = true;
-                ft.for_each_part(&mut |t, _| holds &= t.concrete_holds_seen(seen));
-                holds
-            }
+            // data holds no function, as it holds no reference
+            Type::Fn(_) => false,
             t => {
                 let mut holds = true;
                 t.for_each_child(&mut |c| holds &= c.concrete_holds_seen(seen));

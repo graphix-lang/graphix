@@ -189,6 +189,7 @@ pub(crate) struct Timer {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_time_timer";
+    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut CompileCtx<R, E>,

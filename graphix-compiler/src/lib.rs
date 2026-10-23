@@ -889,6 +889,10 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// call an ordered builtin never run beside each other
     /// (`design/parallel_eval.md` §6). External effects are not ordered.
     const ORDERED: bool = false;
+    /// An event source whose standing interest re-attaches or resumes
+    /// at its arm's wake (a subscription, a timer, a watch, a server):
+    /// over constant arguments it still acts at every entry.
+    const RESUMES: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,
@@ -1334,6 +1338,7 @@ struct BuiltinEntry<R: Rt, E: UserEvent> {
     perform: BuiltInPerformFn<R, E>,
     effect: Effect,
     ordered: bool,
+    resumes: bool,
 }
 
 macro_rules! env_restore_methods {
@@ -1847,6 +1852,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
                     perform: T::perform,
                     effect: T::EFFECT,
                     ordered: T::ORDERED,
+                    resumes: T::RESUMES,
                 });
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
@@ -1886,6 +1892,11 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// A registered builtin's [`Effect`]; `Async` for unknown names.
     pub fn builtin_effect(&self, name: &str) -> Effect {
         self.registry.builtins.get(name).map(|b| b.effect).unwrap_or_default()
+    }
+
+    /// Whether a registered builtin is [`BuiltIn::RESUMES`].
+    pub fn builtin_resumes(&self, name: &str) -> bool {
+        self.registry.builtins.get(name).is_some_and(|b| b.resumes)
     }
 
     /// A registered [`Effect::Io`] builtin's [`BuiltIn::perform`].

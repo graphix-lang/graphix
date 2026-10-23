@@ -1,9 +1,11 @@
 // Tests for select/match expressions
 
 use anyhow::Result;
+use arcstr::literal;
+use graphix_compiler::CFlag;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, as_i64s, eval, is, prints, refused},
+    testing::{FuseExpect, Mode, TestCtx, as_i64s, config, eval, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -4120,3 +4122,74 @@ run!(null_literal_alone_leaves_the_rest_open, r#"{
   let h = |x: {a: [i64, null]}| select x { {a: null} => 0 };
   h({a: null})
 }"#, refused("missing match cases"); FuseExpect::None);
+
+// Nested alternation is legal in every bracketed position: a let or a
+// parameter whose alternatives cover each member of the written union is
+// irrefutable.
+run!(
+    an_or_pattern_covering_its_union_binds,
+    prints("[i64:1, i64:7, i64:4]"),
+    "/test.gx" => r#"
+        let p: ([`A, `B], i64) = (`A, 1);
+        let (`A | `B, x) = p;
+        let f = |(`A(a) | `B(a), y): ([`A(i64), `B(i64)], i64)| a + y;
+        let g = |(`A(a) | `B(a), y): ([`A(i64), `B(i64)], i64)| a * y;
+        let result = [x, f((`A(3), 4)), g((`B(2), 2))]
+    "#
+);
+
+run!(
+    an_or_pattern_short_of_its_union_refused,
+    refused("refutable patterns are not allowed in let"),
+    "/test.gx" => r#"
+        let p: ([`A, `B, `C], i64) = (`A, 1);
+        let (`A | `B, x) = p;
+        let result = x
+    "#
+);
+
+// A partial struct pattern over Any has no struct type to complete it,
+// so the `..` could mean nothing: it is refused.
+run!(
+    partial_struct_over_any_refused,
+    refused("has no struct type to complete it"),
+    "/test.gx" => r#"
+        let f = |x: Any| select x { {a, ..} => "st [a]", _ => "o" };
+        let result = f({a: 1, b: 2})
+    "#
+);
+
+// The birth-only warning is for an act over constants that a later entry
+// does not repeat; a standing event source (a timer, a subscription)
+// resumes at every entry, so it is not warned of.
+async fn birth_only_warning_spares_event_sources(mode: Mode) -> Result<()> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    let flags = mode.flags() | CFlag::WarningsAreErrors;
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
+    .await?;
+    ctx.rt
+        .compile(literal!(
+            "{ let x = 0; select x { 0 => sys::time::timer(duration:10.ms, true), _ => never() } }"
+        ))
+        .await?;
+    let error = ctx
+        .rt
+        .compile(literal!(
+            "{ let x = 0; select x { 0 => println(\"a\"), _ => never() } }"
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("acts only at this arm's first entry"),
+        "{error:#}"
+    );
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(birth_only_warning_spares_event_sources);

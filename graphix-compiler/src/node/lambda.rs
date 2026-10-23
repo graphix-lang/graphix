@@ -2081,20 +2081,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             let _at = AtLevel::enter(level);
             types.typ(self.spec.id)
         };
-        // CR claude for claude: [doc-drift/low] A missing row makes this lambda run its
-        // full definition check inside the instance. CallSite::typecheck0_instance does
-        // the same when there is no ftype row. DefTable::record drops every row whose
-        // ExprId two nodes share, for example a default argument compiled at two
-        // omitting sites. CLAUDE.md says an instance the table cannot type is refused
-        // and never checked instead, but only a whole missing table is refused. Because
-        // these fallbacks succeed silently, a regression that dropped rows would show
-        // up only as slower compiles. Either state the per-node rule in CLAUDE.md ('a
-        // node whose id two nodes share has no row and is checked'), or report every
-        // such fallback under GRAPHIX_ELAB_AUDIT. (c-lambda-04)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Report every per-node fallback under GRAPHIX_ELAB_AUDIT and state the
-        // per-node rule in CLAUDE.md.
-        let Some(row) = row else { return self.typecheck0(ctx) };
+        let Some(row) = row else {
+            elab_audit::fallback(&self.spec);
+            return self.typecheck0(ctx);
+        };
         {
             let _at = AtLevel::enter(level);
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
@@ -2143,6 +2133,14 @@ pub(crate) mod elab_audit {
             && !REPORTED.replace(true)
         {
             report(kind, spec, format_args!("{e:#}"))
+        }
+    }
+
+    /// A node its definition's table has no row for (its id is shared,
+    /// a default compiled at two sites) is checked in full.
+    pub(crate) fn fallback(spec: &Expr) {
+        if dbgenv::graphix_elab_audit() {
+            report("fallback", spec, format_args!("no check-table row: checked in full"))
         }
     }
 

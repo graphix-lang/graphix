@@ -219,6 +219,7 @@ pub(crate) struct Subscribe {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_subscribe";
+    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,
@@ -559,6 +560,7 @@ macro_rules! list {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
+            const RESUMES: bool = true;
 
             fn init<'a, 'b, 'c, 'd>(
                 ctx: &'a mut CompileCtx<R, E>,
@@ -717,6 +719,7 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish";
+    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,
@@ -1075,6 +1078,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish_rpc";
+    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut CompileCtx<R, E>,

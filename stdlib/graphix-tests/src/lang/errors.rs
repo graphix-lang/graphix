@@ -993,3 +993,13 @@ run!(err_chain_is_cores_under_a_shadowing_type, r#"{
   { catch(e) r <- e.0; error(`A(1))? };
   r.ori + 1
 }"#, refused("cannot compute { parent: [null, Ori], source: Source, text: string } + i64"); FuseExpect::None);
+
+// `?` raises its operand's error part, which an Any operand does not say.
+run!(
+    qop_on_any_refused,
+    refused("the operand of ? has type Any, so the error it raises is not known"),
+    "/test.gx" => r#"
+        let x: Any = 3;
+        let result = { catch(e) println("[e]"); x? }
+    "#
+);

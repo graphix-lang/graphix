@@ -34,6 +34,45 @@ const DYNAMIC_MODULE0: &str = r#"
 
 run!(dynamic_module0, DYNAMIC_MODULE0, is(Value::I64(2)); FuseExpect::None);
 
+// A source that is no program reports through the status, and the last
+// good load runs on: a write to its val still reaches it.
+const DYNAMIC_MODULE_SOURCE_ERROR: &str = r#"
+{
+    let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val x: i64; val y: i64 };
+        source src
+    };
+    src <- once(status) ~ error(`E);
+    foo::x <- select status { error as _ => 5, _ => never() };
+    select foo::y { 50 => "kept", _ => never() }
+}
+"#;
+
+run!(dynamic_module_source_error_keeps_the_load, DYNAMIC_MODULE_SOURCE_ERROR, is(Value::String("kept".into())); FuseExpect::Jit);
+
+// A trait is declared once: in a function body it is refused, as an
+// `impl` is.
+run!(
+    trait_in_a_function_body_refused,
+    refused("trait L is in a function body"),
+    "/test.gx" => r#"
+        let mk = |x: i64| { trait L { val l: fn(self) -> i64 = |s| 7 }; x };
+        let result = mk(1)
+    "#
+);
+
+// A block's value is its last statement, which a let does not have.
+run!(
+    block_ending_in_a_let_refused,
+    refused("a let has none"),
+    "/test.gx" => r#"
+        let f = |x: i64| { let a = x; let b = a + 1 };
+        let result = f(1)
+    "#
+);
+
 const DYNAMIC_MODULE1: &str = r#"
 {
     let source = "

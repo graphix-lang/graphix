@@ -262,6 +262,7 @@ pub(crate) struct IoLines<const BATCHED: bool> {
 impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = if BATCHED { "sys_io_lines_batched" } else { "sys_io_lines" };
+    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,

@@ -676,7 +676,8 @@ impl Type {
                     v => Err(self.cast_fail("not an error", v)),
                 }
             }
-            // a list reads as the array of its elements
+            // a list reads as the array of its elements, a map as the
+            // array of its (key, value) pairs
             Type::Array(et) => {
                 let src = src_head(src, env, v);
                 if matches!(&src, Some(Type::List(_))) && !list::is_list(v) {
@@ -701,6 +702,15 @@ impl Type {
                         |_, el| et.cast_int(env, cx, src, el),
                     )?
                     .map(|mut a| Value::Array(ValArray::from_iter_exact(a.drain(..))))),
+                    Value::Map(m) => {
+                        let mut out: LPooled<Vec<Value>> = LPooled::take();
+                        for (k, val) in m.into_iter() {
+                            let pair = rep::tuple([k.clone(), val.clone()]);
+                            let c = et.cast_int(env, cx, None, &pair)?;
+                            out.push(c.unwrap_or(pair));
+                        }
+                        Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
+                    }
                     v => Err(self.cast_fail("not an array", v)),
                 }
             }
@@ -767,19 +777,15 @@ impl Type {
                                 None => out.push((k.clone(), v.clone())),
                             }
                         }
-                        // CR claude for claude: [bug/low] Keys that convert to the same
-                        // key collapse here, the last one winning, with no error.
-                        // cast<Map<i64, string>>({"1" => "a", "01" => "b", "1.5" =>
-                        // "c"}) is {1 => "b"}, and the array-of-pairs path below does
-                        // the same. Every other lossy cast is an InvalidCast. Proposed:
-                        // refuse when the rebuilt map has fewer entries than were cast.
-                        // probe:
-                        // design/review-2026-10-19/repro/t-cast-setops-map-key-merge.gx
-                        // (t-cast-setops-09)
-                        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23
-                        // triage: no ruling needed. Refuse when the rebuilt map has
-                        // fewer entries: a lossy cast is an InvalidCast.
-                        Ok(changed.then(|| Value::Map(Map::from_iter(out.drain(..)))))
+                        if !changed {
+                            return Ok(None);
+                        }
+                        let n = out.len();
+                        let map = Map::from_iter(out.drain(..));
+                        match map.len() == n {
+                            true => Ok(Some(Value::Map(map))),
+                            false => Err(self.cast_fail("two keys cast to one key", v)),
+                        }
                     }
                     v if let Some(a) = rep::array_elems(v) => {
                         let mut out: LPooled<Vec<(Value, Value)>> = LPooled::take();
@@ -800,7 +806,12 @@ impl Type {
                                 }
                             }
                         }
-                        Ok(Some(Value::Map(Map::from_iter(out.drain(..)))))
+                        let n = out.len();
+                        let map = Map::from_iter(out.drain(..));
+                        match map.len() == n {
+                            true => Ok(Some(Value::Map(map))),
+                            false => Err(self.cast_fail("two keys cast to one key", v)),
+                        }
                     }
                     _ => Err(self.cast_fail("not a map", v)),
                 }
@@ -2199,18 +2210,6 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
             }
             Some(Value::Bytes(bytes::Bytes::copy_from_slice(&bytes).into()))
         }
-        // CR claude for claude: [doc-drift/low] The primitive `array` reads a map as its
-        // [k, v] pairs here, but Type::Array refuses a map ("not an array"), while
-        // Type::Map reads an array of pairs. CLAUDE.md's list of class-leaving casts
-        // names none of these, nor list-to-array. cast<array>(m) works and
-        // cast<Array<(string, i64)>>(m) fails. Needs a ruling: either a map reads as
-        // its pairs for both targets (add the arm to Type::Array) or for neither (drop
-        // Value::Map here). Then list the crossings in CLAUDE.md. probe:
-        // design/review-2026-10-19/repro/t-cast-setops-map-array-class.gx
-        // (t-cast-setops-11)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. A map reads as its pairs for both targets (add the arm to
-        // Type::Array); list the crossings in CLAUDE.md.
         (Value::Array(_) | Value::Map(_), Typ::Map | Typ::Array) => v.cast(t),
         (Value::String(s), t) => parse(s, t),
         (_, Typ::String) => printed(&v),

@@ -125,7 +125,10 @@ definition's check's (`node::lambda::DefTable`, which an image carries),
 substituted by its signature, and each node's `typecheck0_instance`
 does only the state part of its check (the default is the check;
 `design/parallel_compile.md`). An instance the table cannot type is
-refused, a compiler bug, never checked instead (`node::lambda::Typing`).
+refused, a compiler bug, never checked instead (`node::lambda::Typing`);
+a lambda or call site whose id two nodes share (a default compiled at
+two sites) has no row and is checked in full, which
+`GRAPHIX_ELAB_AUDIT` reports.
 Every type name a definition
 writes, a typedef body's included, must name something by the check's
 end, expanded or not (`design/env_independent_typerefs.md`).
@@ -295,7 +298,8 @@ undecorated `use` statements merges into one per root and visibility, a
 sorted tree with every shared prefix written once, where no item reads or
 binds what another binds or reads (a glob merges with nothing); a blank line stands
 around every file-level item that spans lines; primitives in a union
-print first, in canonical order; an item's comments print above its
+print first, in canonical order, and the other members a position does
+not record (all but variants and named types) next, in canonical order; an item's comments print above its
 attributes, and a comment under an arm's `=>` or a field's `name:`
 moves above the arm or the field. Layout: a value follows its head
 (`let x =`, `<-`, `name:`, `=>`) on the head's line when it fits or
@@ -408,7 +412,7 @@ union target takes the first member in canonical order, narrowest
 integer first, that holds it). A cast leaves a value's runtime class
 only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
 plainly (`"42"`), between a number and a datetime (Unix seconds) or a
-duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a union target tries the members of the value's own
+duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a list reads as the array of its elements and a map as the array of its `(key, value)` pairs, and an array of pairs reads as a map; a union target tries the members of the value's own
 class first (`typ/cast.rs::convert`, `in_own_class`). The JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
 reads a field the data omits as null wherever the field's type

@@ -434,6 +434,15 @@ impl FnType {
         // lang::inference::rigid_type_variables_survive_a_cell_merge and
         // lang::interfaces::open_union_without_a_pairing_is_refused, which rely on that
         // aliasing. The weld has to happen in the one place both paths share.
+        // 2026-10-23 claude: graphix-types' expr_pp_round_trip found this class
+        // (2026-10-23, after a generator change): an impl head's parameter bound is a
+        // fn type whose quantifiers ['a_f_, 'cf_1y__kt_] are lost on reparse at width
+        // 0. Seed: add 'cc
+        // 8d8cc9a38e2fe1bd773ada3b4e9f52bd61fc8051627e9ca92797568f05e259e1' to
+        // graphix-types/proptest-regressions/expr/test.txt to replay it; it was taken
+        // out so the gate passes while this CR is open. A printed fn<'a, 'b>(..) with
+        // bare quantifiers does not parse either (Expected whitespaces or ':'), so the
+        // printer can write a type the parser refuses.
         self.alias_tvars(&mut known);
         seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())));
         self

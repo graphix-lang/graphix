@@ -412,6 +412,16 @@ fn compile_kind<R: Rt, E: UserEvent>(
             let typ = Type::of_literal(v).at(spec)?;
             Ok(Constant::new(v.clone(), typ, spec.clone()))
         }
+        ExprKind::Block { exprs }
+            if !flags.contains(CFlag::SeqStep)
+                && exprs.last().is_some_and(|e| matches!(e.kind, ExprKind::Bind(_))) =>
+        {
+            bailat!(
+                exprs[exprs.len() - 1],
+                "a block's value is its last statement, and a let has none: end the \
+                 block with an expression"
+            )
+        }
         ExprKind::Block { exprs } => {
             let scope = scope.append_block("do", spec.id.inner());
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)

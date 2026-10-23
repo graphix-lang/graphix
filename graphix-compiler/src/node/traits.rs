@@ -268,6 +268,14 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         t: &TraitExpr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
+        if netidx_core::path::Path::parts(&*scope.lexical).any(crate::is_fn_block) {
+            bailat!(
+                spec,
+                "trait {} is in a function body; a trait is declared once, outside \
+                 every function",
+                t.name
+            )
+        }
         let tref = trait_ref(&scope.lexical, &t.name, spec.pos, &spec.ori);
         let mut sigs = t
             .methods

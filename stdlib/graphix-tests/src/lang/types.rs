@@ -3373,3 +3373,55 @@ run!(rank2_literal_through_an_alias_may_not_narrow, r#"{
   let app = |g: F| g("a");
   app(|y| y * y)
 }"#, refused("which the parameter's quantifier does not declare"); FuseExpect::None);
+
+// A parameter whose quantifier has one structural bound is read through
+// it, as every type the bound admits has that structure.
+run!(
+    reads_through_a_structural_bound,
+    prints("[i64:1, i64:2, i64:3, i64:4]"),
+    "/test.gx" => r#"
+        let idx = 'a: Array<i64> |x: 'a| -> i64 x[0]$;
+        let fld = 'a: {x: i64} |s: 'a| -> i64 s.x;
+        let tup = 'a: (i64, i64) |t: 'a| -> i64 t.0;
+        let call = 'a: fn(x: i64) -> i64 |g: 'a| -> i64 g(1);
+        let result = [idx([1]), fld({x: 2}), tup((3, 4)), call(|x| x + 3)]
+    "#
+);
+
+// Keys that differ as values but write as the same data ("A" and `A to
+// pack, [1, 2] and (1, 2) to json) are refused by a writer, which would
+// otherwise keep one of them.
+run!(
+    colliding_data_keys_refused_by_a_writer,
+    prints(r#"["refused", "refused"]"#),
+    "/test.gx" => r#"
+        let m: Map<[string, `A], i64> = {"A" => 1, `A => 2};
+        let m2: Map<[Array<i64>, (i64, i64)], i64> = {[1, 2] => 1, (1, 2) => 2};
+        let r1 = select pack::write_bytes(m) { error as _ => "refused", _ => "written" };
+        let r2 = select json::write_str(m2) { error as _ => "refused", _ => "written" };
+        let result = [r1, r2]
+    "#
+);
+
+// A cast that merges two keys loses an entry, so it is an InvalidCast.
+run!(
+    key_merging_map_cast_refused,
+    prints(r#"["refused", "ok"]"#),
+    "/test.gx" => r#"
+        let m = {"1" => "a", "01" => "b"};
+        let ok = {"1" => "a", "2" => "b"};
+        let c = |v| select cast<Map<i64, string>>(v) { error as _ => "refused", _ => "ok" };
+        let result = [c(m), c(ok)]
+    "#
+);
+
+// A map reads as the array of its (key, value) pairs, as an array of
+// pairs reads as a map.
+run!(
+    map_reads_as_its_pairs,
+    prints(r#"[["a", i64:1], ["b", i64:2]]"#),
+    "/test.gx" => r#"
+        let m = {"a" => 1, "b" => 2};
+        let result: Array<(string, i64)> = cast<Array<(string, i64)>>(m)$
+    "#
+);

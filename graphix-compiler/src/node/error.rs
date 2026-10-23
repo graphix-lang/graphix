@@ -587,6 +587,21 @@ impl Strip {
                 )
             })?
         }
+        // what `?` raises is the operand's error part, which Any does not say
+        let any = |t: &Type| matches!(t, Type::Any);
+        let holds_any = typ.with_deref(|t| match t {
+            Some(Type::Set(ts)) => ts.iter().any(any),
+            Some(t) => any(t),
+            None => false,
+        });
+        if op == '?' && holds_any {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "the operand of ? has type {typ}, so the error it raises is not \
+                     known: cast it to a type whose error is (a Result), or use $"
+                )
+            })?
+        }
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         let null = Type::Primitive(Typ::Null.into());
         let holds = |t: &Type| typ.contains_with_flags(BitFlags::empty(), &ctx.env, t);
@@ -1489,26 +1504,6 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }
         if let Some(handler) = self.handler() {
             let etyp = match self.strip {
-                // CR claude for claude: [bug/low] The raised type is the operand minus
-                // what passes through. For an operand typed Any (or [Any, null]),
-                // Strip::of picks the error form, because Any holds an error. What
-                // passes through is still Any, so the difference is the empty set.
-                // fix_echain_typ then refuses with "expected error not []", which names
-                // neither the operand nor its type. `x$` on the same operand is
-                // accepted. Decide whether `?` on Any raises Error<ErrChain<Any>> to
-                // the catch, with the error part computed directly rather than by
-                // subtraction, or is refused with a message like the open-operand one
-                // in Strip::of ("the operand of ? has type Any, ...: annotate it").
-                // probe: design/review-2026-10-12/repro/x-rerun-1-14.gx (x-rerun-1-14)
-                // 2026-10-15 claude: Strip::of now takes the null where an open member
-                // beside a written null is all the error form could take
-                // (c-error-op-04), and an instance strips what its definition decided
-                // (the check table's aux row). An Any operand still takes the error
-                // form, so this CR's question stands.
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Refuse `?` on an Any operand with a message naming the
-                // operand and its type (annotate it), as Strip::of's open-operand
-                // message does.
                 Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
                 Strip::Null => NULL_ERR.clone(),
             };

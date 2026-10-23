@@ -1332,30 +1332,18 @@ impl StructPatternNode {
         if let Self::Bind(_) | Self::Ignore = self {
             return true;
         }
+        // alternatives cover a type when each of its members is covered by
+        // one of them
+        if let Self::Or { alts } = self {
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            return crate::expr::union_members(env, typ, &mut members).is_ok()
+                && !members.is_empty()
+                && members.iter().all(|m| alts.iter().any(|a| a.covers(env, m, false)));
+        }
         let shape = expand(env, typ);
         let shaped = match (self, &shape) {
             (
-                // CR claude for claude: [bug/low] covers returns false for every Or,
-                // whatever the type. A nested or-pattern in a let or a lambda parameter
-                // is therefore always refused as refutable, even when its alternatives
-                // cover every member of the written union: `let (`A | `B, x) = p` over
-                // `p: ([`A, `B], i64)` fails with "refutable patterns are not allowed
-                // in let", and `|(`A(x) | `B(x), y): ([`A(i64), `B(i64)], i64)| ..`
-                // fails the same way. design/or_patterns.md says nested alternation is
-                // legal in every bracketed position, including inside lambda params, so
-                // as built that only holds for select arms. Fix it one of two ways.
-                // Either an Or covers `typ` when every member of `typ` (union_members)
-                // is covered by some alternative, the same per-member test Reach::arm
-                // applies under a written union. Or or_patterns.md says nested
-                // or-patterns are select-only. probe:
-                // design/review-2026-10-12/repro/c-pattern-06.gx Also reported as
-                // (t-parser-b-04). (c-pattern-06)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. An Or covers a type when every member is covered by
-                // some alternative (Reach::arm's per-member test), as or_patterns.md
-                // promises.
-                Self::Or { .. }
-                | Self::Literal(_)
+                Self::Literal(_)
                 | Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
                 | Self::SlicePrefix { .. }
                 | Self::SliceSuffix { .. },

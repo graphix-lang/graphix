@@ -137,7 +137,8 @@ impl GxAbstract {
 /// every tuple, struct, variant and list in its data form
 /// ([`crate::rep::strip`]). An abstract value with no implementation, a
 /// Rust-backed one included, is refused, and so is an implementation
-/// that writes its own type inside itself without end.
+/// that writes its own type inside itself without end, and a map two of
+/// whose keys write as the same data (`"A"` and `` `A ``).
 pub fn to_data(v: &Value) -> Result<Value> {
     Ok(rewrite(v, 0)?.unwrap_or_else(|| v.clone()))
 }
@@ -174,7 +175,16 @@ fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
             };
             Ok(Some(rewrite(&data, depth + 1)?.unwrap_or(data)))
         }
-        v => crate::rep::strip_with(v, &mut |c| rewrite(c, depth)),
+        v => {
+            let data = crate::rep::strip_with(v, &mut |c| rewrite(c, depth))?;
+            // keys that differ as values may write as the same data
+            if let (Value::Map(m), Some(Value::Map(d))) = (v, &data)
+                && d.len() < m.len()
+            {
+                return Err(anyhow!("two keys of a map write as the same data"));
+            }
+            Ok(data)
+        }
     }
 }
 
