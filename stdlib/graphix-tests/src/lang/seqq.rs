@@ -96,7 +96,7 @@ async fn live_until(mode: Mode) -> Result<()> {
     let code = r#"{
         let ready = false;
         ready <- sys::time::after_idle(duration:30.ms, true);
-        seqq { until ready; 42 }
+        seqq { until live(ready); 42 }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [42]);
@@ -112,7 +112,7 @@ async fn until_waits_on_its_own_request(mode: Mode) -> Result<()> {
             let step = 0;
             step <- select step {{ n if n < 60 => n + 1, _ => never() }};
             let request = select step {{ 1 | 30 => step, _ => never() }};
-            let done = {kw} request {{ until step > request + 10; request }};
+            let done = {kw} request {{ until live(step) > request + 10; request }};
             done ~ step - done
         }}"#
         );

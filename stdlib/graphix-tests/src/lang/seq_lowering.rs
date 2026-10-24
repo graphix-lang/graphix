@@ -31,7 +31,7 @@ async fn trigger_error_leaves_the_run(mode: Mode) -> Result<()> {
         step <- select step { n if n < 40 => n + 1, _ => never() };
         let e: [i64, Error<`T>] = select step { 5 => error(`T), n => n };
         let go = select step { 1 | 5 => step, _ => never() };
-        seq let c = (go ~ e)? { until step > c + 10; c }
+        seq let c = (go ~ e)? { until live(step) > c + 10; c }
     }"#;
     assert_eq!(as_i64s(&run_delta(code, mode).await?.0), [1]);
     Ok(())
@@ -153,7 +153,7 @@ async fn destructured_trigger_reads_its_request(mode: Mode) -> Result<()> {
         let step = 0;
         step <- select step { n if n < 30 => n + 1, _ => never() };
         let request = select step { 1 | 2 | 3 => step, _ => never() };
-        seqq let (a, b) = (request, request * 10) { until step > a + 5; a + b }
+        seqq let (a, b) = (request, request * 10) { until live(step) > a + 5; a + b }
     }"#;
     assert_eq!(as_i64s(&run_delta(code, mode).await?.0), [11, 22, 33]);
     Ok(())
@@ -170,7 +170,7 @@ async fn named_callback(mode: Mode) -> Result<()> {
         let go = select step { 1 => step, _ => never() };
         let k = 0;
         k <- select step { 3 => 100, _ => never() };
-        let named = seqq go { let a = array::map(xs, inc); until step > 6; (a, k) };
+        let named = seqq go { let a = array::map(xs, inc); until live(step) > 6; (a, k) };
         named.1
     }"#;
     assert_eq!(last(code, mode).await?, Value::I64(0));
@@ -186,7 +186,7 @@ async fn flush_keeps_a_request_with_it(mode: Mode) -> Result<()> {
         let ready = false;
         ready <- select step { 10 => true, _ => never() };
         let a = select step { 1 | 6 => step, _ => never() };
-        seqq a; flush(cancel) { until ready; a }
+        seqq a; flush(cancel) { until live(ready); a }
     }"#;
     assert_eq!(as_i64s(&run_delta(code, mode).await?.0), [6]);
     Ok(())

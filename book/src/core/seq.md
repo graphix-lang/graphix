@@ -112,8 +112,12 @@ binding. The new binding can have a different type.
 original variable outside the block, and the step completes when `e`
 produces. A later statement that reads `x` sees the write.
 
-**`until cond;`** waits until the boolean `cond` is true, reading it live
-rather than as a queued copy. It has no value, so it cannot be the last
+**`until cond;`** waits until the boolean `cond` is true. A step sees
+the world as it stood when it started (see [What a step
+sees](#what-a-step-sees)), so the variable it waits on is written
+`live`: `until live(ready);`. An `until` whose condition reads nothing
+live and calls nothing could never change after it starts, and the
+compiler warns of it. It has no value, so it cannot be the last
 statement of a body whose value is used.
 
 **`{ s1; s2; ... }`** runs several statements together as one step.
@@ -176,6 +180,35 @@ completes (`S0 -> S1 same`) and which wait a cycle (`S1 -> S2 next`).
 It is the tool for seeing exactly which event a step is waiting on and
 which statements share a cycle.
 
+## What a step sees
+
+A step sees the world as it stood when the step started. Every variable
+the seq's own text reads, lambdas written in it included, is read once,
+when the step is entered (under `seqq`, when the request is queued: see
+[Captured inputs](#captured-inputs)), and a variable that has no value
+yet is read when it first gets one. It does not change while the step
+runs:
+
+```graphix,ignore
+seq { select x > 2 { true => x, false => never() } }
+```
+
+stalls if `x` was 2 when the step started, however `x` moves later. A
+step waits for the world to change only where it says so, with
+`live(e)`, whose variables are read live:
+
+```graphix,ignore
+seq { select live(x) > 2 { true => live(x), false => never() } }
+```
+
+The rule is lexical. A function the step calls runs on its own terms:
+its own state and the variables it captures are live, as an asynchronous
+builtin's subscription or socket is. So what a run must agree on, it
+passes as arguments. A run sees its own effects: a statement is entered
+after the writes before it have landed, so it reads them, a function's
+writes included. `live` means nothing outside a seq and is refused
+there.
+
 ## Call inputs
 
 In both forms, each call waits until all its explicit arguments are
@@ -199,12 +232,17 @@ level.
 
 A step completes when it produces a new value after its entry, never on a
 value left standing from an earlier run. A call's answer is what the call
-produces after it is issued; a step that reads a level (`let y = x`,
-`until flag`) takes the level as it stands at entry, and waits for it if
-it is absent. One consequence: a function that returns a level it does not
-derive from its argument (`|v| k`) produces nothing new when called
-again, so a step calling it never completes after the first run. Sample
-the level on the argument instead (`|v| v ~ k`).
+produces after it is issued; a step that reads a level (`let y = x`)
+takes the level as it stands at entry, and waits for it if it is absent.
+One consequence: a function that returns a level it does not derive from
+its argument (`|v| k`) produces nothing new when called again, so a step
+calling it never completes after the first run. Sample the level on the
+argument instead (`|v| v ~ k`). Another: entering a step is a fresh
+start for the functions it calls, so a function whose answer starts from
+a constant completes the step on that constant. `let counter = |t| { let
+n = 0; n <- t ~ n + 1; n }` makes `let a = counter(t)` 0 at every run,
+its count arriving a cycle later. Start such state at `never()`, or keep
+it outside the seq.
 
 This clocks the call site, not the function body: callbacks and captured
 state inside a function remain reactive. References are sampled as
@@ -237,10 +275,10 @@ source reference variable subsequently points somewhere else.
 
 ## Live state and waits
 
-`until ready` observes the live condition, rather than a queued copy of it.
-The one name it does not read live is the trigger's: `seqq request { until
-served == request; .. }` waits on the request this run is serving, as the
-same block under `seq` does.
+`until` reads the queued copy like any statement, so `until live(ready)`
+observes the live condition. The trigger's name is the request this run
+is serving: `seqq request { until live(served) == request; .. }` waits on
+it, as the same block under `seq` does.
 Connect destinations remain the original variables. An external variable
 the block writes, directly or through a function it calls, also remains
 live when read, so queued `count <- count + 1` operations can accumulate

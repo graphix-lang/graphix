@@ -7,7 +7,7 @@ use crate::expr::{
         grow::{fold_fits, grow, refuse},
         interpolated,
         lambdaexp::{any_lambda, lambda_ahead},
-        list_lit, literal, never_expr, raw_string, reference, select,
+        list_lit, literal, live_expr, never_expr, raw_string, reference, select,
         sep_by1_tok_trailing, seq, spaces, sptoken, variant,
     },
 };
@@ -214,6 +214,7 @@ where
         variant().map(|e| (e, None)),
         cast().map(|e| (e, None)),
         never_expr().map(|e| (e, None)),
+        live_expr().map(|e| (e, None)),
         any().map(|e| (e, None)),
         interpolated().map(|e| (e, None)),
         brace().map(|e| (e, None)),

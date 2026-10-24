@@ -181,6 +181,7 @@ fn trigger_parens(t: &Expr, bound: bool) -> TriggerParens<'_> {
             | TypeCast { .. }
             | Never { .. }
             | Any { .. }
+            | Live(_)
             | StringInterpolate { .. } => true,
             Deref(e) | Not { expr: e } | Neg(e) | ByRef(_, e) => reads_bare(e),
             // a lambda last operand's body is a whole expression
@@ -300,6 +301,7 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | Map { .. }
         | Apply(_)
         | Any { .. }
+        | Live(_)
         | Never { .. }
         | Construct { .. }
         | TypeCast { .. }
@@ -422,6 +424,7 @@ fn head_min(e: &ExprKind) -> usize {
         Select(_) => "select _ {".len(),
         StructWith(_) => "{ _ with".len(),
         Any { .. } => "any(".len(),
+        Live(_) => "live(".len(),
         Never { typ: None, .. } => "never(".len(),
         Never { typ: Some(t), .. } => "never<>(".len() + flat_width(t),
         TypeCast { typ, .. } => "cast<>(".len() + flat_width(typ),
@@ -2096,6 +2099,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "any")?;
                 pretty_print_exprs(buf, args, "(", ")", ",", true)
             }
+            Live(e) => {
+                write!(buf, "live")?;
+                pretty_print_exprs(buf, std::slice::from_ref(&**e), "(", ")", ",", true)
+            }
             Never { typ, args } => {
                 write!(buf, "never")?;
                 if let Some(t) = typ {
@@ -2718,6 +2725,7 @@ impl ExprKind {
                 write!(f, "any")?;
                 print_exprs(f, args, "(", ")", ", ")
             }
+            ExprKind::Live(e) => write!(f, "live({e})"),
             ExprKind::Never { typ, args } => {
                 match typ {
                     Some(t) => write!(f, "never<{t}>")?,

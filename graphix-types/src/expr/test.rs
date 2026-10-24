@@ -1015,7 +1015,13 @@ macro_rules! any {
 
 macro_rules! until_stmt {
     ($inner:expr) => {
-        decorated($inner).prop_map(|e| ExprKind::Until(Arc::new(e)).to_expr_nopos())
+        (decorated($inner), any::<bool>()).prop_map(|(e, live)| {
+            let e = match live {
+                true => ExprKind::Live(Arc::new(e)).to_expr_nopos(),
+                false => e,
+            };
+            ExprKind::Until(Arc::new(e)).to_expr_nopos()
+        })
     };
 }
 
@@ -2218,7 +2224,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 && b0.len() == b1.len()
                 && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
         }
-        (ExprKind::Until(a), ExprKind::Until(b)) => check(a, b),
+        (ExprKind::Until(a), ExprKind::Until(b))
+        | (ExprKind::Live(a), ExprKind::Live(b)) => check(a, b),
         (ExprKind::TryWith(a), ExprKind::TryWith(b)) => {
             a.bind == b.bind
                 && check_type_opt(&a.constraint, &b.constraint)

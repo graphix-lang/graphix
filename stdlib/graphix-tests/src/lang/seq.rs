@@ -216,7 +216,7 @@ const SEQ_TRIGGER_AND_UNTIL: &str = r#"
   let ready = false;
   ready <- select step { 5 => true, _ => never() };
   let y = seq go {
-    until ready;
+    until live(ready);
     9
   };
   select step { 10 => y, _ => never() }
@@ -234,7 +234,7 @@ const SEQ_BUSY_DROPS: &str = r#"
   go <- select step { 8 => true, _ => never() };
   let n = 0;
   n <- seq trig {
-    until go;
+    until live(go);
     n + 1
   };
   select step { 12 => n, _ => never() }
@@ -505,27 +505,27 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(100)))
 }; FuseExpect::Jit);
 
-// A block issues its statements at entry, so two calls in one block are
-// in flight together and answer under 200 ms apart; as separate steps the
-// second starts only when the first answers, at least 200 ms later. A
-// stall of the runtime can only bring the answers closer.
+// A block issues its statements at entry, so both calls in one block have
+// started before either answers; as separate steps the second starts only
+// once the first has answered. Each call answers with the last start it
+// sees once the runtime is idle, so `a` is 2 together and 1 apart.
 async fn block_issues_together(mode: Mode) -> Result<()> {
-    for (body, together) in
-        [("{ a <- f(1); b <- f(2) }", true), ("a <- f(1); b <- f(2)", false)]
-    {
+    for (body, first) in [("{ a <- f(1); b <- f(2) }", 2), ("a <- f(1); b <- f(2)", 1)] {
         let code = format!(
             r#"{{
-                let f = |v| sys::time::after_idle(duration:200.ms, v);
+                let started = 0;
+                let f = |v| {{
+                    started <- v;
+                    sys::time::after_idle(duration:20.ms, v) ~ started
+                }};
                 let a = never<i64>();
                 let b = never<i64>();
                 seq {{ {body} }};
-                let ta = sys::time::now(a);
-                let tb = sys::time::now(b);
-                tb ~ (sys::time::diff(tb, ta) < duration:200.ms)
+                b ~ a
             }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
-        assert_eq!(values, [Value::Bool(together)], "{body}");
+        assert_eq!(values, [Value::I64(first)], "{body}");
     }
     Ok(())
 }
@@ -646,7 +646,7 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
         // the write, it reads `flag` true in every run
         (
             "until_present",
-            "let flag = false; flag <- sys::time::timer(duration:20.ms, false) ~ true; until flag; request",
+            "let flag = false; flag <- sys::time::timer(duration:20.ms, false) ~ true; until live(flag); request",
             vec![1, 2, 3],
         ),
         // the effect helper: its `null` is born at each dispatch
@@ -748,7 +748,7 @@ run!(seq_qop_level_raises_after_entry, r#"{
     let caught = never();
     catch(e) caught <- select (e.0).error { `Late => "late" };
     let r = seq let t = trig {
-        let w = select n > 6 { true => n, false => never() } + late?;
+        let w = select live(n) > 6 { true => live(n), false => never() } + live(late)?;
         w
     };
     caught
@@ -805,7 +805,7 @@ run!(
     let r = &mut a;
     let b = 0;
     let s = &mut b;
-    let done = seqq request { until open; *r <- *r + 1; *s <- b + 1; request };
+    let done = seqq request { until live(open); *r <- *r + 1; *s <- b + 1; request };
     sys::time::after_idle(duration:100.ms, (a, b))
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:3, i64:1]")

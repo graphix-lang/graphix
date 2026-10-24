@@ -539,6 +539,17 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Seq(_) => {
             let lower = |ctx: &CompileCtx<R, E>| -> Result<Expr> {
+                for u in crate::expr::seq::fixed_untils(spec) {
+                    ctx.env.warn(
+                        flags,
+                        &u,
+                        u.pos,
+                        u.end.0,
+                        "this until reads only the step's entry snapshot and calls nothing, \
+                         so it cannot change after the step is entered: wrap what it waits \
+                         for in live(..)",
+                    )?;
+                }
                 let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
                 if flags.contains(CFlag::ExpandSeq) {
                     println!(
@@ -554,6 +565,13 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Until(_) => {
             bailat!(spec, "`until` is only legal in a seq block")
+        }
+        ExprKind::Live(_) => {
+            bailat!(
+                spec,
+                "`live` reads a variable live inside a seq step; it means nothing outside \
+                 a seq block"
+            )
         }
         ExprKind::TryWith(_) => {
             bailat!(spec, "`try … with` is only legal as a seq statement")

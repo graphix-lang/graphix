@@ -538,13 +538,13 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 0	wake-catchup-sep2026/05_noarm_window.gx
 0	wake-catchup-sep2026/06_nested_composition.gx
 0	wake-catchup-sep2026/07_fold_hof_qop_missed_emission.gx
-9	wake-connect-target-sep2026/00_seq.gx
+11	wake-connect-target-sep2026/00_seq.gx
 4	wake-connect-target-sep2026/01_never_let.gx
 3	wake-connect-target-sep2026/02_arm_value.gx
 7	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
 12	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
 2	wake-stale-bottom-sep2026/00_plain_select.gx
-15	wake-stale-bottom-sep2026/01_seq_step.gx
+24	wake-stale-bottom-sep2026/01_seq_step.gx
 2	wake-stale-bottom-sep2026/02_let.gx
 2	wake-stale-bottom-sep2026/03_call.gx
 3	wake-stale-bottom-sep2026/04_map_source.gx

@@ -751,6 +751,10 @@ pub enum ExprKind {
     /// `until expr` — wait until a bool level is true. Legal only as a
     /// seq step.
     Until(Arc<Expr>),
+    /// `live(expr)` — in a seq step, `expr`'s variables read live where
+    /// every other read is the step's entry snapshot. Legal only in a seq
+    /// body.
+    Live(Arc<Expr>),
     /// `try { stmts } with(e) { stmts }` — legal only as a seq step.
     TryWith(Arc<TryWithExpr>),
     /// `arg?`. `written` is the operand as written when a seq lowering
@@ -814,6 +818,7 @@ impl ExprKind {
             | Deref(x)
             | Neg(x)
             | Until(x)
+            | Live(x)
             | Not { expr: x }
             | Construct { arg: x, .. }
             | TypeCast { expr: x, .. }
@@ -1494,6 +1499,7 @@ impl Expr {
             Deref(x) => Deref(a(f, x)),
             Neg(x) => Neg(a(f, x)),
             Until(x) => Until(a(f, x)),
+            Live(x) => Live(a(f, x)),
             Not { expr } => Not { expr: a(f, expr) },
             Construct { name, arg } => Construct { name: name.clone(), arg: a(f, arg) },
             TypeCast { expr, typ } => TypeCast { expr: a(f, expr), typ: typ.clone() },

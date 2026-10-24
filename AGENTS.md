@@ -1217,8 +1217,15 @@ cycle, across workers; the compiler never pins threads.
   A `{ .. }` statement issues its statements together with local lets. `until`,
   `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
   in a seq body outside lambda literals). A step completes on a FIRED
-  production after its entry, never on a standing value; a call-free
-  step reads its level as it stands at entry. `seqq` queues triggers
+  production after its entry, never on a standing value. A step sees the
+  world as it stood at its entry: every variable the seq's own text
+  reads (lambdas written in it included, a nested seq excepted, which
+  takes its own) is read once, at the step's entry (`seq`) or at enqueue
+  (`seqq`), or at its first arrival if absent, as an issued call's
+  arguments are; a callee's state and captures stay live (the rule is
+  lexical), and `live(e)` reads `e`'s variables live, the only way a
+  step waits for the world to change (`until live(ready)`; an `until`
+  with no `live` part and no call warns). `seqq` queues triggers
   with captured values; a capture a step writes, a callee's write
   included, is live (`SeqCapture`). `seq t; abort(e) { .. }` ends the run when
   `e` fires: silent, past any `try`, and it wins the cycle it fires in

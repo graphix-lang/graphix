@@ -21,7 +21,7 @@ async fn values(body: &str, mode: Mode) -> Result<Vec<i64>> {
 async fn abort_ends_run(mode: Mode) -> Result<()> {
     let body = r#"
         let cancel = select step { 8 => step, _ => never() };
-        seq go; abort(cancel) { until step > go + 15; go }
+        seq go; abort(cancel) { until live(step) > go + 15; go }
     "#;
     assert_eq!(values(body, mode).await?, [30]);
     Ok(())
@@ -35,7 +35,7 @@ async fn idle_fire_is_dropped(mode: Mode) -> Result<()> {
             r#"
             let cancel = never();
             cancel <- select step {{ 20 => step, _ => never() }};
-            {kw} go; abort(cancel) {{ until step > go + 5; go }}
+            {kw} go; abort(cancel) {{ until live(step) > go + 5; go }}
         "#
         );
         assert_eq!(values(&body, mode).await?, [1, 30], "{kw}");
@@ -52,7 +52,7 @@ async fn entry_fire_is_not_an_abort(mode: Mode) -> Result<()> {
             let step = 0;
             step <- select step {{ n if n < 60 => n + 1, _ => never() }};
             let go = select step {{ 1 | 10 => step, _ => never() }};
-            {kw} let c = go; abort(c) {{ until step > c + 3; c }}
+            {kw} let c = go; abort(c) {{ until live(step) > c + 3; c }}
         }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
@@ -68,7 +68,7 @@ async fn abort_beats_completion(mode: Mode) -> Result<()> {
             r#"
             let cancel = select step {{ {cancel_at} => step, _ => never() }};
             let ran = 0;
-            let r = seq go; abort(cancel) {{ until step > go + 6; ran <- ran + 1; go }};
+            let r = seq go; abort(cancel) {{ until live(step) > go + 6; ran <- ran + 1; go }};
             select step {{ 60 => ran, _ => never() }}
         "#
         );
@@ -86,7 +86,7 @@ async fn abort_bypasses_try(mode: Mode) -> Result<()> {
             let cancel = select step {{ {cancel_at} => step, _ => never() }};
             let handled = 0;
             let r = seq go; abort(cancel) {{
-                let v = try {{ until step > go + 6; go }} with(_) {{ handled <- handled + 1; -1 }};
+                let v = try {{ until live(step) > go + 6; go }} with(_) {{ handled <- handled + 1; -1 }};
                 v
             }};
             select step {{ 60 => handled, _ => never() }}
@@ -97,7 +97,7 @@ async fn abort_bypasses_try(mode: Mode) -> Result<()> {
             r#"
             let cancel = select step {{ {cancel_at} => step, _ => never() }};
             seq go; abort(cancel) {{
-                let v = try {{ until step > go + 6; go }} with(_) {{ -1 }};
+                let v = try {{ until live(step) > go + 6; go }} with(_) {{ -1 }};
                 v
             }}
         "#
@@ -115,7 +115,7 @@ async fn abort_timer_starts_with_the_run(mode: Mode) -> Result<()> {
         let tick = count(sys::time::timer(duration:40.ms, 16)?);
         let go = select tick { 1 | 9 => tick, _ => never() };
         seq go; abort(sys::time::timer(duration:140.ms, false)) {
-            until tick > go + select go { 1 => 1, _ => 6 };
+            until live(tick) > go + select go { 1 => 1, _ => 6 };
             go
         }
     }"#;
@@ -199,7 +199,7 @@ async fn sleep_resets_the_machine(mode: Mode) -> Result<()> {
             step <- select step {{ n if n < 60 => n + 1, _ => never() }};
             let on = uniq(select step {{ s if s < 8 => true, s if s < 20 => false, _ => true }});
             select on {{
-                true => {kw} on {{ let a = step; until step > a + 12; a }},
+                true => {kw} on {{ let a = step; until live(step) > a + 12; a }},
                 false => never()
             }}
         }}"#
@@ -217,7 +217,7 @@ async fn sleep_resets_the_machine(mode: Mode) -> Result<()> {
 async fn nested_machine_restarts(mode: Mode) -> Result<()> {
     let body = r#"
         let cancel = select step { 8 => step, _ => never() };
-        let slow = |x: i64| seq x { until step > x + 15; x };
+        let slow = |x: i64| seq x { until live(step) > x + 15; x };
         seq go; abort(cancel) { let a = slow(go); a }
     "#;
     assert_eq!(values(body, mode).await?, [30]);
@@ -248,7 +248,7 @@ async fn nested_abort_reads_live(mode: Mode) -> Result<()> {
     let body = r#"
         let stop = |c: bool| select c { true => c, false => never() };
         let ran = 0;
-        let r = seq go { seq abort(stop(step > 8)) { until step > go + 15; ran <- ran + 1; go } };
+        let r = seq go { seq abort(stop(step > 8)) { until live(step) > go + 15; ran <- ran + 1; go } };
         select step { 60 => ran, _ => never() }
     "#;
     assert_eq!(values(body, mode).await?, [0]);
@@ -298,7 +298,7 @@ async fn abort_timer_budgets_every_run(mode: Mode) -> Result<()> {
         let tick = count(sys::time::timer(duration:40.ms, 30)?);
         let go = select tick { 1 | 8 | 15 | 22 => tick, _ => never() };
         seq go; abort(sys::time::timer(duration:140.ms, false)) {
-            until tick > go + select go { 22 => 1, _ => 6 };
+            until live(tick) > go + select go { 22 => 1, _ => 6 };
             go
         }
     }"#;
@@ -331,7 +331,7 @@ async fn abort_reads_trigger_snapshot(mode: Mode) -> Result<()> {
         step <- select step { n if n < 40 => n + 1, _ => never() };
         let go = select step { n if n < 20 && n % 2 == 1 => n, _ => never() };
         seq go; abort(select step - go { 6 => step, _ => never() }) {
-            until step > 30;
+            until live(step) > 30;
             0
         }
     }"#;

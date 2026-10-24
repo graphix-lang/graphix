@@ -3694,9 +3694,9 @@ const WAKE_UNREACHED_INPUT_KEEPS_TARGET: &str = r#"
     let w = select n { 9 => 7, _ => never() };
     let v = select n { 4 => 7, _ => never() };
     let bot = select o { true => { let y = select c { true => 5, false => w }; y <- ev; y }, false => -1 };
-    let live = select o { true => { let y = select c { true => 5, false => v }; y <- ev; y }, false => -1 };
+    let woke = select o { true => { let y = select c { true => 5, false => v }; y <- ev; y }, false => -1 };
     let ctl = select o { true => { let y = select c { true => 5, false => 6 }; y <- ev; y }, false => -1 };
-    select n { 5 => (bot, live, ctl), _ => never() }
+    select n { 5 => (bot, woke, ctl), _ => never() }
 }
 "#;
 

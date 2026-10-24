@@ -109,7 +109,7 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
     use Keyword::*;
     let construct = [
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
-        "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "mut",
+        "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "live", "mut",
     ];
     // the compiler-known type and bound names among them: a user type of
     // one of those names would be unnameable, or silently the builtin
@@ -724,6 +724,21 @@ where
             }
             .to_expr(pos)
         })
+}
+
+/// `live(e)`: in a seq step, `e`'s variables read live.
+fn live_expr<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        attempt(string("live").skip(not_prefix())),
+        between(sptoken('('), sptoken(')'), expr()),
+    )
+        .map(|(pos, _, e)| ExprKind::Live(Arc::new(e)).to_expr(pos))
 }
 
 fn any<I>() -> impl Parser<I, Output = Expr>

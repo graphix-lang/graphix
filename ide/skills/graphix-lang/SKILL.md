@@ -70,6 +70,15 @@ constant argument to `exit` runs at init — always gate it).
   the snapshot: `let snap = known; let states = array::map(snap, ..);
   array::zip(snap, states)` (a passed step sleeps, so its `let` keeps its
   value; a `let` outside the seq tracks).
+- **A step sees the world as it stood at its entry**: every outer variable
+  the seq's own text reads is read once when the step starts (or when it
+  first has a value), and does not change while the step runs. `select x
+  > 2 { true => x, false => never() }` in a step stalls if `x` was 2 at
+  entry. A step waits for a change only through `live(e)`: `until
+  live(ready)`, `select live(x) > 2 { .. }`; a bare `until ready` warns.
+  The rule is lexical: a function the step calls reads its own captures
+  live, so pass what must agree as an argument. `live` outside a seq is
+  refused.
 - **A seq's value is bottom until its first run completes**, and so is
   every tuple, select or call over it: `select (polling, array::len(rows))`
   shows nothing during the first run, the one the "loading…" arm was
@@ -339,7 +348,7 @@ Straight-line only; no `if`/loops inside.
 ```graphix
 let r = seqq request {             // seqq queues triggers; seq drops while busy
   let cfg = load(request);         // a call is issued once per entry over a snapshot of its args
-  until ready;                     // wait for a bool level (never the last statement where its value is used)
+  until live(ready);               // wait for a bool to be true; live: steps see their entry snapshot (never the last statement where its value is used)
   { a <- fetch(cfg); b <- probe(cfg) };  // a block: statements issued together, lets local
   let v = try { risky(cfg)? } with(e) { println("fallback"); 0 };   // the error branch; `catch` is refused in a seq
   write(v)                          // the block's value; each output releases the next queued request

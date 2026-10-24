@@ -112,8 +112,10 @@ trigger := expr
 stmt := let pat = expr ;
       | { stmt* [expr] } ;               // a block: statements issued together
       | expr ;                           // an effect, a watch, a derivation
-      | until expr ;                     // wait for a bool level to be true
+      | until expr ;                     // wait for a bool to be true
       | try { stmt* [expr] } with(e[: T]) { stmt* [expr] } ;   // §7
+
+live(expr)                               // in a step: expr's variables read live, §5
 ```
 
 `trigger` is any expression that does not begin with `{`, and its
@@ -138,8 +140,9 @@ step. `catch` is refused anywhere in a seq body — as a statement,
 inside a block, or nested in a step's expression; a lambda literal's
 body and its defaults are exempt, because a function is its own dynamic
 scope and its own firing world ("as soon as you introduce a lambda
-you're basically back in graphix"). `seq`, `seqq`, `until`, `try` and
-`with` are reserved words; the old integer-sequence builtin `seq(i, j)`
+you're basically back in graphix"). `seq`, `seqq`, `until`, `try`,
+`with` and `live` are reserved words; `live(e)` is refused outside a seq
+body, where it would mean nothing; the old integer-sequence builtin `seq(i, j)`
 is `range(i, j)`.
 
 `if`, loops, `break`/`continue` and a `select` whose arms are step
@@ -160,6 +163,24 @@ stand when the step is reached, and its effects are issued exactly
 once per reaching. A passed step is asleep and nothing in it
 re-fires. This is `f(trigger ~ x)` applied mechanically, the rule the
 hand-written ceremonies get wrong.
+
+**A step sees the world as it stood at its entry.** Every variable the
+seq's own text reads, a lambda written in the seq included, is read once:
+at the step's entry under `seq`, when the request is queued under
+`seqq` (§8), and a variable absent then is read at its first arrival,
+as a call's missing argument is waited for (§6.3). It does not change
+while the step runs: `select x > 2 { true => x, false => never() }`
+stalls when `x` was 2 at entry, and so does `select big(x) { .. }`,
+which is handed the same `x`. The rule is lexical: a function the step
+calls runs on its own terms, its state and its own captures live, as an
+async builtin's subscription or socket is. A step waits for the world
+to change only through `live(e)`, whose variables are read live:
+`until live(ready)`. An `until` whose condition has no `live` part and
+calls nothing cannot change after its entry, and the check warns of it.
+A run sees its own effects: a later step is entered after the writes
+before it landed (below), so it reads them, a callee's included; under
+`seqq` the variables the run writes are read live for the same reason
+(§8).
 
 **A statement starts in the first cycle its predecessor's effect can
 be seen.** A let's effect is its binding and a call's is its value;
@@ -200,8 +221,9 @@ standing at entry is the previous run's answer — a `~`'s held
 resident, a lambda instance's own cell, both re-presented at wake
 because sleep is pause — and the completion guard holds bottom until
 the step fires. A call is re-issued at entry and its own fire is the
-answer. A level is fired at entry as it stands (`any(pc ~! e, e)`) and
-waited for if absent; `until` is the same shape over a bool. A
+answer. A level is fired at entry as it stands and waited for if
+absent, and is not followed after (`live(e)` is); `until` is the same
+shape over a bool. A
 connect completes at issue; its write lands next cycle. An async call
 completes when the operation completes, not when its arguments arrive;
 `print`/`println`/`log` emit `null` after each message, repeats
@@ -210,10 +232,15 @@ completion, so `never()` in a step stalls the run and needs no special
 treatment; a third-party effect with no completion event cannot be
 waited on without adapting its API.
 
-The casualty of the rule: a lambda that returns a standing level it
+The casualties of the rule: a lambda that returns a standing level it
 does not derive from its argument (`|v| k`) produces no fire when
 re-called, in a seq as anywhere else, so a step calling it never
-completes on the second run. `|v| v ~ k` is the spelling.
+completes on the second run. `|v| v ~ k` is the spelling. And entering
+a step is a birth for the functions it calls too, so a callee whose
+answer starts from a constant completes the step on that constant:
+`let counter = |t| { let n = 0; n <- t ~ n + 1; n }` makes `let a =
+counter(t)` 0 at every run, its count landing a cycle later, unseen. A
+`never()` initializer, or state kept outside the seq, is the spelling.
 
 **A `let` binds the step's production for the rest of the run.**
 Later steps read the binding itself; shadowing is sequential as in a
@@ -369,9 +396,13 @@ input events cannot reissue it. Calls nested in expressions and in
 blocks lower the same way; lambda bodies and defaults, `until`
 conditions and reference contents keep their own reactive clocks.
 
-A call-free step and an `until` condition are `any(pc ~! e, e)`: fired
-at entry with the standing value, then tracked, so a level costs the
-completion rule nothing and a level that flips after entry is seen.
+A call-free step and an `until` condition read their variables through
+the step's snapshot: each is sampled by the entry clock, a strict
+sample held until the next entry, and one absent then is taken at its
+first arrival, as the issue atom waits for a missing argument. So the
+step fires at entry with the standing value and is not followed after;
+the variables under a `live(e)` are read directly, which keeps
+`any(pc ~! e, e)`'s tracking for them alone.
 A compound `e` is bound once so its nodes are not duplicated (a `?`
 inside it must raise once). A call-free `?` is therefore sampled on
 the entry event too, so a carried error raises at every entry rather
@@ -608,9 +639,9 @@ and the sample accumulates request debt, so the first complete tuple
 can satisfy several pending requests with the same snapshot — ordinary
 sample behaviour, deliberately inherited; exact arrival-time snapshots
 require initialized inputs. The body reads its captures as tuple
-projections of the dequeued request. `until` conditions (all but the
-trigger's name, which is this run's request as it is under `seq`),
-address-taking and variables the body writes stay LIVE (read-modify-write
+projections of the dequeued request, an `until` condition's included
+(§5). The variables under a `live(e)`, address-taking and variables the
+body writes stay LIVE (read-modify-write
 state must see its own writes across requests): a direct write target
 is never redirected into a snapshot, and a capture the body writes
 through a function it calls is a `SeqCapture` the analysis sets live

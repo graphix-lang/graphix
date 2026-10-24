@@ -33,6 +33,7 @@ mod seq_errors;
 mod seq_let;
 mod seq_lowering;
 mod seq_shadow;
+mod seq_snapshot;
 mod seq_steps;
 mod seq_try;
 mod seqq;

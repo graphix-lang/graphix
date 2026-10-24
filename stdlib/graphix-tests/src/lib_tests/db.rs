@@ -1292,9 +1292,9 @@ run_with_tempdir!(
         seq {{
             sub;
             db::insert(t, "k", 1)?;
-            until inserts == 1;
+            until live(inserts == 1);
             db::remove(t, "k")?;
-            until removes == 1 && changes == 2;
+            until live(removes == 1 && changes == 2);
             on <- false;
             sys::time::timer(duration:20.ms, false);
             on <- true;

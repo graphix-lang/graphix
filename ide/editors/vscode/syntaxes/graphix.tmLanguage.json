@@ -39,7 +39,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.graphix",
-                    "match": "\\b(select|seq|seqq|until|abort|flush|if|try|catch)\\b"
+                    "match": "\\b(select|seq|seqq|until|live|abort|flush|if|try|catch)\\b"
                 },
                 {
                     "name": "keyword.other.graphix",

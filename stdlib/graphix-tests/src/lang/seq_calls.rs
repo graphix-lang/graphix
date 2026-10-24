@@ -88,7 +88,7 @@ async fn until_stays_live(mode: Mode) -> Result<()> {
         let step = 0;
         step <- select step { n if n < 20 => n + 1, _ => never() };
         let ready = |n| n >= 10;
-        seq { until ready(step); step }
+        seq { until live(ready(step)); step }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [10]);
