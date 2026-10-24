@@ -216,30 +216,17 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
                     for role in roles.iter() {
                         match role {
                             SubRole::SortMarker { .. } => sort_dirty = true,
-                            SubRole::Grid {
-                                row_path,
-                                col_name,
-                                sparkline_history_secs,
-                            } => {
+                            SubRole::Grid { .. } => {
                                 grid_dirty = true;
-                                let Some(v) = &v else { continue };
-                                if let Some(hs) = sparkline_history_secs
-                                    && let Some(f) = value_to_f64(v)
-                                {
-                                    let key = (row_path.clone(), col_name.clone());
-                                    let h = inner
-                                        .sparklines
-                                        .entry(key)
-                                        .or_insert_with(LPooled::take);
-                                    push_sparkline_point(h, now, f, *hs);
-                                }
-                                if let Some(cid) = inner.on_update {
-                                    let path =
-                                        Value::String(cell_path(row_path, col_name));
-                                    let _ = cells.gx.call(
-                                        cid,
-                                        ValArray::from_iter([path, v.clone()]),
-                                    );
+                                if let Some(v) = &v {
+                                    deliver_to_grid(
+                                        &cells.gx,
+                                        &mut inner.sparklines,
+                                        inner.on_update,
+                                        role,
+                                        v,
+                                        now,
+                                    )
                                 }
                             }
                         }
@@ -259,6 +246,34 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
             }
         }
     });
+}
+
+/// Deliver `v` to the cell `role` shows in the grid: a point on its
+/// sparkline, then `on_update`, whose call refuses a value its `#value:
+/// Primitive` does not hold (a map).
+fn deliver_to_grid<X: GXExt>(
+    gx: &GXHandle<X>,
+    sparklines: &mut AHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
+    on_update: Option<CallableId>,
+    role: &SubRole,
+    v: &Value,
+    now: Instant,
+) {
+    let SubRole::Grid { row_path, col_name, sparkline_history_secs } = role else {
+        return;
+    };
+    if let Some(hs) = sparkline_history_secs
+        && let Some(f) = value_to_f64(v)
+    {
+        let h = sparklines
+            .entry((row_path.clone(), col_name.clone()))
+            .or_insert_with(LPooled::take);
+        push_sparkline_point(h, now, f, *hs);
+    }
+    if let Some(cid) = on_update {
+        let path = Value::String(cell_path(row_path, col_name));
+        let _ = gx.call(cid, ValArray::from_iter([path, v.clone()]));
+    }
 }
 
 /// A row's sort key in one column: numbers before text, numbers in
@@ -624,6 +639,8 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Subscribe `path` for the cell `(row, col)` in `role`; a role the
     /// subscription already plays (a row listed twice) is not added again.
+    /// A new subscription delivers its current value when it arrives; a
+    /// role new to a standing one is delivered the value it holds.
     fn subscribe_cell(
         &self,
         inner: &mut SharedCellsInner,
@@ -635,29 +652,29 @@ impl<X: GXExt> DataTableW<X> {
         let dval = self.subscriber.subscribe(path);
         let id = dval.id();
         let roles = inner.routing.entry(id).or_insert_with(SubRoles::new);
-        if !roles.contains(&role) {
-            roles.push(role);
+        let added = !roles.contains(&role);
+        if added {
+            roles.push(role.clone());
         }
         inner.cells.insert((row.clone(), col.clone()), id);
-        // CR claude for claude: [bug/low] First problem: when the subscription already
-        // exists (the cell is held as a SortMarker of a sorted column), adding the Grid
-        // role here requests no BEGIN_WITH_LAST update. A row scrolling back into view
-        // therefore fires no on_update and gets no initial sparkline point, although
-        // the book's data_table page says it re-delivers its current value. Fix: when a
-        // Grid role is added to an existing Dval, deliver the stored value the way
-        // spawn_dispatch_task does. Second problem: spawn_dispatch_task passes the raw
-        // netidx Value to on_update, whose declared type is Primitive, which excludes
-        // Map. A publisher writing a map at a cell hands a handler a value its type
-        // rules out, so an exhaustive select over Primitive matches no arm. Either
-        // declare #value as Any (this refuses existing handlers annotated Primitive) or
-        // cast to Primitive and drop the values that fail. That choice is a decision on
-        // the API. (gui-datatable-13)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Do the first fix; cast to Primitive and drop values that fail.
-        inner.dvals.entry(id).or_insert_with(|| {
-            dval.updates(UpdatesFlags::BEGIN_WITH_LAST, self.update_tx.clone());
-            dval
-        });
+        match inner.dvals.entry(id) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                dval.updates(UpdatesFlags::BEGIN_WITH_LAST, self.update_tx.clone());
+                e.insert(dval);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                if added && let Some(v) = inner.values.get(&id) {
+                    deliver_to_grid(
+                        &self.cells.gx,
+                        &mut inner.sparklines,
+                        inner.on_update,
+                        &role,
+                        v,
+                        Instant::now(),
+                    )
+                }
+            }
+        }
     }
 
     /// Push each sparkline column's fallback into the history of every

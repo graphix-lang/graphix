@@ -592,6 +592,66 @@ let result = data_table(
     Ok(())
 }
 
+/// A row a resort brings into view, whose sort cell was already
+/// subscribed off-screen, gets its current value through on_update. The
+/// rows are listed in descending order, so r0 shows only once the sort
+/// is ascending.
+#[tokio::test(flavor = "current_thread")]
+async fn a_resort_delivers_the_cells_it_shows() -> Result<()> {
+    let n_rows: usize = 120;
+    let mut publishes = String::new();
+    let mut rows = String::new();
+    for i in 0..n_rows {
+        publishes.push_str(&format!(
+            "sys::net::publish(\"/local/dt_role/r{i}/cpu\", v64:{i});\n"
+        ));
+        if i > 0 {
+            rows.push_str(", ");
+        }
+        rows.push_str(&format!("\"/local/dt_role/r{}\"", n_rows - 1 - i));
+    }
+    let code = format!(
+        r#"
+
+{publishes}
+let tbl = {{ rows: [{rows}], columns: ["cpu"] }};
+let flip = 0;
+let sort: Array<SortBy> = [{{ column: "cpu", direction: `Descending }}];
+sort <- select flip {{
+    0 => never(),
+    _ => [{{ column: "cpu", direction: `Ascending }}]
+}};
+let heard = false;
+let result = data_table(
+    #sort_by: &sort,
+    #on_update: |#path: string, #value: Primitive| select path {{
+        "/local/dt_role/r0/cpu" => heard <- path ~ true,
+        _ => never()
+    }},
+    #table: &tbl
+)
+"#
+    );
+    let mut h = dt(&code).await?;
+    let _ = h.watch("test::heard").await?;
+    h.wait_until(
+        |h| h.dt_snapshot().row_basenames.first().map(|s| s.as_str()) == Some("r119"),
+        Duration::from_secs(10),
+        "the descending sort",
+    )
+    .await?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::heard"), Some(&Value::Bool(false)), "r0 off-screen");
+    h.set_var("test::flip", Value::I64(1))?;
+    h.wait_until(
+        |h| h.get_watched("test::heard") == Some(&Value::Bool(true)),
+        Duration::from_secs(10),
+        "on_update for r0 once it shows",
+    )
+    .await?;
+    Ok(())
+}
+
 /// With more rows than fit the window, off-screen rows still sort
 /// correctly through column and direction changes (alpha asc → alpha
 /// desc → beta desc → beta asc → alpha asc; `beta[i] = (i*7+13) % n`
@@ -1069,6 +1129,34 @@ let result = data_table(
             if s.contains("/local/dt7/r0/c0") && s.contains("42")),
         "on_update should have received published value, got: {log:?}",
     );
+    Ok(())
+}
+
+/// on_update takes a Primitive, so its call refuses a map published at a
+/// cell; the number beside it is delivered.
+#[tokio::test(flavor = "current_thread")]
+async fn on_update_skips_a_map() -> Result<()> {
+    let code = r#"
+
+let log: Array<string> = [];
+sys::net::publish("/local/dt_map/r0/c0", {"a" => 1});
+sys::net::publish("/local/dt_map/r0/c1", v64:42);
+let tbl = { rows: ["/local/dt_map/r0"], columns: ["c0", "c1"] };
+let result = data_table(
+    #on_update: |#path: string, #value: Primitive| log <- path ~ array::push(log, path),
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::log").await?;
+    let heard = |h: &GuiTestHarness, path: &str| {
+        matches!(h.get_watched("test::log"), Some(Value::Array(a))
+            if a.iter().any(|p| p == &Value::String(path.into())))
+    };
+    h.wait_until(|h| heard(h, "/local/dt_map/r0/c1"), Duration::from_secs(10), "c1")
+        .await?;
+    h.drain().await?;
+    assert!(!heard(&h, "/local/dt_map/r0/c0"), "{:?}", h.get_watched("test::log"));
     Ok(())
 }
 
