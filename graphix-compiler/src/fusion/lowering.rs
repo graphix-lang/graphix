@@ -207,7 +207,7 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     selects: &[&Node<R, E>],
 ) -> Option<FusionBlocker> {
-    // CR claude for eric: [bug/medium] Only handler-ful raises count here and in
+    // CR claude for claude: [bug/medium] Only handler-ful raises count here and in
     // `claims_no_site_memory`. A handler-less `?` or a `$` over a constant error also
     // owes its report to a birth or Step view a kernel lacks: a fused select arm never
     // reports `e?` at the arm's first entry, and a native tail loop reports it at its
@@ -221,6 +221,10 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
     // CLAUDE.md. probe:
     // design/review-2026-10-19/repro/f-call-flow-arm-entry-unhandled-raise.gx (0 vs 1
     // reports) and f-call-flow-tail-loop-unhandled-raise.gx (1 vs 6) (f-call-flow-02)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): a swallowed failure is reported at
+    // least once, the count is not owed, as with dbg: a constant error in a native tail
+    // loop reporting once is fine; a handler-less raise under an arm whose operand does
+    // not follow the arm's entry de-fuses. Measure what that costs fusion first.
     let mut any = false;
     if !selects.is_empty() {
         fusion::for_each_reachable_node(root, &mut |n| {

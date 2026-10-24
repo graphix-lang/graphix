@@ -34,30 +34,36 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 80;
+pub const REGISTRATION_FORMAT: u8 = 81;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
 pub const NOT_QUIESCENT: u64 = 2;
 
 /// The program a session compiled after its packages, when it did: the
-/// runtime hands its embedder the root's id, output flag and type.
+/// runtime hands its embedder the root's id, output flag and type, and
+/// prints at a restore the warnings its compile printed.
 #[derive(Debug, Clone)]
 pub struct ProgramRoot {
     pub id: ExprId,
     pub output: bool,
     pub typ: Type,
+    pub warnings: Vec<ArcStr>,
 }
 
 impl Pack for ProgramRoot {
     fn encoded_len(&self) -> usize {
-        self.id.encoded_len() + self.output.encoded_len() + self.typ.encoded_len()
+        self.id.encoded_len()
+            + self.output.encoded_len()
+            + self.typ.encoded_len()
+            + self.warnings.encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         self.id.encode(buf)?;
         self.output.encode(buf)?;
-        self.typ.encode(buf)
+        self.typ.encode(buf)?;
+        self.warnings.encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
@@ -65,6 +71,7 @@ impl Pack for ProgramRoot {
             id: Pack::decode(buf)?,
             output: Pack::decode(buf)?,
             typ: Pack::decode(buf)?,
+            warnings: Pack::decode(buf)?,
         })
     }
 }

@@ -280,7 +280,7 @@ where
     many(none_of(['\r', '\n']))
 }
 
-// CR claude for eric: [structure/medium] A `//` comment parses only on its own line
+// CR claude for claude: [structure/medium] A `//` comment parses only on its own line
 // directly above an item, so these are refused (`graphix --check`, 2026-10-13): a
 // comment after code on its line (`let x = 1; // c`), one between `let x =` and its
 // value, one on the last line of a file or block (nothing below it), and even `{`
@@ -290,6 +290,8 @@ where
 // graphix fmt round-trips them; it can wait. (parser-comments-01)
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`; `docs` says whether one is legal here.
+// 2026-10-24 claude: Eric ruled (2026-10-24): do it: trailing and end-of-line
+// comments.
 fn comment_line<I>(docs: bool) -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

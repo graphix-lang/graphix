@@ -86,7 +86,7 @@ fn write_count<R: Rt, E: UserEvent>(
 
 type StateRef = Arc<Mutex<QueueState>>;
 
-// CR claude for eric: [bug/medium] A callback that accumulates into an outer
+// CR claude for claude: [bug/medium] A callback that accumulates into an outer
 // variable, `|x| { got <- x ~ array::push(got, x); x }`, loses its first write when
 // the wrapper releases one call per tick: `got` reads [1], then [2], then [2, 3],
 // where each release should see the write the previous one made. Found while pinning
@@ -107,6 +107,9 @@ type StateRef = Arc<Mutex<QueueState>>;
 // fire a credit at all? queuefn_trigger_before_fn relies on same-cycle banking (trigs
 // and xs both deliver one a cycle). Two credits mean two calls in flight, which an
 // accumulator into an outer variable cannot survive. Needs a ruling before a pin.
+// 2026-10-24 claude: Eric ruled (2026-10-24): keep a site's queued calls across sleep
+// (pause, like queue), and a trigger's birth fire is not a credit: only fires after
+// the queuefn exists release calls.
 /// Per-call-site Apply impl for the wrapper lambda. Each invocation of the
 /// wrapper at a user call site goes through this. Push/pop coordination is
 /// done via `state` shared with the owning `QueueFn` node.
@@ -217,7 +220,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
 
     /// The site's queued calls go with its sleep: a release to a sleeping
     /// site would run nothing.
-    // CR claude for eric: [bug/medium] Dropping the site's queued calls at sleep loses
+    // CR claude for claude: [bug/medium] Dropping the site's queued calls at sleep loses
     // calls the program made just because the caller's arm paused: the later triggers
     // only bank credit. Under the rule that a wake resumes and never rebirths, a pause
     // should keep them. The doc's premise that a release to a sleeping site runs
@@ -226,6 +229,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     // its last release) or skips it until the wake, then keep the entries here and
     // update queuefn_sleeping_site_drops_its_calls. probe:
     // design/review-2026-10-19/repro/core-aux-queuefn-site-sleep-drops.gx (core-aux-02)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): keep a site's queued calls across
+    // sleep (pause, like queue), and a trigger's birth fire is not a credit: only fires
+    // after the queuefn exists release calls.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.sleep(ctx);
         let count_write = {
@@ -507,7 +513,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         }
     }
 
-    // CR claude for eric: [bug/medium] This sleep is still the old arm-rewake restart:
+    // CR claude for claude: [bug/medium] This sleep is still the old arm-rewake restart:
     // it clears the shared queue and resets pop_count to 1, and WrapperApply::sleep
     // drops its site's queued calls. A call queued before the sleep never answers, and
     // a #trigger credit banked before it is lost. The wake-is-a-resume rule (CLAUDE.md;
@@ -523,6 +529,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     // QueueFn::sleep is a pause and QueueFn::reborn resets queue, credit and #count,
     // design/queue_fn.md and the async_sleep_outputs.md table follow. What remains here
     // is WrapperApply::sleep dropping its site's calls, which is core-aux-02.
+    // 2026-10-24 claude: Eric ruled (2026-10-24): keep a site's queued calls across
+    // sleep (pause, like queue), and a trigger's birth fire is not a credit: only fires
+    // after the queuefn exists release calls.
     /// A pause: the queued calls and the credit stay.
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 

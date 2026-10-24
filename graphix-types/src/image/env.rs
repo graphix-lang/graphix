@@ -291,7 +291,7 @@ impl Pack for Env {
             package_roots,
             ide: _,
             hidden_impls: _,
-            warned: _,
+            recorded: _,
         } = self;
         lexical_len(self)
             + RelocatedMap((**by_id).clone()).encoded_len()
@@ -322,7 +322,7 @@ impl Pack for Env {
             package_roots,
             ide: _,
             hidden_impls: _,
-            warned: _,
+            recorded: _,
         } = self;
         lexical_encode(self, buf)?;
         RelocatedMap((**by_id).clone()).encode(buf)?;

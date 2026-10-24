@@ -112,16 +112,24 @@ fn an_unused_import_is_refused_by_the_run_as_by_the_check() {
     }
 }
 
-/// A restored program compiles nothing, so one whose compile warned keeps
-/// no image: every run compiles it and warns again.
+/// A restored program compiles nothing, so its image carries the warnings
+/// its compile printed, and every run prints them.
 #[test]
 fn a_program_that_warned_warns_at_every_run() {
     let program =
         "use array::map;\nsys::exit(sys::time::after_idle(duration:50.ms, 0));\n1\n";
     let dir = tempfile::tempdir().expect("tempdir");
+    let mut first = None;
     for i in 0..3 {
         let ran = graphix(dir.path(), program, &[], &[CACHE_LOG]);
+        let warnings: Vec<String> = ran
+            .stderr
+            .lines()
+            .filter(|l| l.starts_with("WARNING"))
+            .map(String::from)
+            .collect();
         assert!(ran.stderr.contains("unused import `map`"), "run {i}:\n{}", ran.stderr);
-        assert_eq!(program_image(&ran).1, false, "run {i} restored:\n{}", ran.log);
+        assert_eq!(program_image(&ran).1, i > 0, "run {i}:\n{}", ran.log);
+        assert_eq!(*first.get_or_insert_with(|| warnings.clone()), warnings, "run {i}");
     }
 }

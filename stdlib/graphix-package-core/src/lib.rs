@@ -2154,7 +2154,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for eric: [bug/medium] Sleep aborts the call in flight, and the
+        // CR claude for claude: [bug/medium] Sleep aborts the call in flight, and the
         // wake re-issues it from the start. That is only correct for an eval that loses
         // nothing when dropped. The stream overrides do lose something. IoReadExactEv
         // and IoReadAllEv drop the bytes they already read: a read_exact of 6 asleep
@@ -2176,6 +2176,9 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         // read, an aborted write_all leaves a partial write, and the cursor reads lose
         // the entries their blocking task advanced past. Cancel safety is still this
         // CR's question.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): the declaration: EvalCachedAsync
+        // declares whether an eval is cancel-safe, and a sleep lets an unsafe one
+        // finish and banks its reply for the wake.
         self.renew(ctx);
     }
 }

@@ -144,7 +144,7 @@ fn parse_method(s: &str) -> std::result::Result<reqwest::Method, Value> {
     }
 }
 
-// CR claude for eric: [bug/medium] A request that never answers wedges its call site
+// CR claude for claude: [bug/medium] A request that never answers wedges its call site
 // for good. `HttpRequestEv` takes the default `Calls::Fifo`, so a site runs one call at
 // a time and queues the rest without bound. This client, and `http::client` without
 // `#timeout`, has no request timeout and no connect timeout. So when a server accepts
@@ -158,6 +158,10 @@ fn parse_method(s: &str) -> std::result::Result<reqwest::Method, Value> {
 // for requests: `Concurrent` (independent calls, replies in completion order) or
 // `Latest` (fits a GET poller, but drops the replies of queued writes). Alternatively,
 // bound the queue. Also reported as (x-security-05). (http-sqlite-db1-05)
+// 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
+// with a sane default: client 30 s connect timeout, no default total timeout, requests
+// Concurrent, #max_body 256 MiB; server timeouts as serve arguments with today's
+// values, body decoded from raw on demand; rpc #max_inflight 1024, an RpcError past it.
 static DEFAULT_CLIENT: LazyLock<Arc<reqwest::Client>> = LazyLock::new(|| {
     Arc::new(
         reqwest::Client::builder().build().expect("failed to create default HTTP client"),
@@ -194,7 +198,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
             if let Some(ca_cert) = &ca_cert {
                 let cert = reqwest::Certificate::from_pem(ca_cert)
                     .map_err(|e| http_err(format_args!("invalid ca_cert PEM: {e}")))?;
-                // CR claude for eric: [risk/medium] `#ca_cert` here adds the CA to the
+                // CR claude for claude: [risk/medium] `#ca_cert` here adds the CA to the
                 // OS trust store: reqwest 0.13's deprecated `add_root_certificate`
                 // merges with the platform verifier's roots. `sys::tls::connect`'s
                 // `#ca_cert` instead replaces the roots with only that CA. So an http
@@ -208,6 +212,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
                 // `tls_certs_merge` here and make sys::tls add the CA to webpki_roots.
                 // Then say which in both gxi docs, or give the two meanings two names.
                 // (x-security-08)
+                // 2026-10-24 claude: Eric ruled (2026-10-24): #ca_cert pins: only that
+                // CA, in http and sys::tls alike.
                 builder = builder.add_root_certificate(cert);
             }
             let client = builder.build().map_err(|e| {
@@ -285,7 +291,7 @@ impl BodyKind for ArcStr {
         Bytes::from_owner(self).into()
     }
 
-    // CR claude for eric: [risk/medium] The client reads a response body whole, with no
+    // CR claude for claude: [risk/medium] The client reads a response body whole, with no
     // bound. Both impls of BodyKind::read (`resp.text()` here, which is then copied
     // again into an ArcStr, and `resp.bytes()` in the Bytes impl) buffer whatever the
     // server sends. `#timeout` defaults to null, so a server that streams without end,
@@ -298,8 +304,13 @@ impl BodyKind for ArcStr {
     // `HTTPError("body over N bytes")`, and build the ArcStr once from the bytes. Eric
     // needs to choose the default bound, because legitimate downloads can be large.
     // (http-sqlite-db1-10)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
+    // with a sane default: client 30 s connect timeout, no default total timeout,
+    // requests Concurrent, #max_body 256 MiB; server timeouts as serve arguments with
+    // today's values, body decoded from raw on demand; rpc #max_inflight 1024, an
+    // RpcError past it.
     async fn read(resp: reqwest::Response) -> reqwest::Result<ArcStr> {
-        // CR claude for eric: [bug/medium] BodyKind::read buffers the whole response
+        // CR claude for claude: [bug/medium] BodyKind::read buffers the whole response
         // body with no size limit, here and in the Bytes impl's resp.bytes(), and the
         // text path copies it a second time into the ArcStr. The default client and
         // http::get set no timeout. A server that streams an endless or very large body
@@ -314,6 +325,11 @@ impl BodyKind for ArcStr {
         // after about 3 s). (x-panics-03)
         // 2026-10-13 claude: re-addressed: the bound's default is the choice
         // http-sqlite-db1-10 above asks of Eric; this waits on that ruling.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional
+        // argument with a sane default: client 30 s connect timeout, no default total
+        // timeout, requests Concurrent, #max_body 256 MiB; server timeouts as serve
+        // arguments with today's values, body decoded from raw on demand; rpc
+        // #max_inflight 1024, an RpcError past it.
         Ok(ArcStr::from(resp.text().await?.as_str()))
     }
 }
@@ -446,7 +462,7 @@ fn text_response(
 }
 
 fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
-    // CR claude for eric: [bug/high] db1-02 regression: a raising http handler's 500
+    // CR claude for claude: [bug/high] db1-02 regression: a raising http handler's 500
     // body leaks ErrChain internals to the client. Since a959e8cc,
     // core::handler::Request::update answers a request with the error its handler
     // raised (`out.or(raised)`), and build_hyper_response sends any Value::Error to the
@@ -472,7 +488,10 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     // Unverified: the reviewer's report, not checked by a verifier. (x-rerun-4-01)
     // 2026-10-13 claude: re-addressed: answering a generic body is the policy question
     // http-sqlite-db1-03 below puts to Eric; this waits on that ruling.
-    // CR claude for eric: [risk/medium] When a handler raises, the remote client gets a
+    // 2026-10-24 claude: Eric ruled (2026-10-24): a generic 500 body with the chain
+    // logged server-side (a handler wanting details returns its own 500), and stop
+    // copying a program's text into every ErrChain link.
+    // CR claude for claude: [risk/medium] When a handler raises, the remote client gets a
     // 500 whose body is the Display of the whole ErrChain. That includes the error
     // payload (db error text, paths, anything the handler put in the message) and the
     // `ori`/`pos` fields, which name the server's source file and line. Any client that
@@ -485,6 +504,9 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     // request got which answer. probe:
     // design/review-2026-10-12/repro/http-sqlite-db1-03.gx Also reported as
     // (x-security-04). (http-sqlite-db1-03)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): a generic 500 body with the chain
+    // logged server-side (a handler wanting details returns its own 500), and stop
+    // copying a program's text into every ErrChain link.
     if let Value::Error(e) = v {
         let data = rep::strip(e);
         return text_response(
@@ -549,7 +571,7 @@ async fn handle_http_request(
         }
         Ok(Err(e)) => return text_response(StatusCode::BAD_REQUEST, e),
     };
-    // CR claude for eric: [risk/medium] Every connection collects its whole body (up to
+    // CR claude for claude: [risk/medium] Every connection collects its whole body (up to
     // `max_body`) before dispatch, and a UTF-8 body is then copied a second time into
     // `body` with `ArcStr::from`, so a request holds two copies. With the defaults (768
     // connections, 16 MiB) remote clients can pin about 24 GiB before the program sees
@@ -558,6 +580,11 @@ async fn handle_http_request(
     // such as a byte-counting semaphore, or smaller defaults. Both are API and policy
     // choices. The defaults are also written twice, in `serve`'s labels in mod.gx and
     // in `Settings` here (`DEFAULT_MAX_BODY`, the 768 literal). (x-security-06)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
+    // with a sane default: client 30 s connect timeout, no default total timeout,
+    // requests Concurrent, #max_body 256 MiB; server timeouts as serve arguments with
+    // today's values, body decoded from raw on demand; rpc #max_inflight 1024, an
+    // RpcError past it.
     let body = match std::str::from_utf8(&raw) {
         Ok(s) if !s.is_empty() => Some(ArcStr::from(s)),
         Ok(_) | Err(_) => None,
@@ -691,7 +718,7 @@ async fn serve_connection(
         let resp = handle_http_request(req, post.clone(), max_body);
         async move { Ok::<_, std::convert::Infallible>(resp.await) }
     });
-    // CR claude for eric: [bug/high] This connection builder has no timer, so hyper
+    // CR claude for claude: [bug/high] This connection builder has no timer, so hyper
     // drops its default 30 s header-read timeout ("has default, but no timer set").
     // Nothing else limits how long a connection may stay idle. Each of these holds its
     // `max_connections` permit from `serve_loop` for as long as the client keeps the
@@ -711,6 +738,11 @@ async fn serve_connection(
     // lib_tests::http::http_silent_socket_releases_its_permit (slow-tests).
     // a connection waiting on a request's headers, a silent one or one idle
     // between requests, is closed past the header timeout: it holds a permit
+    // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
+    // with a sane default: client 30 s connect timeout, no default total timeout,
+    // requests Concurrent, #max_body 256 MiB; server timeouts as serve arguments with
+    // today's values, body decoded from raw on demand; rpc #max_inflight 1024, an
+    // RpcError past it.
     if let Err(e) = hyper::server::conn::http1::Builder::new()
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(HEADER_READ_TIMEOUT)

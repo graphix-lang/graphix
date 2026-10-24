@@ -932,7 +932,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 #[derive(Debug)]
 struct RpcReply(server::RpcCall);
 
-// CR claude for eric: [risk/medium] A published rpc keeps one handler instance for
+// CR claude for claude: [risk/medium] A published rpc keeps one handler instance for
 // every call f has not answered, with no limit and no way to drop one. RpcReply does
 // not implement Reply::abandoned, and Inbox and Handler's pending/running lists are
 // unbounded Vecs. The Inbox wakes the runtime outside the 100-deep rpcs channel, so
@@ -945,6 +945,10 @@ struct RpcReply(server::RpcCall);
 // no reply channel or whose client is gone (needs an accessor on netidx_protocols'
 // RpcReply). probe: design/review-2026-10-19/repro/x-security-rpc-unbounded.sh
 // (x-security-02)
+// 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
+// with a sane default: client 30 s connect timeout, no default total timeout, requests
+// Concurrent, #max_body 256 MiB; server timeouts as serve arguments with today's
+// values, body decoded from raw on demand; rpc #max_inflight 1024, an RpcError past it.
 impl Reply for RpcReply {
     fn reply(mut self, v: Value) {
         self.0.reply.send(v)

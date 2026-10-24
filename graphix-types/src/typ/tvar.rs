@@ -1616,7 +1616,7 @@ impl Type {
     /// says "not numeric, or this number").
     fn require_one_number(&self, hand: &mut dyn FnMut(&TVar, Type)) {
         let mut parts = UnionParts::new(Measure::Numbers);
-        // CR claude for eric: [bug/medium] When the binding already has a numeric
+        // CR claude for claude: [bug/medium] When the binding already has a numeric
         // member, the open members get no conjunct at all. So `'a: [Number, null] +
         // OneNumber` bound to `[i64, 'y]` leaves 'y free. A generic caller (`let g =
         // |b, y| f(select b { true => 1, false => y })`) then generalizes with an
@@ -1629,6 +1629,8 @@ impl Type {
         // member plus the non-numeric types (needs a way to say "not a number"), refuse
         // such a binding at the definition, or let a bound name a compound type. Needs
         // a rule. Probe: design/review-2026-10-12/repro/t-tvar-01.gx (t-tvar-01)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): refuse at the definition: a
+        // OneNumber binding that leaves an open member asks for an annotation.
         if self.union_parts(None, &mut parts).is_err() || parts.known > 0 {
             return;
         }

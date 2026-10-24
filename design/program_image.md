@@ -57,6 +57,9 @@ digest, and the files whose appearance would change a module's
 resolution (an interface beside a module, an `m.gx` beside the
 `m/mod.gx` it would win over). A load re-verifies the record and a
 mismatch is a miss; a program that read a netidx module gets no entry.
+A restored program compiles nothing, so its entry carries the warnings
+its compile printed (`ProgramRoot::warnings`) and a restore prints them
+again: a warm start warns as a cold one does.
 For each root module the record also holds, as absent, its files in
 every search directory ahead of the one it came from
 (`root_module_site`), so a file added there is a miss

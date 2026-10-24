@@ -126,7 +126,7 @@ macro_rules! tdbg {
     };
 }
 
-// CR claude for eric: [structure/low] UserEvent has one implementation, NoUserEvent
+// CR claude for claude: [structure/low] UserEvent has one implementation, NoUserEvent
 // (the only GXExt is NoExt, here and in ../netidx), and nothing reads Event::user
 // except Event::fork, Event's clear and the core-trait hook's take_event clone. Still,
 // the E parameter is on Node, Update, Apply, BuiltIn, ExecCtx, CompileCtx and every
@@ -134,6 +134,10 @@ macro_rules! tdbg {
 // embedder uses. Decide whether GXExt's user events stay. If not, delete UserEvent,
 // Event::user and the E parameter. If an embedder later needs non-Value events, they
 // can reach builtins through libstate rather than through every node's type. (c-lib-05)
+// 2026-10-24 claude: Eric ruled (2026-10-24): delete UserEvent, Event::user and the E
+// parameter. He also wants to look at removing the custom netidx parts of Event and rt,
+// so rt only runs async jobs and netidx is a stdlib library delivering by bind ids like
+// the others (a follow-on project).
 pub trait UserEvent: Clone + Debug + Any + Send + Sync {
     fn clear(&mut self);
 }

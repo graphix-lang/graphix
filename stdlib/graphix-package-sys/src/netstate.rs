@@ -479,7 +479,7 @@ impl NetState {
         // subscriber of the path gets the path's last value alone, never a
         // re-send to every subscriber of it.
         let flags = flags | UpdatesFlags::NO_SPURIOUS;
-        // CR claude for eric: [risk/low] The route is created and the id pushed only
+        // CR claude for claude: [risk/low] The route is created and the id pushed only
         // after subscribe_updates has returned. Two consequences follow. (1) For a Dval
         // that is already live (one held by write_target), subscribe_updates makes the
         // connection task replay the last value into updates_tx on another thread. The
@@ -511,12 +511,15 @@ impl NetState {
         // registered, so a reader subscribing after its route was removed gets the replay. Pin
         // lib_tests::net::net_rewoken_reader_of_a_held_path. Point (1), the replay racing the
         // route's creation, stands.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): fix the replay ordering upstream in
+        // netidx (per-reader BEGIN_WITH_LAST targeted at the joining channel in stream order),
+        // then simplify sys's routing.
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         let mut routes = self.0.routes.lock();
         let streamed = routes.register(&dv);
         let route = routes.subs.entry(dv.id()).or_default();
-        // CR claude for eric: [bug/high] A late second reader of a busy path sees the
+        // CR claude for claude: [bug/high] A late second reader of a busy path sees the
         // same value twice, or newer then older values. This replay sends dv.last()
         // through set_var, and then the reader's BindId joins route.ids. The pump reads
         // route.ids when it drains a batch, not when netidx queued it, so updates
@@ -542,6 +545,9 @@ impl NetState {
         // then sys can remove shared routing/manual last replay. Equality filtering
         // would discard legitimate repeated writes. Socket probes cannot run here;
         // the candidate sys rewrite was discarded. Upstream changes are outside scope.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): fix the replay ordering upstream in
+        // netidx (per-reader BEGIN_WITH_LAST targeted at the joining channel in stream order),
+        // then simplify sys's routing.
         if streamed
             && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
             && let ev @ NEvent::Update(_) = dv.last()

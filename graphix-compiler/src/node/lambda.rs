@@ -884,7 +884,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             publish_production(ctx, Feeds::Pattern(pat), tv, false, root);
         }
         // an interrupted dispatch is not a bottom: it rides its last result
-        // CR claude for eric: [bug/medium] An interrupted dispatch skips the body, and
+        // CR claude for claude: [bug/medium] An interrupted dispatch skips the body, and
         // with it every builtin in the body that reads its own delivery from ctx.event
         // this cycle. do_cycle then clears the event and nothing delivers it again. A
         // repeating sys::time::Timer keeps its spent id and never re-arms. A
@@ -898,6 +898,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // event. The other is that only loops abort, never a body. Pin it either way.
         // probe: design/review-2026-10-19/repro/x-concurrency-interrupt-kills-timer.sh
         // (x-concurrency-01)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): re-deliver: the run loop
+        // re-delivers, next cycle, the deliveries an interrupted cycle left unconsumed.
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
@@ -1567,7 +1569,7 @@ impl Lambda {
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
         // a written type, as the definition's signature holds it
-        // CR claude for eric: [risk/medium] A `'a` written in a nested lambda's
+        // CR claude for claude: [risk/medium] A `'a` written in a nested lambda's
         // signature is that lambda's own fresh quantifier, never the enclosing
         // definition's `'a`. So `'a: Number |k: 'a| |x: 'a| [x, k]` returns a closure
         // that takes a string (`mk(1)("s")` gives ["s", 1]), and `|x: 'a| x + k` is
@@ -1578,6 +1580,8 @@ impl Lambda {
         // shadowing, document it, and print distinct same-named variables distinctly.
         // probe: design/review-2026-10-19/repro/c-lambda-nested-tvar-scope.gx
         // (c-lambda-02)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): scoped type variables: a written
+        // variable an enclosing gate declares names that gate's cell.
         let written = |env: &Env, t: &Type| -> Result<Type> {
             Ok(t.scope_refs(&scope.lexical)
                 .rewrite_trait_args(env)?

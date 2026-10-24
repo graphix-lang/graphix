@@ -298,7 +298,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for eric: [bug/medium] Clearing the output here, as every event
+        // CR claude for claude: [bug/medium] Clearing the output here, as every event
         // source's sleep does, makes the source bottom at the wake. A bottomed argument
         // bottoms its consumer, so state built on the event is hidden until the next
         // event. In the probe, count(timer) in a woken arm shows nothing for three
@@ -312,6 +312,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         // a re-entry. probe:
         // design/review-2026-10-19/repro/x-engine-firing-event-clear-bottoms-consumer.gx
         // (x-engine-firing-03)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): absent without bottom: a woken
+        // event source does not fire and is not bottom, so its consumers keep showing
+        // their state.
         self.out = TagValue::phantom();
         self.slept.set();
         self.stop(ctx)

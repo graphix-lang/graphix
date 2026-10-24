@@ -84,12 +84,16 @@ pub trait GXExt: Default + fmt::Debug + Send + Sync + 'static {
     /// multiple calls to `do_cycle`, but it is not guaranteed that
     /// `update_sources` will not be called again before `is_ready`
     /// returns false.
-    // CR claude for eric: [risk/low] This adds to c-lib-05. A user event filled in here
+    // CR claude for claude: [risk/low] This adds to c-lib-05. A user event filled in here
     // reaches no node. GX::do_cycle updates only the roots in `rt.updated`, which an
     // extension cannot add to, so a cycle driven by is_ready runs nothing and
     // Event::clear discards the event. If user events stay, do_cycle has to name the
     // BindIds whose readers must wake (GX::wake_readers); otherwise delete the
     // extension point along with UserEvent. Found by reading; not run. (rt-06)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): delete UserEvent, Event::user and the
+    // E parameter. He also wants to look at removing the custom netidx parts of Event
+    // and rt, so rt only runs async jobs and netidx is a stdlib library delivering by
+    // bind ids like the others (a follow-on project).
     fn do_cycle(&mut self, event: &mut Event<Self::UserEvent>) -> Result<()>;
 
     /// Return true if there are events ready to deliver

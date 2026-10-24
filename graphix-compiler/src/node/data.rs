@@ -756,7 +756,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         let tv = self.arg.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
-        // CR claude for eric: [bug/medium] When the check never decides a type
+        // CR claude for claude: [bug/medium] When the check never decides a type
         // parameter of the constructed type (top-level `Bx((1, []))` with `type Bx<'a>
         // = Abstract<(i64, Array<'a>)>`), the params resolve to an unbound cell, and
         // every value minted here carries that live checker cell. The core-trait lookup
@@ -772,6 +772,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         // `impl Eq for Bx<i64>` covers such a value. Pin Eq, Ord (map key) and Display
         // either way. probe: design/review-2026-10-12/repro/c-data-map-01.sh
         // (c-data-map-01)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): freeze: a constructor's
+        // parameters are frozen at construction (an undecided cell becomes bottom or
+        // its bound).
         let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
             Type::Abstract { params, .. } => params.clone(),
             _ => Arc::from_iter([]),

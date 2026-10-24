@@ -361,7 +361,7 @@ impl EvalCachedAsync for IoReadExactEv {
             };
             // the buffer grows as bytes arrive, not to n
             let mut buf = Vec::new();
-            // CR claude for eric: [bug/medium] This read is not cancel-safe. When the
+            // CR claude for claude: [bug/medium] This read is not cancel-safe. When the
             // call's arm sleeps, CachedArgsAsync::sleep aborts the eval, and the bytes
             // already moved into the local `buf` are dropped. The restart at the wake
             // then reads from the stream's current position, so the program silently
@@ -386,6 +386,9 @@ impl EvalCachedAsync for IoReadExactEv {
             // across a sleep, or the stream halves get a push-back buffer); waiting on that
             // ruling. The replaced-call reply loss under Latest is fixed under sys-io-08, but
             // these reads are Fifo, so it does not apply here.
+            // 2026-10-24 claude: Eric ruled (2026-10-24): the declaration: EvalCachedAsync
+            // declares whether an eval is cancel-safe, and a sleep lets an unsafe one finish
+            // and banks its reply for the wake.
             match stream.until_closed((&mut *s).take(n).read_to_end(&mut buf)).await {
                 Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
                 Err(e) => errf!("IOError", "read_exact failed: {e}"),

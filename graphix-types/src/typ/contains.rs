@@ -650,7 +650,7 @@ impl OpenPair {
             return OpenPair::Distinct;
         }
         // a rigid cell survives only a merge
-        // CR claude for eric: [bug/medium] When an open cell meets a rigid one this
+        // CR claude for claude: [bug/medium] When an open cell meets a rigid one this
         // returns Merge, and `TVar::merge_into` then adds the other cell's conjuncts to
         // the rigid cell without checking that the rigid cell's declared bound implies
         // them. That absorption is right for a definition's own declared variables
@@ -679,6 +679,9 @@ impl OpenPair {
         // (the instance re-check of a variadic builtin's fn(x: Eq), and of a collection
         // element's fn<'a: Number>) is not judged, so 'b with no type conjunct is
         // skipped; FnType::contains_int's own quantifier gates are not judged either.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): a rank-2 quantifier keeps exactly
+        // its declared bounds (fn<'b: Number> must say 'b: Number + Singleton to take |x|
+        // x * x); the NESTED_QUANTIFIER pins change.
         if t0.is_rigid() || t1.is_rigid() {
             return OpenPair::Merge;
         }
@@ -1479,7 +1482,7 @@ impl Type {
                 }
                 Ok(true)
             }
-            // CR claude for eric: [bug/low] Any on the left contains an open
+            // CR claude for claude: [bug/low] Any on the left contains an open
             // cell on the right without binding it, though any other type
             // there binds the cell (the BIND rhs arm below) and the mirror
             // arm above binds a left cell to Any. So a callback written |v:
@@ -1493,6 +1496,8 @@ impl Type {
             // covariant Any (let x: Any = y binds y's open cell), so this
             // needs a ruling: bind in a contravariant position only, bind
             // everywhere, or keep refusing an Any handler. (typ-any-bind-01)
+            // 2026-10-24 claude: Eric ruled (2026-10-24): Any binds an open
+            // cell in a contravariant position only.
             (Self::Any, _) => Ok(true),
             (
                 Self::Abstract { id: id0, params: p0 },
@@ -1797,7 +1802,7 @@ impl Type {
                     1 => rest.pop().unwrap(),
                     _ => Self::Set(Arc::from_iter(rest.drain(..))),
                 };
-                // CR claude for eric: [bug/low] An open rhs member is checked only
+                // CR claude for claude: [bug/low] An open rhs member is checked only
                 // against `rest`, the lhs members no known sibling used. When `rest`
                 // fails, typically because the cell's bound refuses it, the containment
                 // is refused, even when the cell could take a member a sibling used.
@@ -1807,6 +1812,8 @@ impl Type {
                 // refused. Decide whether to fall back to the whole lhs (`t0`) when
                 // `rest` fails, keeping `rest` as the first choice. Probe:
                 // design/review-2026-10-12/repro/t-contains-10.gx. (t-contains-10)
+                // 2026-10-24 claude: Eric ruled (2026-10-24): when an open union
+                // member's leftover fails, fall back to the whole left side.
                 for m in open {
                     if !rest.contains_int(flags, env, hist, m)? {
                         return Ok(false);

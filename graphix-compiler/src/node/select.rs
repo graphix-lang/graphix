@@ -1412,7 +1412,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 open &= matches!(pat.arm_match(true), ArmMatch::GuardFalse);
             }
         }
-        // CR claude for eric: [bug/medium] A guard flip moves the select to another arm,
+        // CR claude for claude: [bug/medium] A guard flip moves the select to another arm,
         // and that arm's pattern bind fires though the scrutinee did not: in the probe
         // `out` goes 1 then 100 when only `limit` changes, on both engines. CLAUDE.md's
         // wake catch-up calls a pattern bind a facet of its scrutinee's delivery, which
@@ -1425,6 +1425,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // (guard-flip-bind-01)
         // Any guard fire drives a re-match; whether it affects the
         // emission is decided by the consulted set below.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): try stale: the new arm's pattern
+        // binds are delivered stale (a bind is a facet of its scrutinee's delivery); the
+        // select still emits, since a consulted guard fired.
         let pat_up = guard_tags.iter().any(|(_, t)| t.triggers());
         // A bottom scrutinee bottoms the select; it consults no guards.
         // A window with no arm (a bottom scrutinee, an undecidable guard)

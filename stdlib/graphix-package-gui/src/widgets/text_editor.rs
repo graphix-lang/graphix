@@ -63,7 +63,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("text_editor")?;
-        // CR claude for eric: [risk/medium] An answer counts as a rejection whenever
+        // CR claude for claude: [risk/medium] An answer counts as a rejection whenever
         // the echo has not arrived yet, but the runtime holds an answer for only one
         // cycle (gx.rs held_answers drains unconditionally). So a handler whose write
         // takes two hops (`|s| edit <- s` with `doc <- edit`, the
@@ -74,6 +74,8 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         // the same way. Decide whether rejection means "not echoed once the runtime is
         // idle" or document a one-hop rule, and pin a two-hop handler. Found by
         // reading; not run. (gui-widgets-b-03)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): an edit counts as rejected only
+        // when it is not echoed once the runtime is idle.
         let mut sync = self.echoes.answered(id);
         if id == self.p.content.r.id
             && let Some(text) = &self.p.content.t

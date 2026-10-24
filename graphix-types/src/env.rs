@@ -540,9 +540,11 @@ pub struct Env {
     /// other only through their interfaces.
     #[doc(hidden)]
     pub hidden_impls: Arc<Vec<ModPath>>,
-    /// How many warnings compiles under this env published; tasks share
-    /// their parent's count.
-    pub warned: Arc<std::sync::atomic::AtomicUsize>,
+    /// While recording, each warning printed (tasks share their parent's
+    /// record): a program image carries its compile's warnings, which a
+    /// restore prints again ([`Self::record_warnings`]).
+    #[doc(hidden)]
+    pub recorded: Arc<parking_lot::Mutex<Option<Vec<ArcStr>>>>,
 }
 
 impl Env {
@@ -567,7 +569,7 @@ impl Env {
             typedefs: self.typedefs.clone(),
             traits: self.traits.clone(),
             hidden_impls: self.hidden_impls.clone(),
-            warned: self.warned.clone(),
+            recorded: self.recorded.clone(),
         }
     }
 
@@ -590,7 +592,7 @@ impl Env {
             package_roots,
             ide,
             hidden_impls: _,
-            warned: _,
+            recorded: _,
         } = fork;
         self.by_id.join(by_id);
         self.byref_chain.join(byref_chain);
@@ -639,7 +641,7 @@ impl Env {
             package_roots: _,
             ide: _,
             hidden_impls: _,
-            warned: _,
+            recorded: _,
         } = other;
         mem::swap(&mut self.binds, binds);
         mem::swap(&mut self.modules, modules);
@@ -704,17 +706,39 @@ impl Env {
         end: SourcePosition,
         message: impl fmt::Display,
     ) {
-        self.warned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.ide.sink() {
-            None => self
-                .ide
-                .print_warning(format_compact!("WARNING at {pos} {ori}: {message}")),
+            None => {
+                let warning = format_compact!("WARNING at {pos} {ori}: {message}");
+                if let Some(r) = &mut *self.recorded.lock() {
+                    r.push(warning.as_str().into())
+                }
+                self.ide.print_warning(warning)
+            }
             Some(ide) => ide.lock().warnings.push(Warning {
                 pos,
                 end,
                 ori: ori.clone(),
                 message: format_compact!("{message}").as_str().into(),
             }),
+        }
+    }
+
+    /// Record each warning printed from now until
+    /// [`Self::recorded_warnings`].
+    pub fn record_warnings(&self) {
+        *self.recorded.lock() = Some(vec![])
+    }
+
+    /// The warnings printed since [`Self::record_warnings`], ending the
+    /// record.
+    pub fn recorded_warnings(&self) -> Vec<ArcStr> {
+        self.recorded.lock().take().unwrap_or_default()
+    }
+
+    /// Print again warnings a compile printed ([`Self::recorded_warnings`]).
+    pub fn replay_warnings(&self, warnings: &[ArcStr]) {
+        for w in warnings {
+            self.ide.print_warning(CompactString::from(w.as_str()))
         }
     }
 
@@ -1995,7 +2019,7 @@ impl Env {
             package_roots: _,
             ide: _,
             hidden_impls: _,
-            warned: _,
+            recorded: _,
         } = self;
         names.retain(|s, _| !under(s));
         let binds: LPooled<Vec<BindId>> = by_id

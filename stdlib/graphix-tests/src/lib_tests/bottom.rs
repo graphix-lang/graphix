@@ -184,7 +184,7 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 (Tag::STALE, Tag::FIRED, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::STALE, Tag::STALE, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::FIRED, Tag::STALE, 11, Tag::FIRED, 11),
-                // CR claude for eric: [bug/medium] This row pins `~` (and `~!`) keeping
+                // CR claude for claude: [bug/medium] This row pins `~` (and `~!`) keeping
                 // its last value when its trigger goes bottom: Sample::update rides on
                 // a trigger that is not fired, and a bottom trigger counts as not
                 // fired. Everywhere else bottom in is bottom out (dense_delivery.md
@@ -200,6 +200,8 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 // CLAUDE.md. probe:
                 // design/review-2026-10-19/repro/tests-lib-b1-sample-rides-bottom-trigger.gx
                 // (tests-lib-b1-02)
+                // 2026-10-24 claude: Eric ruled (2026-10-24): try it: a sample goes bottom
+                // with its trigger (dense_delivery R1/R3), and see how much it breaks.
                 (Tag::FRESH_BOTTOM, Tag::FIRED, 13, Tag::STALE, 11),
                 (Tag::FIRED, Tag::STALE, 13, Tag::FIRED, 13),
             ]

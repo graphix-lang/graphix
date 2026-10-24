@@ -1011,7 +1011,7 @@ impl Type {
             // A member the value already inhabits wins; else the first
             // member of its own runtime class it converts to; else the
             // first member it converts to across classes.
-            // CR claude for eric: [bug/high] A union takes the first member that
+            // CR claude for claude: [bug/high] A union takes the first member that
             // converts, and integer() drops a fraction, so an integer member always
             // wins over a float member that holds the value exactly. cast<[i64,
             // f64]>("3.5") is i64 3 and cast<Number>("3.5") is i8 3. A json or toml
@@ -1024,6 +1024,9 @@ impl Type {
             // integral inputs. probe:
             // design/review-2026-10-19/repro/tests-types-union-cast-drops-fraction.gx
             // (tests-types-03)
+            // 2026-10-24 claude: Eric ruled (2026-10-24): prefer exact: a union cast
+            // takes a member that holds the value exactly, truncating only when none
+            // does.
             Type::Set(ts) => {
                 // a member whose tag the value carries is its reading,
                 // whatever a tagless reading of an earlier member says
@@ -1044,7 +1047,7 @@ impl Type {
                         Err(e) => Err(e.expect("a tagged member was tried")),
                     };
                 }
-                // CR claude for eric: [bug/medium] A data composite never holds a
+                // CR claude for claude: [bug/medium] A data composite never holds a
                 // member as is: it is always rebuilt, so it never answers Ok(None). The
                 // first member whose element casts succeed therefore wins, truncating
                 // conversions included. json [1.5, 2.5] read as [(i64, i64), (f64,
@@ -1056,6 +1059,9 @@ impl Type {
                 // probe:
                 // design/review-2026-10-19/repro/t-cast-setops-union-cast-converts-held.gx
                 // (t-cast-setops-03)
+                // 2026-10-24 claude: Eric ruled (2026-10-24): prefer exact: a union cast
+                // takes a member that holds the value exactly, truncating only when none
+                // does.
                 let own: LPooled<Vec<bool>> =
                     ts.iter().map(|t| in_own_class(env, t, v)).collect();
                 let mut converted = None;
@@ -1904,7 +1910,7 @@ impl Indiscernible {
     }
 }
 
-// CR claude for eric: [bug/medium] Abstract types are opaque to every comparison rule:
+// CR claude for claude: [bug/medium] Abstract types are opaque to every comparison rule:
 // `rep_ambiguity` and `compared_ref` return nothing for `Type::Abstract`, and
 // `require_compared` skips it. At run time, though, `GxAbstract` with no core-trait
 // impl compares and orders by its payload. So `array::sort` and map keys over
@@ -1918,7 +1924,10 @@ impl Indiscernible {
 // representation would then show up in bound errors outside its module, and a
 // Rust-backed abstract has no representation to descend into. probe:
 // design/review-2026-10-12/repro/x-fix-types-05.gx (x-fix-types-05)
-// CR claude for eric: [bug/medium] rep_ambiguity treats Type::Abstract as opaque (`_ =>
+// 2026-10-24 claude: Eric ruled (2026-10-24): look through: an abstract with no Eq/Ord
+// impl compares and keys by its representation in the checks too, the refusal naming
+// the abstract rather than its hidden rep.
+// CR claude for claude: [bug/medium] rep_ambiguity treats Type::Abstract as opaque (`_ =>
 // None`), and so does Type::require_compared. But when no core Eq/Ord hook applies,
 // GxAbstract's eq, cmp and hash are the payload's. So `type T = Abstract<[`A, string]>`
 // makes T(`A) == T("A") true, and a map keyed by both keeps one entry. Writing `a.0 ==
@@ -1931,6 +1940,9 @@ impl Indiscernible {
 // the rep in the error message. Whichever is chosen, update design/tvar_constraints.md
 // (the Discernible section) to match. probe:
 // design/review-2026-10-12/repro/x-expr-walks-03.gx (x-expr-walks-03)
+// 2026-10-24 claude: Eric ruled (2026-10-24): look through: an abstract with no Eq/Ord
+// impl compares and keys by its representation in the checks too, the refusal naming
+// the abstract rather than its hidden rep.
 fn rep_ambiguity(
     env: &Env,
     seen: &mut Expanded<Type>,
@@ -2081,7 +2093,7 @@ impl Type {
 
 /// Whether a comparison of values of `t` meets a reference: one where
 /// [`Type::indiscernible`] looks.
-// CR claude for eric: [bug/medium] compared_ref, map_refs and rep_ambiguity all stop at
+// CR claude for claude: [bug/medium] compared_ref, map_refs and rep_ambiguity all stop at
 // Type::Abstract. GxAbstract's eq and ord still compare the payload when no Eq/Ord impl
 // rides the value, so a reference inside an abstract (in its rep or in a type
 // parameter) is compared by its raw session cell id. Example: `type R =
@@ -2095,6 +2107,9 @@ impl Type {
 // outside the defining module, and whether tvar_constraints.md's rule that the checks
 // do not look under an abstract still holds. probe:
 // design/review-2026-10-12/repro/x-expr-walks-04.gx (x-expr-walks-04)
+// 2026-10-24 claude: Eric ruled (2026-10-24): look through: an abstract with no Eq/Ord
+// impl compares and keys by its representation in the checks too, the refusal naming
+// the abstract rather than its hidden rep.
 fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
     ensure_sufficient(|| {
         walk(
@@ -2158,7 +2173,7 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 
 /// Whether `t` may read `v` without leaving `v`'s runtime class, which a
 /// union tries before any conversion across classes.
-// CR claude for eric: [bug/medium] Kind markers made unions like [(i64, i64),
+// CR claude for claude: [bug/medium] Kind markers made unions like [(i64, i64),
 // Array<f64>], [{a: i64}, Array<(string, i64)>] and [string, `A] legal, but their
 // members share a data form once rep::strip writes them. This test reads the outer form
 // strictly, so an unmarked array is in the Array member's class only, and a string is
@@ -2173,6 +2188,9 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 // 2026-10-20 claude: json::read reproduces it as well: {"a":1} read into [{a: i64},
 // Array<(string, i64)>] selects the Array member and prints array [("a", 1)] (found by
 // the stdlib fix agent, re-run on main 2026-10-20).
+// 2026-10-24 claude: Eric ruled (2026-10-24): prefer the exact reader: unmarked data
+// reads as the member that reads it exactly (a tuple of that arity, then a struct, then
+// an array).
 fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         None | Some(Type::Bottom) => true,

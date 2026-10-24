@@ -58,7 +58,7 @@ fn timed_out() -> Value {
 /// stream once, so a new certificate, key or CA applies to later streams
 /// and a wake restarts nothing.
 #[derive(Debug, Default)]
-// CR claude for eric: [bug/medium] A sleep of the arm holding sys::tls::accept or
+// CR claude for claude: [bug/medium] A sleep of the arm holding sys::tls::accept or
 // connect destroys the socket. `CachedArgsAsync::sleep` aborts the eval in flight. By
 // then `TlsAcceptEv::eval` / `TlsConnectEv::eval` has already moved the TCP stream out
 // of its `Halves`, so dropping the handshake future closes the socket, and the peer's
@@ -75,6 +75,9 @@ fn timed_out() -> Value {
 // design/wake_catchup.md), so the site no longer meets the spent stream at the wake by
 // itself; an argument's fire still would. The destroyed socket on a mid-handshake abort
 // stands, as part of x-builtin-effects-03's cancel-safety question.
+// 2026-10-24 claude: Eric ruled (2026-10-24): the declaration: EvalCachedAsync declares
+// whether an eval is cancel-safe, and a sleep lets an unsafe one finish and banks its
+// reply for the wake.
 struct Started(Weak<Halves>);
 
 impl Started {

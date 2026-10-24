@@ -1793,7 +1793,7 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
 });
 
 // Mixed sets compare like any union, numeric ones included.
-// CR claude for eric: [bug/medium] Values of a mixed numeric union order by numeric
+// CR claude for claude: [bug/medium] Values of a mixed numeric union order by numeric
 // class before value (Value::partial_cmp compares Typ first). array::sort of [3, 2.5,
 // 1, 0.5]: Array<[i64, f64]> is [1, 3, 0.5, 2.5], min(i64:3, f64:2.5) is 3, and i64:3 <
 // f64:2.5 is true. This fixture compares 3 with 2.5 by == only, so it would pass under
@@ -1802,6 +1802,8 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
 // whichever is chosen here with values where the two differ, and i64:3 == f64:3.0.
 // probe: design/review-2026-10-19/repro/tests-types-mixed-numeric-order.gx
 // (tests-types-04)
+// 2026-10-24 claude: Eric ruled (2026-10-24): refuse: the orderings and Ordered refuse
+// a type holding two numeric types, as arithmetic's Singleton does.
 const COMPARISON_MIXED: &str = r#"{
   let x: [i64, f64] = 3;
   let y: [i64, f64] = 2.5;

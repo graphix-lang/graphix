@@ -95,7 +95,7 @@ struct Parts<'a> {
 
 /// The seq `spec` lowered to its machine, every expression of which
 /// comes from `spec`'s source.
-// CR claude for eric: [readability/low] A type error in a seq step is reported under
+// CR claude for claude: [readability/low] A type error in a seq step is reported under
 // frames that quote the lowered machine, not the program. For `let go = 1; seq go { let
 // a = go + 1; let x = a + "s"; x }`, `--check` prints five frames naming `seqpc…`,
 // `machine seqpc…`, `let seqv…_1` and `let seqv…` before reaching `a + "s"`. None of
@@ -119,6 +119,8 @@ struct Parts<'a> {
 // show '#' names, and every reader of a lowered name keys on the prefix. The
 // alternative is a mark on Expr that packs and images carry, a format change to every
 // AST.
+// 2026-10-24 claude: Eric ruled (2026-10-24): the # prefix: names a lowering builds
+// start with #, which no source can write, and the printer and Connect key on it.
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };

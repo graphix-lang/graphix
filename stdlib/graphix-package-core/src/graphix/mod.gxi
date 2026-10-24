@@ -79,7 +79,7 @@ trait Collection {
     val filter_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> self<'b> throws 'e;
     /// the concatenation of `f` over the elements
     val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
-    // CR claude for eric: [risk/low] The derived map and filter go through filter_map's
+    // CR claude for claude: [risk/low] The derived map and filter go through filter_map's
     // Option, so a null result of f (map) or a null element (filter) is dropped. On a
     // program-defined collection, map(c, |x| x) and filter(c, |_| true) therefore lose
     // elements without any warning. Example: a cons list L<[i64, null]> of 1, null, 3
@@ -89,6 +89,9 @@ trait Collection {
     // element values (`Keep('b) / `Drop) so the derivations are total. At minimum,
     // correct the doc. probe: design/review-2026-10-12/repro/gx-stdlib-05.gx
     // (gx-stdlib-06)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): filter_map's callback keeps taking a
+    // bare [v, null], null dropping the element, and its type widens to [v, null,
+    // `Keep([v, null])] so a callback can keep an explicit null.
     /// `f` over every element
     val map: fn(self<'a>, f: fn(x: 'a) -> 'b throws 'e) -> self<'b> throws 'e
         = |c, f| filter_map(c, |x| f(x));

@@ -2562,7 +2562,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx);
-        // CR claude for eric: [bug/low] A bottom trigger is not `is_fired`, so both `~`
+        // CR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
         // and `~!` ride their resident while the trigger is bottom. The sample keeps
         // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
         // design/dense_delivery.md R3 has a consumed bottom bottom the production. Its
@@ -2573,6 +2573,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // a fourth designated ride in R3 and CLAUDE.md. Pin it either way. probe:
         // design/review-2026-10-19/repro/x-engine-firing-sample-bottom-trigger.gx
         // (x-engine-firing-04)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): try it: a sample goes bottom with
+        // its trigger (dense_delivery R1/R3), and see how much it breaks.
         let fired = t.tag().is_fired();
         self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
@@ -2603,7 +2605,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         if let Some(v) = &self.arg.value
             && !self.arg.tag.is_bottom()
         {
-            // CR claude for eric: [risk/low] A banked `~` pays every trigger that found
+            // CR claude for claude: [risk/low] A banked `~` pays every trigger that found
             // its argument absent. This loop queues one set_var per missed trigger, all
             // in the cycle the argument arrives, and the runtime then delivers them one
             // per cycle. `timer(10ms) ~ v`, with v arriving after 500 ms, replays about
@@ -2615,6 +2617,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             // paying it as one write that carries a count. If it is not, bank a single
             // pending trigger (a bool). probe:
             // design/review-2026-10-12/repro/x-engine-firing-04.gx (x-engine-firing-05)
+            // 2026-10-24 claude: Eric ruled (2026-10-24): bank one: a ~ that finds its
+            // argument absent banks a single pending trigger, paid once when the
+            // argument arrives.
             for _ in 0..mem::take(triggered) {
                 ctx.rt.set_var(id, v.clone());
             }
@@ -2738,7 +2743,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                             )
                         },
                     ),
-                    // CR claude for eric: [risk/low] This uses `spec.end`, a
+                    // CR claude for claude: [risk/low] This uses `spec.end`, a
                     // `WrittenAt`, as a 'the user wrote this' marker to choose the
                     // error. A `WrittenAt` must decide nothing, and `end` is NOWHERE
                     // for every expression that came from a packed package AST or an
@@ -2762,6 +2767,9 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                     // LSP would show '#' names, and every reader of a lowered name
                     // keys on the prefix. The alternative is a mark on Expr that
                     // packs and images carry, a format change to every AST.
+                    // 2026-10-24 claude: Eric ruled (2026-10-24): the # prefix:
+                    // names a lowering builds start with #, which no source can
+                    // write, and the printer and Connect key on it.
                     Some(_) if self.spec.end.get().is_some() => {
                         write_mismatch(bind, written, &self.spec.ori)
                     }

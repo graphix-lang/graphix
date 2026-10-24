@@ -51,7 +51,7 @@ impl fmt::Display for ErrorContext {
             }
         }
         let mut head = Head(LPooled::take(), false);
-        // CR claude for eric: [readability/low] The frame snippet is the printer's
+        // CR claude for claude: [readability/low] The frame snippet is the printer's
         // rendering of the frame's Expr, not what the user wrote. For lowered
         // constructs the chain shows compiler internals: an `until 5` in a seq gives
         // frames reading `{ let seqpc4611686018427393761: [`Idle..`, `machine seqpc.. {
@@ -82,6 +82,9 @@ impl fmt::Display for ErrorContext {
         // '#' names, and every reader of a lowered name keys on the prefix. The
         // alternative is a mark on Expr that packs and images carry, a format change to
         // every AST.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): the # prefix: names a lowering
+        // builds start with #, which no source can write, and the printer and Connect
+        // key on it.
         let complete = write!(head, "{}", self.0).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {

@@ -148,7 +148,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// A write that landed while the binding slept (one queued before the
     /// sleep, a seq machine's reset) was seen by no reader, all of which
     /// slept with it: deliver it fired, once, at the wake.
-    // CR claude for eric: [bug/medium] The re-raise is published to every reader of the
+    // CR claude for claude: [bug/medium] The re-raise is published to every reader of the
     // binding (`ctx.publish`), but not every reader slept with it. A `&mut x` that
     // escapes the arm lets a reader outside read the write live through its Deref. At
     // the wake that reader gets the same write again as a phantom fire, and `count(*h)`
@@ -157,6 +157,8 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     // TrackedFires::deliver does, or skip it for a binding a reference names. Which one
     // depends on the escaped-reference rule, so it is your call. probe:
     // design/review-2026-10-19/repro/c-bind-reraise-escaped-ref.gx (c-bind-02)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): scope the re-raise to the readers
+    // that slept, as TrackedFires does.
     fn reraise_writes_while_asleep(&self, ctx: &mut ExecCtx<'_, R, E>) {
         let slept_at = self.slept_at;
         let mut late: SmallVec<[(BindId, TagValue); 2]> = SmallVec::new();
@@ -615,7 +617,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
             // an abstract type's parameters are invariant: the annotation,
             // not the payload, decides a constructed value's
-            // CR claude for eric: [bug/medium] With invariant abstract parameters,
+            // CR claude for claude: [bug/medium] With invariant abstract parameters,
             // `Box(1)` is typed `Box<i64>` eagerly. A wider annotation can only decide
             // the parameter here (a let whose initializer is itself the construction)
             // and at call arguments (`pre_unify_arg`, which does not look inside an
@@ -635,6 +637,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             // connects). Either way, write_mismatch should not suggest a union of two
             // instantiations of one abstract. probe:
             // design/review-2026-10-12/repro/x-fix-types-07.sh (x-fix-types-07)
+            // 2026-10-24 claude: Eric ruled (2026-10-24): fresh cell: T(v) gets a fresh
+            // parameter cell the payload bounds from below, so the context decides it.
             if let Some(Type::Abstract { .. }) = self.node.typ().deref_cloned() {
                 wrap!(
                     self.node,
@@ -1620,7 +1624,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for eric: [bug/medium] c-bind-11 variant: a reference outliving
+        // CR claude for claude: [bug/medium] c-bind-11 variant: a reference outliving
         // its `&` reads bottom but still writes its referent. ByRef::delete now removes
         // the cell's store entry and its byref_chain link (bind.rs), which fixes the
         // leak. But a reference value that escaped the deleted site (kept in an outer
@@ -1651,6 +1655,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         // the value), or a reference that dies with its site (reads bottom, writes
         // dropped, which needs a liveness test a same-cycle birth cannot fail). That is
         // a semantics choice, so it goes to Eric.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): a reference is valid while the
+        // reference lives: it keeps the place it names alive, past the deletion of the
+        // & that minted it.
         ctx.env.byref_chain.remove(&self.id);
         ctx.env.by_id.remove(&self.id);
         ctx.rt.store_release(&self.id);

@@ -552,7 +552,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                     return;
                 }
-                // CR claude for claude: [perf/low] Each ToGui::Update walks every widget
+                // CR claude for eric: [perf/low] Each ToGui::Update walks every widget
                 // of every window: each widget compares the id with each of its refs
                 // and recurses into its children, through Child::update and
                 // Children::update. A cycle costs updates x widgets x props comparisons
@@ -565,6 +565,11 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
                 // ruling needed. Build the IntMap<ExprId, owner> index, maintained on
                 // widget recompile.
+                // 2026-10-24 claude: Not obvious after all, so back to Eric (question 49
+                // in cr-questions.md): the index needs every one of the 33 widget types
+                // to list its refs and to follow subtree recompiles, and a ref one omits
+                // silently stops updating, which the walk cannot do. Proposed: measure
+                // the walk on a synthetic 1000-widget UI first.
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!(target: FAILURE_TARGET, "handle_update: {e:?}");

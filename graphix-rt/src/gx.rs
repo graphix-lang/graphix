@@ -378,21 +378,17 @@ impl<X: GXExt> GX<X> {
         {
             let st = Instant::now();
             let probes = cfg.program_image.as_ref().map(|_| Probes::default());
-            let warned = t.ctx.env.warned.load(std::sync::atomic::Ordering::Relaxed);
-            match t.load_program(&source, probes.as_ref()).await {
+            if probes.is_some() {
+                t.ctx.env.record_warnings();
+            }
+            let loaded = t.load_program(&source, probes.as_ref()).await;
+            let warnings = t.ctx.env.recorded_warnings();
+            match loaded {
                 Ok(root) => {
-                    t.program = Some(Ok(root));
+                    t.program = Some(Ok(ProgramRoot { warnings, ..root }));
                     info!("program init time: {:?}", st.elapsed());
-                    // a restored program compiles nothing, so a program that
-                    // warned keeps no image: its warnings print at every run
-                    let quiet =
-                        t.ctx.env.warned.load(std::sync::atomic::Ordering::Relaxed)
-                            == warned;
                     if let (Some(tx), Some(probes)) = (cfg.program_image, probes) {
-                        let image = match quiet {
-                            true => t.registration_image(),
-                            false => Err(anyhow!("the program's compile warned")),
-                        };
+                        let image = t.registration_image();
                         let sources = probes.take();
                         let _ =
                             tx.send(image.map(|image| ProgramImage { image, sources }));
@@ -431,6 +427,9 @@ impl<X: GXExt> GX<X> {
             self.nodes.insert(id, n);
         }
         self.scope = reg.scope;
+        if let Some(p) = &reg.program {
+            self.ctx.env.replay_warnings(&p.warnings);
+        }
         self.program = reg.program.map(Ok);
         Ok(())
     }
@@ -1181,7 +1180,7 @@ impl<X: GXExt> GX<X> {
     }
 
     async fn load(&mut self, rt: GXHandle<X>, source: &Load) -> Result<CompRes<X>> {
-        let ProgramRoot { id, output, typ } = self.load_program(source, None).await?;
+        let ProgramRoot { id, output, typ, .. } = self.load_program(source, None).await?;
         let res = smallvec![CompExp { id, output, typ, rt: rt.clone() }];
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
@@ -1246,7 +1245,7 @@ impl<X: GXExt> GX<X> {
         let typ = n.typ().clone();
         self.nodes.insert(id, n);
         self.ctx.rt.updated.insert(id, true);
-        Ok(ProgramRoot { id, output, typ })
+        Ok(ProgramRoot { id, output, typ, warnings: vec![] })
     }
 
     fn compile_callable(&mut self, v: Value, rt: GXHandle<X>) -> Result<Callable<X>> {

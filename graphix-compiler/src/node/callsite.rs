@@ -600,7 +600,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
                 ArgFit::Misfit
             })
         }
-        // CR claude for eric: [bug/high] A rank-2 quantifier is rigid here, yet the
+        // CR claude for claude: [bug/high] A rank-2 quantifier is rigid here, yet the
         // argument's body still adds bounds to it. `x * x` adds Singleton, `x < y` adds
         // Ordered, and a writer adds Data. The callee was checked against the declared
         // bound alone, so `apply = |f: fn<'b: Number>(x: 'b) -> 'b| { let n: Number =
@@ -619,6 +619,9 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
         // predicates are still let through, pending this ruling. Adding them there
         // (dropping the is_predicate skip) is the one-line change if the rule is that a
         // quantifier keeps exactly its declared bounds.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): a rank-2 quantifier keeps exactly
+        // its declared bounds (fn<'b: Number> must say 'b: Number + Singleton to take
+        // |x| x * x); the NESTED_QUANTIFIER pins change.
         Some((formal, _rigid, quantifiers)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantifiers.iter().map(|q| q.cell_constraints()).collect();
@@ -2223,7 +2226,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         ctx.bind_to_lambda.contains_key(&r.id),
                     );
                 }
-                // CR claude for eric: [bug/medium] This guard sees only the `<-`
+                // CR claude for claude: [bug/medium] This guard sees only the `<-`
                 // targets of the current compile batch. A site that an earlier REPL or
                 // GXHandle::compile input resolved statically stays Callee::Static
                 // after a later input writes the binding, so it keeps calling the old
@@ -2259,6 +2262,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 // runtime, which only dynamic modules have). (1) is smallest and keeps
                 // both engines agreeing; (2) or (3) keep the REPL's write meaning what
                 // a script's does.
+                // 2026-10-24 claude: Eric ruled (2026-10-24): refuse the later <- (in
+                // the REPL, to a function an earlier input called statically), naming
+                // the call.
                 if ctx.batch_connect_targets.contains(&r.id) {
                     None
                 } else {
