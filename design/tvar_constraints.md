@@ -369,8 +369,13 @@ abstract type at two instantiations (a tuple, struct, variant and list
 each carry their kind's marker, `design/distinct_composite_forms.md`, and
 a comparison reads a reference as what it names). Members that share a
 constructor are told apart by their parts; a union under a reference,
-a function or an abstract type is not looked at. Values of such a type
-compare and hash as their types do. Comparison (`==` and the
+a function or an abstract type with its own `Eq` or `Ord`
+implementation is not looked at, and values of such a type compare and
+hash as their types do. An abstract type with neither compares, orders
+and hashes by its representation, so the walks look through it, its
+parameters substituted (`compared_rep`), and a failure found there is
+told by the abstract's name, its representation being its module's
+(`Indiscernible::Abstract`); a Rust-backed one has none to look into. Comparison (`==` and the
 orderings), a map literal's key type and the stdlib functions that
 compare or hash (`uniq`, `min`, `max`, `array::sort`, `array::dedup`,
 `list::sort`, the `map::` functions that take or make keys, `db`'s tree
@@ -381,8 +386,9 @@ as arithmetic hands it `Singleton`, so each call checks it.
   with it (`Open::Benign`).
 - A bind of a `Discernible` cell hands the conjunct to every open cell
   its binding holds where a comparison looks (`Type::
-  require_discernible`): not under a reference, a function or an
-  abstract type.
+  require_compared`): not under a reference or a function; an abstract
+  type's parameters included, whether or not it has its own
+  implementation, which the bind cannot see.
 - A conjunct on each open cell can't say that two members of one union
   must differ from each other, so the rest is judged at the statement's
   settle (`PendingSettle::Discernible` for a comparison and a map

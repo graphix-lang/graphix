@@ -612,6 +612,66 @@ run!(
     )
 );
 
+// A union, and a primitive set, takes a member that holds the value exactly
+// before one that would drop part of it; only where none does is a fraction
+// dropped.
+const CAST_UNION_PREFERS_EXACT: &str = r#"
+(
+  cast<[i64, f64]>("3.5")$,
+  cast<[i64, f64]>("3")$,
+  cast<Number>("3.1")$,
+  cast<[i64, u8]>(f64:3.7)$
+)
+"#;
+
+run!(
+    cast_union_prefers_exact,
+    CAST_UNION_PREFERS_EXACT,
+    prints("[f64:3.5, i64:3, decimal:3.1, u8:3]")
+);
+
+// Data composites are judged by every leaf (a union of tuples has no kernel
+// ABI form, so the cast node-walks).
+const CAST_UNION_PREFERS_EXACT_COMPOSITE: &str = r#"
+(
+  cast<[(i64, i64), (f64, f64)]>([f64:1.5, f64:2.5])$,
+  cast<[(i64, i64), (f64, f64)]>([f64:1., f64:2.])$
+)
+"#;
+
+run!(
+    cast_union_prefers_exact_composite,
+    CAST_UNION_PREFERS_EXACT_COMPOSITE,
+    prints("[[f64:1.5, f64:2.5], [i64:1, i64:2]]");
+    FuseExpect::None
+);
+
+// Unmarked data reads back as the member that reads it exactly: a tuple of
+// its length, then a struct, before an array, so what pack and json write
+// of a tuple or a struct reads back as it.
+const DATA_READS_BACK_AS_WRITTEN: &str = r#"
+{
+  type U = [(i64, i64), Array<f64>];
+  let v: U = (1, 2);
+  let p: Result<U, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(v)$);
+  type S = [{a: i64}, Array<(string, i64)>];
+  let s: S = {a: 1};
+  let js: Result<S, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(s)$);
+  type T = [(string, i64), Array<string>];
+  let t: T = ("k", 1);
+  let jt: Result<T, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(t)$);
+  let a: U = [f64:1.5];
+  let pa: Result<U, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(a)$);
+  (p$ == v, js$ == s, jt$ == t, pa$ == a)
+}
+"#;
+
+run!(
+    data_reads_back_as_written,
+    DATA_READS_BACK_AS_WRITTEN,
+    prints("[true, true, true, true]")
+);
+
 // A cast leaves a value's runtime class only by parsing a string into a
 // scalar, by printing a number, bool, datetime or duration plainly,
 // between a number and a datetime (Unix seconds) or a duration

@@ -7,7 +7,7 @@ use crate::{
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, TVar, Type, TypeRef, params_size,
+        AbstractId, CoreTrait, TVar, Type, TypeRef, params_size,
         setops::union_identical,
         tval::{NakedPrefix, has_form, member_of},
     },
@@ -130,6 +130,9 @@ struct CastCx {
     /// Each reference's expansion, by definition and params allocation,
     /// with the params held so the allocation stays theirs.
     expanded: LPooled<AHashMap<(usize, usize), (Arc<[Type]>, Type)>>,
+    /// Only a conversion that loses nothing counts: a union tries its
+    /// members so first.
+    exact: bool,
 }
 
 /// An `is_a` walk's state: the references on its path with the value
@@ -649,11 +652,14 @@ impl Type {
                     );
                 }
                 let own = own_class(v);
-                match (*s & own)
-                    .iter()
-                    .chain((*s & !own).iter())
-                    .find_map(|t| convert(v.clone(), t))
-                {
+                let mut members = (*s & own).iter().chain((*s & !own).iter());
+                let exact = members
+                    .clone()
+                    .find_map(|t| convert(v.clone(), t).filter(|c| holds_exactly(v, c)));
+                match exact.or_else(|| match cx.exact {
+                    true => None,
+                    false => members.find_map(|t| convert(v.clone(), t)),
+                }) {
                     Some(v) => Ok(Some(v)),
                     None => Err(self.cast_fail("no primitive conversion", v)),
                 }
@@ -1010,76 +1016,92 @@ impl Type {
             }
             // A member the value already inhabits wins; else the first
             // member of its own runtime class it converts to; else the
-            // first member it converts to across classes.
-            // CR claude for claude: [bug/high] A union takes the first member that
-            // converts, and integer() drops a fraction, so an integer member always
-            // wins over a float member that holds the value exactly. cast<[i64,
-            // f64]>("3.5") is i64 3 and cast<Number>("3.5") is i8 3. A json or toml
-            // string field "3.5" read into [i64, f64] or Number loses the fraction the
-            // same way. str::parse("3.5") into [i64, f64] gives f64 3.5, so a read and
-            // a cast disagree. Proposed fix: prefer a member that holds the value
-            // exactly, and fall back to the fraction-dropping conversion only when none
-            // does. Also decide whether a fractional string converts to an integer at
-            // all (parse sends it through f64). CAST_TO_AN_INTEGER_IS_EXACT pins only
-            // integral inputs. probe:
-            // design/review-2026-10-19/repro/tests-types-union-cast-drops-fraction.gx
-            // (tests-types-03)
-            // 2026-10-24 claude: Eric ruled (2026-10-24): prefer exact: a union cast
-            // takes a member that holds the value exactly, truncating only when none
-            // does.
+            // first member it converts to across classes. Each way, a member
+            // that holds the value exactly comes before one that would lose
+            // part of it (a fraction, a sub-second part, a rounding).
             Type::Set(ts) => {
-                // a member whose tag the value carries is its reading,
-                // whatever a tagless reading of an earlier member says
-                let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
-                if tagged.peek().is_some() {
-                    let mut read = Err(None);
-                    for t in tagged {
-                        match t.cast_int(env, cx, src, v) {
-                            Ok(None) => return Ok(None),
-                            Ok(Some(c)) if read.is_err() => read = Ok(c),
-                            Ok(Some(_)) => (),
-                            Err(e) if read.is_err() => read = Err(Some(e)),
-                            Err(_) => (),
-                        }
-                    }
-                    return match read {
-                        Ok(c) => Ok(Some(c)),
-                        Err(e) => Err(e.expect("a tagged member was tried")),
-                    };
-                }
-                // CR claude for claude: [bug/medium] A data composite never holds a
-                // member as is: it is always rebuilt, so it never answers Ok(None). The
-                // first member whose element casts succeed therefore wins, truncating
-                // conversions included. json [1.5, 2.5] read as [(i64, i64), (f64,
-                // f64)] is (1, 2), and ["A", 1.5, 2.5] read as [`A(i64, i64), `A(f64,
-                // f64)] is `A(1, 2), while the scalar 1.5 read as [i64, f64] stays 1.5.
-                // Needs a ruling on whether a member "holds" data it truncates. One
-                // fix: before these passes, take the first member whose every leaf
-                // holds its value unconverted (a strict is_a over the data form).
-                // probe:
-                // design/review-2026-10-19/repro/t-cast-setops-union-cast-converts-held.gx
-                // (t-cast-setops-03)
-                // 2026-10-24 claude: Eric ruled (2026-10-24): prefer exact: a union cast
-                // takes a member that holds the value exactly, truncating only when none
-                // does.
-                let own: LPooled<Vec<bool>> =
-                    ts.iter().map(|t| in_own_class(env, t, v)).collect();
-                let mut converted = None;
-                for pass in [true, false] {
-                    for (t, _) in ts.iter().zip(own.iter()).filter(|(_, o)| **o == pass) {
-                        match t.cast_int(env, cx, src, v) {
-                            Ok(None) => return Ok(None),
-                            Ok(Some(c)) if converted.is_none() => converted = Some(c),
-                            Ok(Some(_)) | Err(_) => (),
-                        }
-                    }
-                    if let Some(c) = converted {
-                        return Ok(Some(c));
+                let outer = cx.exact;
+                let rounds: &[bool] = if outer { &[true] } else { &[true, false] };
+                let mut failed = None;
+                for exact in rounds {
+                    cx.exact = *exact;
+                    let r = self.cast_member(env, cx, src, v, ts);
+                    cx.exact = outer;
+                    match r {
+                        Ok(c) => return Ok(c),
+                        Err(e) => failed = Some(e),
                     }
                 }
-                Err(self.cast_fail("no member admits it", v))
+                Err(failed.expect("a round was tried"))
             }
         }
+    }
+
+    /// The union `ts`'s reading of `v`, as `cast_int` takes one: a member
+    /// whose tag the value carries, else one the value inhabits, else, for
+    /// unmarked data, a tuple of its length and then a struct, else the
+    /// first member of its own runtime class it converts to, else the
+    /// first it converts to at all.
+    fn cast_member(
+        &self,
+        env: &Env,
+        cx: &mut CastCx,
+        src: Option<&Type>,
+        v: &Value,
+        ts: &[Type],
+    ) -> Cast {
+        // a member whose tag the value carries is its reading, whatever a
+        // tagless reading of an earlier member says
+        let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
+        if tagged.peek().is_some() {
+            let mut read = Err(None);
+            for t in tagged {
+                match t.cast_int(env, cx, src, v) {
+                    Ok(None) => return Ok(None),
+                    Ok(Some(c)) if read.is_err() => read = Ok(c),
+                    Ok(Some(_)) => (),
+                    Err(e) if read.is_err() => read = Err(Some(e)),
+                    Err(_) => (),
+                }
+            }
+            return match read {
+                Ok(c) => Ok(Some(c)),
+                Err(e) => Err(e.expect("a tagged member was tried")),
+            };
+        }
+        // a writer wrote the tuple or the struct the data reads back as
+        if let Value::Array(a) = v
+            && rep::kind(v).is_none()
+        {
+            let rank = |t: &Type| match rep_head(env, t).as_deref() {
+                Some(Type::Tuple(es)) if es.len() == a.len() => Some(0),
+                Some(Type::Struct(_)) => Some(1),
+                _ => None,
+            };
+            for r in 0..2 {
+                for t in ts.iter().filter(|t| rank(t) == Some(r)) {
+                    if let Ok(c) = t.cast_int(env, cx, src, v) {
+                        return Ok(c);
+                    }
+                }
+            }
+        }
+        let own: LPooled<Vec<bool>> =
+            ts.iter().map(|t| in_own_class(env, t, v)).collect();
+        let mut converted = None;
+        for pass in [true, false] {
+            for (t, _) in ts.iter().zip(own.iter()).filter(|(_, o)| **o == pass) {
+                match t.cast_int(env, cx, src, v) {
+                    Ok(None) => return Ok(None),
+                    Ok(Some(c)) if converted.is_none() => converted = Some(c),
+                    Ok(Some(_)) | Err(_) => (),
+                }
+            }
+            if let Some(c) = converted {
+                return Ok(Some(c));
+            }
+        }
+        Err(self.cast_fail("no member admits it", v))
     }
 
     /// Cast `v` of unknown static type to this type; a failure is the
@@ -1100,6 +1122,7 @@ impl Type {
             hist: LPooled::take(),
             sizes: LPooled::take(),
             expanded: LPooled::take(),
+            exact: false,
         };
         match self.cast_int(env, &mut cx, src, &v) {
             Ok(None) => v,
@@ -1748,6 +1771,29 @@ fn ref_at(t: &Type) -> Option<At<Type>> {
     matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
 }
 
+/// An abstract type a walk is about to look through, keyed like a named
+/// type: a representation may name its own type.
+fn abstract_at(t: &Type) -> Option<At<Type>> {
+    match t {
+        Type::Abstract { id, params } => {
+            Some((t.clone(), (id.inner() as usize, 1), params_size(params)))
+        }
+        _ => None,
+    }
+}
+
+/// What an abstract type's values compare, order and hash by when it has
+/// no `Eq` or `Ord` implementation of its own: its representation, its
+/// parameters substituted (`design/tvar_constraints.md`). A Rust-backed
+/// abstract has none to look into, and one with an implementation is
+/// what the implementation says.
+fn compared_rep(env: &Env, id: AbstractId, params: &[Type]) -> Option<Type> {
+    if env.implements(CoreTrait::Eq, id) || env.implements(CoreTrait::Ord, id) {
+        return None;
+    }
+    Some(env.abstract_reps.get(&id)?.instantiate_with(params))
+}
+
 /// Whether two heads [`rep_collision`]'s own arms did not decide share a
 /// runtime form: a primitive and a head whose form holds it, two
 /// references, or two function types.
@@ -1878,6 +1924,10 @@ pub enum Indiscernible {
     /// The name of a definition whose parameters grow as it recurses, so
     /// no walk decides it.
     Grows(ModPath),
+    /// An abstract type with no `Eq` or `Ord` implementation, whose values
+    /// compare by a representation that fails one of the above; its
+    /// representation is its module's, so only its name is told.
+    Abstract(Type),
 }
 
 impl Indiscernible {
@@ -1898,7 +1948,21 @@ impl Indiscernible {
                 rest.resolve_tvars()
             ),
             Indiscernible::Unordered(_) => unreachable!("a runtime test is no order"),
+            Indiscernible::Abstract(_) => {
+                unreachable!("a runtime test does not look into an abstract type")
+            }
         }
+    }
+
+    /// Why an abstract type's values fail a comparison: they compare by
+    /// a representation outside its module's sight.
+    pub fn by_representation(a: &Type) -> String {
+        format!(
+            "{} has no Eq or Ord implementation, so its values compare by its \
+             representation, which can't tell them apart or order them here; \
+             implement Eq and Ord for it",
+            a.resolve_tvars()
+        )
     }
 
     /// What an unordered type is, and how `==` and `!=` compare it.
@@ -1910,39 +1974,6 @@ impl Indiscernible {
     }
 }
 
-// CR claude for claude: [bug/medium] Abstract types are opaque to every comparison rule:
-// `rep_ambiguity` and `compared_ref` return nothing for `Type::Abstract`, and
-// `require_compared` skips it. At run time, though, `GxAbstract` with no core-trait
-// impl compares and orders by its payload. So `array::sort` and map keys over
-// `Abstract<fn..>` or `Abstract<&T>` are accepted and order by LambdaId or bind id (the
-// kind of order x-diff-par-02 ruled out for bare functions). `T(r1) == T(r2)` is false
-// where `r1 == r2` and `[r1] == [r2]` are true. `U(`A) == U("A")` over `Abstract<[`A,
-// string]>` is accepted and true, though `==` over `[`A, string]` is refused. Proposed
-// fix: for an abstract type with no Eq/Ord impl, all three walks descend into its
-// representation, with params substituted, and `map_refs` rewrites references in the
-// payload. One with a user impl stays opaque. Needs your ruling on two points: a hidden
-// representation would then show up in bound errors outside its module, and a
-// Rust-backed abstract has no representation to descend into. probe:
-// design/review-2026-10-12/repro/x-fix-types-05.gx (x-fix-types-05)
-// 2026-10-24 claude: Eric ruled (2026-10-24): look through: an abstract with no Eq/Ord
-// impl compares and keys by its representation in the checks too, the refusal naming
-// the abstract rather than its hidden rep.
-// CR claude for claude: [bug/medium] rep_ambiguity treats Type::Abstract as opaque (`_ =>
-// None`), and so does Type::require_compared. But when no core Eq/Ord hook applies,
-// GxAbstract's eq, cmp and hash are the payload's. So `type T = Abstract<[`A, string]>`
-// makes T(`A) == T("A") true, and a map keyed by both keeps one entry. Writing `a.0 ==
-// b.0` is refused, so the abstract wrapper lets an indiscernible comparison through.
-// The same happens for `Box<'a> = Abstract<'a>` at Box<[`A, string]>, where the use
-// site can see the argument. One of three rules is needed: (1) look through an abstract
-// with no core Eq/Ord impl to its rep in env.abstract_reps, substituted by its params;
-// (2) refuse comparing or keying such an abstract; or (3) refuse `Abstract<rep>` over a
-// non-Discernible rep unless Eq/Ord is implemented. With a hidden rep, (1) would show
-// the rep in the error message. Whichever is chosen, update design/tvar_constraints.md
-// (the Discernible section) to match. probe:
-// design/review-2026-10-12/repro/x-expr-walks-03.gx (x-expr-walks-03)
-// 2026-10-24 claude: Eric ruled (2026-10-24): look through: an abstract with no Eq/Ord
-// impl compares and keys by its representation in the checks too, the refusal naming
-// the abstract rather than its hidden rep.
 fn rep_ambiguity(
     env: &Env,
     seen: &mut Expanded<Type>,
@@ -2005,6 +2036,25 @@ fn rep_ambiguity(
                 Type::Struct(fs) => parts(&mut fs.iter().map(|(_, t, _)| t)),
                 Type::ByRef(..) | Type::Fn(_) if refs && !keys_only => {
                     Some(Indiscernible::Unordered(t.clone()))
+                }
+                Type::Abstract { id, params } => {
+                    let rep = compared_rep(env, *id, params)?;
+                    let inside = walk(
+                        seen,
+                        abstract_at(t),
+                        None,
+                        || None,
+                        |seen| rep_ambiguity(env, seen, open, keys_only, refs, &rep),
+                    )?;
+                    let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+                    // an unknown part is judged as it would be outside
+                    Some(match inside {
+                        Indiscernible::Pair(a, b) if open(&a) || open(&b) => {
+                            Indiscernible::Pair(a, b)
+                        }
+                        Indiscernible::Grows(n) => Indiscernible::Grows(n),
+                        _ => Indiscernible::Abstract(t.clone()),
+                    })
                 }
                 _ => None,
             }
@@ -2069,6 +2119,12 @@ impl Type {
                          compare them, {how}"
                     )
                 }
+                Indiscernible::Abstract(a) => {
+                    anyhow::anyhow!(
+                        "{what} holds {}",
+                        Indiscernible::by_representation(a)
+                    )
+                }
             }
         })
     }
@@ -2085,7 +2141,7 @@ impl Type {
                 Some(b) => b.require_compared(bound, hand),
                 None => hand(tv, bound.clone()),
             },
-            Type::ByRef(..) | Type::Fn(_) | Type::Abstract { .. } => (),
+            Type::ByRef(..) | Type::Fn(_) => (),
             t => t.for_each_child(&mut |c| c.require_compared(bound, hand)),
         })
     }
@@ -2093,23 +2149,6 @@ impl Type {
 
 /// Whether a comparison of values of `t` meets a reference: one where
 /// [`Type::indiscernible`] looks.
-// CR claude for claude: [bug/medium] compared_ref, map_refs and rep_ambiguity all stop at
-// Type::Abstract. GxAbstract's eq and ord still compare the payload when no Eq/Ord impl
-// rides the value, so a reference inside an abstract (in its rep or in a type
-// parameter) is compared by its raw session cell id. Example: `type R =
-// Abstract<&i64>`. Here `R(&x) == R(&x)` is false while `&x == &x` is true. `R(&x) <
-// R(&y)` orders by cell id, which a warm start relocates. `array::sort` and the map
-// literal `{R(&x) => 1, R(&y) => 2}` pass Ordered, although a bare `&i64` is refused in
-// both places. One fix: when an abstract has no Eq/Ord impl, walk its rep
-// (env.abstract_reps with the params substituted) in all three functions. The other:
-// refuse `==` and Ordered over an abstract whose rep or params hold a reference unless
-// it has an impl. The choice also decides how much of a hidden rep a refusal may reveal
-// outside the defining module, and whether tvar_constraints.md's rule that the checks
-// do not look under an abstract still holds. probe:
-// design/review-2026-10-12/repro/x-expr-walks-04.gx (x-expr-walks-04)
-// 2026-10-24 claude: Eric ruled (2026-10-24): look through: an abstract with no Eq/Ord
-// impl compares and keys by its representation in the checks too, the refusal naming
-// the abstract rather than its hidden rep.
 fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
     ensure_sufficient(|| {
         walk(
@@ -2133,6 +2172,17 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
                     }
                     Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
                     Type::Map { key, value } => any(&mut [&**key, &**value].into_iter()),
+                    Type::Abstract { id, params } => match compared_rep(env, *id, params)
+                    {
+                        None => false,
+                        Some(rep) => walk(
+                            seen,
+                            abstract_at(t),
+                            false,
+                            || true,
+                            |seen| compared_ref(env, seen, &rep),
+                        ),
+                    },
                     _ => false,
                 }
             },
@@ -2173,24 +2223,6 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 
 /// Whether `t` may read `v` without leaving `v`'s runtime class, which a
 /// union tries before any conversion across classes.
-// CR claude for claude: [bug/medium] Kind markers made unions like [(i64, i64),
-// Array<f64>], [{a: i64}, Array<(string, i64)>] and [string, `A] legal, but their
-// members share a data form once rep::strip writes them. This test reads the outer form
-// strictly, so an unmarked array is in the Array member's class only, and a string is
-// in the string member's class only. A tuple written by pack or json therefore reads
-// back as the array ((1, 2) -> [1, 2]), a struct as its pairs, and ("k", 1) of
-// [(string, i64), Array<string>] as ["k", "1"]. This breaks CLAUDE.md's rule that what
-// the writers emit reads back into its type. design/distinct_composite_forms.md calls
-// the string case intended. Choose one: refuse such unions under Data/Concrete, or have
-// the union read prefer the member that reads unmarked data exactly (tuple of that
-// arity, then struct, then array). Then fix the doc that loses. probe:
-// design/review-2026-10-19/repro/t-rep-union-data-roundtrip.gx (t-rep-01)
-// 2026-10-20 claude: json::read reproduces it as well: {"a":1} read into [{a: i64},
-// Array<(string, i64)>] selects the Array member and prints array [("a", 1)] (found by
-// the stdlib fix agent, re-run on main 2026-10-20).
-// 2026-10-24 claude: Eric ruled (2026-10-24): prefer the exact reader: unmarked data
-// reads as the member that reads it exactly (a tuple of that arity, then a struct, then
-// an array).
 fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         None | Some(Type::Bottom) => true,
@@ -2311,6 +2343,19 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         v => return v.clone().cast(t),
     };
     of_int(n, t)
+}
+
+/// Whether `c`, `v` converted, holds all of `v`: converted back to `v`'s
+/// class it is `v` again. A string is what it parses as, so `"3.50"` is
+/// held exactly by 3.5 and not by 3.
+fn holds_exactly(v: &Value, c: &Value) -> bool {
+    match v {
+        Value::String(s) => match s.trim().parse::<Value>() {
+            Ok(Value::String(_)) | Err(_) => true,
+            Ok(p) => holds_exactly(&p, c),
+        },
+        v => convert(c.clone(), Typ::get(v)).as_ref() == Some(v),
+    }
 }
 
 /// Whether `v` reads as a number: a number, a bool (1 or 0), a datetime
@@ -2436,6 +2481,14 @@ fn map_refs(
                     .map(|(k, v)| (k.clone(), map_refs(env, holds, value, v, f)))
                     .collect(),
             ),
+            (Type::Abstract { id, params }, v)
+                if let Some(g) = abstract_value::get(v)
+                    && g.id == *id
+                    && let Some(rep) = compared_rep(env, *id, params) =>
+            {
+                let payload = map_refs(env, holds, &rep, &g.payload, f);
+                abstract_value::wrap(*id, g.name.clone(), g.params.clone(), payload)
+            }
             (_, v) => v.clone(),
         }
     })

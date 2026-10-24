@@ -616,6 +616,77 @@ run!(
     "##
 );
 
+// An abstract type with no Eq or Ord implementation compares by its
+// representation, so the checks look through it: members that share a
+// runtime form, a function and a reference are refused there as they are
+// bare, the refusal naming the abstract and not its representation.
+run!(
+    abstract_compares_by_its_rep,
+    refused("U has no Eq or Ord implementation"),
+    "/test.gx" => r##"
+        type U = Abstract<[fn(x: i64) -> i64, fn(x: string) -> i64]>;
+        let f: [fn(x: i64) -> i64, fn(x: string) -> i64] = |x: i64| x;
+        let result = U(f) == U(f)
+    "##;
+    FuseExpect::None
+);
+
+run!(
+    abstract_function_has_no_order,
+    refused("F has no Eq or Ord implementation"),
+    "/test.gx" => r##"
+        type F = Abstract<fn(x: i64) -> i64>;
+        let result = array::sort([F(|x: i64| x)])
+    "##;
+    FuseExpect::None
+);
+
+run!(
+    abstract_reference_is_no_key,
+    refused("a map key type can't hold"),
+    "/test.gx" => r##"
+        type R = Abstract<&i64>;
+        let x = 1;
+        let result = map::len({R(&x) => 1})
+    "##;
+    FuseExpect::None
+);
+
+// A reference under an abstract compares by what it names, as a bare one
+// does, its type a parameter or written in the representation.
+run!(
+    abstract_reference_compares_by_target,
+    prints("[true, true]"),
+    "/test.gx" => r##"
+        type R = Abstract<&i64>;
+        type B<'a> = Abstract<'a>;
+        let x = 1;
+        let result = (R(&x) == R(&x), B(&x) == B(&x))
+    "##;
+    FuseExpect::None
+);
+
+// One with its own Eq and Ord implementations is what they say, whatever
+// its representation holds.
+run!(
+    abstract_with_impls_is_its_own,
+    is(Value::Bool(true)),
+    "/test.gx" => r##"
+        type F = Abstract<(i64, fn(x: i64) -> i64)>;
+        impl Eq for F { let eq = |a, b| a.0.0 == b.0.0 };
+        impl Ord for F {
+            let cmp = |a, b| select (a.0.0, b.0.0) {
+                (x, y) if x < y => `Less,
+                (x, y) if x > y => `Greater,
+                _ => `Equal
+            }
+        };
+        let sorted = array::sort([F((2, |x: i64| x)), F((1, |x: i64| x))]);
+        let result = sorted[0]$.0.0 == 1 && F((1, |x: i64| x)) == F((1, |x: i64| x * 2))
+    "##;
+    FuseExpect::None
+);
+
 // Printing: interpolation, nested anywhere in the printed type —
 // arrays, structs, tuples, variants, a union member, a recursive type.
 run!(

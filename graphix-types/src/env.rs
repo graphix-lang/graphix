@@ -1358,12 +1358,17 @@ impl Env {
         }
     }
 
+    /// Whether the abstract type `id` has an implementation of `t`.
+    pub fn implements(&self, t: CoreTrait, id: AbstractId) -> bool {
+        self.impls_of(t.id()).is_some_and(|l| {
+            l.iter().any(|im| self.head_abstract(&im.target) == Some(id))
+        })
+    }
+
     /// Whether the abstract type `id` crosses data: it has a `Cast`
     /// implementation.
     pub fn casts(&self, id: AbstractId) -> bool {
-        self.impls_of(CoreTrait::Cast.id()).is_some_and(|l| {
-            l.iter().any(|im| self.head_abstract(&im.target) == Some(id))
-        })
+        self.implements(CoreTrait::Cast, id)
     }
 
     /// Whether the abstract type `id` is written as its representation:

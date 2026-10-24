@@ -92,7 +92,12 @@ its cast (`data_target`).
 first, a marked value's own class being its kind and a data string's
 being `string` (`in_own_class`, `carries_tag` read strictly): data `"A"`
 cast to `` [string, `A] `` stays a string, to `` [`A, `B] `` becomes the
-variant. `cast<string>` of a bare variant is its tag; no other marked
+variant. Unmarked array data reads as a tuple of its length, then a
+struct, before an array, so what a writer emits of a tuple or a struct
+reads back as it (`Type::cast_member`). Every way, a member that holds
+the value exactly comes before one that would drop part of it (a
+fraction, a sub-second part, a rounding: `holds_exactly`).
+`cast<string>` of a bare variant is its tag; no other marked
 value has a primitive form, and the primitive `array` holds arrays only
 (`contains`, `is_a`, `setops`). A list casts to an array element by
 element, and an untyped array to a list likewise.
