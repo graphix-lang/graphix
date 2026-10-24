@@ -176,13 +176,17 @@ impl fmt::Display for Rendered<'_> {
     }
 }
 
-/// What stopped a contained run. The two agree with each other: which
-/// fires first is a race between the engines' descent speeds.
+/// What stopped a contained run. They agree with each other: which fires
+/// first is a race between the engines' descent speeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Containment {
     Deadline,
     StackBudget,
     ActivationBudget,
+    /// The runtime's construction, where the program compiles and is
+    /// checked, outlived the deadline: the same checker in every run, so
+    /// it is a finding of its own once confirmed (`Pair::Construction`).
+    Compile,
 }
 
 /// Strip the counters fresh names carry, so drift between two independent
@@ -247,23 +251,8 @@ impl Outcome {
             // counter drift); RuntimeErr messages are mode-dependent
             (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
-            // CR claude for claude: [risk/medium] Any two timeouts agree here, but a
-            // node-walk ActivationBudget/StackBudget beside a JIT Deadline is not a
-            // race between two descents. The JIT's native tail loop counts no
-            // activations, so for any recursion deeper than the budget the node-walk
-            // aborts whether or not the program terminates. A JIT loop that fails to
-            // exit on a deep but bounded recursion therefore gives (ActivationBudget,
-            // Deadline). That is the shape of a genuinely unbounded program, which
-            // check reports as AGREE (contained), and regress's manifest then trusts.
-            // Decide whether that pair is Unsure rather than contained, and whether to
-            // rerun the node-walk once at slow_budget with
-            // Control::set_activation_budget raised, counting a trace there as a
-            // divergence. probe:
-            // design/review-2026-10-19/repro/fuzz-lib-a-budget-vs-deadline.sh
-            // (fuzz-lib-a-03)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Make (ActivationBudget, Deadline) Unsure, and rerun the
-            // node-walk once with the budget raised at slow_budget.
+            // a node-walk budget beside a JIT deadline is settled by
+            // `Oracle::settle`, which knows the engines
             (Timeout(_), Timeout(_)) => true,
             _ => false,
         }
@@ -280,20 +269,8 @@ impl Outcome {
         use Outcome::*;
         match (s, self, other) {
             (Strength::Final, Trace(a), Trace(b)) => a.agrees_final(b),
-            // CR claude for claude: [test-gap/medium] At Strength::Kind a Trace agrees
-            // with a Timeout, and Oracle::settle returns Agree before its ladder. So an
-            // Excluded program whose warm restore wedges the runtime (an image_decode
-            // of a sys::net, process or timer builtin that blocks) agrees with its cold
-            // trace, and the session axis that exists to fuzz those codecs never sees
-            // it. design/graphix_fuzz.md says a Timeout beside anything else never
-            // agrees. Either send a one-sided Timeout at Kind through the ladder (a
-            // slow retry, then the reference again, agreeing only if the reference also
-            // times out), or, if Excluded hangs are too noisy for that, write the
-            // exception into graphix_fuzz.md. (fuzz-lib-a-08)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Send a one-sided Timeout at Kind through the ladder as
-            // graphix_fuzz.md says.
-            (Strength::Kind, Trace(_) | Timeout(_), Trace(_) | Timeout(_)) => true,
+            // a Timeout beside a trace goes through the ladder's slow retry
+            (Strength::Kind, Trace(_), Trace(_)) => true,
             _ => self.agrees_with(other),
         }
     }
@@ -327,7 +304,9 @@ pub async fn run_program_routed(
     route: Route,
     timeout: Duration,
 ) -> Outcome {
-    run_subject(code, mode, route, SessionImage::None, timeout, false).await.outcome
+    run_subject(code, mode, route, SessionImage::None, timeout, RunOpts::default())
+        .await
+        .outcome
 }
 
 /// Everything needed to compile and drive one subject, derived from its
@@ -485,6 +464,14 @@ struct Started {
     exit: oneshot::Receiver<i32>,
 }
 
+/// What a session's runtime may hold: its trace's events and cycles, and
+/// its live activations where they differ from the process's budget.
+#[derive(Debug, Default, Clone, Copy)]
+struct Limits {
+    trace: Option<(usize, u64)>,
+    activations: Option<u64>,
+}
+
 /// Start `subj` under `mode` over its VFS, with a print sink, an exit
 /// request and the fuzzer's fork policy. The program compiles (or
 /// restores) at construction under `timeout`; a construction abandoned
@@ -495,7 +482,7 @@ async fn start_session(
     registration: RegistrationImage,
     program: Option<graphix_compiler::expr::Load>,
     program_image: Option<oneshot::Sender<anyhow::Result<graphix_rt::ProgramImage>>>,
-    limits: Option<(usize, u64)>,
+    limits: Limits,
     timeout: Duration,
 ) -> Result<Started, Outcome> {
     let (tx, rx) = mpsc::channel(64);
@@ -509,6 +496,9 @@ async fn start_session(
             ctx.libstate.set(exit_req);
             ctx.control.set_par_mode(fuzz_par(mode));
             ctx.control.set_prune_mode(mode.prune());
+            if let Some(n) = limits.activations {
+                ctx.control.set_activation_budget(n);
+            }
         })?
         .flags(mode.flags())
         .registration(registration);
@@ -518,32 +508,15 @@ async fn start_session(
         if let Some(tx) = program_image {
             cfg = cfg.program_image(tx);
         }
-        if let Some(limits) = limits {
-            cfg = cfg.trace(limits);
+        if let Some(trace) = limits.trace {
+            cfg = cfg.trace(trace);
         }
         async { TestCtx::start(cfg).await }.await
     };
     match tokio::time::timeout(timeout, init).await {
         Ok(Ok(ctx)) => Ok(Started { ctx, rx, sink, exit }),
         Ok(Err(e)) => Err(Outcome::RuntimeErr(format!("runtime init failed: {e:?}"))),
-        // CR claude for claude: [test-gap/low] A construction timeout (the program's
-        // compile or check) becomes the same Timeout(Deadline) as an evaluator wedge.
-        // Every pair runs the same checker, so the hang is always symmetric and agrees.
-        // In the sessions it ends as SLOW, or, for a deadlock, as a Pair::Warm
-        // divergence against "no program image was written" (see fuzz-lib-a-12).
-        // typemorph_subject treats TmVerdict::Hung as a measurement failure, so
-        // typemorph_work_order writes 'A'. No lane can report the checker going
-        // nonterminating or superlinear, which the rule that the typechecker stays
-        // instant would want caught. Decide whether a construction timeout gets its own
-        // containment (e.g. Containment::Compile) and becomes a single-run finding like
-        // Pair::Twin once it is confirmed at slow_budget, and whether a typemorph base
-        // or probe that hangs again at the slow budget counts as a finding.
-        // (fuzz-lib-a-05)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Give construction timeouts their own containment, a finding once
-        // confirmed at slow_budget; a typemorph subject hung at the slow budget is a
-        // finding.
-        Err(_) => Err(Outcome::Timeout(Containment::Deadline)),
+        Err(_) => Err(Outcome::Timeout(Containment::Compile)),
     }
 }
 
@@ -565,7 +538,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         registration,
         program,
         None,
-        None,
+        Limits::default(),
         timeout,
     )
     .await
@@ -629,7 +602,8 @@ pub async fn run_program_with_stats_routed(
     route: Route,
     timeout: Duration,
 ) -> (Outcome, Option<FusionStats>) {
-    let run = run_subject(code, mode, route, SessionImage::None, timeout, true).await;
+    let opts = RunOpts { stats: true, ..RunOpts::default() };
+    let run = run_subject(code, mode, route, SessionImage::None, timeout, opts).await;
     (run.outcome, run.stats)
 }
 
@@ -838,22 +812,8 @@ async fn drive_inner(
                 // The embedder timeline has cycles between building the
                 // callable and the first dispatch; back-to-back dispatch
                 // would let a reference delivered at init reach the instance.
-                // CR claude for claude: [test-gap/medium] These gap compiles' events land
-                // in the first dispatch epoch's segment, so Epoch::anchor anchors that
-                // epoch at a gap compile, and its offsets count control cycles and vary
-                // per run (4-6 for the same program). Later dispatch epochs anchor at
-                // their own dispatch and agree exactly across all eight dispatch runs.
-                // This noise is why Strength::of holds EngineDispatch and the Dispatch
-                // sessions at Final strength, which misses extra and missing fires
-                // inside an epoch on the route every GUI handler takes. Take and
-                // discard one trace_wait_idle segment after the gap compiles. Then
-                // decide whether the same-route dispatch pairs go back to Exact at the
-                // Exact tier (Pair::Route alone needs Final). probe:
-                // design/review-2026-10-19/repro/fuzz-lib-a-dispatch-gap-anchor.sh
-                // (fuzz-lib-a-04)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Discard the gap compiles' segment; return same-route
-                // dispatch pairs to Exact where they agree.
+                // Their segment is set aside, so the first dispatch epoch
+                // anchors at its own dispatch as the later ones do.
                 for _ in 0..3 {
                     step_or_timeout!(
                         ctx.rt.compile(ArcStr::from("i64:0")),
@@ -863,6 +823,7 @@ async fn drive_inner(
                         }
                     );
                 }
+                let _ = wait_settled!();
                 for ep in &c.epochs {
                     let args =
                         ValArray::from_iter_exact(ep.iter().map(|(_, v)| v.value()));
@@ -879,19 +840,10 @@ async fn drive_inner(
         }
     }
     let mut trace = trace::Trace::from_segments(&segs, eid);
-    // Exact tier only. The runtime runs on past a capped trace, so the
-    // capture stops at the last segment's cycle.
-    // CR claude for claude: [test-gap/low] Prints are captured only at the Exact tier, so
-    // a program with any sys::/http::/json::read marker has its print output (fused Io
-    // calls included) compared nowhere. Trace::agrees_final already compares prints as
-    // a per-epoch multiset without offsets, so capturing them for FinalValues too costs
-    // nothing new, and the settle loop already waits out late replies for values.
-    // Decide whether FinalValues programs capture prints (`tier !=
-    // OracleTier::Excluded`). probe:
-    // design/review-2026-10-19/repro/fuzz-lib-a-finalvalues-prints.sh (fuzz-lib-a-05)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Capture prints for FinalValues programs (tier != Excluded).
-    if tier == OracleTier::Exact {
+    // Every tier that compares (FinalValues as a per-epoch multiset). The
+    // runtime runs on past a capped trace, so the capture stops at the last
+    // segment's cycle.
+    if tier != OracleTier::Excluded {
         let mut lines = Vec::new();
         for (epoch, seg) in segs.iter().enumerate() {
             let cycles = sink.take_through(seg.end_cycle);
@@ -982,17 +934,11 @@ impl Strength {
     /// dispatch route's cycle offsets enter, which are not contractual;
     /// the outcome's kind for a program whose values are not comparable.
     pub fn of(pair: Pair, tier: OracleTier) -> Self {
-        let dispatch = matches!(
-            pair,
-            Pair::EngineDispatch
-                | Pair::Route
-                | Pair::Cold(_, Route::Dispatch)
-                | Pair::Warm(_, Route::Dispatch)
-        );
         match tier {
             OracleTier::Excluded => Strength::Kind,
             OracleTier::FinalValues => Strength::Final,
-            OracleTier::Exact if dispatch => Strength::Final,
+            // the routes pace a program differently
+            OracleTier::Exact if pair == Pair::Route => Strength::Final,
             OracleTier::Exact => Strength::Exact,
         }
     }
@@ -1290,6 +1236,9 @@ struct SubjectRun {
     /// fusion off (or is restored), so nothing else contributes. `None`
     /// when the runtime did not answer.
     stats: Option<FusionStats>,
+    /// It timed out inside one cycle: none started over the second half of
+    /// its budget ([`RunOpts::watch_progress`]).
+    stalled: bool,
 }
 
 fn no_image() -> Result<Bytes, String> {
@@ -1298,7 +1247,7 @@ fn no_image() -> Result<Bytes, String> {
 
 impl SubjectRun {
     fn failed(outcome: Outcome) -> Self {
-        SubjectRun { outcome, image: no_image(), stats: None }
+        SubjectRun { outcome, image: no_image(), stats: None, stalled: false }
     }
 }
 
@@ -1313,8 +1262,9 @@ async fn run_subject(
     route: Route,
     image: SessionImage,
     timeout: Duration,
-    stats: bool,
+    opts: RunOpts,
 ) -> SubjectRun {
+    let RunOpts { stats, activations, watch_progress } = opts;
     let subj = match Subject::parse(code, "test") {
         Ok(s) => s,
         Err(e) => return SubjectRun::failed(Outcome::CompileErr(e)),
@@ -1328,7 +1278,10 @@ async fn run_subject(
         }
         SessionImage::None => (registration_image_source().await, program, None, None),
     };
-    let limits = Some((subj.sched.max_events, subj.sched.max_cycles));
+    let limits = Limits {
+        trace: Some((subj.sched.max_events, subj.sched.max_cycles)),
+        activations,
+    };
     let Started { ctx, mut rx, sink, mut exit } = match start_session(
         &subj,
         mode,
@@ -1343,7 +1296,20 @@ async fn run_subject(
         Ok(s) => s,
         Err(o) => return SubjectRun::failed(o),
     };
-    let outcome = drive(&ctx, &mut rx, &mut exit, &subj, route, timeout, &sink).await;
+    let drive = drive(&ctx, &mut rx, &mut exit, &subj, route, timeout, &sink);
+    let (outcome, halfway) = match watch_progress {
+        false => (drive.await, None),
+        true => {
+            let halfway = async {
+                tokio::time::sleep(timeout / 2).await;
+                ctx.rt.control().cycles()
+            };
+            let (o, h) = tokio::join!(drive, halfway);
+            (o, Some(h))
+        }
+    };
+    let stalled = matches!(outcome, Outcome::Timeout(Containment::Deadline))
+        && halfway == Some(ctx.rt.control().cycles());
     // A wedged runtime never answers another request: abort first, then
     // never await it without a deadline.
     if matches!(outcome, Outcome::Timeout(_)) {
@@ -1367,7 +1333,20 @@ async fn run_subject(
             .and_then(Result::ok),
     };
     let _ = tokio::time::timeout(grace, ctx.shutdown()).await;
-    SubjectRun { outcome, image, stats }
+    SubjectRun { outcome, image, stats, stalled }
+}
+
+/// What a [`run_subject`] measures besides its outcome.
+#[derive(Debug, Default, Clone, Copy)]
+struct RunOpts {
+    /// Ask the runtime for the program's fusion stats.
+    stats: bool,
+    /// The live activations the runtime may hold, where they differ from
+    /// the process's budget.
+    activations: Option<u64>,
+    /// Note whether a run that timed out started no cycle over the second
+    /// half of its budget ([`SubjectRun::stalled`]).
+    watch_progress: bool,
 }
 
 /// [`run_subject`] for the image axis: the outcome and the image a
@@ -1379,7 +1358,7 @@ async fn run_session(
     image: SessionImage,
     timeout: Duration,
 ) -> (Outcome, Result<Bytes, String>) {
-    let run = run_subject(code, mode, route, image, timeout, false).await;
+    let run = run_subject(code, mode, route, image, timeout, RunOpts::default()).await;
     (run.outcome, run.image)
 }
 
@@ -1505,6 +1484,18 @@ pub enum Pair {
     /// node-walk (`tested`): skipping a boundary changed the program
     /// (`design/walk_pruning.md`).
     Prune,
+    /// A corpus pin that no longer parses (`reference` and `tested` both
+    /// hold the parse error): it pins nothing.
+    Unparsed,
+    /// A run whose construction, the program's compile and check, did not
+    /// finish at the slow budget either (`reference` and `tested` both hold
+    /// it): the checker or the compiler hung or went superlinear.
+    Construction,
+    /// A run of an `Exact`-tier program (`reference`) vs its rerun in the
+    /// same engine (`tested`): a program with no source of nondeterminism
+    /// answered twice differently, a determinism bug in the engine or a
+    /// normalization gap in the oracle.
+    Rerun(Mode),
 }
 
 /// The label of one session run, for a finding's outcome fields.
@@ -1564,6 +1555,18 @@ impl Divergence {
             (Pair::Prune, _) => {
                 "walk pruning bug (pruned node-walk != unpruned node-walk)"
             }
+            (Pair::Unparsed, _) => {
+                "corpus pin does not parse (whatever it was refused for once, it pins \
+                     nothing now)"
+            }
+            (Pair::Construction, _) => {
+                "the compile or check did not finish at the slow budget (a hang or a \
+                     superlinear checker: the typechecker must stay instant)"
+            }
+            (Pair::Rerun(_), _) => {
+                "nondeterminism: a deterministic program answered differently on a \
+                     rerun in the same engine (an engine bug or an oracle normalization gap)"
+            }
             (Pair::Par(Mode::Par), _) => {
                 "parallel evaluation bug (forked node-walk != serial node-walk)"
             }
@@ -1608,6 +1611,9 @@ impl Divergence {
             Pair::Rejected | Pair::Accepted => ("interp", "jit"),
             Pair::Check => ("check", "build"),
             Pair::Prune => ("interp/unpruned", "interp"),
+            Pair::Rerun(_) => ("first run", "rerun"),
+            Pair::Construction => ("construction", "construction"),
+            Pair::Unparsed => ("parse", "parse"),
             Pair::Par(Mode::Par) => ("interp", "interp/par"),
             Pair::Par(_) => ("interp", "jit/par"),
             Pair::Cold(m, r) => (
@@ -1700,52 +1706,85 @@ impl FromStr for Verdict {
 
 /// [`check`] with the [`Verdict`] of an agreement: every comparison the
 /// subject owes, judged through the confirm ladder, stopping at the first
-/// divergence or the first drop.
+/// divergence. A dropped comparison says nothing of the others, so they
+/// still run, and the check ends unsure if none diverged.
 pub async fn check_verdict(
     code: &str,
     timeout: Duration,
 ) -> (Option<Divergence>, Verdict) {
+    let (d, r) = check_judged(code, timeout).await;
+    (d, r.verdict)
+}
+
+/// [`check_verdict`] with what a refusal said ([`Recorded`]).
+pub async fn check_judged(
+    code: &str,
+    timeout: Duration,
+) -> (Option<Divergence>, Recorded) {
+    let unsure = || Recorded { verdict: Verdict::Unsure, why: None };
     let tier = oracle_tier(code);
     let pairs = comparisons(code, sessions_enabled());
     let mut o = Oracle::new(code, tier, timeout);
     o.make(&[Pair::Engine]).await;
-    if let Some(d) = o.check_pair().await {
-        return (Some(d), Verdict::Unsure);
+    if let Some(d) = o.construction().await {
+        return (Some(d), unsure());
     }
+    if let Some(d) = o.check_pair().await {
+        return (Some(d), unsure());
+    }
+    let mut dropped = false;
     for &pair in &pairs {
         o.make_group(&pairs, pair).await;
         if let Some(d) = o.twin().await {
-            return (Some(d), Verdict::Unsure);
+            return (Some(d), unsure());
         }
         match o.settle(pair).await {
             Settled::Agree => (),
-            // CR claude for claude: [test-gap/medium] A drop here ends the whole check,
-            // so any program whose engine pair drops (CONTAINED, JIT ASSERTION, SLOW,
-            // NONDETERMINISTIC) never runs its groups 1-3. The JIT's cold and warm
-            // image sessions and the forked runs are never made. For a deep tail
-            // recursion (node-walk ActivationBudget beside a JIT trace), the native
-            // loop kernel's image round trip and its parallel run are never fuzzed.
-            // Each later pair runs its own ladder, so a drop says nothing about them.
-            // Record the drop, continue with the remaining pairs, and return Unsure at
-            // the end only if none diverged (and update graphix_fuzz.md's 'A drop ends
-            // the check unsure'). probe:
-            // design/review-2026-10-19/repro/fuzz-lib-a-drop-ends-check.sh
-            // (fuzz-lib-a-01)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Record the drop, continue with the remaining pairs, Unsure
-            // only if none diverged; update graphix_fuzz.md.
-            Settled::Drop => return (None, Verdict::Unsure),
-            Settled::Diverge(reference, tested) => {
+            Settled::Drop => dropped = true,
+            Settled::Diverge(pair, reference, tested) => {
                 let d =
                     Divergence { code: code.to_string(), reference, tested, tier, pair };
-                return (Some(d), Verdict::Unsure);
+                return (Some(d), unsure());
             }
         }
     }
     if let Some(d) = o.twin().await {
-        return (Some(d), Verdict::Unsure);
+        return (Some(d), unsure());
     }
-    (None, o.verdict())
+    match dropped {
+        true => (None, unsure()),
+        false => (None, o.recorded()),
+    }
+}
+
+/// A pin's verdict as the outcome manifest records it: a refusal's with
+/// the innermost cause it gave, normalized ([`tm_error_head`]), since one
+/// refusal agrees with any other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recorded {
+    pub verdict: Verdict,
+    pub why: Option<String>,
+}
+
+impl fmt::Display for Recorded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.why {
+            None => write!(f, "{}", self.verdict),
+            Some(why) => write!(f, "{}\t{why}", self.verdict),
+        }
+    }
+}
+
+impl FromStr for Recorded {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        let (verdict, why) = match s.split_once('\t') {
+            None => (s.parse()?, None),
+            Some((v, why)) => (v.parse()?, Some(why.to_string())),
+        };
+        Ok(Recorded { verdict, why })
+    }
 }
 
 /// One run the oracle makes of a subject: an engine on a route, in a
@@ -1820,7 +1859,15 @@ impl Pair {
             Pair::Warm(m, r) => {
                 (session(m, r, Session::Cold), session(m, r, Session::Warm))
             }
-            Pair::Twin | Pair::Rejected | Pair::Accepted | Pair::Check => return None,
+            Pair::Twin
+            | Pair::Rejected
+            | Pair::Accepted
+            | Pair::Check
+            | Pair::Rerun(_)
+            | Pair::Construction
+            | Pair::Unparsed => {
+                return None;
+            }
         })
     }
 
@@ -1953,9 +2000,9 @@ async fn run_one_inner(code: &str, run: Run, budget: Duration) -> Outcome {
 enum Settled {
     Agree,
     /// The ladder found nothing stable to say: containment, slowness or
-    /// nondeterminism.
+    /// the nondeterminism a non-`Exact` tier allows.
     Drop,
-    Diverge(Outcome, Outcome),
+    Diverge(Pair, Outcome, Outcome),
 }
 
 /// A subject's runs, made as its comparisons ask for them.
@@ -2038,6 +2085,24 @@ impl<'a> Oracle<'a> {
         self.make(&group).await;
     }
 
+    /// The node-walk's construction outlived the deadline, and again at
+    /// the slow budget: a single-run finding, since every run shares the
+    /// checker.
+    async fn construction(&self) -> Option<Divergence> {
+        let (a, _) = Pair::Engine.runs()?;
+        let o @ Outcome::Timeout(Containment::Compile) = self.get(a) else {
+            return None;
+        };
+        let again = run_one(self.code, a, slow_budget(self.timeout)).await;
+        matches!(again, Outcome::Timeout(Containment::Compile)).then(|| Divergence {
+            code: self.code.to_string(),
+            reference: o.clone(),
+            tested: again,
+            tier: self.tier,
+            pair: Pair::Construction,
+        })
+    }
+
     /// Both engines refused the program, but the check alone accepts it:
     /// elaboration refused what the check passed. A compile verdict owes
     /// nothing to values, so an excluded program is checked too.
@@ -2090,6 +2155,48 @@ impl<'a> Oracle<'a> {
         let (ra, rb) = pair.runs().expect("a comparison");
         let s = Strength::of(pair, self.tier);
         let (mut a, mut b) = (self.get(ra).clone(), self.get(rb).clone());
+        // A node-walk budget beside a JIT deadline is no race between two
+        // descents: the JIT's native loop counts no activations, so the
+        // node-walk aborts any recursion deeper than its budget, ending or
+        // not. The node-walk again with the room to finish refutes a JIT
+        // that hung; another abort says nothing.
+        if ra.mode.node_walk()
+            && !rb.mode.node_walk()
+            && ra.session == Session::NoCache
+            && matches!(
+                a,
+                Outcome::Timeout(
+                    Containment::StackBudget | Containment::ActivationBudget
+                )
+            )
+            && matches!(b, Outcome::Timeout(Containment::Deadline))
+        {
+            self.confirmed = true;
+            let budget = slow_budget(self.timeout);
+            let opts = RunOpts {
+                activations: Some(ACTIVATION_BUDGET * 4),
+                ..RunOpts::default()
+            };
+            let again = run_subject(
+                self.code,
+                ra.mode,
+                ra.route,
+                SessionImage::None,
+                budget,
+                opts,
+            )
+            .await
+            .outcome;
+            if matches!(again, Outcome::Trace(_)) {
+                return Settled::Diverge(pair, again, b);
+            }
+            eprintln!(
+                "CONTAINED — the node-walk exceeded its budget beside a JIT deadline, \
+                 and again with four times the activations; not recorded"
+            );
+            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+            return Settled::Drop;
+        }
         if a.agrees_at(&b, s) {
             return Settled::Agree;
         }
@@ -2159,30 +2266,29 @@ impl<'a> Oracle<'a> {
                 return Settled::Agree;
             }
             // A wedge sits at ~0% CPU; seconds of burn are an honestly slow
-            // reference, which refutes nothing
-            // CR claude for claude: [risk/medium] This drop reads only the reference's
-            // CPU burn. A node-walk that loops forever inside one cycle beside a JIT
-            // trace burns CPU like an honestly slow one, so it lands here as
-            // SLOW/unsure and is never recorded. design/graphix_fuzz.md calls fusion
-            // removing nontermination a top-tier finding, and this rule silently
-            // swallows that half. The JIT-side hang is still recorded, because the rule
-            // requires run == ra. A tested-side speed ratio cannot separate the two
-            // cases, since the kernel and node-walk gap is legitimately hundreds of
-            // times (probe: design/review-2026-10-12/repro/fuzz-lib-a-07.sh drops an
-            // honestly slow program through this branch). A progress signal on the
-            // reference could: the cycle it reached at the first timeout versus at the
-            // slow rerun, recording a reference stuck on one cycle while burning CPU.
-            // That needs a decision on whether one heavy cycle counts as slowness. The
-            // "asymmetric timeout" text in Divergence::bisect then describes only an
-            // idle-wedged or starved reference; its comment about a heavy terminating
-            // program is the case this branch already drops. (fuzz-lib-a-07)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Add the progress signal (cycle reached at first timeout vs
-            // slow rerun); a reference stuck on one cycle is recorded.
+            // reference, which refutes nothing, unless it burns them inside
+            // one cycle: a run that starts no cycle over the second half of
+            // the slow budget loops there, which the tested side's answer
+            // refutes
             if run == ra
                 && matches!(a, Outcome::Timeout(_))
                 && burned >= Duration::from_secs(5)
             {
+                if ra.session == Session::NoCache {
+                    let opts = RunOpts { watch_progress: true, ..RunOpts::default() };
+                    let probe = run_subject(
+                        self.code,
+                        ra.mode,
+                        ra.route,
+                        SessionImage::None,
+                        budget,
+                        opts,
+                    )
+                    .await;
+                    if probe.stalled {
+                        return Settled::Diverge(pair, probe.outcome, b);
+                    }
+                }
                 eprintln!(
                     "SLOW — the reference burned {:.1}s CPU over a {:.0}s budget \
                      without finishing; not recorded",
@@ -2193,28 +2299,13 @@ impl<'a> Oracle<'a> {
                 return Settled::Drop;
             }
         }
-        // a reference that disagrees with itself is nondeterminism
+        // a reference that disagrees with itself is nondeterminism, a
+        // finding where the program has no source of it
         let again = run_one(self.code, ra, budget).await;
-        // CR claude for claude: [risk/medium] This is the only Drop exit in settle that
-        // prints nothing. The CONTAINED, JIT ASSERTION and SLOW drops each eprintln a
-        // label and the program, so `graphix-fuzz check` ends with "UNSURE ...
-        // nondeterminism decided it (see above)" and nothing is above it. Campaigns and
-        // regress discard the drop outright. For an Exact-tier program (no rand, no
-        // clock, by oracle_tier's own definition), a reference that disagrees with its
-        // own rerun is either a determinism bug in that engine or a normalization gap
-        // in the oracle. Probe: design/review-2026-10-12/repro/fuzz-lib-a-06.sh drops
-        // fuzz-lib-a-01's raw-BindId program this way without a word. At minimum,
-        // eprintln a NONDETERMINISTIC line with the program and both renders (the
-        // reference and its rerun). Decide whether an Exact-tier self-disagreement
-        // should become a finding class of its own (a Pair or Divergence kind) instead
-        // of a drop. (fuzz-lib-a-06)
-        // 2026-10-12 claude: The NONDETERMINISTIC line with the program and both renders
-        // is in (fuzz-main-aux-03's fix, which also canonicalizes references and abstract
-        // payloads in traces). Left for Eric: whether an Exact-tier self-disagreement
-        // becomes a finding class of its own.
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Make an Exact-tier self-disagreement a finding class of its own.
         if !again.agrees_at(&a, s) {
+            if self.tier == OracleTier::Exact {
+                return Settled::Diverge(Pair::Rerun(ra.mode), a, again);
+            }
             eprintln!(
                 "NONDETERMINISTIC — the reference disagreed with its rerun; not recorded"
             );
@@ -2223,12 +2314,25 @@ impl<'a> Oracle<'a> {
             eprintln!("    rerun: {}", render(&again));
             return Settled::Drop;
         }
-        Settled::Diverge(a, b)
+        Settled::Diverge(pair, a, b)
     }
 
     /// How an agreement concluded: the engines' kind, unless the ladder
     /// decided something or the program is excluded. A contained callable
     /// is unsure: its runs are four, the budget's race decides it.
+    /// [`Self::verdict`], a refusal's with the node-walk's innermost cause.
+    fn recorded(&self) -> Recorded {
+        let verdict = self.verdict();
+        let (a, _) = Pair::Engine.runs().expect("a comparison");
+        let why = match (verdict, self.get(a)) {
+            (Verdict::Rejected, Outcome::CompileErr(e) | Outcome::RuntimeErr(e)) => {
+                Some(tm_error_head(e).replace('\t', " "))
+            }
+            _ => None,
+        };
+        Recorded { verdict, why }
+    }
+
     fn verdict(&self) -> Verdict {
         let Some((a, b)) = Pair::Engine.runs() else { unreachable!() };
         let v = Verdict::of(self.get(a), self.get(b));
@@ -3209,7 +3313,7 @@ pub enum TmVerdict {
     Accept,
     Reject(String),
     /// The check didn't finish inside its budget: a measurement failure,
-    /// never a flip.
+    /// never a flip ([`TmReport::hang`] is the confirmed one).
     Hung,
 }
 
@@ -3223,6 +3327,9 @@ pub struct TmReport {
     /// Each must-reject mutant (`mustreject`) and its finding, `None`
     /// when it was refused where its rule says.
     pub rejects: Vec<Probed<Option<String>>>,
+    /// The check that hung, when it hung again at the slow budget on a
+    /// runtime of its own: the typechecker must stay instant.
+    pub hang: Option<Probed<()>>,
 }
 
 /// One mutant of a subject and what checking it said.
@@ -3261,6 +3368,9 @@ impl TmReport {
                 flip(&p.id, head, &p.mutant);
             }
         }
+        if let Some(p) = &self.hang {
+            flip(&p.id, "HUNG: the check outlived the slow budget", &p.mutant);
+        }
         for p in &self.probes {
             match p.verdict {
                 TmVerdict::Accept => {
@@ -3282,6 +3392,7 @@ impl TmReport {
     pub fn flipped(&self) -> bool {
         self.probes.iter().any(|p| matches!(p.verdict, TmVerdict::Reject(_)))
             || self.rejects.iter().any(|p| p.verdict.is_some())
+            || self.hang.is_some()
     }
 }
 
@@ -3380,19 +3491,7 @@ pub async fn typemorph_subject(
             None => t,
         }
     };
-    let (tx, _rx) = mpsc::channel(64);
-    let sink = graphix_package_core::PrintSink::default();
-    let ctx = async {
-        TestCtx::start(
-            config(tx, REGISTER, vec![], move |ctx| {
-                ctx.libstate.set(sink);
-            })?
-            .flags(Mode::Interp.flags()),
-        )
-        .await
-    }
-    .await
-    .map_err(|e| format!("runtime init failed: {e:?}"))?;
+    let ctx = tm_runtime().await?;
     let accept = |c: TmCheck| match c {
         TmCheck::Unparsed(e) => TmVerdict::Reject(tm_error_head(&e)),
         TmCheck::Hung => TmVerdict::Hung,
@@ -3419,7 +3518,40 @@ pub async fn typemorph_subject(
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
-    Ok(TmReport { base, probes: results, noparse, rejects })
+    let hung = match base {
+        TmVerdict::Hung => Some(("base".to_string(), body.to_string())),
+        _ => results
+            .iter()
+            .find(|p| p.verdict == TmVerdict::Hung)
+            .map(|p| (p.id.clone(), p.mutant.clone())),
+    };
+    let hang = match hung {
+        None => None,
+        Some((id, mutant)) => {
+            let ctx = tm_runtime().await?;
+            let full = compose(&mutant);
+            let again = tm_check(&ctx, &full, false, slow_budget(per_check)).await;
+            let hung = matches!(again, TmCheck::Hung);
+            let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
+            hung.then_some(Probed { id, mutant, verdict: () })
+        }
+    };
+    Ok(TmReport { base, probes: results, noparse, rejects, hang })
+}
+
+/// A runtime for typemorph's checks, warmed by its registration.
+async fn tm_runtime() -> Result<TestCtx, String> {
+    let (tx, _rx) = mpsc::channel(64);
+    let sink = graphix_package_core::PrintSink::default();
+    TestCtx::start(
+        config(tx, REGISTER, vec![], move |ctx| {
+            ctx.libstate.set(sink);
+        })
+        .map_err(|e| format!("runtime init failed: {e:?}"))?
+        .flags(Mode::Interp.flags()),
+    )
+    .await
+    .map_err(|e| format!("runtime init failed: {e:?}"))
 }
 
 /// The must-reject half of a subject (`mustreject`): the base checked
@@ -3471,8 +3603,10 @@ pub async fn typemorph_child(
     prog: &str,
     per_check: Duration,
 ) -> (Result<String, String>, Duration) {
-    // every check the subject may run, one warmed init, plus slack
-    let deadline = per_check * tm_checks(TM_CAP) + Duration::from_secs(60);
+    // every check the subject may run, a hang's confirmation, one warmed
+    // init, plus slack
+    let deadline =
+        per_check * tm_checks(TM_CAP) + slow_budget(per_check) + Duration::from_secs(60);
     let ms = per_check.as_millis().to_string();
     let c =
         run_child("typemorph-one", &[&ms], &[], prog, false, Deadline::Fixed(deadline))
@@ -3635,7 +3769,7 @@ impl Drop for InFlight {
 /// verdict for the outcome manifest.
 pub struct Regression {
     pub regressions: Vec<(String, Divergence)>,
-    pub verdicts: Vec<(String, Verdict)>,
+    pub verdicts: Vec<(String, Recorded)>,
 }
 
 /// Run the embedded regression corpus (every finding under `findings/`)
@@ -3646,47 +3780,29 @@ pub struct Regression {
 /// every one of them, so the verdicts it records are the unloaded ones.
 pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
     let entries = corpus::REGRESSION_CORPUS;
-    let recorded = manifest_rows::<Verdict>(OUTCOME_MANIFEST);
+    let recorded = manifest_rows::<Recorded>(OUTCOME_MANIFEST);
     let mut regressions = Vec::new();
-    let mut verdicts: Vec<Option<Verdict>> = vec![None; entries.len()];
+    let mut verdicts: Vec<Option<Recorded>> = vec![None; entries.len()];
     let mut suspect: Vec<usize> = Vec::new();
     let job = |i: usize| async move {
         let _pin = InFlight::enter(entries[i].0);
-        check_verdict(entries[i].1, timeout).await
+        check_judged(entries[i].1, timeout).await
     };
     windowed(entries.len(), regress_parallelism(), job, |i, res| {
-        let (d, v) = match res {
+        let (d, r) = match res {
             Ok(r) => r,
             Err(e) => panic!("regress {}: {e}", entries[i].0),
         };
-        let trusted = match v {
+        let trusted = match r.verdict {
             Verdict::Ran | Verdict::Excluded => true,
-            // CR claude for claude: [test-gap/high] A recorded `reject` is trusted on its
-            // class alone. Nothing records or compares which refusal a reject pin gets,
-            // so a pin refused for the wrong reason stays green. Today 2 of the 79
-            // reject pins pass on a parse error: nested-bind-stmt-dead-elim-aug2026/05
-            // has a bare `never`, and rec-rtype-writeback-aug2026/00 has a trailing `//
-            // minimized:` comment, although its header says it runs. 14 more pass on
-            // the let/typedef value-position rule instead of the bug their headers
-            // document (e.g. refparam-occurs-aug2026/00, annotation-names-sep2026/00).
-            // Fix: store the normalized innermost cause (tm_error_head) in the manifest
-            // row of a reject pin and compare it in outcome_mismatches, and make a
-            // parse error a regression for any pin. The Containment kind of a contained
-            // pin needs the same. Each of the 16 pins needs a decision: restore its
-            // subject, or drop it. probe:
-            // design/review-2026-10-19/repro/fuzz-lib-b-reject-pin-reasons.sh
-            // (fuzz-lib-b-01)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Store and compare each reject pin's normalized cause; a
-            // parse error regresses any pin; restore or drop the 16 pins one by one.
             Verdict::Contained | Verdict::Rejected => {
-                !bless && recorded.get(entries[i].0) == Some(&v)
+                !bless && recorded.get(entries[i].0) == Some(&r)
             }
             Verdict::Unsure => false,
         };
         match d {
             Some(d) => regressions.push((entries[i].0.to_string(), d)),
-            None if trusted => verdicts[i] = Some(v),
+            None if trusted => verdicts[i] = Some(r),
             None => suspect.push(i),
         }
     })
@@ -3697,17 +3813,22 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
             suspect.len()
         );
         for i in suspect {
-            let (d, v) = check_verdict(entries[i].1, timeout * 4).await;
+            let (d, r) = check_judged(entries[i].1, timeout * 4).await;
             match d {
                 Some(d) => regressions.push((entries[i].0.to_string(), d)),
-                None => verdicts[i] = Some(v),
+                None => verdicts[i] = Some(r),
             }
         }
     }
-    for (i, v) in verdicts.iter().enumerate() {
-        let Some(v) = v else { continue };
-        if let Some(d) = misdeclared(entries[i].1, *v, timeout * 4).await {
+    for (i, r) in verdicts.iter_mut().enumerate() {
+        let Some(rec) = r else { continue };
+        let d = match unparsed(entries[i].1, rec, timeout * 4).await {
+            Some(d) => Some(d),
+            None => misdeclared(entries[i].1, rec.verdict, timeout * 4).await,
+        };
+        if let Some(d) = d {
             regressions.push((entries[i].0.to_string(), d));
+            *r = None;
         }
     }
     let verdicts = entries
@@ -3718,16 +3839,32 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
     Regression { regressions, verdicts }
 }
 
+/// A pin both engines refuse because it does not parse: it pins nothing,
+/// whatever it was refused for once.
+async fn unparsed(prog: &str, rec: &Recorded, timeout: Duration) -> Option<Divergence> {
+    let Recorded { verdict: Verdict::Rejected, .. } = rec else { return None };
+    let e =
+        check_only(prog, timeout).await.err().filter(|e| e.contains("Parse error"))?;
+    let o = Outcome::CompileErr(e);
+    Some(Divergence {
+        code: prog.to_string(),
+        reference: o.clone(),
+        tested: o,
+        tier: oracle_tier(prog),
+        pair: Pair::Unparsed,
+    })
+}
+
 /// The checked-in outcome manifest: one `verdict<TAB>name` line per
 /// corpus program, written by `regress --bless` (then rebuild to embed).
 pub static OUTCOME_MANIFEST: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/outcome.manifest"));
 
-/// The rows of a `value<TAB>name` manifest.
+/// The rows of a `value<TAB>name` manifest, the name the last field.
 fn manifest_rows<V: FromStr>(manifest: &str) -> BTreeMap<&str, V> {
     manifest
         .lines()
-        .filter_map(|l| l.split_once('\t'))
+        .filter_map(|l| l.rsplit_once('\t'))
         .filter_map(|(v, n)| v.parse().ok().map(|v| (n, v)))
         .collect()
 }
@@ -3777,9 +3914,9 @@ fn manifest_diff<'a, V: FromStr + fmt::Display + 'a>(
 pub fn outcome_mismatches(manifest: &str, r: &Regression) -> Vec<String> {
     let live = r.verdicts.iter().map(|(n, v)| (n.as_str(), Measured::Value(v)));
     let regressed = r.regressions.iter().map(|(n, _)| (n.as_str(), Measured::Elsewhere));
-    manifest_diff(manifest, live.chain(regressed), |n, r: &Verdict, v| {
-        (r != v && *r != Verdict::Unsure && *v != Verdict::Unsure)
-            .then(|| format!("changed outcome: {n}: {r} -> {v}"))
+    manifest_diff(manifest, live.chain(regressed), |n, r: &Recorded, v| {
+        let unsure = r.verdict == Verdict::Unsure || v.verdict == Verdict::Unsure;
+        (r != v && !unsure).then(|| format!("changed outcome: {n}: {r} -> {v}"))
     })
 }
 
@@ -4583,26 +4720,50 @@ pub fn apply_mem_limit() {
         }
         let limit = mem_limit();
         if limit > 0 {
-            let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
-            // best effort: a hard limit already below `limit` makes this
-            // EPERM, and the subject timeout is the real guard
-            // CR claude for claude: [risk/low] On macOS, RLIMIT_AS is an alias of
-            // RLIMIT_RSS, which the kernel does not enforce. This call therefore caps
-            // nothing on katana, the fleet's darwin host (32 workers, 16GB). A subject
-            // whose memory grows without deep recursion, such as an array doubled every
-            // cycle, is bounded there only by the subject timeout times the host's
-            // scale. design/graphix_fuzz.md describes the 8GB cap as what keeps one
-            // runaway subject from taking a box and does not mention this gap. Options:
-            // a darwin child watches its own resident size (`task_info`) on a timer and
-            // aborts above the limit, or the parent polls its children's RSS. At
-            // minimum, document that darwin hosts run uncapped and size their workers
-            // for that. (fuzz-main-aux-09)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. A darwin child watches its own RSS (task_info) and aborts
-            // above the cap; document it in graphix_fuzz.md.
-            unsafe { libc::setrlimit(libc::RLIMIT_AS, &rl) };
+            #[cfg(target_os = "macos")]
+            watch_resident(limit);
+            #[cfg(not(target_os = "macos"))]
+            {
+                let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
+                // best effort: a hard limit already below `limit` makes
+                // this EPERM, and the subject timeout is the real guard
+                unsafe { libc::setrlimit(libc::RLIMIT_AS, &rl) };
+            }
         }
     }
+}
+
+/// macOS enforces no address-space limit (`RLIMIT_AS` aliases the
+/// unenforced `RLIMIT_RSS`), so a darwin child watches its own resident
+/// size and aborts past `limit`, as an allocation past the cap aborts
+/// elsewhere.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn watch_resident(limit: u64) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            // SAFETY: zeroed is a valid mach_task_basic_info, and task_info
+            // writes at most `count` words into it.
+            let mut info: libc::mach_task_basic_info = unsafe { std::mem::zeroed() };
+            let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+            let r = unsafe {
+                libc::task_info(
+                    libc::mach_task_self(),
+                    libc::MACH_TASK_BASIC_INFO,
+                    &mut info as *mut libc::mach_task_basic_info as libc::task_info_t,
+                    &mut count,
+                )
+            };
+            let resident = info.resident_size;
+            if r == libc::KERN_SUCCESS && resident > limit {
+                eprintln!(
+                    "memory limit: {resident} bytes resident, past the {limit}-byte cap"
+                );
+                std::process::abort();
+            }
+        }
+    });
 }
 
 /// The stack budget aborts a runaway recursion (a Timeout, like the
@@ -7230,7 +7391,7 @@ mod fusecheck_test {
                 ("vouched", Verdict::Rejected),
                 ("new", Verdict::Excluded),
             ]
-            .map(|(n, v)| (n.to_string(), v))
+            .map(|(n, verdict)| (n.to_string(), Recorded { verdict, why: None }))
             .into(),
         };
         assert_eq!(

@@ -1,4 +1,6 @@
 // expect: reject
+// Refused now by the comparison rule: `x > i64:3` over the element union
+// [i64, fn] it documents needs one operand type.
 // FIXED by the rtype write-back (setup_static_bind unifies the
 // instance's settled rtype into the site's LIVE rtype cell; abstract
 // returns retry through privatize_type and skip when still opaque).
@@ -37,6 +39,4 @@
 // the def's cells (monomorphic recursion made total — matches the
 // 2026-07-06 ruling), or the instance re-drive must unify the
 // instance's settled rtype back into the site's live cell.
-{let a = [i64:0, i64:0, {let rec f = |n, acc| {type T = {bar: i64, baz: f64, foo: Array<f64>}; let x = { bar: i64:42, baz: f64:84., foo: [f64:1., f64:2., f64:4.3, f64:55.23] }; let f = |{bar: bar, ..}: T| array::iter; f(x)}; f(i64:0, buffer::to_string)}, i64:-100, i64:0]; array::map(a, |x| x > i64:3)}
-// minimized:
 {let a = [i64:0, i64:0, {let rec f = |n, acc| {type T = {bar: i64, baz: f64, foo: Array<f64>}; let x = { bar: i64:0, baz: f64:84., foo: [f64:1., f64:2., f64:4.3, f64:55.23] }; let f = |{bar: bar, ..}: T| array::iter; f(x)}; f(i64:0, buffer::to_string)}, i64:-100, i64:0]; array::map(a, |x| x > i64:3)}

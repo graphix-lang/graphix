@@ -493,6 +493,7 @@ impl<X: GXExt> GX<X> {
             !self.ctx.view().deferred_pending(),
             "compiled references left unreplayed"
         );
+        self.ctx.control.cycle_started();
         // no kernel runs between cycles
         self.ctx.fusion.relocate_kernels();
         self.ctx.view().apply_deferred();

@@ -143,7 +143,8 @@ sections for multi-file subjects.
 stripped): `Exact` — pure programs, exact per-cycle trace agreement,
 with captured print output compared as well; `FinalValues` —
 value-deterministic async (IO pacing races quiescence, but each
-epoch's settled value is deterministic, so compare per-epoch finals);
+epoch's settled value is deterministic, so compare per-epoch finals,
+and each epoch's prints as a multiset);
 `Excluded` — random values, the wall clock, OS-assigned ports and
 paths, child processes (a child's lifetime is program data, so the
 epoch its exit lands in is the wall clock's), an fs mutation racing
@@ -156,14 +157,22 @@ crashes surface, and divergences never record. The Excluded list is empirical an
 `selfcheck` polices it: a missing marker shows up as a finals-strength
 flake.
 
-**`Timeout` narrowly means a wedged evaluator** — or a runaway the
-stack or activation budget aborted: any failed request to a runtime
+**`Timeout` narrowly means a wedged evaluator** — or a construction
+that outlived the deadline (`Timeout(Compile)`: the program's compile
+and check, which every run shares, so the node-walk's, confirmed at the
+slow budget, is a finding of its own, `Pair::Construction`), or a
+runaway the stack or activation budget aborted: any failed request to a runtime
 whose `Control` reports `budget_aborted()` is `Timeout(ActivationBudget)`
 or `Timeout(StackBudget)` by the budget the abort recorded
 (`Control::aborted_by`; the driver maps it, in one place), because the deadline and the budget are the same
 containment and which one stops an unbounded descent first is a race
 between the engines' descent speeds, not a property of the program.
-Timeout==Timeout is AGREE whatever stopped each side; a Timeout beside
+Timeout==Timeout is AGREE whatever stopped each side, but for a
+node-walk budget beside a JIT `Deadline`: the JIT's native loop counts
+no activations, so the node-walk aborts any recursion deeper than its
+budget whether or not it ends; the node-walk runs again at the slow
+budget with four times the activations, a trace there is a divergence
+(the JIT hung) and another abort leaves the check `unsure`. A Timeout beside
 anything else never agrees, a bottom or a print-only trace included.
 Read a bench timeout as an unexplained failure, not a pass. An
 asymmetric hang is a top-tier finding: fusion adding or removing
@@ -183,8 +192,11 @@ pin that must run in both engines picks a depth both finish.
 
 **One list of comparisons** (`comparisons`): each is a `Pair` naming
 its reference and tested runs, held at one `Strength` (`Strength::of`:
-`Exact`, `Final` where a dispatch route's cycle offsets enter or the
-tier is `FinalValues`, `Kind` for an `Excluded` program). In order: the
+`Exact`, `Final` for the route pair, whose two routes pace a program
+differently, or where the tier is `FinalValues`, `Kind` for an
+`Excluded` program; the dispatch route's gap compiles before its first
+dispatch settle in a segment of their own, set aside, so each dispatch
+epoch anchors at its dispatch). In order: the
 engines; a callable's dispatch engines and route pair; each engine's
 sessions; the forked runs; the pruned node-walk. The runs are made as the list reaches them,
 a group at a time, and shared. A batch child's first pass agrees only
@@ -197,9 +209,15 @@ beside a node-walk trace, is that assertion being the JIT's (as
 `#[native]`, which the seed harvest strips); a one-sided Timeout reruns that side at the slow
 budget (a session's cold and warm together) and the comparison goes on
 with the rerun's outcome; a reference that burned seconds of CPU and
-still timed out is honest slowness; a reference that disagrees with its
-own rerun is nondeterminism; anything left is a divergence. A drop ends
-the check `unsure`.
+still timed out is honest slowness, unless a probe run shows it starting
+no cycle over the second half of the slow budget (`Control::cycles`): a
+loop inside one cycle, which the other side's answer refutes, so a
+divergence; a reference that disagrees with its
+own rerun is nondeterminism, a finding of its own at the `Exact` tier
+(`Pair::Rerun`: nothing in the program may vary) and a drop elsewhere;
+anything left is a divergence. A drop says
+nothing of the other comparisons, so they still run, and the check ends
+`unsure` unless one of them diverged.
 
 **Captured output** is compared at `Exact` strength, each line keyed by
 its epoch and its cycle's offset from the epoch's anchor and sorted only
@@ -344,7 +362,9 @@ Three rules learned from a campaign that died of its own exhaust:
   allocator a healthy batch child reserves 2.4-3GB for under 1GB
   resident; at 48GB one runaway subject took a 62GB box with it
   (systemd-oomd killed the session), where at 8GB it aborts its own
-  child.
+  child. macOS enforces no `RLIMIT_AS`, so a darwin child instead
+  watches its own resident size (`task_info`, every 100ms) and aborts
+  past the same cap.
 
 The fleet deploy is a script (`fleet.sh deploy`), every step of which
 verifies a fact (pgrep, content fingerprint, the campaign's own gate
@@ -439,7 +459,9 @@ After minimization a finding is a `.gx` file in a directory under
 `graphix-fuzz/findings/<class-date>/` with a README recording the
 adjudication; the directory IS the regression gate. `regress` runs the
 whole corpus through `check` in-process; the corpus is embedded in the
-binary, so a soak's startup gate carries the count of pins it verified.
+binary, so a campaign's gate (`soak.sh` runs `regress` once before it
+launches the soak, which then skips its own: `GRAPHIX_FUZZ_GATED`)
+carries the count of pins it verified.
 `regress` also compiles every pin once more in JIT mode, compile only,
 and compares its fused-region count with `graphix-fuzz/fusecheck.manifest`
 (one `count<TAB>name` row per pin; `abort` for a pin whose first cycle
@@ -527,7 +549,11 @@ functions of the body text, so a `(kind, site)` id re-derives the
 identical candidate in a fresh process — every flip is CONFIRMED in a
 fresh process before it is reported, and a program whose own
 acceptance flaps across processes is a determinism finding, never a
-flip. Rejection heads are normalized (digit runs collapsed) so
+flip. A check that outlives its budget is a measurement failure, and
+ends the subject's probes; the one that hung is checked again on a
+runtime of its own at the slow budget, and a second hang is a flip
+(`HUNG`): the typechecker must stay instant. Rejection heads are
+normalized (digit runs collapsed) so
 positions and fresh-counter ids do not split buckets. `typemorph
 <file>` is the triage tool; `typemorph-scan [n] [seed]` scans the
 findings corpus plus generated subjects — a hand-run gate, re-run when

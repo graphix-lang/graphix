@@ -3,4 +3,4 @@
 // divergence_000001): a written type's names resolved only where a relation
 // expanded them. Now the definition check resolves them, deferred to the
 // check's end for a name a later module supplies.
-{ let n = 100; array::map([1, 2], |y| array::map([1], |x| let v: [S, T] = never())) }
+{ let n = 100; array::map([1, 2], |y| array::map([1], |x| { let v: [S, T] = never(); v })) }

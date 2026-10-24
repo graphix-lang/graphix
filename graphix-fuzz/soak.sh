@@ -132,6 +132,7 @@ launch() {
         printf "%s\n" "$$" > "$pidfile"
         renice -n "$nice_level" -p "$$" >/dev/null
         exec env \
+            GRAPHIX_FUZZ_GATED=1 \
             GRAPHIX_FUZZ_PAR="$workers" \
             GRAPHIX_FUZZ_CORPUS="$corpus" \
             "$binary" "$@"
@@ -146,44 +147,25 @@ launch() {
     return 1
 }
 
-# The campaign must clear its own regression corpus before it is allowed
-# to hunt: a build that broke a fixed bug would otherwise spend the night
-# re-finding it.
-wait_for_gate() {
+# The launched soak starts hunting: it loads its corpus and prints its
+# start line (the campaign's gate ran before the launch).
+wait_for_start() {
     local dir=$1 log="$dir/soak.log"
-    # The launched soak re-runs the full regression gate before it
-    # hunts: a parallel pass, then every non-ran agreement (refusal,
-    # limit and error pins) again sequentially at 4x budget, so the
-    # gate's wall time is a few minutes at scale 1 and grows with the
-    # corpus and with GRAPHIX_FUZZ_TIMEOUT_SCALE. The wait is the
-    # scaled gate with generous headroom: giving up early kills a
-    # healthy soak, and a loaded box takes minutes.
-    local scale=${GRAPHIX_FUZZ_TIMEOUT_SCALE:-1}
-    [[ $scale =~ ^[0-9]+$ ]] && ((scale >= 1)) || scale=1
-    local max=$(( 3000 * scale ))
-    local _i
-    for ((_i = 0; _i < max; _i++)); do
+    local _i line
+    for ((_i = 0; _i < 600; _i++)); do
         soak_live "$dir" || {
-            echo "soak exited during its startup gate" >&2
+            echo "soak exited before it started" >&2
             tail -n 20 "$log" >&2 || true
             return 1
         }
-        local result
-        result=$(grep -m1 '^regression corpus:' "$log" || true)
-        if [[ -n $result ]]; then
-            [[ $result == *', 0 regressions' ]] || {
-                echo "startup gate failed: $result" >&2
-                tail -n 20 "$log" >&2 || true
-                return 1
-            }
-            if grep -q '^soak: iters=forever ' "$log"; then
-                echo "soak: $result"
-                return 0
-            fi
+        line=$(grep -m1 '^soak: iters=forever ' "$log" || true)
+        if [[ -n $line ]]; then
+            echo "$line"
+            return 0
         fi
         sleep 0.2
     done
-    echo "startup gate timed out" >&2
+    echo "soak did not start" >&2
     tail -n 20 "$log" >&2 || true
     return 1
 }
@@ -286,18 +268,8 @@ start() {
         cargo build --profile soak -p graphix-fuzz --manifest-path "$repo/Cargo.toml"
         binary="$build/soak/graphix-fuzz"
     fi
-    # CR claude for claude: [perf/low] This gate runs the whole regression corpus. The
-    # soak launched below then runs `print_regression` again with the same binary
-    # (main.rs `soak` arm) before it hunts, and `wait_for_gate` waits for that second
-    # run. Every launch pays the gate twice, at 4x on scale-4 boxes. wait_for_gate's
-    # comment calls the second run 'the full regression gate', but it has no fusecheck
-    # and ignores outcome mismatches. Choose one gate: skip the soak's in-process run
-    # when soak.sh already gated (an env flag), or drop this line and make the soak's
-    # gate run fusecheck and stop on mismatches. Found by reading; not run.
-    # (fuzz-main-aux-05)
-    # 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    # needed. Skip the soak's in-process gate when soak.sh already gated (env flag),
-    # and fix wait_for_gate's comment.
+    # The campaign's one gate: the corpus, the outcome and fusion manifests;
+    # the launched soak skips its own (GRAPHIX_FUZZ_GATED).
     "$binary" regress
 
     mkdir -p "$dir/state" "$dir/corpus"
@@ -308,7 +280,7 @@ start() {
 
     trap 'stop_campaign "$dir"' ERR INT TERM
     launch "$dir" "$seed" "$workers" "$mix"
-    wait_for_gate "$dir"
+    wait_for_start "$dir"
     verify_campaign "$dir"
     trap - ERR INT TERM
     status "$campaign"

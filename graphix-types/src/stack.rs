@@ -313,6 +313,8 @@ pub struct Control {
     build_forks: AtomicU64,
     /// Batches of run-time binds and compiles its cycles applied.
     rebuilds: AtomicU64,
+    /// Cycles started.
+    cycles: AtomicU64,
     /// Fork-point verdicts its cycles worked out from the graph.
     verdicts: AtomicU64,
     /// Live activations its cycles bound, and how many it may hold.
@@ -411,6 +413,7 @@ impl Control {
             forks: AtomicU64::new(0),
             build_forks: AtomicU64::new(0),
             rebuilds: AtomicU64::new(0),
+            cycles: AtomicU64::new(0),
             verdicts: AtomicU64::new(0),
             activations: AtomicU64::new(0),
             activation_budget: AtomicU64::new(
@@ -527,6 +530,17 @@ impl Control {
     #[doc(hidden)]
     pub fn rebuilt(&self) {
         self.rebuilds.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The cycles this runtime has started: a progress signal another
+    /// thread can read while a cycle runs.
+    pub fn cycles(&self) -> u64 {
+        self.cycles.load(Ordering::Relaxed)
+    }
+
+    #[doc(hidden)]
+    pub fn cycle_started(&self) {
+        self.cycles.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Fork-point verdicts this runtime's cycles worked out from the

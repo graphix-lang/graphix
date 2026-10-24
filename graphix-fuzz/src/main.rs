@@ -919,7 +919,11 @@ async fn main() -> Result<ExitCode> {
                 corpus.len(),
                 out.display()
             );
-            let regressions = print_regression().await;
+            // soak.sh gates the campaign before it launches the soak
+            let regressions = match std::env::var_os("GRAPHIX_FUZZ_GATED") {
+                Some(_) => 0,
+                None => print_regression().await,
+            };
             let before = corpus.len();
             println!(
                 "soak: iters={} seed={seed} mix={mix} → {}/",

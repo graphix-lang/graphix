@@ -1,4 +1,5 @@
 // expect: reject
+// A `type` in value position is refused now.
 // bisect: fusion/JIT bug (interp != jit)
 // interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
 // jit:    RuntimeErr("trace_wait_idle: runtime did not respond")

@@ -1,4 +1,6 @@
 // expect: reject
+// Hole (1) is the statement-only rule; the typedef is a statement here,
+// so the pin holds hole (2): the write refuses to clobber `inner`.
 // bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin.
 // After the fix this program is a CompileErr in both modes (AGREE).
 // Found by soak aug31e (ryouko fuzz divergence_000000, 2026-08-31).
@@ -22,4 +24,4 @@
 // The arm now derefs a bound cell (⊥ ⊇ Array refuses, matching the
 // literal-RHS refusal); an open cell still commits 'r := ⊥, the one
 // solution.
-{let outer = never(); catch(e) outer <- i64:1; let g = || {let inner = type M = [`M(Map<string, i64>), `N]; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); error(`B)?; v - outer}
+{let outer = never(); catch(e) outer <- i64:1; let g = || {type M = [`M(Map<string, i64>), `N]; let inner = never(); catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); error(`B)?; v - outer}

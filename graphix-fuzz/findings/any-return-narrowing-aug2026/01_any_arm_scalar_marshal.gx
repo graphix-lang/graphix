@@ -1,5 +1,5 @@
-// expect: reject
-// A `let` in value position is refused now (sep28k).
+// With the arm's `let` in a block (a `let` in value position is refused
+// now) it runs, and both engines must agree.
 // Any-return per-site narrowing (aug05c ryouko divergence_000000,
 // hand-minimized): a select with an Any-annotated let-bodied arm
 // returns [Any, Array<i64>], which normalize correctly collapses to
@@ -16,4 +16,4 @@
 // refuses to fuse over the Any-carrying element union.
 // Exact-type comparison (2026-09-24): a union element is compared through
 // a type test; a return of the flattening makes the `_` arm dead, refused.
-{let a = [i64:0, {let f = |n| select n {i64:0 => let trigs: Any = i64:9, _ => [i64:1, i64:2, i64:4]}; f(i64:3)}, i64:4]; array::map(a, |x| select x {i64 as n => n > i64:3, _ => true})}
+{let a = [i64:0, {let f = |n| select n {i64:0 => {let trigs: Any = i64:9; trigs}, _ => [i64:1, i64:2, i64:4]}; f(i64:3)}, i64:4]; array::map(a, |x| select x {i64 as n => n > i64:3, _ => true})}
