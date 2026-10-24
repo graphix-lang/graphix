@@ -32,7 +32,8 @@ val generate_id: fn(db: Db) -> Result<u64, `DbErr(string)>;
 /// List the names of all trees in the database.
 val tree_names: fn(db: Db) -> Result<Array<string>, `DbErr(string)>;
 
-/// Drop a named tree from the database.
+/// Drop a named tree from the database. Its subscriptions end: each of
+/// their accessors yields one `DbErr` after the changes made before it.
 val drop_tree: fn(db: Db, name: string) -> Result<bool, `DbErr(string)>;
 
 /// Open or create a named tree with typed keys and values.

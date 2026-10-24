@@ -2,7 +2,10 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use chrono::DateTime;
 use enumflags2::BitFlags;
-use graphix_compiler::rep;
+use graphix_compiler::{
+    list,
+    rep::{self, Kind},
+};
 use netidx::publisher::Typ;
 use netidx_core::pack::Pack;
 use netidx_value::{ValArray, ValError, Value};
@@ -21,7 +24,11 @@ pub(crate) static ENCODE_MANY_POOL: LazyLock<Pool<Vec<GPooled<Vec<u8>>>>> =
 /// A key nests at most this deep.
 const MAX_DEPTH: usize = 64;
 
+/// `v` stored as data: its tuples, structs, variants and lists in their
+/// data forms ([`rep::strip`]).
 pub(crate) fn encode_value(v: &Value) -> Result<GPooled<Vec<u8>>> {
+    let stripped = rep::strip(v);
+    let v = stripped.as_ref().unwrap_or(v);
     let mut buf = ENCODE_POOL.take();
     buf.reserve(v.encoded_len());
     v.encode(&mut *buf).map_err(|e| anyhow!("the value cannot be stored: {e}"))?;
@@ -36,36 +43,9 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // keys by their bytes. A tree whose keys are one primitive type stores them
 // without a tag (a string or bytes key raw, so a prefix is a byte prefix);
 // any other key type stores each value tagged by its type and
-// self-delimiting.
+// self-delimiting, its tuples, structs, variants and lists by their
+// markers (the abstract tag and the kind), a list's elements in one run.
 
-// CR claude for claude: [bug/medium] Keys arrive stripped: a bare variant is a String and
-// a payload variant an Array, and the tagged encoding orders by type first. So a tree
-// keyed by [`Z(i64), `A] puts `Z(1) before `A, although `A < `Z(1) in the language and
-// the gxi promises the language's order for first/last/get_lt/get_gt/cursor::range.
-// Encode variant keys tag first whatever their payload (for example from the marked
-// key), or change the documented order. probe:
-// design/review-2026-10-19/repro/x-kind-markers-db-variant-key-order.sh
-// (x-kind-markers-03)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Encode variant keys tag first from the marked key (with http-sqlite-db1-01).
-// CR claude for claude: [bug/high] Keys reach this function in data form (the tree
-// builtins list them in DATA_ARGS), and data form drops the kind markers. So members of
-// a union key type that share a data form become one key: `A and "A", (1, 2) and [<1,
-// 2>], a struct and its array of pairs. Inserting `A overwrites "A", and a tuple key
-// reads back as a list. The markers are gone too, so a bare variant (String tag) sorts
-// after every payload variant (Array tag): first() returns `B(1) although `A < `B(1).
-// That breaks the order mod.gxi promises for first/last/get_lt/get_gt/range. A cursor
-// prefix of `A also matches `AB, though cursor.gxi says other keys match exactly. Fix:
-// encode from the language form, with a tag byte per kind marker, and decode back to
-// it. Then drop the keys from DATA_ARGS, bump META_VERSION, and pin
-// variant/tuple/list/struct keys against Value::cmp. The other option is to refuse such
-// key types at db::tree. Values in these unions lose the same way, through json too.
-// probe: design/review-2026-10-19/repro/http-sqlite-db1-db-key-data-form.gx,
-// design/review-2026-10-19/repro/http-sqlite-db1-db-key-tuple-as-list.gx
-// (http-sqlite-db1-01)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Encode from the language form with a tag byte per kind marker; drop keys from
-// DATA_ARGS; bump META_VERSION; pin.
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {
@@ -85,6 +65,14 @@ pub(crate) fn encode_prefix(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<V
     let terminator = match (key_typ, v) {
         (Some(Typ::String | Typ::Bytes), _) => 0,
         (_, Value::String(_) | Value::Bytes(_)) => 2,
+        (_, v)
+            if matches!(
+                rep::kind(v),
+                Some(Kind::Tuple | Kind::Struct | Kind::Variant)
+            ) =>
+        {
+            0
+        }
         (_, Value::Array(_) | Value::Map(_)) => 1,
         _ => 0,
     };
@@ -283,6 +271,15 @@ fn write_payload(v: &Value, buf: &mut Vec<u8>, depth: usize) -> Result<()> {
             buf.extend_from_slice(&d.subsec_nanos().to_be_bytes());
         }
         Value::Error(e) => write_tagged(e, buf, depth + 1)?,
+        Value::Array(_) if rep::kind(v) == Some(Kind::List) => {
+            buf.push(1);
+            write_tagged(&rep::marker(Kind::List), buf, depth + 1)?;
+            for v in list::Iter::new(v.clone()) {
+                buf.push(1);
+                write_tagged(&v, buf, depth + 1)?;
+            }
+            buf.push(0);
+        }
         Value::Array(a) => {
             for v in a.iter() {
                 buf.push(1);
@@ -298,9 +295,10 @@ fn write_payload(v: &Value, buf: &mut Vec<u8>, depth: usize) -> Result<()> {
             }
             buf.push(0);
         }
-        Value::Abstract(_) => {
-            bail!("{} cannot be a key", graphix_compiler::typ::Naked(v))
-        }
+        Value::Abstract(_) => match rep::marker_kind(v) {
+            Some(k) => buf.push(k as u8),
+            None => bail!("{} cannot be a key", graphix_compiler::typ::Naked(v)),
+        },
     }
     Ok(())
 }
@@ -365,7 +363,10 @@ fn read_payload(t: Typ, data: &mut &[u8], depth: usize) -> Result<Value> {
             while take::<1>(data)?[0] != 0 {
                 elts.push(read_tagged(data, depth + 1)?);
             }
-            Value::Array(ValArray::from_iter_exact(elts.drain(..)))
+            match elts.first().and_then(rep::marker_kind) {
+                Some(Kind::List) => list::from_iter(elts.drain(1..)),
+                _ => Value::Array(ValArray::from_iter_exact(elts.drain(..))),
+            }
         }
         Typ::Map => {
             let mut m = netidx_value::Map::new();
@@ -376,7 +377,10 @@ fn read_payload(t: Typ, data: &mut &[u8], depth: usize) -> Result<Value> {
             }
             Value::Map(m)
         }
-        Typ::Abstract => bail!("undecodable key: an abstract value"),
+        Typ::Abstract => match Kind::from_u8(take::<1>(data)?[0]) {
+            Some(k) => rep::marker(k),
+            None => bail!("undecodable key: an abstract value"),
+        },
     })
 }
 
@@ -463,7 +467,27 @@ mod test {
             map(&[(1, "a")]),
             map(&[(1, "a"), (2, "b")]),
             map(&[(1, "b")]),
+            rep::tuple([Value::I64(0), Value::I64(9)]),
+            rep::tuple([Value::I64(1), Value::I64(2)]),
+            rep::tuple([Value::I64(1), Value::I64(2), Value::I64(0)]),
+            rep::structure([("a".into(), Value::I64(0)), ("b".into(), "y".into())]),
+            rep::structure([("a".into(), Value::I64(1)), ("b".into(), "x".into())]),
+            variant("A", []),
+            variant("A", [Value::I64(1)]),
+            variant("A", [Value::I64(3)]),
+            variant("AB", []),
+            variant("B", []),
+            variant("B", [Value::I64(1)]),
+            list::nil(),
+            list::from_iter([Value::I64(0), Value::I64(5)]),
+            list::from_iter([Value::I64(1)]),
+            list::from_iter([Value::I64(1), Value::I64(2)]),
+            list::from_iter([Value::I64(1), list::from_iter([variant("A", [])])]),
         ]
+    }
+
+    fn variant<const N: usize>(tag: &'static str, payload: [Value; N]) -> Value {
+        rep::make_variant(tag.into(), payload)
     }
 
     fn map(kvs: &[(i64, &str)]) -> Value {
@@ -486,6 +510,18 @@ mod test {
             ),
             (map(&[(1, "a")]), map(&[(1, "a"), (2, "b")]), map(&[(1, "ab")])),
             (Value::I64(1), Value::I64(1), Value::I64(2)),
+            (variant("A", []), variant("A", []), variant("AB", [])),
+            (variant("A", []), variant("A", []), variant("A", [Value::I64(1)])),
+            (
+                rep::tuple([Value::I64(1), Value::I64(2)]),
+                rep::tuple([Value::I64(1), Value::I64(2)]),
+                rep::tuple([Value::I64(1), Value::I64(2), Value::I64(3)]),
+            ),
+            (
+                list::from_iter([Value::I64(1)]),
+                list::from_iter([Value::I64(1), Value::I64(2)]),
+                list::from_iter([Value::I64(2)]),
+            ),
         ] {
             for typ in [None, Some(Typ::get(&key))] {
                 let prefix = encode_prefix(typ, &prefix).unwrap();
@@ -506,6 +542,20 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_long_list_key_nests_one_level() {
+        let v = list::from_iter((0..1000).map(Value::I64));
+        assert_eq!(decode_key(None, &key(&v)).unwrap(), v);
+    }
+
+    #[test]
+    fn stored_values_carry_no_markers() {
+        let v = rep::tuple([variant("A", []), list::from_iter([Value::I64(1)])]);
+        let data =
+            Value::Array([Value::from("A"), Value::Array([Value::I64(1)].into())].into());
+        assert_eq!(decode_value(&encode_value(&v).unwrap()).unwrap(), data);
     }
 
     #[test]

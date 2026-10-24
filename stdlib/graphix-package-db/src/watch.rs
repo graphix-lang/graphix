@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures::channel::mpsc;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
 use sled::IVec;
 use smallvec::SmallVec;
@@ -14,20 +14,32 @@ pub(crate) struct Change {
     pub(crate) value: Option<IVec>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Watch {
     prefix: Box<[u8]>,
     tx: mpsc::UnboundedSender<Change>,
 }
 
-/// The watches on one tree. Every write to the tree holds its lock:
-/// shared while the tree has no watch, else exclusive until what it
-/// changed is sent, so each watch receives the tree's changes in the
-/// order they were made.
+/// The watches on one tree. A write holds `order` shared while the tree
+/// has no watch, else exclusive until what it changed is sent, so each
+/// watch receives the tree's changes in the order they were made. The
+/// list is replaced whole under its own lock, so registering or dropping
+/// a watch never waits for a write.
 #[derive(Debug, Default)]
-pub(crate) struct Watches(RwLock<Vec<Watch>>);
+pub(crate) struct Watches {
+    order: RwLock<()>,
+    list: Mutex<Arc<[Watch]>>,
+}
 
 impl Watches {
+    fn list(&self) -> Arc<[Watch]> {
+        self.list.lock().clone()
+    }
+
+    fn watched(&self) -> bool {
+        !self.list.lock().is_empty()
+    }
+
     /// Send each change to a key under `prefix` to `tx`, until the
     /// registration drops.
     pub(crate) fn add(
@@ -35,26 +47,25 @@ impl Watches {
         prefix: &[u8],
         tx: mpsc::UnboundedSender<Change>,
     ) -> Registered {
-        // CR claude for claude: [perf/medium] This exclusive lock is taken on the runtime
-        // thread (DbSubscribe::update -> spawn_watch). It waits for every write in
-        // flight on the tree, and watch::write holds the lock for the whole sled
-        // operation: an apply_batch, a commit's transaction, an import. A subscription
-        // made during a 100k-entry db::batch stopped a 5 ms ticker for 409 ms, the
-        // whole batch. Registered::drop blocks a tokio worker the same way. The fix is
-        // a choice. Register without blocking: keep the list behind its own short
-        // mutex, and have writers that saw no watch record their changes anyway. Or
-        // register on a blocking thread and fire the subscription once registered,
-        // giving up "registered in the cycle the subscription fires". probe:
-        // design/review-2026-10-19/repro/db2-subscribe-blocks-runtime.gx (db2-01)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Register without blocking: the list behind its own short mutex.
-        self.0.write().push(Watch { prefix: prefix.into(), tx: tx.clone() });
+        let mut list = self.list.lock();
+        let watch = Watch { prefix: prefix.into(), tx: tx.clone() };
+        *list = list.iter().cloned().chain([watch]).collect();
         Registered { watches: self.clone(), tx }
+    }
+
+    /// End every watch: each receiver sees its channel close after the
+    /// changes already sent.
+    pub(crate) fn end(&self) {
+        let mut list = self.list.lock();
+        for w in list.iter() {
+            w.tx.close_channel();
+        }
+        *list = Arc::new([]);
     }
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.read().is_empty()
+        !self.watched()
     }
 }
 
@@ -67,19 +78,22 @@ pub(crate) struct Registered {
 
 impl Drop for Registered {
     fn drop(&mut self) {
-        self.watches.0.write().retain(|w| !w.tx.same_receiver(&self.tx))
+        let mut list = self.watches.list.lock();
+        *list = list.iter().filter(|w| !w.tx.same_receiver(&self.tx)).cloned().collect();
     }
 }
 
-/// What a write changed on each of its trees, kept only while one of them
-/// has a watch.
-pub(crate) struct Changes(Option<LPooled<Vec<(usize, Change)>>>);
+/// What a write changed on each of its trees.
+pub(crate) struct Changes {
+    changes: LPooled<Vec<(usize, Change)>>,
+    exact: bool,
+}
 
 impl Changes {
-    /// Whether the changes are kept: a write that must read to learn what
-    /// it changes reads only then.
+    /// Whether the changes must be exact: a write that must read to learn
+    /// whether a write changes its key reads only then.
     pub(crate) fn wanted(&self) -> bool {
-        self.0.is_some()
+        self.exact
     }
 
     /// The write set `key` of its `tree`th tree from `old` to `new`.
@@ -90,48 +104,70 @@ impl Changes {
         old: Option<&[u8]>,
         new: Option<&[u8]>,
     ) {
-        if let Some(changes) = &mut self.0
-            && old != new
-        {
-            changes.push((tree, Change { key: key.into(), value: new.map(IVec::from) }));
+        if old != new {
+            self.touched(tree, key, new)
         }
+    }
+
+    /// The write set `key` of its `tree`th tree to `new`, whatever it held.
+    pub(crate) fn touched(&mut self, tree: usize, key: &[u8], new: Option<&[u8]>) {
+        self.changes.push((tree, Change { key: key.into(), value: new.map(IVec::from) }));
     }
 
     /// Forget what was recorded: the write it describes did not happen.
     pub(crate) fn clear(&mut self) {
-        if let Some(changes) = &mut self.0 {
-            changes.clear()
-        }
+        self.changes.clear()
     }
 }
 
+/// Held by every sender a write found unwatched when it began.
+static LATE: Mutex<()> = Mutex::new(());
+
 /// Write to `trees` with `write`, which records what it changed (tree `i`
 /// is `trees[i]`); each change is sent to the watches whose prefix its key
-/// has before the trees are released.
+/// has before the trees are released. A watch registered while a write
+/// that found none ran gets each key it changed as the tree holds it
+/// after, sent under [`LATE`], so the last value a watch receives for a
+/// key is the key's.
 pub(crate) fn write<T>(
-    trees: &[&Watches],
+    trees: &[(&Watches, &sled::Tree)],
     write: impl FnOnce(&mut Changes) -> Result<T>,
 ) -> Result<T> {
-    let mut order: SmallVec<[&Watches; 4]> = trees.iter().copied().collect();
+    let mut order: SmallVec<[&Watches; 4]> = trees.iter().map(|(w, _)| *w).collect();
     order.sort_unstable_by_key(|w| *w as *const Watches);
     order.dedup_by(|a, b| ptr::eq(*a, *b));
-    {
-        let shared: SmallVec<[_; 4]> = order.iter().map(|w| w.0.read()).collect();
-        if shared.iter().all(|w| w.is_empty()) {
-            return write(&mut Changes(None));
+    let exact = order.iter().any(|w| w.watched());
+    let mut changes = Changes { changes: LPooled::take(), exact };
+    if !exact {
+        let _shared: SmallVec<[_; 4]> = order.iter().map(|w| w.order.read()).collect();
+        let res = write(&mut changes);
+        if order.iter().any(|w| w.watched()) {
+            let _late = LATE.lock();
+            send(trees, &mut changes, true);
         }
+        return res;
     }
-    let exclusive: SmallVec<[_; 4]> = order.iter().map(|w| (*w, w.0.write())).collect();
-    let mut changes = Changes(Some(LPooled::take()));
+    let _exclusive: SmallVec<[_; 4]> = order.iter().map(|w| w.order.write()).collect();
     let res = write(&mut changes);
-    for (tree, change) in changes.0.iter_mut().flat_map(|c| c.drain(..)) {
-        let (_, watches) = exclusive
-            .iter()
-            .find(|(w, _)| ptr::eq(*w, trees[tree]))
-            .expect("every tree written is locked");
-        for w in watches.iter().filter(|w| change.key.starts_with(&w.prefix)) {
+    send(trees, &mut changes, false);
+    res
+}
+
+/// Send each change to its tree's watches under its key's prefix, a
+/// `late` one with the value its key holds now.
+fn send(trees: &[(&Watches, &sled::Tree)], changes: &mut Changes, late: bool) {
+    let lists: SmallVec<[_; 4]> = trees.iter().map(|(w, _)| w.list()).collect();
+    for (tree, mut change) in changes.changes.drain(..) {
+        let mut watches =
+            lists[tree].iter().filter(|w| change.key.starts_with(&w.prefix)).peekable();
+        if watches.peek().is_none() {
+            continue;
+        }
+        if late && let Ok(now) = trees[tree].1.get(&change.key) {
+            change.value = now
+        }
+        for w in watches {
             let _ = w.tx.unbounded_send(change.clone());
         }
     }
-    res
 }

@@ -93,7 +93,10 @@ writer reaches it", and "fn(..) is not data".
     `Any`, so its result is written by its shape.
 - **Async builtins.**
   - `EvalCachedAsync::DATA_ARGS` lists the arguments that leave as data;
-    they are converted before `prepare_args`.
+    they are converted before `prepare_args` with their tuples, structs,
+    variants and lists kept (`write_marked_data`), so a store's keys
+    differ and order as the program's values do; what it stores as a
+    value it strips itself (`rep::strip`).
   - `DATA_RESULT` casts the answer to the call's resolved success type,
     where it holds an abstract type (`data_target`, `read_back`). A
     refusal answers with the builtin's own declared error.

@@ -99,14 +99,19 @@ pub fn marker(k: Kind) -> Value {
     MARKS.with(|m| m[k as usize].clone())
 }
 
+/// The kind `v` marks, if it is a kind marker.
+pub fn marker_kind(v: &Value) -> Option<Kind> {
+    match v {
+        Value::Abstract(m) => m.downcast_ref::<Marker>().map(|m| m.0),
+        _ => None,
+    }
+}
+
 /// The kind `v` is marked as, if it is a tuple, struct, variant or list
 /// cell.
 pub fn kind(v: &Value) -> Option<Kind> {
     match v {
-        Value::Array(a) => match a.first()? {
-            Value::Abstract(m) => m.downcast_ref::<Marker>().map(|m| m.0),
-            _ => None,
-        },
+        Value::Array(a) => marker_kind(a.first()?),
         _ => None,
     }
 }
@@ -399,48 +404,61 @@ pub fn strip_with<E>(
                 }
                 Some(array(vs))
             }
-            None => match v {
-                Value::Array(a) => {
-                    let mut out: LPooled<Vec<Value>> = LPooled::take();
-                    for (i, e) in a.iter().enumerate() {
-                        match f(e)? {
-                            Some(e) => {
-                                if out.is_empty() {
-                                    out.extend(a[..i].iter().cloned());
-                                }
-                                out.push(e)
-                            }
-                            None if !out.is_empty() => out.push(e.clone()),
-                            None => (),
-                        }
-                    }
-                    (!out.is_empty()).then(|| array(out))
-                }
-                Value::Map(m) => {
-                    let mut kvs: Option<LPooled<Vec<(Value, Value)>>> = None;
-                    for (i, (k, e)) in m.into_iter().enumerate() {
-                        let (k1, e1) = (f(k)?, f(e)?);
-                        if kvs.is_none() && (k1.is_some() || e1.is_some()) {
-                            kvs = Some(
-                                m.into_iter()
-                                    .take(i)
-                                    .map(|(k, e)| (k.clone(), e.clone()))
-                                    .collect(),
-                            );
-                        }
-                        if let Some(kvs) = &mut kvs {
-                            kvs.push((
-                                k1.unwrap_or_else(|| k.clone()),
-                                e1.unwrap_or_else(|| e.clone()),
-                            ));
-                        }
-                    }
-                    kvs.map(|mut kvs| Value::Map(Map::from_iter(kvs.drain(..))))
-                }
-                Value::Error(e) => f(e)?.map(|e| Value::Error(e.into())),
-                _ => None,
-            },
+            None => map_parts(v, f)?,
         })
+    })
+}
+
+/// `v`'s parts, each `f`'s rewrite of it, as `strip_with` rewrites an
+/// unmarked level: an array's elements (a marker included), a map's keys
+/// and values, an error's payload; `None` when no part changed.
+pub fn map_parts<E>(
+    v: &Value,
+    f: &mut impl FnMut(&Value) -> Result<Option<Value>, E>,
+) -> Result<Option<Value>, E> {
+    let array = |mut vs: LPooled<Vec<Value>>| {
+        Value::Array(ValArray::from_iter_exact(vs.drain(..)))
+    };
+    Ok(match v {
+        Value::Array(a) => {
+            let mut out: LPooled<Vec<Value>> = LPooled::take();
+            for (i, e) in a.iter().enumerate() {
+                match f(e)? {
+                    Some(e) => {
+                        if out.is_empty() {
+                            out.extend(a[..i].iter().cloned());
+                        }
+                        out.push(e)
+                    }
+                    None if !out.is_empty() => out.push(e.clone()),
+                    None => (),
+                }
+            }
+            (!out.is_empty()).then(|| array(out))
+        }
+        Value::Map(m) => {
+            let mut kvs: Option<LPooled<Vec<(Value, Value)>>> = None;
+            for (i, (k, e)) in m.into_iter().enumerate() {
+                let (k1, e1) = (f(k)?, f(e)?);
+                if kvs.is_none() && (k1.is_some() || e1.is_some()) {
+                    kvs = Some(
+                        m.into_iter()
+                            .take(i)
+                            .map(|(k, e)| (k.clone(), e.clone()))
+                            .collect(),
+                    );
+                }
+                if let Some(kvs) = &mut kvs {
+                    kvs.push((
+                        k1.unwrap_or_else(|| k.clone()),
+                        e1.unwrap_or_else(|| e.clone()),
+                    ));
+                }
+            }
+            kvs.map(|mut kvs| Value::Map(Map::from_iter(kvs.drain(..))))
+        }
+        Value::Error(e) => f(e)?.map(|e| Value::Error(e.into())),
+        _ => None,
     })
 }
 

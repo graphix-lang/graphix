@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use arcstr::literal;
 use futures::{channel::mpsc, future, prelude::*};
 use graphix_compiler::{
@@ -12,7 +12,9 @@ use graphix_compiler::{
     rep,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CachedVals, Invocation, data_target, read_back, write_data};
+use graphix_package_core::{
+    CachedVals, Invocation, data_target, read_back, write_marked_data,
+};
 use netidx::publisher::Typ;
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::IntoValue;
@@ -97,7 +99,8 @@ fn push_event(key_typ: Option<Typ>, change: Change, events: &mut Vec<Result<DbEv
 }
 
 /// Forward `changes` to the runtime, one batch per delivery the runtime
-/// has room for, until the task ends, which ends the watch.
+/// has room for, until the task ends, which ends the watch. A channel the
+/// tree's drop closed ends it with an error.
 async fn watch(
     _watch: Registered,
     mut changes: mpsc::UnboundedReceiver<Change>,
@@ -105,21 +108,31 @@ async fn watch(
     bind_id: BindId,
     mut tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
 ) {
-    while let Some(change) = changes.next().await {
+    loop {
+        let next = changes.next().await;
         if future::poll_fn(|cx| tx.poll_ready(cx)).await.is_err() {
             break;
         }
         let mut batch_events = EVENT_POOL.take();
-        push_event(key_typ, change, &mut batch_events);
-        while let Ok(change) = changes.try_recv() {
-            push_event(key_typ, change, &mut batch_events);
-        }
+        let dropped = match next {
+            Some(change) => {
+                push_event(key_typ, change, &mut batch_events);
+                while let Ok(change) = changes.try_recv() {
+                    push_event(key_typ, change, &mut batch_events);
+                }
+                false
+            }
+            None => {
+                batch_events.push(Err(anyhow!("the tree was dropped")));
+                true
+            }
+        };
         let mut batch = CBATCH_POOL.take();
         batch.push((
             bind_id,
             Box::new(DbEvents(batch_events)) as Box<dyn CustomBuiltinType>,
         ));
-        if tx.start_send(batch).is_err() {
+        if tx.start_send(batch).is_err() || dropped {
             break;
         }
     }
@@ -200,7 +213,7 @@ impl DbSubscribe {
     fn watch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
         let Some(tree) = get_tree_inner(&self.args, 1) else { return };
-        let prefix = match self.args.value(0).map(|v| write_data(ctx, v)) {
+        let prefix = match self.args.value(0).map(|v| write_marked_data(ctx, v)) {
             None | Some(Err(_)) => return,
             Some(Ok(Value::Null)) => Ok(GPooled::orphan(vec![])),
             Some(Ok(v)) => encode_prefix(tree.key_typ, &v),
@@ -583,6 +596,73 @@ mod test {
         })
         .collect();
         assert_eq!(values, [Value::Null, Value::U64(1)]);
+    }
+
+    /// A watch registers while a write that found none is applying, and
+    /// still hears what that write changed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_watch_registers_past_a_write_in_flight() {
+        let (_dir, tree) = temp_tree().await;
+        let (applied_tx, applied) = std::sync::mpsc::channel();
+        let (go_tx, go) = std::sync::mpsc::channel::<()>();
+        let writer = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                crate::watch::write(&[(&tree.watches, &tree.tree)], |changes| {
+                    let v = value(Value::U64(7));
+                    let old = tree.tree.insert(&*key(0), &**v)?;
+                    changes.record(0, &key(0), old.as_deref(), Some(&v));
+                    applied_tx.send(()).unwrap();
+                    go.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap()
+            })
+        };
+        applied.recv().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let _watch = spawn_watch(&tree, &[], BindId::new(), tx);
+        go_tx.send(()).unwrap();
+        writer.join().unwrap();
+        let events = received(&mut rx, |e| !e.is_empty()).await;
+        assert!(matches!(&events[..], [DbEvent::Insert { value: Value::U64(7), .. }]));
+    }
+
+    /// Ending a tree's watches delivers the changes sent before, then one
+    /// error, then nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ended_watches_deliver_an_error() {
+        let (_dir, tree) = temp_tree().await;
+        let (tx, mut rx) = mpsc::channel(1);
+        let watch = spawn_watch(&tree, &[], BindId::new(), tx);
+        let t = tree.clone();
+        tokio::task::spawn_blocking(move || {
+            t.insert(&key(0), &value(Value::Null)).unwrap();
+            t.watches.end();
+        })
+        .await
+        .unwrap();
+        let mut events = vec![];
+        while let Some(batch) =
+            tokio::time::timeout(Duration::from_secs(10), rx.next()).await.unwrap()
+        {
+            for (_, batch) in batch.iter() {
+                let batch = (&**batch as &dyn Any).downcast_ref::<DbEvents>().unwrap();
+                events.extend(batch.0.iter().map(|e| e.as_ref().map(|_| ()).is_ok()));
+            }
+            if events.last() == Some(&false) {
+                break;
+            }
+        }
+        assert_eq!(events, [true, false]);
+        for _ in 0..100 {
+            if watch.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(watch.is_finished());
+        assert!(tree.watches.is_empty());
     }
 
     /// Ending the watch unregisters it.

@@ -487,7 +487,8 @@ can't be one; the run-time cast refuses one too) or an abstract type
 with no `Cast` impl, a writer declares its value `'a: Data` (no
 reference, function or such abstract type; open is fine), an async
 builtin's `DATA_ARGS`/`DATA_RESULT` convert a store's keys and values
-both ways, and the builtin's
+both ways (the arguments keep their kind markers, so keys differ and
+order as values do), and the builtin's
 `typecheck1` only extracts the type, never refuses
 (`design/tvar_constraints.md`); a builtin that wraps a function
 (`queuefn`) declares it `'a: Function` the same way. A builtin's quantifier that a

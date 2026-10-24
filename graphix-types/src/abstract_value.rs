@@ -140,15 +140,33 @@ impl GxAbstract {
 /// that writes its own type inside itself without end, and a map two of
 /// whose keys write as the same data (`"A"` and `` `A ``).
 pub fn to_data(v: &Value) -> Result<Value> {
-    Ok(rewrite(v, 0)?.unwrap_or_else(|| v.clone()))
+    Ok(rewrite(v, 0, Forms::Strip)?.unwrap_or_else(|| v.clone()))
 }
 
-/// [`to_data`] of `v`, `None` when nothing in it changed; `depth` counts
-/// the implementations written through so far. One walk: each level's
-/// markers go ([`crate::rep::strip_with`]) and each abstract writes as
-/// its data.
-fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
+/// [`to_data`] with every tuple, struct, variant and list kept as a
+/// value, so what differs or orders apart as a value still does: a
+/// store's keys.
+pub fn to_marked_data(v: &Value) -> Result<Value> {
+    Ok(rewrite(v, 0, Forms::Keep)?.unwrap_or_else(|| v.clone()))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Forms {
+    Strip,
+    Keep,
+}
+
+/// [`to_data`] or [`to_marked_data`] of `v`, `None` when nothing in it
+/// changed; `depth` counts the implementations written through so far.
+/// One walk: each level's markers go ([`crate::rep::strip_with`]) or stay
+/// ([`crate::rep::map_parts`]) and each abstract writes as its data.
+fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
     match v {
+        Value::Abstract(_)
+            if forms == Forms::Keep && crate::rep::marker_kind(v).is_some() =>
+        {
+            Ok(None)
+        }
         Value::Abstract(_) => {
             if crate::reference::cell(v).is_some() {
                 return Err(anyhow!("a reference is not data"));
@@ -173,10 +191,14 @@ fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
                     ));
                 }
             };
-            Ok(Some(rewrite(&data, depth + 1)?.unwrap_or(data)))
+            Ok(Some(rewrite(&data, depth + 1, forms)?.unwrap_or(data)))
         }
         v => {
-            let data = crate::rep::strip_with(v, &mut |c| rewrite(c, depth))?;
+            let mut part = |c: &Value| rewrite(c, depth, forms);
+            let data = match forms {
+                Forms::Strip => crate::rep::strip_with(v, &mut part)?,
+                Forms::Keep => crate::rep::map_parts(v, &mut part)?,
+            };
             // keys that differ as values may write as the same data
             if let (Value::Map(m), Some(Value::Map(d))) = (v, &data)
                 && d.len() < m.len()

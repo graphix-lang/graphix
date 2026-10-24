@@ -565,6 +565,15 @@ pub fn write_data<R: Rt, E: UserEvent>(
     coretraits::with_hooks(ctx, || graphix_compiler::abstract_value::to_data(v))
 }
 
+/// [`write_data`] with its tuples, structs, variants and lists kept as
+/// values ([`graphix_compiler::abstract_value::to_marked_data`]).
+pub fn write_marked_data<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    v: &Value,
+) -> Result<Value> {
+    coretraits::with_hooks(ctx, || graphix_compiler::abstract_value::to_marked_data(v))
+}
+
 /// `t` through its variables and names to its constructor; `None` for
 /// `Any` or an open variable.
 fn constructor(env: &Env, t: &Type) -> Option<Type> {
@@ -746,8 +755,8 @@ pub struct CachedVals {
 }
 
 impl CachedVals {
-    /// The slots with those at `idx` as data leaving the program
-    /// ([`write_data`]).
+    /// The slots with those at `idx` as data leaving the program, their
+    /// forms kept ([`write_marked_data`]).
     fn as_data<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
@@ -756,7 +765,7 @@ impl CachedVals {
         let mut slots = self.slots.clone();
         for i in idx {
             if let Some((Some(v), _)) = slots.get_mut(*i) {
-                *v = write_data(ctx, v)?;
+                *v = write_marked_data(ctx, v)?;
             }
         }
         Ok(CachedVals { slots, evaluated: self.evaluated })
@@ -1662,7 +1671,10 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
 
     /// The arguments that leave as data (a store's keys and values):
     /// each abstract value in them is written as its `Cast`
-    /// implementation says ([`write_data`]) before `prepare_args`.
+    /// implementation says before `prepare_args`, their tuples, structs,
+    /// variants and lists kept as values ([`write_marked_data`]), so keys
+    /// differ and order as the program's values do; what the builtin
+    /// stores as data it strips (`rep::strip`).
     const DATA_ARGS: &[usize] = &[];
 
     /// Whether the answer is data read back as the call's resolved success

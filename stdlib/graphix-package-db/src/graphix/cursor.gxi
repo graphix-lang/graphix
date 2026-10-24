@@ -4,7 +4,7 @@ type Cursor<'k, 'v>;
 
 /// Create a new cursor, optionally filtering by key prefix.
 /// Strings and bytes match by their byte prefix, including in union key types.
-/// Arrays match initial whole elements; maps match initial whole key/value pairs
+/// Arrays and lists match initial whole elements; maps match initial whole key/value pairs
 /// in key order. Other keys match exactly. Use cursor::range for compound ranges.
 /// A null prefix disables filtering, including when the key type contains null.
 val new: fn(?#prefix: ['k, null], t: Tree<'k, 'v>) -> Cursor<'k, 'v>;

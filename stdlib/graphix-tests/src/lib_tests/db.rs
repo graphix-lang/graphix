@@ -1344,3 +1344,87 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+// Keys keep their forms: `A and "A" are two keys, and a bare variant
+// orders before a payload variant as `<` orders them.
+run_with_tempdir!(
+    name: db_keys_differ_as_values,
+    code: r#"{{
+        type K = [string, `A, `B(i64)];
+        let s: K = "A";
+        let a: K = `A;
+        let b: K = `B(1);
+        let db = db::open("{}")$;
+        let t: db::Tree<K, i64> = db::tree(db, null)$;
+        let u: db::Tree<[`A, `B(i64)], i64> = db::tree(db, "variants")$;
+        seq {{
+            let _ = db::insert(t, s, 1)$;
+            let _ = db::insert(t, a, 2)$;
+            let _ = db::insert(u, `B(1), 3)$;
+            let _ = db::insert(u, `A, 4)$;
+            (db::len(t)$, db::get(t, s)$, db::get(t, a)$, db::first(u)$)
+        }}
+    }}"#,
+    setup: |td| {
+        td.path().join("test_key_forms.db")
+    },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"[u64:2, i64:1, i64:2, ["A", i64:4]]"#);
+        Ok(())
+    }
+);
+
+// A cursor yields a union's keys in `array::sort`'s order, each in its
+// own form: the tuple (1, 2) and the list [<1, 2>] are two keys.
+run_with_tempdir!(
+    name: db_keys_order_as_values,
+    code: r#"{{
+        type K = [List<i64>, (i64, i64), {{a: i64, b: string}}, `A(i64), `B];
+        let ks: Array<K> = [
+            [<1>], [<1, 2>], [<0, 5>], [<>], (1, 2), (0, 9),
+            {{a: 1, b: "x"}}, {{a: 0, b: "y"}}, `A(3), `B, `A(1)
+        ];
+        let db = db::open("{}")$;
+        let t: db::Tree<K, i64> = db::tree(db, null)$;
+        let list: K = [<1>];
+        let tuple: K = (1, 2);
+        seq {{
+            let _ = db::batch(t, array::map(ks, |k| `Insert(k, 0)))$;
+            let read = db::cursor::read_many(db::cursor::new(t), 100)$;
+            let keys = array::map(read, |(k, _)| k);
+            let prefixed = db::cursor::read_many(db::cursor::new(#prefix: list, t), 100)$;
+            let exact = db::cursor::read_many(db::cursor::new(#prefix: tuple, t), 100)$;
+            (keys == array::sort(ks), array::len(prefixed), array::len(exact))
+        }}
+    }}"#,
+    setup: |td| {
+        td.path().join("test_key_order.db")
+    },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"[true, i64:2, i64:1]"#);
+        Ok(())
+    }
+);
+
+// Dropping a tree ends its subscriptions: on_change delivers the insert
+// made before the drop, then one DbErr.
+run_with_tempdir!(
+    name: db_drop_tree_ends_subscriptions,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let t: db::Tree<string, i64> = db::tree(db, "t")$;
+        let sub = db::subscription::new(t);
+        let ch = db::subscription::on_change(sub);
+        let _ = db::insert(t, sub ~ "a", 1)$;
+        let heard = select ch {{ error as _ => never(), _ => true }};
+        let _ = db::drop_tree(db, heard ~ "t")$;
+        select ch {{ error as e => e, _ => never() }}
+    }}"#,
+    setup: |td| {
+        td.path().join("test_drop_subscribed.db")
+    },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"error:["DbErr", "the tree was dropped"]"#);
+        Ok(())
+    }
+);

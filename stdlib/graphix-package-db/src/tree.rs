@@ -77,10 +77,12 @@ impl Database {
         w
     }
 
-    /// End the watches on a dropped tree: one made later under its name
-    /// starts with none.
+    /// End the watches on a dropped tree, each told so: one made later
+    /// under its name starts with none.
     fn forget_watches(&self, name: &[u8]) {
-        self.watches.lock().remove(name);
+        if let Some(w) = self.watches.lock().remove(name).and_then(|w| w.upgrade()) {
+            w.end()
+        }
     }
 }
 
@@ -164,7 +166,7 @@ impl TreeInner {
         &self,
         f: impl FnOnce(&sled::Tree, &mut Changes) -> Result<T>,
     ) -> Result<T> {
-        watch::write(&[&self.watches], |changes| f(&self.tree, changes))
+        watch::write(&[(&self.watches, &self.tree)], |changes| f(&self.tree, changes))
     }
 
     pub(crate) fn insert(&self, key: &[u8], value: &[u8]) -> Result<Option<sled::IVec>> {
@@ -212,7 +214,11 @@ impl TreeInner {
     /// Apply `writes` in order, atomically.
     pub(crate) fn apply_batch(&self, writes: &Writes) -> Result<()> {
         self.write(|tree, changes| {
-            if changes.wanted() {
+            if !changes.wanted() {
+                for (k, v) in writes.iter() {
+                    changes.touched(0, k, v.as_deref());
+                }
+            } else {
                 let mut now: LPooled<AHashMap<sled::IVec, Option<sled::IVec>>> =
                     LPooled::take();
                 for (k, v) in writes.iter() {
@@ -311,7 +317,7 @@ pub(crate) fn meta_key(name: Option<&ArcStr>) -> Result<&str> {
 
 /// The version of the stored form: the meta entry's text and the key
 /// encoding. A tree written under another version does not open.
-const META_VERSION: &str = "2";
+const META_VERSION: &str = "3";
 
 /// The types a tree was opened with, `key` set when its keys are one
 /// primitive type (stored untagged).
@@ -774,20 +780,6 @@ db_name_op!(DbDropTreeEv, DbDropTree, "db_drop_tree", |db, name: ArcStr| {
     meta_key(Some(&name))?;
     let _creating = db.creating.lock();
     let existed = db.drop_tree(name.as_bytes())?;
-    // CR claude for claude: [bug/medium] Dropping a tree ends its subscriptions silently.
-    // The registered watches keep the old Watches, which nothing writes to again: old
-    // handles fail, and a tree re-created under the name has fresh watches. No remove
-    // and no error reaches on_change/on_insert/on_remove, so a copy built from
-    // on_change keeps the dropped keys forever, contrary to the subscription gxi.
-    // Probe: after a drop and re-create, the copy held a=1, get("a") was null, and the
-    // new insert of b was never heard. Decide what a drop means to a subscription.
-    // Options: an end/error item on the watch channel, so each accessor yields `DbErr`
-    // once and the subscription ends, or a Remove per key. Then document it in
-    // drop_tree's and subscription::new's docs. probe:
-    // design/review-2026-10-19/repro/db2-drop-tree-silences-subscription.gx (db2-02)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. An end/error item on the watch channel: each accessor yields DbErr once and
-    // the subscription ends; document it.
     db.forget_watches(name.as_bytes());
     db.open_tree(META_TREE)?.remove(name.as_bytes())?;
     Ok(Value::Bool(existed))
@@ -884,7 +876,8 @@ fn import_data(db: &Database, data: ExportData) -> Result<()> {
         .collect::<sled::Result<LPooled<Vec<_>>>>()?;
     let watches: LPooled<Vec<Arc<Watches>>> =
         trees.iter().map(|t| db.watches(t)).collect();
-    let locked: SmallVec<[&Watches; 4]> = watches.iter().map(|w| &**w).collect();
+    let locked: SmallVec<[_; 4]> =
+        watches.iter().map(|w| &**w).zip(trees.iter()).collect();
     watch::write(&locked, |changes| {
         let changes = RefCell::new(changes);
         let res = trees.as_slice().transaction(|tx| {

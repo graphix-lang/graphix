@@ -210,7 +210,8 @@ impl TxnState {
         }
         let watches: LPooled<Vec<Arc<Watches>>> =
             trees[..self.trees.len()].iter().map(|t| self.db.watches(t)).collect();
-        let locked: SmallVec<[&Watches; 4]> = watches.iter().map(|w| &**w).collect();
+        let locked: SmallVec<[_; 4]> =
+            watches.iter().map(|w| &**w).zip(trees.iter()).collect();
         let res = watch::write(&locked, |changes| {
             let changes = RefCell::new(changes);
             let res = (&trees[..]).transaction(|tx| self.check_and_apply(tx, &changes));
@@ -221,7 +222,7 @@ impl TxnState {
         })?;
         match res {
             Ok(()) => {
-                // CR claude for claude: [bug/low] commit applies the transaction and then
+                // CR claude for eric: [bug/low] commit applies the transaction and then
                 // flushes. If the flush fails (disk full, an I/O error), the program
                 // gets a DbErr although every write is already applied and visible.
                 // That contradicts the gxi's "all writes become visible atomically, or
@@ -235,6 +236,15 @@ impl TxnState {
                 // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
                 // ruling needed. Commit is not durable, like every other write: drop the
                 // flush; the gxi says call db::flush.
+                // 2026-10-24 claude: Not obvious after all, so back to Eric: dropping the
+                // flush undoes the db2-09 fix of the 2026-10-05 review (a commit flushes
+                // before it answers, since the book calls transactions ACID and a commit
+                // followed by sys::exit was lost), which the 2026-10-09 review accepted
+                // and graphix-tests lib_tests::db::db_commit_is_durable pins. So the
+                // choice is between that durability and an honest outcome on a failed
+                // flush: keep the flush and add an error variant for 'committed, not yet
+                // durable' to commit's result (an API change), or drop durability and the
+                // pin.
                 self.db.flush()?;
                 Ok(Value::Null)
             }

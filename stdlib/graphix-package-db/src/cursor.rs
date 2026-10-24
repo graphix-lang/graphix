@@ -5,7 +5,8 @@ use crate::{
 use anyhow::Result;
 use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect, rep};
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, write_data,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    write_marked_data,
 };
 use netidx::publisher::Typ;
 use netidx_derive::FromValue;
@@ -70,7 +71,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 1)?;
-        let iter = match write_data(ctx, from.value(0)?).ok()? {
+        let iter = match write_marked_data(ctx, from.value(0)?).ok()? {
             Value::Null => Some(tree.tree.iter()),
             v => encode_prefix(tree.key_typ, &v).ok().map(|p| tree.tree.scan_prefix(&*p)),
         };
@@ -105,8 +106,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorRangeEv {
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 2)?;
-        let lo = parse_bound(tree.key_typ, &write_data(ctx, from.value(0)?).ok()?)?;
-        let hi = parse_bound(tree.key_typ, &write_data(ctx, from.value(1)?).ok()?)?;
+        let lo =
+            parse_bound(tree.key_typ, &write_marked_data(ctx, from.value(0)?).ok()?)?;
+        let hi =
+            parse_bound(tree.key_typ, &write_marked_data(ctx, from.value(1)?).ok()?)?;
         let iter = lo.zip(hi).map(|r| tree.tree.range(r));
         Some(wrap_cursor(iter, tree))
     }
