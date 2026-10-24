@@ -6,7 +6,11 @@ use crate::testing::TuiTestHarness;
 use anyhow::{Context, Result, bail};
 use crossterm::event::KeyCode;
 use ratatui::style::Color;
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 const VIEWPORT: (u16, u16) = (80, 24);
 
@@ -27,9 +31,9 @@ fn shows(h: &mut TuiTestHarness, text: &str) -> Result<bool> {
     Ok(h.render_lines()?.iter().any(|l| l.contains(text)))
 }
 
-/// Examples that draw nothing until they have been running a while.
-const STARTS_BLANK: &[&str] =
-    &["canvas_animated", "paragraph_log_viewer", "text_dynamic"];
+/// How long an example may take to draw its first frame: some wait on a
+/// timer or a netidx listing.
+const FIRST_FRAME: Duration = Duration::from_secs(10);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_example_renders() -> Result<()> {
@@ -54,10 +58,13 @@ async fn every_example_renders() -> Result<()> {
                 }
                 h.render()?;
             }
-            if h.render_lines()?.iter().all(|l| l.trim().is_empty())
-                && !STARTS_BLANK.contains(&name.as_str())
-            {
-                bail!("draws nothing")
+            let deadline = Instant::now() + FIRST_FRAME;
+            while h.render_lines()?.iter().all(|l| l.trim().is_empty()) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() || !h.next_update(left).await? {
+                    bail!("draws nothing")
+                }
+                h.render()?;
             }
             Ok(())
         }
