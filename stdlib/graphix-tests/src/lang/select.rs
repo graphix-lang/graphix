@@ -3902,7 +3902,7 @@ run!(
 // A guard sees the scrutinee's value only where the chain reaches its
 // arm: an earlier arm that claims the value keeps it from every guard
 // below, so `check(-1)?` never runs and never raises.
-// CR claude for eric: [risk/low] This pin holds only for the bind spelling. With the
+// CR claude for claude: [risk/low] This pin holds only for the bind spelling. With the
 // guard written over the scrutinee variable, `_ if check(x)?`, the guard still ticks
 // every cycle, so check(-1)? runs on every -1 that arm 0 claimed and raises to the
 // catch: caught ends at 3 instead of 0, on both engines. The two spellings mean the
@@ -3911,6 +3911,9 @@ run!(
 // and pin the variable spelling too. probe:
 // design/review-2026-10-19/repro/tests-select-guard-reads-claimed-scrutinee.gx
 // (tests-select-05)
+// 2026-10-24 claude: Eric ruled (2026-10-24): sleep it: a guard the chain does not
+// reach this cycle does not run; it sleeps like an unselected arm and wakes with
+// catch-up when next consulted.
 run!(guard_below_the_claim_never_sees_the_value, r#"{
   let step = 0;
   step <- select step { n if n < 6 => n + 1, _ => never() };

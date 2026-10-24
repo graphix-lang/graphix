@@ -222,7 +222,7 @@ impl TxnState {
         })?;
         match res {
             Ok(()) => {
-                // CR claude for eric: [bug/low] commit applies the transaction and then
+                // CR claude for claude: [bug/low] commit applies the transaction and then
                 // flushes. If the flush fails (disk full, an I/O error), the program
                 // gets a DbErr although every write is already applied and visible.
                 // That contradicts the gxi's "all writes become visible atomically, or
@@ -245,6 +245,9 @@ impl TxnState {
                 // flush: keep the flush and add an error variant for 'committed, not yet
                 // durable' to commit's result (an API change), or drop durability and the
                 // pin.
+                // 2026-10-24 claude: Eric ruled (2026-10-24): option A: keep the flush,
+                // and add a NotDurable(string) error to commit's result for a commit
+                // applied and visible but not on disk.
                 self.db.flush()?;
                 Ok(Value::Null)
             }

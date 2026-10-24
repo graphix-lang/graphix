@@ -1384,7 +1384,7 @@ impl FnType {
             // same-named variable: either form of a bound (`'c: C`, `c: C`)
             // names its variable its own way
             let sig_addr = sig_tv.cell_addr();
-            // CR claude for eric: [bug/medium] Several impl cells can map to one
+            // CR claude for claude: [bug/medium] Several impl cells can map to one
             // signature variable (`|x: 'b, y: 'c|` implementing `(x: 'a, y: 'a)`). This
             // `.find` checks the declared bound on the first of them in name order
             // only, so renaming the impl's variables changes the verdict. `'c: Number
@@ -1397,6 +1397,10 @@ impl FnType {
             // loop below, which is all call safety needs. CLAUDE.md states only the
             // second direction. Pin the multi-cell shape either way. probe:
             // design/review-2026-10-12/repro/t-fntyp-07.sh (t-fntyp-07)
+            // 2026-10-24 claude: Eric ruled (2026-10-24): an implementation may be more
+            // general than its interface: drop the reverse check (the implementation
+            // carrying each declared bound); an implementation still may not need a
+            // bound the interface does not declare.
             let matched = impl_cells
                 .iter()
                 .find(|(_, tv)| {

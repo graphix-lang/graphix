@@ -1212,7 +1212,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         LPooled::<IndexMap<ArcStr, (Expr, ArcStr, BindId)>>::take(),
         |caps, stmt| {
             stmt.fold(caps, &mut |mut caps, e| {
-                // CR claude for eric: [bug/medium] Captures are only the names the body
+                // CR claude for claude: [bug/medium] Captures are only the names the body
                 // reads directly; a function the body calls reads the same variable
                 // live. So one seqq run sees two worlds. With `let g = |k| k + x`, a
                 // run computes `let a = x` from its enqueue-time snapshot while `g(0)`
@@ -1224,6 +1224,9 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                 // closures read live. probe:
                 // design/review-2026-10-19/repro/x-engine-seq-errors-seqq-closure-reads-live.gx
                 // (x-engine-seq-errors-03)
+                // 2026-10-24 claude: Eric ruled (2026-10-24): snapshot everything: a seqq run's
+                // snapshot covers the outer variables its callees read too (the dependency
+                // summaries name them).
                 if let ExprKind::Ref { name }
                 | ExprKind::Connect { name, deref: true, .. } = &e.kind
                     && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
@@ -1628,7 +1631,7 @@ fn inline_lambda(mut e: &Expr) -> bool {
 /// One call issued per entry over a snapshot of the arguments taken on
 /// the entry event; only the call's own fired production is this
 /// invocation's answer. A nullary call is a level read at entry.
-// CR claude for eric: [risk/medium] A call is issued once per entry over the entry
+// CR claude for claude: [risk/medium] A call is issued once per entry over the entry
 // snapshot, even a pure one in a select guard or scrutinee. A step that filters on it,
 // `select x { v if big(v) => v, _ => never() }` or `select big(x) { true => x, false =>
 // never() }`, decides on x as it stood at entry and waits forever. The same step with
@@ -1637,6 +1640,10 @@ fn inline_lambda(mut e: &Expr) -> bool {
 // it as a trap, re-snapshot a call whose arguments fire before its step completes, or
 // treat Stateless calls as levels. probe:
 // design/review-2026-10-19/repro/t-seq-call-over-level-stalls.gx (t-seq-07)
+// 2026-10-24 claude: Eric ruled (2026-10-24): keep it: with snapshot-everything and
+// birth at each step the rule is consistent, so a call is issued once per entry over
+// its entry arguments, and a step that filters on one may stall. Document that in
+// seq_blocks.md and pin it.
 fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let pc = issue.pc;
     if call.args.is_empty() {

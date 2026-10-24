@@ -485,7 +485,7 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     let Some(typ) = cast_target(&ft.rtype) else {
         return Some(errf!(TAG, "parse requires a concrete type annotation"));
     };
-    // CR claude for eric: [bug/medium] parse reads the text as a netidx literal before
+    // CR claude for claude: [bug/medium] parse reads the text as a netidx literal before
     // casting, so text that is not a literal fails even where the cast would succeed.
     // parse<string>("abc") is a ParseError, parse<string>("007") is "7" and
     // parse<string>("4.20") is "4.2", and parse<datetime>("2020-01-01T00:00:00Z") fails
@@ -494,6 +494,9 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     // and keep the literal parse for collection syntax. probe:
     // design/review-2026-10-19/repro/collections-str-parse-not-cast.gx
     // (collections-str-06)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): parse reads what Graphix prints: the
+    // text parsed by Graphix's own parser restricted to literals, then cast to the
+    // target; a string or scalar target also takes bare text.
     if let Type::Primitive(p) = &typ
         && !p.is_empty()
         && p.iter().all(|t| t.is_number())

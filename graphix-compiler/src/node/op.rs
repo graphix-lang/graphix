@@ -694,7 +694,7 @@ fn decimal_checked(op: ArithOp, checked: bool, l: &Value, r: &Value) -> Option<V
 
 /// `l op r` as both engines compute it. A failure is an error value, a
 /// checked op's the catchable `ArithError`.
-// CR claude for eric: [doc-drift/low] Only integers get a named cause here. int_arith
+// CR claude for claude: [doc-drift/low] Only integers get a named cause here. int_arith
 // returns DIV_ZERO, MUL_OVERFLOW and so on, but every other type falls back to
 // netidx-value's checked_* ops. So `decimal:1.0 /? decimal:0.0`, `%?` by zero and a
 // `*?` overflow all give the one message 'decimal arithmetic error', and f64 `/? 0.0`
@@ -708,6 +708,9 @@ fn decimal_checked(op: ArithOp, checked: bool, l: &Value, r: &Value) -> Option<V
 // each cause; pin lang::errors::checked_decimal_names_its_cause,
 // x-engine-collections-06). What stands is the float rule: checked f32/f64 division
 // and remainder by zero still follow IEEE (inf, NaN) with no error.
+// 2026-10-24 claude: Eric ruled (2026-10-24): floats follow IEEE: the checked float
+// operators never fail (inf, NaN), documented in CLAUDE.md and the book; they stay
+// legal for generic code.
 pub(crate) fn arith(op: ArithOp, checked: bool, l: Value, r: Value) -> Value {
     let v = match int_arith(op, checked, &l, &r)
         .or_else(|| decimal_checked(op, checked, &l, &r))

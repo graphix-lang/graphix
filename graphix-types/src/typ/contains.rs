@@ -2718,7 +2718,7 @@ pub(super) fn find_impl_with(
 ) -> Result<Option<Arc<ImplDef>>> {
     let Some(list) = env.impls_all(trait_id) else { return Ok(None) };
     // An open cell inside `t` could still become anything.
-    // CR claude for eric: [bug/medium] has_unbound counts declared (rigid) cells, so a
+    // CR claude for claude: [bug/medium] has_unbound counts declared (rigid) cells, so a
     // generic head never matches a self type with a variable inside it. `impl<'b: Show>
     // Show for Array<'b>` does not apply to Array<'a> in `'a: Show |x: Array<'a>|
     // Show::show(x)`, the shape of Rust's `fn f<A: Show>(x: Vec<A>)`. It does not apply
@@ -2729,6 +2729,9 @@ pub(super) fn find_impl_with(
     // discharges through the rigid cell's conjuncts), and an open interior cell inside
     // a gate is either left for the instances or stays refused. probe:
     // design/review-2026-10-19/repro/t-contains-impl-open-interior.gx (t-contains-03)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): in a definition's check a rigid
+    // variable matches an impl head like a concrete type, the impl's bounds discharged
+    // by its declared bounds; an open variable is left for the instances.
     if t.has_unbound() {
         return Ok(None);
     }

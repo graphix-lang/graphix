@@ -1335,7 +1335,7 @@ where
         attempt(spaces1().with(string("with")).skip(space()))
             .with(struct_fields())
             .map(Tail::With),
-        // CR claude for eric: [bug/medium] A trailing `;` before `}` parses as an empty
+        // CR claude for claude: [bug/medium] A trailing `;` before `}` parses as an empty
         // last statement, a NoOp. So `{ e; }` gets past the two-expression rule that
         // refuses `{ e }`, and the block's value becomes a ⊥ Nop. The checker accepts
         // it against any declared return type, and at run time it never produces. A seq
@@ -1356,6 +1356,9 @@ where
         // publish's value. Options: keep it (a block ending in ';' has no value, typed
         // bottom like never(), documented in book/src/core/block.md), or refuse it and
         // rewrite the examples.
+        // 2026-10-24 claude: Eric ruled (2026-10-24): keep it and document it: a block
+        // ending in ';' has no value (bottom, like never()), a form made deliberately
+        // and never documented.
         semisep()
             .with(sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
                 ExprKind::NoOp.to_expr(pos).ending(pos)

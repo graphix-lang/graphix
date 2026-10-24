@@ -91,7 +91,7 @@ impl LazyArmFacts {
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
         LazyArmFacts {
-            // CR claude for eric: [bug/medium] The tracker is built from each arm's
+            // CR claude for claude: [bug/medium] The tracker is built from each arm's
             // refs at the first update, and a dynamic call site's refs are only its
             // function node and arguments. So a variable captured by the closure the
             // site will dispatch (in1 in `|x| count(in1) + x`) is untracked until the
@@ -113,6 +113,10 @@ impl LazyArmFacts {
             // the function value's definition refs); waiting on that ruling.
             // TrackedFires::evaluated (5c66bda6a) does not cover it: it walks the arm
             // without callees, and the lost fire predates the first dispatch.
+            // 2026-10-24 claude: Eric ruled (2026-10-24): option A, a fire stamp per
+            // variable: each variable records the cycle of its last fire and an arm the
+            // cycle it last ran; at a wake, an input stamped after the arm's last run
+            // fired while it slept. Covers dynamic callees and moving references.
             tracked: TrackedFires::new(&ctx.env, arms.len(), |i, r| {
                 arm_refs(&arms[i], r)
             }),
@@ -1555,7 +1559,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     }
                     false => View::Step,
                 };
-                // CR claude for eric: [bug/medium] An arm's tracked inputs come from
+                // CR claude for claude: [bug/medium] An arm's tracked inputs come from
                 // `TrackedFires::new` at the select's first update and are refreshed
                 // only in `deselect`. `Deref::refs` names its target only after the
                 // Deref's first update. So an arm selected for the first time reads
@@ -1581,6 +1585,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // tests-lang-rest-b-02 (wake.rs, Eric's) asks for, an input learned
                 // after the arm's last refresh: a per-variable fire epoch or seeding
                 // from what the arm reaches at run time. Readdressed with it.
+                // 2026-10-24 claude: Eric ruled (2026-10-24): option A, a fire stamp
+                // per variable: each variable records the cycle of its last fire and an
+                // arm the cycle it last ran; at a wake, an input stamped after the
+                // arm's last run fired while it slept. Covers dynamic callees and
+                // moving references.
                 let (t, v) =
                     ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx));
                 planes.emit(t, v)

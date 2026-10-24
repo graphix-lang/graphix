@@ -328,7 +328,7 @@ fn evaluate<R: Rt, E: UserEvent>(
     step: &mut Step<R, E>,
     entered: bool,
 ) -> bool {
-    // CR claude for eric: [bug/medium] View::Step on entry fires the constants of every
+    // CR claude for claude: [bug/medium] View::Step on entry fires the constants of every
     // instance the step calls, so a callee's state is reset at each run. With `let
     // counter = |t| { let n = 0; n <- t ~ n + 1; n }`, a step `let a = counter(t)`
     // completes in the entry cycle on the reborn 0, and the callee's answer lands a
@@ -340,6 +340,11 @@ fn evaluate<R: Rt, E: UserEvent>(
     // probe:
     // design/review-2026-10-19/repro/x-engine-seq-errors-step-rebirth-resets-callee-state.gx
     // (x-engine-seq-errors-02)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): a step's birth reaching into its callees
+    // is correct: a seq is like an ordinary language, and counter(t) in a step counts the
+    // events on this step from zero. So this is a casualty to document in seq_blocks.md
+    // beside |v| k and pin: a callee whose initial value fires at its birth completes the
+    // step on that value.
     let view = if entered { View::Step } else { View::Cycle };
     ctx.under(view, |ctx| {
         if entered {

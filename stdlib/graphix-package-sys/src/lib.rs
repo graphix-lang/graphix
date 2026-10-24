@@ -460,7 +460,7 @@ impl<K: StreamMark> PartialOrd for Stream<K> {
     }
 }
 
-// CR claude for eric: [risk/low] Stream orders and hashes by Arc address, as do
+// CR claude for claude: [risk/low] Stream orders and hashes by Arc address, as do
 // ProcValue, TcpListenerValue, WatcherValue and every type built by core's
 // impl_abstract_arc!. `a < b`, sort, min/max and map key order over two handles
 // therefore change from run to run. A program over handles is nondeterministic, and a
@@ -469,7 +469,10 @@ impl<K: StreamMark> PartialOrd for Stream<K> {
 // handle a creation ordinal (an atomic_id!) to order and hash by. Either way, the four
 // hand-written impls in sys should become impl_abstract_arc!. probe:
 // design/review-2026-10-12/repro/sys-io-09-handle-order-nondeterministic.gx (sys-io-09)
-// CR claude for eric: [bug/medium] Stream handles order and hash by `Arc::as_ptr`.
+// 2026-10-24 claude: Eric ruled (2026-10-24): keep ordering and hashing handles by
+// address, and document in sys's gxi that they order by identity: stable within a run,
+// not between runs.
+// CR claude for claude: [bug/medium] Stream handles order and hash by `Arc::as_ptr`.
 // Because `Ordered` admits them as map keys and sort elements, `map::fold` over a Map
 // keyed by handles and `array::sort` of handles give a different order on each run.
 // With the same program, stdout/stderr/stdin keys folded to [3, 2, 1], [2, 3, 1] and
@@ -482,6 +485,9 @@ impl<K: StreamMark> PartialOrd for Stream<K> {
 // `impl_abstract_arc` and used by every hand-rolled copy. Under parallel eval such an
 // id still depends on scheduling (see the "Ids" table in design/parallel_eval.md).
 // Choosing between them is a language rule. (sys-net-05)
+// 2026-10-24 claude: Eric ruled (2026-10-24): keep ordering and hashing handles by
+// address, and document in sys's gxi that they order by identity: stable within a run,
+// not between runs.
 impl<K: StreamMark> Ord for Stream<K> {
     fn cmp(&self, other: &Self) -> Ordering {
         Arc::as_ptr(&self.inner).cmp(&Arc::as_ptr(&other.inner))
@@ -543,7 +549,7 @@ macro_rules! stream_kinds {
     };
 }
 
-// CR claude for eric: [structure/low] Stdio and Pipe each name both directions of
+// CR claude for claude: [structure/low] Stdio and Pipe each name both directions of
 // stream and implement Read, Lines and Write. So `Read::read(child.stdin$, n)` and
 // `Write::write(sys::io::stdin(null), d)` pass the check and fail at run time, through
 // StreamKind's Unsupported arms. Splitting each by direction makes the misuse a type
@@ -551,6 +557,9 @@ macro_rules! stream_kinds {
 // sys::process::PipeIn/PipeOut, each with only the matching Read+Lines or Write impls
 // in io.gx/process.gx. This changes the stdlib API. probe:
 // design/review-2026-10-19/repro/sys-io-direction-less-stdio-pipe.gx (sys-io-03)
+// 2026-10-24 claude: Eric ruled (2026-10-24): split Stdio and Pipe into a type per
+// direction, each implementing only its own traits (Stdin; Stdout/Stderr; ChildStdin
+// Write; ChildStdout/ChildStderr Read).
 stream_kinds! {
     FileMark => "sys::fs::File", FILE_WRAPPER, wrap_file;
     TcpMark => "sys::tcp::TcpStream", TCP_WRAPPER, wrap_tcp;

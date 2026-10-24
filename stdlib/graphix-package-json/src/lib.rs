@@ -62,7 +62,7 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
 /// A number as the first of i64, u64 and f64 that holds it, `None` past
 /// f64's range.
-// CR claude for eric: [bug/medium] Every number that is not an i64 or u64 becomes an
+// CR claude for claude: [bug/medium] Every number that is not an i64 or u64 becomes an
 // f64 here, before the target cast sees it. The exact text is in hand
 // (arbitrary_precision is on through rust_decimal), but the rounding still decides the
 // answer. json::read("-9223372036854775809") as i64 is -9223372036854775808 instead of
@@ -73,6 +73,9 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 // target reads exactly. The JsonValue doc ("the first of i64, u64 and f64 that holds
 // it") says the same. Needs your ruling on untyped readers seeing a decimal. probe:
 // design/review-2026-10-19/repro/small-pkgs-json-number-via-f64.gx (small-pkgs-02)
+// 2026-10-24 claude: Eric ruled (2026-10-24): untyped reads stay f64; an integer or
+// decimal target reads the exact text and refuses what does not fit; document the
+// arbitrary_precision token object rather than scan for it.
 fn number(n: serde_json::Number) -> Option<Value> {
     match (n.as_i64(), n.as_u64()) {
         (Some(i), _) => Some(Value::I64(i)),
@@ -127,7 +130,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
         while let Some(JsonKey(k)) = a.next_key()? {
             // serde_json's arbitrary_precision (on wherever a crate in the
             // build asks for it) hands a number over as a one-entry map
-            // CR claude for eric: [bug/low] A real object whose first key is the token
+            // CR claude for claude: [bug/low] A real object whose first key is the token
             // reads as a number: {"$serde_json::private::Number": "123"} is 123 as i64
             // and an InvalidCast as Map<string, string>. arbitrary_precision is on only
             // because rust_decimal's serde-with-arbitrary-precision unifies it into the
@@ -135,6 +138,10 @@ impl<'de> Visitor<'de> for JsonVisitor {
             // `number`) and document the ambiguity, or to drop it. probe:
             // design/review-2026-10-19/repro/small-pkgs-json-number-token.gx
             // (small-pkgs-07)
+            // 2026-10-24 claude: Eric ruled (2026-10-24): untyped reads stay f64; an
+            // integer or decimal target reads the exact text and refuses what does not
+            // fit; document the arbitrary_precision token object rather than scan for
+            // it.
             if pairs.is_empty() && &*k == NUMBER_TOKEN {
                 let n: CompactString = a.next_value()?;
                 let n = n.parse::<serde_json::Number>().map_err(de::Error::custom)?;

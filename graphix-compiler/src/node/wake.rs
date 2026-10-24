@@ -65,7 +65,7 @@ impl TrackedFires {
     }
 
     /// A tracker over `n` arms; `fill(i, r)` collects arm `i`'s refs.
-    // CR claude for eric: [bug/medium] An arm's tracked inputs come from its
+    // CR claude for claude: [bug/medium] An arm's tracked inputs come from its
     // compile-time refs and are refreshed only at a deselect. A callee reached through
     // a function value has no instance before its first dispatch, so the variables its
     // body reads are untracked until the arm's first deselect. A fire of such a
@@ -82,6 +82,10 @@ impl TrackedFires {
     // lang::collection::collection_refs_reach_its_slots: its [9]-only expectation
     // encodes the lost catch-up. Also add a static twin of that pin. probe:
     // design/review-2026-10-12/repro/tests-lang-rest-b-02.gx (tests-lang-rest-b-02)
+    // 2026-10-24 claude: Eric ruled (2026-10-24): option A, a fire stamp per variable:
+    // each variable records the cycle of its last fire and an arm the cycle it last
+    // ran; at a wake, an input stamped after the arm's last run fired while it slept.
+    // Covers dynamic callees and moving references.
     pub(crate) fn new(
         env: &Env,
         n: usize,

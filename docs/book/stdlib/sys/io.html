@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-4c9c4bcf.js";
+            window.path_to_searchindex_js = "../../searchindex-7aabf713.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -235,7 +235,7 @@ trait Read {
         }
     };
 
-    // CR claude for eric: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
+    // CR claude for claude: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
     // copies everything read so far, so a Graphix-defined stream reads in time
     // quadratic in its length: 64 MB took 3.8 s against 1.3 s for 32 MB. read_exact's
     // default does the same. Push the chunks onto an Array&lt;bytes&gt; and `buffer::concat`
@@ -257,6 +257,9 @@ trait Read {
     // these defaults; a package-graph change), a core builtin that appends to an Array
     // (surface), or accept it (only a program-defined Read impl's default
     // read_all/read_exact pays it; the built-in streams read in Rust).
+    // 2026-10-24 claude: Eric ruled (2026-10-24): accumulate the chunks in a Map keyed
+    // by arrival order, and let buffer::concat take a map of chunks as well as a single
+    // buffer and an array: N log(M) for N bytes in M chunks.
     /// Read the stream to its end and return everything it produced as
     /// one value. Reads re-arm themselves until the stream ends, so a
     /// stream that never ends (a socket the peer holds open) never

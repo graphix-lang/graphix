@@ -1991,7 +1991,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 self.cell = Self::cell(tv);
             }
         }
-        // CR claude for eric: [risk/medium] A write that fires while the reference has
+        // CR claude for claude: [risk/medium] A write that fires while the reference has
         // no address is held here. A moving reference whose key is bottom (`&mut
         // rows[sel$]` with `sel` null) gets that write later, when the key returns, on
         // whatever place it names then. Nothing fires at the landing. So a key pressed
@@ -2010,6 +2010,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         // past an array's end is dropped, and update place_bottom_key. probe:
         // design/review-2026-10-12/repro/tests-lang-rest-b-03-phantom-write.gx
         // (tests-lang-rest-b-03)
+        // 2026-10-24 claude: Eric ruled (2026-10-24): drop it: a write whose address is
+        // bottom does not happen, silently, as any operation with a bottom input does
+        // not.
         self.pending |= rhs_fired;
         if self.pending
             && let Some(v) = rhs_val
