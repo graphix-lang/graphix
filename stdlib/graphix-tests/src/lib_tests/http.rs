@@ -122,9 +122,11 @@ run!(http_invalid_header_is_500, r#"{
 // hold up the next.
 run!(http_raising_handler_then_good, r#"{
     let handler = |req: http::Request| {
-        body: "hi [req.body?]",
-        headers: [],
-        status: u16:200
+        let text: Result<string, `Empty> = select buffer::to_string_lossy(req.raw) {
+            "" => error(`Empty),
+            s => s
+        };
+        { body: "hi [text?]", headers: [], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -140,9 +142,8 @@ run!(http_raising_handler_then_good, r#"{
 // client gives up, the next request is served.
 run!(http_abandoned_request_then_good, r#"{
     let handler = |req: http::Request| {
-        body: "hi [req.body$]",
-        headers: [],
-        status: u16:200
+        let text = select buffer::to_string_lossy(req.raw) { "" => never(), s => s };
+        { body: "hi [text]", headers: [], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
@@ -154,12 +155,13 @@ run!(http_abandoned_request_then_good, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "200 hi bob")
 }; FuseExpect::Jit);
 
-// Concurrent requests that raise are each answered with their own error.
+// A request whose instance raises is answered 500, and a concurrent one
+// whose instance answers gets its own page.
 run!(http_raises_answer_their_own_requests, r#"{
     let handler = |req: http::Request| {
         let late = sys::time::after_idle(duration:300.ms, req.path);
         let p = select req.path { "/a" => late, p => p };
-        let e: Result<string, `Bad(string)> = error(`Bad(p));
+        let e: Result<string, `Bad(string)> = select p { "/a" => error(`Bad(p)), p => p };
         { body: e?, headers: [], status: u16:200 }
     };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
@@ -167,13 +169,9 @@ run!(http_raises_answer_their_own_requests, r#"{
     let client = http::default_client(server)$;
     let a = http::request(client, "http://[addr]/a")$;
     let b = http::request(sys::time::after_idle(duration:100.ms, client), "http://[addr]/b")$;
-    let both = (a.body, b.body);
-    select (str::contains(#part: "/a", both.0), str::contains(#part: "/b", both.1)) {
-        (true, true) => "own errors",
-        _ => "crossed: [both]"
-    }
+    "[a.status] [b.status] [b.body]"
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "own errors")
+    matches!(v, Ok(Value::String(s)) if &**s == "500 200 /b")
 }; FuseExpect::Jit);
 
 // Concurrent requests each get their own instance's answer.
@@ -252,7 +250,7 @@ run!(http_restart_same_address, r#"{
 // A body over #max_body is answered 413 without reaching the handler.
 run!(http_max_body, r#"{
     let handler = |req: http::Request| {
-        body: "[req.body]",
+        body: "[req.path]",
         headers: [],
         status: u16:200
     };
@@ -268,7 +266,7 @@ run!(http_max_body, r#"{
 // A body that is not UTF-8 arrives as raw bytes.
 run!(http_raw_body, r#"{
     let handler = |req: http::Request| {
-        body: "[req.body] [req.raw == bytes:/+4=]",
+        body: "[req.raw == bytes:/+4=]",
         headers: [],
         status: u16:200
     };
@@ -278,7 +276,7 @@ run!(http_raw_body, r#"{
     let r = http::request_bin(#method: `POST, #body: bytes:/+4=, client, "http://[addr]/")$;
     r.body
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bytes(b)) if &***b == b"null true")
+    matches!(v, Ok(Value::Bytes(b)) if &***b == b"true")
 }; FuseExpect::Jit);
 
 // rest::post sends JSON headers, the bearer and the body.
@@ -287,7 +285,7 @@ run!(http_rest_post, r#"{
         let has = |name: string, value: string|
             array::len(array::filter(req.headers, |h: (string, string)| (h.0 == name) && (h.1 == value))) == 1;
         {
-            body: "[req.method] [has("content-type", "application/json")] [has("authorization", "Bearer t")] [req.body$]",
+            body: "[req.method] [has("content-type", "application/json")] [has("authorization", "Bearer t")] [buffer::to_string_lossy(req.raw)]",
             headers: [],
             status: u16:200
         }
@@ -354,22 +352,26 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
 /// A connection that never sends a request gives its permit back at the
 /// header read timeout: with one permit, a request after it is served.
 #[tokio::test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn http_silent_socket_releases_its_permit() -> Result<()> {
     const CODE: &str = r#"{
     let handler = |req: http::Request| {body: "served", headers: [], status: u16:200};
-    let server = http::serve(#addr: "127.0.0.1:0", #max_connections: 1, #handler: handler)$;
+    let server = http::serve(
+        #addr: "127.0.0.1:0",
+        #max_connections: 1,
+        #header_timeout: duration:1.s,
+        #handler: handler
+    )$;
     let addr = http::server_addr(server);
     let silent = sys::tcp::connect(addr)$;
     let client = http::default_client(null)$;
-    let later = sys::time::timer(duration:32.s, false);
+    let later = sys::time::timer(duration:2.s, false);
     let resp = http::request(#timeout: duration:10.s, client, (later ~ silent) ~ "http://[addr]/");
     select resp { error as e => "[e]", r => r.body }
 }"#;
     // the modes wait out the timeout together
     let run = |mode| {
         let first = Collect::First(1);
-        collect(CODE, crate::TEST_REGISTER, mode, first, Duration::from_secs(120))
+        collect(CODE, crate::TEST_REGISTER, mode, first, Duration::from_secs(30))
     };
     let [interp, jit, par, jit_par] = Mode::ALL;
     let (a, b, c, d) = tokio::join!(run(interp), run(jit), run(par), run(jit_par));
@@ -407,9 +409,9 @@ run!(http_error_names_its_cause, r#"{
     matches!(v, Ok(v) if v.to_string() == "[true, true]")
 }; FuseExpect::Jit);
 
-// A raising handler's 500 body is the error as data, never its kind
-// markers (x-rerun-2-02).
-run!(http_500_body_carries_no_markers, r#"{
+// A raising handler's 500 says nothing of the error: no payload, no source
+// position, no program text.
+run!(http_500_body_is_generic, r#"{
     let handler = |req: http::Request| {
         let e: Result<string, `Internal(string)> = error(`Internal(req.path));
         { body: e?, headers: [], status: u16:200 }
@@ -418,7 +420,23 @@ run!(http_500_body_carries_no_markers, r#"{
     let addr = http::server_addr(server);
     let client = http::default_client(server)$;
     let a = http::request(client, "http://[addr]/raise")$;
-    (a.status, str::contains(#part: "abstract:", a.body), str::contains(#part: "\[\"Internal\", \"/raise\"\]", a.body))
+    (a.status, a.body)
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(v) if v.to_string() == "[u16:500, false, true]")
+    matches!(v, Ok(v) if v.to_string() == r#"[u16:500, "Internal Server Error"]"#)
+}; FuseExpect::Jit);
+
+// A response body over the client's #max_body is an error, whether the
+// server declares its length or not.
+run!(http_client_max_body, r#"{
+    let handler = |req: http::Request| { body: "hello", headers: [], status: u16:200 };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let small = http::request(#max_body: 4, client, "http://[addr]/");
+    let fits = http::request(#max_body: 5, client, "http://[addr]/")$;
+    (fits.body, select small { error as e => "[e]", _ => "read" })
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a.len() == 2
+        && a[0] == Value::String("hello".into())
+        && matches!(&a[1], Value::String(s) if s.contains("body over 4 bytes")))
 }; FuseExpect::Jit);

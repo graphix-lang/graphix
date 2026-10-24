@@ -19,12 +19,17 @@ val call: fn<'a: Data, 'b: Concrete>(path: string, args: 'a) -> Result<'b, [`Rpc
 ///   or null if 'spec is null
 /// - every field in 'args must contain the type of the corresponding default in 'spec
 /// Each call runs an instance of f of its own and is answered by its first
-/// value, or by the error it raises. A call runs to its answer whether or not
-/// the caller is still waiting; one f never answers holds the call.
+/// value. One whose f raises is answered a generic `RpcError`, the error
+/// logged here (an error's chain names the server's source): an f that
+/// wants the caller to see details answers its own error value. A call runs
+/// to its answer whether or not the caller is still waiting; one f never
+/// answers holds the call. Past `#max_inflight` calls (1024 by default)
+/// unanswered, a new call is answered an `RpcError`.
 val rpc: fn<'spec: Data, 'result: Data, 'args: Concrete + Data>(
     #path:string,
     #doc:string,
     #spec:'spec,
+    ?#max_inflight:i64,
     #f:fn(args: 'args) -> 'result throws 'e
 ) -> Result<_, `PublishRpcError(string)> throws 'e;
 

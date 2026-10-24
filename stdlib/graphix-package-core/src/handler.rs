@@ -18,6 +18,15 @@ use triomphe::Arc;
 pub trait Reply: Send + 'static {
     fn reply(self, v: Value);
 
+    /// Answer with the error the request's instance raised; the default
+    /// answers with the error itself.
+    fn raised(self, e: Value)
+    where
+        Self: Sized,
+    {
+        self.reply(e)
+    }
+
     /// The asker stopped waiting.
     fn abandoned(&self) -> bool {
         false
@@ -94,6 +103,12 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
     siblings: Siblings,
 }
 
+/// How a request's instance answered.
+enum Answer {
+    Fired(Value),
+    Raised(Value),
+}
+
 /// One call of the function over its own request binding.
 #[derive(Debug)]
 struct Request<R: Rt, E: UserEvent> {
@@ -126,12 +141,12 @@ impl<R: Rt, E: UserEvent> Request<R, E> {
     }
 
     /// The answer this cycle: the call's first fire, or what it raised.
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Option<Value> {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Option<Answer> {
         let out = match self.call.update(ctx).view() {
-            TagView::Fired(tv) => Some(tv.value_cloned()),
+            TagView::Fired(tv) => Some(Answer::Fired(tv.value_cloned())),
             _ => None,
         };
-        let raised = self.relay.update(ctx);
+        let raised = self.relay.update(ctx).map(Answer::Raised);
         out.or(raised)
     }
 
@@ -184,6 +199,11 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         self.pending.push((request, reply));
     }
 
+    /// The requests taken and not yet answered.
+    pub fn in_flight(&self) -> usize {
+        self.pending.len() + self.running.len()
+    }
+
     /// Start an instance of the function for each new request, then
     /// answer each request whose instance fired or raised. The instances
     /// run on branches of their own where they are independent.
@@ -218,14 +238,17 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             let Some(answer) = answer else { continue };
             let (mut r, q) = self.running.swap_remove(i);
             r.delete(ctx);
-            if let Some(v) = answer {
-                let v = match q.data() {
-                    None => v,
-                    Some(tag) => {
-                        crate::write_data(ctx, &v).unwrap_or_else(|e| errf!(tag, "{e:#}"))
-                    }
-                };
-                q.reply(v)
+            match answer {
+                None => (),
+                Some(Answer::Raised(e)) => q.raised(e),
+                Some(Answer::Fired(v)) => {
+                    let v = match q.data() {
+                        None => v,
+                        Some(tag) => crate::write_data(ctx, &v)
+                            .unwrap_or_else(|e| errf!(tag, "{e:#}")),
+                    };
+                    q.reply(v)
+                }
             }
         }
     }

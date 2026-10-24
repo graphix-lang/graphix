@@ -460,7 +460,8 @@ run!(net_publisher_gone_and_back, r#"
         == r#"[i64:1, error:["SubscribeError", "unsubscribed"], i64:1]"#)
 }; FuseExpect::Jit);
 
-// A handler that raises answers its caller with the error.
+// A handler that raises answers its caller a generic RpcError, the error
+// it raised kept on the server.
 run!(net_rpc_handler_raises, r#"{
   sys::net::rpc(#path: "/local/pin/raise", #doc: "raise", #spec: null,
     #f: |a: null| { let e: Result<i64, `Boom> = error(`Boom); a ~ e? });
@@ -470,7 +471,22 @@ run!(net_rpc_handler_raises, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::Array(a)
         if a[0] == Value::from("RpcError")
-            && matches!(&a[1], Value::String(m) if m.contains("Boom"))))
+            && matches!(&a[1], Value::String(m) if &**m == "the rpc failed")))
+}; FuseExpect::None);
+
+// Past #max_inflight unanswered calls, a call is refused.
+run!(net_rpc_max_inflight, r#"{
+  sys::net::rpc(#path: "/local/pin/inflight", #doc: "hold", #spec: null, #max_inflight: 1,
+    #f: |a: null| never<i64>());
+  let held: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
+    sys::net::call("/local/pin/inflight", null);
+  let refused: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
+    sys::net::call(sys::time::after_idle(duration:100.ms, null) ~ "/local/pin/inflight", null);
+  refused
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::Array(a)
+        if a[0] == Value::from("RpcError")
+            && matches!(&a[1], Value::String(m) if m.contains("1 calls are already in flight"))))
 }; FuseExpect::None);
 
 const NET_RPC_MISSING: &str = r#"{

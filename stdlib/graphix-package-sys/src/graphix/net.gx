@@ -5,6 +5,7 @@ let rpc = 'spec: Data, 'result: Data, 'args: Concrete + Data |
     #path: string,
     #doc: string,
     #spec: 'spec,
+    #max_inflight: i64 = 1024,
     #f: fn(args: 'args) -> 'result throws 'e
 | -> Result<_, `PublishRpcError(string)> throws 'e 'sys_net_publish_rpc;
 let list = |#update: Any = sys::time::timer(1, true), path: string|

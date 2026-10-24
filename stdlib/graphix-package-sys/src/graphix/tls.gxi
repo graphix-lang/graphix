@@ -20,7 +20,8 @@ impl Socket for TlsStream;
 /// certificate or hostname) leaves it untouched; one that fails in the
 /// handshake has spent it, since a socket partway through a handshake
 /// cannot carry plaintext. A handshake that has not finished in 2
-/// minutes fails, the socket spent.
+/// minutes fails, the socket spent. `#ca_cert` is the only CA trusted: the
+/// server's certificate must chain to it, whatever the platform trusts.
 val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: TcpStream) -> Result<TlsStream, `TLSError(string)>;
 
 /// Upgrade a TCP stream to a TLS server connection. Each stream's

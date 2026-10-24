@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e422c715.js";
+            window.path_to_searchindex_js = "searchindex-3799b983.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -7023,7 +7023,8 @@ impl Socket for TlsStream;
 /// certificate or hostname) leaves it untouched; one that fails in the
 /// handshake has spent it, since a socket partway through a handshake
 /// cannot carry plaintext. A handshake that has not finished in 2
-/// minutes fails, the socket spent.
+/// minutes fails, the socket spent. `#ca_cert` is the only CA trusted: the
+/// server's certificate must chain to it, whatever the platform trusts.
 val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: TcpStream) -&gt; Result&lt;TlsStream, `TLSError(string)&gt;;
 
 /// Upgrade a TCP stream to a TLS server connection. Each stream's
@@ -7056,12 +7057,17 @@ val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&
 ///   or null if 'spec is null
 /// - every field in 'args must contain the type of the corresponding default in 'spec
 /// Each call runs an instance of f of its own and is answered by its first
-/// value, or by the error it raises. A call runs to its answer whether or not
-/// the caller is still waiting; one f never answers holds the call.
+/// value. One whose f raises is answered a generic `RpcError`, the error
+/// logged here (an error's chain names the server's source): an f that
+/// wants the caller to see details answers its own error value. A call runs
+/// to its answer whether or not the caller is still waiting; one f never
+/// answers holds the call. Past `#max_inflight` calls (1024 by default)
+/// unanswered, a new call is answered an `RpcError`.
 val rpc: fn&lt;'spec: Data, 'result: Data, 'args: Concrete + Data&gt;(
     #path:string,
     #doc:string,
     #spec:'spec,
+    ?#max_inflight:i64,
     #f:fn(args: 'args) -&gt; 'result throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
@@ -7200,8 +7206,6 @@ type BinResponse = {
     url: string
 };
 
-/// A request to a server: `body` is the body as text, null when it is
-/// empty or not UTF-8; `raw` is the body as sent.
 /// What a `serve` handler answers a request with.
 type Reply = {
     body: string,
@@ -7209,8 +7213,9 @@ type Reply = {
     status: u16
 };
 
+/// A request to a server: `raw` is the body as sent, held once; a handler
+/// that wants it as text decodes it, `buffer::to_string(req.raw)`.
 type Request = {
-    body: [string, null],
     headers: Array&lt;(string, string)&gt;,
     method: string,
     path: string,
@@ -7221,34 +7226,45 @@ type Request = {
 type Client;
 type Server;
 
-/// Create a configured HTTP client.
+/// Create a configured HTTP client. `#timeout` bounds each request whole
+/// (none by default); `#connect_timeout` bounds its connection (30 s by
+/// default). `#ca_cert` is the only CA the client trusts: a server
+/// certificate must chain to it, whatever the platform trusts.
 val client: fn(
     ?#timeout: [duration, null],
     ?#default_headers: Array&lt;(string, string)&gt;,
     ?#redirect_limit: u32,
     ?#ca_cert: [bytes, null],
+    ?#connect_timeout: [duration, null],
     trigger: Any
 ) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
-/// Get or create a shared default HTTP client.
+/// Get or create a shared default HTTP client: no request timeout, a 30 s
+/// connect timeout, the platform's trusted CAs.
 val default_client: fn(trigger: Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
-/// Make an HTTP request and return a text response.
+/// Make an HTTP request and return a text response, a body that is not
+/// UTF-8 decoded lossily. A response body over `#max_body` bytes (256 MiB
+/// by default) is an `HTTPError`, refused by its Content-Length before it
+/// is read where it declares one. A call site's requests run at once and
+/// answer in the order they complete.
 val request: fn(
     ?#method: Method,
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [string, null],
     ?#timeout: [duration, null],
+    ?#max_body: i64,
     client: Client,
     url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
-/// Make an HTTP request and return a binary response.
+/// Make an HTTP request and return a binary response; as `request`.
 val request_bin: fn(
     ?#method: Method,
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [bytes, null],
     ?#timeout: [duration, null],
+    ?#max_body: i64,
     client: Client,
     url: string
 ) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
@@ -7265,18 +7281,22 @@ val server_addr: fn(server: Server) -&gt; string;
 /// Start an HTTP server. Each request runs an instance of `#handler` of
 /// its own, concurrently with the others, and is answered by that
 /// instance's first value; one that raises, or that the server drops (it
-/// sleeps or is deleted), is answered 500. A request its instance never
-/// answers is held, with its connection and its share of
-/// `#max_connections`, until the client gives up. A body over `#max_body`
-/// bytes (16 MiB by default) is answered 413 without reaching the handler.
-/// A connection has 30 s to send a request's headers, idle between
-/// requests included, and 60 s for its body.
+/// sleeps or is deleted), is answered 500 with a generic body, the error
+/// logged here: a handler that wants the client to see details answers its
+/// own 500. A request its instance never answers is held, with its
+/// connection and its share of `#max_connections`, until the client gives
+/// up. A body over `#max_body` bytes (16 MiB by default) is answered 413
+/// without reaching the handler. A connection has `#header_timeout` (30 s)
+/// to send a request's headers, idle between requests included, and
+/// `#body_timeout` (60 s) for its body.
 val serve: fn(
     #addr: string,
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
     ?#max_body: i64,
+    ?#header_timeout: duration,
+    ?#body_timeout: duration,
     #handler: fn(req: Request) -&gt; Reply throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
 

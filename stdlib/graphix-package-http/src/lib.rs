@@ -19,7 +19,7 @@ use graphix_compiler::{
     typ::FnType,
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, Handler,
+    CachedArgs, CachedArgsAsync, CachedVals, Calls, EvalCached, EvalCachedAsync, Handler,
     ImageState, Inbox, RtVar, seam_arg,
 };
 use graphix_rt::GXRt;
@@ -144,27 +144,15 @@ fn parse_method(s: &str) -> std::result::Result<reqwest::Method, Value> {
     }
 }
 
-// CR claude for claude: [bug/medium] A request that never answers wedges its call site
-// for good. `HttpRequestEv` takes the default `Calls::Fifo`, so a site runs one call at
-// a time and queues the rest without bound. This client, and `http::client` without
-// `#timeout`, has no request timeout and no connect timeout. So when a server accepts
-// the connection but never replies (or trickles the reply), every later call at that
-// site waits behind it forever, even calls to a healthy host. A poller whose url moves
-// on gets no further replies. Probe:
-// design/review-2026-10-12/repro/http-sqlite-db1-05.gx (request 1 goes to a server that
-// never replies, requests 2..29 go to a second server that answers at once, and nothing
-// is printed). Two fixes to decide on: (1) give this client and the `http::client`
-// builder a default total timeout plus a connect timeout; (2) pick a different `CALLS`
-// for requests: `Concurrent` (independent calls, replies in completion order) or
-// `Latest` (fits a GET poller, but drops the replies of queued writes). Alternatively,
-// bound the queue. Also reported as (x-security-05). (http-sqlite-db1-05)
-// 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
-// with a sane default: client 30 s connect timeout, no default total timeout, requests
-// Concurrent, #max_body 256 MiB; server timeouts as serve arguments with today's
-// values, body decoded from raw on demand; rpc #max_inflight 1024, an RpcError past it.
+/// How long a client waits for a connection, unless it says otherwise.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 static DEFAULT_CLIENT: LazyLock<Arc<reqwest::Client>> = LazyLock::new(|| {
     Arc::new(
-        reqwest::Client::builder().build().expect("failed to create default HTTP client"),
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .expect("failed to create default HTTP client"),
     )
 });
 
@@ -184,12 +172,16 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
         let default_headers = cached.value(1)?;
         let redirect_limit = cached.get::<u32>(2)?;
         let ca_cert = cached.get::<Option<Bytes>>(3)?;
-        cached.value(4)?;
+        let connect_timeout = cached.get::<Option<Duration>>(4)?;
+        cached.value(5)?;
         let build = || {
             let mut builder = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(redirect_limit as usize));
             if let Some(timeout) = timeout {
                 builder = builder.timeout(timeout);
+            }
+            if let Some(timeout) = connect_timeout {
+                builder = builder.connect_timeout(timeout);
             }
             let headers = value_to_header_map(default_headers)?;
             if !headers.is_empty() {
@@ -198,23 +190,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
             if let Some(ca_cert) = &ca_cert {
                 let cert = reqwest::Certificate::from_pem(ca_cert)
                     .map_err(|e| http_err(format_args!("invalid ca_cert PEM: {e}")))?;
-                // CR claude for claude: [risk/medium] `#ca_cert` here adds the CA to the
-                // OS trust store: reqwest 0.13's deprecated `add_root_certificate`
-                // merges with the platform verifier's roots. `sys::tls::connect`'s
-                // `#ca_cert` instead replaces the roots with only that CA. So an http
-                // client given a private CA still accepts any publicly trusted
-                // certificate for the host, where a sys::tls connection with the same
-                // argument refuses it. The probe shows a fresh private CA: sys::tls
-                // refuses example.com with UnknownIssuer, and http::get through
-                // `http::client(#ca_cert: ca, ..)` gets 200 (probe:
-                // design/review-2026-10-12/repro/x-security-08.sh). Pick one meaning
-                // for both. To pin, use `tls_certs_only`. To trust it in addition, use
-                // `tls_certs_merge` here and make sys::tls add the CA to webpki_roots.
-                // Then say which in both gxi docs, or give the two meanings two names.
-                // (x-security-08)
-                // 2026-10-24 claude: Eric ruled (2026-10-24): #ca_cert pins: only that
-                // CA, in http and sys::tls alike.
-                builder = builder.add_root_certificate(cert);
+                builder = builder.tls_certs_only([cert]);
             }
             let client = builder.build().map_err(|e| {
                 http_err(format_args!("failed to build client: {}", chain(e)))
@@ -278,9 +254,8 @@ pub(crate) trait BodyKind: FromValue + fmt::Debug + Send + Sync + 'static {
 
     fn body(self) -> reqwest::Body;
 
-    fn read(
-        resp: reqwest::Response,
-    ) -> impl Future<Output = reqwest::Result<Self::Read>> + Send;
+    /// The body read, as this kind reads it.
+    fn of(body: Bytes) -> Self::Read;
 }
 
 impl BodyKind for ArcStr {
@@ -291,46 +266,8 @@ impl BodyKind for ArcStr {
         Bytes::from_owner(self).into()
     }
 
-    // CR claude for claude: [risk/medium] The client reads a response body whole, with no
-    // bound. Both impls of BodyKind::read (`resp.text()` here, which is then copied
-    // again into an ArcStr, and `resp.bytes()` in the Bytes impl) buffer whatever the
-    // server sends. `#timeout` defaults to null, so a server that streams without end,
-    // or a redirect to a huge file, grows the process until the OS kills it, and the
-    // program never gets a catchable `HTTPError`. Probe:
-    // design/review-2026-10-12/repro/http-sqlite-db1-10.sh hit a 6 GB cap in 3 s.
-    // http::serve already bounds request bodies with `#max_body` through `Limited`.
-    // Proposed fix: give request/request_bin (and get/get_bin) a `?#max_body: i64`,
-    // read through `Limited::new(resp, max)` or a `resp.chunk()` loop, fail with
-    // `HTTPError("body over N bytes")`, and build the ArcStr once from the bytes. Eric
-    // needs to choose the default bound, because legitimate downloads can be large.
-    // (http-sqlite-db1-10)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
-    // with a sane default: client 30 s connect timeout, no default total timeout,
-    // requests Concurrent, #max_body 256 MiB; server timeouts as serve arguments with
-    // today's values, body decoded from raw on demand; rpc #max_inflight 1024, an
-    // RpcError past it.
-    async fn read(resp: reqwest::Response) -> reqwest::Result<ArcStr> {
-        // CR claude for claude: [bug/medium] BodyKind::read buffers the whole response
-        // body with no size limit, here and in the Bytes impl's resp.bytes(), and the
-        // text path copies it a second time into the ArcStr. The default client and
-        // http::get set no timeout. A server that streams an endless or very large body
-        // therefore grows the process until the kernel kills it, and the program never
-        // gets an HTTPError. The server side already bounds request bodies with
-        // #max_body and Limited; the client side reads untrusted network data with no
-        // bound. Fix: add a #max_body to http::client and to request/request_bin,
-        // defaulting like serve's. Reject a Content-Length over it up front, read with
-        // resp.chunk() in a loop (or Limited over the body stream) and return HTTPError
-        // past the limit. Build the ArcStr once from the collected bytes. probe:
-        // design/review-2026-10-12/repro/x-panics-03.py (OOM-killed at the 6 GB cap
-        // after about 3 s). (x-panics-03)
-        // 2026-10-13 claude: re-addressed: the bound's default is the choice
-        // http-sqlite-db1-10 above asks of Eric; this waits on that ruling.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional
-        // argument with a sane default: client 30 s connect timeout, no default total
-        // timeout, requests Concurrent, #max_body 256 MiB; server timeouts as serve
-        // arguments with today's values, body decoded from raw on demand; rpc
-        // #max_inflight 1024, an RpcError past it.
-        Ok(ArcStr::from(resp.text().await?.as_str()))
+    fn of(body: Bytes) -> ArcStr {
+        ArcStr::from(&*String::from_utf8_lossy(&body))
     }
 }
 
@@ -342,9 +279,33 @@ impl BodyKind for Bytes {
         self.into()
     }
 
-    async fn read(resp: reqwest::Response) -> reqwest::Result<Bytes> {
-        resp.bytes().await
+    fn of(body: Bytes) -> Bytes {
+        body
     }
+}
+
+/// A response's body, refused past `max` bytes: by its Content-Length
+/// before reading, else as it arrives.
+async fn read_body(
+    mut resp: reqwest::Response,
+    max: u64,
+) -> std::result::Result<Bytes, Value> {
+    let over = || http_err(format_args!("body over {max} bytes"));
+    if resp.content_length().is_some_and(|n| n > max) {
+        return Err(over());
+    }
+    let mut body = bytes::BytesMut::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| http_err(format_args!("failed to read body: {}", chain(e))))?
+    {
+        if (body.len() + chunk.len()) as u64 > max {
+            return Err(over());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.freeze())
 }
 
 #[derive(Debug)]
@@ -353,6 +314,7 @@ pub(crate) struct RequestArgs<B> {
     headers: Value,
     body: Option<B>,
     timeout: Option<Duration>,
+    max_body: i64,
     client: Arc<reqwest::Client>,
     url: ArcStr,
 }
@@ -383,6 +345,7 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
     type Args = RequestArgs<B>;
 
     const NAME: &str = B::NAME;
+    const CALLS: Calls = Calls::Concurrent;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some(RequestArgs {
@@ -393,14 +356,21 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
             headers: cached.value(1)?.clone(),
             body: cached.get::<Option<B>>(2)?,
             timeout: cached.get::<Option<Duration>>(3)?,
-            client: cached.abstract_arg::<ClientValue>(4)?.inner.clone(),
-            url: cached.get::<ArcStr>(5)?,
+            max_body: cached.get::<i64>(4)?,
+            client: cached.abstract_arg::<ClientValue>(5)?.inner.clone(),
+            url: cached.get::<ArcStr>(6)?,
         })
     }
 
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let send = async {
+                let max_body = u64::try_from(args.max_body).map_err(|_| {
+                    http_err(format_args!(
+                        "max_body must be at least 0, got {}",
+                        args.max_body
+                    ))
+                })?;
                 let mut req =
                     args.client.request(parse_method(&args.method)?, &*args.url);
                 let headers = value_to_header_map(&args.headers)?;
@@ -419,9 +389,7 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
                 let status = resp.status().as_u16();
                 let url = ArcStr::from(resp.url().as_str());
                 let headers = headers_to_value(resp.headers().iter());
-                let body = B::read(resp).await.map_err(|e| {
-                    http_err(format_args!("failed to read body: {}", chain(e)))
-                })?;
+                let body = B::of(read_body(resp, max_body).await?);
                 Ok(Response { body: body.into(), headers, status, url }.into())
             };
             send.await.unwrap_or_else(|e: Value| e)
@@ -462,57 +430,14 @@ fn text_response(
 }
 
 fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
-    // CR claude for claude: [bug/high] db1-02 regression: a raising http handler's 500
-    // body leaks ErrChain internals to the client. Since a959e8cc,
-    // core::handler::Request::update answers a request with the error its handler
-    // raised (`out.or(raised)`), and build_hyper_response sends any Value::Error to the
-    // HTTP client verbatim: `if let Value::Error(e) = v { return
-    // text_response(StatusCode::INTERNAL_SERVER_ERROR, e) }`. The raised value is the
-    // full ErrChain from node/error.rs wrap_error: cause, error, `ori`
-    // (Origin::to_value: source with its absolute file path, the parent origins) and
-    // `pos`. For Source::Program and Source::Unspecified, Origin::to_value
-    // (graphix-types/src/expr/mod.rs) also copies the source text into `text`.
-    // sys::net::publish_rpc uses the same Handler, so an rpc caller receives the same
-    // chain. Failure: Any client that can make a handler's `?` fire (here, a malformed
-    // JSON body) gets back: 500 [["cause", null], ["error", ["JsonErr", ...]], ["ori",
-    // [["parent", null], ["source", ["File", "/home/eric/.../11_leak.gx"]], ["text",
-    // ""]]], ["pos", [["column", i32:29], ["line", i32:5]]]]. That is the server's
-    // absolute source path and the line/column of the failing expression. Under
-    // graphix-fuzz (Source::Program root) the body also carries the parent Program
-    // origin's text. The same holds for a standalone binary whose embedded main program
-    // runs under Source::Program (graphix-shell/src/lib.rs); I inferred this from that
-    // code and did not run such a binary. Fix: Answer a raised or bottom handler with a
-    // fixed body ("Internal Server Error") and log the chain server-side; the catch at
-    // the serve site already receives the error. Do the same for publish_rpc's reply.
-    // Also stop copying a Source::Program's whole text into every ErrChain link.
-    // Unverified: the reviewer's report, not checked by a verifier. (x-rerun-4-01)
-    // 2026-10-13 claude: re-addressed: answering a generic body is the policy question
-    // http-sqlite-db1-03 below puts to Eric; this waits on that ruling.
-    // 2026-10-24 claude: Eric ruled (2026-10-24): a generic 500 body with the chain
-    // logged server-side (a handler wanting details returns its own 500), and stop
-    // copying a program's text into every ErrChain link.
-    // CR claude for claude: [risk/medium] When a handler raises, the remote client gets a
-    // 500 whose body is the Display of the whole ErrChain. That includes the error
-    // payload (db error text, paths, anything the handler put in the message) and the
-    // `ori`/`pos` fields, which name the server's source file and line. Any client that
-    // can make the handler fail can read internal details this way. The interface doc
-    // for serve only promises "answered 500". Proposed fix: log the error server-side
-    // (FAILURE_TARGET, or the covering handler, which already receives it) and answer a
-    // generic "Internal Server Error" body. A handler that wants to expose details
-    // returns its own 500 Response. The test http_raises_answer_their_own_requests
-    // tells requests apart by this body, so it would need another way to tell which
-    // request got which answer. probe:
-    // design/review-2026-10-12/repro/http-sqlite-db1-03.gx Also reported as
-    // (x-security-04). (http-sqlite-db1-03)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): a generic 500 body with the chain
-    // logged server-side (a handler wanting details returns its own 500), and stop
-    // copying a program's text into every ErrChain link.
     if let Value::Error(e) = v {
         let data = rep::strip(e);
-        return text_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            data.as_ref().unwrap_or(e),
+        log::error!(
+            target: graphix_compiler::FAILURE_TARGET,
+            "an http handler raised: {}",
+            data.as_ref().unwrap_or(e)
         );
+        return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
     }
     #[derive(FromValue)]
     #[value(shape = "graphix_compiler::rep::GraphixShape")]
@@ -552,6 +477,7 @@ async fn handle_http_request(
     req: hyper::Request<hyper::body::Incoming>,
     mut post: Post,
     max_body: usize,
+    body_timeout: Duration,
 ) -> hyper::Response<Full<Bytes>> {
     let (parts, body) = req.into_parts();
     let declared = parts
@@ -561,8 +487,7 @@ async fn handle_http_request(
     if declared.is_some_and(|n| n > max_body as u64) {
         return text_response(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large");
     }
-    let body =
-        tokio::time::timeout(BODY_READ_TIMEOUT, Limited::new(body, max_body).collect());
+    let body = tokio::time::timeout(body_timeout, Limited::new(body, max_body).collect());
     let raw = match body.await {
         Err(_) => return text_response(StatusCode::REQUEST_TIMEOUT, "Request Timeout"),
         Ok(Ok(b)) => b.to_bytes(),
@@ -571,28 +496,9 @@ async fn handle_http_request(
         }
         Ok(Err(e)) => return text_response(StatusCode::BAD_REQUEST, e),
     };
-    // CR claude for claude: [risk/medium] Every connection collects its whole body (up to
-    // `max_body`) before dispatch, and a UTF-8 body is then copied a second time into
-    // `body` with `ArcStr::from`, so a request holds two copies. With the defaults (768
-    // connections, 16 MiB) remote clients can pin about 24 GiB before the program sees
-    // a single request. Dropping the copy means changing `Request`: drop `body` and let
-    // the handler decode `raw`. The other part is a cap on total in-flight body bytes,
-    // such as a byte-counting semaphore, or smaller defaults. Both are API and policy
-    // choices. The defaults are also written twice, in `serve`'s labels in mod.gx and
-    // in `Settings` here (`DEFAULT_MAX_BODY`, the 768 literal). (x-security-06)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
-    // with a sane default: client 30 s connect timeout, no default total timeout,
-    // requests Concurrent, #max_body 256 MiB; server timeouts as serve arguments with
-    // today's values, body decoded from raw on demand; rpc #max_inflight 1024, an
-    // RpcError past it.
-    let body = match std::str::from_utf8(&raw) {
-        Ok(s) if !s.is_empty() => Some(ArcStr::from(s)),
-        Ok(_) | Err(_) => None,
-    };
     #[derive(IntoValue)]
     #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
-        body: Option<ArcStr>,
         headers: Value,
         method: ArcStr,
         path: ArcStr,
@@ -600,7 +506,6 @@ async fn handle_http_request(
         raw: Bytes,
     }
     let request = Fields {
-        body,
         headers: headers_to_value(parts.headers.iter()),
         method: ArcStr::from(parts.method.as_str()),
         path: ArcStr::from(parts.uri.path()),
@@ -697,7 +602,7 @@ async fn serve_connection(
     stream: tokio::net::TcpStream,
     tls: Option<tokio_rustls::TlsAcceptor>,
     post: Post,
-    max_body: usize,
+    limits: Limits,
 ) {
     let io = match tls {
         None => MaybeTls::Plain(stream),
@@ -715,37 +620,13 @@ async fn serve_connection(
         }
     };
     let service = hyper::service::service_fn(|req| {
-        let resp = handle_http_request(req, post.clone(), max_body);
+        let resp =
+            handle_http_request(req, post.clone(), limits.max_body, limits.body_timeout);
         async move { Ok::<_, std::convert::Infallible>(resp.await) }
     });
-    // CR claude for claude: [bug/high] This connection builder has no timer, so hyper
-    // drops its default 30 s header-read timeout ("has default, but no timer set").
-    // Nothing else limits how long a connection may stay idle. Each of these holds its
-    // `max_connections` permit from `serve_loop` for as long as the client keeps the
-    // socket open: - a connection that never sends a byte, - a keep-alive connection
-    // idle between requests, - a request whose body trickles in (the `Limited::collect`
-    // in `handle_http_request` has no deadline). So `max_connections` silent sockets
-    // (768 by default, opened in about 2 s) lock every other client out indefinitely.
-    // Fix: - give the builder `.timer(hyper_util::rt::TokioTimer::new())` and an
-    // explicit `.header_read_timeout(..)`; - bound the body collect with
-    // `tokio::time::timeout`; - bound keep-alive idle time between requests. Whether
-    // these are `serve` arguments with defaults is a policy call. Probe:
-    // design/review-2026-10-12/repro/x-security-01.py (x-security-01)
-    // 2026-10-13 claude: the builder now has a timer and a 30 s header read timeout
-    // (HEADER_READ_TIMEOUT, which also closes a keep-alive connection idle that long),
-    // and a body has 60 s to arrive (BODY_READ_TIMEOUT, else 408). Fixed values: whether
-    // they are serve arguments is the policy call above. Pin:
-    // lib_tests::http::http_silent_socket_releases_its_permit (slow-tests).
-    // a connection waiting on a request's headers, a silent one or one idle
-    // between requests, is closed past the header timeout: it holds a permit
-    // 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
-    // with a sane default: client 30 s connect timeout, no default total timeout,
-    // requests Concurrent, #max_body 256 MiB; server timeouts as serve arguments with
-    // today's values, body decoded from raw on demand; rpc #max_inflight 1024, an
-    // RpcError past it.
     if let Err(e) = hyper::server::conn::http1::Builder::new()
         .timer(hyper_util::rt::TokioTimer::new())
-        .header_read_timeout(HEADER_READ_TIMEOUT)
+        .header_read_timeout(limits.header_timeout)
         .serve_connection(hyper_util::rt::TokioIo::new(io), service)
         .await
     {
@@ -768,7 +649,7 @@ async fn serve_loop(
     tls: Option<tokio_rustls::TlsAcceptor>,
     post: Post,
     max_connections: Arc<Semaphore>,
-    max_body: usize,
+    limits: Limits,
 ) {
     loop {
         while conns.0.lock().try_join_next().is_some() {}
@@ -785,9 +666,20 @@ async fn serve_loop(
         let (tls, post) = (tls.clone(), post.clone());
         conns.0.lock().spawn(async move {
             let _permit = permit;
-            serve_connection(stream, tls, post, max_body).await
+            serve_connection(stream, tls, post, limits).await
         });
     }
+}
+
+/// What a connection may take: a request's body, at most `max_body`
+/// bytes in `body_timeout`, and its headers in `header_timeout`, counted
+/// from when it may send them (a new connection, or the last response),
+/// so a connection idle that long between requests is closed.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    max_body: usize,
+    header_timeout: Duration,
+    body_timeout: Duration,
 }
 
 /// The server's settings, as its arguments give them.
@@ -795,18 +687,12 @@ struct Settings<'a> {
     addr: &'a ArcStr,
     tls: Option<tokio_rustls::TlsAcceptor>,
     max_connections: usize,
-    max_body: usize,
+    limits: Limits,
 }
 
 impl<'a> Settings<'a> {
-    fn of(
-        addr: &'a ArcStr,
-        cert: &Value,
-        key: &Value,
-        max_connections: &Value,
-        max_body: &Value,
-    ) -> std::result::Result<Self, Value> {
-        // plain HTTP only when both are null, never because one is missing
+    fn of(addr: &'a ArcStr, args: [&Value; 6]) -> std::result::Result<Self, Value> {
+        let [cert, key, max_connections, max_body, header_timeout, body_timeout] = args;
         let tls = match (cert, key) {
             (Value::Bytes(cert), Value::Bytes(key)) => {
                 Some(build_tls_acceptor(cert, key)?)
@@ -814,36 +700,34 @@ impl<'a> Settings<'a> {
             (Value::Null, Value::Null) => None,
             _ => return Err(http_err("both cert and key must be provided for TLS")),
         };
-        let max_connections = match max_connections {
-            Value::I64(n) => usize::try_from(*n)
-                .ok()
-                .filter(|n| (1..=Semaphore::MAX_PERMITS).contains(n))
-                .ok_or_else(|| {
-                    let max = Semaphore::MAX_PERMITS;
-                    http_err(format_args!(
-                        "max_connections must be in 1..={max}, got {n}"
-                    ))
-                })?,
-            _ => 768,
+        let int = |v: &Value| match v {
+            Value::I64(n) => Ok(*n),
+            v => Err(http_err(format_args!("expected an integer, got {v}"))),
         };
-        let max_body = match max_body {
-            Value::I64(n) => usize::try_from(*n).map_err(|_| {
-                http_err(format_args!("max_body must be at least 0, got {n}"))
-            })?,
-            _ => DEFAULT_MAX_BODY,
+        let duration = |v: &Value| match v {
+            Value::Duration(d) => Ok(**d),
+            v => Err(http_err(format_args!("expected a duration, got {v}"))),
         };
-        Ok(Self { addr, tls, max_connections, max_body })
+        let n = int(max_connections)?;
+        let max_connections = usize::try_from(n)
+            .ok()
+            .filter(|n| (1..=Semaphore::MAX_PERMITS).contains(n))
+            .ok_or_else(|| {
+                let max = Semaphore::MAX_PERMITS;
+                http_err(format_args!("max_connections must be in 1..={max}, got {n}"))
+            })?;
+        let n = int(max_body)?;
+        let max_body = usize::try_from(n).map_err(|_| {
+            http_err(format_args!("max_body must be at least 0, got {n}"))
+        })?;
+        let limits = Limits {
+            max_body,
+            header_timeout: duration(header_timeout)?,
+            body_timeout: duration(body_timeout)?,
+        };
+        Ok(Self { addr, tls, max_connections, limits })
     }
 }
-
-const DEFAULT_MAX_BODY: usize = 16 * 1024 * 1024;
-
-/// How long a connection may take to send a request's headers, counted
-/// from when it may send them: a new connection, or the last response.
-const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// How long a request may take to send its body.
-const BODY_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The bound socket, kept across restarts so one on the same address
 /// reuses it rather than racing the old loop's drop, and the connections
@@ -886,9 +770,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let [_, _, _, _, _, _] = from else { bail!("expected six arguments") };
+        let [_, _, _, _, _, _, _, _] = from else { bail!("expected eight arguments") };
         let typ = resolved.unwrap_or(typ);
-        let handler = Handler::new(ctx, &typ.args[5].typ, scope, top_id)?;
+        let handler = Handler::new(ctx, &typ.args[7].typ, scope, top_id)?;
         let var = RtVar::new(ctx, top_id);
         Ok(Box::new(HttpServe {
             var,
@@ -962,7 +846,7 @@ impl<R: Rt, E: UserEvent> HttpServe<R, E> {
         ctx.rt.watch(rx);
         let semaphore = Arc::new(Semaphore::new(s.max_connections));
         let post = Post { tx, id: self.var.id, inbox: self.inbox.clone() };
-        let serve = serve_loop(listener, conns, s.tls, post, semaphore, s.max_body);
+        let serve = serve_loop(listener, conns, s.tls, post, semaphore, s.limits);
         let abort = tokio::spawn(serve).abort_handle();
         self.abort = Some(abort.clone());
         Ok(SERVER_WRAPPER
@@ -986,32 +870,32 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         let woke = self.slept.take();
-        let (addr, addr_fired) = seam_arg(ctx, &mut from[0]);
-        let (cert, cert_fired) = seam_arg(ctx, &mut from[1]);
-        let (key, key_fired) = seam_arg(ctx, &mut from[2]);
-        let (max_conns, max_conns_fired) = seam_arg(ctx, &mut from[3]);
-        let (max_body, max_body_fired) = seam_arg(ctx, &mut from[4]);
-        let (f, f_fired) = seam_arg(ctx, &mut from[5]);
+        let (addr, mut fired) = seam_arg(ctx, &mut from[0]);
+        fired |= woke;
+        let mut args: [Option<Value>; 6] = Default::default();
+        for (i, arg) in args.iter_mut().enumerate() {
+            let (v, f) = seam_arg(ctx, &mut from[i + 1]);
+            *arg = v;
+            fired |= f;
+        }
+        let (f, f_fired) = seam_arg(ctx, &mut from[7]);
         self.handler.set_fn(ctx, f, f_fired);
         let mut started = None;
-        if woke
-            || addr_fired
-            || cert_fired
-            || key_fired
-            || max_conns_fired
-            || max_body_fired
-        {
+        if fired {
             self.stop();
             // a bottom argument bottoms the call, and no server runs
-            started = Some(match (&addr, &cert, &key, &max_conns, &max_body) {
+            let [a, b, c, d, e, g] = &args;
+            started = Some(match (&addr, a, b, c, d, e, g) {
                 (
                     Some(Value::String(addr)),
-                    Some(cert),
-                    Some(key),
-                    Some(mc),
-                    Some(mb),
+                    Some(a),
+                    Some(b),
+                    Some(c),
+                    Some(d),
+                    Some(e),
+                    Some(g),
                 ) => {
-                    let s = Settings::of(addr, cert, key, mc, mb);
+                    let s = Settings::of(addr, [a, b, c, d, e, g]);
                     Some(s.and_then(|s| self.start(ctx, s)).unwrap_or_else(|e| e))
                 }
                 _ => None,

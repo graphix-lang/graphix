@@ -43,6 +43,12 @@ fn as_path(v: Value) -> Option<Path> {
     }
 }
 
+/// An error an rpc answers its caller with, which the caller reads as
+/// `RpcError(msg)` (`remote_err`).
+fn remote_failure(msg: &str) -> Value {
+    Value::Error(Value::String(ArcStr::from(msg)).into())
+}
+
 fn remote_err(tag: &ArcStr, e: &Value) -> Value {
     match e {
         Value::String(msg) => Value::Error(
@@ -932,26 +938,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 #[derive(Debug)]
 struct RpcReply(server::RpcCall);
 
-// CR claude for claude: [risk/medium] A published rpc keeps one handler instance for
-// every call f has not answered, with no limit and no way to drop one. RpcReply does
-// not implement Reply::abandoned, and Inbox and Handler's pending/running lists are
-// unbounded Vecs. The Inbox wakes the runtime outside the 100-deep rpcs channel, so
-// callers get no backpressure. Any netidx client allowed to write the rpc path can grow
-// the server's memory at will, even with writes that carry no reply channel and that
-// nobody waits for. In the probe, 1000 writes/s to an rpc whose f answers later grow
-// RSS ~3.5 MB/s (87 to 180 MB in 25 s); the same program answering at once stays at 72
-// MB. http::serve bounds the same exposure with max_connections. Decide the policy: a
-// #max_inflight that answers an RpcError past it, and dropping a call whose RpcCall has
-// no reply channel or whose client is gone (needs an accessor on netidx_protocols'
-// RpcReply). probe: design/review-2026-10-19/repro/x-security-rpc-unbounded.sh
-// (x-security-02)
-// 2026-10-24 claude: Eric ruled (2026-10-24): yes to all, each an optional argument
-// with a sane default: client 30 s connect timeout, no default total timeout, requests
-// Concurrent, #max_body 256 MiB; server timeouts as serve arguments with today's
-// values, body decoded from raw on demand; rpc #max_inflight 1024, an RpcError past it.
 impl Reply for RpcReply {
     fn reply(mut self, v: Value) {
         self.0.reply.send(v)
+    }
+
+    /// The error is logged here and the caller told only that the call
+    /// failed: an error's chain names the server's source.
+    fn raised(self, e: Value) {
+        log::error!(target: graphix_compiler::FAILURE_TARGET, "an rpc handler raised: {e}");
+        self.reply(remote_failure("the rpc failed"))
     }
 
     fn data(&self) -> Option<ArcStr> {
@@ -1014,12 +1010,15 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     cast_typ: Option<Type>,
     /// The published spec's defaults, which a call's arguments override.
     defaults: Vec<(ArcStr, Value)>,
+    /// `#max_inflight`: calls past it are answered an error; none is
+    /// refused before the argument has arrived.
+    max_inflight: usize,
     out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
     fn handler_arg(resolved: &FnType) -> Option<Type> {
-        match &resolved.args.get(3)?.typ {
+        match &resolved.args.get(4)?.typ {
             Type::Fn(ft) => Some(ft.args.first()?.typ.clone()),
             _ => None,
         }
@@ -1092,9 +1091,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let [_, _, _, _] = from else { bail!("expected four arguments") };
+        let [_, _, _, _, _] = from else { bail!("expected five arguments") };
         let typ = resolved.unwrap_or(typ);
-        let handler = Handler::new(ctx, &typ.args[3].typ, scope, top_id)?;
+        let handler = Handler::new(ctx, &typ.args[4].typ, scope, top_id)?;
         let var = RtVar::new(ctx, top_id);
         Ok(Box::new(PublishRpc {
             slept: WakeBit::default(),
@@ -1104,6 +1103,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
             current: None,
             cast_typ: resolved.and_then(Self::handler_arg),
             defaults: Vec::new(),
+            max_inflight: usize::MAX,
             out: TagValue::phantom(),
         }))
     }
@@ -1124,6 +1124,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
             current: None,
             cast_typ,
             defaults: Vec::new(),
+            max_inflight: usize::MAX,
             out: TagValue::phantom(),
         }))
     }
@@ -1149,9 +1150,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         let (pathv, path_fired) = seam_arg(ctx, &mut from[0]);
         let (docv, doc_fired) = seam_arg(ctx, &mut from[1]);
         let (specv, spec_fired) = seam_arg(ctx, &mut from[2]);
-        let (fv, f_fired) = seam_arg(ctx, &mut from[3]);
+        let (maxv, max_fired) = seam_arg(ctx, &mut from[3]);
+        let (fv, f_fired) = seam_arg(ctx, &mut from[4]);
         self.handler.set_fn(ctx, fv, f_fired);
         let mut failed = None;
+        if max_fired && let Some(Value::I64(n)) = maxv {
+            match usize::try_from(n) {
+                Ok(n) => self.max_inflight = n,
+                Err(_) => {
+                    failed = Some(errf!(
+                        literal!("PublishRpcError"),
+                        "max_inflight must be at least 0, got {n}"
+                    ))
+                }
+            }
+        }
         if path_fired || doc_fired || spec_fired || woke {
             if crate::netstate::rpc_dbg() {
                 eprintln!(
@@ -1175,6 +1188,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             let mut calls: LPooled<Vec<server::RpcCall>> = LPooled::take();
             self.inbox.take(&mut *calls);
             for c in calls.drain(..) {
+                if self.handler.in_flight() >= self.max_inflight {
+                    let n = self.max_inflight;
+                    let msg =
+                        compact_str::format_compact!("{n} calls are already in flight");
+                    RpcReply(c).reply(remote_failure(&msg));
+                    continue;
+                }
                 match self.arg(ctx, &c) {
                     e @ Value::Error(_) => RpcReply(c).reply(e),
                     arg => self.handler.push(arg, RpcReply(c)),

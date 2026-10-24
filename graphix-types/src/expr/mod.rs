@@ -1016,15 +1016,18 @@ impl fmt::Display for Origin {
 }
 
 impl Origin {
-    /// The value an `ErrChain` link carries. A source that names where
-    /// the text is (a file, a netidx path, an embedded module) carries
-    /// no copy of it: every link of every chain would hold the whole
-    /// program.
+    /// The value an `ErrChain` link carries. Only a snippet from nowhere in
+    /// particular carries its text, which is what names it; a program, a
+    /// file, a netidx path or an embedded module does not: every link of
+    /// every chain would hold it, and an error a program hands on (an
+    /// http reply) would carry it out.
     pub fn to_value(&self) -> Value {
         let p = Value::from(self.parent.as_ref().map(|p| p.to_value()));
         let text = match self.source {
-            Source::Unspecified | Source::Program => self.text.clone(),
-            Source::File(_) | Source::Netidx(_) | Source::Vfs(_) => ArcStr::new(),
+            Source::Unspecified => self.text.clone(),
+            Source::Program | Source::File(_) | Source::Netidx(_) | Source::Vfs(_) => {
+                ArcStr::new()
+            }
         };
         rep::structure([
             (literal!("parent"), p),
