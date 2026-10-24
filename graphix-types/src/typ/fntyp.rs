@@ -1377,62 +1377,38 @@ impl FnType {
             sorted_tvars(cells.drain().map(|(_, tv)| (tv.name.clone(), tv)))
         };
         let probe = BitFlags::empty();
+        // An implementation may be more general than its signature: a bound
+        // the signature declares need not be the implementation's. One the
+        // implementation does carry pairs the variables inside it with the
+        // signature's, as positions do.
         for (sig_tv, sig_tc) in self.constraint_view().iter() {
-            // a bound of Any constrains nothing
-            let mut found = *sig_tc == Type::Any;
-            // the impl cell the signature's was matched with, else the
+            if *sig_tc == Type::Any {
+                continue;
+            }
+            // the impl cells the signature's was matched with, else the
             // same-named variable: either form of a bound (`'c: C`, `c: C`)
             // names its variable its own way
             let sig_addr = sig_tv.cell_addr();
-            // CR claude for claude: [bug/medium] Several impl cells can map to one
-            // signature variable (`|x: 'b, y: 'c|` implementing `(x: 'a, y: 'a)`). This
-            // `.find` checks the declared bound on the first of them in name order
-            // only, so renaming the impl's variables changes the verdict. `'c: Number
-            // |x: 'b, y: 'c|` is refused "missing constraint 'a: Number", while `'b:
-            // Number |x: 'c, y: 'b|` is accepted. The rule needs deciding once. If an
-            // implementation must carry the signature's bounds, check every cell mapped
-            // to the sig variable. If it may be more general than its interface
-            // (t-fntyp-08: `|x| x` under `fn<'a: Number>(x: 'a) -> 'a` is refused
-            // today), drop this loop and keep the impl-requires-only-what-sig-declares
-            // loop below, which is all call safety needs. CLAUDE.md states only the
-            // second direction. Pin the multi-cell shape either way. probe:
-            // design/review-2026-10-12/repro/t-fntyp-07.sh (t-fntyp-07)
-            // 2026-10-24 claude: Eric ruled (2026-10-24): an implementation may be more
-            // general than its interface: drop the reverse check (the implementation
-            // carrying each declared bound); an implementation still may not need a
-            // bound the interface does not declare.
-            let matched = impl_cells
+            let mut matched: LPooled<Vec<&TVar>> = impl_cells
                 .iter()
-                .find(|(_, tv)| {
+                .filter(|(_, tv)| {
                     matches!(tvar_map.cells.get(&tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
                 })
-                .or_else(|| {
-                    impl_tvs
-                        .binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
-                        .ok()
-                        .map(|i| &impl_tvs[i])
-                });
-            if let Some((_, impl_tv)) = matched {
+                .map(|(_, tv)| tv)
+                .collect();
+            if matched.is_empty()
+                && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
+            {
+                matched.push(&impl_tvs[i].1);
+            }
+            for impl_tv in matched.iter() {
                 for c in impl_tv.cell_constraints().iter() {
-                    // a conjunct that matches the signature's by structure
-                    // pairs the variables inside them, as positions do
                     let mut scratch = tvar_map.clone();
                     if sig_tc.sig_matches_int(env, c, &mut scratch, hist).is_ok() {
                         *tvar_map = scratch;
-                        found = true;
-                        break;
-                    }
-                    if c == sig_tc
-                        || (c.contains_with_flags(probe, env, sig_tc)?
-                            && sig_tc.contains_with_flags(probe, env, c)?)
-                    {
-                        found = true;
                         break;
                     }
                 }
-            }
-            if !found {
-                bail!("missing constraint {sig_tv}: {sig_tc} in implementation")
             }
         }
         let mut param_bounds = LPooled::take();

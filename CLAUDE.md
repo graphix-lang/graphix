@@ -1084,7 +1084,8 @@ cycle, across workers; the compiler never pins threads.
   `type Result<'r: NoError, 'e>`, so a result's error member is its only
   error (`design/tvar_constraints.md`). An interface declares every bound its
   implementation's variables carry, a typedef parameter's bound counting
-  (`FnType::sig_matches`).
+  (`FnType::sig_matches`); the implementation may leave off a bound the
+  interface declares.
 
 ## Stack discipline
 

@@ -443,7 +443,10 @@ must follow from the signature variable's conjuncts, or from the bound
 of a typedef parameter it is passed as (`FnType::sig_matches`). A call
 through the interface is checked by the signature alone; before this
 rule, `val f: fn(x: 'a) -> 'a` over `|x| x + x` passed the check and
-refused `f("s")` at elaboration.
+refused `f("s")` at elaboration. The other direction is not required:
+an implementation may be more general than its interface (`|x| x` under
+`fn<'a: Number>(x: 'a) -> 'a`), whatever its variables are called; a
+bound it does carry pairs the variables inside it with the signature's.
 
 ### `FnType` derives its constraint list from the cells
 
@@ -469,9 +472,8 @@ former consumer derives from the cells:
   conjunct; each listing walk holds a per-signature reentrancy guard, so
   the regress stops at the signature already being listed.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells
-  directly (inference declares no header); `sig_matches_int` requires
-  each of the signature's declared conjuncts among the impl cell's
-  conjunction, and its impl-constraint check is SATISFACTION — the
+  directly (inference declares no header); `sig_matches_int`'s
+  impl-constraint check is SATISFACTION — the
   signature's concrete choice must be admitted by the impl's inferred
   constraint — not structural equality, which spuriously rejected a
   concretely typed `.gxi` signature over an inferred-generic impl.

@@ -84,10 +84,10 @@ async fn contradicting_definitions_are_refused() -> Result<()> {
         ),
         (
             "impl Show for i64 { let show = |x| \"int [x]\" };\n\
-             impl<'a> Show for Array<'a> { let show = |xs| \"arr\" };\nShow::show([1])\n",
+             impl<'a: Show> Show for Array<'a> { let show = |xs| \"arr\" };\nShow::show([1])\n",
             "trait Show { val show: fn(self) -> string };\n\
-             impl<'a: Show> Show for Array<'a>;\n",
-            "missing constraint 'a: Show in implementation",
+             impl<'a> Show for Array<'a>;\n",
+            "the implementation requires 'a: Show, which the signature does not declare",
         ),
     ];
     for (gx, gxi, refusal) in cases {

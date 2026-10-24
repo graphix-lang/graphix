@@ -2717,22 +2717,11 @@ pub(super) fn find_impl_with(
     hist: &mut ContainsHist,
 ) -> Result<Option<Arc<ImplDef>>> {
     let Some(list) = env.impls_all(trait_id) else { return Ok(None) };
-    // An open cell inside `t` could still become anything.
-    // CR claude for claude: [bug/medium] has_unbound counts declared (rigid) cells, so a
-    // generic head never matches a self type with a variable inside it. `impl<'b: Show>
-    // Show for Array<'b>` does not apply to Array<'a> in `'a: Show |x: Array<'a>|
-    // Show::show(x)`, the shape of Rust's `fn f<A: Show>(x: Vec<A>)`. It does not apply
-    // to `|x| Show::show([x])` either, while `|x| Show::show(x)` called with [1]
-    // dispatches. design/traits.md writes this rule down, but it contradicts its own
-    // 'an open self type inside a gate is left for the instances'. Decide: a rigid
-    // interior cell is a constant (test has_free, so the head unifies and the bound
-    // discharges through the rigid cell's conjuncts), and an open interior cell inside
-    // a gate is either left for the instances or stays refused. probe:
-    // design/review-2026-10-19/repro/t-contains-impl-open-interior.gx (t-contains-03)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): in a definition's check a rigid
-    // variable matches an impl head like a concrete type, the impl's bounds discharged
-    // by its declared bounds; an open variable is left for the instances.
-    if t.has_unbound() {
+    // An open cell inside `t` could still become anything, and two heads
+    // that fit it would each commit a guess; a declared (rigid) cell is a
+    // constant, which takes the impl's bounds as a body's call hands a
+    // declared variable a bound it needs, so each call checks them.
+    if t.has_free() {
         return Ok(None);
     }
     for im in list.iter().filter(|im| !env.impl_hidden(im)) {

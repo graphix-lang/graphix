@@ -449,9 +449,33 @@ run!(
     "#
 );
 
+// An implementation may be more general than its interface: the bounds it
+// leaves off are the interface's to impose, and the names of its variables
+// decide nothing.
+run!(
+    implementation_more_general_than_interface,
+    prints("[i64:1, i64:2, i64:3, i64:3]"),
+    "/test.gx" => r#"
+        mod m;
+        let result = [m::id(1), m::a(1, 2), m::b(3, 3), m::c(4, 3)]
+    "#,
+    "/test/m.gxi" => r#"
+        val id: fn<'a: Number>(x: 'a) -> 'a;
+        val a: fn<'a: Number>(x: 'a, y: 'a) -> 'a;
+        val b: fn<'a: Number>(x: 'a, y: 'a) -> 'a;
+        val c: fn<'a: Number>(x: 'a, y: 'a) -> 'a
+    "#,
+    "/test/m.gx" => r#"
+        let id = |x| x;
+        let a = 'c: Number |x: 'b, y: 'c| -> 'c y;
+        let b = 'b: Number |x: 'c, y: 'b| -> 'b y;
+        let c = |x: 'b, y: 'c| -> 'c y
+    "#
+);
+
 run!(
     ctor_quantifier_wrong_bound_refused,
-    refused("missing constraint"),
+    refused("which the implementation constraint Number does not admit"),
     "/test.gx" => r#"
         mod m;
         let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
@@ -614,6 +638,35 @@ run!(
         let nested = (Rev(1), 5) > (Rev(2), 9) && (Rev(1), 5) < (Rev(1), 6);
         let result = root && nested
     "##
+);
+
+// A generic impl head matches a self type holding a declared variable, as
+// Rust's `fn f<A: Show>(x: Vec<A>)` does; the impl's bound is the
+// variable's to meet, handed to it as a body's call hands one, so each call
+// checks it.
+run!(
+    impl_head_over_a_declared_variable,
+    prints(r#""arr""#),
+    "/test.gx" => r##"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "i" };
+        impl<'b: Show> Show for Array<'b> { let show = |xs| "arr" };
+        let f = 'a: Show |x: Array<'a>| -> string Show::show(x);
+        let result = f([1, 2])
+    "##
+);
+
+run!(
+    impl_head_bound_reaches_the_call,
+    refused("does not contain Array<f64>"),
+    "/test.gx" => r##"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "i" };
+        impl<'b: Show> Show for Array<'b> { let show = |xs| "arr" };
+        let h = 'a: Number |x: Array<'a>| -> string Show::show(x);
+        let result = h([1.5])
+    "##;
+    FuseExpect::None
 );
 
 // An abstract type with no Eq or Ord implementation compares by its

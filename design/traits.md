@@ -387,7 +387,13 @@ alias-expanded, selects the impl (or the trait's default); the call's
 function node is RE-POINTED at that binding and pre-bound statically
 when the lambda is known — after which it is an ordinary static call.
 An open self type inside a definition gate is the polymorphic case,
-left for the instances; open at depth zero is the compile error. A
+left for the instances; open at depth zero is the compile error. A self
+type holding a declared (rigid) variable is a constant to the impl
+lookup (`find_impl_with` refuses only `has_free`): `impl<'b: Show> Show
+for Array<'b>` serves `'a: Show |x: Array<'a>|`, and the impl's bounds
+are handed to the declared variable as a body's call hands it one, so
+each call checks them. One holding an open variable is refused: two heads
+that fit it would each commit a guess. A
 union self type lowers the call to `{ let #s = self; let #a_i = arg_i;
 ..; select #s { M as #t => #bind::N(#t, #a_i, ..), .. } }` — `#bind::N`
 being the compiler's private spelling for a binding by id — and the
