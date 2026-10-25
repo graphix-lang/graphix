@@ -2247,63 +2247,6 @@ fn fc_is_err(args: &[Value]) -> Option<Value> {
 
 crate::fast_builtin!(IsErr, IsErrEv, "core_is_err", fc_is_err);
 
-#[derive(Debug, Default)]
-struct FilterErr {
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let _ = (ctx, buf);
-        Ok(Box::new(FilterErr::default()))
-    }
-
-    const EFFECT: Effect = Effect::Sync;
-    const NAME: &str = "core_filter_err";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(FilterErr::default()))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        let _ = buf;
-        Ok(())
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        let x = from[0].update(ctx);
-        if let Some(bottom) = bottom_of([x.tag()]) {
-            return bottom;
-        }
-        match seam_tick(x).and_then(|tv| match tv.value_cloned() {
-            v @ Value::Error(_) => Some(TagValue::fired(v)),
-            _ => None,
-        }) {
-            Some(tv) => self.out.set(tv),
-            None => self.out.ride(),
-        }
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-}
-
 fn fc_error(args: &[Value]) -> Option<Value> {
     Some(Value::Error(args[0].clone().into()))
 }
@@ -3812,7 +3755,6 @@ graphix_derive::defpackage! {
         MapLen,
         MapUnion,
         IsErr,
-        FilterErr,
         ToError,
         Once,
         Take,
@@ -3903,8 +3845,6 @@ graphix_derive::defpackage! {
         opt::OkOr,
         opt::Zip,
         opt::Unzip,
-        opt::OptOrElse as opt::OptOrElse<GXRt<X>, X::UserEvent>,
-        opt::OptOkOrElse as opt::OptOkOrElse<GXRt<X>, X::UserEvent>,
     ],
 }
 

@@ -150,7 +150,8 @@ val count: fn(x: Any) -> i64;
 /// failed division (by zero, an overflow) is logged and returns nothing
 val divide: fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number;
 
-/// return e only if e is an error
+/// return e only if e is an error: a success value gives nothing, as an
+/// arm of `select e { error as e => e, _ => never() }` does
 val filter_err: fn(e: Result<'a, 'b>) -> Error<'b>;
 
 /// return v if f(v) is true, otherwise return nothing

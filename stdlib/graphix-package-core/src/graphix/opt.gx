@@ -23,8 +23,14 @@ let filter = |v: ['a, null], f: fn(x: 'a) -> bool throws 'e| -> ['a, null] throw
     null as _ => null,
     x => select f(x) { true => x, false => null }
 };
-let or_else = |v: ['a, null], f: fn() -> ['a, null] throws 'e| -> ['a, null] throws 'e 'core_opt_or_else;
-let ok_or_else = |v: ['a, null], f: fn() -> 'e throws 'x| -> Result<'a, 'e> throws 'x 'core_opt_ok_or_else;
+let or_else = |v: ['a, null], f: fn() -> ['a, null] throws 'e| -> ['a, null] throws 'e select v {
+    null as _ => f(),
+    x => x
+};
+let ok_or_else = |v: ['a, null], f: fn() -> 'e throws 'x| -> Result<'a, 'e> throws 'x select v {
+    null as _ => error(f()),
+    x => x
+};
 let is_some_and = |v: ['a, null], f: fn(x: 'a) -> bool throws 'e| -> bool throws 'e select v {
     null as _ => false,
     x => f(x)

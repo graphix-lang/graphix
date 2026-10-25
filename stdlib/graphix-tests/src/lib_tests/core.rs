@@ -27,8 +27,8 @@ const FILTER_ERR: &str = r#"
 }
 "#;
 
-// `filter_err` node-walks by rule; the kernel is the array literal's
-// `error("foo")`.
+// `filter_err` answers the error among the elements and nothing for the
+// rest (x-builtin-effects-06).
 run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,

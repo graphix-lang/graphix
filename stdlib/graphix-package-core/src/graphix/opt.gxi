@@ -60,15 +60,13 @@ val flat_map: fn(v: ['a, null], f: fn(x: 'a) -> ['b, null] throws 'e) -> ['b, nu
 val filter: fn(v: ['a, null], f: fn(x: 'a) -> bool throws 'e) -> ['a, null] throws 'e;
 
 /// or_else(v, f): return v if non-null, otherwise return whatever f()
-/// produces. f is invoked eagerly and its latest value is cached so
-/// later updates to v can be resolved without re-invoking f. If v is
-/// null before f has produced its first value, no output is emitted
-/// until f fires.
+/// produces. f runs only while v is null, as an arm of
+/// `select v { null as _ => f(), x => x }` does: it starts at v's first
+/// null, pauses while v is non-null, and resumes at the next null.
 val or_else: fn(v: ['a, null], f: fn() -> ['a, null] throws 'e) -> ['a, null] throws 'e;
 
 /// ok_or_else(v, f): return v if non-null, otherwise return
-/// error(f()). Same eager-with-caching semantics as or_else; null v
-/// before f's first firing is silent until f produces.
+/// error(f()). f runs only while v is null, as for or_else.
 val ok_or_else: fn(v: ['a, null], f: fn() -> 'e throws 'x) -> Result<'a, 'e> throws 'x;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
