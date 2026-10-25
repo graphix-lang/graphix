@@ -190,7 +190,7 @@ impl ReadFormat for Query {
     const TAG: ArcStr = literal!("SqliteError");
     type Args = (Conn, ArcStr, ValArray);
 
-    fn prepare_args(cached: &CachedVals) -> Option<Self::Args> {
+    fn prepare_args(cached: &CachedVals, _exact: bool) -> Option<Self::Args> {
         let conn = conn(cached)?;
         let sql = cached.get::<ArcStr>(1)?;
         let params = cached.get::<ValArray>(2)?;

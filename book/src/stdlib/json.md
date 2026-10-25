@@ -36,6 +36,21 @@ let items: Array<{id: i64, label: string}> = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 ```
 
+### Numbers
+
+A number reads exactly where the target holds an integer or a
+`decimal`: `-9223372036854775809` read as an `i64` is an `InvalidCast`,
+since it does not fit, and `9007199254740993.0` is 9007199254740993, not
+the float nearest it. A float target reads the float nearest the text. A
+read whose target holds neither, `Array<Any>` say, reads every number
+that is not an integer as an `f64`. Where the target holds both kinds, an
+`Any` position may get a `decimal` for a number an `f64` would round.
+
+The reader keeps a number's text by way of serde_json's
+`arbitrary_precision`, which passes a number as an object of one key,
+`$serde_json::private::Number`. An object whose first key is that one
+reads as the number its value names.
+
 ## Type-directed serialization
 
 `json::write_str` and `json::write_bytes` write a value as its type at

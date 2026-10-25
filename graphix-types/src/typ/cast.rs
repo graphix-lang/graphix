@@ -340,6 +340,16 @@ impl Type {
         })
     }
 
+    /// Whether a part of this type reads a number exactly: an integer or
+    /// a decimal, or an abstract type, whose `Cast` reads what it likes.
+    pub fn holds_exact_number(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Primitive(p) => Some(p.intersects(Typ::integer() | Typ::Decimal)),
+            Type::Abstract { .. } => Some(true),
+            _ => None,
+        })
+    }
+
     /// Whether a value of this type can hold a reference, outside a
     /// function or an abstract type, which a cast never takes apart. A
     /// cast refuses such a source: a reference names a cell, it is no
@@ -2244,8 +2254,9 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
 /// number, a number
 /// to a datetime or a duration (an integer target holds it exactly, a
 /// fraction is dropped), a string to what it parses as, a number, bool,
-/// datetime or duration to its plain printed form, and an array of
-/// numbers to bytes. Nothing converts to null or to an error.
+/// datetime or duration to its plain printed form, a decimal to the float
+/// nearest it, and an array of numbers to bytes. Nothing converts to null
+/// or to an error.
 fn convert(v: Value, t: Typ) -> Option<Value> {
     match (&v, t) {
         (_, Typ::Null | Typ::Error) => None,
@@ -2265,6 +2276,12 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
         (_, Typ::String) => printed(&v),
         (_, Typ::DateTime | Typ::Duration) if Typ::get(&v).is_number() => v.cast(t),
         (_, t) if t.is_integer() && counts(&v) => integer(&v, t),
+        (Value::Decimal(d), Typ::F64) => {
+            format_compact!("{d}").parse().ok().map(Value::F64)
+        }
+        (Value::Decimal(d), Typ::F32) => {
+            format_compact!("{d}").parse().ok().map(Value::F32)
+        }
         (_, t) if t.is_number() && counts(&v) => v.cast(t),
         _ => None,
     }

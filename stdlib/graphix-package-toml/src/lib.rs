@@ -155,7 +155,7 @@ impl ReadFormat for Toml {
     const TAG: ArcStr = literal!("TomlErr");
     type Args = ReadInput;
 
-    fn prepare_args(cached: &CachedVals) -> Option<ReadInput> {
+    fn prepare_args(cached: &CachedVals, _exact: bool) -> Option<ReadInput> {
         ReadInput::of(cached)
     }
 

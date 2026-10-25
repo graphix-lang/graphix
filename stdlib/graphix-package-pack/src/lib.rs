@@ -19,7 +19,7 @@ impl ReadFormat for Packed {
     const TAG: ArcStr = literal!("PackErr");
     type Args = Bytes;
 
-    fn prepare_args(cached: &CachedVals) -> Option<Bytes> {
+    fn prepare_args(cached: &CachedVals, _exact: bool) -> Option<Bytes> {
         cached.get::<Bytes>(0)
     }
 

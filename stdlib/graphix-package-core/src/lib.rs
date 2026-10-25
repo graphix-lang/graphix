@@ -121,6 +121,12 @@ impl CastTarget {
         self.0 = extract_cast_type(Some(resolved))
     }
 
+    /// Whether a part of the target reads a number exactly
+    /// (`Type::holds_exact_number`).
+    pub fn holds_exact_number(&self, env: &Env) -> bool {
+        self.0.as_ref().is_some_and(|t| t.holds_exact_number(env))
+    }
+
     /// `v` cast to the target, or as it is when there is none.
     pub fn cast(&self, env: &Env, v: Value) -> Value {
         match &self.0 {
@@ -173,7 +179,10 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
     const TAG: ArcStr;
     type Args: Debug + Any + Send + Sync;
 
-    fn prepare_args(cached: &CachedVals) -> Option<Self::Args>;
+    /// The arguments `parse` takes; `exact` when the target holds a number
+    /// read exactly ([`CastTarget::holds_exact_number`]), which a number
+    /// the format names past a float's precision should reach exactly.
+    fn prepare_args(cached: &CachedVals, exact: bool) -> Option<Self::Args>;
 
     /// The parsed value, or an error tagged `TAG`.
     fn parse(args: Self::Args) -> impl Future<Output = Value> + Send;
@@ -189,12 +198,19 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
 #[derive(Debug)]
 pub struct TypedRead<F> {
     target: CastTarget,
+    exact: bool,
     format: PhantomData<fn() -> F>,
+}
+
+impl<F> TypedRead<F> {
+    fn new(env: &Env, target: CastTarget) -> Self {
+        Self { exact: target.holds_exact_number(env), target, format: PhantomData }
+    }
 }
 
 impl<F> Default for TypedRead<F> {
     fn default() -> Self {
-        Self { target: CastTarget::default(), format: PhantomData }
+        Self { target: CastTarget::default(), exact: false, format: PhantomData }
     }
 }
 
@@ -204,10 +220,10 @@ impl<F> ImageState for TypedRead<F> {
     }
 
     fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
-        Ok(Self { target: CastTarget::decode(buf)?, format: PhantomData })
+        Ok(Self::new(&ctx.env, CastTarget::decode(buf)?))
     }
 }
 
@@ -216,23 +232,24 @@ impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
     type Args = F::Args;
 
     fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        Self { target: CastTarget::of(resolved), format: PhantomData }
+        Self::new(&ctx.env, CastTarget::of(resolved))
     }
 
     fn typecheck1<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
         self.target.refresh(resolved);
+        self.exact = self.target.holds_exact_number(&ctx.env);
         Ok(())
     }
 
@@ -245,7 +262,7 @@ impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        F::prepare_args(cached)
+        F::prepare_args(cached, self.exact)
     }
 
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {

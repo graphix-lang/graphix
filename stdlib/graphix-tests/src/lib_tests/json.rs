@@ -368,6 +368,21 @@ run!(time_map_keys_read_back, r#"{
         == r#"["{\"2020-01-01T00:00:00+00:00\":1}", true, "{\"1.5\":2}", true]"#)
 }; FuseExpect::Jit);
 
+// An integer or decimal target reads a number's text exactly, refusing
+// what does not fit, a float target the float nearest it, and a read with
+// neither an f64 (small-pkgs-02).
+run!(json_number_read_exactly, r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let show = |r: Result<[i64, decimal, f64], E>| select r { error as _ => "refused", v => "[v]" };
+    let a: Result<i64, E> = json::read("-9223372036854775809");
+    let b: Result<i64, E> = json::read("-9223372036854776000");
+    let c: Result<i64, E> = json::read("9007199254740993.0");
+    let d: Result<decimal, E> = json::read("12345678901234567890.123456789");
+    let e: Result<{n: i64, x: f64}, E> = json::read("{\"n\": 1, \"x\": 0.30000000000000000001}");
+    let f: Result<Array<Any>, E> = json::read("\[9007199254740993.5, 0.1\]");
+    (show(a), show(b), show(c), show(d), e$.x, f$)
+}"#, prints(r#"["refused", "refused", "9007199254740993", "12345678901234567890.123456789", f64:0.3, [f64:9007199254740994., f64:0.1]]"#); FuseExpect::Jit);
+
 // A number past f64's range is an error, never a NaN the text never held
 // (x-engine-collections-05).
 run!(json_number_out_of_range, r#"{

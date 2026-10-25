@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-44103f68.js";
+            window.path_to_searchindex_js = "searchindex-f13f22e3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -7377,6 +7377,18 @@ let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 
 let items: Array&lt;{id: i64, label: string}&gt; = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 </code></pre>
+<h3 id="numbers-1"><a class="header" href="#numbers-1">Numbers</a></h3>
+<p>A number reads exactly where the target holds an integer or a
+<code>decimal</code>: <code>-9223372036854775809</code> read as an <code>i64</code> is an <code>InvalidCast</code>,
+since it does not fit, and <code>9007199254740993.0</code> is 9007199254740993, not
+the float nearest it. A float target reads the float nearest the text. A
+read whose target holds neither, <code>Array&lt;Any&gt;</code> say, reads every number
+that is not an integer as an <code>f64</code>. Where the target holds both kinds, an
+<code>Any</code> position may get a <code>decimal</code> for a number an <code>f64</code> would round.</p>
+<p>The reader keeps a number’s text by way of serde_json’s
+<code>arbitrary_precision</code>, which passes a number as an object of one key,
+<code>$serde_json::private::Number</code>. An object whose first key is that one
+reads as the number its value names.</p>
 <h2 id="type-directed-serialization"><a class="header" href="#type-directed-serialization">Type-directed serialization</a></h2>
 <p><code>json::write_str</code> and <code>json::write_bytes</code> write a value as its type at
 the call site says: a struct or a <code>Map</code> is an object; an array, a tuple

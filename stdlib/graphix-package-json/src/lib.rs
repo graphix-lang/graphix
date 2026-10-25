@@ -6,7 +6,7 @@ use ahash::AHashSet;
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     env::Env,
     errf,
@@ -18,21 +18,40 @@ use graphix_package_core::{
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, SeqAccess, Visitor},
+    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
     ser::{Error as _, SerializeMap, SerializeSeq},
 };
 use std::fmt;
 
 /// A JSON document read straight into a graphix value: a number is the
-/// first of i64, u64 and f64 that holds it, and an object an array of
-/// `[key, value]` pairs sorted by key, a repeated key's last value kept.
-struct JsonValue(Value);
+/// first of i64 and u64 that holds it, else as [`number`] says, and an
+/// object an array of `[key, value]` pairs sorted by key, a repeated key's
+/// last value kept.
+#[derive(Clone, Copy)]
+struct JsonValue {
+    exact: bool,
+}
 
-impl<'de> Deserialize<'de> for JsonValue {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        d.deserialize_any(JsonVisitor).map(JsonValue)
+impl JsonValue {
+    /// The one document `de` holds, nothing after it.
+    fn read<'de, R: serde_json::de::Read<'de>>(
+        self,
+        mut de: serde_json::Deserializer<R>,
+    ) -> serde_json::Result<Value> {
+        let v = self.deserialize(&mut de)?;
+        de.end()?;
+        Ok(v)
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for JsonValue {
+    type Value = Value;
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+        d.deserialize_any(self)
     }
 }
 
@@ -60,33 +79,35 @@ impl<'de> Deserialize<'de> for JsonKey {
 /// The key serde_json's arbitrary_precision passes a number under.
 const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
-/// A number as the first of i64, u64 and f64 that holds it, `None` past
-/// f64's range.
-// CR claude for claude: [bug/medium] Every number that is not an i64 or u64 becomes an
-// f64 here, before the target cast sees it. The exact text is in hand
-// (arbitrary_precision is on through rust_decimal), but the rounding still decides the
-// answer. json::read("-9223372036854775809") as i64 is -9223372036854775808 instead of
-// an InvalidCast, "9007199254740993.0" as i64 is 9007199254740992, and
-// "12345678901234567890.123456789" as decimal is 12345678901234567168. Proposed: use
-// F64 only when the f64 names the text exactly, else Value::Decimal when Decimal holds
-// it exactly, else F64. Then an integer target refuses what does not fit and a decimal
-// target reads exactly. The JsonValue doc ("the first of i64, u64 and f64 that holds
-// it") says the same. Needs your ruling on untyped readers seeing a decimal. probe:
-// design/review-2026-10-19/repro/small-pkgs-json-number-via-f64.gx (small-pkgs-02)
-// 2026-10-24 claude: Eric ruled (2026-10-24): untyped reads stay f64; an integer or
-// decimal target reads the exact text and refuses what does not fit; document the
-// arbitrary_precision token object rather than scan for it.
-fn number(n: serde_json::Number) -> Option<Value> {
-    match (n.as_i64(), n.as_u64()) {
-        (Some(i), _) => Some(Value::I64(i)),
-        (None, Some(u)) => Some(Value::U64(u)),
-        (None, None) => n.as_f64().map(Value::F64),
+/// A number past i64 and u64: an f64, or, when `exact`, a decimal where
+/// the f64 does not read back as the text and a decimal holds it, so an
+/// integer target refuses what does not fit and a decimal target reads it
+/// whole. `None` past f64's range.
+fn number(n: &serde_json::Number, exact: bool) -> Option<Value> {
+    let f = n.as_f64()?;
+    let text = n.as_str();
+    let d = match exact {
+        false => None,
+        true => {
+            Decimal::from_str_exact(text).or_else(|_| Decimal::from_scientific(text)).ok()
+        }
+    };
+    Some(match d {
+        Some(d) if !reads_back(f, &d) => Value::Decimal(d.into()),
+        _ => Value::F64(f),
+    })
+}
+
+/// Whether `f` reads back as `d`: `d` itself when it is a whole number,
+/// else in its shortest form.
+fn reads_back(f: f64, d: &Decimal) -> bool {
+    match d.fract().is_zero() {
+        true => d.to_i128() == Some(f as i128),
+        false => Decimal::from_str_exact(&format_compact!("{f}")).is_ok_and(|s| s == *d),
     }
 }
 
-struct JsonVisitor;
-
-impl<'de> Visitor<'de> for JsonVisitor {
+impl<'de> Visitor<'de> for JsonValue {
     type Value = Value;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -119,7 +140,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
         let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        while let Some(JsonValue(v)) = a.next_element()? {
+        while let Some(v) = a.next_element_seed(self)? {
             vals.push(v)
         }
         Ok(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
@@ -128,26 +149,20 @@ impl<'de> Visitor<'de> for JsonVisitor {
     fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
         let mut pairs: LPooled<Vec<(ArcStr, Value)>> = LPooled::take();
         while let Some(JsonKey(k)) = a.next_key()? {
-            // serde_json's arbitrary_precision (on wherever a crate in the
-            // build asks for it) hands a number over as a one-entry map
-            // CR claude for claude: [bug/low] A real object whose first key is the token
-            // reads as a number: {"$serde_json::private::Number": "123"} is 123 as i64
-            // and an InvalidCast as Map<string, string>. arbitrary_precision is on only
-            // because rust_decimal's serde-with-arbitrary-precision unifies it into the
-            // build. Decide whether to keep it (and the exact number text it gives
-            // `number`) and document the ambiguity, or to drop it. probe:
-            // design/review-2026-10-19/repro/small-pkgs-json-number-token.gx
-            // (small-pkgs-07)
-            // 2026-10-24 claude: Eric ruled (2026-10-24): untyped reads stay f64; an
-            // integer or decimal target reads the exact text and refuses what does not
-            // fit; document the arbitrary_precision token object rather than scan for
-            // it.
+            // arbitrary_precision hands a number over as a one-entry map
+            // under NUMBER_TOKEN, so an object whose first key is it reads as
+            // a number
             if pairs.is_empty() && &*k == NUMBER_TOKEN {
                 let n: CompactString = a.next_value()?;
                 let n = n.parse::<serde_json::Number>().map_err(de::Error::custom)?;
-                return number(n).ok_or_else(|| de::Error::custom("number out of range"));
+                return match (n.as_i64(), n.as_u64()) {
+                    (Some(i), _) => Ok(Value::I64(i)),
+                    (None, Some(u)) => Ok(Value::U64(u)),
+                    (None, None) => number(&n, self.exact)
+                        .ok_or_else(|| de::Error::custom("number out of range")),
+                };
             }
-            let JsonValue(v) = a.next_value()?;
+            let v = a.next_value_seed(self)?;
             pairs.push((k, v))
         }
         // stable, so of a repeated key's pairs the last written is last
@@ -271,20 +286,21 @@ struct Json;
 impl ReadFormat for Json {
     const NAME: &str = "json_read";
     const TAG: ArcStr = literal!("JsonErr");
-    type Args = ReadInput;
+    type Args = (ReadInput, bool);
 
-    fn prepare_args(cached: &CachedVals) -> Option<ReadInput> {
-        ReadInput::of(cached)
+    fn prepare_args(cached: &CachedVals, exact: bool) -> Option<(ReadInput, bool)> {
+        Some((ReadInput::of(cached)?, exact))
     }
 
-    fn parse(input: ReadInput) -> impl Future<Output = Value> + Send {
+    fn parse((input, exact): (ReadInput, bool)) -> impl Future<Output = Value> + Send {
         async move {
+            let seed = JsonValue { exact };
             let json = match &input {
-                ReadInput::Str(s) => serde_json::from_str::<JsonValue>(s),
-                ReadInput::Bytes(b) => serde_json::from_slice::<JsonValue>(b),
+                ReadInput::Str(s) => seed.read(serde_json::Deserializer::from_str(s)),
+                ReadInput::Bytes(b) => seed.read(serde_json::Deserializer::from_slice(b)),
             };
             match json {
-                Ok(JsonValue(v)) => v,
+                Ok(v) => v,
                 Err(e) => errf!(Self::TAG, "{e}"),
             }
         }
