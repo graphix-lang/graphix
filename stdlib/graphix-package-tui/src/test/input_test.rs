@@ -47,6 +47,51 @@ let result = input_handler(#handle: &outer, &input_handler(#handle: &inner, &tex
     Ok(())
 }
 
+/// A disabled handler steps aside: its child, nested handlers included,
+/// gets every event until it is enabled again (tests-tui-03, tui-core-07).
+#[tokio::test]
+async fn a_disabled_handler_steps_aside() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::input_handler::{self, *};
+use tui::text::text;
+let on = true;
+let outer_hits = 0;
+let inner_hits = 0;
+let outer = |e: Event| -> [`Stop, `Continue] on_press(e, |k| select k.code {
+  kk@ `Char("d") => { on <- kk ~ false; `Stop },
+  kk => { outer_hits <- (kk ~ outer_hits) + 1; `Stop }
+});
+let inner = |e: Event| -> [`Stop, `Continue] on_press(e, |k| select k.code {
+  kk@ `Char("e") => { on <- kk ~ true; `Stop },
+  kk => { inner_hits <- (kk ~ inner_hits) + 1; `Stop }
+});
+let result = input_handler(
+  #enabled: &on,
+  #handle: &outer,
+  &input_handler(#handle: &inner, &text(&"x"))
+)
+"#,
+    )
+    .await?;
+    h.watch("test::outer_hits").await?;
+    h.watch("test::inner_hits").await?;
+    h.watch("test::on").await?;
+    h.dispatch_event(ch('a')).await?;
+    assert_eq!(h.get_watched("test::outer_hits"), Some(&Value::I64(1)));
+    h.dispatch_event(ch('d')).await?;
+    assert_eq!(h.get_watched("test::on"), Some(&Value::Bool(false)));
+    h.dispatch_event(ch('b')).await?;
+    assert_eq!(h.get_watched("test::inner_hits"), Some(&Value::I64(1)));
+    assert_eq!(h.get_watched("test::outer_hits"), Some(&Value::I64(1)));
+    h.dispatch_event(ch('e')).await?;
+    assert_eq!(h.get_watched("test::on"), Some(&Value::Bool(true)));
+    h.dispatch_event(ch('z')).await?;
+    assert_eq!(h.get_watched("test::outer_hits"), Some(&Value::I64(2)));
+    assert_eq!(h.get_watched("test::inner_hits"), Some(&Value::I64(1)));
+    Ok(())
+}
+
 /// A handler replaced while a call is out goes on taking events.
 #[tokio::test]
 async fn a_handler_swapped_mid_call_keeps_working() -> Result<()> {

@@ -158,9 +158,9 @@ the select chapter's "Writing From an Arm" spells out why.
 ### Conditional Handling
 
 The `#enabled` parameter turns a handler on and off. A disabled handler
-drops every event: neither it nor anything it wraps, nested handlers
-included, sees one. So it gates a whole subtree, and whatever enables it
-must sit outside it:
+steps aside: what it wraps, nested handlers included, gets every event
+as though it were not there. Here the editing keys are a layer that is
+present only while editing:
 
 ```graphix
 {{#include ../../examples/tui/input_conditional.gx}}

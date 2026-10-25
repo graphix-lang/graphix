@@ -151,8 +151,8 @@ type InputHandler = {
 /// An event the handler does not answer in the cycle it was given (its
 /// call produced nothing) goes nowhere. The handler is called from the
 /// display, outside any `catch`, so it may not raise. While `#enabled`
-/// is false, events are dropped: neither the handler nor `child` (nor
-/// any handler under it) sees them.
+/// is false the handler steps aside: `child` gets every event, in order
+/// behind any the handler was given before.
 val input_handler: fn(
   ?#enabled: &[bool, null],
   #handle: &fn(e: Event) -> [`Stop, `Continue],

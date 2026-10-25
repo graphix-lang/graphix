@@ -376,8 +376,27 @@ impl<X: GXExt> InputHandlerW<X> {
         Ok(TuiW::new(t))
     }
 
+    fn enabled(&self) -> bool {
+        self.p.enabled.t.flatten().unwrap_or(true)
+    }
+
+    /// Hand the queued events on in order, behind the one in flight: to
+    /// the handler one at a time, or, while it is disabled, to the child.
     async fn send_next(&mut self) -> Result<()> {
+        while self.in_flight.is_none()
+            && !self.enabled()
+            && let Some(v) = self.queued.pop_front()
+        {
+            self.child.w.handle_event(v).await?
+        }
+        self.send_to_handler()
+    }
+
+    /// Give the handler the oldest queued event, when it is enabled and has
+    /// none in flight.
+    fn send_to_handler(&mut self) -> Result<()> {
         if self.in_flight.is_none()
+            && self.enabled()
             && let Some(h) = &self.handle
             && let Some(v) = self.queued.pop_front()
         {
@@ -390,7 +409,7 @@ impl<X: GXExt> InputHandlerW<X> {
 
     async fn set_handle(&mut self, v: Value) -> Result<()> {
         self.gx.update_callable(&mut self.handle, &v).await?;
-        self.send_next().await
+        self.send_to_handler()
     }
 
     /// The handler's answer to the event in flight: the child sees the
@@ -410,44 +429,12 @@ impl<X: GXExt> InputHandlerW<X> {
 #[async_trait]
 impl<X: GXExt> TuiWidget for InputHandlerW<X> {
     async fn handle_event(&mut self, v: Value) -> Result<()> {
-        // CR claude for claude: [risk/medium] A disabled handler drops every event here:
-        // nothing is queued and nothing goes to `self.child`, so the child and every
-        // input_handler nested under it are cut off while it is disabled.
-        // input_handler.gxi does not document `#enabled`. The book's Conditional
-        // Handling section only says a handler can be enabled or disabled, which reads
-        // as 'the handler steps aside'. Decide which it is. For bypass, forward to
-        // `self.child.w.handle_event(v)` when disabled. Either way, document `#enabled`
-        // in the val's doc and add an input_test case that pins it: a disabled outer
-        // handler over a counting inner one, plus a flip to false while events are
-        // queued, which `handle_update` clears. (tests-tui-03)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): steps aside: a disabled handler
-        // forwards events to its child.
-        // CR claude for claude: [bug/low] When `#enabled` is false this drops the event
-        // rather than handing it to `self.child`. A disabled handler therefore cuts off
-        // every widget and nested input_handler below it, not just itself. For example,
-        // a modal key layer `input_handler(#enabled: &modal_open, ..., &app)` blocks
-        // all keys to `app` while the modal is closed. The book's "Conditional
-        // Handling" section calls this enabling or disabling "the handler", which reads
-        // as transparent. input_handler.gxi does not document `#enabled`, and no test
-        // covers it. Decide which rule is intended: transparent (forward to
-        // `self.child.w.handle_event` when disabled) or blocks the subtree. Then
-        // document it in input_handler.gxi and pin it with a TuiTestHarness test. The
-        // book's signature is also stale (`throws 'e`, parameter `a`) and should match
-        // the gxi. (tui-core-07)
-        // 2026-10-13 claude: input_handler.gxi and the book's Conditional Handling now
-        // document the rule as built (a disabled handler drops events for its whole
-        // subtree); change both if the ruling is bypass.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): steps aside: a disabled handler
-        // forwards events to its child.
-        if self.p.enabled.t.flatten().unwrap_or(true) {
-            if self.queued.len() < MAX_QUEUED {
-                self.queued.push_back(v);
-            } else {
-                debug!("the handler is behind; dropped {v}")
-            }
-            self.send_next().await?
+        if self.queued.len() < MAX_QUEUED {
+            self.queued.push_back(v);
+        } else {
+            debug!("the handler is behind; dropped {v}")
         }
-        Ok(())
+        self.send_next().await
     }
 
     fn handle_update<'a>(
@@ -455,8 +442,11 @@ impl<X: GXExt> TuiWidget for InputHandlerW<X> {
         id: ExprId,
         v: &'a Value,
     ) -> Result<crate::PendingUpdate<'a>> {
-        if let Some(Some(false)) = self.p.enabled.update(id, v).context("enabled")? {
-            self.queued.clear();
+        if self.p.enabled.update(id, v).context("enabled")?.is_some() {
+            return Ok(Some(Box::pin(async move {
+                self.send_next().await?;
+                finish_update(self.child.update(&self.gx, id, v)?).await
+            })));
         }
         if let Some((answer, _)) = &self.in_flight
             && *answer == id
