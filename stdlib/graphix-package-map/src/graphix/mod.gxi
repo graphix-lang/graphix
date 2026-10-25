@@ -10,7 +10,7 @@ val filter: fn(m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> bool throws 'e) -> Map<'k,
 /// filter_map returns a new map containing the outputs of f
 /// that were not null; when two outputs share a key, the
 /// later one's value wins
-val filter_map: fn<'k2: Ordered>(m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> Option<('k2, 'v2)> throws 'e) -> Map<'k2, 'v2> throws 'e;
+val filter_map: fn<'k2: Ordered>(m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> [('k2, 'v2), null, `Keep(('k2, 'v2))] throws 'e) -> Map<'k2, 'v2> throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)

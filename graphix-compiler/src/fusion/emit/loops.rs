@@ -126,6 +126,15 @@ fn is_unit_or_null(typ: &Type) -> bool {
 
 /// Whether a frozen type admits `null`, filter_map's drop marker.
 /// An unknown shape answers true, so the caller keeps interpreting.
+/// Whether a filter_map callback's result type may be `Keep(..)`.
+fn holds_keep(t: &Type) -> bool {
+    t.with_deref(|t| match t {
+        Some(Type::Variant(tag, _, _)) => &**tag == "Keep",
+        Some(Type::Set(ms)) => ms.iter().any(holds_keep),
+        _ => false,
+    })
+}
+
 fn frozen_may_be_null(t: &Type) -> bool {
     t.with_deref(|t| match t {
         Some(Type::Primitive(p)) => p.contains(Typ::Null),
@@ -347,6 +356,10 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
+    // a callback that may keep with `Keep node-walks: the loop unwraps nothing
+    if holds_keep(&output_type) {
+        return Ok(None);
+    }
     let Some(output_element) = kernel_abi::nullable_inner(&output_type) else {
         // A callback that can never return null makes filter_map a map.
         if frozen_may_be_null(&output_type) {

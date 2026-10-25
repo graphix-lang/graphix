@@ -937,7 +937,9 @@ cycle, across workers; the compiler never pins threads.
   the statement's settle reads as any type it may yet bind
   (`PendingSettle::Discernible`, `design/tvar_constraints.md`).
   `flat_map`'s callback returns the collection (`fn(x: 'a) ->
-  Array<'b>`), so nothing splices by shape.
+  Array<'b>`), so nothing splices by shape; `filter_map`'s returns
+  `['b, null, `Keep('b)]`: null drops an element, `` `Keep(v) `` keeps
+  `v`, null included (a callback that may return `Keep` node-walks).
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
   inferred predicate a capture is a type variable that
   `PatternNode::bind_narrowed` binds, after the select narrows the arm,

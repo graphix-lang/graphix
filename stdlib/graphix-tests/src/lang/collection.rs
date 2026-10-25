@@ -118,9 +118,13 @@ run!(
             `N => acc,
             `C(x, rest) => fold_l(rest, f(acc, x), f)
         };
-        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> L<'b> throws 'e select l {
+        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e| -> L<'b> throws 'e select l {
             `N => `N,
-            `C(x, rest) => select f(x) { null as _ => filter_map_l(rest, f), y => `C(y, filter_map_l(rest, f)) }
+            `C(x, rest) => select f(x) {
+                null as _ => filter_map_l(rest, f),
+                `Keep(y) => `C(y, filter_map_l(rest, f)),
+                y => `C(y, filter_map_l(rest, f))
+            }
         };
         let rec append_l = |a: L<'a>, b: L<'a>| -> L<'a> select a { `N => b, `C(x, rest) => `C(x, append_l(rest, b)) };
         let rec flat_map_l = |l: L<'a>, f: fn(x: 'a) -> L<'b> throws 'e| -> L<'b> throws 'e select l {
@@ -573,4 +577,48 @@ modes!(
     collection_refs_reach_its_slots,
     bottom_source_runs_no_slot,
     bottom_source_slots_wake_caught_up
+);
+
+// filter_map drops an element on null and keeps `Keep(v), null included,
+// so the derived map and filter of a program-defined collection keep its
+// null elements.
+run!(
+    filter_map_keeps_with_keep,
+    prints("[[i64:1, null, i64:3], [i64:1, i64:3], i64:3, i64:3, i64:2]"),
+    "/test.gx" => r#"
+        type L<'a> = [`C('a, L<'a>), `N];
+        let rec fold_l = |l: L<'a>, acc: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e select l {
+            `N => acc,
+            `C(x, rest) => fold_l(rest, f(acc, x), f)
+        };
+        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e| -> L<'b> throws 'e select l {
+            `N => `N,
+            `C(x, rest) => select f(x) {
+                null as _ => filter_map_l(rest, f),
+                `Keep(y) => `C(y, filter_map_l(rest, f)),
+                y => `C(y, filter_map_l(rest, f))
+            }
+        };
+        let rec append_l = |a: L<'a>, b: L<'a>| -> L<'a> select a { `N => b, `C(x, rest) => `C(x, append_l(rest, b)) };
+        let rec flat_map_l = |l: L<'a>, f: fn(x: 'a) -> L<'b> throws 'e| -> L<'b> throws 'e select l {
+            `N => `N,
+            `C(x, rest) => append_l(f(x), flat_map_l(rest, f))
+        };
+        impl Collection for L<'_> {
+            let fold = |l, init, f| fold_l(l, init, f);
+            let filter_map = |l, f| filter_map_l(l, f);
+            let flat_map = |l, f| flat_map_l(l, f)
+        };
+        let a: Array<[i64, null]> = [1, null, 3];
+        let ln: L<[i64, null]> = `C(1, `C(null, `C(3, `N)));
+        let m: Map<string, [i64, null]> = {"a" => 1, "b" => null};
+        let result = [
+            cast<Any>(array::filter_map(a, |x| `Keep(x)))$,
+            cast<Any>(array::filter_map(a, |x| x))$,
+            cast<Any>(Collection::len(Collection::map(ln, |x| x)))$,
+            cast<Any>(Collection::len(Collection::filter(ln, |x| true)))$,
+            cast<Any>(map::len(map::filter_map(m, |(k, v)| `Keep((k, v)))))$
+        ]
+    "#;
+    FuseExpect::Jit
 );

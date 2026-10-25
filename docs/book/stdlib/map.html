@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b89a3109.js";
+            window.path_to_searchindex_js = "../searchindex-44103f68.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -187,7 +187,7 @@ val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; bool throws 'e) -
 /// filter_map returns a new map containing the outputs of f
 /// that were not null; when two outputs share a key, the
 /// later one's value wins
-val filter_map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val filter_map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; [('k2, 'v2), null, `Keep(('k2, 'v2))] throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)

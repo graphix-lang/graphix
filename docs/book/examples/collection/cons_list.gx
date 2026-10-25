@@ -13,12 +13,13 @@ let rec fold_l = |l: L<'a>, acc: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e|
         `C(x, rest) => fold_l(rest, f(acc, x), f)
     };
 
-let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> Option<'b> throws 'e|
+let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e|
     -> L<'b> throws 'e
     select l {
         `N => `N,
         `C(x, rest) => select f(x) {
             null as _ => filter_map_l(rest, f),
+            `Keep(y) => `C(y, filter_map_l(rest, f)),
             y => `C(y, filter_map_l(rest, f))
         }
     };

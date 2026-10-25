@@ -830,9 +830,16 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
         let mut elems: LPooled<Vec<Value>> = match self.op {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
             MapOp::Filter => return source.kept(self.flavor, slots.iter().map(taken)),
-            MapOp::FilterMap => {
-                slots.iter().map(Slot::value).filter(kept).cloned().collect()
-            }
+            // null drops an element, `Keep(v) keeps v, null included
+            MapOp::FilterMap => slots
+                .iter()
+                .map(Slot::value)
+                .filter(kept)
+                .map(|v| match crate::rep::variant(v) {
+                    Some((tag, [kept])) if &**tag == "Keep" => kept.clone(),
+                    _ => v.clone(),
+                })
+                .collect(),
             MapOp::FlatMap => {
                 let mut elems = LPooled::take();
                 for s in slots {

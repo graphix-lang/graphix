@@ -9,7 +9,7 @@ let iterq = |#clock: Any, m: Map<'a, 'b>| -> ('a, 'b) 'map_iterq;
 
 let map = 'c: Ordered |m: Map<'a, 'b>, f: fn(kv: ('a, 'b)) -> ('c, 'd) throws 'e| -> Map<'c, 'd> throws 'e 'map_map;
 let filter = |m: Map<'a, 'b>, f: fn(kv: ('a, 'b)) -> bool throws 'e| -> Map<'a, 'b> throws 'e 'map_filter;
-let filter_map = 'c: Ordered |m: Map<'a, 'b>, f: fn(kv: ('a, 'b)) -> Option<('c, 'd)> throws 'e| -> Map<'c, 'd> throws 'e 'map_filter_map;
+let filter_map = 'c: Ordered |m: Map<'a, 'b>, f: fn(kv: ('a, 'b)) -> [('c, 'd), null, `Keep(('c, 'd))] throws 'e| -> Map<'c, 'd> throws 'e 'map_filter_map;
 let fold = |m: Map<'a, 'b>, init: 'c, f: fn(acc: 'c, kv: ('a, 'b)) -> 'c throws 'e| -> 'c throws 'e 'map_fold;
 
 let change = 'a: Ordered |m: Map<'a, 'b>, k: 'a, default: 'b, f: fn(v: 'b) -> 'b throws 'e| -> Map<'a, 'b> throws 'e

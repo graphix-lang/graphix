@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b89a3109.js";
+            window.path_to_searchindex_js = "../searchindex-44103f68.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -180,7 +180,7 @@ val filter: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Arra
 
 /// filter_map returns a new array containing the outputs of f
 /// that were not null
-val filter_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+val filter_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, null, `Keep('b)] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// return a new array where each element is the output of f applied to the
 /// corresponding element in a
