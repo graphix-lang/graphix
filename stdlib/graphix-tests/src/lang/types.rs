@@ -2010,6 +2010,19 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
     _ => false,
 });
 
+// A variable an abstract type, a type application or a reference holds is
+// fixed exactly there, so that argument is checked first, whatever the
+// order the call writes: "aa" fits the Bx's [string, i64] written after it
+// (http-sqlite-db1-08).
+run!(an_invariant_argument_decides_first, r#"{
+  type Bx<'a> = Abstract<Array<'a>>;
+  let f = |k: 'a, b: Bx<'a>| -> i64 1;
+  let g = |#k: 'a, r: &['a, null]| -> i64 2;
+  let b: Bx<[string, i64]> = Bx(["x"]);
+  let o: [string, i64, null] = null;
+  (f("aa", b), g(#k: "aa", &o))
+}"#, prints("[i64:1, i64:2]"); FuseExpect::Jit);
+
 // Mixed sets compare by == like any union, numeric ones included: values
 // of two numeric types are never equal.
 const COMPARISON_MIXED: &str = r#"{

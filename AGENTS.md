@@ -866,8 +866,10 @@ node graph IS the IR — there is no parallel typed IR
   type the instance runs with, and only where a fn type hides the
   label against the callee's parameter; a call's type variable that only data positions hold (never a
   function or a reference) settles to the widest argument whatever
-  the order, one a callback or a reference holds to the first
-  (`callsite.rs::Widening`); a formal with its own quantifiers (`f: fn<'b: C>(..)`) is
+  the order, one a callback holds to the first, and one an abstract
+  type, a type application or a reference holds is fixed there, those
+  arguments checked first whatever the order the call writes
+  (`callsite.rs::Widening`, `holds_invariantly`); a formal with its own quantifiers (`f: fn<'b: C>(..)`) is
   rank-2: its argument is checked with `'b` rigid and held to exactly
   its declared bounds, predicates included (`fn<'b: Number>` takes no
   `|x| x * x`: declare `Number + Singleton`), a call copies `'b`

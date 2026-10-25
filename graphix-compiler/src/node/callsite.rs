@@ -827,22 +827,6 @@ pub(crate) fn carried_out(
 /// Every type variable under `t` by name, with whether each occurrence
 /// is data: never under a function, a reference, a typedef application,
 /// a nominal type or a constructor application. Bindings are walked.
-// CR claude for claude: [bug/medium] A variable held under an abstract type, a typedef
-// application or a reference is not widenable, so the first argument checked fixes it.
-// Labeled arguments are always checked first, and the syntax forces them before
-// positional ones. As a result, `db::cursor::new(#prefix: "aa", t)` with `t:
-// db::Tree<[string, i64], i64>` is refused (`Tree<'k: string, ..> does not contain
-// ..`), while `db::get(t, "aa")` checks. `cursor::range` and `subscription::new` fail
-// the same way, and the caller has no way to reorder. An invariant position fixes the
-// variable exactly, so checking the arguments that hold a variable invariantly before
-// the ones that hold it as data would accept these calls whatever the order. CLAUDE.md
-// names only functions and references as "holds to the first". Either that rule extends
-// to nominal types and applications, or the check order changes. Separately, the
-// mismatch prints the opaque tree as `<abstract#id>` instead of `Tree<..>`. probe:
-// design/review-2026-10-12/repro/http-sqlite-db1-08.gx (http-sqlite-db1-08)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Check the arguments that hold a variable invariantly first, so call order stops
-// deciding; print abstract types by name in the mismatch.
 fn data_positions(
     t: &Type,
     data: bool,
@@ -866,6 +850,28 @@ fn data_positions(
         | Type::Abstract { .. }
         | Type::App(..) => t.for_each_child(&mut |c| data_positions(c, false, seen, out)),
         t => t.for_each_child(&mut |c| data_positions(c, data, seen, out)),
+    })
+}
+
+/// Whether `t` holds a type variable under an abstract type, a type
+/// application or a reference, outside any function type: such a position
+/// fixes the variable exactly, so its argument is checked first and the
+/// order a call writes its arguments in decides nothing. A function's
+/// positions stay in order: an earlier argument types a callback's.
+fn holds_invariantly(t: &Type) -> bool {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => tv.binding().is_some_and(|b| holds_invariantly(&b)),
+        Type::Fn(_) => false,
+        Type::Abstract { .. } | Type::App(..) | Type::Ref(_) | Type::ByRef(..) => {
+            let mut tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            t.collect_tvars(&mut tvars);
+            !tvars.is_empty()
+        }
+        t => {
+            let mut any = false;
+            t.for_each_child(&mut |c| any = any || holds_invariantly(c));
+            any
+        }
     })
 }
 
@@ -3205,7 +3211,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         };
         let mut widening = Widening::new(fresh);
-        for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
+        let mut formals: SmallVec<[_; 8]> =
+            ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)).collect();
+        formals.sort_by_key(|(farg, _)| !holds_invariantly(&farg.typ));
+        for (farg, key) in formals {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
                 let waits = widening.waits(self.fnode.typ(), ftype, &farg.typ);
                 let hint = widening.hint(self.fnode.typ(), ftype, &farg.typ);
