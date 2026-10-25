@@ -529,3 +529,30 @@ modes!(
     slot_catches_complete_the_step,
     slept_catch_in_flight
 );
+
+/// A type error in a seq step is told at the step as written, under no
+/// frame of the machine its lowering built and with none of the names that
+/// lowering bound (tests-seq-08, x-errors-04).
+#[tokio::test(flavor = "current_thread")]
+async fn a_step_error_names_nothing_lowered() -> Result<()> {
+    for (src, step) in [
+        (
+            r#"{ let go = 1; seq go { let a = go + 1; let x = a + "s"; x } }"#,
+            r#"in: a + "s""#,
+        ),
+        (
+            "{ let go = true; seq go { until 5; 1 } }",
+            "type mismatch bool does not contain i64",
+        ),
+    ] {
+        match graphix_package_core::testing::eval_modes(src, crate::TEST_REGISTER).await?
+        {
+            Err(msg) => assert!(
+                msg.contains(step) && !msg.contains("#seq") && !msg.contains("machine"),
+                "{src}: {msg}"
+            ),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}

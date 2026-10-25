@@ -191,20 +191,17 @@ pub enum Containment {
 
 /// Strip the counters fresh names carry, so drift between two independent
 /// compiles neither hides nor fakes a diagnostic difference: tvar numbers
-/// (`'_6070` -> `'_N`), ids after a `#` (`<abstract#12>`, the block scopes
-/// `#do123`, `#fn45`) and the seq lowering's names (`seqv4611_1` ->
-/// `seqvN_1`, `seqpc12` -> `seqpcN`).
+/// (`'_6070` -> `'_N`) and ids after a `#` (`<abstract#12>`, the block
+/// scopes `#do123`, `#fn45`, the names a lowering binds, `#seqv4611_1` ->
+/// `#seqvN_1`).
 fn normalize_diag(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let (mut i, mut flushed) = (0, 0);
     while i < b.len() {
-        let word_start =
-            i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
         let head = match b[i] {
             b'#' => 1,
             b'\'' if b.get(i + 1) == Some(&b'_') => 2,
-            b's' if word_start && s[i..].starts_with("seq") => 3,
             _ => 0,
         };
         if head > 0 {
@@ -5699,8 +5696,8 @@ mod tests {
     fn normalize_diag_strips_fresh_counters() {
         let n = normalize_diag;
         assert_eq!(
-            n("`let [h, ..] = seqv4611686018427390_1` in seqpc12"),
-            "`let [h, ..] = seqvN_1` in seqpcN"
+            n("`let [h, ..] = #seqv4611686018427390_1` in #seqpc12"),
+            "`let [h, ..] = #seqvN_1` in #seqpcN"
         );
         assert_eq!(n("'_6070 <abstract#12> #do123 #fn45"), "'_N <abstract#N> #doN #fnN");
         assert_eq!(n("myseqv12 seq x2 'a1 s3"), "myseqv12 seq x2 'a1 s3");

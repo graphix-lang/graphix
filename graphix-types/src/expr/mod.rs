@@ -1292,6 +1292,47 @@ impl PartialEq for Expr {
 }
 
 impl Expr {
+    /// Whether a lowering built this expression: it binds or writes a
+    /// lowered name ([`crate::is_lowered`]), it is of a kind only the
+    /// compiler builds, or it is a block that opens with one of those.
+    pub fn is_lowered(&self) -> bool {
+        match &self.kind {
+            ExprKind::Bind(b) => {
+                let mut lowered = false;
+                b.pattern.with_names(&mut |n| lowered |= crate::is_lowered(n));
+                lowered
+            }
+            ExprKind::Connect { name, .. } => {
+                Path::basename(&name.0).is_some_and(crate::is_lowered)
+            }
+            ExprKind::SeqMachine(_)
+            | ExprKind::SeqGuard(_)
+            | ExprKind::SeqAbort(_)
+            | ExprKind::SeqCapture(_)
+            | ExprKind::Rethrow(_) => true,
+            ExprKind::Block { exprs } => exprs.first().is_some_and(Expr::is_lowered),
+            _ => false,
+        }
+    }
+
+    /// Whether a lowered name is read, bound or written anywhere in this
+    /// expression.
+    pub fn mentions_lowered(&self) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            let here = match &self.kind {
+                ExprKind::Ref { name } => {
+                    Path::basename(&name.0).is_some_and(crate::is_lowered)
+                }
+                _ => self.is_lowered(),
+            };
+            let mut found = here;
+            if !found {
+                self.for_each_child(&mut |c| found = found || c.mentions_lowered());
+            }
+            found
+        })
+    }
+
     /// The value this expression writes when it is a literal: a constant,
     /// or an array, list, map, tuple, struct or variant of literals.
     pub fn literal_value(&self) -> Option<Value> {

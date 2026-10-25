@@ -36,7 +36,10 @@ change to values that produce a valid result.
 
 Checked operators return a union type `[T, Error<`ArithError(string)>]`,
 allowing you to handle arithmetic errors explicitly using `?`, `$`, or
-`select`.
+`select`. The error names its cause: an integer or decimal overflow, a
+zero divisor. Floats follow IEEE 754, so a checked float operator never
+fails: `1.0 /? 0.0` is infinity and `0.0 %? 0.0` is NaN. They stay legal on
+floats so that generic code can use them over any number.
 
 Mixing two numeric types is refused at compile time; cast one side:
 

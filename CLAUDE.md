@@ -694,7 +694,8 @@ node graph IS the IR — there is no parallel typed IR
   all of them when none are left or what is left refuses it); a free union member stays free (a type test over an
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able; checked arith
-  (`+?` …) yields a catchable `ArithError` naming its cause, unchecked
+  (`+?` …) yields a catchable `ArithError` naming its cause, except
+  over floats, which follow IEEE and never fail (inf, NaN), unchecked
   `+ - *` wrap, integer div0 and `MIN / -1` bottom, `x % -1` is 0; indexing is bounds-checked through shared helpers on
   both backends; `$` and handler-less `?` log a swallowed error from
   both backends; unchecked-arith diagnostics, `sum`/`product`/`divide`'s
@@ -1068,7 +1069,11 @@ cycle, across workers; the compiler never pins threads.
   `sleep()`: a run does not survive its arm's sleep, and a `seqq`'s
   handler owes its queue the aborted run's credit, paid at the wake
   (`CatchRole::Machine::clock`). `--expand` prints the
-  machine and each instance's step boundaries. `range(i, j)` is
+  machine and each instance's step boundaries. Every name a lowering
+  binds starts with `#`, which no source can write (`is_lowered`,
+  `Expr::is_lowered`): an error's chain records no frame for an
+  expression a lowering built and prints no snippet naming one, and a
+  write a lowering built gets no declaration hint. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
 - **Comments** are legal only above an expression, a select arm, an impl
   or trait method, a struct-literal field or an interface item; `///`

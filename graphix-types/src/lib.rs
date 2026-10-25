@@ -318,6 +318,12 @@ pub fn block_component(kind: &str, id: u64) -> CompactString {
     compact_str::format_compact!("#{kind}{id}")
 }
 
+/// True iff `name` is one a lowering built (`#seqpc12`): it starts with
+/// `#`, which no source can write.
+pub fn is_lowered(name: &str) -> bool {
+    name.starts_with('#')
+}
+
 /// True iff `part` is a generated block-scope component rather than
 /// a module name.
 pub fn is_block_component(part: &str) -> bool {

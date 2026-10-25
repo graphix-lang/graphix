@@ -99,32 +99,6 @@ struct Parts<'a> {
 
 /// The seq `spec` lowered to its machine, every expression of which
 /// comes from `spec`'s source.
-// CR claude for claude: [readability/low] A type error in a seq step is reported under
-// frames that quote the lowered machine, not the program. For `let go = 1; seq go { let
-// a = go + 1; let x = a + "s"; x }`, `--check` prints five frames naming `seqpc…`,
-// `machine seqpc…`, `let seqv…_1` and `let seqv…` before reaching `a + "s"`. None of
-// those bindings exist in the source. The synthetic expressions this lowering builds
-// should not appear as error context: give the generated wrappers the statement's own
-// spec, or mark them so the context printer skips them. Add a pin that a seq-step type
-// error's message contains no 'seqpc' or 'seqv'. (tests-seq-08)
-// 2026-10-14 claude: same root as x-errors-04. A written end (Expr::end) cannot mark
-// the lowering's expressions: it decides nothing by rule, and packed stdlib ASTs and
-// image-restored ones have none, so frames would differ cold and warm. Needs a mark the
-// lowering sets on the expressions it builds (or the machine node rewriting the frames
-// its children add); not started.
-// 2026-10-16 claude: Readdressed to eric with x-errors-04, tests-seq-08 and
-// t-expr-core-08: all three need one decision, how the compiler marks the expressions a
-// lowering builds. Proposal: a lowering names what it binds with a leading '#'
-// (seqpc{id} becomes #seqpc{id}, and the other seq* names alike), which no source can
-// write, as block scope components already are (graphix_types::is_block_component). The
-// error printer then skips a frame whose expression binds or connects such a name, and
-// Connect tells a synthesized write by its target's name instead of by spec.end, so
-// packed and image-restored ASTs answer alike. The cost: --expand and the LSP would
-// show '#' names, and every reader of a lowered name keys on the prefix. The
-// alternative is a mark on Expr that packs and images carry, a format change to every
-// AST.
-// 2026-10-24 claude: Eric ruled (2026-10-24): the # prefix: names a lowering builds
-// start with #, which no source can write, and the printer and Connect key on it.
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };
@@ -178,7 +152,7 @@ fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
     let pos = seq.spec.pos;
     refuse_rec(seq.spec, b)?;
     let BindExpr { pattern, typ, value, .. } = b;
-    let name = ArcStr::from(format_compact!("seqbind{}", seq.spec.id.inner()).as_str());
+    let name = ArcStr::from(format_compact!("#seqbind{}", seq.spec.id.inner()).as_str());
     let destructure = let_pat(pos, pattern.clone(), typ.clone(), r#ref(pos, &name));
     let event = |e: &Expr| Arc::new(block(e.pos, [destructure.clone(), e.clone()]));
     let body = Arc::from_iter(
@@ -233,7 +207,7 @@ fn trigger_snapshot(
 ) -> Result<Expr> {
     let Parts { spec, trigger, body, .. } = *seq;
     let (pos, id) = (spec.pos, spec.id.inner());
-    let cell = |n: &str| ArcStr::from(format_compact!("seqt{id}_{n}").as_str());
+    let cell = |n: &str| ArcStr::from(format_compact!("#seqt{id}_{n}").as_str());
     match trigger {
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
@@ -275,7 +249,7 @@ fn trigger_snapshot(
             Ok(match &b.typ {
                 None => b.value.clone(),
                 Some(t) => {
-                    let v = format_compact!("seqtv{id}");
+                    let v = format_compact!("#seqtv{id}");
                     block(
                         vpos,
                         [
@@ -311,11 +285,11 @@ fn desugar_plain(
     if steps.is_empty() {
         return Err(anyhow!("a seq block must contain at least one step").at(spec));
     }
-    let pc = format_compact!("seqpc{id}");
-    let idle = format_compact!("seqidle{id}");
-    let result = format_compact!("seqr{id}");
-    let go = format_compact!("seqgo{id}");
-    let aborted = format_compact!("seqab{id}");
+    let pc = format_compact!("#seqpc{id}");
+    let idle = format_compact!("#seqidle{id}");
+    let result = format_compact!("#seqr{id}");
+    let go = format_compact!("#seqgo{id}");
+    let aborted = format_compact!("#seqab{id}");
 
     let mut snapshot_decls: SmallVec<[Expr; 2]> = SmallVec::new();
     let mut snapshot_writes: SmallVec<[Expr; 2]> = SmallVec::new();
@@ -424,8 +398,8 @@ fn run_events(
     visible: &Names,
 ) {
     let (pos, id) = (spec.pos, spec.id.inner());
-    let edge = format_compact!("seqedge{id}");
-    let armed = format_compact!("seqarmed{id}");
+    let edge = format_compact!("#seqedge{id}");
+    let armed = format_compact!("#seqarmed{id}");
     if abort.is_some() || flush.is_some() {
         out.push(let_bind(
             pos,
@@ -441,7 +415,7 @@ fn run_events(
         ));
     }
     let mut events: SmallVec<[Expr; 2]> = SmallVec::new();
-    let flushed = format_compact!("seqfl{id}");
+    let flushed = format_compact!("#seqfl{id}");
     let flush_var = queue.as_ref().and_then(|q| q.flush);
     let push_flush = |out: &mut Vec<Expr>, events: &mut SmallVec<[Expr; 2]>| {
         if let Some(e) = flush {
@@ -810,7 +784,7 @@ impl Machine<'_> {
         });
         let n = self.snapshots;
         let id = self.id;
-        let cell = |i: usize| format_compact!("seqs{id}_{n}_{i}");
+        let cell = |i: usize| format_compact!("#seqs{id}_{n}_{i}");
         let mut map = scope(visible);
         for (i, k) in vars.keys().enumerate() {
             map.insert(k.clone(), Redirect::Entry(ArcStr::from(cell(i).as_str())));
@@ -844,8 +818,8 @@ impl Machine<'_> {
         }
         self.snapshots += 1;
         let pos = e.pos;
-        let input = format_compact!("seqsin{}_{n}", self.id);
-        let snap = format_compact!("seqs{}_{n}", self.id);
+        let input = format_compact!("#seqsin{}_{n}", self.id);
+        let snap = format_compact!("#seqs{}_{n}", self.id);
         let tuple = ExprKind::Tuple {
             args: Arc::from_iter(
                 std::iter::once(r#ref(pos, pc))
@@ -891,7 +865,7 @@ impl Machine<'_> {
         writes: impl FnOnce(&str) -> LPooled<Vec<Expr>>,
     ) -> usize {
         let k = self.steps.len();
-        let name = ArcStr::from(format_compact!("seqv{}_{k}", self.id).as_str());
+        let name = ArcStr::from(format_compact!("#seqv{}_{k}", self.id).as_str());
         let mut items: SmallVec<[Expr; 4]> = SmallVec::new();
         // an until's condition is a boolean
         let typ = until.then(|| Type::Primitive(Typ::Bool.into()));
@@ -1081,14 +1055,14 @@ impl Machine<'_> {
                 anyhow!("a try body and a with body each need a statement").at(spec)
             );
         }
-        let e_cell = ArcStr::from(format_compact!("seqe{}", spec.id.inner()).as_str());
+        let e_cell = ArcStr::from(format_compact!("#seqe{}", spec.id.inner()).as_str());
         self.decls.push(let_bind(pos, &e_cell, None, never(pos)));
         // a try whose value only writes variables has each body write them,
         // typed as they are
         let direct =
             !sink.is_empty() && sink.iter().all(|w| matches!(w, Write::Connect { .. }));
         let join = (!sink.is_empty() && !direct).then(|| {
-            let cell = ArcStr::from(format_compact!("seqj{}", spec.id.inner()).as_str());
+            let cell = ArcStr::from(format_compact!("#seqj{}", spec.id.inner()).as_str());
             let typ = match sink.first() {
                 Some(Write::Let { typ, .. } | Write::Join(_, typ)) => typ.clone(),
                 _ => None,
@@ -1105,7 +1079,7 @@ impl Machine<'_> {
         let mark = self.steps.len();
         let mut tails = self.lower_scoped(&body, &branch, visible)?;
         let with_entry = label(self.steps.len());
-        let caught = ArcStr::from(format_compact!("seqtry{}", spec.id.inner()).as_str());
+        let caught = ArcStr::from(format_compact!("#seqtry{}", spec.id.inner()).as_str());
         // an inner try catches every error its body raises (a constraint
         // must hold them all), so none reaches this one
         let inner_try = |e: &Expr| matches!(&e.kind, ExprKind::Catch(c) if matches!(c.role, CatchRole::Try { .. }));
@@ -1198,7 +1172,7 @@ impl Machine<'_> {
                 )
                 .at(s));
             }
-            let v = format_compact!("seqb{}_{i}", spec.id.inner());
+            let v = format_compact!("#seqb{}_{i}", spec.id.inner());
             match &s.kind {
                 ExprKind::NoOp => continue,
                 ExprKind::Bind(b) if b.rec => {
@@ -1266,7 +1240,7 @@ impl Machine<'_> {
             0 => return Err(declaration_refused(spec)),
             1 => vals.pop().unwrap(),
             n => {
-                let last = format_compact!("seqb{}", spec.id.inner());
+                let last = format_compact!("#seqb{}", spec.id.inner());
                 select(
                     pos,
                     ExprKind::Tuple { args: Arc::from_iter(vals.drain(..)) }.to_expr(pos),
@@ -1318,14 +1292,14 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     let Parts { spec, trigger, abort, flush, body } = *seq;
     let pos = spec.pos;
     let id = spec.id.inner();
-    let flushed = format_compact!("seqqflush{id}");
-    let requests = format_compact!("seqqrequests{id}");
-    let dequeued = format_compact!("seqqrun{id}");
-    let request = format_compact!("seqqrequest{id}");
-    let clock = format_compact!("seqqclock{id}");
-    let activation = format_compact!("seqqactivation{id}");
-    let input = format_compact!("seqqinput{id}");
-    let result = format_compact!("seqqresult{id}");
+    let flushed = format_compact!("#seqqflush{id}");
+    let requests = format_compact!("#seqqrequests{id}");
+    let dequeued = format_compact!("#seqqrun{id}");
+    let request = format_compact!("#seqqrequest{id}");
+    let clock = format_compact!("#seqqclock{id}");
+    let activation = format_compact!("#seqqactivation{id}");
+    let input = format_compact!("#seqqinput{id}");
+    let result = format_compact!("#seqqresult{id}");
     // every spelling of the trigger's variable is the run's request
     let trigger_names: SmallVec<[ArcStr; 2]> = match trigger.map(|t| &t.expr().kind) {
         Some(ExprKind::Ref { name }) => std::iter::once(ArcStr::from(ref_key(name)))
@@ -1361,7 +1335,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                         expr.kind = ExprKind::Ref { name: name.clone() };
                         (
                             expr,
-                            ArcStr::from(format_compact!("seqqcap{id}_{n}").as_str()),
+                            ArcStr::from(format_compact!("#seqqcap{id}_{n}").as_str()),
                             bind.id,
                         )
                     });
@@ -1462,7 +1436,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     }
     let carried = args.len() > 1;
     for (i, arg) in args.iter_mut().enumerate() {
-        let name = format_compact!("seqqseed{id}_{i}");
+        let name = format_compact!("#seqqseed{id}_{i}");
         prelude.push(let_bind(
             pos,
             &name,
@@ -1505,7 +1479,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     if flush.is_some() {
         let (label, event) = match flush_reads_request {
             true => (literal!("flush_before"), flushed.clone()),
-            false => (literal!("flush"), format_compact!("seqfl{id}")),
+            false => (literal!("flush"), format_compact!("#seqfl{id}")),
         };
         queue_args.push((Some(label), r#ref(pos, &event)));
     }
@@ -1712,7 +1686,7 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
     match &e.kind {
         ExprKind::Ref { .. } | ExprKind::Constant(_) => any(at_entry(e.clone()), e),
         _ => {
-            let v = format_compact!("seqv{}", e.id.inner());
+            let v = format_compact!("#seqv{}", e.id.inner());
             block(
                 pos,
                 [
@@ -1806,8 +1780,8 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
         return entry_fire(expr, pc);
     }
     let pos = spec.pos;
-    let input = format_compact!("seqargs{}", spec.id.inner());
-    let issued = format_compact!("seqissued{}", spec.id.inner());
+    let input = format_compact!("#seqargs{}", spec.id.inner());
+    let issued = format_compact!("#seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
     // CR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,

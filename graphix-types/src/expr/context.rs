@@ -29,7 +29,9 @@ impl fmt::Debug for ErrorContext {
 
 impl std::error::Error for ErrorContext {}
 
-/// `at: <pos>[ in <source>], in: <the start of the expression>..`
+/// `at: <pos>[ in <source>], in: <the start of the expression>..`, the
+/// start left out of an expression that names what a lowering bound,
+/// which is no text the program wrote.
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const MAX: usize = 38;
@@ -51,41 +53,7 @@ impl fmt::Display for ErrorContext {
             }
         }
         let mut head = Head(LPooled::take(), false);
-        // CR claude for claude: [readability/low] The frame snippet is the printer's
-        // rendering of the frame's Expr, not what the user wrote. For lowered
-        // constructs the chain shows compiler internals: an `until 5` in a seq gives
-        // frames reading `{ let seqpc4611686018427393761: [`Idle..`, `machine seqpc.. {
-        // `S0..`, `let seqv.._0: bool = ..` and `any(seqpc.. ~! 5, 5)` before the real
-        // `type mismatch bool does not contain i64` (probe:
-        // design/review-2026-10-12/repro/x-errors-04-seq-frames.gx, `--check`). Where
-        // the expression has a written end and its Origin has text, print the source
-        // slice `ori.text[pos..end]` (truncated as now), and fall back to the printer
-        // otherwise. Alternatively, skip frames whose spec the seq lowering
-        // synthesized. (x-errors-04)
-        // 2026-10-14 claude: tried printing ori.text[pos..end] where the expression has
-        // a written end: the seq lowering's nodes have none (built with to_expr(pos), 39
-        // sites in expr/seq.rs), so the probe's frames are unchanged. Giving them their
-        // statement's end would show the source but also feed the LSP's scope map spans
-        // it never had; skipping their frames needs a mark the lowering sets.
-        // 2026-10-14 claude: tests-seq-08 is the same finding. Expr::end was weighed as
-        // the mark and refused: it decides nothing by rule and is absent from packed and
-        // image-restored ASTs.
-        // 2026-10-16 claude: Readdressed to eric with x-errors-04, tests-seq-08 and
-        // t-expr-core-08: all three need one decision, how the compiler marks the
-        // expressions a lowering builds. Proposal: a lowering names what it binds with a
-        // leading '#' (seqpc{id} becomes #seqpc{id}, and the other seq* names alike),
-        // which no source can write, as block scope components already are
-        // (graphix_types::is_block_component). The error printer then skips a frame
-        // whose expression binds or connects such a name, and Connect tells a
-        // synthesized write by its target's name instead of by spec.end, so packed and
-        // image-restored ASTs answer alike. The cost: --expand and the LSP would show
-        // '#' names, and every reader of a lowered name keys on the prefix. The
-        // alternative is a mark on Expr that packs and images carry, a format change to
-        // every AST.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): the # prefix: names a lowering
-        // builds start with #, which no source can write, and the printer and Connect
-        // key on it.
-        let complete = write!(head, "{}", self.0).is_ok();
+        let complete = self.0.mentions_lowered() || write!(head, "{}", self.0).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {
             return Err(fmt::Error);
@@ -139,9 +107,16 @@ pub trait At {
 
 impl At for anyhow::Error {
     /// A frame for the expression the latest frame already names adds
-    /// nothing; the latest frame is found first, the site only under
-    /// none.
+    /// nothing, and neither does one for an expression a lowering built
+    /// ([`Expr::is_lowered`]), which the program did not write; the latest
+    /// frame is found first, the site only under none, and an error always
+    /// gets its site.
     fn at(self, spec: &Expr) -> Self {
+        let has_site = self.downcast_ref::<ErrorSite>().is_some()
+            || self.downcast_ref::<ErrorContext>().is_some();
+        if has_site && spec.is_lowered() {
+            return self;
+        }
         let frames = match self.downcast_ref::<ErrorContext>() {
             Some(ErrorContext(e, n)) if e.id == spec.id || *n >= MAX_FRAMES => {
                 return self;
