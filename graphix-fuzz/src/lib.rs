@@ -1357,8 +1357,9 @@ async fn run_session(
     route: Route,
     image: SessionImage,
     timeout: Duration,
+    opts: RunOpts,
 ) -> (Outcome, Result<Bytes, String>) {
-    let run = run_subject(code, mode, route, image, timeout, RunOpts::default()).await;
+    let run = run_subject(code, mode, route, image, timeout, opts).await;
     (run.outcome, run.image)
 }
 
@@ -1373,13 +1374,24 @@ pub async fn cold_warm(
     route: Route,
     timeout: Duration,
 ) -> (Outcome, Outcome) {
+    cold_warm_with(code, mode, route, timeout, RunOpts::default()).await
+}
+
+async fn cold_warm_with(
+    code: &str,
+    mode: Mode,
+    route: Route,
+    timeout: Duration,
+    opts: RunOpts,
+) -> (Outcome, Outcome) {
     let (cold, image) =
-        run_session(code, mode, route, SessionImage::Write, timeout).await;
+        run_session(code, mode, route, SessionImage::Write, timeout, opts).await;
     let warm = match (&cold, image) {
         // nothing compiled, so nothing to restore
         (Outcome::CompileErr(_), _) | (Outcome::Timeout(_), Err(_)) => cold.clone(),
         (_, Ok(image)) => {
-            run_session(code, mode, route, SessionImage::Read(image), timeout).await.0
+            let image = SessionImage::Read(image);
+            run_session(code, mode, route, image, timeout, opts).await.0
         }
         (_, Err(e)) => Outcome::RuntimeErr(e),
     };
@@ -1721,10 +1733,20 @@ pub async fn check_judged(
     code: &str,
     timeout: Duration,
 ) -> (Option<Divergence>, Recorded) {
+    judged(code, timeout, None).await
+}
+
+/// [`check_judged`] with each run holding at most `activations` live
+/// activations, else the process's budget.
+async fn judged(
+    code: &str,
+    timeout: Duration,
+    activations: Option<u64>,
+) -> (Option<Divergence>, Recorded) {
     let unsure = || Recorded { verdict: Verdict::Unsure, why: None };
     let tier = oracle_tier(code);
     let pairs = comparisons(code, sessions_enabled());
-    let mut o = Oracle::new(code, tier, timeout);
+    let mut o = Oracle::new(code, tier, timeout, activations);
     o.make(&[Pair::Engine]).await;
     if let Some(d) = o.construction().await {
         return (Some(d), unsure());
@@ -1919,11 +1941,18 @@ enum Job {
     Sessions(Mode, Route),
 }
 
-async fn do_job(code: &str, job: Job, timeout: Duration) -> Vec<(Run, Outcome)> {
+async fn do_job(
+    code: &str,
+    job: Job,
+    timeout: Duration,
+    opts: RunOpts,
+) -> Vec<(Run, Outcome)> {
     match job {
         Job::Plain(r) => {
             log_run("RUN", r);
-            let o = run_program_routed(code, r.mode, r.route, timeout).await;
+            let o = run_subject(code, r.mode, r.route, SessionImage::None, timeout, opts)
+                .await
+                .outcome;
             log_run("DONE", r);
             vec![(r, o)]
         }
@@ -1932,7 +1961,7 @@ async fn do_job(code: &str, job: Job, timeout: Duration) -> Vec<(Run, Outcome)> 
             let (c, w) = (run(Session::Cold), run(Session::Warm));
             log_run("RUN", c);
             log_run("RUN", w);
-            let (cold, warm) = cold_warm(code, mode, route, timeout).await;
+            let (cold, warm) = cold_warm_with(code, mode, route, timeout, opts).await;
             log_run("DONE", c);
             log_run("DONE", w);
             vec![(c, cold), (w, warm)]
@@ -1990,7 +2019,10 @@ async fn run_one_inner(code: &str, run: Run, budget: Duration) -> Outcome {
     match run.session {
         Session::NoCache => run_program_routed(code, run.mode, run.route, budget).await,
         Session::Cold => {
-            run_session(code, run.mode, run.route, SessionImage::Write, budget).await.0
+            let opts = RunOpts::default();
+            run_session(code, run.mode, run.route, SessionImage::Write, budget, opts)
+                .await
+                .0
         }
         Session::Warm => cold_warm(code, run.mode, run.route, budget).await.1,
     }
@@ -2010,6 +2042,9 @@ struct Oracle<'a> {
     code: &'a str,
     tier: OracleTier,
     timeout: Duration,
+    /// The live activations each run may hold, where they differ from the
+    /// process's budget.
+    activations: Option<u64>,
     runs: Vec<(Run, Outcome)>,
     /// Runs before this index have been scanned for a twin violation.
     scanned: usize,
@@ -2019,8 +2054,25 @@ struct Oracle<'a> {
 }
 
 impl<'a> Oracle<'a> {
-    fn new(code: &'a str, tier: OracleTier, timeout: Duration) -> Self {
-        Oracle { code, tier, timeout, runs: Vec::new(), scanned: 0, confirmed: false }
+    fn new(
+        code: &'a str,
+        tier: OracleTier,
+        timeout: Duration,
+        activations: Option<u64>,
+    ) -> Self {
+        Oracle {
+            code,
+            tier,
+            timeout,
+            activations,
+            runs: Vec::new(),
+            scanned: 0,
+            confirmed: false,
+        }
+    }
+
+    fn opts(&self) -> RunOpts {
+        RunOpts { activations: self.activations, ..RunOpts::default() }
     }
 
     fn get(&self, run: Run) -> &Outcome {
@@ -2034,7 +2086,7 @@ impl<'a> Oracle<'a> {
             Session::NoCache => Job::Plain(run),
             Session::Cold | Session::Warm => Job::Sessions(run.mode, run.route),
         };
-        for (r, o) in do_job(self.code, job, budget).await {
+        for (r, o) in do_job(self.code, job, budget, self.opts()).await {
             if let Some((_, x)) = self.runs.iter_mut().find(|(x, _)| *x == r) {
                 *x = o;
             }
@@ -2063,15 +2115,14 @@ impl<'a> Oracle<'a> {
                 }
             }
         }
-        let code = self.code;
-        let timeout = self.timeout;
+        let (code, timeout, opts) = (self.code, self.timeout, self.opts());
         if serial_runs() {
             for j in jobs {
-                self.runs.extend(do_job(code, j, timeout).await);
+                self.runs.extend(do_job(code, j, timeout, opts).await);
             }
         } else {
             let done = futures::future::join_all(
-                jobs.into_iter().map(|j| do_job(code, j, timeout)),
+                jobs.into_iter().map(|j| do_job(code, j, timeout, opts)),
             )
             .await;
             self.runs.extend(done.into_iter().flatten());
@@ -2275,7 +2326,7 @@ impl<'a> Oracle<'a> {
                 && burned >= Duration::from_secs(5)
             {
                 if ra.session == Session::NoCache {
-                    let opts = RunOpts { watch_progress: true, ..RunOpts::default() };
+                    let opts = RunOpts { watch_progress: true, ..self.opts() };
                     let probe = run_subject(
                         self.code,
                         ra.mode,
@@ -2418,7 +2469,7 @@ async fn first_pass(
     timeout: Duration,
 ) -> BatchVerdict {
     let pairs = comparisons(code, sessions);
-    let mut o = Oracle::new(code, tier, timeout);
+    let mut o = Oracle::new(code, tier, timeout, None);
     o.make(&[Pair::Engine]).await;
     if o.check_pair().await.is_some() {
         return BatchVerdict::Other;
@@ -6076,7 +6127,7 @@ mod tests {
     /// the oracle records nothing.
     #[tokio::test(flavor = "multi_thread")]
     async fn tail_recursive_loop_is_the_jits() {
-        set_budgets();
+        let budget = Some(ACTIVATION_BUDGET);
         for code in [
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
              select n { 0 => acc, _ => f(n - 1, *(&acc) + 1) }; f(10, 0) }",
@@ -6084,12 +6135,23 @@ mod tests {
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 f(n, *(&acc)); \
              f(0, 0) }",
         ] {
-            let (d, _) = check_verdict(code, Duration::from_secs(10)).await;
+            let (d, _) = judged(code, Duration::from_secs(10), budget).await;
             assert!(d.is_none(), "{code}: {d:?}");
         }
         let runaway = "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
                        f(n, *(&acc)); f(0, 0) }";
-        let o = run_program(runaway, Mode::Interp, Duration::from_secs(10)).await;
+        let opts = RunOpts { activations: budget, ..RunOpts::default() };
+        let t = Duration::from_secs(10);
+        let o = run_subject(
+            runaway,
+            Mode::Interp,
+            Route::InLanguage,
+            SessionImage::None,
+            t,
+            opts,
+        )
+        .await
+        .outcome;
         assert!(matches!(o, Outcome::Timeout(Containment::ActivationBudget)), "{o:?}");
     }
 
