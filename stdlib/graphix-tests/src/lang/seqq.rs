@@ -192,7 +192,8 @@ async fn block_lets_are_local(mode: Mode) -> Result<()> {
 }
 
 // A seqq in an arm runs again when its trigger fires at a later entry;
-// one with no trigger runs at the arm's birth only.
+// one with no trigger runs at the arm's birth only. The arm sleeps once
+// its run issued (tick 2) and is entered again at once (tick 3).
 async fn sleep_restarts(mode: Mode) -> Result<()> {
     let idle = "sys::time::after_idle(duration:20.ms, tick)";
     for (trigger, expr, expect) in [
@@ -203,12 +204,13 @@ async fn sleep_restarts(mode: Mode) -> Result<()> {
     ] {
         let code = format!(
             r#"{{
-        let tick = count(sys::time::timer(duration:80.ms, 3)?);
+        let tick = 1;
         let issued = never<i64>();
         select tick {{
             1 | 3 => seqq {trigger} {{ let value = {expr}; issued <- value; value }},
             _ => never()
         }};
+        tick <- select tick {{ 1 => issued ~ 2, 2 => tick ~ 3, _ => never() }};
         issued
     }}"#
         );
