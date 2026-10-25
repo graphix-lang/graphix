@@ -43,7 +43,7 @@ born view, a seq step entered for its next run.
 | `throttle` | pauses the pending emission (its timer starts again at the next update); keeps the held value and the window the last emission opened; clears the output | — |
 | `range`, `iter` | remints the delivery ID (the stream in flight is aborted); clears the output | — |
 | `queue`, `iterq` | takes back sent-undelivered values; keeps contents and credits | sends again |
-| `queuefn` | keeps the queue and its credit; a wrapper site drops its own queued calls | — |
+| `queuefn` | keeps the queue and its credit; a sleeping wrapper site's calls keep their place, released at its wake | — |
 | `once`, `take`, `skip`, `uniq`, `hold`, `count`, `filter` | nothing | — |
 | net subscribe, list/list_table, publish, publish_rpc, `write` | detaches; clears the output | re-attaches over standing args (`write` writes only on a value fire) |
 | filesystem watch application and event/path accessors | rebuilds the watch or detaches listeners; clears the output | rebuilds over standing args |

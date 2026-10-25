@@ -1,8 +1,8 @@
 # `queuefn` — queued function invocation
 
-Status: built; whether a sleeping wrapper site keeps its calls is open (core-aux-02).
+Status: built.
 Pins: `stdlib/graphix-tests/src/lib_tests/core.rs` `queuefn_delta_per_cycle`, `queuefn_trigger_arg`,
-`queuefn_trigger_before_fn`
+`queuefn_trigger_before_fn`, `queuefn_sleeping_site_keeps_its_calls`, `queuefn_birth_fire_is_no_credit`
 
 Lives in `graphix-package-core::queuefn`; the builtin is
 `core_queuefn`, bound in core's `mod.gx`.
@@ -51,12 +51,20 @@ let result = slow(x, y);   // at most one release per tick
 State per `queuefn` call site: `queue` (pending invocations, oldest
 first) and `pop_count` (banked permission slots, initialized to **1**
 so the first invocation runs immediately and may emit in the same
-cycle). `pop_count > 0` and a non-empty queue are mutually exclusive.
+cycle). `pop_count > 0` and a queue holding a call of a site awake are
+mutually exclusive.
 
 - **Wrapper invocation**: if `pop_count > 0`, decrement and invoke `f`;
   otherwise push the invocation and emit nothing this cycle.
-- **`#trigger` update**: if the queue is non-empty, dequeue the oldest
-  invocation and invoke `f` with it; otherwise `pop_count += 1`.
+- **`#trigger` update**: dequeue the oldest invocation of a site awake
+  and invoke `f` with it; with none, `pop_count += 1`. A fire born with
+  the queuefn (its first cycle, or a seq step's next run) is no credit:
+  only fires after it exists release calls.
+- **A site's sleep** is a pause: its calls keep their place in the queue
+  and no release takes one while it sleeps, since a sleeping site's
+  bindings would see only the last of several releases. At its wake it
+  releases its own calls, oldest first, while credit remains, and a call
+  it makes in that cycle queues behind them.
 - **Depth change**: write the new depth through `#count` when non-null.
 - **`f` re-emits**: the queue and `pop_count` are NOT reset; later pops
   run queued args through the new `f`. A user who needs a fresh queue
@@ -118,23 +126,12 @@ user asked for.
   bind with `ctx.rt.set_var`, so the site's call fires next cycle.
 - `#count` is written through `ExecCtx::write_target`: a place patches
   its root (`patch_level`), a binding is set (`set_level`).
-<!-- CR claude for claude: [doc-drift/low] Stale. The wrapper holds a
-genn::Callback::through, not `pred` over an `Arc<[BindId]>`. `#count` is written through
-ExecCtx::write_target, not byref_chain. The same-cycle release rule (set_var when a
-release delivers to the site's bindings) is missing. This bullet states as intended the
-sleep reset that the wake-is-a-resume rule forbids. Rewrite the Implementation section
-from queuefn.rs once the sleep/reborn rule is settled, and drop the Status dates. Found
-by reading; not run. (core-aux-04) -->
-<!-- 2026-10-19 claude: Implementation rewritten from queuefn.rs (Callback::through,
-write_target, the same-cycle release rule, ORDERED) and the Status dates dropped. The
-sleep bullet now describes the reset as built and names it open; rewrite it once
-core-aux-01/core-aux-02 are ruled, then delete this CR. -->
 - Sleep: the node's `sleep` is a pause, keeping the queue and
   `pop_count`; its `reborn` (a seq step's next run) clears the queue,
   resets `pop_count` to 1 and writes `#count`. A wrapper site's `sleep`
-  and `delete` drop the site's queued entries, writing `#count`; whether
-  a sleeping site should keep them is open (core-aux-02). The node's
-  `delete` releases `fid`.
+  marks it asleep in `QueueState::asleep`, and its next update is its
+  wake; its `delete` and `reborn` drop its queued entries, writing
+  `#count`. The node's `delete` releases `fid`.
 - A bottom argument at a wrapper site bottoms that invocation: it is
   neither queued nor dispatched.
 - Containers: `QueueEntry.updates` and the per-cycle delta are

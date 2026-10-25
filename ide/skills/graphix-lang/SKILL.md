@@ -200,8 +200,10 @@ handler-less `?` log the error they swallow from both engines. `&&`/`||` are str
 side). Comparison is exact: `x == 3` over `x: [i64, null]` and `` v ==
 `Red `` over `` [`Green, `Red] `` are refused — `opt::is_some`,
 `opt::contains(x, 3)`, `` select v { `Red => true, _ => false } ``,
-`r$ == "a"` on a Result. Two values of one union type compare, mixed
-numerics included (`[i64, f64]`: `i64:3 == f64:3.0` is false).
+`r$ == "a"` on a Result. Two values of one union type compare by `==`,
+mixed numerics included (`[i64, f64]`: `i64:3 == f64:3.0` is false), but
+the orderings (`<` `<=` `>` `>=`), sorts, `min`/`max` and map keys refuse
+a type holding two numeric types (`[i64, f64]`, `Number`): cast to one.
 Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`: a type
 holding two numeric types (`[i64, f64]`, `Number`) is refused even
 against itself, and a generic function called with one is refused at
@@ -309,8 +311,8 @@ across a bottom cycle).
   reference types, two function types. Wrap them in distinct variants.
   Everything else is told apart: a string from a bare variant, an array
   from a tuple, struct, variant or list, `[]` from `[<>]`.
-- References and functions cannot be ordered, sorted or used as map
-  keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
+- References, functions and a type holding two numeric types cannot
+  be ordered, sorted or used as map keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 
 ```graphix
 select x {
@@ -661,7 +663,13 @@ known <- edit
 A guard cannot bind (`_ if !is_err(is_file(p)) => .. file ..` has no
 `file`): select on the Result. A type-directed read (`json::read`,
 `str::parse`) takes its target from the annotation it reaches, and the
-target must settle concrete (its `'b: Concrete` bound).
+target must settle concrete (its `'b: Concrete` bound). `str::parse` reads
+what Graphix prints: a `string` target is the text itself; any other
+target reads the text as a Graphix literal (`(1, "a")`, `{x: 1}`,
+`` `B(3) ``, `[<1, 2>]`, `{"k" => 1}`) cast to it, else the bare text cast
+(`"42"`, an RFC3339 datetime). `json::read` into a target holding an
+integer or `decimal` reads a number's text exactly (past `i64` is an
+`InvalidCast`); a read into neither, `Array<Any>`, gives `f64`.
 
 Derive, do not add a second writer. Two unordered writers to one
 variable race when one replaces it wholesale (a file load landing after

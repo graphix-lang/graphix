@@ -15,6 +15,7 @@ use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{collections::VecDeque, fmt::Debug, marker::PhantomData, sync::Arc as SArc};
 use triomphe::Arc;
 
@@ -37,6 +38,9 @@ struct QueueEntry {
 #[derive(Debug, Default)]
 struct QueueState {
     queue: VecDeque<QueueEntry>,
+    /// The sites asleep: their calls keep their place and none is released
+    /// until the site wakes.
+    asleep: SmallVec<[SiteId; 2]>,
     pop_count: i64,
     /// BindId of the writable `#count` ref, or None if not provided.
     count_ref: Option<BindId>,
@@ -48,6 +52,7 @@ impl QueueState {
     fn new() -> Self {
         Self {
             queue: VecDeque::new(),
+            asleep: SmallVec::new(),
             pop_count: 1,
             count_ref: None,
             last_written_depth: 0,
@@ -56,6 +61,28 @@ impl QueueState {
 
     fn depth(&self) -> i64 {
         self.queue.len() as i64
+    }
+
+    /// The oldest call of a site awake.
+    fn pop_awake(&mut self) -> Option<QueueEntry> {
+        let i = self.queue.iter().position(|e| !self.asleep.contains(&e.site))?;
+        self.queue.remove(i)
+    }
+
+    /// The oldest call of `site`, when a credit releases it.
+    fn pop_own(&mut self, site: SiteId) -> Option<QueueEntry> {
+        if self.pop_count == 0 {
+            return None;
+        }
+        let i = self.queue.iter().position(|e| e.site == site)?;
+        self.pop_count -= 1;
+        self.queue.remove(i)
+    }
+
+    /// Forget `site`: its calls and its sleep.
+    fn drop_site(&mut self, site: SiteId) {
+        self.queue.retain(|e| e.site != site);
+        self.asleep.retain(|s| *s != site);
     }
 
     /// The `#count` write the depth needs, if it changed.
@@ -86,30 +113,6 @@ fn write_count<R: Rt, E: UserEvent>(
 
 type StateRef = Arc<Mutex<QueueState>>;
 
-// CR claude for claude: [bug/medium] A callback that accumulates into an outer
-// variable, `|x| { got <- x ~ array::push(got, x); x }`, loses its first write when
-// the wrapper releases one call per tick: `got` reads [1], then [2], then [2, 3],
-// where each release should see the write the previous one made. Found while pinning
-// c-data-map-02; it reproduces at 9445a1d21, pruned or not, so it is no regression of
-// the 10-19 fixes. Find whether the second release's `~` samples `got` before the
-// first write lands or the instance reads it stale, and pin it in lang::queuefn.
-// probe: design/review-2026-10-19/repro/queuefn-stale-accumulator.gx
-// (queuefn-stale-read-01)
-// 2026-10-19 claude: Neither: no read is stale. The trigger clk fires at birth (its
-// initial 0), and the queuefn node updates before any wrapper site (the sites need
-// its lambda), so that fire finds the queue empty and banks a second credit
-// (pop_count 2) beside the initial one. q(1) and q(2) then both dispatch in cycle 0,
-// each samples got = [], and their two writes land in turn: [1], then [2]; q(3),
-// released at the next tick, reads [2]. With #trigger: skip(#n: 1, clk) the probe
-// gives [1], [1, 2], [1, 2, 3] (/home/eric/tmp/cr-fix3/wt-stdlib/qacc2.gx). So the
-// question is a rule: may a credit a trigger banks in a cycle release a call made in
-// that same cycle (statement order puts the node first), and is a trigger's birth
-// fire a credit at all? queuefn_trigger_before_fn relies on same-cycle banking (trigs
-// and xs both deliver one a cycle). Two credits mean two calls in flight, which an
-// accumulator into an outer variable cannot survive. Needs a ruling before a pin.
-// 2026-10-24 claude: Eric ruled (2026-10-24): keep a site's queued calls across sleep
-// (pause, like queue), and a trigger's birth fire is not a credit: only fires after
-// the queuefn exists release calls.
 /// Per-call-site Apply impl for the wrapper lambda. Each invocation of the
 /// wrapper at a user call site goes through this. Push/pop coordination is
 /// done via `state` shared with the owning `QueueFn` node.
@@ -136,6 +139,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // a site waking releases its calls the credit banked while it slept;
+        // they land in turn from the next cycle, and so after them does a
+        // call it makes now
+        let mut woke: LPooled<Vec<QueueEntry>> = LPooled::take();
+        let count_write = {
+            let mut s = self.state.lock();
+            match s.asleep.iter().position(|x| *x == self.site) {
+                None => None,
+                Some(i) => {
+                    s.asleep.swap_remove(i);
+                    while let Some(e) = s.pop_own(self.site) {
+                        woke.push(e)
+                    }
+                    s.count_write()
+                }
+            }
+        };
+        write_count(ctx, count_write);
+        let woke_any = !woke.is_empty();
+        for mut e in woke.drain(..) {
+            for (bid, v) in e.updates.drain(..) {
+                ctx.rt.set_var(bid, v);
+            }
+        }
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         let mut tags: LPooled<Vec<Tag>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
@@ -161,11 +188,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     drop(s);
                     // a release delivering to these binds this cycle goes first;
                     // this call lands next cycle
-                    let released = self
-                        .call
-                        .args()
-                        .iter()
-                        .any(|b| ctx.event.variables.contains_key(b));
+                    let released = woke_any
+                        || self
+                            .call
+                            .args()
+                            .iter()
+                            .any(|b| ctx.event.variables.contains_key(b));
                     for (bid, v) in delta.drain(..) {
                         if released {
                             ctx.rt.set_var(bid, v);
@@ -210,33 +238,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     /// The site's queued calls go with it, and so do its bindings.
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.delete(ctx);
-        let count_write = {
-            let mut s = self.state.lock();
-            s.queue.retain(|e| e.site != self.site);
-            s.count_write()
-        };
-        write_count(ctx, count_write);
+        self.forget(ctx);
     }
 
-    /// The site's queued calls go with its sleep: a release to a sleeping
-    /// site would run nothing.
-    // CR claude for claude: [bug/medium] Dropping the site's queued calls at sleep loses
-    // calls the program made just because the caller's arm paused: the later triggers
-    // only bank credit. Under the rule that a wake resumes and never rebirths, a pause
-    // should keep them. The doc's premise that a release to a sleeping site runs
-    // nothing no longer holds either, since wake catch-up re-raises a binding written
-    // while asleep. Decide whether a pop may target a sleeping site (catch-up delivers
-    // its last release) or skips it until the wake, then keep the entries here and
-    // update queuefn_sleeping_site_drops_its_calls. probe:
-    // design/review-2026-10-19/repro/core-aux-queuefn-site-sleep-drops.gx (core-aux-02)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): keep a site's queued calls across
-    // sleep (pause, like queue), and a trigger's birth fire is not a credit: only fires
-    // after the queuefn exists release calls.
+    /// A pause: the site's calls keep their place, released once it wakes.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.sleep(ctx);
+        let mut s = self.state.lock();
+        if !s.asleep.contains(&self.site) {
+            s.asleep.push(self.site)
+        }
+    }
+
+    /// Born again, the site makes its calls afresh.
+    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.forget(ctx);
+    }
+}
+
+impl<R: Rt, E: UserEvent> WrapperApply<R, E> {
+    fn forget(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let count_write = {
             let mut s = self.state.lock();
-            s.queue.retain(|e| e.site != self.site);
+            s.drop_site(self.site);
             s.count_write()
         };
         write_count(ctx, count_write);
@@ -281,6 +305,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
         ctx.record_ref(fid, top_id);
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
+            asleep: SmallVec::new(),
             pop_count,
             count_ref,
             last_written_depth,
@@ -463,11 +488,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
         }
-        let trigger_fired = seam_tick(from[1].update(ctx)).is_some();
+        // a fire born with the queuefn is no credit
+        let trigger_fired = seam_tick(from[1].update(ctx)).is_some() && !ctx.event.born();
         if trigger_fired {
             let popped = {
                 let mut s = self.state.lock();
-                match s.queue.pop_front() {
+                match s.pop_awake() {
                     Some(entry) => Some(entry),
                     None => {
                         s.pop_count += 1;
@@ -513,25 +539,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         }
     }
 
-    // CR claude for claude: [bug/medium] This sleep is still the old arm-rewake restart:
-    // it clears the shared queue and resets pop_count to 1, and WrapperApply::sleep
-    // drops its site's queued calls. A call queued before the sleep never answers, and
-    // a #trigger credit banked before it is lost. The wake-is-a-resume rule (CLAUDE.md;
-    // design/async_sleep_outputs.md: a queue keeps its contents and credits) keeps
-    // both, as core `queue` and `iterq` do. design/queue_fn.md still documents the
-    // restart. Decide whether queuefn pauses like `queue`. If it does, keep the state
-    // across sleep, add `reborn` on QueueFn and WrapperApply for a seq step's next run,
-    // and update queue_fn.md. If it does not, record the exception in CLAUDE.md and
-    // async_sleep_outputs.md. probe:
-    // design/review-2026-10-19/repro/x-node-contract-queuefn-sleep-reset.gx
-    // (x-node-contract-02)
-    // 2026-10-19 claude: The node half is done under core-aux-01 (for claude, now XCR):
-    // QueueFn::sleep is a pause and QueueFn::reborn resets queue, credit and #count,
-    // design/queue_fn.md and the async_sleep_outputs.md table follow. What remains here
-    // is WrapperApply::sleep dropping its site's calls, which is core-aux-02.
-    // 2026-10-24 claude: Eric ruled (2026-10-24): keep a site's queued calls across
-    // sleep (pause, like queue), and a trigger's birth fire is not a credit: only fires
-    // after the queuefn exists release calls.
     /// A pause: the queued calls and the credit stay.
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
@@ -539,6 +546,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         let w = {
             let mut s = self.state.lock();
             s.queue.clear();
+            s.asleep.clear();
             s.pop_count = 1;
             s.count_write()
         };

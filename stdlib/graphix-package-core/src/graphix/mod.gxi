@@ -233,7 +233,10 @@ val queue: fn(#clock:Any, ?#flush:Any, ?#flush_before: [i64, null], v: 'a) -> 'a
 /// internal pop_count initialized to 1, so the first invocation runs
 /// immediately. Subsequent invocations push their args onto the queue and
 /// emit nothing until #trigger fires; each #trigger update releases one
-/// queued invocation, or banks a pop slot if the queue is empty.
+/// queued invocation, or banks a pop slot if the queue is empty. A fire
+/// of #trigger in the cycle the queuefn is born releases nothing. A call
+/// site that sleeps keeps its queued calls: no release takes one while it
+/// sleeps, and at its wake the slots banked meanwhile release them.
 ///
 /// If #count is provided as a writable ref, the current queue depth is
 /// written through it whenever it changes, to a place (`&mut s.depth`)

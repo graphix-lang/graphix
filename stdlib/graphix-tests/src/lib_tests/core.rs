@@ -787,19 +787,36 @@ run!(queuefn_bottom_argument, r#"{
     matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:101]")
 }; FuseExpect::Jit);
 
-// A sleeping site's queued calls go with its sleep: the first release
-// after it runs the live site's call.
-run!(queuefn_sleeping_site_drops_its_calls, r#"{
+// A sleeping site's queued calls keep their place: a release skips them
+// while the site sleeps, and the credits banked meanwhile release them at
+// its wake (core-aux-02).
+run!(queuefn_sleeping_site_keeps_its_calls, r#"{
     let c = 0;
-    c <- select c { n if n < 10 => n + 1, _ => never() };
+    c <- select c { n if n < 12 => n + 1, _ => never() };
     let trig: Any = select c { 4 => null, 5 => null, 6 => null, _ => never() };
     let q = queuefn(#trigger: trig, |x: i64| -> i64 x);
-    let mode = select c { n if n < 3 => `A, n if n < 8 => `B, _ => `A };
+    let mode = uniq(select c { n if n < 3 => `A, n if n < 8 => `B, _ => `A });
     let xa = select c { 0 => 1, 1 => 2, 2 => 3, _ => never() };
     let xb = select c { 3 => 10, _ => never() };
     let r = select mode { `A => q(xa), `B => q(xb) };
-    select r { 10 => c, _ => never() }
-}"#, is(Value::I64(5)); FuseExpect::Jit);
+    let log: Array<i64> = [];
+    log <- r ~ array::push(log, r);
+    select c { 12 => log, _ => never() }
+}"#, prints("[i64:1, i64:10, i64:2, i64:3]"); FuseExpect::Jit);
+
+// A trigger's fire born with the queuefn is no credit: one call is
+// released per later tick, each seeing the write the one before made
+// (queuefn-stale-read-01).
+run!(queuefn_birth_fire_is_no_credit, r#"{
+    let clk = 0;
+    clk <- select clk { k if k < 6 => (k ~ clk) + 1, _ => never() };
+    let got: Array<i64> = [];
+    let q = queuefn(#trigger: clk, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+    let a = q(1);
+    let b = q(2);
+    let c = q(3);
+    select clk { 6 => got, _ => never() }
+}"#, prints("[i64:1, i64:2, i64:3]"); FuseExpect::Jit);
 
 // The option HOFs answer every delivery of their input, as their select
 // spellings do, even when the callback ignores its argument: after a
