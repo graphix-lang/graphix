@@ -43,6 +43,16 @@ fn fc_bytes_concat(args: &[Value]) -> Option<Value> {
                     }
                 }
             }
+            // chunks in key order: a map keyed by arrival takes each chunk
+            // in O(log n), where appending to a buffer copies it
+            Value::Map(m) => {
+                for (_, elem) in m.into_iter() {
+                    match elem {
+                        Value::Bytes(b) => buf.extend_from_slice(b),
+                        _ => return None,
+                    }
+                }
+            }
             _ => return None,
         }
     }

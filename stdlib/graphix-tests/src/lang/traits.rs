@@ -1285,6 +1285,34 @@ run!(
     "#
 );
 
+// Many chunks join in arrival order: the defaults key them by count, so
+// the eleventh comes after the tenth.
+run!(
+    graphix_defined_reads_join_many_chunks,
+    prints(r#"["abcdefghijklmno", "pqrstuvwxyz"]"#),
+    "/test.gx" => r#"
+        use sys::io::Read;
+        type Mem = Abstract<&mut bytes>;
+        impl Read for Mem {
+            let read = |s, n| {
+                let cell = s.0;
+                let b = *cell;
+                let take = (s, n) ~ select buffer::len(b) == u64:0 {
+                    true => u64:0,
+                    false => u64:1
+                };
+                *cell <- take ~ b[take..]$;
+                take ~ b[..take]$
+            }
+        };
+        let a = buffer::from_string("abcdefghijklmnopqrstuvwxyz");
+        let b = buffer::from_string("pqrstuvwxyz");
+        let first = buffer::to_string(Read::read_exact(Mem(&mut a), u64:15)?)?;
+        let rest = buffer::to_string(Read::read_all(Mem(&mut b))?)?;
+        let result = [first, rest]
+    "#
+);
+
 // Each read_exact on one stream takes its bytes where the last left off.
 run!(
     graphix_defined_read_exact_twice,

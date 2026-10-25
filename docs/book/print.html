@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d037af67.js";
+            window.path_to_searchindex_js = "searchindex-b89a3109.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -5640,8 +5640,10 @@ val to_string_lossy: fn(b: bytes) -&gt; string;
 /// Convert a string to its UTF-8 bytes.
 val from_string: fn(s: string) -&gt; bytes;
 
-/// Concatenate bytes values.
-val concat: fn(@args: [bytes, Array&lt;bytes&gt;]) -&gt; bytes;
+/// Concatenate bytes values: a buffer, an array of them, or a map of
+/// them in key order (chunks keyed by arrival, each added in O(log n)
+/// where appending to a buffer copies it).
+val concat: fn(@args: [bytes, Array&lt;bytes&gt;, Map&lt;'k, bytes&gt;]) -&gt; bytes;
 
 /// Convert bytes to an Array&lt;u8&gt;.
 val to_array: fn(b: bytes) -&gt; Array&lt;u8&gt;;
@@ -6376,20 +6378,27 @@ trait Read {
     val read_exact: fn(self, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s, n| {
         // a new request, a new stream or a new n, starts over
         let want: u64 = (s, n) ~ n;
-        let acc: bytes = (s, n) ~ buffer::from_string("");
+        // the chunks keyed by arrival, joined once at the end: appending
+        // each to a buffer would copy everything read so far
+        let chunks: Map&lt;u64, bytes&gt; = (s, n) ~ {};
+        let count: u64 = (s, n) ~ u64:0;
+        let got: u64 = (s, n) ~ u64:0;
+        let slot = &amp;mut chunks{count};
         let chunk = read(s, want);
         select chunk {
             error as _ =&gt; filter_err(chunk),
-            // done is decided when a chunk arrives, never when acc moves
+            // done is decided when a chunk arrives, never when got moves
             bytes as b =&gt; select b ~ (buffer::len(b) == u64:0
-                || buffer::len(acc) + buffer::len(b) &gt;= n) {
-                true =&gt; b ~ buffer::concat(acc, b),
+                || got + buffer::len(b) &gt;= n) {
+                true =&gt; b ~ buffer::concat(chunks, b),
                 false =&gt; {
                     // `b ~` is load-bearing: a connect fires when its
-                    // RHS fires, and an ungated `acc &lt;- f(acc, b)`
+                    // RHS fires, and an ungated `got &lt;- f(got, b)`
                     // would re-fire on its own write — the documented
                     // counter idiom, an accumulator by accident.
-                    acc &lt;- b ~ buffer::concat(acc, b);
+                    *slot &lt;- b ~ b;
+                    count &lt;- b ~ count + u64:1;
+                    got &lt;- b ~ got + buffer::len(b);
                     want &lt;- b ~ want - buffer::len(b);
                     never()
                 }
@@ -6397,46 +6406,25 @@ trait Read {
         }
     };
 
-    // CR claude for claude: [perf/low] Every chunk does `buffer::concat(acc, b)`, which
-    // copies everything read so far, so a Graphix-defined stream reads in time
-    // quadratic in its length: 64 MB took 3.8 s against 1.3 s for 32 MB. read_exact's
-    // default does the same. Push the chunks onto an Array&lt;bytes&gt; and `buffer::concat`
-    // it once at the end. For read_exact, keep a running length beside the array.
-    // probe: design/review-2026-10-19/repro/gx-stdlib-read-all-quadratic.sh
-    // (gx-stdlib-07)
-    // 2026-10-19 claude: Not done: the Graphix default bodies in sys's io.gxi reach
-    // only core (sys depends on no array or list package), and core has no array or
-    // list append, so the chunks cannot be pushed onto an Array&lt;bytes&gt; here. A fix
-    // needs one of: sys depending on graphix-package-array for array::push, a core
-    // builtin that appends to an Array, or a recursive chunk list flattened at the end.
-    // Each is a dependency or surface choice.
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Use a recursive chunk list flattened at the end (no new dependency).
-    // 2026-10-23 claude: Back to Eric: the triage note's recursive chunk list does not
-    // help. Flattening it still concatenates growing buffers (quadratic), and the
-    // linear form is one buffer::concat over an Array&lt;bytes&gt;, which needs an append
-    // core does not have. Options: sys depends on graphix-package-array (array::push in
-    // these defaults; a package-graph change), a core builtin that appends to an Array
-    // (surface), or accept it (only a program-defined Read impl's default
-    // read_all/read_exact pays it; the built-in streams read in Rust).
-    // 2026-10-24 claude: Eric ruled (2026-10-24): accumulate the chunks in a Map keyed
-    // by arrival order, and let buffer::concat take a map of chunks as well as a single
-    // buffer and an array: N log(M) for N bytes in M chunks.
     /// Read the stream to its end and return everything it produced as
     /// one value. Reads re-arm themselves until the stream ends, so a
     /// stream that never ends (a socket the peer holds open) never
     /// produces.
     val read_all: fn(self) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s| {
         let want: u64 = u64:65536;
-        let acc: bytes = s ~ buffer::from_string("");
+        // keyed by arrival and joined once: see `read_exact`
+        let chunks: Map&lt;u64, bytes&gt; = s ~ {};
+        let count: u64 = s ~ u64:0;
+        let slot = &amp;mut chunks{count};
         let chunk = read(s, want);
         select chunk {
             error as _ =&gt; filter_err(chunk),
             bytes as b =&gt; select b ~ (buffer::len(b) == u64:0) {
-                true =&gt; b ~ acc,
+                true =&gt; b ~ buffer::concat(chunks),
                 false =&gt; {
                     // gated on the chunk: see `read_exact`
-                    acc &lt;- b ~ buffer::concat(acc, b);
+                    *slot &lt;- b ~ b;
+                    count &lt;- b ~ count + u64:1;
                     want &lt;- b ~ u64:65536;
                     never()
                 }

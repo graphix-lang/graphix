@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d037af67.js";
+            window.path_to_searchindex_js = "../searchindex-b89a3109.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -498,8 +498,10 @@ val to_string_lossy: fn(b: bytes) -&gt; string;
 /// Convert a string to its UTF-8 bytes.
 val from_string: fn(s: string) -&gt; bytes;
 
-/// Concatenate bytes values.
-val concat: fn(@args: [bytes, Array&lt;bytes&gt;]) -&gt; bytes;
+/// Concatenate bytes values: a buffer, an array of them, or a map of
+/// them in key order (chunks keyed by arrival, each added in O(log n)
+/// where appending to a buffer copies it).
+val concat: fn(@args: [bytes, Array&lt;bytes&gt;, Map&lt;'k, bytes&gt;]) -&gt; bytes;
 
 /// Convert bytes to an Array&lt;u8&gt;.
 val to_array: fn(b: bytes) -&gt; Array&lt;u8&gt;;

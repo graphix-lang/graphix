@@ -8,8 +8,10 @@ val to_string_lossy: fn(b: bytes) -> string;
 /// Convert a string to its UTF-8 bytes.
 val from_string: fn(s: string) -> bytes;
 
-/// Concatenate bytes values.
-val concat: fn(@args: [bytes, Array<bytes>]) -> bytes;
+/// Concatenate bytes values: a buffer, an array of them, or a map of
+/// them in key order (chunks keyed by arrival, each added in O(log n)
+/// where appending to a buffer copies it).
+val concat: fn(@args: [bytes, Array<bytes>, Map<'k, bytes>]) -> bytes;
 
 /// Convert bytes to an Array<u8>.
 val to_array: fn(b: bytes) -> Array<u8>;

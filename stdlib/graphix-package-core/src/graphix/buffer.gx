@@ -1,7 +1,7 @@
 let to_string = |b: bytes| -> Result<string, `EncodingError(string)> 'core_bytes_to_string;
 let to_string_lossy = |b: bytes| -> string 'core_bytes_to_string_lossy;
 let from_string = |s: string| -> bytes 'core_bytes_from_string;
-let concat = |@args: [bytes, Array<bytes>]| -> bytes 'core_bytes_concat;
+let concat = |@args: [bytes, Array<bytes>, Map<'k, bytes>]| -> bytes 'core_bytes_concat;
 let to_array = |b: bytes| -> Array<u8> 'core_bytes_to_array;
 let from_array = |a: Array<u8>| -> bytes 'core_bytes_from_array;
 let len = |b: bytes| -> u64 'core_bytes_len;
