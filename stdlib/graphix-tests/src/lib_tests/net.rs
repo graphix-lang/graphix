@@ -293,20 +293,21 @@ run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // The woken subscribe reads the path as it stands at the wake: one moved
-// while the arm slept is the one subscribed.
+// while the arm slept is the one subscribed. Each step follows the
+// delivery before it.
 run!(net_subscribe_arm_rewake_moved_path, r#"
 {
   sys::net::publish("/local/wakepath/a", "a");
   sys::net::publish("/local/wakepath/b", "b");
   let x = 0;
-  x <- sys::time::timer(duration:0.15s, true) ~ x + 1;
   let p = "/local/wakepath/a";
-  p <- select x { 1 => "/local/wakepath/b", _ => never() };
-  let flip = select x { 1 => `Off, _ => `On };
+  p <- select x { 1 => x ~ "/local/wakepath/b", _ => never() };
+  let flip = uniq(select x { 1 => `Off, _ => `On });
   let got = select flip {
     `On => { let v: string = sys::net::subscribe(p)$; v },
     `Off => "off"
   };
+  x <- count(got);
   array::group(got, |n, _| n >= 3)
 }
 "#, prints(r#"["a", "off", "b"]"#); FuseExpect::Jit);
@@ -359,16 +360,17 @@ run!(net_write_refused_cast, r#"
 }; FuseExpect::None);
 
 // A write in an arm that sleeps writes again after its wake, to the path
-// as it stands.
+// as it stands. Each x follows the write before it landing, or the sleep.
 run!(net_write_after_wake, r#"
 {
-  let x = 0;
+  let x = 1;
   let log: Array<i64> = [];
   let p = "/local/pin/wakewrite";
   sys::net::publish(#on_write: |v: i64| log <- v ~ array::push(log, v), p, 0);
-  x <- sys::time::timer(duration:20.ms, true) ~ x + 1;
   let flip = select x % 3 { 0 => `Off, _ => `On };
   select flip { `On => sys::net::write(p, x * 100), `Off => null };
+  x <- select array::len(log) { 0 => never(), n => n ~ x + 1 };
+  x <- select flip { `Off => flip ~ x + 1, `On => never() };
   select array::len(log) { 4 => log, _ => never() }
 }
 "#, |v: Result<&Value>| {
@@ -393,18 +395,21 @@ run!(net_second_subscriber, r#"
 // A reader that wakes gets the path's value though NetState held no Dval of
 // it while it slept: the rpc client the call keeps does, so netidx still
 // streams the path and sends a new reader nothing.
+// The reader starts once the call answers, sleeps once it has seen the
+// value, and wakes the cycle after.
 run!(net_rewoken_reader_of_a_held_path, r#"
 {
   sys::net::rpc(#path: "/local/pin/held", #doc: "d", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x)$;
-  let c: i64 = sys::net::call("/local/pin/held", sys::time::timer(duration:50.ms, false) ~ {x: 5})$;
+  let c: i64 = sys::net::call("/local/pin/held", {x: 5})$;
   let on = true;
-  on <- sys::time::timer(duration:150.ms, true) ~ !on;
   let b = select on {
-    true => { let x: Array<string> = sys::net::subscribe("/local/pin/held")$; x },
+    true => { let x: Array<string> = sys::net::subscribe(c ~ "/local/pin/held")$; x },
     false => ["off"]
   };
   let seen = count(select b { [s] if s == "off" => never(), x => x });
-  sys::time::timer(duration:700.ms, false) ~ (c, seen)
+  on <- select seen { 1 => seen ~ false, _ => never() };
+  on <- select on { false => on ~ true, true => never() };
+  select seen { 2 => (c, seen), _ => never() }
 }
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[0] == Value::I64(5) && matches!(a[1], Value::I64(n) if n >= 2))
@@ -444,15 +449,16 @@ run!(net_publish_path_moves_while_bottom, r#"
 }; FuseExpect::None);
 
 // A subscriber sees its publisher go away as an error, and the value again
-// when it comes back.
+// when it comes back. The publisher goes once the value is seen and comes
+// back once its loss is.
 run!(net_publisher_gone_and_back, r#"
 {
   let paths = ["/local/pin/gone"];
-  paths <- sys::time::timer(duration:200.ms, false) ~ [];
-  paths <- sys::time::timer(duration:700.ms, false) ~ ["/local/pin/gone"];
   array::map(paths, |p| sys::net::publish(p, 1));
   let v: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> =
     sys::net::subscribe("/local/pin/gone");
+  let n = count(v);
+  paths <- select n { 1 => n ~ [], 2 => n ~ ["/local/pin/gone"], _ => never() };
   array::group(v, |n, _| n == 3)
 }
 "#, |v: Result<&Value>| {
