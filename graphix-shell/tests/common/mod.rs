@@ -4,9 +4,15 @@
 
 use std::{
     fs,
+    io::Read,
     path::Path,
-    process::{Command, ExitStatus, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
+
+/// How long a run may take before it is taken for a hang.
+const HANG: Duration = Duration::from_secs(120);
 
 /// A finished run of `graphix`.
 pub struct Ran {
@@ -28,7 +34,7 @@ pub fn graphix(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -
     let logs = dir.join("log");
     let _ = fs::remove_dir_all(&logs);
     fs::create_dir_all(&logs).expect("create the log dir");
-    let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
+    let child = Command::new(env!("CARGO_BIN_EXE_graphix"))
         .arg("--no-netidx")
         .arg("--log-dir")
         .arg(&logs)
@@ -37,8 +43,11 @@ pub fn graphix(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -
         .env("XDG_CACHE_HOME", dir.join("cache"))
         .envs(env.iter().copied())
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("run graphix");
+    let out = within_deadline(child);
     let log = fs::read_dir(&logs)
         .expect("read the log dir")
         .filter_map(|e| e.ok())
@@ -50,6 +59,52 @@ pub fn graphix(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         log,
+    }
+}
+
+/// The child's output once it exits. One still running after [`HANG`] is
+/// sent SIGABRT, so systemd-coredump keeps its threads' stacks, and the
+/// test fails naming the pid to read them by.
+fn within_deadline(mut child: Child) -> std::process::Output {
+    let drain = |r: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || {
+            let mut buf = vec![];
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|r| Box::new(r) as Box<dyn Read + Send>));
+    let stderr = drain(child.stderr.take().map(|r| Box::new(r) as Box<dyn Read + Send>));
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for graphix") {
+            break status;
+        }
+        if start.elapsed() > HANG {
+            let pid = child.id();
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGABRT);
+            }
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            let _ = child.wait();
+            let stderr =
+                String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned();
+            panic!(
+                "graphix (pid {pid}) ran past {HANG:?}: aborted it for a core, read its \
+                 threads with `coredumpctl debug {pid}` then `thread apply all bt`\n\
+                 stderr:\n{stderr}"
+            )
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
     }
 }
 

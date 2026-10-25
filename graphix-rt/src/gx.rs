@@ -1555,6 +1555,20 @@ impl<X: GXExt> GX<X> {
             // 20 s. To catch it, loop the test (or the program under timeout) until one
             // hangs, then read the threads with gdb as root or `eu-stack -p`.
             // (rt-budget-hang-01)
+            // 2026-10-24 claude: Not reproduced in about 2700 more runs: 400 and 1280 warm
+            // runs at 16 and 32 parallel loops, and 1280 runs in cold_then_warm's exact
+            // sequence (a fresh cache, one cold run, four warm) at 32 loops on 16 cores.
+            // Ruled out: the eval pool (the hung process had no pool threads, so no fork
+            // had run). The main thread waits for graphix-tokio, which was parked in
+            // block_on, so Shell::run never returned; it returns when from_gx or the exit
+            // request's sender closes, and both close only when GX::run returns and the GX
+            // drops. So either the run loop never saw the abort (a budget abort sets
+            // Control's Abort flag without notifying the run loop's Notify, which only
+            // GXHandle::abort does) or the GX teardown blocked; no blocking Drop was found
+            // on that path. Trap for the next one:
+            // graphix-shell/tests/common/mod.rs::graphix now gives a run 120 s, then sends
+            // it SIGABRT and fails naming the pid, so coredumpctl debug <pid> then thread
+            // apply all bt shows every thread (checked on a run that never exits).
             if self.ctx.control.aborted() {
                 return Ok(());
             }
