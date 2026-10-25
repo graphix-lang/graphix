@@ -1483,7 +1483,17 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         };
         queue_args.push((Some(label), r#ref(pos, &event)));
     }
-    queue_args.push((None, sample(pos, r#ref(pos, &request), payload)));
+    // every queued request is paid its captures, however many find one
+    // absent
+    queue_args.push((
+        None,
+        ExprKind::BinOp {
+            op: BinOp::BankedSample,
+            lhs: Arc::new(r#ref(pos, &request)),
+            rhs: Arc::new(payload),
+        }
+        .to_expr(pos),
+    ));
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
     let mut field = 0;
     for (var, (live, name, _)) in captures.iter() {

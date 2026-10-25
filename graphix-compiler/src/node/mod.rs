@@ -2461,9 +2461,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 enum Banking {
     /// `~!`: the trigger produces bottom and banks nothing.
     Strict,
-    /// `~`: the trigger is banked and paid through the private `id` at
-    /// the RHS's first value.
-    Debt { triggered: usize, id: BindId },
+    /// `~`: a trigger that finds the RHS absent is banked, and what is
+    /// owed is paid through the private `id` at the RHS's value.
+    Debt { owed: u64, each: Owed, id: BindId },
+}
+
+/// What a banking sample owes the triggers that found its argument absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Owed {
+    /// One payment however many fired: `~`.
+    One,
+    /// A payment per trigger: the `seqq` request queue's
+    /// (`BinOp::BankedSample`).
+    Each,
 }
 
 #[derive(Debug)]
@@ -2485,11 +2495,15 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
+        let each = match bool::decode(buf)? {
+            true => Owed::Each,
+            false => Owed::One,
+        };
         let banking = match Option::<BindId>::decode(buf)? {
             None => Banking::Strict,
             Some(id) => {
                 ctx.record_ref(id, top_id);
-                Banking::Debt { triggered: 0, id }
+                Banking::Debt { owed: 0, each, id }
             }
         };
         let trigger = decode_node(ctx, buf)?;
@@ -2513,14 +2527,15 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         top_id: ExprId,
         lhs: &Arc<Expr>,
         rhs: &Arc<Expr>,
-        strict: bool,
+        owed: Option<Owed>,
     ) -> Result<Node<R, E>> {
-        let banking = if strict {
-            Banking::Strict
-        } else {
-            let id = BindId::new();
-            ctx.record_ref(id, top_id);
-            Banking::Debt { triggered: 0, id }
+        let banking = match owed {
+            None => Banking::Strict,
+            Some(each) => {
+                let id = BindId::new();
+                ctx.record_ref(id, top_id);
+                Banking::Debt { owed: 0, each, id }
+            }
         };
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
         let arg = Held::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
@@ -2561,15 +2576,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         self.top_id.encode(buf)?;
+        matches!(self.banking, Banking::Debt { each: Owed::Each, .. }).encode(buf)?;
         self.debt_id().encode(buf)?;
         self.trigger.image_encode(buf)?;
         self.arg.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        // only a fired trigger samples or banks debt
-        let t = self.trigger.update(ctx);
-        // CR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
+        // CR claude for eric: [bug/low] A bottom trigger is not `is_fired`, so both `~`
         // and `~!` ride their resident while the trigger is bottom. The sample keeps
         // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
         // design/dense_delivery.md R3 has a consumed bottom bottom the production. Its
@@ -2582,7 +2596,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // (x-engine-firing-04)
         // 2026-10-24 claude: Eric ruled (2026-10-24): try it: a sample goes bottom with
         // its trigger (dense_delivery R1/R3), and see how much it breaks.
-        let fired = t.tag().is_fired();
+        // 2026-10-25 claude: Tried (bottom the sample when its trigger is bottom, debt
+        // kept): 48 fixtures fail, 196 runs. The cause is one idiom: an event written as
+        // a select with never() arms (select step { 2 => null, _ => never() }) stands
+        // bottom between its fires, and `t ~ v` over it is how a program samples on it;
+        // with the change the sample is bottom at every cycle but the fire, so a tuple or
+        // select over it never produces (lang::byref::place_bottom_key hangs on (t3 ~ a,
+        // t5 ~ a, ..)). The seq lowering samples its pc and step events the same way,
+        // which is most of the failures (seq, seqq, seq_errors, seq_abort). Reverted; the
+        // sample rides a bottom trigger as before. The rule wants a decision on that
+        // idiom: either a bottom trigger keeps the ride (named as R3's fourth designated
+        // ride), or events are written some other way than never() arms. Readdressed to
+        // eric.
+        let fired = self.trigger.update(ctx).tag().is_fired();
         self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
             Banking::Strict => {
@@ -2594,11 +2620,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
                     (false, _, _) => self.resident.ride(),
                 };
             }
-            Banking::Debt { triggered, id } => (triggered, *id),
+            Banking::Debt { owed, each, id } => match (fired, each) {
+                (true, Owed::One) => {
+                    *owed = 1;
+                    (owed, *id)
+                }
+                (true, Owed::Each) => {
+                    *owed += 1;
+                    (owed, *id)
+                }
+                (false, _) => (owed, *id),
+            },
         };
-        if fired {
-            *triggered += 1;
-        }
         let var = ctx.event.variables.get(&id).cloned();
         // a banked trigger is answered from the held arg this cycle; the
         // rest of the debt is paid through `id`
@@ -2612,21 +2645,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         if let Some(v) = &self.arg.value
             && !self.arg.tag.is_bottom()
         {
-            // CR claude for claude: [risk/low] A banked `~` pays every trigger that found
-            // its argument absent. This loop queues one set_var per missed trigger, all
-            // in the cycle the argument arrives, and the runtime then delivers them one
-            // per cycle. `timer(10ms) ~ v`, with v arriving after 500 ms, replays about
-            // 50 stale ticks back to back. A 1 ms clock over an hour-long subscription
-            // queues about 3.6M writes at once. The burst and the growth are documented
-            // nowhere: the book's select.md says only "`~` still banks". If per-fire
-            // payment is the contract, document the burst beside `~!` in
-            // book/src/core/select.md and bound the debt, either by saturating it or by
-            // paying it as one write that carries a count. If it is not, bank a single
-            // pending trigger (a bool). probe:
-            // design/review-2026-10-12/repro/x-engine-firing-04.gx (x-engine-firing-05)
-            // 2026-10-24 claude: Eric ruled (2026-10-24): bank one: a ~ that finds its
-            // argument absent banks a single pending trigger, paid once when the
-            // argument arrives.
             for _ in 0..mem::take(triggered) {
                 ctx.rt.set_var(id, v.clone());
             }

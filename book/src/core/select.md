@@ -535,4 +535,6 @@ select k.code {
 ```
 
 `e ~! v` is the strict sample: `v` at each fire of `e`, and bottom
-with no bank when `v` is bottom. `~` still banks.
+with no bank when `v` is bottom. `~` still banks: the fires that find
+`v` absent are paid once, with `v`'s first value, however many there
+were.

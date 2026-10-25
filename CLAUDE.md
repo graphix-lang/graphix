@@ -870,8 +870,10 @@ cycle, across workers; the compiler never pins threads.
 
 ## Language features (current)
 
-- **Sampling**: `e ~ v` is `v` at each fire of `e`, banking a trigger
-  that finds `v` absent; `e ~! v` is strict (bottom, no bank). A connect
+- **Sampling**: `e ~ v` is `v` at each fire of `e`, banking one trigger
+  however many find `v` absent, paid once when `v` arrives (the `seqq`
+  lowering's own `BinOp::BankedSample` pays each); `e ~! v` is strict
+  (bottom, no bank). A connect
   writes when its RHS fires; a constant RHS in an arm fires only at the
   arm's first entry, and the definition's check warns of it (and of an
   effect call reading no variable, or a `seq` with no trigger, there:

@@ -2327,8 +2327,10 @@ const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
 // The history: `Bad arrives with the error at step 3 and at no other step.
 run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, prints(r#"[[i64:0, "None"], [i64:1, "None"], [i64:2, "None"], [i64:3, "Bad"]]"#); FuseExpect::Jit);
 
-// `~` banks triggers that find `v` absent (three banked writes and the
-// live one, four); `~!` drops them (one write).
+// `~` banks one trigger however many find `v` absent, and pays it with
+// `v`'s first value: `v` lands with the live trigger at step 6, so the
+// three banked and the live one are one write; `~!` drops the banked ones
+// (one write) (x-engine-firing-05).
 const STRICT_SAMPLE_NO_BANK: &str = r#"
 {
   let step = 0;
@@ -2344,7 +2346,7 @@ const STRICT_SAMPLE_NO_BANK: &str = r#"
 }
 "#;
 
-run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, prints("[i64:4, i64:1]"); FuseExpect::Jit);
+run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, prints("[i64:1, i64:1]"); FuseExpect::Jit);
 
 // A write arm under a scrutinee that starts as `never()` wakes on the
 // first delivery and the nested write fires.

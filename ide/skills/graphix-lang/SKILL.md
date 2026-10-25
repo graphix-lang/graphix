@@ -58,8 +58,8 @@ constant argument to `exit` runs at init — always gate it).
   a dead arm. Annotate the let with the union the reader will match:
   `let r: [i64, Error<`E>] = select ..`.
 - **`~` banks, `~!` does not**: `e ~ v` is `v` at each fire of `e`, and a
-  fire that finds `v` absent is paid when `v` first arrives; `e ~! v` is
-  bottom then. Use `~!` when a late payment would be a phantom event.
+  fire that finds `v` absent is paid when `v` first arrives, once however
+  many fired meanwhile; `e ~! v` is bottom then. Use `~!` when a late payment would be a phantom event.
 - **`seqq` reads the world once per run, `seq` once per step**: `seqq`
   captures every outer variable the body only reads along with the
   queued request, so two steps see the same `known`. Under `seq` a later

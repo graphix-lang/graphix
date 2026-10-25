@@ -1,5 +1,5 @@
 use super::{
-    Any, Block, Connect, ConnectDeref, Constant, Never, Sample, StringInterpolate,
+    Any, Block, Connect, ConnectDeref, Constant, Never, Owed, Sample, StringInterpolate,
     TypeCast,
     array::{Array, ArrayRef, ArraySlice, ListLit},
     bind::{Bind, ByRef, Deref, Ref},
@@ -616,11 +616,28 @@ fn compile_kind<R: Rt, E: UserEvent>(
             BinOp::CheckedDiv => binop!(CheckedDiv, lhs, rhs),
             BinOp::Mod => binop!(Mod, lhs, rhs),
             BinOp::CheckedMod => binop!(CheckedMod, lhs, rhs),
-            BinOp::Sample => {
-                Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, false)
-            }
+            BinOp::Sample => Sample::compile(
+                ctx,
+                flags,
+                spec.clone(),
+                scope,
+                top_id,
+                lhs,
+                rhs,
+                Some(Owed::One),
+            ),
+            BinOp::BankedSample => Sample::compile(
+                ctx,
+                flags,
+                spec.clone(),
+                scope,
+                top_id,
+                lhs,
+                rhs,
+                Some(Owed::Each),
+            ),
             BinOp::StrictSample => {
-                Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, true)
+                Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, None)
             }
         },
     }

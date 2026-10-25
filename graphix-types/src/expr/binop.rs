@@ -24,6 +24,10 @@ pub enum BinOp {
     CheckedMod,
     Sample,
     StrictSample,
+    /// `~` paying every trigger that found its argument absent, where `~`
+    /// banks one: built only by a lowering (the `seqq` request queue),
+    /// never parsed, printed as `~`.
+    BankedSample,
 }
 
 impl BinOp {
@@ -83,7 +87,7 @@ impl BinOp {
             BinOp::CheckedDiv => "/?",
             BinOp::Mod => "%",
             BinOp::CheckedMod => "%?",
-            BinOp::Sample => "~",
+            BinOp::Sample | BinOp::BankedSample => "~",
             BinOp::StrictSample => "~!",
         }
     }
@@ -101,7 +105,7 @@ impl BinOp {
     /// Higher binds tighter.
     pub fn precedence(self) -> u8 {
         match self {
-            BinOp::Sample | BinOp::StrictSample => 0,
+            BinOp::Sample | BinOp::StrictSample | BinOp::BankedSample => 0,
             BinOp::Or => 1,
             BinOp::And => 2,
             BinOp::Eq | BinOp::Ne => 3,
