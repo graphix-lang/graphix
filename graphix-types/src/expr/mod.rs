@@ -1,7 +1,7 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
-    rep,
+    list, rep,
     typ::{FnType, Mutability, TVar, Type},
 };
 use arcstr::{ArcStr, literal};
@@ -12,7 +12,7 @@ pub use context::{At, ErrorContext, ErrorSite, ParserContext};
 pub use modpath::ModPath;
 use netidx_core::{pack::PackError, path::Path};
 use netidx_derive::Pack;
-use netidx_value::Value;
+use netidx_value::{ValArray, Value};
 pub use pattern::union_members;
 pub use pattern::{Pattern, StructurePattern};
 use poolshark::local::LPooled;
@@ -1292,6 +1292,45 @@ impl PartialEq for Expr {
 }
 
 impl Expr {
+    /// The value this expression writes when it is a literal: a constant,
+    /// or an array, list, map, tuple, struct or variant of literals.
+    pub fn literal_value(&self) -> Option<Value> {
+        fn all(args: &[Expr]) -> Option<LPooled<Vec<Value>>> {
+            let mut vals: LPooled<Vec<Value>> = LPooled::take();
+            for a in args {
+                vals.push(a.literal_value()?)
+            }
+            Some(vals)
+        }
+        crate::stack::ensure_sufficient(|| match &self.kind {
+            ExprKind::Constant(v) => Some(v.clone()),
+            ExprKind::ExplicitParens(e) => e.literal_value(),
+            ExprKind::Array { args } => {
+                Some(Value::Array(ValArray::from_iter_exact(all(args)?.drain(..))))
+            }
+            ExprKind::List { args } => Some(list::from_iter(all(args)?.drain(..))),
+            ExprKind::Tuple { args } => Some(rep::tuple(all(args)?.drain(..))),
+            ExprKind::Variant { tag, args } => {
+                Some(rep::make_variant(tag.clone(), all(args)?.drain(..)))
+            }
+            ExprKind::Struct(StructExpr { args }) => {
+                let mut fields: LPooled<Vec<(ArcStr, Value)>> = LPooled::take();
+                for (name, e) in args.iter() {
+                    fields.push((name.clone(), e.literal_value()?))
+                }
+                Some(rep::structure(fields.drain(..)))
+            }
+            ExprKind::Map { args } => {
+                let mut pairs: LPooled<Vec<(Value, Value)>> = LPooled::take();
+                for (k, v) in args.iter() {
+                    pairs.push((k.literal_value()?, v.literal_value()?))
+                }
+                Some(Value::Map(netidx_value::Map::from_iter(pairs.drain(..))))
+            }
+            _ => None,
+        })
+    }
+
     /// Record where the expression's text ends. The first writer is the
     /// parser nearest the node, so it wins.
     pub fn ending(mut self, end: SourcePosition) -> Self {

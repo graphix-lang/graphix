@@ -541,6 +541,31 @@ run!(
     )
 );
 
+// parse reads what Graphix prints: a string as its text, anything else
+// as a literal cast to the target, or as bare text the cast reads
+// (collections-str-06, x-builtin-effects-07).
+run!(
+    parse_reads_what_graphix_prints,
+    r#"{
+  type E = `ParseError(string);
+  let t = (1, "a");
+  let s = {x: 1, y: [<2, 3>]};
+  let v: [`A, `B(i64)] = `B(3);
+  let m = {"k" => [1.5]};
+  let pt: Result<(i64, string), E> = str::parse("[t]");
+  let ps: Result<{x: i64, y: List<i64>}, E> = str::parse("[s]");
+  let pv: Result<[`A, `B(i64)], E> = str::parse("[v]");
+  let pm: Result<Map<string, Array<f64>>, E> = str::parse("[m]");
+  let a: Result<string, E> = str::parse("4.20");
+  let b: Result<string, E> = str::parse("007");
+  let d: Result<datetime, E> = str::parse("2020-01-01T00:00:00Z");
+  let n: Result<(i64, i64), E> = str::parse("(1, x)");
+  let n = select n { error as _ => "refused", _ => "read" };
+  (pt$ == t, ps$ == s, pv$ == v, pm$ == m, a$, b$, d$ == datetime:"2020-01-01T00:00:00Z", n)
+}"#,
+    prints(r#"[true, true, true, true, "4.20", "007", true, "refused"]"#)
+);
+
 // sprintf prints a composite as interpolation does, never its kind
 // marker, and refuses to pad past its cap rather than allocate without
 // bound (x-builtin-effects-01, collections-str-01, x-panics-05,

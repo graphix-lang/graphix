@@ -33,17 +33,4 @@ let sprintf = |fmt: string, @args: Any| -> Result<string, `FormatError(string)> 
 let len = |s: string| -> i64 'str_len;
 let char_len = |s: string| -> i64 'str_char_len;
 let sub = |#start: i64, #len: i64, s: string| -> Result<string, `SubError(string)> 'str_sub;
-// CR claude for claude: [bug/low] parse reads netidx value-literal syntax and then casts,
-// but Graphix prints composites in its own syntax. So parse refuses what interpolation
-// or println wrote for the same type: "(1, \"a\")", "{x: 1}" and "`B(3)" are all
-// ParseErrors. A plain string target also needs the text quoted. json::read reads back
-// what json::write_str writes; parse has no such round trip, and the gxi says only
-// "parse the specified string as a value". Decide which syntax parse reads. Either
-// accept the printed data-literal forms, or document the netidx syntax in mod.gxi and
-// point to json for round trips. probe:
-// design/review-2026-10-19/repro/x-builtin-effects-parse-printed-forms.gx
-// (x-builtin-effects-07)
-// 2026-10-24 claude: Eric ruled (2026-10-24): parse reads what Graphix prints: the text
-// parsed by Graphix's own parser restricted to literals, then cast to the target; a
-// string or scalar target also takes bare text.
 let parse = 'b: Concrete |s: string| -> Result<'b, `ParseError(string)> 'str_parse

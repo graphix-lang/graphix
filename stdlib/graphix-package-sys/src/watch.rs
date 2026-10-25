@@ -162,33 +162,7 @@ struct WatcherValue {
     idmap: Arc<Mutex<AHashMap<Id, BindId>>>,
 }
 
-impl PartialEq for WatcherValue {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.idmap, &other.idmap)
-    }
-}
-
-impl Eq for WatcherValue {}
-
-impl PartialOrd for WatcherValue {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for WatcherValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        Arc::as_ptr(&self.idmap).cmp(&Arc::as_ptr(&other.idmap))
-    }
-}
-
-impl Hash for WatcherValue {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.idmap).hash(state)
-    }
-}
-
-graphix_package_core::impl_no_pack!(WatcherValue);
+graphix_package_core::impl_abstract_arc!(@identity WatcherValue.idmap);
 
 impl WatcherValue {
     fn add(

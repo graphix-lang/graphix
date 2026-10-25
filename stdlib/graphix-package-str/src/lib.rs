@@ -9,14 +9,14 @@ use escaping::Escape;
 use graphix_compiler::{
     env::Env,
     err, errf,
-    expr::split_escaped,
+    expr::{Expr, split_escaped},
     rep,
     typ::{FnType, TVal, Type},
 };
 use graphix_package_core::{ErrorText, FastMemo, cast_target};
 use netidx::{path::Path, subscriber::Value};
 use netidx_derive::FromValue;
-use netidx_value::ValArray;
+use netidx_value::{Typ, ValArray};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -485,34 +485,21 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     let Some(typ) = cast_target(&ft.rtype) else {
         return Some(errf!(TAG, "parse requires a concrete type annotation"));
     };
-    // CR claude for claude: [bug/medium] parse reads the text as a netidx literal before
-    // casting, so text that is not a literal fails even where the cast would succeed.
-    // parse<string>("abc") is a ParseError, parse<string>("007") is "7" and
-    // parse<string>("4.20") is "4.2", and parse<datetime>("2020-01-01T00:00:00Z") fails
-    // while cast<datetime> of the same string works. This needs a rule. One option:
-    // cast the String itself when the target holds string or the literal parse fails,
-    // and keep the literal parse for collection syntax. probe:
-    // design/review-2026-10-19/repro/collections-str-parse-not-cast.gx
-    // (collections-str-06)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): parse reads what Graphix prints: the
-    // text parsed by Graphix's own parser restricted to literals, then cast to the
-    // target; a string or scalar target also takes bare text.
-    if let Type::Primitive(p) = &typ
-        && !p.is_empty()
-        && p.iter().all(|t| t.is_number())
-    {
-        return Some(match typ.cast_value(env, Value::String(s.clone())) {
-            Value::Error(_) => errf!(TAG, "cannot parse {s:?} as {typ}"),
-            v => v,
-        });
-    }
-    Some(match s.parse::<Value>() {
-        Ok(Value::Error(e)) => errf!(TAG, "{}", ErrorText(&e)),
-        Ok(v) => match typ.cast_value(env, v) {
+    // a string prints as its text, and a number as text the cast reads
+    let parsed = match &typ {
+        Type::Primitive(p) if *p == Typ::String => return Some(Value::String(s.clone())),
+        Type::Primitive(p) if !p.is_empty() && p.iter().all(|t| t.is_number()) => None,
+        _ => s.parse::<Expr>().ok().and_then(|e| e.literal_value()),
+    };
+    Some(match parsed {
+        Some(v) => match typ.cast_value(env, v) {
             Value::Error(e) => errf!(TAG, "{}", ErrorText(&e)),
             v => v,
         },
-        Err(_) => errf!(TAG, "cannot parse {s:?} as {typ}"),
+        None => match typ.cast_value(env, Value::String(s.clone())) {
+            Value::Error(_) => errf!(TAG, "cannot parse {s:?} as {typ}"),
+            v => v,
+        },
     })
 }
 

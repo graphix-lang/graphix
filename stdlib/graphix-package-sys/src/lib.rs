@@ -460,34 +460,6 @@ impl<K: StreamMark> PartialOrd for Stream<K> {
     }
 }
 
-// CR claude for claude: [risk/low] Stream orders and hashes by Arc address, as do
-// ProcValue, TcpListenerValue, WatcherValue and every type built by core's
-// impl_abstract_arc!. `a < b`, sort, min/max and map key order over two handles
-// therefore change from run to run. A program over handles is nondeterministic, and a
-// fuzzer run comparing two processes can diverge on it. Either refuse `Ordered` for
-// abstract handle types in the checker, as for references and functions, or give each
-// handle a creation ordinal (an atomic_id!) to order and hash by. Either way, the four
-// hand-written impls in sys should become impl_abstract_arc!. probe:
-// design/review-2026-10-12/repro/sys-io-09-handle-order-nondeterministic.gx (sys-io-09)
-// 2026-10-24 claude: Eric ruled (2026-10-24): keep ordering and hashing handles by
-// address, and document in sys's gxi that they order by identity: stable within a run,
-// not between runs.
-// CR claude for claude: [bug/medium] Stream handles order and hash by `Arc::as_ptr`.
-// Because `Ordered` admits them as map keys and sort elements, `map::fold` over a Map
-// keyed by handles and `array::sort` of handles give a different order on each run.
-// With the same program, stdout/stderr/stdin keys folded to [3, 2, 1], [2, 3, 1] and
-// [3, 1, 2] on different runs (probe: design/review-2026-10-12/repro/sys-net-05.gx).
-// Other code repeats the same address identity: `TcpListenerValue` and `WatcherValue`
-// in this crate, core's `impl_abstract_arc!(@identity)` (used by the db, sqlite and
-// http handles), and netidx-admin's `Staged`. Two fixes are possible. The first: refuse
-// Rust-backed handle types under `Ordered`, keep `==` by identity, and treat them like
-// references and functions. The second: order and hash them by a creation id minted in
-// `impl_abstract_arc` and used by every hand-rolled copy. Under parallel eval such an
-// id still depends on scheduling (see the "Ids" table in design/parallel_eval.md).
-// Choosing between them is a language rule. (sys-net-05)
-// 2026-10-24 claude: Eric ruled (2026-10-24): keep ordering and hashing handles by
-// address, and document in sys's gxi that they order by identity: stable within a run,
-// not between runs.
 impl<K: StreamMark> Ord for Stream<K> {
     fn cmp(&self, other: &Self) -> Ordering {
         Arc::as_ptr(&self.inner).cmp(&Arc::as_ptr(&other.inner))

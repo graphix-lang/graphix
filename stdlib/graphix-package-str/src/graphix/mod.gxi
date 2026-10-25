@@ -110,7 +110,10 @@ val char_len: fn(s: string) -> i64;
 /// will return "💖💖"
 val sub: fn(#start:i64, #len:i64, s: string) -> Result<string, `SubError(string)>;
 
-/// parse the specified string as a value. return the value on success or an
-/// error on failure. Note, if you feed the parser a well formed error then
-/// parse will also return an error
+/// parse `s` as a value of the annotated type, reading what Graphix
+/// prints for one. A string is the text itself. Any other type reads the
+/// text as a literal (a number, string, bool, null, datetime, duration or
+/// bytes, or an array, list, map, tuple, struct or variant of literals)
+/// cast to the type, or, where the text is no literal, the text cast to
+/// the type, so a number or an RFC3339 datetime reads bare.
 val parse: fn<'b: Concrete>(s: string) -> Result<'b, `ParseError(string)>;

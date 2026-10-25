@@ -7,6 +7,10 @@ child process's pipe) is its own type, and the `Read`, `Lines`, `Write`,
 `Close` and `Seek` traits give them the same operations; see
 [sys::io](sys/io.md).
 
+A handle (a stream, a listener, a process, a watcher) is equal only to
+itself. Handles order and hash by identity, so a sort of handles, or a
+map keyed by them, is stable within a run but not between runs.
+
 | Module | Purpose |
 |--------|---------|
 | `sys::io` | The stream traits, stdin/stdout/stderr |

@@ -9,8 +9,6 @@ use netidx_derive::{FromValue, IntoValue};
 use netidx_value::{FromValue as _, Value};
 use poolshark::local::LPooled;
 use std::{
-    cmp::Ordering,
-    hash::{Hash, Hasher},
     process::{ExitStatus as StdExitStatus, Stdio as ProcessStdio},
     sync::OnceLock,
     time::Duration,
@@ -110,33 +108,7 @@ pub(crate) struct ProcValue {
     inner: Arc<ManagedProc>,
 }
 
-impl PartialEq for ProcValue {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
-}
-
-impl Eq for ProcValue {}
-
-impl PartialOrd for ProcValue {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ProcValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (&*self.inner as *const ManagedProc).cmp(&(&*other.inner as *const ManagedProc))
-    }
-}
-
-impl Hash for ProcValue {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        (&*self.inner as *const ManagedProc).hash(state)
-    }
-}
-
-graphix_package_core::impl_no_pack!(ProcValue);
+graphix_package_core::impl_abstract_arc!(@identity ProcValue);
 
 graphix_package_core::abstract_wrapper!(
     ProcValue,

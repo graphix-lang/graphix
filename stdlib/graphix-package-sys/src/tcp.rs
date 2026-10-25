@@ -3,11 +3,7 @@ use compact_str::format_compact;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, Calls, EvalCachedAsync};
 use netidx_value::Value;
-use std::{
-    cmp::Ordering,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::{Halves, StreamKind, get_stream, stream_of, wrap_tcp};
@@ -17,33 +13,7 @@ pub(crate) struct TcpListenerValue {
     listener: Arc<TcpListener>,
 }
 
-impl PartialEq for TcpListenerValue {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.listener, &other.listener)
-    }
-}
-
-impl Eq for TcpListenerValue {}
-
-impl PartialOrd for TcpListenerValue {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for TcpListenerValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        Arc::as_ptr(&self.listener).cmp(&Arc::as_ptr(&other.listener))
-    }
-}
-
-impl Hash for TcpListenerValue {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.listener).hash(state)
-    }
-}
-
-graphix_package_core::impl_no_pack!(TcpListenerValue);
+graphix_package_core::impl_abstract_arc!(@identity TcpListenerValue.listener);
 
 graphix_package_core::abstract_wrapper!(
     TcpListenerValue,

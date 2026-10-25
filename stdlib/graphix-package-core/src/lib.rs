@@ -360,7 +360,9 @@ macro_rules! impl_no_pack {
 
 /// Generates `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, `impl_no_pack!`,
 /// and the `LazyLock<AbstractWrapper<T>>` static for an abstract value type
-/// whose identity is determined by `Arc::as_ptr(&self.inner)`.
+/// whose identity is the address its `inner` Arc points at (`@identity
+/// T.field` names another field): equal only to itself, ordered and hashed
+/// by that address, so its order holds within a run and not between runs.
 #[macro_export]
 macro_rules! impl_abstract_arc {
     ($name:ident, $wrapper_vis:vis static $wrapper:ident = $path:literal) => {
@@ -368,9 +370,12 @@ macro_rules! impl_abstract_arc {
         $crate::abstract_wrapper!($name, $wrapper_vis static $wrapper = $path);
     };
     (@identity $name:ident) => {
+        $crate::impl_abstract_arc!(@identity $name.inner);
+    };
+    (@identity $name:ident . $field:ident) => {
         impl PartialEq for $name {
             fn eq(&self, other: &Self) -> bool {
-                std::sync::Arc::ptr_eq(&self.inner, &other.inner)
+                std::ptr::eq(&*self.$field, &*other.$field)
             }
         }
         impl Eq for $name {}
@@ -381,12 +386,12 @@ macro_rules! impl_abstract_arc {
         }
         impl Ord for $name {
             fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                std::sync::Arc::as_ptr(&self.inner).addr().cmp(&std::sync::Arc::as_ptr(&other.inner).addr())
+                (&raw const *self.$field).addr().cmp(&(&raw const *other.$field).addr())
             }
         }
         impl std::hash::Hash for $name {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                std::sync::Arc::as_ptr(&self.inner).hash(state)
+                (&raw const *self.$field).addr().hash(state)
             }
         }
         $crate::impl_no_pack!($name);

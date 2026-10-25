@@ -1,3 +1,6 @@
+// A handle (a stream, a listener, a process, a watcher) is equal only to
+// itself, and handles order and hash by identity: an order, a sort or a
+// map keyed by handles is stable within a run, not between runs.
 mod io;
 mod fs;
 mod process;
