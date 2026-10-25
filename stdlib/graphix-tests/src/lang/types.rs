@@ -1211,6 +1211,17 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(_)))
 );
 
+// A returned closure's default that reads the factory's parameter ties
+// the closure's parameter to it, so the factory's check reaches the cell
+// and the check agrees with the build.
+run!(
+    default_reads_the_factorys_parameter,
+    "{ let mk = |z| { let g = |#d = z, x| [d, x]; g }; let f = mk(1); \
+       [f(2), f(#d: 5, 3)] }",
+    prints("[[i64:1, i64:2], [i64:5, i64:3]]");
+    FuseExpect::None
+);
+
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {
   let x = never();

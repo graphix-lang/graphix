@@ -1592,7 +1592,7 @@ impl Receipts {
 
     /// Acknowledge every raise not taken yet, so no enclosing handler
     /// waits on them; their deliveries are passed over.
-    // CR claude for claude: [bug/high] give_up acks raises whose deliveries have not
+    // CR claude for eric: [bug/high] give_up acks raises whose deliveries have not
     // landed yet. A delivery that then lands while the catch is asleep is never seen by
     // take, so `arrived` lags `acked` after the wake. The next real raises are then
     // passed over as given up, and handled() is never called for them. The ancestors'
@@ -1608,6 +1608,20 @@ impl Receipts {
     // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
     // needed. Take the counting fix; the wake question follows wake catch-up: a catch
     // hears, once, the deliveries that landed while it slept, and Receipts agree.
+    // 2026-10-25 claude: Tried 2026-10-25, needs a decision before code. A delivery
+    // reaches the catch through its error variable, one a cycle, and lands in the
+    // runtime with no hook that knows the handler; a sleeping catch reads none of them,
+    // and at its wake catch-up re-raises them as one fire at the latest value. So
+    // Receipts cannot count landings by observing them, and an ordinal recorded at
+    // raise or at deliver_error is issue order, not landing. The triage's 'hears, once,
+    // at its wake, and Receipts agree' leaves a choice: (a) a sleeping catch no longer
+    // gives its in-flight raises up: the handler hears them at the wake and Receipts
+    // ack them then, but an enclosing seq step waits on them for as long as the catch
+    // sleeps, forever if its arm never wakes; or (b) give_up stays at sleep (ancestors
+    // never wait) and the one catch-up fire at the wake counts as every given-up
+    // delivery that landed (arrived catches up to acked), the handler's run on it
+    // passed over; Receipts then agree, but the handler does not hear those errors.
+    // Readdressed to eric for the choice.
     fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
         while self.acked < handler.raised() {
             self.acked += 1;

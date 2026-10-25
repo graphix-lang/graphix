@@ -1925,6 +1925,30 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
     }
 }
 
+/// Whether `t` holds an open cell a definition enclosing one at `depth`
+/// owns.
+fn holds_enclosing_cell(t: &Type, depth: u32) -> bool {
+    fn go(t: &Type, depth: u32, seen: &mut AHashSet<usize>) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                seen.insert(tv.cell_addr())
+                    && match tv.binding() {
+                        Some(b) => go(&b, depth, seen),
+                        None => {
+                            matches!(tv.level(), Level::Def { depth: d, .. } if d < depth)
+                        }
+                    }
+            }
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found = found || go(c, depth, seen));
+                found
+            }
+        })
+    }
+    go(t, depth, &mut LPooled::take())
+}
+
 /// The definition's check of its labeled defaults, under the gate:
 /// each default compiles in the def's scope and must fit its parameter.
 /// Against a declared tvar it must fit the tvar's constraints, not the
@@ -1943,22 +1967,6 @@ fn check_defaults<R: Rt, E: UserEvent>(
         }
         DefOrigin::Runtime => return Ok(()),
     };
-    // CR claude for claude: [bug/high] An open parameter type is only narrowed by its
-    // default's conjuncts here, never linked to the default's type. In `let mk = |z| {
-    // let g = |#d = z, x| [d, x]; g }` nothing then reaches z's cell, and mk's gate
-    // settles z to ⊥ in its DefTable. The call check reopens that vacuous ⊥ and accepts
-    // `mk(1)`, and the build refuses the instance (`an instance at fn(z: i64) -> .. of
-    // a definition typed fn(z: _) -> ..`). A closure factory whose returned lambda
-    // defaults a label to the factory's parameter never compiles, while --check and the
-    // LSP call it clean. It works when z is annotated or when mk calls g itself. Decide
-    // which way to fix it: tie an open parameter to its default's type when that type
-    // holds an enclosing open gate's cell, or have the gate keep any cell a nested
-    // default reads generic rather than settling it to ⊥. probe:
-    // design/review-2026-10-19/repro/x-typecheck-generics-default-reads-outer-param.gx
-    // (x-typecheck-generics-01)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Tie an open parameter to its default's type when that type holds an
-    // enclosing gate's cell, so the check agrees with the build.
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
         let mut node = ctx.with_restored(def.env.clone(), |ctx| {
@@ -1967,6 +1975,16 @@ fn check_defaults<R: Rt, E: UserEvent>(
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
             match &at.typ {
+                // a default reading an enclosing definition's open cell
+                // gives the parameter that cell's type: nothing else would
+                // reach the cell, and its definition would settle it to ⊥
+                Type::TVar(tv)
+                    if !tv.is_bound()
+                        && !tv.is_rigid()
+                        && holds_enclosing_cell(&typ, def.level.depth()) =>
+                {
+                    at.typ.check_contains(&ctx.env, &typ)
+                }
                 // each conjunct narrows the default's open cells, which
                 // may be the environment's, rather than deciding them
                 Type::TVar(tv) if !tv.is_bound() => tv
