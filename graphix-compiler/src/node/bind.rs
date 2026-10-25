@@ -602,7 +602,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
             // an abstract type's parameters are invariant: the annotation,
             // not the payload, decides a constructed value's
-            // CR claude for claude: [bug/medium] With invariant abstract parameters,
+            // CR claude for eric: [bug/medium] With invariant abstract parameters,
             // `Box(1)` is typed `Box<i64>` eagerly. A wider annotation can only decide
             // the parameter here (a let whose initializer is itself the construction)
             // and at call arguments (`pre_unify_arg`, which does not look inside an
@@ -624,6 +624,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             // design/review-2026-10-12/repro/x-fix-types-07.sh (x-fix-types-07)
             // 2026-10-24 claude: Eric ruled (2026-10-24): fresh cell: T(v) gets a fresh
             // parameter cell the payload bounds from below, so the context decides it.
+            // 2026-10-25 claude: Tried the ruling as a deferred judgment: T(v) left its
+            // parameter cells open and a PendingSettle::LowerBound, judged after the
+            // frame's sites and before its cells settle (and at a definition gate's
+            // close, before the signature generalizes), bound what nothing decided to
+            // the payload's type and checked the rest held it. All nine repro cases
+            // then checked, a misfit was still refused, and |x| Box(x) stayed generic.
+            // But an annotation that is a union of two instantiations broke: `let x:
+            // [Box<i64>, Box<string>] = Box("hi")` checks the union against Box<'a>
+            // while 'a is open, takes the first member (Box<i64>), and the payload then
+            // fails (lang::traits::abstract_test_matches_parameters and four other
+            // trait and select fixtures). A deferred check cannot steer that choice.
+            // What the ruling needs is a lower bound on the cell itself: a TCell field
+            // beside its constraints that every bind checks (the binding must contain
+            // the payload), so the union check skips Box<i64>; the settle binds a cell
+            // still open to it. That is a change to the cell core (copies, merges,
+            // aliases and images carry it), so it is reverted and back to eric to
+            // confirm before building it.
             if let Some(Type::Abstract { .. }) = self.node.typ().deref_cloned() {
                 wrap!(
                     self.node,
