@@ -548,6 +548,18 @@ impl NetState {
         // 2026-10-24 claude: Eric ruled (2026-10-24): fix the replay ordering upstream in
         // netidx (per-reader BEGIN_WITH_LAST targeted at the joining channel in stream order),
         // then simplify sys's routing.
+        // 2026-10-25 claude: The load flake in lib_tests::net::net_subscribe_arm_rewake is
+        // this mechanism. Driving that fixture by its deliveries instead of the 150 ms timer
+        // (x <- got ~ x + 1) makes each wake land before netidx has delivered the update the
+        // arm slept through, and in the test harness about one run in four per mode fails: [0,
+        // -1, 0, -1, 4, -1] and [0, -1, 2, -1, 2, -1] (the woken subscribe joined a
+        // subscription netidx still held and replayed its pre-sleep dv.last()), and once
+        // interp hung with no delivery after a wake (the replay lost, probably point (1) of
+        // x-concurrency-07, unconfirmed). The timer usually gives netidx time to catch up;
+        // under load it does not. The fixture keeps the timer until the upstream fix lands;
+        // then switch it to delivery-driven, which pins this. Probe:
+        // design/review-2026-10-12/repro/sys-net-01-rewake.gx (clean in 6 shell runs, the
+        // harness reproduces it).
         if streamed
             && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
             && let ev @ NEvent::Update(_) = dv.last()

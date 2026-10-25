@@ -167,20 +167,23 @@ async fn wake_resumes_an_idle_wait(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// A sleep aborts a call in flight and the wake issues nothing: the child
-// exits while the arm sleeps, the arm wakes with no argument firing, and
-// the wait never answers. A child that exits before the sleep answers.
+// A sleep aborts a call in flight and the wake issues nothing: the arm
+// sleeps the cycle after its wait is issued, the child is killed while
+// it sleeps, and the wake leaves the wait unanswered. A wait that
+// answered before the sleep keeps its answer.
 #[cfg(unix)]
 async fn sleep_aborts_a_call_in_flight(mode: Mode) -> Result<()> {
-    for (secs, expect) in [("0.05", &[Value::Bool(true)][..]), ("0.25", &[])] {
+    for (script, sleep_on, expect) in
+        [("exit 0", "issued", &[Value::Bool(true)][..]), ("sleep 30", "child", &[])]
+    {
         let code = format!(
             r#"{{
-                let child = sys::process::spawn(
-                    sys::process::options(#args: ["-c", "sleep {secs}"], "/bin/sh")
-                )$;
-                let tick = count(sys::time::timer(child ~ duration:100.ms, 4)?);
+                let child = sys::process::spawn(sys::process::options(
+                    #args: ["-c", "{script}"],
+                    #kill_on_drop: true,
+                    "/bin/sh"
+                ))$;
                 let on = true;
-                on <- select tick {{ 2 => false, 4 => true, _ => never() }};
                 let issued = never<bool>();
                 select on {{
                     true => select sys::process::wait(child.proc) {{
@@ -189,11 +192,14 @@ async fn sleep_aborts_a_call_in_flight(mode: Mode) -> Result<()> {
                     }},
                     false => never()
                 }};
+                on <- {sleep_on} ~ false;
+                let off = select on {{ false => child.proc, true => never() }};
+                on <- sys::process::kill(off) ~ true;
                 issued
             }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
-        assert_eq!(values, expect, "sleep {secs}");
+        assert_eq!(values, expect, "{script}");
     }
     Ok(())
 }

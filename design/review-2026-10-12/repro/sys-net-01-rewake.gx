@@ -1,0 +1,15 @@
+// sys-net-01: a subscribe woken before netidx delivered the update it slept
+// through replays the pre-sleep value (dv.last() of a subscription netidx
+// still holds), or, now and then, nothing at all. Every `got` after a -1
+// should be newer than the one before it. Run it several times.
+let x = i64:0;
+let p = "/local/wakesub";
+sys::net::publish(p, x);
+let flip = select x % i64:2 { i64:0 => `On, _ => `Off };
+let got = select flip {
+  `On => { let v: i64 = sys::net::subscribe(p)$; v },
+  `Off => i64:-1
+};
+x <- got ~ x + i64:1;
+println("x=[x] got=[got]");
+sys::exit(select x { i64:12 => 0, _ => never() })
