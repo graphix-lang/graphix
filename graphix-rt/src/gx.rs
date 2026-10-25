@@ -1529,6 +1529,32 @@ impl<X: GXExt> GX<X> {
             }
             // an abort that landed while waiting ends the loop before the
             // next cycle
+            // CR claude for claude: [bug/medium] A runtime the activation budget aborted
+            // can leave the shell's process hung forever instead of exiting.
+            // graphix-shell/tests/script_exit.rs a_stopped_runtime_says_why hung in the
+            // gate of 2026-10-24; the same test passed in the day's earlier gates. The
+            // program: `let rec f = |n: i64| -> i64 select n { 0 => 0, k => k + f(k -
+            // 1) }; let depth = 0; depth <- select depth { d if d < 100 => d + 10, _ =>
+            // never() }; sys::exit(sys::time::after_idle(duration:300.ms, depth ~ 0));
+            // f(depth)` under GRAPHIX_ACTIVATION_BUDGET=20, run as `graphix --no-netidx
+            // --log-dir <dir>/log <dir>/main.gx` with stdin null and XDG_CACHE_HOME in a
+            // tempdir. It was a warm run: the log said "Program image <path>" (loaded, not
+            // written), then "ERROR [graphix_types::stack] activation budget (20) exceeded
+            // by a recursion — aborting the runtime", and nothing more. stderr never got
+            // the shell's GXHandle::stopped message ("a runaway recursion exceeded the
+            // runtime's budget"), so the shell did not see the runtime stop. After 47
+            // minutes the process had used 0 s of CPU: 18 threads, 15 tokio-rt-worker in
+            // futex_wait, one tokio-rt-worker in do_epoll_wait, the main `graphix` thread
+            // and `graphix-tokio` in futex_wait (/proc/<pid>/task/*/wchan; gdb could not
+            // attach). A deadlock or a lost wakeup on the abort path, not a spin.
+            // Candidates: this check and the `aborted.notified()` arms here and in the
+            // batch send above (a notify_one with no waiter registered yet is stored, but
+            // a second abort path or a send blocked on `sub.reserve()` could still miss
+            // it), and the shell's wait for the runtime's end in script mode. Not
+            // reproduced: 30 warm runs of the same program, same env, each exited within
+            // 20 s. To catch it, loop the test (or the program under timeout) until one
+            // hangs, then read the threads with gdb as root or `eu-stack -p`.
+            // (rt-budget-hang-01)
             if self.ctx.control.aborted() {
                 return Ok(());
             }

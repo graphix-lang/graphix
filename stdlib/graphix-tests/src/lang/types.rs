@@ -1136,6 +1136,32 @@ run!(
     FuseExpect::None
 );
 
+// A let annotation's same-named variables are one variable, and in a
+// body one the definition declares is the definition's own.
+run!(
+    annotation_names_one_variable_in_a_tuple,
+    "{ let w: ('a, 'a) = (1, \"s\"); 0 }",
+    refused("('a: i64, 'a: i64) does not contain (i64, string)");
+    FuseExpect::None
+);
+run!(
+    annotation_names_one_variable_across_a_fn_type,
+    "{ let p: ('c, fn(x: 'c) -> 'c) = (1, |x: string| x); 0 }",
+    refused("does not contain (i64, fn(x: string) -> string)");
+    FuseExpect::None
+);
+run!(
+    body_annotation_names_the_definitions_variable,
+    "{ let f = 'e: Number |x: 'e| -> 'e { let v: 'e = 1; x }; 0 }",
+    refused("'e: unbound within Number does not contain i64");
+    FuseExpect::None
+);
+run!(
+    body_annotation_takes_the_definitions_variable,
+    "{ let g = 'e: Number |x: 'e| -> 'e { let v: 'e = x; v }; g(2) }",
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
+
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {
   let x = never();

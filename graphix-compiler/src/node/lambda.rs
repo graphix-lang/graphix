@@ -524,10 +524,31 @@ pub struct BodyShared {
 
 /// The body compiling now: what it shares, and whether this compile is
 /// its definition's check, which alone records specs.
+/// A type written in a body: its same-named variables are one variable,
+/// and one a definition around the body declares (a nested fn type's own
+/// quantifiers are its own) is the innermost such definition's.
+pub(crate) fn body_annotation<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>, t: &Type) {
+    let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    if let Some(body) = &ctx.body {
+        for typ in body.declared.iter().rev() {
+            let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            typ.collect_tvars(&mut named);
+            for (name, tv) in named.drain() {
+                if !name.starts_with('_') {
+                    known.entry(name).or_insert(tv);
+                }
+            }
+        }
+    }
+    t.alias_tvars(&mut known);
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct BodyCompile {
     pub(crate) share: BodyShare,
     pub(crate) checking: bool,
+    /// The signatures of the definitions around the body, innermost last.
+    pub(crate) declared: Arc<[Arc<FnType>]>,
 }
 
 impl BodyShared {
@@ -1416,13 +1437,23 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
             Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
         ctx.with_restored(def_env.clone(), |ctx| match &body {
             DefBody::Expr(body) => {
+                let enclosing = match &ctx.body {
+                    Some(b) => b.declared.clone(),
+                    None => Arc::from_iter([]),
+                };
                 let compiling = BodyCompile {
                     share: shared.clone(),
                     checking: matches!(mode, BindMode::Definition),
+                    declared: enclosing.clone(),
                 };
                 let outer = ctx.body.replace(compiling);
                 let instance =
                     instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
+                        if let Some(b) = ctx.body.as_mut() {
+                            b.declared = Arc::from_iter(
+                                enclosing.iter().cloned().chain([typ.clone()]),
+                            );
+                        }
                         let argspec = def_argspec.clone();
                         GXLambda::new(
                             ctx,

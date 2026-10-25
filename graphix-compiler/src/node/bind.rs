@@ -186,26 +186,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     ) -> Result<Node<R, E>> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let annotation = match annotation {
-            // CR claude for claude: [bug/medium] The parser makes a separate cell for
-            // every `'a` in a type, and only `typexp::fntype` and `Lambda::compile`
-            // alias same-named ones. This annotation never goes through
-            // `Type::alias_tvars`, so its same-named variables are tied together only
-            // inside one fn type. `let w: ('a, 'a) = (1, "s")`, `let s: {x: 'b, y: 'b}
-            // = {x: 1, y: "s"}` and `let p: ('c, fn(x: 'c) -> 'c) = (1, |x: string| x)`
-            // are all accepted. Inside a lambda, `let u: ('d, 'd) = (x, y)` relates x
-            // to nothing. The pin `annotation_variable_is_one_variable` states the rule
-            // but covers only a bare fn-type annotation. Fix: call `alias_tvars` once
-            // over the scoped annotation here, and likewise over the type argument of
-            // `never<T>`. A separate decision is needed: a body annotation's `'e` is
-            // currently a fresh variable, not the enclosing definition's rigid
-            // quantifier, so `'e: Number |x: 'e| -> 'e { let v: 'e = 1; x }` is
-            // accepted. Either seed `known` with the enclosing definition's declared
-            // quantifiers, or refuse the shadowing name. probe:
-            // design/review-2026-10-12/repro/t-tvar-04.gx (t-tvar-04)
-            // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-            // ruling needed. Do the aliasing fix; refuse a body annotation's quantifier
-            // name that shadows an enclosing definition's declared quantifier.
-            Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
+            Some(t) => {
+                let t = t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?;
+                super::lambda::body_annotation(ctx, &t);
+                Some(t)
+            }
             None => None,
         };
         let compile_pattern = |ctx: &mut CompileCtx<R, E>, typ: &Type| {

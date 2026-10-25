@@ -1927,12 +1927,27 @@ impl Type {
     }
 
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        self.collect_tvars_seen(known, &mut LPooled::take())
+    }
+
+    /// [`Self::collect_tvars`], each shared node (`seen`) walked once.
+    pub(super) fn collect_tvars_seen(
+        &self,
+        known: &mut AHashMap<ArcStr, TVar>,
+        seen: &mut AHashSet<usize>,
+    ) {
+        if let Some(n) = node_addr(self)
+            && !seen.insert(n)
+        {
+            return;
+        }
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
             // a nested fn type's own quantifiers are its own, whatever an
-            // enclosing signature names alike
+            // enclosing signature names alike; a node it shares with the
+            // outside names them there, so it is walked apart
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                 ft.collect_tvars(&mut inner);
@@ -1942,8 +1957,8 @@ impl Type {
                     }
                 }
             }
-            Type::Fn(ft) => ft.collect_tvars(known),
-            t => t.for_each_child(&mut |c| c.collect_tvars(known)),
+            Type::Fn(ft) => ft.collect_tvars_seen(known, seen),
+            t => t.for_each_child(&mut |c| c.collect_tvars_seen(known, seen)),
         })
     }
 

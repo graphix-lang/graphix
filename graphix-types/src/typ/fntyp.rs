@@ -1007,11 +1007,19 @@ impl FnType {
     /// portion that normalizes away carries no constraint force, and
     /// identity must not depend on the stored form.
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        self.collect_tvars_seen(known, &mut LPooled::take())
+    }
+
+    pub(super) fn collect_tvars_seen(
+        &self,
+        known: &mut AHashMap<ArcStr, TVar>,
+        seen: &mut AHashSet<usize>,
+    ) {
         self.for_each_part(&mut |t, constraint| {
             if constraint {
-                t.normalize().collect_tvars(known)
+                t.normalize().collect_tvars_seen(known, seen)
             } else {
-                t.collect_tvars(known)
+                t.collect_tvars_seen(known, seen)
             }
         })
     }

@@ -657,7 +657,10 @@ node graph IS the IR — there is no parallel typed IR
   value restriction, `CompileCtx::monomorphic`), except one an earlier compile
   generalized (a REPL input): it stays generic, a later write is held to
   a copy of its type with the variables rigid, and a later `&mut` of it
-  is refused (`CompileCtx::generalized_earlier`); a def's declared tvars are
+  is refused (`CompileCtx::generalized_earlier`); a type written in a body (a `let`
+  annotation, `never<T>`) names one variable per name, and a name a
+  definition around it declares is that definition's variable
+  (`lambda::body_annotation`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥ and no
   two unify (`contains.rs` Distinct), so a function type without
   `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them
