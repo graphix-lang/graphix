@@ -2010,6 +2010,22 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
     _ => false,
 });
 
+// A variable a nested lambda's signature writes, which a definition around
+// it declares, is that definition's, unless the nested lambda declares it
+// itself (c-lambda-02).
+run!(a_nested_signature_names_the_enclosing_variable, r#"{
+  let mk = 'a: Number + Singleton |k: 'a| |x: 'a| x + k;
+  let own = 'a: Number |k: 'a| 'a: Any |x: 'a| [x];
+  (mk(1)(2), own(1)("s"))
+}"#, prints(r#"[i64:3, ["s"]]"#); FuseExpect::None);
+
+run!(
+    a_nested_signature_takes_no_other_type,
+    "{ let mk = 'a: Number |k: 'a| |x: 'a| [x, k]; let g = mk(1); g(\"s\") }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
 // A variable an abstract type, a type application or a reference holds is
 // fixed exactly there, so that argument is checked first, whatever the
 // order the call writes: "aa" fits the Bx's [string, i64] written after it

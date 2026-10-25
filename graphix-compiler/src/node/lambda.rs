@@ -529,6 +529,16 @@ pub struct BodyShared {
 /// quantifiers are its own) is the innermost such definition's.
 pub(crate) fn body_annotation<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>, t: &Type) {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    enclosing_tvars(ctx, &mut known);
+    t.alias_tvars(&mut known);
+}
+
+/// The variables the definitions around the body being compiled declare,
+/// by name, the innermost's where two share one.
+fn enclosing_tvars<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    known: &mut AHashMap<ArcStr, TVar>,
+) {
     if let Some(body) = &ctx.body {
         for typ in body.declared.iter().rev() {
             let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
@@ -540,7 +550,6 @@ pub(crate) fn body_annotation<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>, t: &T
             }
         }
     }
-    t.alias_tvars(&mut known);
 }
 
 #[derive(Debug, Clone)]
@@ -1588,19 +1597,6 @@ impl Lambda {
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
         // a written type, as the definition's signature holds it
-        // CR claude for claude: [risk/medium] A `'a` written in a nested lambda's
-        // signature is that lambda's own fresh quantifier, never the enclosing
-        // definition's `'a`. So `'a: Number |k: 'a| |x: 'a| [x, k]` returns a closure
-        // that takes a string (`mk(1)("s")` gives ["s", 1]), and `|x: 'a| x + k` is
-        // refused as "cannot compute 'a: unbound + 'a: unbound". The printer shows both
-        // variables as `'a` (`fn<'a: Number>(k: 'a) -> fn(x: 'a) -> Array<['a, 'a]>`),
-        // and no doc states the scoping rule. Decide between two fixes. One: a written
-        // variable an enclosing gate declares names that gate's cell. Two: keep
-        // shadowing, document it, and print distinct same-named variables distinctly.
-        // probe: design/review-2026-10-19/repro/c-lambda-nested-tvar-scope.gx
-        // (c-lambda-02)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): scoped type variables: a written
-        // variable an enclosing gate declares names that gate's cell.
         let written = |env: &Env, t: &Type| -> Result<Type> {
             Ok(t.scope_refs(&scope.lexical)
                 .rewrite_trait_args(env)?
@@ -1738,6 +1734,12 @@ impl Lambda {
                 explicit_throws,
                 ..FnType::default()
             };
+            // a variable the definitions around this one declare, and this
+            // one does not, is theirs
+            let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            enclosing_tvars(ctx, &mut known);
+            known.retain(|name, _| !scoped.contains_key(name));
+            ft.alias_tvars(&mut known);
             Arc::new(ft.declaring(&constraints))
         };
         typ.lambda_ids.set_id(id);
