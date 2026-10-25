@@ -933,7 +933,8 @@ cycle, across workers; the compiler never pins threads.
   abstract), which a generic definition's variable
   takes from its body, so each call checks it; what orders or hashes
   (the orderings, sorts, `min`/`max`, `dedup`, map keys) takes
-  `'a: Ordered`, which also refuses a reference or a function; a member still open at
+  `'a: Ordered`, which also refuses a reference, a function or a type holding two
+  numeric types; a member still open at
   the statement's settle reads as any type it may yet bind
   (`PendingSettle::Discernible`, `design/tvar_constraints.md`).
   `flat_map`'s callback returns the collection (`fn(x: 'a) ->
@@ -1085,8 +1086,8 @@ cycle, across workers; the compiler never pins threads.
   numeric types is refused even against itself, and a generic
   definition's at the call, by the check; the open members of a union
   under it merge into one cell. Comparison takes any one type, unions
-  and mixed numerics included, if it is `Discernible` (`Ordered` for the
-  orderings). `OneNumber`, a written
+  and mixed numerics included, if it is `Discernible`; the orderings take
+  `Ordered`, which refuses two numeric types. `OneNumber`, a written
   bound only, holds a type to at most one numeric type (`'a: [Number,
   null] + OneNumber`); a binding with a numeric member beside an open one
   is refused at the definition that leaves it open (annotate it). `NoError` holds a type to no member a value of

@@ -134,9 +134,10 @@ i64), `S(fn(s: string) -> string)] ``, tells them apart.
 
 What orders or hashes values (`<` and the other orderings, map keys,
 `min`, `max`, the sorts, `array::dedup`) needs `Ordered`, which is
-`Discernible` and no references: a reference has no order, and `==`,
-`!=` and `uniq` compare one by what it points to (see
-[References](../udt/references.md)).
+`Discernible`, no references and no type holding two numeric types: a
+reference has no order, and `==`, `!=` and `uniq` compare one by what it
+points to (see [References](../udt/references.md)), and values of two
+numeric types have no order between them.
 
 ## Higher Order Functions
 

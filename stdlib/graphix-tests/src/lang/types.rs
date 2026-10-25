@@ -1740,6 +1740,12 @@ const NESTED_QUANTIFIER_ALIAS_CONCRETE: &str = r#"{
   apply(|x| x + 1)
 }"#;
 const NESTED_QUANTIFIER_COMPARE: &str = r#"{
+  type G = fn<'b: Number + Ordered>(x: 'b, y: 'b) -> bool;
+  let apply = |f: G| select f(1, 2) { true => 1, false => 0 };
+  apply(|x, y| x < y)
+}"#;
+// `Number` admits a type holding every numeric type, which has no order
+const NESTED_QUANTIFIER_COMPARE_UNORDERED: &str = r#"{
   type G = fn<'b: Number>(x: 'b, y: 'b) -> bool;
   let apply = |f: G| select f(1, 2) { true => 1, false => 0 };
   apply(|x, y| x < y)
@@ -1862,6 +1868,10 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (
             NESTED_QUANTIFIER_SQUARE_UNDECLARED,
             "which the parameter's quantifier does not declare",
+        ),
+        (
+            NESTED_QUANTIFIER_COMPARE_UNORDERED,
+            "requires 'b: Ordered, which the parameter's quantifier does not declare",
         ),
         (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
@@ -2000,25 +2010,16 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
     _ => false,
 });
 
-// Mixed sets compare like any union, numeric ones included.
-// CR claude for claude: [bug/medium] Values of a mixed numeric union order by numeric
-// class before value (Value::partial_cmp compares Typ first). array::sort of [3, 2.5,
-// 1, 0.5]: Array<[i64, f64]> is [1, 3, 0.5, 2.5], min(i64:3, f64:2.5) is 3, and i64:3 <
-// f64:2.5 is true. This fixture compares 3 with 2.5 by == only, so it would pass under
-// either ordering. Either the orderings and Ordered refuse a type holding two numeric
-// types, as Singleton does for arithmetic, or mixed classes order by value. Pin
-// whichever is chosen here with values where the two differ, and i64:3 == f64:3.0.
-// probe: design/review-2026-10-19/repro/tests-types-mixed-numeric-order.gx
-// (tests-types-04)
-// 2026-10-24 claude: Eric ruled (2026-10-24): refuse: the orderings and Ordered refuse
-// a type holding two numeric types, as arithmetic's Singleton does.
+// Mixed sets compare by == like any union, numeric ones included: values
+// of two numeric types are never equal.
 const COMPARISON_MIXED: &str = r#"{
   let x: [i64, f64] = 3;
   let y: [i64, f64] = 2.5;
-  let f = |a: Number, b: Number| a >= b;
+  let z: [i64, f64] = 3.0;
+  let f = |a: Number, b: Number| a != b;
   type N = [i64, u8];
   let n: N = 3;
-  [x == y, x == x, n <= n, f(2.5, 1.5)]
+  [x == y, x == x, x == z, n == n, f(2.5, 1.5)]
 }"#;
 
 run!(comparison_mixed_numeric, COMPARISON_MIXED, |v: Result<&Value>| match v {
@@ -2026,12 +2027,37 @@ run!(comparison_mixed_numeric, COMPARISON_MIXED, |v: Result<&Value>| match v {
         &**a == &[
             Value::Bool(false),
             Value::Bool(true),
+            Value::Bool(false),
             Value::Bool(true),
             Value::Bool(true),
         ]
     }
     _ => false,
 });
+
+// The orderings and `Ordered` refuse a type holding two numeric types, as
+// arithmetic's `Singleton` does: they have no order between them
+// (tests-types-04).
+#[tokio::test(flavor = "current_thread")]
+async fn ordering_refuses_two_numeric_types() -> Result<()> {
+    for src in [
+        "{ let a: [i64, f64] = 3; let b: [i64, f64] = 2.5; a < b }",
+        "{ let xs: Array<[i64, f64]> = [i64:3, f64:2.5]; array::sort(xs) }",
+        "{ let a: [i64, f64] = 3; let b: [i64, f64] = 2.5; min(a, b) }",
+        "{ type N = [i64, u8]; let n: N = 3; n <= n }",
+        "{ let f = |a: Number, b: Number| a >= b; f(2.5, 1.5) }",
+        "{ let t: Array<(string, [i64, f64])> = [(\"a\", 1)]; array::sort(t) }",
+        "{ let m: Map<[i64, f64], string> = {}; m }",
+    ] {
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => {
+                assert!(msg.contains("more than one numeric type"), "{src}: {msg}")
+            }
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
 
 // `OneNumber` admits a nullable number of one numeric type.
 const ONE_NUMBER: &str = r#"{

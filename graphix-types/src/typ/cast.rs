@@ -1931,6 +1931,9 @@ pub enum Indiscernible {
     Pair(Type, Type),
     /// A reference or a function, under `Ordered`: neither has an order.
     Unordered(Type),
+    /// A type holding two numeric types, under `Ordered`: their values
+    /// have no order between them.
+    Numbers(Type),
     /// The name of a definition whose parameters grow as it recurses, so
     /// no walk decides it.
     Grows(ModPath),
@@ -1957,7 +1960,9 @@ impl Indiscernible {
                 test.resolve_tvars(),
                 rest.resolve_tvars()
             ),
-            Indiscernible::Unordered(_) => unreachable!("a runtime test is no order"),
+            Indiscernible::Unordered(_) | Indiscernible::Numbers(_) => {
+                unreachable!("a runtime test is no order")
+            }
             Indiscernible::Abstract(_) => {
                 unreachable!("a runtime test does not look into an abstract type")
             }
@@ -1974,6 +1979,10 @@ impl Indiscernible {
             a.resolve_tvars()
         )
     }
+
+    /// Why a type holding two numeric types has no order.
+    pub const NUMBERS: &str = "more than one numeric type: values of two numeric \
+                               types have no order between them; cast them to one";
 
     /// What an unordered type is, and how `==` and `!=` compare it.
     pub fn unordered_kind(t: &Type) -> (&'static str, &'static str) {
@@ -2005,7 +2014,23 @@ fn rep_ambiguity(
                     .find(Option::is_some)
                     .flatten()
             };
+            let ordered = refs && !keys_only;
             match &t {
+                Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
+                    Some(Indiscernible::Numbers(t.clone()))
+                }
+                Type::Set(ts)
+                    if ordered
+                        && (ts
+                            .iter()
+                            .filter_map(|m| prims_only(env, m))
+                            .fold(BitFlags::empty(), |acc, p| acc | p)
+                            & Typ::number())
+                        .len()
+                            > 1 =>
+                {
+                    Some(Indiscernible::Numbers(t.clone()))
+                }
                 Type::Set(ts) => {
                     if !keys_only {
                         for (i, a) in ts.iter().enumerate() {
@@ -2044,7 +2069,7 @@ fn rep_ambiguity(
                 }
                 Type::Tuple(ts) | Type::Variant(_, ts, _) => parts(&mut ts.iter()),
                 Type::Struct(fs) => parts(&mut fs.iter().map(|(_, t, _)| t)),
-                Type::ByRef(..) | Type::Fn(_) if refs && !keys_only => {
+                Type::ByRef(..) | Type::Fn(_) if ordered => {
                     Some(Indiscernible::Unordered(t.clone()))
                 }
                 Type::Abstract { id, params } => {
@@ -2129,6 +2154,11 @@ impl Type {
                          compare them, {how}"
                     )
                 }
+                Indiscernible::Numbers(n) => anyhow::anyhow!(
+                    "{what} holds {}, {}",
+                    n.resolve_tvars(),
+                    Indiscernible::NUMBERS
+                ),
                 Indiscernible::Abstract(a) => {
                     anyhow::anyhow!(
                         "{what} holds {}",
