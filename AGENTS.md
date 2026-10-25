@@ -660,7 +660,9 @@ order (`Fifo`, the default), the latest only, a new one aborting those in
 flight, though one that completed before the abort reached it still
 answers, a cycle later if need be (`Latest`: `accept`, `wait`), or each at once, answered in
 completion order (`Concurrent`: the tls handshakes); `delete` and `sleep`
-abort every call in flight. Bottom never reaches builtin authors: a bottomed arg bottoms the
+abort every call in flight, except that a sleep lets the calls of an eval
+not `CANCEL_SAFE` (a stream read or write, a cursor read, a handshake, a
+file seek) finish, their replies kept until the wake answers them. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`; raw `Apply` authors read args through
 `seam_arg`/`seam_tick`/`seam_value`. Configuration a fast fn derives
 from its args (a regex, a template registry) lives in a bounded
@@ -802,7 +804,8 @@ node graph IS the IR — there is no parallel typed IR
   is a birth calls `Apply::reborn` (a seq step's next run). A labeled
   DEFAULT is born with the binding and delivers
   FIRED at a fresh callee's first dispatch. Sleep aborts an async call
-  in flight and the wake restarts nothing: only an argument's fire
+  in flight (one not cancel-safe finishes, answering at the wake) and
+  the wake restarts nothing: only an argument's fire
   starts a call, and a call's result survives the sleep; an event
   source (a timer, an idle wait, a subscription, a line reader, a
   server) pauses (a timer's run resumes at the wake, a pending idle

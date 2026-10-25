@@ -124,6 +124,7 @@ impl EvalCachedAsync for DbCursorReadEv {
     type Args = Cursor;
 
     const NAME: &str = "db_cursor_read";
+    const CANCEL_SAFE: bool = false;
     const DATA_RESULT: bool = true;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -145,6 +146,7 @@ impl EvalCachedAsync for DbCursorReadManyEv {
     type Args = (Cursor, i64);
 
     const NAME: &str = "db_cursor_read_many";
+    const CANCEL_SAFE: bool = false;
     const DATA_RESULT: bool = true;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

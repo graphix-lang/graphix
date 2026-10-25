@@ -62,6 +62,7 @@ impl EvalCachedAsync for FileSeekEv {
     type Args = (Arc<Halves>, SeekFrom);
 
     const NAME: &str = "sys_fs_seek";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let stream = get_stream(cached, 0)?;
@@ -114,6 +115,7 @@ impl EvalCachedAsync for FileFstatEv {
     type Args = Arc<Halves>;
 
     const NAME: &str = "sys_fs_fstat";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -144,6 +146,7 @@ impl EvalCachedAsync for FileTruncateEv {
     type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_fs_truncate";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))

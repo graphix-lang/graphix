@@ -1691,6 +1691,13 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
 
     const CALLS: Calls = Calls::Fifo;
 
+    /// Whether an `eval` dropped before it completes, or whose reply is
+    /// dropped, loses nothing a later call cannot get again. One that would
+    /// (a read that consumed input, a partial write, a handshake holding the
+    /// stream) is let finish when its site sleeps, and its reply answers at
+    /// the wake. Never `false` under [`Calls::Latest`], which aborts.
+    const CANCEL_SAFE: bool = true;
+
     /// The arguments that leave as data (a store's keys and values):
     /// each abstract value in them is written as its `Cast`
     /// implementation says before `prepare_args`, their tuples, structs,
@@ -1819,6 +1826,8 @@ pub enum Calls {
     Concurrent,
 }
 
+type Kept = triomphe::Arc<parking_lot::Mutex<VecDeque<Value>>>;
+
 /// The abort for every call a site has in flight: dropping it resolves
 /// each call's receiver.
 #[derive(Debug)]
@@ -1845,6 +1854,12 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     /// answers: one that completed before it was replaced still answers
     replaced: SmallVec<[BindId; 1]>,
     abort: Option<Abort>,
+    /// the replies of an eval not [`EvalCachedAsync::CANCEL_SAFE`], oldest
+    /// first: they wait here, and the reply variable only wakes the site,
+    /// so one landing while it sleeps answers at the wake
+    kept: Option<Kept>,
+    /// asleep since the last update
+    slept: bool,
     /// the error tag a panicking eval answers under, from the call's
     /// declared return type; none when it declares no such error
     panic_tag: Option<ArcStr>,
@@ -1957,6 +1972,9 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         self.abort = None;
         self.inflight = 0;
         self.queued.clear();
+        if let Some(kept) = &self.kept {
+            kept.lock().clear()
+        }
         for id in self.replaced.drain(..) {
             ctx.release_var(id, self.var.top_id());
         }
@@ -2012,6 +2030,12 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
+        const {
+            assert!(
+                T::CANCEL_SAFE || !matches!(T::CALLS, Calls::Latest),
+                "a Latest call aborts what it replaces, so its eval must be cancel-safe"
+            )
+        };
         let var = RtVar::new(ctx, top_id);
         let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
         let data_result = data_result::<T>(resolved);
@@ -2022,6 +2046,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             inflight: 0,
             replaced: SmallVec::new(),
             abort: None,
+            kept: (!T::CANCEL_SAFE).then(Kept::default),
+            slept: false,
             panic_tag,
             data_result,
             out: TagValue::phantom(),
@@ -2047,6 +2073,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             inflight: 0,
             replaced: SmallVec::new(),
             abort: None,
+            kept: (!T::CANCEL_SAFE).then(Kept::default),
+            slept: false,
             panic_tag,
             data_result,
             out: TagValue::phantom(),
@@ -2077,10 +2105,24 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.t.attach(ctx);
         let invocation = self.cached.update(ctx, from);
         let start = invocation == Invocation::Fired;
-        let mut reply = ctx.event.variables.remove(&self.var.id).map(|tv| {
+        let woke = std::mem::take(&mut self.slept);
+        let event = ctx.event.variables.remove(&self.var.id);
+        let mut reply = match &self.kept {
+            None => event.map(|tv| tv.value()),
+            Some(kept) if event.is_some() || woke => {
+                let mut kept = kept.lock();
+                let v = kept.pop_front();
+                // one answer a cycle: the next wakes the site again
+                if !kept.is_empty() {
+                    ctx.rt.set_var(self.var.id, Value::Null);
+                }
+                v
+            }
+            Some(_) => None,
+        };
+        if reply.is_some() {
             self.inflight -= 1;
-            tv.value()
-        });
+        }
         if let Some(earlier) = self.replaced_reply(ctx) {
             // one answer a cycle: the replaced call's first, this one's next
             if let Some(v) = reply.replace(earlier) {
@@ -2123,7 +2165,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             && let Some(args) = self.queued.pop_front()
         {
             self.inflight += 1;
-            let (id, panic_tag) = (self.var.id, self.panic_tag.clone());
+            let (id, panic_tag, kept) =
+                (self.var.id, self.panic_tag.clone(), self.kept.clone());
             let aborted = self.abort.get_or_insert_with(Abort::new).rx.clone();
             let eval = std::panic::AssertUnwindSafe(T::eval(args)).catch_unwind();
             ctx.rt.spawn_var(async move {
@@ -2139,7 +2182,13 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                     }
                     future::Either::Right(_) => ABORTED.clone(),
                 };
-                (id, v)
+                match kept {
+                    None => (id, v),
+                    Some(kept) => {
+                        kept.lock().push_back(v);
+                        (id, Value::Null)
+                    }
+                }
             });
         }
         match res {
@@ -2175,33 +2224,17 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.clear();
     }
 
+    /// Aborts the calls in flight and drops those queued, unless the eval
+    /// is not cancel-safe: then those in flight finish and answer at the
+    /// wake.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug/medium] Sleep aborts the call in flight, and the
-        // wake re-issues it from the start. That is only correct for an eval that loses
-        // nothing when dropped. The stream overrides do lose something. IoReadExactEv
-        // and IoReadAllEv drop the bytes they already read: a read_exact of 6 asleep
-        // across "abc" | "def" | "ghi" returns "defghi". IoWriteExactEv leaves a
-        // partial write_all and then writes the whole buffer again: 192000 bytes sent
-        // arrive as 257536. DbCursorReadEv and DbCursorReadManyEv run on a blocking
-        // task that keeps advancing the cursor after the abort, so those entries are
-        // lost. design/async_sleep_outputs.md prescribes this abort for stream I/O, yet
-        // keeps IoLines' reader across sleep for exactly this reason. The rule is
-        // decided per wrapper but needs to be per eval. Options: EvalCachedAsync
-        // declares whether an eval is cancel-safe, and a sleep lets an unsafe one
-        // finish and banks its reply for the wake; or the stream halves get a pushback
-        // buffer that an aborted read refills, while writes stay non-abortable. Either
-        // way, write the rule into design/async_sleep_outputs.md. Probe:
-        // design/review-2026-10-12/repro/x-builtin-effects-03.sh (x-builtin-effects-03)
-        // 2026-10-18 claude: Eric ruled 'no partial rebirth' (design/wake_catchup.md):
-        // a wake no longer re-issues an aborted call, so write_all no longer sends its
-        // buffer twice. What stands: an aborted read_exact/read_all drops the bytes it
-        // read, an aborted write_all leaves a partial write, and the cursor reads lose
-        // the entries their blocking task advanced past. Cancel safety is still this
-        // CR's question.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): the declaration: EvalCachedAsync
-        // declares whether an eval is cancel-safe, and a sleep lets an unsafe one
-        // finish and banks its reply for the wake.
-        self.renew(ctx);
+        match self.kept {
+            None => self.renew(ctx),
+            Some(_) => {
+                self.queued.clear();
+                self.slept = true;
+            }
+        }
     }
 }
 

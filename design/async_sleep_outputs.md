@@ -12,7 +12,12 @@ its output is.
   paused) and the wake restarts nothing, since a restart would perform
   an action no trigger asked for; only an argument's fire, a caught-up
   one included, starts a call. The result is a level and survives the
-  sleep.
+  sleep. A call whose eval is not `EvalCachedAsync::CANCEL_SAFE` is not
+  aborted: dropping it would lose what it already did (the bytes a read
+  consumed, a partial write, a cursor's advance, the stream a handshake
+  or a file operation holds). It finishes asleep, its reply waits in the
+  site's `kept` queue (the reply variable only wakes the site), and the
+  wake answers it. Calls not yet started are dropped either way.
 - **An event source** (timers, `after_idle`, `throttle`'s pending
   emission, line readers, net and db subscriptions, watches, servers,
   `iter`/`range` deliveries): it pauses. A timer's run and a pending
@@ -36,7 +41,7 @@ born view, a seq step entered for its next run.
 
 | Family | Sleep | Wake |
 | --- | --- | --- |
-| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, db, sqlite, other packages on the wrapper) | aborts the call in flight, remints the reply ID; keeps args and result | starts a call only on an argument fire |
+| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, db, sqlite, other packages on the wrapper) | aborts the call in flight, remints the reply ID; keeps args and result; an eval not cancel-safe (stream reads and writes, cursor reads, tls handshakes, file seek/fstat/truncate) finishes instead | answers a kept reply; starts a call only on an argument fire |
 | rpc `call` | remints the reply ID; keeps the result | as above |
 | `timer` | cancels the armed fire; keeps the run; clears its output | re-arms the run if fires remain |
 | `after_idle` | cancels a pending wait; clears its output | resumes a pending wait |

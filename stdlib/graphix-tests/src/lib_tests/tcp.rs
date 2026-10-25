@@ -42,6 +42,31 @@ run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
 
+// A read whose arm sleeps finishes asleep and answers at the wake: the
+// bytes it took before the sleep are not lost (x-builtin-effects-03,
+// sys-io-07).
+const TCP_READ_ACROSS_SLEEP: &str = r#"
+{
+  use sys::io::{Read, Write};
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
+  let server = sys::tcp::accept(listener, client)?;
+  let w1 = Write::write_exact(server, buffer::from_string("hello"))?;
+  let on = true;
+  on <- w1 ~ false;
+  let later = select on { false => on ~ server, true => never() };
+  let w2 = Write::write_exact(later, buffer::from_string("0123456789"))?;
+  on <- w2 ~ true;
+  let got = select on { true => Read::read_exact(client, u64:10)?, false => never() };
+  buffer::to_string(got)?
+}
+"#;
+
+run!(tcp_read_across_sleep, TCP_READ_ACROSS_SLEEP, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "hello01234")
+}; FuseExpect::Jit);
+
 // Write on the client, read on the server.
 const TCP_WRITE_READ: &str = r#"
 {

@@ -35,6 +35,7 @@ impl EvalCachedAsync for IoReadEv {
     type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_io_read";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))
@@ -347,6 +348,7 @@ impl EvalCachedAsync for IoReadExactEv {
     type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_io_read_exact";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))
@@ -361,34 +363,6 @@ impl EvalCachedAsync for IoReadExactEv {
             };
             // the buffer grows as bytes arrive, not to n
             let mut buf = Vec::new();
-            // CR claude for claude: [bug/medium] This read is not cancel-safe. When the
-            // call's arm sleeps, CachedArgsAsync::sleep aborts the eval, and the bytes
-            // already moved into the local `buf` are dropped. The restart at the wake
-            // then reads from the stream's current position, so the program silently
-            // loses data. In the probe, read_exact(10) returns "0123456789" instead of
-            // "hello01234". IoReadAllEv's read_to_end has the same flaw. IoReadEv has a
-            // narrower version: a read that completed just before the sleep posts its
-            // reply under the released id, and the reply is dropped. Fix: give Halves'
-            // read slot a push-back buffer (BytesMut). read_exact/read_all accumulate
-            // into it in place and split off only on completion, so an aborted read
-            // leaves its bytes for the next read. A reply dropped by renew would also
-            // need its bytes pushed back. probe:
-            // design/review-2026-10-12/repro/sys-io-07.gx Also reported as
-            // (x-concurrency-03). (sys-io-07)
-            // 2026-10-13 codex: A local child-pipe adaptation of the probe reproduced the lost
-            // "hello" prefix. The TCP probe cannot run in this sandbox. A complete
-            // fix needs read-result acknowledgment/recovery in core CachedArgsAsync
-            // (src/lib.rs::release/renew) and graphix-rt/src/gx.rs::deliver, which
-            // discards unreferenced replies. Those files are outside this scope; a
-            // Halves push-back buffer alone cannot recover an already-posted reply.
-            // 2026-10-16 claude: The sleep half of this is Eric's x-builtin-effects-03 in
-            // core's CachedArgsAsync::sleep (whether a non-cancel-safe eval finishes and banks
-            // across a sleep, or the stream halves get a push-back buffer); waiting on that
-            // ruling. The replaced-call reply loss under Latest is fixed under sys-io-08, but
-            // these reads are Fifo, so it does not apply here.
-            // 2026-10-24 claude: Eric ruled (2026-10-24): the declaration: EvalCachedAsync
-            // declares whether an eval is cancel-safe, and a sleep lets an unsafe one finish
-            // and banks its reply for the wake.
             match stream.until_closed((&mut *s).take(n).read_to_end(&mut buf)).await {
                 Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
                 Err(e) => errf!("IOError", "read_exact failed: {e}"),
@@ -406,6 +380,7 @@ impl EvalCachedAsync for IoReadAllEv {
     type Args = Arc<Halves>;
 
     const NAME: &str = "sys_io_read_all";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -435,6 +410,7 @@ impl EvalCachedAsync for IoWriteEv {
     type Args = (Arc<Halves>, Bytes);
 
     const NAME: &str = "sys_io_write";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<Bytes>(1)?))
@@ -464,6 +440,7 @@ impl EvalCachedAsync for IoWriteExactEv {
     type Args = (Arc<Halves>, Bytes);
 
     const NAME: &str = "sys_io_write_exact";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<Bytes>(1)?))
