@@ -393,7 +393,9 @@ it needs.
 
 The program entry key includes the compile flags (fusion on and off
 produce different graphs) and the image header carries the ISA
-description. The quiescence check no longer refuses kernels.
+description and the build fingerprint (`fusion::emit::build_fingerprint`:
+the helpers by name and signature, the libcall list, the compiler's
+version), each refused on a mismatch, since native code binds them. The quiescence check no longer refuses kernels.
 
 Pins: `program_image_restores_kernels` (a fusion-on program image
 restores the same values and runs the JIT, by the invocation counter);

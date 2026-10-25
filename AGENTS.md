@@ -405,7 +405,9 @@ runtime restores the first of the program entry and the registration
 entry that reads, else compiles; an entry that fails to read leaves the
 session untouched, and whatever was compiled is written. `--no-cache`
 disables the cache, `--warm` writes and exits (failing when it cannot);
-the header carries the ISA and a checksum of everything after it
+the header carries the ISA, the build's fingerprint (its helpers,
+libcalls and version, `build_fingerprint`), refused on a mismatch as the
+ISA is, and a checksum of everything after it
 (`image::seal`), so a corrupted entry is a failed read, never decoded. A script compiles at runtime
 construction (`GXConfig::program`, `GXHandle::program`), never through
 `load`. The package root compiles with fusion off. A fused region

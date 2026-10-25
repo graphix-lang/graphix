@@ -1,7 +1,8 @@
 //! The registration image: a compiler session's state after the
 //! package root modules compiled and before any cycle ran, so a warm
 //! start restores it instead of compiling. Layout: magic, version, the
-//! ISA description, the heap, trailer and id-count offsets, then the
+//! ISA description, the build fingerprint, the heap, trailer and id-count
+//! offsets, then the
 //! environment, the definitions, the context's tables, the root nodes,
 //! the root scope and the program root, all under one image session,
 //! then the instance heap, the shared objects' definitions, the trailer
@@ -34,7 +35,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 83;
+pub const REGISTRATION_FORMAT: u8 = 84;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -232,6 +233,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
         let seal_at = buf.len();
         buf.put_u32(0);
         isa.encode(&mut buf)?;
+        crate::fusion::emit::build_fingerprint().encode(&mut buf)?;
         let offsets_at = buf.len();
         buf.put_u64(0);
         buf.put_u64(0);
@@ -354,27 +356,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
             return Err(PackError::InvalidFormat);
         }
         bytes.advance(MAGIC.len());
-        // CR claude for claude: [risk/medium] Nothing in an image says which build wrote
-        // it. This reader checks the magic, this hand-bumped format byte, the seal and
-        // the ISA. The image's native code binds libcalls by their index in this
-        // build's LibCall::all_libcalls() and helpers by name, and it assumes this
-        // build's value layouts. Only the shell's cache keeps images apart by build id.
-        // RegistrationImage::load accepts any bytes, and its docs state no same-build
-        // contract. Probe: design/review-2026-10-12/repro/c-image-04.sh. Given a
-        // format-46 registration entry written by the 2026-10-11 19:23 build, HEAD
-        // restores it and compiles nothing. Given one from the 16:21 build with the
-        // same format byte, HEAD decodes partway and then fails, so the encoding
-        // changes without a bump. An embedder that stores images, kernels in a program
-        // entry included, can run code from another build after an upgrade. Fix: write
-        // a build fingerprint into the header and refuse a mismatch here, as the ISA
-        // check does. The fingerprint could be the executable's build id or a hash of
-        // the helper table, the libcall list and the crate versions. The other option
-        // is to document on RegistrationImage that an image must come from the same
-        // executable. (c-image-04)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Take the fix: a build fingerprint in the header (helper table +
-        // libcall list + crate versions hashed at build), refused on mismatch like the
-        // ISA.
         if bytes.get_u8() != REGISTRATION_FORMAT {
             return Err(PackError::InvalidFormat);
         }
@@ -400,6 +381,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         let isa = String::decode(&mut bytes)?;
         if isa != crate::fusion::emit::isa_description() {
             warn!("the image was written for another isa: {isa}");
+            return Err(PackError::InvalidFormat);
+        }
+        if u64::decode(&mut bytes)? != crate::fusion::emit::build_fingerprint() {
+            warn!("the image was written by another build");
             return Err(PackError::InvalidFormat);
         }
         if bytes.remaining() < 24 {

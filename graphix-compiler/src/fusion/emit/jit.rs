@@ -163,6 +163,27 @@ pub fn isa_description() -> String {
     DESC.clone()
 }
 
+/// What native code assumes of the build that runs it: each helper it
+/// calls by name, with its signature, the libcalls it binds by index, and
+/// the compiler's version. An image records it, so code another build
+/// wrote is refused.
+pub fn build_fingerprint() -> u64 {
+    static FP: LazyLock<u64> = LazyLock::new(|| {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        env!("CARGO_PKG_VERSION").hash(&mut h);
+        for s in crate::fusion::emit_helpers::all_helpers() {
+            s.name.hash(&mut h);
+            format_compact!("{:?} {:?}", s.params, s.ret).hash(&mut h);
+        }
+        for l in cranelift_codegen::ir::LibCall::all_libcalls() {
+            format_compact!("{l:?}").hash(&mut h);
+        }
+        h.finish()
+    });
+    *FP
+}
+
 /// The `(args, out)` signature of a thunk or wrapper.
 fn trampoline_signature(isa: &dyn TargetIsa) -> Signature {
     let ptr_ty = isa.pointer_type();

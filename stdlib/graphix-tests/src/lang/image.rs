@@ -425,6 +425,7 @@ fn image_offsets(image: &Bytes) -> (usize, u64, usize, usize) {
     assert!(graphix_compiler::image::sealed(image, SEAL_AT), "the seal moved");
     let mut b = &image[SEAL_AT + 4..];
     String::decode(&mut b).expect("the isa");
+    u64::decode(&mut b).expect("the build fingerprint");
     let header = image.len() - b.len();
     let (heap_at, table_at, counts_at) =
         (b.get_u64(), b.get_u64() as usize, b.get_u64() as usize);
@@ -487,6 +488,26 @@ async fn program_image_restores() -> Result<()> {
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
     assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));
     assert_eq!(cold_values, warm_values);
+    Ok(())
+}
+
+/// An image another build wrote is refused, as one written for another
+/// isa is: the runtime given it compiles cold (c-image-04).
+#[tokio::test]
+async fn an_image_from_another_build_is_refused() -> Result<()> {
+    let program = "let x = 20; x + 2";
+    let Session { image, values: cold, .. } =
+        session(program, None, ParMode::from_env()).await?;
+    let image = image.expect("the cold run wrote its image");
+    let (header, ..) = image_offsets(&image);
+    let mut other = image.to_vec();
+    other[header - 1] ^= 1;
+    graphix_compiler::image::seal(&mut other, SEAL_AT);
+    let run = Run::WarmOrCold(Bytes::from(other));
+    let Session { restored, values: warm, .. } =
+        session_with(program, run, ParMode::from_env(), None).await?;
+    assert!(!restored, "an image from another build was restored");
+    assert_eq!(cold, warm);
     Ok(())
 }
 
