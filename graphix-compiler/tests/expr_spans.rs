@@ -106,14 +106,6 @@ fn file_exprs(path: &Path, text: &ArcStr) -> anyhow::Result<Vec<Expr>> {
 const FIXTURE: &str = "let r = seq t {\n    // before\n    #[native]\n    until ready;\n    until done && !failed;\n    x + 1\n};\nlet a = t ~ |x| x + 1;\nlet b = &|x| x;\nlet c = &mut |x| x;\nlet d = t ~ &|x| x;\nlet e = seq t ~ |x| x { 1 };\nlet w = `B   \n;\nlet v = [`A  , `B(1)  ]";
 
 #[test]
-// CR claude for claude: [test-gap/low] This walks the whole corpus, but no gate test
-// formats it: format_source's refusal and idempotence over the examples, stdlib and
-// bench run only when someone remembers the gxfmt harness. A sibling test reusing
-// sources() could assert, for each file that parses, that format_source is not Refused
-// and that a second pass gives the same text. All 389 files pass it today. Found by
-// reading; corpus formatted by hand with the debug binary. (tests-shell-compiler-05)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Add the sibling test over sources(): not Refused, idempotent.
 fn every_span_reads_back_as_its_node() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = vec![];
@@ -145,4 +137,34 @@ fn every_span_reads_back_as_its_node() {
         .map(|(kind, at)| format!("{kind} x{}: {}", at.len(), &at[0]))
         .collect();
     assert!(failures.is_empty(), "{checked} checked\n{}", report.join("\n"));
+}
+
+/// The formatter over the corpus: no file it formats is refused, and
+/// formatting its output changes nothing.
+#[test]
+fn the_corpus_formats_and_formats_again_the_same() {
+    use graphix_compiler::expr::format::{FormatConfig, SourceKind, format_source};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = vec![];
+    for dir in ["book/src/examples", "stdlib", "bench"] {
+        sources(&root.join(dir), &mut files);
+    }
+    assert!(files.len() > 100, "{}", files.len());
+    let cfg = FormatConfig::default();
+    let mut failures = vec![];
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap();
+        let kind = SourceKind::of_path(&file);
+        match format_source(kind, &text, &cfg) {
+            Err(e) => failures.push(format!("{}: {e:#}", file.display())),
+            Ok(once) => match format_source(kind, &once, &cfg) {
+                Ok(twice) if *twice == *once => (),
+                Ok(_) => {
+                    failures.push(format!("{}: a second pass changed it", file.display()))
+                }
+                Err(e) => failures.push(format!("{}: its output: {e:#}", file.display())),
+            },
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
