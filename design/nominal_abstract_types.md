@@ -112,7 +112,12 @@ simplification is the bigger win.
 `AbstractId::declared(scope, name, ..)` (`typ/mod.rs`) is a v5 UUID
 of the canonical path less the components a function body or block mints
 (whose ids differ per instance and per process), and, for a type a body
-declares, of the declaration's source and position too; minted at
+declares, of the declaration's source and position too; for a dynamic
+module whose path crosses a body, of the place its `mod` statement is
+written (`declaration_place`, recorded on the module's `ScopeNames::site`
+before each compile of its text), so two dynamic modules named alike in two
+blocks are two types, while a file module is its file, one type wherever it
+is loaded; minted at
 `Env::deftype`, used for BOTH the
 compile-time `Type::Abstract { id, params }` and the runtime tag. One
 identity per type however many times its interface is read; the

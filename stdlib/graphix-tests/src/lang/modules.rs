@@ -1438,3 +1438,48 @@ run!(dynamic_module_runs_on_under_a_bottom_source, r#"{
   foo::x <- select step { 1 => step ~ 5, _ => never() };
   select step { 3 => foo::y, _ => never() }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(50))); FuseExpect::Jit);
+
+// Two dynamic modules named alike in two blocks are two modules: each one's
+// abstract type is its own, keyed by where its `mod` statement is written.
+const TWO_BLOCK_MODULES: &str = r#"
+{
+  let a = {
+    let s = mod m dynamic {
+      sandbox unrestricted;
+      sig { type T; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
+      source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0"
+    };
+    select s { error as e => never(e), null as _ => m::get(m::mk(41)) }
+  };
+  let b = {
+    let s = mod m dynamic {
+      sandbox unrestricted;
+      sig { type T; val mk: fn(x: string) -> T; val get: fn(t: T) -> string };
+      source "type T = Abstract<string>; let mk = |x: string| -> T T(x); let get = |t: T| -> string t.0"
+    };
+    select s { error as e => never(e), null as _ => m::get(m::mk("hello")) }
+  };
+  a + str::len(b)
+}
+"#;
+run!(two_block_modules, TWO_BLOCK_MODULES, is(Value::I64(46)); FuseExpect::Jit);
+
+const TWO_BLOCK_MODULES_CROSSED: &str = r#"
+{
+  let a = {
+    let s = mod m dynamic {
+      sandbox unrestricted;
+      sig { type T; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
+      source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0"
+    };
+    select s { error as e => never(e), null as _ => m::mk(41) }
+  };
+  let s = mod m dynamic {
+    sandbox unrestricted;
+    sig { type T; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
+    source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0 + 1"
+  };
+  select s { error as e => never(e), null as _ => m::get(a) }
+}
+"#;
+run!(two_block_modules_crossed, TWO_BLOCK_MODULES_CROSSED, refused("type mismatch T does not contain T"); FuseExpect::None);

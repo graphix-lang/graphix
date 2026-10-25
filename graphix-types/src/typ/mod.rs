@@ -11,7 +11,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::{
     pack::{Pack as PackTrait, PackError, encode_varint},
@@ -374,6 +374,21 @@ pub fn abstract_uuid(path: &str) -> uuid::Uuid {
     uuid::Uuid::new_v5(&ABSTRACT_NAMESPACE, path.as_bytes())
 }
 
+/// Where a declaration is written, the same in every process: its source
+/// and position, and a source named by its text alone (a REPL input, an
+/// embedded program) by the text too.
+pub fn declaration_place(ori: &Origin, pos: SourcePosition) -> CompactString {
+    match &ori.source {
+        Source::File(_) | Source::Vfs(_) | Source::Netidx(_) => {
+            format_compact!("{}:{pos}", ori.source)
+        }
+        Source::Program | Source::Unspecified => {
+            let (_, text) = abstract_uuid(&ori.text).as_u64_pair();
+            format_compact!("{}:{text:x}:{pos}", ori.source)
+        }
+    }
+}
+
 /// The names of every abstract type minted in this process, for
 /// diagnostics (`Type::Abstract` carries only the id).
 static ABSTRACT_NAMES: LazyLock<Mutex<IntMap<AbstractId, ArcStr>>> =
@@ -394,48 +409,29 @@ impl AbstractId {
     /// takes no part: a module's type is its path without them (an
     /// interface's declaration and its implementation's are one type),
     /// and a type declared in a body is its place there, so every
-    /// instance of the enclosing function, cold or warm, declares one.
+    /// instance of the enclosing function, cold or warm, declares one. A
+    /// dynamic module whose path crosses a body is told from a same-named
+    /// one in another body by `site`, the place its `mod` statement is
+    /// written ([`declaration_place`]); a file module is its file.
     pub fn declared(
         scope: &ModPath,
         name: &str,
         pos: SourcePosition,
         ori: &Origin,
+        site: Option<&str>,
     ) -> Self {
         let parts = || Path::parts(&scope.0);
         if !parts().any(|p| p.starts_with('#')) {
             return Self::of(scope, name);
         }
         let stable: ModPath = parts().filter(|p| !p.starts_with('#')).collect();
-        // CR claude for claude: [bug/medium] A module declared inside a block or function
-        // body has scope `/#do../m`. Here its types are keyed by `/m::T` alone, because
-        // the `#` parts are dropped unless the last part is one. So two different
-        // dynamic modules named `m` in two blocks mint one nominal type. With equal
-        // representations, the second module's `get` accepts the first module's value
-        // (the repro prints 42). With different representations, the second module is
-        // refused as a redefinition ('T is already defined as Abstract<i64>'). A module
-        // whose scope crosses a `#` component needs its declaration in the key: the
-        // `mod` statement's origin and position, as a body type already has. That key
-        // is still the same for every instance and every process. probe:
-        // design/review-2026-10-19/repro/t-expr-core-abstract-id-shared.gx,
-        // design/review-2026-10-19/repro/t-expr-core-abstract-id-refused.gx
-        // (t-expr-core-01)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Key a module whose scope crosses a `#` component by its declaration
-        // (origin and position).
         let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
-        let place = match in_body {
-            false => return Self::of(&stable, name),
-            true => match &ori.source {
-                Source::File(_) | Source::Vfs(_) | Source::Netidx(_) => {
-                    format_compact!("{stable}::#{}:{pos}::{name}", ori.source)
-                }
-                // a source named by its text alone (a REPL input, an
-                // embedded program) is told apart by the text
-                Source::Program | Source::Unspecified => {
-                    let (_, text) = abstract_uuid(&ori.text).as_u64_pair();
-                    format_compact!("{stable}::#{}:{text:x}:{pos}::{name}", ori.source)
-                }
-            },
+        let place = match (in_body, site) {
+            (true, _) => {
+                format_compact!("{stable}::#{}::{name}", declaration_place(ori, pos))
+            }
+            (false, Some(site)) => format_compact!("{stable}::#{site}::{name}"),
+            (false, None) => return Self::of(&stable, name),
         };
         let (_, lo) = abstract_uuid(&place).as_u64_pair();
         AbstractId(lo).named(name)

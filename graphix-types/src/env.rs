@@ -185,11 +185,18 @@ pub struct ScopeNames {
     pub imports: Map<CompactString, ImportEntry>,
     /// Glob (`use m::*`) sources, in declaration order.
     pub globs: Arc<Vec<Glob>>,
+    /// Where the dynamic module at this scope is declared, for one whose
+    /// path crosses a body: its source is the statement, so this tells its
+    /// abstract types from a same-named module's in another body
+    /// ([`AbstractId::declared`]); a file module's source is its file.
+    pub site: Option<ArcStr>,
 }
 
 impl crate::tracked::SameValue for ScopeNames {
     fn same_value(&self, other: &Self) -> bool {
-        self.imports.ptr_eq(&other.imports) && Arc::ptr_eq(&self.globs, &other.globs)
+        self.imports.ptr_eq(&other.imports)
+            && Arc::ptr_eq(&self.globs, &other.globs)
+            && self.site == other.site
     }
 }
 
@@ -226,7 +233,9 @@ impl Glob {
 
 impl Pack for ScopeNames {
     fn encoded_len(&self) -> usize {
-        crate::shared_map::map_len(&self.imports) + self.globs.encoded_len()
+        crate::shared_map::map_len(&self.imports)
+            + self.globs.encoded_len()
+            + self.site.encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -234,14 +243,15 @@ impl Pack for ScopeNames {
             k.encode(buf)?;
             v.encode(buf)
         })?;
-        self.globs.encode(buf)
+        self.globs.encode(buf)?;
+        self.site.encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let imports = crate::shared_map::map_decode(buf, &mut |buf| {
             Ok((CompactString::decode(buf)?, ImportEntry::decode(buf)?))
         })?;
-        Ok(Self { imports, globs: Pack::decode(buf)? })
+        Ok(Self { imports, globs: Pack::decode(buf)?, site: Pack::decode(buf)? })
     }
 }
 
@@ -1684,6 +1694,7 @@ impl Env {
             let sn = ScopeNames {
                 imports: retain(&sn.imports, |k, _| import(k)),
                 globs: Arc::new(sn.globs.iter().filter(|g| glob(g)).cloned().collect()),
+                site: sn.site.clone(),
             };
             view.names.insert(scope.clone(), sn);
         }
@@ -1694,6 +1705,36 @@ impl Env {
             *traits = retain(traits, |k, _| declared(k));
         }
         view
+    }
+
+    /// Record where the dynamic module at `scope` is declared, when its
+    /// path crosses a body (`#`) component.
+    pub fn declare_module_site(
+        &mut self,
+        scope: &ModPath,
+        ori: &Origin,
+        pos: SourcePosition,
+    ) {
+        if Path::parts(&scope.0).any(|p| p.starts_with('#')) {
+            let place = crate::typ::declaration_place(ori, pos);
+            self.names.get_or_default(scope.clone()).site = Some(place.as_str().into());
+        }
+    }
+
+    /// Where the innermost module around `scope` whose path crosses a
+    /// body is declared ([`Self::declare_module_site`]).
+    fn module_site(&self, scope: &ModPath) -> Option<ArcStr> {
+        let mut at: &str = &scope.0;
+        loop {
+            if let Some(site) = self
+                .names
+                .get(&ModPath(Path::from(ArcStr::from(at))))
+                .and_then(|sn| sn.site.clone())
+            {
+                return Some(site);
+            }
+            at = Path::dirname(at)?;
+        }
     }
 
     /// Register a glob (`use m::*`) source module at `scope`.
@@ -1757,7 +1798,8 @@ impl Env {
             TypeDefBody::Abstract(rep) => {
                 let formals =
                     Arc::from_iter(params.iter().map(|(tv, _)| Type::TVar(tv.clone())));
-                let id = AbstractId::declared(scope, name, decl, &ori);
+                let site = self.module_site(scope);
+                let id = AbstractId::declared(scope, name, decl, &ori, site.as_deref());
                 let typ = Type::Abstract { id, params: formals };
                 let rep = match rep {
                     None => None,

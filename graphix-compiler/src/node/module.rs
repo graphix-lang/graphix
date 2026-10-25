@@ -1012,7 +1012,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         // the source expression compiles in the enclosing scope; only
         // the loaded text compiles under the module's own scope
         let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
+        ctx.env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
+        env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
         env.modules.insert_cow(scope.lexical.clone());
         bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
@@ -1144,7 +1146,15 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             Body::Static => self.flags,
             Body::Dynamic { .. } => self.flags | CFlag::NoBuiltins,
         };
+        let dynamic = matches!(self.body, Body::Dynamic { .. });
         let compiled = ctx.with_restored_mut(&mut self.env, |ctx| {
+            if dynamic {
+                ctx.env.declare_module_site(
+                    &self.scope.lexical,
+                    &self.spec.ori,
+                    self.spec.pos,
+                );
+            }
             crate::node::compile_block_children(
                 ctx,
                 flags,
