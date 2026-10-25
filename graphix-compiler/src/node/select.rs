@@ -1437,22 +1437,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 open &= matches!(pat.arm_match(true), ArmMatch::GuardFalse);
             }
         }
-        // CR claude for claude: [bug/medium] A guard flip moves the select to another arm,
-        // and that arm's pattern bind fires though the scrutinee did not: in the probe
-        // `out` goes 1 then 100 when only `limit` changes, on both engines. CLAUDE.md's
-        // wake catch-up calls a pattern bind a facet of its scrutinee's delivery, which
-        // suggests the bind should read stale here, but the arm is newly selected (its
-        // first entry is a Step) and the guard was consulted, so the rule is yours: does
-        // a re-selection by a guard deliver the bind fired, or stale? tui::browser hit
-        // it (a window shrink re-ran the last Down key) and now samples the limit with
-        // the key. Found by the 10-19 GUI/TUI CR-fix agent. probe:
-        // design/review-2026-10-19/repro/select-guard-flip-fires-bind.gx
-        // (guard-flip-bind-01)
         // Any guard fire drives a re-match; whether it affects the
         // emission is decided by the consulted set below.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): try stale: the new arm's pattern
-        // binds are delivered stale (a bind is a facet of its scrutinee's delivery); the
-        // select still emits, since a consulted guard fired.
         let pat_up = guard_tags.iter().any(|(_, t)| t.triggers());
         // A bottom scrutinee bottoms the select; it consults no guards.
         // A window with no arm (a bottom scrutinee, an undecidable guard)
@@ -1552,15 +1538,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 if let Some(j) = selected.replace(i) {
                     deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
                 }
-                // A stale scrutinee binds stale, a past event at a first consult
-                // or a wake alike; only a consulted guard's flip binds FIRED, and
-                // under an init view a guard's fire is its birth, not a flip.
-                let bind_tag = if arg_prod.triggers() {
-                    arg_prod
-                } else if planes.guard_fire && !ctx.event.init() && !woke {
-                    Tag::FIRED
-                } else {
-                    Tag::STALE
+                // A bind is a facet of its scrutinee's delivery: a stale
+                // scrutinee binds stale, at a first consult, a wake or a
+                // guard's flip alike.
+                let bind_tag = match arg_prod.triggers() {
+                    true => arg_prod,
+                    false => Tag::STALE,
                 };
                 arms[i].0.bind_event(ctx, v, bind_tag);
                 // An arm is born at its first entry, into a world it reads

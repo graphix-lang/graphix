@@ -793,7 +793,8 @@ node graph IS the IR — there is no parallel typed IR
   select, consumed by whichever arm reads it; a destructuring let's
   siblings are inputs of their own; a pattern bind, of this select or
   an enclosing one, is a facet of its scrutinee's delivery: reading it
-  consumes that input's bit, and it is never delivered). An input that
+  consumes that input's bit, and it is never delivered; an arm a guard's
+  flip selects binds stale). An input that
   went bottom during the sleep is bottom at the wake: a bottom input
   SETS a node's resident (`TagValue::set_bottom`), never rides it, and
   every wake refresh stands a stale bottom like a value. Sleep state is

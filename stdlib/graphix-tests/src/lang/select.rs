@@ -4066,6 +4066,21 @@ run!(passed_guard_recomputes_over_the_value_it_missed, r#"{
   select step { 3 => r, _ => never() }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other"); FuseExpect::Jit);
 
+// A guard flip that moves the select to another arm binds its pattern
+// stale, a bind being a facet of its scrutinee's delivery: `x ~ 100` does
+// not fire when only the limit changed (guard-flip-bind-01).
+run!(a_guard_flip_binds_stale, r#"{
+  let step = 0;
+  step <- select step { k if k < 4 => (k ~ step) + 1, _ => never() };
+  let n: i64 = never();
+  n <- select step { 1 => step ~ 1, _ => never() };
+  let limit = 10;
+  limit <- select step { 2 => step ~ 2, _ => never() };
+  let out = 0;
+  select n ~ 5 { x if x >= limit => out <- x ~ 100, e => out <- e ~ 1 };
+  select step { 4 => out, _ => never() }
+}"#, is(Value::I64(1)); FuseExpect::Jit);
+
 // The literal pool pools an arm against the member of its shape it can
 // match: over two same-arity tuple members, the `A/`B arms cover the
 // second, not the first.
