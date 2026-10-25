@@ -1090,6 +1090,16 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     if excluded.iter().any(|m| mentions(code, m)) {
         return OracleTier::Excluded;
     }
+    // Functions have no order, and under `Any` a closure orders by the id
+    // its compile minted, which a forked compile mints in any order: a
+    // program that orders `Any` values beside a lambda is nondeterministic
+    let orders = ["Map<Any", "sort", "dedup", "min(", "max("];
+    if mentions(code, "Any")
+        && code.contains('|')
+        && orders.iter().any(|m| code.contains(m))
+    {
+        return OracleTier::Excluded;
+    }
     // An fs mutation racing an fs observation: nothing orders two async
     // IO builtins unless the program threads a data edge between them.
     // One-sided fs programs keep their value comparison.

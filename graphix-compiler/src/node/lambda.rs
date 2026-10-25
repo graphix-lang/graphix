@@ -685,20 +685,8 @@ impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 
-// CR claude for claude: [risk/low] A function value still orders by its LambdaId once it
-// is widened to Any. Parallel compile, slot builds and forked branches mint those ids
-// in any order, so a `Map<Any, _>` keyed by closures, or a sort over an `Array<Any>`
-// holding them, iterates in a different order on each forced run (GRAPHIX_PAR=off is
-// stable). graphix-fuzz's Par pair reports this as a parallel-evaluation DIVERGENCE, so
-// a generated program that widens closures to Any is soak noise. Decide between two
-// fixes: give functions a run-time order independent of mint order (definition source
-// id plus an instance ordinal relocated to program order at join), or rule Any-ordered
-// functions nondeterministic like references and mark such traces Excluded in the
-// oracle. probe: design/review-2026-10-12/repro/x-rerun-7-05-any-fn-key-order.gx
-// (x-rerun-7-05)
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
-// Functions have no order (Ordered refuses them); under Any rule them nondeterministic
-// like references and mark such traces Excluded.
+/// Functions have no order (`Ordered` refuses them); under `Any` one orders
+/// by its id, minted in run order, so such an order is nondeterministic.
 impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))

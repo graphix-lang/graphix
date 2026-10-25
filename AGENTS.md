@@ -1211,7 +1211,10 @@ cycle, across workers; the compiler never pins threads.
   (`bind::ref_target`: the place, else the byref chain's binding, else
   the cell), rewriting each one the operand type holds
   (`Type::map_refs`) before the value comparison; such a comparison
-  never fuses. References and functions have no order (`Ordered`).
+  never fuses. References and functions have no order (`Ordered`);
+  under `Any` a function orders by an id minted in run order, so an
+  order over `Any`-typed functions is nondeterministic, and the fuzzer
+  excludes a program that may make one (`oracle_tier`).
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
   block; it is not control flow. `?` wraps its error in an `ErrChain`
   once, extending a chain rather than nesting it, and the types agree:
