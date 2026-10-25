@@ -18,13 +18,17 @@ async fn seq_timers(mode: Mode) -> Result<()> {
             "reply == 7 && sys::time::diff(sys::time::now(reply), go) >= duration:40.ms",
         ),
     ] {
+        // the second run starts once the first answers, never into a busy
+        // machine
         let code = format!(
             r#"{{
-                let go = sys::time::timer(duration:150.ms, 2)?;
-                seq go {{
+                let go = sys::time::timer(duration:150.ms, false)?;
+                let out = seq go {{
                     let reply = {expr};
                     {check}
-                }}
+                }};
+                go <- sys::time::now(once(out));
+                out
             }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;

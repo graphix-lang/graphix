@@ -126,14 +126,16 @@ async fn abort_timer_starts_with_the_run(mode: Mode) -> Result<()> {
 
 // The abort's event reads the run's trigger `c`, not the live `go`: run 1
 // is aborted 140 ms after its start, go = 3 arrives mid-run (dropped by
-// seq, queued by seqq), and go = 9 runs alone.
+// seq, queued by seqq), and go = 9 runs alone. Only run 1 has an abort,
+// which a live `go` would take away when 3 arrives.
 async fn abort_reads_the_trigger(mode: Mode) -> Result<()> {
     for kw in ["seq", "seqq"] {
         let code = format!(
             r#"{{
             let tick = count(sys::time::timer(duration:40.ms, 16)?);
             let go = select tick {{ 1 | 3 | 9 => tick, _ => never() }};
-            {kw} let c = go; abort(sys::time::after_idle(duration:140.ms, c)) {{
+            let stop = |c| select c {{ 1 => sys::time::after_idle(duration:140.ms, c), _ => never() }};
+            {kw} let c = go; abort(stop(c)) {{
                 sys::time::after_idle(select c {{ 1 => duration:200.ms, _ => duration:5.ms }}, c)
             }}
         }}"#
