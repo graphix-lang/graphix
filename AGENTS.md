@@ -859,13 +859,17 @@ node graph IS the IR — there is no parallel typed IR
   function or a reference) settles to the widest argument whatever
   the order, one a callback or a reference holds to the first
   (`callsite.rs::Widening`); a formal with its own quantifiers (`f: fn<'b: C>(..)`) is
-  rank-2: its argument is checked with `'b` rigid, a call copies `'b`
+  rank-2: its argument is checked with `'b` rigid and held to exactly
+  its declared bounds, predicates included (`fn<'b: Number>` takes no
+  `|x| x * x`: declare `Number + Singleton`), a call copies `'b`
   generic, and an open quantifier never binds to its bound, no site's
-  settle decides it (`design/tvar_constraints.md`);
+  settle decides it (`design/tvar_constraints.md`); `Any` binds an open
+  cell only in a contravariant position (a `|v: Any|` callback fixes its
+  formal's type; `let x: Any = y` decides nothing of `y`);
   union collapse requires strict tvar identity; in a union checked against
   a union, an open member takes only the members its known siblings leave
   (`[&i64, Error<E>] ⊇ ['b, Error<E>]` gives 'b `&i64`, never `Error<E>`,
-  all of them when none are left); a free union member stays free (a type test over an
+  all of them when none are left or what is left refuses it); a free union member stays free (a type test over an
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able; checked arith
   (`+?` …) yields a catchable `ArithError` naming its cause, unchecked

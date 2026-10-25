@@ -279,9 +279,13 @@ RIGID (`callsite.rs::quantified_formal`): the formal is expanded once,
 rigid gates open on its quantifier cells, and the pre-unify, the
 argument's typecheck0 and a `check_contains_rigid` all run against
 that one expansion (each expansion of a typedef reference freshens its
-cells). `apply(|x| x * x)` checks; `apply(|x| x + 1)` and
-`apply(|x: i64| ..)` are refused, since they hold only where `'b` is
-`i64`. A call of `apply` copies `'b` generic
+cells). The quantifier keeps exactly its declared bounds: whatever the
+argument's check adds to it, a predicate included, must follow from them
+(`callsite.rs::added_bound`, by `Type::implies`, the rule an interface's
+bounds follow), so under `'b: Number` `apply(|x| x < x)` checks and
+`apply(|x| x * x)` is refused until the formal says `'b: Number +
+Singleton`; `apply(|x| x + 1)` and `apply(|x: i64| ..)` are refused,
+since they hold only where `'b` is `i64`. A call of `apply` copies `'b` generic
 (`FnType::generic_inner_quantifiers`): the argument's cells the check
 aliases to it stay its own scheme's, which each call of `f` copies,
 and the passing site's settle leaves it.

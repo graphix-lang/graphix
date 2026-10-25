@@ -487,20 +487,19 @@ fn quantified_formal(
     Ok(Some((formal.clone(), gates, quantifiers)))
 }
 
-/// A rank-2 quantifier `q` keeps the bounds its formal `declared`: the
-/// argument's check may add a predicate (the bound rule for those is
-/// open, tests-types-02), but no other conjunct that none declared
-/// implies, since the callee may call the argument at any type the
-/// declared bounds admit.
+/// A rank-2 quantifier `q` keeps exactly the bounds its formal `declared`:
+/// the callee may call the argument at any type they admit, so the
+/// argument's check may add no conjunct, a predicate included, that none
+/// of them implies.
 fn added_bound(env: &Env, q: &TVar, declared: &[Type]) -> Result<()> {
     for c in q.cell_constraints() {
-        if c.is_predicate() || declared.contains(&c) {
-            continue;
+        let mut implied = false;
+        for d in declared {
+            if d.implies(env, &c)? {
+                implied = true;
+                break;
+            }
         }
-        let implied = declared.iter().any(|d| {
-            !d.is_predicate()
-                && c.contains_with_flags(BitFlags::empty(), env, d).unwrap_or(false)
-        });
         if !implied {
             format_with_flags(PrintFlag::DerefTVars, || {
                 bail!(
@@ -600,28 +599,6 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
                 ArgFit::Misfit
             })
         }
-        // CR claude for claude: [bug/high] A rank-2 quantifier is rigid here, yet the
-        // argument's body still adds bounds to it. `x * x` adds Singleton, `x < y` adds
-        // Ordered, and a writer adds Data. The callee was checked against the declared
-        // bound alone, so `apply = |f: fn<'b: Number>(x: 'b) -> 'b| { let n: Number =
-        // 2.5; f(n) }; apply(|x| x * x)` passes the check and the build refuses it with
-        // the untypeable-instance message. The Ordered variant (f(&a, &a)) and the Data
-        // variant fail the same way. A declared `'a: Number + Singleton` function is
-        // accepted where rank2_refuses_narrower_bound refuses `'a: Int`. Proposed rule:
-        // a quantifier keeps exactly its declared bounds, so the argument must fit
-        // them, and the formal must say `'b: Number + Singleton`.
-        // NESTED_QUANTIFIER_SQUARE and NESTED_QUANTIFIER_TWO_TYPES pin the accepting
-        // behaviour and would change. probe:
-        // design/review-2026-10-19/repro/tests-types-rank2-singleton.gx
-        // (tests-types-02)
-        // 2026-10-19 claude: x-typecheck-generics-02's fix (callsite::added_bound) now
-        // refuses a non-predicate bound an argument adds to a rank-2 quantifier;
-        // predicates are still let through, pending this ruling. Adding them there
-        // (dropping the is_predicate skip) is the one-line change if the rule is that a
-        // quantifier keeps exactly its declared bounds.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): a rank-2 quantifier keeps exactly
-        // its declared bounds (fn<'b: Number> must say 'b: Number + Singleton to take
-        // |x| x * x); the NESTED_QUANTIFIER pins change.
         Some((formal, _rigid, quantifiers)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
                 quantifiers.iter().map(|q| q.cell_constraints()).collect();

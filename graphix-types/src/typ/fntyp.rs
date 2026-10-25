@@ -610,6 +610,9 @@ impl FnType {
         &self,
         cx: &mut super::normalize::ResolveTvarsCx,
     ) -> Option<Self> {
+        self.open_quantifiers(|_, open| {
+            cx.quantifiers.insert(open.cell_addr());
+        });
         self.cow_walk(|t| t.resolve_tvars_seen_int(cx))
     }
 
@@ -1188,13 +1191,14 @@ impl FnType {
         if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
             return Ok(false);
         }
+        let args = flags ^ ContainsFlags::Contra;
         for (s, t) in pairs {
-            if !t.typ.contains_int(flags, env, hist, &s.typ)? {
+            if !t.typ.contains_int(args, env, hist, &s.typ)? {
                 return Ok(false);
             }
         }
         Ok(match (&t.vargs, &self.vargs) {
-            (Some(tv), Some(sv)) => tv.contains_int(flags, env, hist, sv)?,
+            (Some(tv), Some(sv)) => tv.contains_int(args, env, hist, sv)?,
             (None, None) => true,
             (_, _) => false,
         } && self.rtype.contains_int(flags, env, hist, &t.rtype)?
@@ -1418,22 +1422,14 @@ impl FnType {
         // concrete choice, or follow from the conjuncts of the signature
         // variable it stands for.
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
-        // or a bound of the typedef parameter it fills, implies it; a
-        // predicate follows from a bound that holds it of every type the
-        // bound admits, none with an unknown part; a predicate bound implies
-        // itself, and `Ordered` implies `Discernible`
+        // or a bound of the typedef parameter it fills, implies it
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
             let mut sig_tcs = sig_tv.cell_constraints();
             if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
                 sig_tcs.extend(bounds.iter().cloned());
             }
             for s in sig_tcs.iter() {
-                if s == impl_tc
-                    || matches!((s, impl_tc), (Type::Ordered, Type::Discernible))
-                    || (!s.is_predicate()
-                        && (!impl_tc.is_predicate() || !s.holds_unknown(env))
-                        && impl_tc.contains_with_flags(probe, env, s)?)
-                {
+                if s.implies(env, impl_tc)? {
                     return Ok(());
                 }
             }

@@ -1085,6 +1085,41 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }
 );
 
+// An open union member whose bound refuses what its known siblings leave
+// takes from the whole other side: 'a is i64 in [i64, Array<string>] ⊇
+// [i64, 'a: Number].
+const OPEN_MEMBER_FALLS_BACK_TO_THE_WHOLE_SIDE: &str = r#"
+{
+  let f = 'a: Number |x: 'a, y: bool| -> ['a, i64] select y { true => x, false => 1 };
+  let g = |r: [i64, Array<string>]| r;
+  g(f(never(), false))
+}
+"#;
+run!(
+    open_member_falls_back_to_the_whole_side,
+    OPEN_MEMBER_FALLS_BACK_TO_THE_WHOLE_SIDE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }
+);
+
+// A callback that takes Any fixes its formal's open type to Any, so a
+// Concrete bound is met; a covariant Any decides nothing of what flows
+// into it: `q` is still an i64 for `h`.
+const ANY_BINDS_ONLY_CONTRAVARIANTLY: &str = r#"
+{
+  let f = 'a: Concrete |g: fn(v: 'a) -> i64| 1;
+  let q = never();
+  let w: Any = q;
+  q <- 2;
+  let h = |z: i64| z + 1;
+  [f(|v: Any| 0), h(q)]
+}
+"#;
+run!(
+    any_binds_only_contravariantly,
+    ANY_BINDS_ONLY_CONTRAVARIANTLY,
+    prints("[i64:1, i64:3]")
+);
+
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {
   let x = never();
@@ -1522,6 +1557,13 @@ const NESTED_QUANTIFIER_MONO: &str = r#"{
 }"#;
 // The argument is checked with 'b rigid: well typed for every 'b.
 const NESTED_QUANTIFIER_SQUARE: &str = r#"{
+  type F = fn<'b: Number + Singleton>(x: 'b) -> 'b;
+  let apply = |f: F| f(3);
+  apply(|x| x * x)
+}"#;
+// A rank-2 quantifier keeps exactly its declared bounds: 'b: Number holds
+// a union of numbers, which `x * x` can't take.
+const NESTED_QUANTIFIER_SQUARE_UNDECLARED: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
   let apply = |f: F| f(3);
   apply(|x| x * x)
@@ -1601,7 +1643,7 @@ const NESTED_QUANTIFIER_COMPARE: &str = r#"{
   apply(|x, y| x < y)
 }"#;
 const NESTED_QUANTIFIER_TWO_TYPES: &str = r#"{
-  type F = fn<'b: Number>(x: 'b) -> 'b;
+  type F = fn<'b: Number + Singleton>(x: 'b) -> 'b;
   let apply = |f: F| f(3) + cast<i64>(f(2.5))$;
   let sq = |x| x * x;
   apply(sq)
@@ -1715,6 +1757,10 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_CONCRETE_INLINE, "cannot compute"),
         (NESTED_QUANTIFIER_MONO, "does not contain"),
+        (
+            NESTED_QUANTIFIER_SQUARE_UNDECLARED,
+            "which the parameter's quantifier does not declare",
+        ),
         (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),

@@ -37,6 +37,9 @@ pub enum ContainsFlags {
     /// `TCell::rigid_gates`. A committing check always enforces them: a
     /// rigid cell never binds, so it holds only itself and Bottom.
     RigidCheck,
+    /// The walk is under an odd number of function arguments, where the
+    /// sides of the judgment have swapped.
+    Contra,
 }
 
 /// The infinite-type rejection wording, shared by
@@ -603,30 +606,40 @@ fn cell_constraints_ok(
 
 /// Whether `q`, when a rank-2 formal's quantifier holds it rigid at a
 /// call, admits unifying with the open cell `o`: the callee was checked
-/// against `q`'s declared bound alone, so each of `o`'s type conjuncts
-/// must follow from it. A quantifier with no type conjunct is not judged.
+/// against `q`'s declared bounds alone, so each of `o`'s conjuncts must
+/// follow from them. A quantifier with no bound is not judged.
 fn quantifier_admits(env: &Env, q: &TVar, o: &TVar) -> bool {
     if !q.is_quantifier_rigid() || o.is_rigid() {
         return true;
     }
     let own = q.cell_constraints();
-    if own.iter().all(|c| c.is_predicate()) {
+    if own.is_empty() {
         return true;
     }
     let trait_of = |t: &Type| match t {
         Type::Ref(tr) => env.trait_of_ref(tr),
         _ => None,
     };
-    o.cell_constraints().iter().filter(|c| !c.is_predicate()).all(|c| {
+    o.cell_constraints().iter().all(|c| {
         own.iter().any(|q| match (trait_of(q), trait_of(c)) {
             (Some(a), Some(b)) => a == b,
-            (None, None) => {
-                q == c
-                    || c.contains_with_flags(BitFlags::empty(), env, q).unwrap_or(false)
-            }
+            (None, None) => q.implies(env, c).unwrap_or(false),
             _ => false,
         })
     })
+}
+
+impl Type {
+    /// Whether the declared bound `self` implies the bound `c`: it is `c`,
+    /// or holds it of every type it admits (a predicate only where none of
+    /// those has an unknown part), and `Ordered` implies `Discernible`.
+    pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
+        Ok(self == c
+            || matches!((self, c), (Type::Ordered, Type::Discernible))
+            || (!self.is_predicate()
+                && (!c.is_predicate() || !self.holds_unknown(env))
+                && c.contains_with_flags(BitFlags::empty(), env, self)?))
+    }
 }
 
 /// How two distinct open cells unify.
@@ -682,6 +695,26 @@ impl OpenPair {
         // 2026-10-24 claude: Eric ruled (2026-10-24): a rank-2 quantifier keeps exactly
         // its declared bounds (fn<'b: Number> must say 'b: Number + Singleton to take |x|
         // x * x); the NESTED_QUANTIFIER pins change.
+        // 2026-10-24 claude: Ruling built: callsite::added_bound now holds a rank-2
+        // quantifier to exactly its declared bounds, predicates included, through the
+        // shared Type::implies (the rule sig_matches uses), so fn<'b: Number> refuses |x|
+        // x * x ('b: Singleton undeclared) and Number + Singleton takes it;
+        // quantifier_admits judges predicates too. Pins: lang::types
+        // NESTED_QUANTIFIER_SQUARE (now Number + Singleton, 9),
+        // NESTED_QUANTIFIER_SQUARE_UNDECLARED (refused), NESTED_QUANTIFIER_TWO_TYPES
+        // (Number + Singleton, 15), rank2_refuses_narrower_bound. Still open from the
+        // 10-13 note: a quantifier copy that reaches a later comparison without its bound
+        // (a variadic builtin's fn(x: Eq), a collection element's fn<'a: Number>) has no
+        // conjunct and is not judged, and FnType::contains_int's own quantifier gates are
+        // not judged.
+        // 2026-10-24 claude: Later the same day: the bound-less quantifier copy was
+        // Type::resolve_tvars, which CallSite uses for the instance's type (site_ftype)
+        // and which gave every open cell a fresh copy without its bounds, so fn<'a:
+        // Function> reached an instance as fn(..) and added_bound refused filter(queuefn,
+        // ..) (lang::types::function_bounded_builtin_passed_as_a_value). A function
+        // type's open quantifiers now keep their bounds through resolve_tvars
+        // (ResolveTvarsCx::quantifiers). Still open: FnType::contains_int's own
+        // quantifier gates are not judged.
         if t0.is_rigid() || t1.is_rigid() {
             return OpenPair::Merge;
         }
@@ -1228,9 +1261,11 @@ impl Type {
             }
             return Ok(r);
         }
-        // a probe binds nothing: its verdict, rigid or not, is memoized
-        let rigid = flags == ContainsFlags::RigidCheck;
-        if !flags.is_empty() && !rigid {
+        // a probe binds nothing: its verdict, rigid or not and in either
+        // polarity, is memoized
+        let probe = flags & !ContainsFlags::Contra;
+        let rigid = probe == ContainsFlags::RigidCheck;
+        if !probe.is_empty() && !rigid {
             return self.contains_dispatch(flags, env, hist, t);
         }
         if hist.gated == 0
@@ -1482,22 +1517,28 @@ impl Type {
                 }
                 Ok(true)
             }
-            // CR claude for claude: [bug/low] Any on the left contains an open
-            // cell on the right without binding it, though any other type
-            // there binds the cell (the BIND rhs arm below) and the mirror
-            // arm above binds a left cell to Any. So a callback written |v:
-            // Any| leaves its formal's 'a open: under 'a: Concrete it is
-            // refused with "the type 'a must be fully known here ..
-            // annotate it" although it is annotated. sys::net::publish
-            // (#on_write: |v: Any| ..) and sys::net::rpc(#f: |a: Any| ..)
-            // are refused today; let f = 'a: Concrete |g: fn(v: 'a) -> i64|
-            // 0; f(|v: Any| 0) shows it, f(|v: [i64, string]| 0) binds 'a.
-            // Binding the cell to Any here would also decide cells under a
-            // covariant Any (let x: Any = y binds y's open cell), so this
-            // needs a ruling: bind in a contravariant position only, bind
-            // everywhere, or keep refusing an Any handler. (typ-any-bind-01)
-            // 2026-10-24 claude: Eric ruled (2026-10-24): Any binds an open
-            // cell in a contravariant position only.
+            // in a contravariant position Any binds an open cell (a callback
+            // that takes any value fixes its formal's type), never under a
+            // covariant Any, where `let x: Any = y` decides nothing of `y`
+            (Self::Any, Self::TVar(t1)) => {
+                if commit
+                    && flags.contains(ContainsFlags::Contra)
+                    && let Some(cell) = t1.open_cell()
+                    && !cell.is_rigid()
+                    && cell_constraints_ok(&cell, flags, env, hist, &Self::Any)?
+                    && commit_cell_constraints(&cell, flags, env, hist, &Self::Any)?
+                {
+                    if graphix_dbg_bind() {
+                        eprintln!(
+                            "BIND rhs '{}({:x}) := Any",
+                            cell.name,
+                            cell.cell_addr()
+                        );
+                    }
+                    cell.bind(Self::Any);
+                }
+                Ok(true)
+            }
             (Self::Any, _) => Ok(true),
             (
                 Self::Abstract { id: id0, params: p0 },
@@ -1763,7 +1804,8 @@ impl Type {
             // Member-wise identity pre-pass: only the residue takes the
             // general per-member walk (which is O(|s0|·|s1|) per level).
             // An open rhs member takes from the lhs members its known
-            // siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E.
+            // siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E; where
+            // they leave none it can take, from the whole lhs.
             (t0 @ Self::Set(s0), Self::Set(s1)) => {
                 let mut used: SmallVec<[bool; 8]> = smallvec::smallvec![false; s0.len()];
                 let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
@@ -1802,20 +1844,12 @@ impl Type {
                     1 => rest.pop().unwrap(),
                     _ => Self::Set(Arc::from_iter(rest.drain(..))),
                 };
-                // CR claude for claude: [bug/low] An open rhs member is checked only
-                // against `rest`, the lhs members no known sibling used. When `rest`
-                // fails, typically because the cell's bound refuses it, the containment
-                // is refused, even when the cell could take a member a sibling used.
-                // `[i64, Array<string>] ⊇ [i64, 'a: Number]` is refused, although 'a :=
-                // i64 is sound. The rule ('an open member takes only the members its
-                // known siblings leave') does not say what happens when the leftover is
-                // refused. Decide whether to fall back to the whole lhs (`t0`) when
-                // `rest` fails, keeping `rest` as the first choice. Probe:
-                // design/review-2026-10-12/repro/t-contains-10.gx. (t-contains-10)
-                // 2026-10-24 claude: Eric ruled (2026-10-24): when an open union
-                // member's leftover fails, fall back to the whole left side.
                 for m in open {
-                    if !rest.contains_int(flags, env, hist, m)? {
+                    let from = match rest.contains_int(guide(flags), env, hist, m)? {
+                        true => &rest,
+                        false => t0,
+                    };
+                    if !from.contains_int(flags, env, hist, m)? {
                         return Ok(false);
                     }
                 }

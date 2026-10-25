@@ -48,6 +48,9 @@ pub(super) struct ResolveTvarsCx {
     /// An open cell's copy keeps its predicate conjuncts (`Concrete`,
     /// `Function`), which name no cell.
     predicates: bool,
+    /// The open quantifiers of the function types met: their bounds are
+    /// part of the type (`fn<'a: Function>(..)`), so a copy keeps them all.
+    pub(super) quantifiers: LPooled<nohash::IntSet<usize>>,
 }
 
 impl ResolveTvarsCx {
@@ -58,6 +61,7 @@ impl ResolveTvarsCx {
             in_progress: LPooled::take(),
             memo: LPooled::take(),
             predicates: false,
+            quantifiers: LPooled::take(),
         }
     }
 }
@@ -332,14 +336,19 @@ impl Type {
                     }
                     None => {
                         let fresh = tv.fresh_copy();
-                        if cx.predicates {
+                        cx.fresh.insert(addr, fresh.clone());
+                        if cx.quantifiers.contains(&addr) {
+                            for c in tv.cell_constraints() {
+                                let c = c.resolve_tvars_seen_int(cx).unwrap_or(c);
+                                fresh.add_cell_constraint(c);
+                            }
+                        } else if cx.predicates {
                             for c in tv.cell_constraints() {
                                 if c.is_predicate() {
                                     fresh.add_cell_constraint(c);
                                 }
                             }
                         }
-                        cx.fresh.insert(addr, fresh.clone());
                         Type::TVar(fresh)
                     }
                 };
