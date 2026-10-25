@@ -30,10 +30,13 @@ val batch: fn(t: TxnTree<'k, 'v>, ops: Array<[`Insert('k, 'v), `Remove('k)]>) ->
 
 /// Commit the transaction. All writes become visible atomically, or
 /// none do: `Conflict when a key the transaction read has changed
-/// since, after which the program may run the transaction again.
+/// since, after which the program may run the transaction again. A
+/// commit is flushed to disk before it answers; `NotDurable when it was
+/// applied and is visible but the flush failed (do not run it again:
+/// call db::flush to retry the flush).
 /// If you use any object created from this transaction after commit
 /// or rollback you will receive a runtime error
-val commit: fn(txn: Txn) -> Result<null, [`DbErr(string), `Conflict]>;
+val commit: fn(txn: Txn) -> Result<null, [`DbErr(string), `Conflict, `NotDurable(string)]>;
 
 /// Abort the transaction. No changes are applied.
 /// If you use any object created from this transaction after commit

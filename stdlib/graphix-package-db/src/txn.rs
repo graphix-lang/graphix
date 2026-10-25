@@ -9,6 +9,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
+use compact_str::format_compact;
 use graphix_compiler::rep;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
@@ -222,34 +223,18 @@ impl TxnState {
         })?;
         match res {
             Ok(()) => {
-                // CR claude for claude: [bug/low] commit applies the transaction and then
-                // flushes. If the flush fails (disk full, an I/O error), the program
-                // gets a DbErr although every write is already applied and visible.
-                // That contradicts the gxi's "all writes become visible atomically, or
-                // none do", and a program that retries a read-modify-write on that
-                // DbErr applies it twice. commit is also the only write in the package
-                // that flushes on its own, and the gxi does not say so. Pick one
-                // contract: either commit is not durable (drop the flush; the program
-                // calls db::flush as it does after every other write), or commit is
-                // durable and a flush failure after the apply comes back as its own
-                // outcome, documented as "committed, not yet durable". (db2-07)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Commit is not durable, like every other write: drop the
-                // flush; the gxi says call db::flush.
-                // 2026-10-24 claude: Not obvious after all, so back to Eric: dropping the
-                // flush undoes the db2-09 fix of the 2026-10-05 review (a commit flushes
-                // before it answers, since the book calls transactions ACID and a commit
-                // followed by sys::exit was lost), which the 2026-10-09 review accepted
-                // and graphix-tests lib_tests::db::db_commit_is_durable pins. So the
-                // choice is between that durability and an honest outcome on a failed
-                // flush: keep the flush and add an error variant for 'committed, not yet
-                // durable' to commit's result (an API change), or drop durability and the
-                // pin.
-                // 2026-10-24 claude: Eric ruled (2026-10-24): option A: keep the flush,
-                // and add a NotDurable(string) error to commit's result for a commit
-                // applied and visible but not on disk.
-                self.db.flush()?;
-                Ok(Value::Null)
+                // applied and visible either way: a failed flush is its own
+                // outcome, never a DbErr a retry would apply again
+                match self.db.flush() {
+                    Ok(_) => Ok(Value::Null),
+                    Err(e) => Ok(Value::Error(
+                        rep::make_variant(
+                            literal!("NotDurable"),
+                            [Value::String(format_compact!("{e}").as_str().into())],
+                        )
+                        .into(),
+                    )),
+                }
             }
             Err(TransactionError::Abort(Refused::Conflict)) => {
                 Ok(Value::Error(rep::make_variant(literal!("Conflict"), []).into()))

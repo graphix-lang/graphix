@@ -28,7 +28,9 @@ nothing. Its reads see the trees as they stand and its own writes, and
 its writes wait for the commit, which checks that every key it read
 still holds what it read and applies the writes atomically, or fails
 with `` `Conflict `` and applies none. A program that gets `` `Conflict ``
-runs the transaction again.
+runs the transaction again. A commit is on disk when it answers; one that
+was applied but whose flush failed answers `` `NotDurable ``, and is not
+run again (`db::flush` retries the flush).
 
 ```graphix
 {{#include ../../../stdlib/graphix-package-db/src/graphix/txn.gxi}}

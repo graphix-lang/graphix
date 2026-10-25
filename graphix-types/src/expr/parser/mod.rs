@@ -1350,30 +1350,6 @@ where
         attempt(spaces1().with(string("with")).skip(space()))
             .with(struct_fields())
             .map(Tail::With),
-        // CR claude for claude: [bug/medium] A trailing `;` before `}` parses as an empty
-        // last statement, a NoOp. So `{ e; }` gets past the two-expression rule that
-        // refuses `{ e }`, and the block's value becomes a ⊥ Nop. The checker accepts
-        // it against any declared return type, and at run time it never produces. A seq
-        // body drops the same NoOp, so `seq { e; }` yields e. book/src/core/block.md
-        // says a one-expression block will not parse. Either refuse the empty last
-        // position here with a reason naming the stray `;`, or drop it as seq lowering
-        // does, and pin the choice beside parser/test.rs a_refusal_says_why. probe:
-        // design/review-2026-10-19/repro/tests-parser-trailing-semicolon-block.gx
-        // (tests-parser-01)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Refuse the empty last position with a reason naming the stray `;`.
-        // 2026-10-23 claude: Not obvious after all, so back to Eric: the trailing ';'
-        // is a used form. book/src/examples/gui/data_table_basic.gx and
-        // data_table_dashboard.gx write effect-only function bodies as {
-        // net::publish(..); net::publish(..); }, whose value is the NoOp (never
-        // produces), and format.rs pins an_empty_statement_is_its_semicolon. Refusing
-        // it breaks those; dropping the NoOp makes such a body produce its last
-        // publish's value. Options: keep it (a block ending in ';' has no value, typed
-        // bottom like never(), documented in book/src/core/block.md), or refuse it and
-        // rewrite the examples.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): keep it and document it: a block
-        // ending in ';' has no value (bottom, like never()), a form made deliberately
-        // and never documented.
         semisep()
             .with(sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
                 ExprKind::NoOp.to_expr(pos).ending(pos)

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3799b983.js";
+            window.path_to_searchindex_js = "searchindex-d037af67.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -1665,6 +1665,15 @@ important_thing
 outside the block scope. Blocks are valid anywhere an expression is
 valid, and they are just expressions. They will become very important
 when we introduce lambda expressions.</p>
+<p>A block whose last statement ends in <code>;</code> has no value: it never produces,
+and its type is bottom, as <code>never()</code>’s is. That is the form for a function
+called only for its effects, whose result nothing reads:</p>
+<pre><code class="language-graphix">let report = |x: i64| {
+  println("got [x]");
+  println("twice is [x * 2]");
+};
+report(21)
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="use"><a class="header" href="#use">Use</a></h1>
 <p><code>use</code> imports a <em>name</em> into the current scope. It follows the same
@@ -7691,7 +7700,9 @@ nothing. Its reads see the trees as they stand and its own writes, and
 its writes wait for the commit, which checks that every key it read
 still holds what it read and applies the writes atomically, or fails
 with <code>`Conflict</code> and applies none. A program that gets <code>`Conflict</code>
-runs the transaction again.</p>
+runs the transaction again. A commit is on disk when it answers; one that
+was applied but whose flush failed answers <code>`NotDurable</code>, and is not
+run again (<code>db::flush</code> retries the flush).</p>
 <pre><code class="language-graphix">use super::Db;
 /// An open transaction handle.
 type Txn;
@@ -7724,10 +7735,13 @@ val batch: fn(t: TxnTree&lt;'k, 'v&gt;, ops: Array&lt;[`Insert('k, 'v), `Remove(
 
 /// Commit the transaction. All writes become visible atomically, or
 /// none do: `Conflict when a key the transaction read has changed
-/// since, after which the program may run the transaction again.
+/// since, after which the program may run the transaction again. A
+/// commit is flushed to disk before it answers; `NotDurable when it was
+/// applied and is visible but the flush failed (do not run it again:
+/// call db::flush to retry the flush).
 /// If you use any object created from this transaction after commit
 /// or rollback you will receive a runtime error
-val commit: fn(txn: Txn) -&gt; Result&lt;null, [`DbErr(string), `Conflict]&gt;;
+val commit: fn(txn: Txn) -&gt; Result&lt;null, [`DbErr(string), `Conflict, `NotDurable(string)]&gt;;
 
 /// Abort the transaction. No changes are applied.
 /// If you use any object created from this transaction after commit

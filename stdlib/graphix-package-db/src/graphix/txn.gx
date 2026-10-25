@@ -4,5 +4,5 @@ let get = |t: TxnTree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'd
 let insert = |t: TxnTree<'k, 'v>, key: 'k, value: 'v| -> Result<['v, null], `DbErr(string)> 'db_txn_insert;
 let remove = |t: TxnTree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_txn_remove;
 let batch = |t: TxnTree<'k, 'v>, ops: Array<[`Insert('k, 'v), `Remove('k)]>| -> Result<null, `DbErr(string)> 'db_txn_batch;
-let commit = |txn: Txn| -> Result<null, [`DbErr(string), `Conflict]> 'db_txn_commit;
+let commit = |txn: Txn| -> Result<null, [`DbErr(string), `Conflict, `NotDurable(string)]> 'db_txn_commit;
 let rollback = |txn: Txn| -> Result<null, `DbErr(string)> 'db_txn_rollback

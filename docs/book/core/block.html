@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3799b983.js";
+            window.path_to_searchindex_js = "../searchindex-d037af67.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -197,6 +197,15 @@ important_thing
 outside the block scope. Blocks are valid anywhere an expression is
 valid, and they are just expressions. They will become very important
 when we introduce lambda expressions.</p>
+<p>A block whose last statement ends in <code>;</code> has no value: it never produces,
+and its type is bottom, as <code>never()</code>’s is. That is the form for a function
+called only for its effects, whose result nothing reads:</p>
+<pre><code class="language-graphix">let report = |x: i64| {
+  println("got [x]");
+  println("twice is [x * 2]");
+};
+report(21)
+</code></pre>
 
                     </main>
 

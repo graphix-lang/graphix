@@ -26,3 +26,15 @@ This program won't compile because you can't reference y and x from
 outside the block scope. Blocks are valid anywhere an expression is
 valid, and they are just expressions. They will become very important
 when we introduce lambda expressions.
+
+A block whose last statement ends in `;` has no value: it never produces,
+and its type is bottom, as `never()`'s is. That is the form for a function
+called only for its effects, whose result nothing reads:
+
+```graphix
+let report = |x: i64| {
+  println("got [x]");
+  println("twice is [x * 2]");
+};
+report(21)
+```
