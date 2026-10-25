@@ -83,24 +83,16 @@ function M.setup_lsp()
   end
 end
 
--- CR claude for claude: [risk/low] nvim and Zed read the Helix-dialect queries through
--- symlinks. nvim-treesitter's indent module reads
--- @indent.begin/@indent.end/@indent.dedent/@indent.branch and Zed's reads @indent/@end,
--- so the shared indents.scm (@indent, @outdent, @extend) gives no auto-indent in
--- either. @namespace, @constant.numeric.* and @variable.other.member also fall back to
--- generic groups or none. This install_info also builds the grammar from GitHub `main`
--- while the queries come from the local checkout: one renamed node and nvim refuses the
--- whole highlight query. Options: per-editor query layers (an nvim indents.scm plus
--- translated capture names), or keep one set and state the limits in ide/README.md;
--- either way, point url at the local checkout so the grammar and queries come from one
--- revision. (ide-tooling-10)
--- 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling needed.
--- Point url at the local checkout; state the editor limits in ide/README.md.
+-- The grammar is built from the checkout this plugin sits in, which the
+-- queries on the runtimepath come from too, so the two are one revision; a
+-- copy of the plugin outside a checkout builds GitHub's main.
+local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h:h:h:h:h')
+local local_grammar = vim.uv.fs_stat(root .. '/ide/tree-sitter-graphix/grammar.js') ~= nil
 local install_info = {
-  url = "https://github.com/graphix-lang/graphix",
+  url = local_grammar and root or "https://github.com/graphix-lang/graphix",
   files = { "src/parser.c", "src/scanner.c" },
   location = "ide/tree-sitter-graphix",
-  branch = "main",
+  branch = (not local_grammar) and "main" or nil,
 }
 
 --- Register the graphix tree-sitter parser with nvim-treesitter. The
@@ -122,11 +114,13 @@ function M.setup_treesitter()
       pattern = 'TSUpdate',
       callback = function()
         require('nvim-treesitter.parsers').graphix = {
-          install_info = {
-            url = install_info.url,
-            location = install_info.location,
-            branch = install_info.branch,
-          },
+          install_info = local_grammar
+              and { path = root .. '/' .. install_info.location }
+            or {
+              url = install_info.url,
+              location = install_info.location,
+              branch = install_info.branch,
+            },
         }
       end,
     })

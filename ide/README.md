@@ -38,8 +38,15 @@ manager (lazy.nvim: `{ dir = "/path/to/graphix/ide/editors/nvim" }`) or
 require('graphix').setup()
 ```
 
-and `:TSInstall graphix` for the grammar. See the header of
+and `:TSInstall graphix` for the grammar, which is built from this
+checkout, the revision its queries come from. See the header of
 `editors/nvim/lua/graphix/init.lua` for the options.
+
+The queries are written in Helix's dialect, and Neovim reads them as
+they are: its indent module wants `@indent.begin` and the like, so
+there is no tree-sitter auto-indent, and `@namespace`,
+`@constant.numeric.*` and `@variable.other.member` fall back to
+generic highlight groups.
 
 #### Emacs
 
@@ -66,7 +73,9 @@ checkout, and runs `hx --grammar build`. See `editors/helix/README.md` for detai
 
 #### Zed
 
-See `editors/zed/README.md` for Zed-specific instructions.
+See `editors/zed/README.md` for Zed-specific instructions. Zed reads
+the same Helix-dialect queries: its indent captures are `@indent` and
+`@end`, so there is no tree-sitter auto-indent there either.
 
 #### Claude Code
 
