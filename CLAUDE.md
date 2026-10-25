@@ -1027,7 +1027,10 @@ cycle, across workers; the compiler never pins threads.
   non-place expression is a fresh cell its uses type; an optional
   writable argument is `[&mut T, null]`. `&a[i]`, `&s.f`, `&t.0`,
   `&m{k}` are root + path; writes patch the root at delivery; a dynamic
-  key is a moving reference. References de-fuse. A reference's value is
+  key is a moving reference, and a write while its address is bottom (a
+  bottom key, a dereference of a bottom reference) does not happen,
+  silently; one made before the reference first arrives lands at its
+  first target. References de-fuse. A reference's value is
   its own cell, so `==`/`!=` compare references by what they name
   (`bind::ref_target`: the place, else the byref chain's binding, else
   the cell), rewriting each one the operand type holds

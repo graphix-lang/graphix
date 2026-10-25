@@ -1875,8 +1875,9 @@ pub struct ConnectDeref<R: Rt, E: UserEvent> {
     /// so a moving place writes where its key names then.
     pub(super) cell: Option<BindId>,
     pub(super) top_id: ExprId,
-    /// The RHS fired while no target took its value: the next target
-    /// resolved lands it.
+    /// The RHS fired before the reference arrived: its first target lands
+    /// it. A reference that arrived naming no place (a key that is bottom)
+    /// drops the write, as any operation drops a bottom input.
     pending: bool,
     slept: WakeBit,
 }
@@ -1966,8 +1967,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        // a fired RHS writes; a write no target took lands at the next
-        // target resolved; a bottom RHS never writes
+        // a fired RHS writes; a write before the reference arrived lands at
+        // its first target; a bottom RHS or address never writes
         let woke = self.slept.take();
         let (rhs_fired, rhs_val) = {
             let tv = self.rhs.update(ctx);
@@ -1977,10 +1978,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         if let crate::branch::RtView::Fork(f) = &ctx.rt {
             f.note_read(self.src_id);
         }
+        // a reference that arrived naming no place (a place whose address
+        // is bottom) has nowhere to write
+        let mut addressless = false;
         if let Some(tv) = ctx.event.variables.get(&self.src_id) {
-            // a reference delivered without a target (a place whose
-            // address is undetermined) has nowhere to write
             self.cell = Self::cell(tv);
+            addressless = self.cell.is_none();
         } else if self.cell.is_none() || woke {
             // an instance created after the reference value was
             // delivered, or woken after it moved, finds it standing
@@ -1989,31 +1992,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                     VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
                 };
                 self.cell = Self::cell(tv);
+                addressless = self.cell.is_none();
             }
         }
-        // CR claude for claude: [risk/medium] A write that fires while the reference has
-        // no address is held here. A moving reference whose key is bottom (`&mut
-        // rows[sel$]` with `sel` null) gets that write later, when the key returns, on
-        // whatever place it names then. Nothing fires at the landing. So a key pressed
-        // while no row is selected overwrites the next row selected. The write lands
-        // only if the RHS still has a value at that point: `key ~ text` lands, while an
-        // RHS that is bottom again by then (a select over an event) drops it. CLAUDE.md
-        // says a connect writes when its RHS fires. design/place_references.md says
-        // only that a write into a place that does not exist is dropped and logged. The
-        // rule exists only in the field's doc comment and in
-        // lang::byref::place_bottom_key, whose comment says both "lands nowhere" and
-        // "the pending write lands there". This needs a ruling. One option: keep the
-        // held write, then state it, including the RHS-must-still-stand condition, in
-        // CLAUDE.md (References) and design/place_references.md, and pin the phantom
-        // case. The other: hold only until the first target ever resolves (the init
-        // case), drop and log a write that fires on a bottom address the way a write
-        // past an array's end is dropped, and update place_bottom_key. probe:
-        // design/review-2026-10-12/repro/tests-lang-rest-b-03-phantom-write.gx
-        // (tests-lang-rest-b-03)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): drop it: a write whose address is
-        // bottom does not happen, silently, as any operation with a bottom input does
-        // not.
-        self.pending |= rhs_fired;
+        self.pending = !addressless && (self.pending || rhs_fired);
         if self.pending
             && let Some(v) = rhs_val
             && let Some(cell) = self.cell

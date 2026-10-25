@@ -272,9 +272,10 @@ const PLACE_KEY_EVALUATED_ONCE: &str = r#"
 
 run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, prints("[i64:2, i64:10]"); FuseExpect::Jit);
 
-// An undetermined key is a bottom reference: a write through it lands
-// nowhere; when the key returns the reference retargets (and, as at
-// every retarget, the pending write lands there).
+// An undetermined key is a bottom reference: a write through it does not
+// happen, as no operation with a bottom input does; when the key returns
+// the reference retargets, and nothing written meanwhile lands there
+// (tests-lang-rest-b-03).
 const PLACE_BOTTOM_KEY: &str = r#"
 {
   let step = 0;
@@ -290,12 +291,12 @@ const PLACE_BOTTOM_KEY: &str = r#"
   let t4 = select step { 11 => null, _ => never() };
   k <- t4 ~ 1;
   let t5 = select step { 16 => null, _ => never() };
-  let seen = array::group(*r, |n, _| n == 3);
+  let seen = array::group(*r, |n, _| n == 2);
   (t3 ~ a, t5 ~ a, t5 ~ seen)
 }
 "#;
 
-run!(place_bottom_key, PLACE_BOTTOM_KEY, prints("[[i64:10, i64:20], [i64:10, i64:99], [i64:10, i64:20, i64:99]]"); FuseExpect::Jit);
+run!(place_bottom_key, PLACE_BOTTOM_KEY, prints("[[i64:10, i64:20], [i64:10, i64:20], [i64:10, i64:20]]"); FuseExpect::Jit);
 
 // A place the root no longer has is bottom, not its last value: a
 // connect sampling it then writes nothing.
@@ -353,9 +354,8 @@ const PLACE_THROUGH_DEREF: &str = r#"
 run!(place_through_deref, PLACE_THROUGH_DEREF, prints("[i64:20, i64:20]"); FuseExpect::Jit);
 
 // A place through a dereference whose reference went bottom has no
-// address: it reads nothing and a write through it lands nowhere; when
-// the reference returns, the place does (and, as at every retarget,
-// the pending write lands there).
+// address: it reads nothing and a write through it does not happen; when
+// the reference returns the place does, and a later write lands there.
 const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 {
   let step = 0;
@@ -379,7 +379,7 @@ const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 }
 "#;
 
-run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, prints("[[i64:10, i64:20], [i64:99, i64:20], null, [i64:7, i64:20]]"); FuseExpect::Jit);
+run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, prints("[[i64:10, i64:20], [i64:10, i64:20], null, [i64:7, i64:20]]"); FuseExpect::Jit);
 
 // A place indexed past i64::MAX addresses nothing, never from the end:
 // its read is bottom and the sample banks.
