@@ -1584,6 +1584,9 @@ impl<X: GXExt> GX<X> {
             // graphix-shell/tests/common/mod.rs::graphix now gives a run 120 s, then sends
             // it SIGABRT and fails naming the pid, so coredumpctl debug <pid> then thread
             // apply all bt shows every thread (checked on a run that never exits).
+            // 2026-10-25 claude: 640 more runs of a_stopped_runtime_says_why's binary, 16
+            // at a time at load average 40 to 60, each under XDG_CACHE_HOME of its own:
+            // all passed, no hang, and the 120 s trap has caught nothing in today's gates.
             if self.ctx.control.aborted() {
                 return Ok(());
             }

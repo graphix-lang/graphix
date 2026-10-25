@@ -298,7 +298,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug/medium] Clearing the output here, as every event
+        // CR claude for eric: [bug/medium] Clearing the output here, as every event
         // source's sleep does, makes the source bottom at the wake. A bottomed argument
         // bottoms its consumer, so state built on the event is hidden until the next
         // event. In the probe, count(timer) in a woken arm shows nothing for three
@@ -315,6 +315,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         // 2026-10-24 claude: Eric ruled (2026-10-24): absent without bottom: a woken
         // event source does not fire and is not bottom, so its consumers keep showing
         // their state.
+        // 2026-10-25 claude: Tried the ruling in its one form the tags can hold today:
+        // each of the 15 event sources' sleep() kept its output and rode it stale
+        // (out.ride() for out = phantom) instead of clearing it, so a woken source
+        // neither fires nor is bottom and count(timer) keeps showing its count. Six pins
+        // of the rule this replaces then fail in every mode:
+        // async_restart::{iter_reentry_emits_no_old_element, line_reader_rewake,
+        // wake_resumes_standing_timers},
+        // db::db_subscription_accessors_do_not_replay_on_wake,
+        // net::{net_subscribe_arm_rewake, net_subscribe_arm_rewake_moved_path}. A select
+        // emits its arm's current value at a re-entry, so an arm whose body is the event
+        // itself (`On => subscribe(p)`, a line reader, an iter) re-emits the old event
+        // as new, which design/async_sleep_outputs.md names as the reason for the clear.
+        // Reverted. The ruling as worded needs a third state beside value and bottom,
+        // absent: never fires, does not bottom a consumer (count rides its resident over
+        // it), and gives a select nothing to emit at the re-entry, in the TagValue tags
+        // and the JIT's discs alike. Back to eric: build that state, or accept the
+        // re-emission (and rewrite those six pins), or keep the clear.
         self.out = TagValue::phantom();
         self.slept.set();
         self.stop(ctx)
