@@ -519,16 +519,16 @@ async fn net_rpc_missing_path() -> Result<()> {
 }
 
 // A subscription that moves to another path and back gets the first
-// path's value again.
+// path's value again. Each move follows the delivery before it.
 const NET_RESUBSCRIBE: &str = r#"
 {
   sys::net::publish("/local/resub/a", "a");
   sys::net::publish("/local/resub/b", "b");
   let path = "/local/resub/a";
-  let n = 0;
-  n <- sys::time::timer(duration:100.ms, 2) ~ n + 1;
-  path <- n ~ select n { 1 => "/local/resub/b", _ => "/local/resub/a" };
   let v: string = sys::net::subscribe(path)?;
+  let n = 0;
+  n <- v ~ n + 1;
+  path <- select n { 1 => n ~ "/local/resub/b", 2 => n ~ "/local/resub/a", _ => never() };
   array::group(v, |n, _| n == 3)
 }
 "#;

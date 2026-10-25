@@ -6024,7 +6024,8 @@ mod tests {
         if fuse == Fuse::No {
             return;
         }
-        let stats = stats.expect("the runtime answered the stats request");
+        let stats =
+            stats.unwrap_or_else(|| panic!("the runtime answered no stats: {jit:?}"));
         let why: String = stats
             .failed
             .iter()
@@ -6562,6 +6563,23 @@ mod tests {
         .await;
     }
 
+    /// `code` under the JIT with its fusion stats, holding as many
+    /// activations as it reaches whatever budget the process set.
+    async fn run_deep(code: &str, timeout: Duration) -> (Outcome, Option<FusionStats>) {
+        let opts =
+            RunOpts { stats: true, activations: Some(u64::MAX), ..RunOpts::default() };
+        let run = run_subject(
+            code,
+            Mode::Jit,
+            Route::InLanguage,
+            SessionImage::None,
+            timeout,
+            opts,
+        )
+        .await;
+        (run.outcome, run.stats)
+    }
+
     /// A 5M-deep tail recursion is only runnable as the compiled
     /// rebind-and-jump loop (the node-walk overflows around ~50k), so
     /// only Jit runs; `fused > 0` pins that the loop compiled.
@@ -6570,9 +6588,9 @@ mod tests {
         let code = "{ let rec lp = |n: i64, acc: i64| -> i64 \
                      select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; \
                      lp(i64:5000000, i64:0) }";
-        let (out, stats) =
-            run_program_with_stats(code, Mode::Jit, Duration::from_secs(30)).await;
-        let stats = stats.expect("the runtime answered the stats request");
+        let (out, stats) = run_deep(code, Duration::from_secs(30)).await;
+        let stats =
+            stats.unwrap_or_else(|| panic!("the runtime answered no stats: {out:?}"));
         assert!(
             stats.fused > 0,
             "deep tail probe did not fuse (attempted={}): {:?}",
@@ -6593,9 +6611,9 @@ mod tests {
         let code = "{ let rec f = |n: i64| -> i64 \
                      select n { i64:0 => i64:0, _ => n + f(n - i64:1) }; \
                      f(i64:2000000) }";
-        let (out, stats) =
-            run_program_with_stats(code, Mode::Jit, Duration::from_secs(60)).await;
-        let stats = stats.expect("the runtime answered the stats request");
+        let (out, stats) = run_deep(code, Duration::from_secs(60)).await;
+        let stats =
+            stats.unwrap_or_else(|| panic!("the runtime answered no stats: {out:?}"));
         assert!(
             stats.fused > 0,
             "deep non-tail probe did not fuse (attempted={}): {:?}",
