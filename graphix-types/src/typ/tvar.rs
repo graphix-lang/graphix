@@ -1179,6 +1179,37 @@ impl TVar {
         lower(&Type::TVar(other.clone()), level);
     }
 
+    /// [`Self::alias`] by an enclosing scope's same-named var: one a nested
+    /// fn type named alike already (its own quantifiers never reach here)
+    /// is the enclosing scope's, and takes its name again.
+    fn alias_enclosing(&self, other: &Self) {
+        let (id, cell) = {
+            let o = other.read();
+            (o.id, o.cell.clone())
+        };
+        let renamed = {
+            let mut l = self.write();
+            let renamed = l.frozen && l.id != id && decided_of(l.task, "var", None);
+            if renamed {
+                l.frozen = false;
+            }
+            renamed
+        };
+        // a sibling of the nested group merged first: this var's cell
+        // already forwards to the enclosing one
+        if renamed
+            && let Some(end) = self.open_cell()
+            && Arc::ptr_eq(&end.cell(), &cell)
+        {
+            let mut l = self.write();
+            l.cell = cell;
+            l.id = id;
+            l.frozen = true;
+            return;
+        }
+        self.alias(other)
+    }
+
     pub fn freeze(&self) {
         let mut l = self.write();
         if !l.frozen && !decided_of(l.task, "var", None) {
@@ -1853,7 +1884,7 @@ impl Type {
                 Entry::Occupied(e) => {
                     let v = e.get();
                     v.freeze();
-                    tv.alias(v);
+                    tv.alias_enclosing(v);
                 }
                 Entry::Vacant(e) => {
                     e.insert(tv.clone());

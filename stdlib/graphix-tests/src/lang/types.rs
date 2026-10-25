@@ -1120,6 +1120,22 @@ run!(
     prints("[i64:1, i64:3]")
 );
 
+// A quantifier's bound reaches its uses inside a nested fn type, where the
+// variable occurs more than once.
+const NESTED_USES_KEEP_THE_BOUND: &str = r#"
+{
+  type F = fn<'a: Number>(g: fn(x: 'a) -> 'a) -> f64;
+  let f: F = |g| 0.0;
+  f(|x: string| x)
+}
+"#;
+run!(
+    nested_uses_keep_the_bound,
+    NESTED_USES_KEEP_THE_BOUND,
+    refused("does not contain fn(x: string) -> string");
+    FuseExpect::None
+);
+
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {
   let x = never();

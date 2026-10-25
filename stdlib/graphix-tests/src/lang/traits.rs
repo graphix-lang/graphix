@@ -474,6 +474,21 @@ run!(
 );
 
 run!(
+    interface_with_nested_uses_pairs,
+    |v: Result<&Value>| matches!(v, Ok(Value::F64(f)) if *f == 0.0),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f(|x: i64| x)
+    "#,
+    "/test/m.gxi" => r#"
+        val f: fn<'a: Number>(g: fn(x: 'a) -> 'a) -> f64
+    "#,
+    "/test/m.gx" => r#"
+        let f = 'a: Number |g: fn(x: 'a) -> 'a| -> f64 0.0
+    "#
+);
+
+run!(
     ctor_quantifier_wrong_bound_refused,
     refused("which the implementation constraint Number does not admit"),
     "/test.gx" => r#"

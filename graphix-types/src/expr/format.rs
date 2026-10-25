@@ -680,6 +680,13 @@ mod tests {
         stable(SourceKind::Program, src);
     }
 
+    // a quantifier's bound reaches every use, a nested fn type's included
+    #[test]
+    fn nested_uses_keep_the_quantifier() {
+        let src = "type F = fn<'a: Number>(g: fn(x: 'a) -> 'a, y: 'a) -> f64;\n0\n";
+        formats_to(SourceKind::Program, src, src);
+    }
+
     fn formats_to(kind: SourceKind, src: &str, want: &str) {
         assert_eq!(&**format_source(kind, src, &FormatConfig::default()).unwrap(), want);
         stable(kind, src)

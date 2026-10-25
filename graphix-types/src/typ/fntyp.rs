@@ -410,39 +410,6 @@ impl FnType {
             }
         }
         self.quantifiers = Arc::from_iter(names.drain(..));
-        // CR claude for claude: [bug/high] A quantifier's bound is lost when its
-        // variable occurs twice inside a nested fn type, as in `fn<'a: Number>(g: fn(x:
-        // 'a) -> 'a) -> f64`. The nested type's own `declaring` (run by the parser)
-        // already froze its 'a vars, and TVar::alias returns at once for a frozen var.
-        // So this alias pass cannot weld the inner cell to the quantifier's cell, and
-        // constraint_view reaches the bare inner cell by name. Effects: the check
-        // accepts `f(|x: string| x)`; a .gxi with this type refuses its identical
-        // implementation; `graphix fmt` prints the type without `fn<'a: Number>`, and
-        // the file it writes is refused ("undeclared type variable"). The formatter's
-        // reparse guard misses it because FnType::eq compares only the constraint view,
-        // never `quantifiers`. Fix: in Type::alias_tvars, merge a frozen var's cell
-        // into the known one (alias_cells), or have a nested signature's declaring
-        // alias only its own quantifiers. Then pin the parse/print/check round trip.
-        // probe: design/review-2026-10-19/repro/t-fntyp-nested-bound-lost.sh
-        // (t-fntyp-01)
-        // 2026-10-19 claude: Tried both fixes the CR names; neither lands as is. (1)
-        // alias_cells for a frozen var in Type::alias_tvars welds a parsed signature's
-        // nested vars to the outer ones but not a lambda's annotation, so stdlib
-        // interfaces stop pairing (array::fold: 'type variable usage mismatch'). (2)
-        // Skipping alias_tvars in a declaring with no constraints passes the repro's
-        // three cases but breaks lang::functions::annotation_variable_is_one_variable,
-        // lang::inference::rigid_type_variables_survive_a_cell_merge and
-        // lang::interfaces::open_union_without_a_pairing_is_refused, which rely on that
-        // aliasing. The weld has to happen in the one place both paths share.
-        // 2026-10-23 claude: graphix-types' expr_pp_round_trip found this class
-        // (2026-10-23, after a generator change): an impl head's parameter bound is a
-        // fn type whose quantifiers ['a_f_, 'cf_1y__kt_] are lost on reparse at width
-        // 0. Seed: add 'cc
-        // 8d8cc9a38e2fe1bd773ada3b4e9f52bd61fc8051627e9ca92797568f05e259e1' to
-        // graphix-types/proptest-regressions/expr/test.txt to replay it; it was taken
-        // out so the gate passes while this CR is open. A printed fn<'a, 'b>(..) with
-        // bare quantifiers does not parse either (Expected whitespaces or ':'), so the
-        // printer can write a type the parser refuses.
         self.alias_tvars(&mut known);
         seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())));
         self
