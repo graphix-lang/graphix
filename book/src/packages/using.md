@@ -171,9 +171,13 @@ When you add or remove a package, the package manager:
    from the Cargo cache, or downloads it from crates.io
 2. Adds your third-party packages to its `Cargo.toml` as dependencies (the
    shell registers every package its manifest names)
-3. Backs up the previous binary with a timestamp
-4. Runs `cargo install --force`, the installed standard library packages
-   selected as Cargo features, to build and install the new binary
+3. Builds it with `cargo build --release`, the installed standard library
+   packages selected as Cargo features; the source's `Cargo.lock` is kept,
+   so only a package you added brings dependencies of its own
+4. Moves the previous binary aside, with a timestamp, and puts the new one
+   in its place
 
-This means you need a working Rust toolchain installed. The rebuild takes
-roughly the same time as compiling any Rust project of similar size.
+This means you need a working Rust toolchain installed. Builds share one
+target directory in the graphix data directory, so the first takes
+roughly as long as compiling any Rust project of similar size, and later
+ones compile only what changed.

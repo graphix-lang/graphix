@@ -296,6 +296,13 @@ fn graphix_data_dir() -> Result<PathBuf> {
     graphix_rt::data_dir().ok_or_else(|| anyhow!("can't find your data dir"))
 }
 
+/// The target directory the builds of the source the package manager
+/// unpacks share, outside the build directory each unpack wipes, so a
+/// build compiles only what changed.
+fn shared_target_dir() -> Result<PathBuf> {
+    Ok(graphix_data_dir()?.join("target"))
+}
+
 fn packages_toml_path() -> Result<PathBuf> {
     Ok(graphix_data_dir()?.join("packages.toml"))
 }
@@ -1465,21 +1472,6 @@ impl GraphixPM {
         Ok(Self { cratesio, cargo, version: version.into(), exe })
     }
 
-    /// The root `cargo install` must write to for the new binary to
-    /// replace the running one: the directory above its `bin`.
-    fn install_root(&self) -> Result<&Path> {
-        match self.exe.parent() {
-            Some(bin) if bin.file_name().is_some_and(|n| n == "bin") => {
-                Ok(bin.parent().unwrap_or(bin))
-            }
-            _ => bail!(
-                "{} is not in a cargo install root's bin directory, so a rebuild \
-                 cannot replace it; run the graphix that cargo install installed",
-                self.exe.display()
-            ),
-        }
-    }
-
     /// Open the lock file for the graphix data directory.
     /// Call `.write()` on the returned lock to acquire exclusive access.
     fn lock_file() -> Result<fd_lock::RwLock<std::fs::File>> {
@@ -1529,23 +1521,6 @@ impl GraphixPM {
 
     /// Delete the scratch build dir and unpack a fresh graphix-shell source
     /// tree for `version`.
-    // CR claude for claude: [perf/medium] Every add, remove, update and build-standalone
-    // recompiles the whole shell dependency tree in release mode from scratch.
-    // prepare_source deletes the entire build dir. install_from_source runs `cargo
-    // install --path` with no --target-dir, so cargo uses a new temporary target dir.
-    // build_embedding's target dir is inside the build dir this function wipes. As a
-    // result, adding or removing one small external package costs a full build of
-    // hundreds of crates (cranelift, netidx, iced when gui is installed). Fix: keep one
-    // target dir outside the wiped build dir, such as graphix_data_dir()/target, and
-    // pass it as --target-dir to both cargo install and the standalone cargo build.
-    // This trades disk space for build time, which is your call. Separately,
-    // remove_packages calls prepare_source whenever a stdlib name is requested, even
-    // one that is already removed. It should decide the removal set from the record
-    // first and unpack only when there is a real stdlib removal whose cascade needs the
-    // feature graph. (package-05)
-    // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-    // needed. Keep one target dir at graphix_data_dir()/target for install and
-    // standalone builds; fix the remove_packages unpack.
     async fn prepare_source(&self, version: &str) -> Result<PathBuf> {
         println!("Unpacking graphix-shell source...");
         let build_dir = graphix_data_dir()?.join("build");
@@ -1563,7 +1538,6 @@ impl GraphixPM {
         source_dir: &Path,
         packages: &mut Packages,
     ) -> Result<()> {
-        let root = self.install_root()?;
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
         let mut plan = packages.build_plan();
@@ -1580,51 +1554,67 @@ impl GraphixPM {
             }
             plan = packages.build_plan();
         }
-        // Save previous binary
-        let date = Local::now().format(BACKUP_STAMP);
-        let backup_name = format!(
-            "{BACKUP_PREFIX}{date}{}",
-            self.exe
-                .extension()
-                .map(|e| format!(".{}", e.to_string_lossy()))
-                .unwrap_or_default()
-        );
-        let _ = fs::copy(&self.exe, self.exe.with_file_name(&backup_name)).await;
         // Stdlib packages are selected by Cargo feature; `core` is always compiled.
         println!("Building graphix with updated packages (this may take a while)...");
-        // CR claude for claude: [risk/medium] `cargo install` without --locked ignores
-        // the source's Cargo.lock (cargo-install(1)), so every add, remove or update
-        // re-resolves the whole dependency tree to the newest semver-compatible
-        // releases. A broken upstream patch release then makes every package operation
-        // fail, and the installed shell differs from the tested lock. build_embedding
-        // builds the same source with `cargo build`, which keeps the lock and adds only
-        // the new deps. Options: build with `cargo build --release` in source_dir and
-        // copy the binary over self.exe (one build path for both commands), or accept
-        // the drift. --locked alone fails once an external dep is added. Found by
-        // reading; not run. (package-03)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Build with cargo build --release in source_dir (keeps the lock) and
-        // copy the binary, one path for both commands.
-        let mut cmd = Command::new(&self.cargo);
-        cmd.arg("install")
-            .arg("--root")
-            .arg(root)
-            .arg("--path")
-            .arg(source_dir)
-            .arg("--force")
-            .arg("--no-default-features")
-            .kill_on_drop(true);
-        if !plan.features.is_empty() {
-            cmd.arg("--features").arg(plan.features.join(" "));
-        }
-        let status = cmd.status().await.context("running cargo install")?;
-        if !status.success() {
-            bail!("cargo install failed with status {status}")
-        }
+        let built =
+            self.cargo_build(source_dir, &plan.features, &shared_target_dir()?).await?;
+        self.replace_exe(&built).await?;
         // Clean up old previous binaries (>1 week)
         self.cleanup_old_binaries().await;
         println!("Done! Restart graphix to use the updated packages.");
         Ok(())
+    }
+
+    /// Put the binary at `built` in place of the running one, which is kept
+    /// beside it as a dated backup: moved aside, since a running executable
+    /// cannot be written over on every host.
+    async fn replace_exe(&self, built: &Path) -> Result<()> {
+        let date = Local::now().format(BACKUP_STAMP);
+        let ext = self.exe.extension().map(|e| format!(".{}", e.to_string_lossy()));
+        let backup = self
+            .exe
+            .with_file_name(format!("{BACKUP_PREFIX}{date}{}", ext.unwrap_or_default()));
+        fs::rename(&self.exe, &backup)
+            .await
+            .with_context(|| format!("moving {} aside", self.exe.display()))?;
+        if let Err(e) = fs::copy(built, &self.exe).await {
+            let _ = fs::rename(&backup, &self.exe).await;
+            return Err(e).with_context(|| {
+                format!("copying {} to {}", built.display(), self.exe.display())
+            });
+        }
+        Ok(())
+    }
+
+    /// `cargo build --release` of the shell in `source_dir` with `features`
+    /// on and no others, keeping the source's lockfile, into `target_dir`:
+    /// the binary's path. The target directory is pinned, so a global
+    /// build.target-dir or CARGO_TARGET_DIR cannot move the binary out from
+    /// under the copy.
+    async fn cargo_build(
+        &self,
+        source_dir: &Path,
+        features: &[CompactString],
+        target_dir: &Path,
+    ) -> Result<PathBuf> {
+        let mut cmd = Command::new(&self.cargo);
+        cmd.arg("build")
+            .arg("--release")
+            .arg("--target-dir")
+            .arg(target_dir)
+            .arg("--no-default-features")
+            .current_dir(source_dir)
+            .kill_on_drop(true);
+        if !features.is_empty() {
+            cmd.arg("--features").arg(features.join(" "));
+        }
+        let status = cmd.status().await.context("running cargo build")?;
+        if !status.success() {
+            bail!("cargo build --release failed with status {status}")
+        }
+        Ok(target_dir
+            .join("release")
+            .join(format!("graphix{}", std::env::consts::EXE_SUFFIX)))
     }
 
     /// Rebuild the graphix binary with the given package set
@@ -1763,18 +1753,6 @@ impl GraphixPM {
         let _guard = Self::hold(&mut lock)?;
         let mut installed = read_packages().await?;
         let version = &self.version;
-        // A stdlib removal needs the shell's feature graph; unpack the source
-        // once and reuse it for the build.
-        let needs_edges =
-            packages.iter().any(|p| p.name() != "core" && is_stdlib_package(p.name()));
-        let prepared = if needs_edges {
-            let source = self.prepare_source(&version).await?;
-            let cargo = fs::read_to_string(source.join("Cargo.toml")).await?;
-            let edges = feature_edges(&cargo)?;
-            Some((source, edges))
-        } else {
-            None
-        };
         // the whole removal, decided against the set installed now
         let mut stdlib: BTreeSet<CompactString> = BTreeSet::new();
         let mut external: Vec<&str> = Vec::new();
@@ -1795,6 +1773,17 @@ impl GraphixPM {
                 println!("{name} is not installed");
             }
         }
+        // a stdlib removal needs the shell's feature graph: the source,
+        // unpacked once and built from
+        let prepared = match stdlib.is_empty() {
+            true => None,
+            false => {
+                let source = self.prepare_source(&version).await?;
+                let cargo = fs::read_to_string(source.join("Cargo.toml")).await?;
+                let edges = feature_edges(&cargo)?;
+                Some((source, edges))
+            }
+        };
         let mut cascade: BTreeSet<CompactString> = BTreeSet::new();
         if let Some((_, edges)) = &prepared {
             for name in &stdlib {
@@ -1955,8 +1944,13 @@ impl GraphixPM {
             Some(_) => Some(Saved::take(&source_dir).await?),
             None => None,
         };
+        // a caller's own tree builds in its own target directory
+        let target_dir = match source_override {
+            Some(_) => source_dir.join("target"),
+            None => shared_target_dir()?,
+        };
         let built = tokio::select! {
-            built = self.build_embedding(&source_dir, &external, &features, crate_name) => built,
+            built = self.build_embedding(&source_dir, &external, &features, crate_name, &target_dir) => built,
             _ = tokio::signal::ctrl_c() => Err(anyhow!("interrupted")),
         };
         if let Some(saved) = saved {
@@ -1973,41 +1967,21 @@ impl GraphixPM {
     }
 
     /// Build the shell in `source_dir` with `external` added and
-    /// `features` on: the binary's path.
+    /// `features` on, into `target_dir`: the binary's path.
     async fn build_embedding(
         &self,
         source_dir: &Path,
         external: &BTreeMap<CompactString, PackageEntry>,
         features: &[CompactString],
         crate_name: &str,
+        target_dir: &Path,
     ) -> Result<PathBuf> {
         println!("Updating Cargo.toml...");
         rewrite_manifest(source_dir, external).await?;
         println!("Building standalone binary (this may take a while)...");
-        // Pin the target dir so a global build.target-dir or CARGO_TARGET_DIR
-        // cannot move the binary out from under the copy.
-        let target_dir = source_dir.join("target");
         let mut f = features.to_vec();
         f.push(format_compact!("{crate_name}/standalone"));
-        let status = Command::new(&self.cargo)
-            .arg("build")
-            .arg("--release")
-            .arg("--target-dir")
-            .arg(&target_dir)
-            .arg("--no-default-features")
-            .arg("--features")
-            .arg(f.join(" "))
-            .current_dir(source_dir)
-            .kill_on_drop(true)
-            .status()
-            .await
-            .context("running cargo build")?;
-        if !status.success() {
-            bail!("cargo build --release failed with status {status}")
-        }
-        Ok(target_dir
-            .join("release")
-            .join(format!("graphix{}", std::env::consts::EXE_SUFFIX)))
+        self.cargo_build(source_dir, &f, target_dir).await
     }
 
     /// Query crates.io for the latest version of a crate
@@ -2102,7 +2076,7 @@ impl GraphixPM {
             Some(s) if build_version == latest => s,
             _ => self.prepare_source(&build_version).await?,
         };
-        // Build before writing: a failed cargo install leaves packages.toml
+        // Build before writing: a failed build leaves packages.toml
         // untouched and the user re-runs to the same choices.
         self.install_from_source(&build_src, &mut packages).await?;
         write_packages(&packages).await?;
