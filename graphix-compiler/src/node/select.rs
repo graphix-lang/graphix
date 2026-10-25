@@ -647,23 +647,6 @@ impl Reach {
                     )?
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
-                // CR claude for claude: [bug/low] A slice arm claims its length on the
-                // ladder only when array_len_coverage holds, which means every element
-                // pattern is irrefutable. Element literals and variant heads are never
-                // pooled per length. `[] => .., [true] => .., [false] => .., [_, _, ..]
-                // => ..` over Array<bool> is refused with "the slice arms leave array
-                // length 1 uncovered", and so are `[(true, x)]` and `[(false, x)]`.
-                // CLAUDE.md says bool literals and variant heads pool per position
-                // inside composite patterns, and says nothing about this exception.
-                // Choose one: (a) pool each exact-length slice arm as a fixed-arity
-                // group keyed by (kind, len), the way Shape::Tuple is, and claim that
-                // length on the ladder when its group completes; or (b) state the limit
-                // in CLAUDE.md's Sets and coverage section. probe:
-                // design/review-2026-10-12/repro/x-typecheck-patterns-07.gx
-                // (x-typecheck-patterns-07)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Option (a): pool exact-length slice arms per (kind,
-                // len) and claim the length when the group completes.
                 if unguarded && sp.array_len_coverage(env, explicit).is_some() {
                     let mut done: SmallVec<[Type; 2]> = SmallVec::new();
                     for l in self.ladders.iter_mut() {
@@ -700,7 +683,21 @@ impl Reach {
                 Claim::Dead if checking => dead(
                     "every combination of heads it matches is covered by earlier arms",
                 )?,
-                Claim::Completes(m) => self.cover(env, m)?,
+                // a slice group covers its length of the member, on its ladder
+                Claim::Completes(m) => match sp.array_len_range() {
+                    Some((k, exact)) => {
+                        let mut done = false;
+                        for l in self.ladders.iter_mut() {
+                            if l.member == m && !l.complete() {
+                                done |= l.claim(k, exact);
+                            }
+                        }
+                        if done {
+                            self.cover(env, m)?
+                        }
+                    }
+                    None => self.cover(env, m)?,
+                },
                 Claim::Dead | Claim::Open | Claim::Unpooled => (),
             }
             if let StructPatternNode::Abstract { .. } = sp
@@ -784,8 +781,10 @@ impl Reach {
             };
             let refutable = match self.refutable_slice {
                 true => {
-                    " (a slice arm with refutable element patterns — literals, variants, \
-                     nested slices — cannot establish length coverage)"
+                    " (a slice arm with refutable element patterns covers its length only \
+                     with exact-length siblings whose bool literals and variant heads \
+                     admit every combination; other literals, a rest and nested slices \
+                     never do)"
                 }
                 false => "",
             };
@@ -1055,6 +1054,21 @@ fn pooled_leaves(
                 Ok(true)
             }
             (
+                StructPatternNode::Slice { kind: SliceKind::Array, all: _, binds },
+                Type::Array(e),
+            )
+            | (
+                StructPatternNode::Slice { kind: SliceKind::List, all: _, binds },
+                Type::List(e),
+            ) => {
+                for (i, p) in binds.iter().enumerate() {
+                    if !at(i, p, e)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            (
                 StructPatternNode::Abstract { id, bind, .. },
                 Type::Abstract { id: t, params },
             ) if id == t => match env.abstract_reps.get(id) {
@@ -1088,6 +1102,8 @@ fn pooled_leaves(
 #[derive(PartialEq, Eq)]
 enum Shape {
     Tuple(usize),
+    /// An exact-length array or list slice: its group covers that length.
+    Slice(SliceKind, usize),
     Variant(ArcStr, usize),
     Struct(SmallVec<[ArcStr; 8]>),
     Abstract(AbstractId),
@@ -1098,6 +1114,9 @@ impl Shape {
         match sp {
             StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds } => {
                 Some(Shape::Tuple(binds.len()))
+            }
+            StructPatternNode::Slice { kind, all: _, binds } => {
+                Some(Shape::Slice(*kind, binds.len()))
             }
             StructPatternNode::Variant { tag, all: _, binds } => {
                 Some(Shape::Variant(tag.clone(), binds.len()))
@@ -1116,6 +1135,8 @@ impl Shape {
     fn fits(&self, t: &Type) -> bool {
         match (self, t) {
             (Shape::Tuple(n), Type::Tuple(ts)) => *n == ts.len(),
+            (Shape::Slice(SliceKind::Array, _), Type::Array(_))
+            | (Shape::Slice(SliceKind::List, _), Type::List(_)) => true,
             (Shape::Variant(tag, n), Type::Variant(t, ts, _)) => {
                 tag == t && *n == ts.len()
             }

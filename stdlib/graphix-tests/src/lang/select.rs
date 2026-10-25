@@ -593,6 +593,35 @@ run!(
     FuseExpect::None
 );
 
+// Exact-length slice arms pool their elements' heads per length: `[true]`
+// with `[false]` claims length 1, of an array or a list, through a tuple
+// element too; a length short of a combination stays uncovered, and an arm
+// whose combinations earlier ones match is dead (x-typecheck-patterns-07).
+run!(slice_arms_pool_heads_per_length, r#"{
+  let f = |a: Array<bool>| select a { [] => 0, [true] => 1, [false] => 2, [_, _, ..] => 3 };
+  let g = |l: List<(bool, i64)>| select l {
+    [<>] => 0, [<(true, x)>] => x, [<(false, x)>] => -x, [<_, _, ..>] => 99
+  };
+  let h = |a: Array<[`A, `B]>| select a {
+    [] => 0, [`A] => 1, [`B] => 2, [`A, _] => 3, [`B, `A] => 4, [`B, `B] => 5, [_, _, _, ..] => 6
+  };
+  (f([false]), g([<(false, 3)>]), h([`B, `A]))
+}"#, prints("[i64:2, i64:-3, i64:4]"); FuseExpect::Jit);
+
+run!(
+    slice_arms_short_of_a_combination_leave_the_length,
+    "{ let f = |a: Array<bool>| select a { [] => 0, [true] => 1, [_, _, ..] => 3 }; f([true]) }",
+    refused("leave length 1 of Array<bool> uncovered");
+    FuseExpect::None
+);
+
+run!(
+    a_slice_arm_its_siblings_cover_is_dead,
+    "{ let f = |a: Array<bool>| select a { [] => 0, [true] => 1, [true] => 2, [_, ..] => 3 }; f([true]) }",
+    refused("every combination of heads it matches is covered by earlier arms");
+    FuseExpect::None
+);
+
 // Nested structural select patterns with scalar leaf binds fuse.
 
 const SELECT_NESTED_TUPLE: &str = r#"

@@ -1073,8 +1073,9 @@ cycle, across workers; the compiler never pins threads.
   first member's), an arm that can match none of
   it, or that tests what an earlier unguarded arm tests, is dead, and the
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
-  length ladders count as coverage, one ladder per array or list member;
-  a `null` literal covers `null`; a collection type test (`Array<T> as`)
+  length ladders count as coverage, one ladder per array or list member,
+  and exact-length slice arms pool their elements' heads per length
+  (`[true]` with `[false]` claims length 1); a `null` literal covers `null`; a collection type test (`Array<T> as`)
   narrows later arms only of collections whose every element it
   covers, since a mixed one that fails it may still hold a `T`;
   bool literals, variant heads
