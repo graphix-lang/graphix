@@ -1180,6 +1180,37 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
 );
 
+// A write through a field of a union keeps the value in its member: a
+// `with` replacement fits every member's field, and a writable reference
+// to a field needs the members' fields to be one type.
+run!(
+    union_field_with_fits_every_member,
+    "{ type S = [{a: i64, b: string}, {a: string, b: i64}]; \
+       let h = |s: S, k: i64| -> S {s with a: k}; 0 }",
+    refused("string does not contain i64");
+    FuseExpect::None
+);
+run!(
+    union_field_place_needs_one_field_type,
+    "{ type S = [{a: i64, b: string}, {a: string, b: i64}]; \
+       let s: S = {a: \"y\", b: 9}; let r = &mut s.a; 0 }",
+    refused("the members' fields differ");
+    FuseExpect::None
+);
+run!(
+    union_tuple_place_needs_one_field_type,
+    "{ let t: [(i64, string), (string, i64)] = (\"y\", 9); let r = &mut t.0; 0 }",
+    refused("the members' fields differ");
+    FuseExpect::None
+);
+run!(
+    union_field_write_where_members_agree,
+    "{ type S = [{a: i64, b: string}, {a: i64, b: i64}]; \
+       let s: S = {a: 1, b: 9}; let r = &mut s.a; *r <- 5; \
+       let u = {s with a: 7}; select (s, u) { ({a, ..}, {a: b, ..}) => a + b } }",
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(_)))
+);
+
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {
   let x = never();

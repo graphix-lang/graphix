@@ -1240,8 +1240,9 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     arg: &Node<R, E>,
 ) -> Result<CompiledExpr> {
     let cv = emit_owned_value_operand_node(cx, arg)?;
-    // the type as Construct::update stores it: its params resolved
-    let typ_ptr = cx.interned_type(&resolve_node_typ(cx.ctx, typ).resolve_tvars())?;
+    // the type as Construct::update stores it: its params frozen
+    let typ_ptr =
+        cx.interned_type(&resolve_node_typ(cx.ctx, typ).frozen(cx.ctx.type_env))?;
     let name_ptr = cx.interned_str(name)?;
     let call = cx.call_helper(
         "graphix_abstract_wrap",

@@ -415,3 +415,39 @@ pub fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     }
     go(t, out, &mut LPooled::take())
 }
+
+impl Type {
+    /// This type fixed for a value to carry: every cell resolved, an open
+    /// one to its bounds' witness, else ⊥ (a value minted where the check
+    /// left a parameter undecided carries no cell a later check could
+    /// still decide).
+    pub fn frozen(&self, env: &Env) -> Type {
+        /// `None` where nothing beneath holds a cell.
+        fn go(t: &Type, env: &Env, memo: &mut AHashMap<usize, Type>) -> Option<Type> {
+            crate::stack::ensure_sufficient(|| match t {
+                Type::TVar(tv) => {
+                    let addr = tv.cell_addr();
+                    if let Some(t) = memo.get(&addr) {
+                        return Some(t.clone());
+                    }
+                    // a cell met again inside its own binding is ⊥ there
+                    memo.insert(addr, Type::Bottom);
+                    let fixed = |t: Type, memo: &mut AHashMap<usize, Type>| {
+                        go(&t, env, memo).unwrap_or(t)
+                    };
+                    let r = match tv.binding() {
+                        Some(b) => fixed(b, memo),
+                        None => match tv.witness(env) {
+                            Ok(Ok(w)) => fixed(w, memo),
+                            _ => Type::Bottom,
+                        },
+                    };
+                    memo.insert(addr, r.clone());
+                    Some(r)
+                }
+                t => t.cow_children(&mut |c| go(c, env, memo)),
+            })
+        }
+        go(self, env, &mut LPooled::take()).unwrap_or_else(|| self.clone())
+    }
+}

@@ -1,7 +1,7 @@
 use super::{
     VarRead, WakeBit,
     coretraits::with_hooks,
-    data::{struct_field_type, tuple_field_type},
+    data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef},
     pattern::StructPatternNode,
     place::{self, Path},
@@ -1295,8 +1295,32 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     }
 
     /// The element type: each step's accessor rule over the root's type,
-    /// without the access's failure (a place handles that at runtime).
-    fn elem_type(&self, ctx: &mut CompileCtx<R, E>, spec: &Expr) -> Result<Type> {
+    /// without the access's failure (a place handles that at runtime). A
+    /// writable field step over a union needs every member's field to be
+    /// one type, so a write keeps the root in its own member.
+    fn elem_type(
+        &self,
+        ctx: &mut CompileCtx<R, E>,
+        spec: &Expr,
+        writable: bool,
+    ) -> Result<Type> {
+        let one = |cur: &Type, ts: LPooled<Vec<Type>>| -> Result<Type> {
+            match ts.iter().skip(1).find(|t| **t != ts[0]) {
+                Some(other) if writable => {
+                    format_with_flags(PrintFlag::DerefTVars, || {
+                        bail!(
+                            "a writable reference to a field of {cur} would write {} into a \
+                         member whose field is {other}: the members' fields differ",
+                            ts[0]
+                        )
+                    })
+                }
+                _ => {
+                    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
+                    Type::union(&ctx.env, &ts)
+                }
+            }
+        };
         let mut cur = self.root.typ().clone();
         for step in &self.steps {
             cur = match step {
@@ -1316,9 +1340,12 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                     kt.check_contains(&ctx.env, k.typ())?;
                     vt
                 }
-                PlaceStep::Tuple(i) => tuple_field_type(ctx, &self.scope, &cur, *i)?,
+                PlaceStep::Tuple(i) => {
+                    one(&cur, tuple_field_types(ctx, &self.scope, &cur, *i)?)?
+                }
                 PlaceStep::Field(name) => {
-                    let (_, t) = struct_field_type(ctx, &cur, &name.name)?;
+                    let (_, ts) = struct_field_types(ctx, &cur, &name.name)?;
+                    let t = one(&cur, ts)?;
                     if ctx.env.ide.is_lsp() {
                         ctx.env.push_field_ref(FieldRefSite {
                             pos: name.pos_or(spec.pos),
@@ -1951,7 +1978,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                         Type::ByRef(Mutability::Mut, Arc::new(Type::empty_tvar()));
                     wrap!(self, through.check_contains(&ctx.env, d.child.typ()))?;
                 }
-                wrap!(self, p.elem_type(ctx, &self.spec))?
+                wrap!(self, p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut))?
             }
         };
         let t = Type::ByRef(*mutability, Arc::new(t));

@@ -756,29 +756,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         let tv = self.arg.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
-        // CR claude for claude: [bug/medium] When the check never decides a type
-        // parameter of the constructed type (top-level `Bx((1, []))` with `type Bx<'a>
-        // = Abstract<(i64, Array<'a>)>`), the params resolve to an unbound cell, and
-        // every value minted here carries that live checker cell. The core-trait lookup
-        // (coretraits `impl_for`) refuses any type with an unbound cell. So `impl<'a>
-        // Eq`/`Display`/`Ord for Bx<'a>` are silently skipped: `==` compares
-        // structurally and printing shows the raw form. Inside a function, or after an
-        // unrelated statement such as a `map::insert` of the value settles 'a, the same
-        // impls apply. emit_construct_node mints the same params, so both engines agree
-        // on the wrong answer. Needs a rule: either freeze the params at construction
-        // (an undecided cell becomes ⊥ or its bound, through one helper shared with
-        // emit_construct_node), or let `impl_for` treat an open param in a value's type
-        // as matching any generic impl head. The rule also decides whether a concrete
-        // `impl Eq for Bx<i64>` covers such a value. Pin Eq, Ord (map key) and Display
-        // either way. probe: design/review-2026-10-12/repro/c-data-map-01.sh
-        // (c-data-map-01)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): freeze: a constructor's
-        // parameters are frozen at construction (an undecided cell becomes bottom or
-        // its bound).
-        let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
-            Type::Abstract { params, .. } => params.clone(),
-            _ => Arc::from_iter([]),
-        });
+        let params =
+            self.params.get_or_insert_with(|| match &self.typ.frozen(&ctx.env) {
+                Type::Abstract { params, .. } => params.clone(),
+                _ => Arc::from_iter([]),
+            });
         let v = abstract_value::wrap(
             self.id,
             self.name.clone(),
@@ -825,48 +807,59 @@ pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
     source: &Type,
     field: usize,
 ) -> Result<Type> {
+    let ts = tuple_field_types(ctx, scope, source, field)?;
+    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
+    Type::union(&ctx.env, &ts)
+}
+
+/// [`tuple_field_type`] per member of a union source (one type for any
+/// other): what a write through the field must fit, each of them.
+pub(crate) fn tuple_field_types<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    scope: &ModPath,
+    source: &Type,
+    field: usize,
+) -> Result<LPooled<Vec<Type>>> {
     // tuples of one arity: the field's type is each one's
     if let Some(members) = union_of(ctx, source, |t| match t {
         Type::Tuple(flds) => Some(flds.clone()),
         _ => None,
     })? && members.windows(2).all(|w| w[0].len() == w[1].len())
     {
-        let ts = members
+        return members
             .iter()
             .map(|flds| flds.get(field).cloned())
             .collect::<Option<LPooled<Vec<Type>>>>()
-            .ok_or_else(|| anyhow!("in tuple, no such field {}", field))?;
-        let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-        return Type::union(&ctx.env, &ts);
+            .ok_or_else(|| anyhow!("in tuple, no such field {}", field));
     }
     // errors: the field is each one's payload
-    if let Some(members) = union_of(ctx, source, |t| match t {
+    if let Some(mut members) = union_of(ctx, source, |t| match t {
         Type::Error(t) => Some((**t).clone()),
         _ => None,
     })? {
         if field != 0 {
             bail!("no such field {}", field);
         }
-        let ts: LPooled<Vec<&Type>> = members.iter().collect();
-        return Type::union(&ctx.env, &ts);
+        return Ok(LPooled::from_iter(members.drain(..)));
     }
+    let one = |t: Type| -> LPooled<Vec<Type>> { LPooled::from_iter([t]) };
     deref_typ!("tuple", ctx, source,
         Some(Type::Tuple(flds)) => flds
             .get(field)
-            .map(|t| t.clone())
+            .map(|t| one(t.clone()))
             .ok_or_else(|| anyhow!("in tuple, no such field {}", field)),
         Some(Type::Error(t)) => {
             if field != 0 {
                 bail!("no such field {}", field);
             }
-            Ok((**t).clone())
+            Ok(one((**t).clone()))
         },
         Some(Type::Abstract { id, params }) => {
             if field != 0 {
                 bail!("no such field {}: an abstract type has only its payload .0", field);
             }
             match ctx.env.abstract_rep(*id, scope) {
-                Some(r) => Ok(r.instantiate_with(params)),
+                Some(r) => Ok(one(r.instantiate_with(params))),
                 None => bail!(
                     "the definition of this abstract type is not visible here, so \
                      its payload cannot be read"
@@ -883,6 +876,18 @@ pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
     source: &Type,
     name: &ArcStr,
 ) -> Result<(usize, Type)> {
+    let (i, ts) = struct_field_types(ctx, source, name)?;
+    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
+    Ok((i, Type::union(&ctx.env, &ts)?))
+}
+
+/// [`struct_field_type`] per member of a union source (one type for any
+/// other): what a write through the field must fit, each of them.
+pub(crate) fn struct_field_types<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    source: &Type,
+    name: &ArcStr,
+) -> Result<(usize, LPooled<Vec<Type>>)> {
     let field = |flds: &[(ArcStr, Type, WrittenAt)]| match flds
         .iter()
         .enumerate()
@@ -904,11 +909,10 @@ pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
             index = i;
             ts.push(t);
         }
-        let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-        return Ok((index, Type::union(&ctx.env, &ts)?));
+        return Ok((index, ts));
     }
     deref_typ!("struct", ctx, source,
-        Some(Type::Struct(flds)) => field(flds)
+        Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (i, LPooled::from_iter([t])))
     )
 }
 
@@ -1116,40 +1120,26 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         let top_id = self.spec.id;
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {
-                // CR claude for claude: [bug/high] Over a union of same-shaped structs,
-                // struct_field_type returns the union of the members' field types. That
-                // is a read type, and here it is used as the type a write must fit. `{s
-                // with a: k}` with s: [{a: i64, b: string}, {a: string, b: i64}] = {a:
-                // "y", b: 9} builds {a: k, b: 9}, which is in no member. The node-walk
-                // then hits a select coverage hole, and the fused JIT reads the i64 as
-                // a string ("!false"). Place::elem_type in bind.rs has the same defect
-                // for `&mut s.a` and `&mut t.0` (tuple_field_type). The array and map
-                // place steps already refuse a union source. Rule to decide: either a
-                // write must fit every member's field type (with keeps the source's
-                // type), or a `&mut` field step over a union is refused unless all
-                // members agree. Pin as must-reject. probe:
-                // design/review-2026-10-19/repro/c-data-map-union-field-write.sh
-                // (c-data-map-01)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. A write must fit every member's field type (the sound
-                // reading); refuse `&mut` field steps over a union unless all members
-                // agree. Pin as must-reject.
-                let (i, typ) = struct_field_type(ctx, &styp, &rep.name)?;
+                // the result keeps the source's type: over a union the
+                // replacement fits every member's field
+                let (i, typs) = struct_field_types(ctx, &styp, &rep.name)?;
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
                 if check {
-                    wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
-                    wrap!(
-                        rep.n,
-                        super::callsite::check_hidden_defaults(
-                            ctx,
-                            BitFlags::empty(),
-                            &Scope::root(),
-                            top_id,
-                            &typ,
-                            &rep.n.typ(),
-                            super::callsite::Narrowing::Copy
-                        )
-                    )?;
+                    for typ in typs.iter() {
+                        wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
+                        wrap!(
+                            rep.n,
+                            super::callsite::check_hidden_defaults(
+                                ctx,
+                                BitFlags::empty(),
+                                &Scope::root(),
+                                top_id,
+                                typ,
+                                &rep.n.typ(),
+                                super::callsite::Narrowing::Copy
+                            )
+                        )?;
+                    }
                 }
                 rep.index = Some(i);
             }

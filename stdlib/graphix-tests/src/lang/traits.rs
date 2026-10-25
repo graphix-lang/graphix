@@ -2491,3 +2491,21 @@ run!(
         let one: [i64, string] = "q";
         let result = #[native] Show::show(one)
     "#);
+
+// A value minted where the check left a parameter undecided carries its
+// type frozen (the cell settles to its bound's witness, else ⊥), so the
+// type's core trait impls apply to it: Eq, Ord as a map key, Display.
+run!(
+    undecided_parameter_value_takes_its_impls,
+    prints("[true, \"Bx\", i64:1]"),
+    "/test.gx" => r#"
+        type Bx<'a> = Abstract<(i64, Array<'a>)>;
+        impl<'a> Ord for Bx<'a> { let cmp = |a, b| `Equal };
+        impl<'a> Eq for Bx<'a> { let eq = |a, b| true };
+        impl<'a> Display for Bx<'a> { let fmt = |b| "Bx" };
+        let e = Bx((1, []));
+        let f = Bx((2, []));
+        let m = map::insert(map::insert({}, e, 1), f, 2);
+        let result = [cast<Any>(e == f)$, cast<Any>("[e]")$, cast<Any>(map::len(m))$]
+    "#
+);
