@@ -307,7 +307,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     targets.push(id)
                 }
             });
-            targets.into_iter().for_each(|id| ctx.mark_connect_target(id));
+            for id in targets {
+                ctx.mark_connect_target(id).map_err(|e| e.at(&spec))?;
+            }
         }
         if !matches!(pat, expr::StructurePattern::Bind(_)) {
             pattern.ids(&mut |id| ctx.env.mark_let_pattern(id));
@@ -423,14 +425,18 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 
     /// The LambdaDef `Value` of the binding this one aliases (`let h =
     /// f`), when `f` resolves statically and no `<-` writes it.
-    fn aliased_lambda(&self, ctx: &CompileCtx<R, E>) -> Option<Value> {
+    fn aliased_lambda(&self, ctx: &mut CompileCtx<R, E>) -> Option<Value> {
         let mut view = self.node.view();
         while let NodeView::ExplicitParens(p) = view {
             view = p.n.view();
         }
         match view {
             NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => {
-                ctx.bind_to_lambda.get(&r.id).cloned()
+                let fv = ctx.bind_to_lambda.get(&r.id).cloned();
+                if fv.is_some() {
+                    ctx.record_static_callee(r.id, &self.spec);
+                }
+                fv
             }
             _ => None,
         }
@@ -559,6 +565,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // bind's entry must go with it.
         self.pattern.ids(&mut |id| {
             ctx.bind_to_lambda.remove(&id);
+            ctx.static_callees.remove(&id);
             ctx.connect_targets.remove(&id);
             ctx.batch_connect_targets.remove(&id);
         });
@@ -1502,7 +1509,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                         r.spec
                     );
                 }
-                ctx.mark_connect_target(r.id);
+                ctx.mark_connect_target(r.id).map_err(|e| e.at(&spec))?;
             }
         }
         Ok(Node::new(Self {

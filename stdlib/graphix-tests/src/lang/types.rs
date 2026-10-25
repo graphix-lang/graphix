@@ -2826,7 +2826,8 @@ async fn written_after_generalized_is_held_to_it() -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     let _f = ctx.rt.compile(ArcStr::from("let f = |x| x")).await?;
-    let _s = ctx.rt.compile(ArcStr::from("let s = f(\"s\")")).await?;
+    let g = "let g = select true { true => f, false => f }; let s = g(\"s\")";
+    let _s = ctx.rt.compile(ArcStr::from(g)).await?;
     let narrow = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 1")).await.unwrap_err();
     let narrow = format!("{narrow:#}");
     assert!(narrow.contains("what is written to it must be as general"), "{narrow}");
@@ -2837,6 +2838,28 @@ async fn written_after_generalized_is_held_to_it() -> Result<()> {
     let _w = ctx.rt.compile(ArcStr::from("f <- |x| x")).await?;
     let r = ctx.rt.compile(ArcStr::from("let r = &mut f")).await.unwrap_err();
     assert!(format!("{r:#}").contains("made generic by an earlier compile"));
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// A later input's `<-` to a function an earlier input calls statically
+/// is refused, naming the call, which keeps the definition it bound; one
+/// no call fixed takes the write.
+#[tokio::test(flavor = "current_thread")]
+async fn written_after_a_static_call_is_refused() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let _f = ctx
+        .rt
+        .compile(ArcStr::from("let f = |x: i64| x + 1; let g = |x: i64| x + 1"))
+        .await?;
+    let _r = ctx.rt.compile(ArcStr::from("let r = f(1)")).await?;
+    let e = ctx.rt.compile(ArcStr::from("f <- |x| x + 100")).await.unwrap_err();
+    let e = format!("{e:#}");
+    assert!(e.contains("f cannot be written") && e.contains("f(1)"), "{e}");
+    let _w = ctx.rt.compile(ArcStr::from("g <- |x| x + 2")).await?;
     ctx.shutdown().await;
     Ok(())
 }

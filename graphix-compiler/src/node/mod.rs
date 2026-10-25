@@ -1744,7 +1744,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                 Some((_, b)) => b.id,
             };
         // a `<-` target is never a static call target
-        ctx.mark_connect_target(id);
+        ctx.mark_connect_target(id).map_err(|e| e.at(&spec))?;
         if ctx.env.ide.is_lsp() {
             ctx.env.push_reference(ReferenceSite {
                 pos: target_pos(&spec),

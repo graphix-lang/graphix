@@ -1408,6 +1408,11 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// is per batch): `Bind::update` must not reseed a woken target that
     /// holds a value. `Bind::delete` removes its ids.
     pub connect_targets: TrackedSet<BindId>,
+    /// Every binding a call site resolved statically, with the first such
+    /// call: that call keeps the definition it bound, so a later compile's
+    /// `<-` to the binding is refused ([`Self::mark_connect_target`]).
+    /// `Bind::delete` removes its ids.
+    pub static_callees: TrackedMap<BindId, StaticCall>,
     /// Per block being compiled, innermost last: the lets something in
     /// it writes, by statement and name ([`node::written_lets`]).
     pub(crate) written_lets: Vec<AHashSet<(ExprId, CompactString)>>,
@@ -1609,6 +1614,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             bind_to_lambda: self.bind_to_lambda.fork(),
             batch_connect_targets: self.batch_connect_targets.fork(),
             connect_targets: self.connect_targets.fork(),
+            static_callees: self.static_callees.fork(),
             written_lets: self.written_lets.clone(),
             builtin_bindings: self.builtin_bindings.fork(),
             rec_defs: self.rec_defs.clone(),
@@ -1657,6 +1663,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             bind_to_lambda,
             batch_connect_targets,
             connect_targets,
+            static_callees,
             written_lets: _,
             builtin_bindings,
             rec_defs: _,
@@ -1687,6 +1694,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         self.bind_to_lambda.join(bind_to_lambda);
         self.batch_connect_targets.join(batch_connect_targets);
         self.connect_targets.join(connect_targets);
+        self.static_callees.join(static_callees);
         self.builtin_bindings.join(builtin_bindings);
         self.fn_forward_resolutions.join(fn_forward_resolutions);
         let frame = self.pending_settles.last_mut().expect("root settle frame");
@@ -1767,11 +1775,28 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// type, which every value written takes (the value restriction). One
     /// an earlier compile generalized stays so, its uses having relied on
     /// it, and a write is held to its type (`Connect::typecheck0_with`).
-    pub(crate) fn mark_connect_target(&mut self, id: BindId) {
+    pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
+        if let Some(StaticCall(call)) = self.static_callees.get(&id) {
+            let name =
+                self.env.by_id.get(&id).map(|b| b.name.clone()).unwrap_or_default();
+            bail!(
+                "{name} cannot be written: an earlier compile calls it as a fixed \
+                 function at {}: {call}",
+                call.pos
+            )
+        }
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
         if !self.generalized_earlier(id) {
             self.env.poly_binds.remove(&id);
+        }
+        Ok(())
+    }
+
+    /// Record that the call `spec` binds `id`'s definition statically.
+    pub(crate) fn record_static_callee(&mut self, id: BindId, spec: &Arc<expr::Expr>) {
+        if !self.static_callees.contains_key(&id) {
+            self.static_callees.insert(id, StaticCall(spec.clone()));
         }
     }
 
@@ -1960,6 +1985,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 bind_to_lambda: TrackedMap::default(),
                 batch_connect_targets: TrackedSet::default(),
                 connect_targets: TrackedSet::default(),
+                static_callees: TrackedMap::default(),
                 written_lets: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
@@ -3166,6 +3192,18 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
     }
 }
 
+/// A call that binds a definition statically ([`CompileCtx::static_callees`]):
+/// any one names the binding's refusal, so compile tasks recording different
+/// calls of one binding agree.
+#[derive(Debug, Clone)]
+pub struct StaticCall(pub Arc<expr::Expr>);
+
+impl graphix_types::tracked::SameValue for StaticCall {
+    fn same_value(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// The registries a compile or a registration read writes, as they were
 /// before it, so a failure, or a check that runs nothing, puts them back.
 pub struct Saved {
@@ -3176,6 +3214,7 @@ pub struct Saved {
     fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
     connect_targets: TrackedSet<BindId>,
     batch_connect_targets: TrackedSet<BindId>,
+    static_callees: TrackedMap<BindId, StaticCall>,
     tags: TrackedSet<ArcStr>,
 }
 
@@ -3192,6 +3231,7 @@ impl Saved {
             bind_to_lambda,
             batch_connect_targets,
             connect_targets,
+            static_callees,
             written_lets: _,
             builtin_bindings,
             rec_defs: _,
@@ -3224,6 +3264,7 @@ impl Saved {
             fn_forward_resolutions: fn_forward_resolutions.clone(),
             connect_targets: connect_targets.clone(),
             batch_connect_targets: batch_connect_targets.clone(),
+            static_callees: static_callees.clone(),
             tags: tags.clone(),
         }
     }
@@ -3237,6 +3278,7 @@ impl Saved {
             fn_forward_resolutions,
             connect_targets,
             batch_connect_targets,
+            static_callees,
             tags,
         } = self;
         ctx.env = env;
@@ -3246,6 +3288,7 @@ impl Saved {
         ctx.fn_forward_resolutions = fn_forward_resolutions;
         ctx.connect_targets = connect_targets;
         ctx.batch_connect_targets = batch_connect_targets;
+        ctx.static_callees = static_callees;
         ctx.tags = tags;
     }
 }

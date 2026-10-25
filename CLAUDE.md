@@ -173,7 +173,10 @@ arm reads still schedules the statement, which wake catch-up relies on.
 The runtime side (`sleep`, `update`, `Deref`'s addressing) registers
 directly; a builtin needing runtime state `init` cannot reach takes it
 in `EvalCachedAsync::attach`. Static resolution reads only the index
-(`bind_to_lambda`): a binding it lacks dispatches dynamically.
+(`bind_to_lambda`): a binding it lacks dispatches dynamically. A call
+bound statically keeps its definition, so a later compile's `<-` to
+that binding (a REPL input's) is refused, naming the call
+(`CompileCtx::static_callees`, carried by the image).
 
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned
 tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)
