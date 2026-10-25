@@ -429,21 +429,6 @@ impl StructPatternNode {
             out.push(Leaf { id: *id, typ: typ.clone(), fresh: false });
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] A capture takes the narrowed predicate,
-        // whose cells hold the union of each position's parts over every member, so it
-        // loses which member it came from. `a@ (_, _)` over U = [(i64, string),
-        // (string, i64)] is ([i64, string], [i64, string]), and `h(a)` with `h: |u: U|`
-        // is refused ("U does not contain ([i64, string], [i64, string])"). `a@ [_,
-        // ..]` over [Array<i64>, Array<string>] is refused the same way, although the
-        // captured value is always a member of the scrutinee. Fix: type a whole bind as
-        // the union of the reaching members its position can match (bind_narrowed would
-        // take `reaching`), and keep the per-cell union for the plain binds. That
-        // refines the CLAUDE.md capture rule, so it needs your call. probe:
-        // design/review-2026-10-19/repro/c-pattern-capture-loses-member.gx
-        // (c-pattern-04)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Type a whole bind as the union of the reaching members its position
-        // can match; keep per-cell unions for plain binds.
         for id in self.whole_binds() {
             out.push(Leaf { id, typ: typ.normalize(), fresh: true })
         }
@@ -1581,11 +1566,15 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// takes the part it stands over (a `_` slot and a field a partial
     /// pattern leaves out have the scrutinee's type), and a name
     /// or-alternatives share the union of theirs
-    /// ([`StructPatternNode::leaves`]).
+    /// ([`StructPatternNode::leaves`]). A whole capture (`a@ (_, _)`)
+    /// stands over one member of `reaching` at a time, so it takes the
+    /// union of its part of each member the arm can match, where a plain
+    /// bind takes the union of its position's parts.
     pub(super) fn bind_narrowed(
         &self,
         env: &Env,
         narrowed: &Type,
+        reaching: &Type,
         checking: bool,
     ) -> Result<()> {
         let tests_error = self.explicit_type_predicate && self.tests_error();
@@ -1597,9 +1586,48 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
+        if !self.explicit_type_predicate {
+            self.wholes_by_member(env, reaching, &mut leaves)?;
+        }
         for l in leaves.iter().filter(|l| l.fresh || tests_error) {
             if let Some(b) = env.by_id.get(&l.id) {
                 b.typ.check_contains(env, &l.typ)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Each whole capture in `leaves` typed as the union of its part of
+    /// each member of `reaching` the arm's predicate matches.
+    fn wholes_by_member(
+        &self,
+        env: &Env,
+        reaching: &Type,
+        leaves: &mut SmallVec<[Leaf; 4]>,
+    ) -> Result<()> {
+        if !leaves.iter().any(|l| l.fresh) {
+            return Ok(());
+        }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        crate::expr::union_members(env, reaching, &mut members)?;
+        if members.len() < 2 {
+            return Ok(());
+        }
+        let mut parts: AHashMap<BindId, SmallVec<[Type; 4]>> = AHashMap::default();
+        for m in members.iter() {
+            if !self.type_predicate.could_match(env, m)? {
+                continue;
+            }
+            let mut ls: SmallVec<[Leaf; 4]> = SmallVec::new();
+            self.structure_predicate.leaves(env, m, true, false, &mut ls)?;
+            for l in ls.into_iter().filter(|l| l.fresh) {
+                parts.entry(l.id).or_default().push(l.typ)
+            }
+        }
+        for l in leaves.iter_mut().filter(|l| l.fresh) {
+            if let Some(ts) = parts.get(&l.id) {
+                let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
+                l.typ = Type::union_exact(env, &ts)?;
             }
         }
         Ok(())

@@ -955,7 +955,9 @@ cycle, across workers; the compiler never pins threads.
   to its part of the narrowed predicate (a `_` slot, the fields a
   partial struct pattern leaves out and a slice's rest carry the
   scrutinee's types; shared
-  or-alternative captures union). Never type a capture from
+  or-alternative captures union); a whole capture (`a@ (_, _)`) is
+  the union of its part of each reaching member the arm matches, not
+  of each position's parts, so it fits the scrutinee's own type. Never type a capture from
   `infer_type_predicate`. A slice's inferred element type is a Set with
   one member per element and a cell for the rest, so each element
   narrows on its own. Pins: `lang::select::capture_*`,

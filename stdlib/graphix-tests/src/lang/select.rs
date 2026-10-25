@@ -2619,6 +2619,20 @@ run!(capture_slice_rest, CAPTURE_SLICE_REST, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(211)))
 });
 
+// A whole capture stands over one member at a time: it is the union of the
+// members it can match, whole, not the union of their positions' parts, so
+// it fits the scrutinee's own type (c-pattern-04).
+run!(capture_keeps_its_member, r#"{
+  type U = [(i64, string), (string, i64)];
+  type A = [Array<i64>, Array<string>];
+  let h = |u: U| 1;
+  let g = |a: A| 10;
+  let f = |v: U| select v { a@ (_, _) => h(a) };
+  let k = |v: A| select v { a@ [_, ..] => g(a), [] => 0 };
+  let n = |v: (U, i64)| select v { (a@ (_, _), m) => h(a) + m };
+  (f(("a", 1)), k([1, 2]), n(((1, "b"), 2)))
+}"#, prints("[i64:1, i64:10, i64:3]"); FuseExpect::Jit);
+
 const CAPTURE_UNION_MEMBER: &str = r#"
 {
   type Pair = { left: i64, right: i64 };
