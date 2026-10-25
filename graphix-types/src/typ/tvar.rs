@@ -1154,28 +1154,6 @@ impl TVar {
         }
         s.cell = o_cell;
         drop(s);
-        // CR claude for claude: [risk/low] `lower` skips a generic cell, which is right
-        // for a binding (a scheme bound into a cell is still a scheme). A merge is
-        // different: it welds two cells into one, and the survivor must take the
-        // shallower level. When `other` is generic (a pattern-predicate cell, a frozen
-        // annotation var, a let-rec placeholder, a trait quantifier) and self's cell is
-        // Top or Def, the merged cell stays generic. Level::copied_by then copies it at
-        // every call, making polymorphic a cell the environment owns, and the value
-        // restriction no longer holds for it. No route to it is known: the direction
-        // rules usually keep the generic side as the abandoned cell. When `level` is
-        // not generic, call `other.claim(level)` here (claim lowers generic cells too)
-        // instead of `lower`. (t-tvar-07)
-        // 2026-10-14 claude: tried `other.claim(level)` here; it breaks
-        // lang::traits::core_display_nested_same_tag (`impl<'a> Display for Box<'a>`
-        // over Box(Box(Box(1))) prints "<Box(Box(1))>"): the impl's quantifier welds
-        // with the method's parameter cell and must stay generic for each call's
-        // dispatch. A rule has to tell that weld from an environment-owned one.
-        // 2026-10-16 claude: Readdressed to eric: the fix needs a rule telling an
-        // environment-owned cell's weld from a quantifier's (the impl<'a> Display for
-        // Box<'a> case that must stay generic for each call's dispatch), which is a
-        // typing rule, and no program reaches the hazard today.
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Find a route first; with none, close it.
         lower(&Type::TVar(other.clone()), level);
     }
 
@@ -1647,27 +1625,22 @@ impl Type {
     /// says "not numeric, or this number").
     fn require_one_number(&self, hand: &mut dyn FnMut(&TVar, Type)) {
         let mut parts = UnionParts::new(Measure::Numbers);
-        // CR claude for claude: [bug/medium] When the binding already has a numeric
-        // member, the open members get no conjunct at all. So `'a: [Number, null] +
-        // OneNumber` bound to `[i64, 'y]` leaves 'y free. A generic caller (`let g =
-        // |b, y| f(select b { true => 1, false => y })`) then generalizes with an
-        // unconstrained 'y, and `g(false, 2.5)` passes the check. The build refuses it:
-        // the instance of f at fn(x: [i64, f64]) is refused. So --check and the LSP
-        // accept what elaboration refuses, which CLAUDE.md calls a type-system bug
-        // (graphix-fuzz check reports the DIVERGENCE). A statement-settle recheck is
-        // not enough, because 'y is still open when g settles: the constraint has to
-        // reach g's signature. Options: narrow the open members to the known numeric
-        // member plus the non-numeric types (needs a way to say "not a number"), refuse
-        // such a binding at the definition, or let a bound name a compound type. Needs
-        // a rule. Probe: design/review-2026-10-12/repro/t-tvar-01.gx (t-tvar-01)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): refuse at the definition: a
-        // OneNumber binding that leaves an open member asks for an annotation.
         if self.union_parts(None, &mut parts).is_err() || parts.known > 0 {
             return;
         }
         for tv in parts.open.iter() {
             hand(tv, Type::OneNumber)
         }
+    }
+
+    /// An open member of a `OneNumber` cell's binding beside a numeric one:
+    /// it may yet be another numeric type, which no bound can rule out, so
+    /// the definition that leaves it open is refused (annotate it).
+    pub fn one_number_open(&self) -> bool {
+        let mut parts = UnionParts::new(Measure::Numbers);
+        self.union_parts(None, &mut parts).is_ok()
+            && parts.known > 0
+            && !parts.open.is_empty()
     }
 
     /// [`Self::require_singleton`] for an operand whose type must be one

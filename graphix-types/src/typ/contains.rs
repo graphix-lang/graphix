@@ -848,35 +848,6 @@ fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
 
 /// A non-containment report that formats lazily: callers probe these
 /// errors, and rendering a large type eagerly is tree-cost.
-// CR claude for claude: [readability/low] A mismatch names a typedef by its
-// expansion: `let s: Shape = ..; let q: i64 = s`, or `|s: Shape| -> i64 s`, says
-// 'i64 does not contain [`Circle(f64), `Rect(f64, f64)]' where it should say Shape.
-// The reference node's type is a cell that the bind's `contains` bound to the
-// expanded form, and DerefTVars prints the cell's binding. Keep the written Ref as
-// the cell's binding where the check expanded it only to compare, or remember it
-// beside the cell for printing. Found under (t-cast-setops-13), whose union arm order
-// is fixed. (mismatch-print-01)
-// 2026-10-16 claude: Found where the expansion enters:
-// StructPatternNode::compile_int_inner expands a typedef reference before binding, so
-// a plain name binds the typedef's body (the bind trace shows 'CHK-CONTAINS i64 >=
-// [`Circle(f64), `Rect(f64, f64)]', no cell involved). Binding a plain name at the
-// written type instead fixes the message but changes typing: a union of (bool, i64)
-// and (bool, Option<i64>) no longer merges, and collection_newtype_defaults,
-// native_let_wildcard_keeps_the_value_type and private_type_in_public_body stop
-// fusing. The fix has to be print-only: carry the written type beside the bind's type
-// for messages (the Ref node or TypeMismatch would print it), never in what the check
-// unifies.
-// 2026-10-17 claude: Needs a decision, so readdressed. Binding a plain name at its
-// written type would fix the message, but union normalization does not see through a
-// typedef reference (it has no env to expand one), so (bool, i64) and (bool,
-// Option<i64>) merge expanded and not as written, and three fixtures stop fusing.
-// Options: (a) normalization expands references when it merges, which needs the env
-// and is a typing change; (b) a print-only side channel, the written type beside the
-// bind for messages, which touches every bind for one message; (c) accept that a
-// mismatch prints a typedef by its expansion.
-// 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-// needed. Option (c), unless (b) turns out cheap: accept that a mismatch prints a
-// typedef by its expansion.
 #[derive(Debug)]
 pub struct TypeMismatch {
     expected: Type,

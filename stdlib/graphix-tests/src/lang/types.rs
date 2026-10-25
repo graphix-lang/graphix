@@ -1162,6 +1162,24 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
 );
 
+// A OneNumber binding holding a numeric member beside an open one is
+// refused at the definition that leaves it open: the open member may yet
+// be another numeric type, which no bound can rule out.
+run!(
+    one_number_beside_an_open_member_refused,
+    "{ let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x; \
+       let g = |b, y| f(select b { true => 1, false => y }); 0 }",
+    refused("an open member of which may yet be another numeric type: annotate it");
+    FuseExpect::None
+);
+run!(
+    one_number_beside_an_annotated_member,
+    "{ let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x; \
+       let g = |b, y: [i64, null]| f(select b { true => 1, false => y }); \
+       select g(true, null) { i64 as n => n, null => 0 } }",
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
 {
   let x = never();

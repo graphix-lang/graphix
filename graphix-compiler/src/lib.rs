@@ -2440,6 +2440,17 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                     discernible(env, &t, &Discerned::Bound(tv.clone(), c.clone()))?
                 }
                 Type::Concrete => discernible(env, &t, &Discerned::Keys)?,
+                Type::OneNumber => {
+                    if t.one_number_open() {
+                        format_with_flags(PrintFlag::DerefTVars, || {
+                            bail!(
+                                "'{}: OneNumber holds {t}, an open member of which may \
+                                 yet be another numeric type: annotate it",
+                                tv.name
+                            )
+                        })?
+                    }
+                }
                 _ => (),
             }
         }
