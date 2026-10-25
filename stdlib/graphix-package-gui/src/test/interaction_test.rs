@@ -1338,6 +1338,29 @@ async fn rejected_text_edit(kind: &str, handler: &str) -> Result<()> {
     Ok(())
 }
 
+/// A handler whose echo takes two hops (`|s| edit <- s` with `doc <-
+/// edit`) answers before its echo comes: the edit stands until the runtime
+/// is idle, so a key typed in between builds on it (gui-widgets-b-03).
+#[tokio::test(flavor = "current_thread")]
+async fn a_two_hop_echo_keeps_the_edit() -> Result<()> {
+    let code = format_compact!(
+        "{IMPORTS}; let doc = \"\"; let edit: string = never(); doc <- edit; \
+         let result = text_editor(#on_edit: |s| edit <- s, &doc)"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    h.watch("test::doc").await?;
+    h.click(WIDGET_HIT);
+    let msgs = h.process_events(&[char_key("a")]);
+    h.apply(&msgs);
+    // the first cycle with an update answers the edit; its echo is later
+    while !h.inner.deliver_batch().await? {}
+    assert_eq!(h.get_watched("test::doc"), Some(&Value::from("")));
+    let msgs = h.process_events(&[char_key("b")]);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::doc"), Some(&Value::from("ab")));
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_text_input_returns_to_the_program_value() -> Result<()> {
     rejected_text_edit("text_input", "on_input").await

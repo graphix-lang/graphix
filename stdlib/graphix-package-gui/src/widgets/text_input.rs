@@ -63,9 +63,15 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         self.on_submit
             .update(rt, &self.gx, id, v, &mut changed)
             .context("text_input on_submit recompile")?;
-        changed |= self.echoes.answered(id);
+        if self.echoes.answered(id) {
+            super::ask_idle(&self.gx);
+        }
         changed |= self.echoes.retain_handler(&self.on_input);
         Ok(changed)
+    }
+
+    fn idle(&mut self) -> bool {
+        self.echoes.idle()
     }
 
     fn view(&self) -> IcedElement<'_> {

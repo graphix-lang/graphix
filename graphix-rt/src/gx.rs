@@ -286,6 +286,9 @@ pub(super) struct GX<X: GXExt> {
     result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
     /// Pending `WaitIdle` requests, answered at the next idle verdict.
     idle_waiters: Vec<oneshot::Sender<()>>,
+    /// A `NotifyIdle` is pending: the next idle verdict sends
+    /// [`GXEvent::Idle`].
+    notify_idle: bool,
     /// Pending `WaitSettled` requests, answered at the first idle verdict
     /// with nothing outstanding (`GXRt::outstanding`).
     settle_waiters: Vec<oneshot::Sender<()>>,
@@ -339,6 +342,7 @@ impl<X: GXExt> GX<X> {
             flags: cfg.flags,
             result_watch: None,
             idle_waiters: Vec::new(),
+            notify_idle: false,
             settle_waiters: Vec::new(),
             trace: None,
             scope: Scope::root(),
@@ -898,6 +902,7 @@ impl<X: GXExt> GX<X> {
                     self.result_watch = Some((id, res));
                 }
                 ToGX::WaitIdle { res } => self.idle_waiters.push(res),
+                ToGX::NotifyIdle => self.notify_idle = true,
                 ToGX::WaitSettled { res } => self.settle_waiters.push(res),
                 ToGX::TraceStart { max_events, max_cycles } => {
                     // Replacing an active trace drops its pending waiter and events.
@@ -1453,6 +1458,7 @@ impl<X: GXExt> GX<X> {
                 let waiter = self.result_watch.is_some()
                     || self.trace.is_some()
                     || !self.idle_waiters.is_empty()
+                    || self.notify_idle
                     || settled;
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
@@ -1462,6 +1468,15 @@ impl<X: GXExt> GX<X> {
                     }
                     for tx in self.idle_waiters.drain(..) {
                         let _ = tx.send(());
+                    }
+                    // a full channel leaves it pending for the next verdict
+                    if self.notify_idle
+                        && let Ok(permit) = self.sub.try_reserve()
+                    {
+                        let mut batch = self.batch_pool.take();
+                        batch.push(GXEvent::Idle);
+                        permit.send(batch);
+                        self.notify_idle = false;
                     }
                     if settled {
                         for tx in self.settle_waiters.drain(..) {

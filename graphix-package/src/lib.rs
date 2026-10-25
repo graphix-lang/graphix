@@ -118,6 +118,10 @@ pub trait CustomDisplay<X: GXExt>: Any {
     /// The updates of one runtime cycle have all been processed: a
     /// display that redraws shows the cycle whole here.
     async fn batch_done(&mut self);
+
+    /// The runtime went idle after the display asked
+    /// (`GXHandle::notify_idle`), every update before it processed.
+    async fn idle(&mut self);
 }
 
 /// Why a custom display ended without failing.

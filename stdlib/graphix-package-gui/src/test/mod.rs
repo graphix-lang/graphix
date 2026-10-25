@@ -150,9 +150,10 @@ impl GuiTestHarness {
     }
 
     /// Deliver every update until the runtime is idle with nothing left
-    /// to deliver. Returns true if any update changed the widget tree.
-    /// A value from outside the runtime (netidx) can come later: wait for
-    /// it with `wait_until`.
+    /// to deliver, then tell the widgets it is idle, as `GXEvent::Idle`
+    /// does. Returns true if either changed the widget tree. A value from
+    /// outside the runtime (netidx) can come later: wait for it with
+    /// `wait_until`.
     async fn drain(&mut self) -> Result<bool> {
         let Self { f: Fixture { gx, rx, watches, .. }, root, rt_handle, .. } = self;
         let mut first_error = None;
@@ -168,10 +169,31 @@ impl GuiTestHarness {
             }
         };
         let (changed, _) = testing::drain_idle(gx, rx, deliver).await?;
+        let changed = root.w.idle() || changed;
         match first_error {
             Some(e) => Err(e),
             None => Ok(changed),
         }
+    }
+
+    /// Deliver the runtime's next batch, waiting for it, and nothing
+    /// after it: the widgets see one cycle's updates and not the idle.
+    /// Returns whether the batch held an update.
+    async fn deliver_batch(&mut self) -> Result<bool> {
+        let Self { f: Fixture { gx, rx, watches, .. }, root, rt_handle, .. } = self;
+        let mut batch = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .context("no batch came")?
+            .context("the runtime is gone")?;
+        let mut updated = false;
+        for e in batch.drain(..) {
+            if let graphix_rt::GXEvent::Updated(id, v) = e {
+                watches.note(id, &v);
+                update_widget(root, gx, rt_handle, id, &v)?;
+                updated = true;
+            }
+        }
+        Ok(updated)
     }
 
     /// Set the program variable `name`, module-qualified, from the test.

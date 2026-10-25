@@ -62,6 +62,8 @@ text_input(#on_input: |v| name <- v, #placeholder: &"Type here...", &name)
 
 The `<-` connect operator schedules `name` to update on the next cycle, and because the text input holds a reference to `name`, it automatically reflects the new value.
 
+Until the value comes back, the input shows what the user typed, so fast typing builds on it. The program decides: a callback may write the value through any number of steps (`|v| edit <- v` with `name <- edit` elsewhere), and an edit that has not come back by the time the program is idle was rejected, so the input returns to the program's value. Text inputs, text editors, checkboxes and togglers all work this way.
+
 ## Theming
 
 Every window accepts a `#theme` parameter that controls its visual appearance. Graphix ships with 22 built-in themes plus support for fully custom palettes and stylesheets:

@@ -70,7 +70,9 @@ macro_rules! toggle_widget {
                 self.on_toggle
                     .update(rt, &self.gx, id, v, &mut changed)
                     .context(concat!($label, " on_toggle"))?;
-                changed |= self.echoes.answered(id);
+                if self.echoes.answered(id) {
+                    super::ask_idle(&self.gx);
+                }
                 changed |= self.echoes.retain_handler(&self.on_toggle);
                 Ok(changed)
             }
@@ -103,6 +105,10 @@ impl<X: GXExt> GuiWidget<X> for CheckboxW<X> {
         v: &Value,
     ) -> Result<bool> {
         self.do_update(rt, id, v)
+    }
+
+    fn idle(&mut self) -> bool {
+        self.echoes.idle()
     }
 
     fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
@@ -144,6 +150,10 @@ impl<X: GXExt> GuiWidget<X> for TogglerW<X> {
         v: &Value,
     ) -> Result<bool> {
         self.do_update(rt, id, v)
+    }
+
+    fn idle(&mut self) -> bool {
+        self.echoes.idle()
     }
 
     fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {

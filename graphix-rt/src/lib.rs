@@ -516,6 +516,9 @@ enum ToGX<X: GXExt> {
     WaitIdle {
         res: oneshot::Sender<()>,
     },
+    /// Send [`GXEvent::Idle`] when the runtime next goes idle. See
+    /// [`GXHandle::notify_idle`].
+    NotifyIdle,
     /// Answer when the runtime is idle with nothing outstanding. See
     /// [`GXHandle::wait_settled`].
     WaitSettled {
@@ -539,6 +542,9 @@ enum ToGX<X: GXExt> {
 pub enum GXEvent {
     Updated(ExprId, Value),
     Env(Env),
+    /// The runtime went idle after a [`GXHandle::notify_idle`]: every
+    /// update of the cycles before it came before it.
+    Idle,
 }
 
 /// One entry in a runtime-side trace (see [`GXHandle::trace_start`]).
@@ -894,6 +900,14 @@ impl<X: GXExt> GXHandle<X> {
     /// brings later is not waited for.
     pub async fn wait_idle(&self) -> Result<()> {
         self.exec(|res| ToGX::WaitIdle { res }).await
+    }
+
+    /// Send [`GXEvent::Idle`] in the event stream when the runtime next goes
+    /// idle, as [`Self::wait_idle`] decides it: unlike that answer, it comes
+    /// after every update before it. Requests made before it is sent are
+    /// one.
+    pub fn notify_idle(&self) -> Result<()> {
+        self.0.tx.send(ToGX::NotifyIdle).map_err(|_| self.stopped("runtime is dead"))
     }
 
     /// Wait until the runtime is idle, as [`Self::wait_idle`], with

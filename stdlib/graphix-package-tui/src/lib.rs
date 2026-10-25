@@ -1314,6 +1314,8 @@ impl<X: GXExt> CustomDisplay<X> for Tui<X> {
     async fn batch_done(&mut self) {
         self.send(ToTui::Draw).await;
     }
+
+    async fn idle(&mut self) {}
 }
 
 graphix_derive::defpackage! {

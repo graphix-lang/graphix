@@ -1395,7 +1395,12 @@ test is a result.
 - GUI (iced): uses the iced sub-crates directly; `GuiTestHarness::dt()`
   downcasts; tests fire callbacks via `gx.call(callable_id, args)`;
   test contexts default to `NetConfig::Internal`; publisher coalescing
-  collapses rapid updates — space them with timers.
+  collapses rapid updates — space them with timers. A control's send
+  (`widgets::Echoes`) shows until echoed, and is rejected only when its
+  call was answered and it is not echoed once the runtime is idle: a
+  widget left waiting asks `GXHandle::notify_idle`, and the
+  `GXEvent::Idle` that answers comes after every update before it, to
+  the display's `CustomDisplay::idle`.
 - Package manager: `packages.toml` v2 (`[stdlib]` tracks the shell
   version, `[packages]` for externals); `update` presents a maskable
   change set and builds before writing the manifest; hard error on

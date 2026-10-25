@@ -193,6 +193,23 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         self.for_each_child_mut(&mut |c| changed |= c.before_view());
         changed
     }
+
+    /// The runtime is idle after a widget asked ([`ask_idle`]): a send it
+    /// saw answered and not echoed was rejected. Returns `true` if the
+    /// window should redraw. The default forwards to children.
+    fn idle(&mut self) -> bool {
+        let mut changed = false;
+        self.for_each_child_mut(&mut |c| changed |= c.idle());
+        changed
+    }
+}
+
+/// Ask the runtime to say when it is next idle, which judges a send
+/// [`Echoes::answered`] left waiting.
+pub(crate) fn ask_idle<X: GXExt>(gx: &GXHandle<X>) {
+    if let Err(e) = gx.notify_idle() {
+        log::error!("could not ask for idle: {e:?}")
+    }
 }
 
 pub type GuiW<X> = Box<dyn GuiWidget<X>>;
@@ -401,9 +418,11 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 }
 
 /// What a control sent through its handler and the runtime has not echoed
-/// yet. The control shows its newest send, so input that comes before an
-/// echo builds on what the user did, not on the stale value.
-pub(crate) struct Echoes<T>(std::collections::VecDeque<(ExprId, Option<T>)>);
+/// yet, each beside its call's answer id and whether that answer came. The
+/// control shows its newest send, so input that comes before an echo builds
+/// on what the user did, not on the stale value; a send answered and not
+/// echoed by the time the runtime is idle was rejected.
+pub(crate) struct Echoes<T>(std::collections::VecDeque<(ExprId, Option<T>, bool)>);
 
 impl<T: PartialEq> Echoes<T> {
     pub(crate) fn new() -> Self {
@@ -426,7 +445,7 @@ impl<T: PartialEq> Echoes<T> {
         shell.call_handled = true;
         match f.call_answered(args.clone()) {
             Ok(()) => {
-                self.0.push_back((f.answer, Some(value)));
+                self.0.push_back((f.answer, Some(value), false));
                 true
             }
             Err(e) => {
@@ -437,28 +456,50 @@ impl<T: PartialEq> Echoes<T> {
     }
 
     /// A value echo retires itself and earlier values; a program value
-    /// retires them all. Answer slots stay ordered until their cycles end.
+    /// retires them all.
     pub(crate) fn delivered(&mut self, v: &T) -> bool {
-        let at = self.0.iter().position(|(_, p)| p.as_ref() == Some(v));
+        let at = self.0.iter().position(|(_, p, _)| p.as_ref() == Some(v));
         let n = at.map_or(self.0.len(), |i| i + 1);
-        for (_, p) in self.0.iter_mut().take(n) {
+        for (_, p, _) in self.0.iter_mut().take(n) {
             *p = None;
         }
         at.is_some()
     }
 
+    /// The answer `id` came for the oldest send it answers: one echoed
+    /// already retires, one not waits for the runtime's idle to judge it,
+    /// and this says so.
     pub(crate) fn answered(&mut self, id: ExprId) -> bool {
-        self.0
-            .iter()
-            .position(|(answer, _)| *answer == id)
-            .and_then(|i| self.0.remove(i))
-            .is_some_and(|(_, v)| v.is_some())
+        let Some(i) = self.0.iter().position(|(a, _, done)| *a == id && !done) else {
+            return false;
+        };
+        match self.0[i].1 {
+            None => {
+                self.0.remove(i);
+                false
+            }
+            Some(_) => {
+                self.0[i].2 = true;
+                true
+            }
+        }
+    }
+
+    /// The runtime is idle: the sends answered and not echoed were
+    /// rejected and retire, and this says whether there were any.
+    pub(crate) fn idle(&mut self) -> bool {
+        let mut rejected = false;
+        self.0.retain(|(_, p, done)| {
+            rejected |= *done && p.is_some();
+            !done
+        });
+        rejected
     }
 
     pub(crate) fn retain_handler<X: GXExt>(&mut self, handler: &Handler<X>) -> bool {
         let answer = handler.f.as_ref().map(|f| f.answer);
         let mut changed = false;
-        self.0.retain(|(id, v)| {
+        self.0.retain(|(id, v, _)| {
             let keep = Some(*id) == answer;
             changed |= !keep && v.is_some();
             keep
@@ -468,7 +509,7 @@ impl<T: PartialEq> Echoes<T> {
 
     /// What the control shows: its newest send, else the runtime's value.
     pub(crate) fn shown<'a>(&'a self, runtime: Option<&'a T>) -> Option<&'a T> {
-        self.0.iter().rev().find_map(|(_, p)| p.as_ref()).or(runtime)
+        self.0.iter().rev().find_map(|(_, p, _)| p.as_ref()).or(runtime)
     }
 }
 
@@ -726,23 +767,28 @@ mod echo_tests {
     use super::*;
 
     #[test]
-    fn an_echo_keeps_its_answer_slot_until_the_cycle_ends() {
+    fn an_unechoed_answer_is_judged_at_idle() {
         let answer = ExprId::new();
         let mut echoes = Echoes::new();
-        echoes.0.extend([(answer, Some(1)), (answer, Some(2))]);
+        echoes.0.extend([(answer, Some(1), false), (answer, Some(2), false)]);
         assert!(echoes.delivered(&1));
         assert!(!echoes.answered(answer));
         assert_eq!(echoes.shown(Some(&0)), Some(&2));
+        // answered, not echoed: it shows until the runtime is idle
         assert!(echoes.answered(answer));
+        assert_eq!(echoes.shown(Some(&0)), Some(&2));
+        assert!(echoes.idle());
         assert_eq!(echoes.shown(Some(&0)), Some(&0));
         assert!(echoes.0.is_empty());
-        echoes.0.extend([(answer, Some(1)), (answer, Some(2))]);
-        assert!(!echoes.delivered(&3));
-        echoes.0.push_back((answer, Some(4)));
-        assert!(!echoes.answered(answer));
-        assert!(!echoes.answered(answer));
-        assert_eq!(echoes.shown(Some(&3)), Some(&4));
+        // an echo after the answer and before idle is no rejection
+        echoes.0.push_back((answer, Some(3), false));
         assert!(echoes.answered(answer));
+        assert!(echoes.delivered(&3));
+        assert!(!echoes.idle());
         assert!(echoes.0.is_empty());
+        // a send not answered yet waits out the idle
+        echoes.0.push_back((answer, Some(4), false));
+        assert!(!echoes.idle());
+        assert_eq!(echoes.shown(Some(&0)), Some(&4));
     }
 }

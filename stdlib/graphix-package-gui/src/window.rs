@@ -147,6 +147,11 @@ pub struct TrackedWindow<X: GXExt> {
 }
 
 impl<X: GXExt> TrackedWindow<X> {
+    /// The runtime is idle: the widgets judge the sends they wait on.
+    pub fn idle(&mut self) {
+        self.needs_redraw |= self.props.content.w.idle();
+    }
+
     pub fn handle_update(
         &mut self,
         rt: &tokio::runtime::Handle,

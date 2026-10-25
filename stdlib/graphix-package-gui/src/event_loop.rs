@@ -528,6 +528,11 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     tw.needs_redraw = true;
                 }
             }
+            ToGui::Idle => {
+                for tw in self.windows.values_mut() {
+                    tw.idle();
+                }
+            }
             ToGui::Update(id, v) => {
                 if id == self.root_exp.id {
                     if let Err(e) = self.reconcile(event_loop, v) {

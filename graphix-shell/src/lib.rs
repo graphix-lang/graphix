@@ -181,6 +181,11 @@ impl<X: GXExt> Output<X> {
                     *env = e;
                     *newenv = Some(env.clone());
                 }
+                GXEvent::Idle => {
+                    if let Self::Custom(cdc) = self {
+                        cdc.custom.idle().await
+                    }
+                }
             }
         }
         self.batch_done().await;

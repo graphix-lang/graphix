@@ -42,6 +42,9 @@ pub(crate) enum ToGui {
     /// Wake the event loop to render widget state mutated outside
     /// the iced event cycle.
     Redraw,
+    /// The runtime went idle, every update before it delivered: an edit a
+    /// widget sent and saw answered but not echoed is rejected.
+    Idle,
     Stop(oneshot::Sender<()>),
 }
 
@@ -145,6 +148,12 @@ impl<X: GXExt> CustomDisplay<X> for Gui<X> {
     }
 
     async fn batch_done(&mut self) {}
+
+    async fn idle(&mut self) {
+        if self.proxy.send_event(ToGui::Idle).is_err() {
+            error!("could not send idle because gui event loop closed")
+        }
+    }
 }
 
 graphix_derive::defpackage! {
