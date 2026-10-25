@@ -296,7 +296,10 @@ it releases them once the decoded body's nodes have registered their
 own. A decode failure falls back to fresh static
 resolution. The shell maps the entry into memory, which saves a copy; the
 checksum (`image::sealed`) reads the whole entry once at restore, so
-a lazy decode saves decode work, not I/O.
+a lazy decode saves decode work, not I/O. The checksum itself is cheap
+(crc32 over 10 MiB, the admin image's size, about 0.1 ms); what a
+per-region seal would save is reading the heap a restore leaves
+untouched, which matters only on a cold page cache over a slow disk.
 
 Measured, the admin TUI (`milestone_image`), optimized without LTO,
 unpinned: cold 500 ms (registration 105, program compile 197, first

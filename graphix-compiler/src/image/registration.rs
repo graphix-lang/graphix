@@ -359,20 +359,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         if bytes.get_u8() != REGISTRATION_FORMAT {
             return Err(PackError::InvalidFormat);
         }
-        // CR claude for claude: [perf/low] `image::sealed` runs crc32 over every byte of
-        // the entry before anything decodes, so a warm start reads the whole mapped
-        // file, including the instance heap and instances never reached. The admin
-        // image is about 10 MB, 7 MB of it heap. design/program_image.md and
-        // `RegistrationCache::load`'s comment say only the pages a restore touches are
-        // read. On a cold page cache over a network disk, that is a full sequential
-        // read per start. Either seal per region (the eager part and trailer checked
-        // here, each heap instance checked by its instance-table entry at
-        // `materialize`), or keep the whole-file seal and correct the doc and the
-        // `load` comment after measuring the cost on the target. (x-image-07)
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Measure the whole-file crc on the admin image (cold page cache); if it
-        // matters seal per region, else correct design/program_image.md and the load
-        // comment.
         if !image::sealed(&image, MAGIC.len() + 1) {
             warn!("the image is corrupt: its checksum does not match");
             return Err(PackError::InvalidFormat);
