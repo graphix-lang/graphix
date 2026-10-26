@@ -118,14 +118,8 @@ run!(http_invalid_header_is_500, r#"{
     matches!(v, Ok(Value::U16(500)))
 }; FuseExpect::Jit);
 
-// A request the handler has no value for is answered 500 and does not
-// hold up the next.
-// CR claude for claude: [doc-drift/low] The comment above says a request the handler
-// has no value for is answered 500. This handler raises (`text?`), which is what gives
-// the 500, and the next fixture's comment states the actual rule: a handler with no
-// value leaves the request unanswered. Reword it to "A request whose handler raises is
-// answered 500 and does not hold up the next." Found by reading; not run.
-// (tests-lib-b1-04)
+// A request whose handler raises is answered 500 and does not hold up
+// the next.
 run!(http_raising_handler_then_good, r#"{
     let handler = |req: http::Request| {
         let text: Result<string, `Empty> = select buffer::to_string_lossy(req.raw) {
@@ -145,8 +139,9 @@ run!(http_raising_handler_then_good, r#"{
 }; FuseExpect::Jit);
 
 // A handler with no value for a request leaves it unanswered; once its
-// client gives up, the next request is served.
-// CR claude for claude: [test-gap/medium] This fixture cannot fail if the abandoned
+// client gives up, its connection is let go and the next request is
+// served on the one connection the server allows.
+// XCR claude for claude: [test-gap/medium] This fixture cannot fail if the abandoned
 // request is never released. Under serve's default connection limit, r2 gets a
 // connection of its own and is answered while r1 is still pending: in the probe, r2 is
 // answered 0.4 s in while r1 has 4.5 s left on its timeout. A serve that kept the
@@ -154,17 +149,27 @@ run!(http_raising_handler_then_good, r#"{
 // server `#max_connections: 1`, so r2 can only be served once r1's connection is let
 // go; that version passes today. probe:
 // design/review-2026-10-26/repro/tests-lib-b1-http-next-not-held.sh (tests-lib-b1-01)
+// 2026-10-26 claude: The server now allows one connection (#max_connections: 1) and r2
+// carries a 5 s timeout whose error the result prints, so r2 is served only once r1's
+// abandoned connection and permit are let go. With serve_loop forgetting the permit
+// every mode fails (checked). Pin: lib_tests::http::http_abandoned_request_then_good.
 run!(http_abandoned_request_then_good, r#"{
     let handler = |req: http::Request| {
         let text = select buffer::to_string_lossy(req.raw) { "" => never(), s => s };
         { body: "hi [text]", headers: [], status: u16:200 }
     };
-    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let server = http::serve(#addr: "127.0.0.1:0", #max_connections: 1, #handler: handler)$;
     let addr = http::server_addr(server);
     let client = http::default_client(server)$;
     let r1 = http::request(#timeout: duration:200.ms, client, "http://[addr]/");
-    let r2 = http::request(#method: `POST, #body: "bob", r1 ~ client, "http://[addr]/")$;
-    "[r2.status] [r2.body]"
+    let r2 = http::request(
+        #timeout: duration:5.s,
+        #method: `POST,
+        #body: "bob",
+        r1 ~ client,
+        "http://[addr]/"
+    );
+    select r2 { error as e => "[e]", r => "[r.status] [r.body]" }
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "200 hi bob")
 }; FuseExpect::Jit);

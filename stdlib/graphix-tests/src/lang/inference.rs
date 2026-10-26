@@ -82,9 +82,9 @@ const EMPTY_ARRAY_ARM: &str = r#"{
 
 // A declared type variable stays rigid through a cell merge: an arm's
 // alias of `'a` over a union scrutinee is still `'a` at the return
-// check, so the union does not bind it to a sibling member (u2), a
-// foreign member is refused rather than absorbed (u5), and the empty
-// slice arm over `[Array<'a>, null]` is ordinary (s1).
+// check, so the union does not bind it to a sibling member, a foreign
+// member is refused rather than absorbed, and the empty slice arm over
+// `[Array<'a>, null]` is ordinary.
 const RIGID_ALIAS_UNION_RETURN: &str = r#"{
   let first = |rows: [Array<'a>, null]| -> ['a, null] select rows {
     null as _ => null,

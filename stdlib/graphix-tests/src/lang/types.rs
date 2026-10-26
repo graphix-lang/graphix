@@ -1213,19 +1213,24 @@ run!(
     refused("the members' fields differ");
     FuseExpect::None
 );
-// CR claude for claude: [test-gap/medium] union_field_write_where_members_agree cannot
+// XCR claude for claude: [test-gap/medium] union_field_write_where_members_agree cannot
 // fail on the write it is about. run! reads only the first update, which is 8, computed
 // before `*r <- 5` lands, and the predicate accepts any i64. A no-op write through
 // `&mut s.a`, or a patch into the wrong member, still passes. Gate the result on the
 // write (e.g. skip(#n: 1, ..)) and pin it exactly: s is {a: 5, b: 9} and the sum is 12.
 // probe: design/review-2026-10-26/repro/tests-types-union-field-write-first-value.gx
 // (tests-types-03)
+// 2026-10-26 claude: The fixture now skips the update before the write lands and pins
+// the next exactly: s is {a: 5, b: 9} and the sum 12. A no-op write leaves no second
+// update (the test times out) and a wrong patch misprints. Pin:
+// lang::types::union_field_write_where_members_agree.
 run!(
     union_field_write_where_members_agree,
     "{ type S = [{a: i64, b: string}, {a: i64, b: i64}]; \
        let s: S = {a: 1, b: 9}; let r = &mut s.a; *r <- 5; \
-       let u = {s with a: 7}; select (s, u) { ({a, ..}, {a: b, ..}) => a + b } }",
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(_)))
+       let u = {s with a: 7}; \
+       skip(#n: 1, select (s, u) { ({a, ..}, {a: b, ..}) => (s, a + b) }) }",
+    prints(r#"[[["a", i64:5], ["b", i64:9]], i64:12]"#)
 );
 
 // A returned closure's default that reads the factory's parameter ties
@@ -1954,13 +1959,21 @@ async fn not_concrete_names_a_minted_cell_short() -> Result<()> {
         Err(msg) => msg,
         Ok(v) => panic!("must be refused: {v:?}"),
     };
-    // CR claude for claude: [test-gap/low] "'_46116" is the decimal prefix of
-    // ids::MINT_BASE. If MINT_BASE moves, a regression to full-width cell names passes
-    // this assertion. Count the digits after "'_" as an_open_cell_prints_short does,
-    // through one helper shared by both tests. Found by reading; not run.
-    // (tests-types-07)
-    assert!(msg.contains("must be fully known") && !msg.contains("'_46116"), "{msg}");
+    assert!(
+        msg.contains("the type '_")
+            && msg.contains("must be fully known")
+            && cells_print_short(&msg),
+        "{msg}"
+    );
     Ok(())
+}
+
+/// Every cell `msg` names prints by its short name, `'_` and at most nine
+/// digits, never the cell's full generated id.
+fn cells_print_short(msg: &str) -> bool {
+    msg.split("'_").skip(1).all(|named| {
+        (1..10).contains(&named.chars().take_while(char::is_ascii_digit).count())
+    })
 }
 
 // A signature's declared bounds print once, by name, joined by `+`.
@@ -2034,13 +2047,7 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
 
 // A variable a nested lambda's signature writes, which a definition around
 // it declares, is that definition's, unless the nested lambda declares it
-// itself (c-lambda-02).
-// CR claude for claude: [style/low] The comment above cites a finding id,
-// '(c-lambda-02)', which is history. So do '(http-sqlite-db1-08)' above
-// an_invariant_argument_decides_first, '(tests-types-04)' above
-// ordering_refuses_two_numeric_types, and '(u2)/(u5)/(s1)' in inference.rs's
-// rigid-alias comment. Delete the ids and keep the rule text; the ids belong in commit
-// messages. Found by reading; not run. (tests-types-08)
+// itself.
 run!(a_nested_signature_names_the_enclosing_variable, r#"{
   let mk = 'a: Number + Singleton |k: 'a| |x: 'a| x + k;
   let own = 'a: Number |k: 'a| 'a: Any |x: 'a| [x];
@@ -2056,8 +2063,7 @@ run!(
 
 // A variable an abstract type, a type application or a reference holds is
 // fixed exactly there, so that argument is checked first, whatever the
-// order the call writes: "aa" fits the Bx's [string, i64] written after it
-// (http-sqlite-db1-08).
+// order the call writes: "aa" fits the Bx's [string, i64] written after it.
 run!(an_invariant_argument_decides_first, r#"{
   type Bx<'a> = Abstract<Array<'a>>;
   let f = |k: 'a, b: Bx<'a>| -> i64 1;
@@ -2069,13 +2075,17 @@ run!(an_invariant_argument_decides_first, r#"{
 
 // Mixed sets compare by == like any union, numeric ones included: values
 // of two numeric types are never equal.
-// CR claude for claude: [test-gap/medium] No test feeds a NaN to a comparison. The
+// XCR claude for claude: [test-gap/medium] No test feeds a NaN to a comparison. The
 // JIT's NaN handling, the fcmp Unordered fix-ups in fusion/emit/scalar.rs, could be
 // replaced by a plain fcmp and every test would still pass, with the kernel and the
 // node-walk then disagreeing on NaN == NaN and NaN < -inf. Add a fixture here that runs
 // the six comparisons over (NaN, NaN), (NaN, -inf) and (-inf, NaN) in a `#[native]`
 // function body, plus sort and min over a NaN, and pin the exact results. probe:
 // design/review-2026-10-26/repro/tests-types-nan-order-unpinned.gx (tests-types-02)
+// 2026-10-26 claude: New fixture lang::types::nan_comparison_is_a_total_order: the six
+// comparisons in a #[native] body over (NaN, NaN), (NaN, -inf), (-inf, NaN), plus
+// array::sort, min and max over a NaN, pinned exactly. Replacing compile_cmp's float
+// fix-ups with plain fcmp fails its jit and jit_par modes (checked).
 const COMPARISON_MIXED: &str = r#"{
   let x: [i64, f64] = 3;
   let y: [i64, f64] = 2.5;
@@ -2099,9 +2109,33 @@ run!(comparison_mixed_numeric, COMPARISON_MIXED, |v: Result<&Value>| match v {
     _ => false,
 });
 
+// Float comparison is a total order in both engines: NaN equals NaN and
+// sorts below every number, -inf included.
+run!(
+    nan_comparison_is_a_total_order,
+    r#"{
+  let f = |a: f64, b: f64| #[native] [a == b, a != b, a < b, a <= b, a > b, a >= b];
+  let n = f64:0. / f64:0.;
+  let ninf = f64:-1. / f64:0.;
+  (
+    f(n, n),
+    f(n, ninf),
+    f(ninf, n),
+    array::sort([1.5, n, ninf, n, 0.0]),
+    min(1.5, n),
+    max(ninf, n)
+  )
+}"#,
+    prints(
+        "[[true, false, false, true, false, true], \
+      [false, true, true, true, false, false], \
+      [false, true, false, false, true, true], \
+      [f64:NaN, f64:NaN, f64:-inf, f64:0., f64:1.5], f64:NaN, f64:-inf]"
+    )
+);
+
 // The orderings and `Ordered` refuse a type holding two numeric types, as
-// arithmetic's `Singleton` does: they have no order between them
-// (tests-types-04).
+// arithmetic's `Singleton` does: they have no order between them.
 #[tokio::test(flavor = "current_thread")]
 async fn ordering_refuses_two_numeric_types() -> Result<()> {
     for src in [
@@ -2933,19 +2967,12 @@ run!(
 );
 
 /// A write of the binding's one type is fine.
-// CR claude for claude: [risk/low] This fixture orders its sample with two independent
-// timers (50 ms write, 200 ms sample). A runtime stalled 150 ms on a loaded test run
-// delivers both fires in one cycle and samples r at 41, so the test flakes. Derive the
-// second event from the first: end with `skip(#n: 1, r)` in place of the 200 ms timer;
-// that shows 42 whatever the timing. probe:
-// design/review-2026-10-26/repro/tests-types-two-timer-race.sh (tests-types-04)
 const WRITTEN_BINDING_TAKES_ITS_TYPE: &str = r#"
 {
     let f = |x| x;
     let t = sys::time::timer(duration:50.ms, false);
     f <- t ~ (|x: i64| x + 1);
-    let r = f(41);
-    sys::time::timer(duration:200.ms, false) ~ r
+    skip(#n: 1, f(41))
 }
 "#;
 
@@ -3613,9 +3640,9 @@ run!(an_open_cell_prints_short, r#"
 "#, |v: Result<&Value>| match v {
     Err(e) => {
         let msg = format!("{e:#}");
-        let held = msg.split("its type holds '_").nth(1).unwrap_or("");
-        let digits = held.chars().take_while(|c| c.is_ascii_digit()).count();
-        msg.contains("is not polymorphic in 'b") && (1..10).contains(&digits)
+        msg.contains("is not polymorphic in 'b")
+            && msg.contains("its type holds '_")
+            && cells_print_short(&msg)
     }
     Ok(_) => false,
 }; FuseExpect::None);
