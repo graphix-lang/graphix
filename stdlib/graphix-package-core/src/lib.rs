@@ -98,13 +98,13 @@ fn without_errors(t: &Type) -> Option<Type> {
     })
 }
 
-pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
-    cast_target(&resolved_typ?.rtype).filter(castable)
+pub fn extract_cast_type(env: &Env, resolved_typ: Option<&FnType>) -> Option<Type> {
+    cast_target(&resolved_typ?.rtype).filter(|t| castable(env, t))
 }
 
 /// Whether a read can cast to `t`: the checker's Concrete rule.
-pub fn castable(t: &Type) -> bool {
-    t.is_concrete()
+pub fn castable(env: &Env, t: &Type) -> bool {
+    t.is_concrete(env)
 }
 
 /// A type-directed builtin's target: the success type of its resolved
@@ -113,12 +113,12 @@ pub fn castable(t: &Type) -> bool {
 pub struct CastTarget(Option<Type>);
 
 impl CastTarget {
-    pub fn of(resolved: Option<&FnType>) -> Self {
-        Self(extract_cast_type(resolved))
+    pub fn of(env: &Env, resolved: Option<&FnType>) -> Self {
+        Self(extract_cast_type(env, resolved))
     }
 
-    pub fn refresh(&mut self, resolved: &FnType) {
-        self.0 = extract_cast_type(Some(resolved))
+    pub fn refresh(&mut self, env: &Env, resolved: &FnType) {
+        self.0 = extract_cast_type(env, Some(resolved))
     }
 
     /// Whether a part of the target reads a number exactly
@@ -268,7 +268,7 @@ impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        Self::new(&ctx.env, CastTarget::of(resolved))
+        Self::new(&ctx.env, CastTarget::of(&ctx.env, resolved))
     }
 
     fn typecheck1<R: Rt, E: UserEvent>(
@@ -277,7 +277,7 @@ impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.target.refresh(resolved);
+        self.target.refresh(&ctx.env, resolved);
         self.exact = self.target.holds_exact_number(&ctx.env);
         Ok(())
     }
@@ -2041,8 +2041,8 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 /// success type. Stored data carries no markers and no abstract value,
 /// so the read makes its tuples, structs, variants and lists and casts
 /// its abstract types.
-pub fn data_target(resolved: Option<&FnType>) -> Option<Type> {
-    extract_cast_type(resolved)
+pub fn data_target(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
+    extract_cast_type(env, resolved)
 }
 
 /// Stored data `v` read back as `t` ([`data_target`]); data it can't be is
@@ -2072,8 +2072,8 @@ impl std::fmt::Display for ErrorText<'_> {
     }
 }
 
-fn data_result<T: EvalCachedAsync>(resolved: Option<&FnType>) -> Option<Type> {
-    T::DATA_RESULT.then(|| data_target(resolved)).flatten()
+fn data_result<T: EvalCachedAsync>(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
+    T::DATA_RESULT.then(|| data_target(env, resolved)).flatten()
 }
 
 impl<T: EvalCachedAsync> CachedArgsAsync<T> {
@@ -2205,7 +2205,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         };
         let var = RtVar::new(ctx, top_id);
         let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
-        let data_result = data_result::<T>(resolved);
+        let data_result = data_result::<T>(&ctx.env, resolved);
         let t = CachedArgsAsync::<T> {
             var,
             cached: CachedVals::new(from),
@@ -2391,7 +2391,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.data_result = data_result::<T>(Some(resolved));
+        self.data_result = data_result::<T>(&ctx.env, Some(resolved));
         self.t.typecheck1(ctx, from, resolved)
     }
 

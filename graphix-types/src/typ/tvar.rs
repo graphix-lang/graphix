@@ -1889,48 +1889,8 @@ impl Type {
 
     /// Whether `self` is concrete now: no open cell, and `Concrete ⊇ self`
     /// holds. The type a run-time read may cast to.
-    pub fn is_concrete(&self) -> bool {
-        !self.has_unbound() && self.concrete_holds()
-    }
-
-    /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥, no
-    /// reference and no function anywhere (a value read from data can't
-    /// be one), bound
-    /// cells judged by their bindings, open cells admitted (a bind hands
-    /// them the conjunct).
-    // CR claude for claude: [bug/medium] concrete_holds has no Env, so a type reference
-    // is judged by its parameters alone: `type R = &i64` (or `fn(x: i64) -> i64`,
-    // `Array<&i64>`, `[i64, &i64]`) holds Concrete. `let r: Result<R,
-    // `ParseError(string)> = str::parse("42")` passes --check, and only the run-time
-    // cast refuses it ("a reference can't be read from data"); written out, the same
-    // target is refused by the check. data_holds already walks through definitions with
-    // Type::holds(env, ..). Build concrete_holds on that walk with ByRef, Fn and Bottom
-    // found (Type::is_concrete too), and delete concrete_holds_seen. In
-    // design/tvar_constraints.md, add functions to the Concrete bullet and say it is
-    // judged through type references. probe:
-    // design/review-2026-10-26/repro/t-tvar-concrete-through-typedef.gx (t-tvar-03)
-    pub(crate) fn concrete_holds(&self) -> bool {
-        self.concrete_holds_seen(&mut LPooled::take())
-    }
-
-    /// [`Self::concrete_holds`], each cell and shared node judged once:
-    /// met again, it answers what its first visit is answering.
-    fn concrete_holds_seen(&self, seen: &mut AHashSet<usize>) -> bool {
-        ensure_sufficient(|| match self {
-            Type::Bottom | Type::ByRef(..) => false,
-            Type::TVar(tv) => {
-                !seen.insert(tv.cell_addr())
-                    || tv.binding().is_none_or(|b| b.concrete_holds_seen(seen))
-            }
-            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => true,
-            // data holds no function, as it holds no reference
-            Type::Fn(_) => false,
-            t => {
-                let mut holds = true;
-                t.for_each_child(&mut |c| holds &= c.concrete_holds_seen(seen));
-                holds
-            }
-        })
+    pub fn is_concrete(&self, env: &Env) -> bool {
+        !self.has_unbound() && self.concrete_holds(env)
     }
 
     /// Hand `bound` to every open cell the type reaches, a function's

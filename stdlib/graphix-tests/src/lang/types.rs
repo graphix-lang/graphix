@@ -407,6 +407,29 @@ run!(
     FuseExpect::None
 );
 
+// `Concrete` is judged through a type's references: a typedef naming a
+// reference or a function is no read target, as the type written out is
+// not.
+run!(
+    concrete_refuses_a_reference_through_a_typedef,
+    r#"{ type R = &i64; let r: Result<R, `ParseError(string)> = str::parse("42"); r }"#,
+    refused("does not contain ['b: unbound within Concrete & NoError");
+    FuseExpect::None
+);
+run!(
+    concrete_refuses_a_function_through_a_typedef,
+    r#"{ type F = fn(x: i64) -> i64;
+         let r: Result<F, `ParseError(string)> = str::parse("42"); r }"#,
+    refused("does not contain ['b: unbound within Concrete & NoError");
+    FuseExpect::None
+);
+run!(
+    concrete_takes_data_through_a_typedef,
+    r#"{ type R = (i64, string); let r: Result<R, `ParseError(string)> = str::parse("(41, \"a\")");
+         r$.0 + 1 }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(42)))
+);
+
 // A type-directed builtin's target is `'b: Concrete`: refused where it
 // settles open, at the definition when the definition owns the cell (a
 // function never called included), at each call when the signature

@@ -330,7 +330,7 @@ macro_rules! db_event_accessor {
             const NAME: &str = $builtin_name;
 
             fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut CompileCtx<R, E>,
+                ctx: &'a mut CompileCtx<R, E>,
                 _typ: &'a FnType,
                 resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
@@ -341,7 +341,7 @@ macro_rules! db_event_accessor {
                     top_id,
                     cached: CachedVals::new(from),
                     bind_id: None,
-                    data: data_target(resolved),
+                    data: data_target(&ctx.env, resolved),
                     out: TagValue::phantom(),
                 }))
             }
@@ -375,11 +375,11 @@ macro_rules! db_event_accessor {
 
             fn typecheck1(
                 &mut self,
-                _ctx: &mut CompileCtx<R, E>,
+                ctx: &mut CompileCtx<R, E>,
                 _from: &mut [Node<R, E>],
                 resolved: &FnType,
             ) -> Result<()> {
-                self.data = data_target(Some(resolved));
+                self.data = data_target(&ctx.env, Some(resolved));
                 Ok(())
             }
 

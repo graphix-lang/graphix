@@ -6,6 +6,7 @@ use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
     UserEvent,
     effects::Effect,
+    env::Env,
     err, errf,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -268,7 +269,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
             slept: WakeBit::default(),
             cur: None,
             var,
-            target: CastTarget::of(resolved),
+            target: CastTarget::of(&ctx.env, resolved),
             out: TagValue::phantom(),
         }))
     }
@@ -389,11 +390,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.target.refresh(resolved);
+        self.target.refresh(&ctx.env, resolved);
         Ok(())
     }
 
@@ -437,7 +438,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         let _ = from;
         Ok(Box::new(RpcCall {
             var,
-            target: CastTarget::of(resolved),
+            target: CastTarget::of(&ctx.env, resolved),
             out: TagValue::phantom(),
         }))
     }
@@ -542,11 +543,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.target.refresh(resolved);
+        self.target.refresh(&ctx.env, resolved);
         Ok(())
     }
 
@@ -754,10 +755,10 @@ fn on_write_ftype(typ: &FnType) -> Option<TArc<FnType>> {
 
 /// What a write is cast to for the handler: its argument type, none where
 /// the check settled it to ⊥ (no argument of the call is a handler).
-fn write_type(resolved: Option<&FnType>) -> Option<Type> {
+fn write_type(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
     let ft = on_write_ftype(resolved?)?;
     let t = &ft.args.first()?.typ;
-    castable(t).then(|| t.clone())
+    castable(env, t).then(|| t.clone())
 }
 
 #[derive(Debug)]
@@ -807,7 +808,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                     top_id,
                     wid,
                     on_write,
-                    write_typ: write_type(resolved),
+                    write_typ: write_type(&ctx.env, resolved),
                     handler: false,
                     out: TagValue::phantom(),
                 }))
@@ -971,11 +972,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.write_typ = write_type(Some(resolved));
+        self.write_typ = write_type(&ctx.env, Some(resolved));
         Ok(())
     }
 

@@ -1373,7 +1373,7 @@ impl Type {
             return behind.contains_int(flags, env, hist, t);
         }
         match (self, t) {
-            (Self::Concrete, t) => Ok(t.concrete_holds() && !t.holds_uncastable(env)),
+            (Self::Concrete, t) => Ok(t.concrete_holds(env)),
             (_, Self::Concrete) => Ok(false),
             (Self::Data, t) => Ok(t.data_holds(env)),
             (_, Self::Data) => Ok(false),

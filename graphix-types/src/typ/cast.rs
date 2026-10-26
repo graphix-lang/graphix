@@ -521,8 +521,47 @@ impl Type {
     /// function and no abstract type [`Self::holds_uncastable`] refuses;
     /// open cells hold (a bind hands them the conjunct).
     pub(crate) fn data_holds(&self, env: &Env) -> bool {
-        !self.holds(env, &mut Verdicts::new(), &|t| match t {
+        !self.holds_beyond_data(env, false)
+    }
+
+    /// Whether `Concrete ⊇ self` holds as the type stands: [`Self::data_holds`]
+    /// and no ⊥ (a value read from data can't be any of them), judged
+    /// through type references; bound cells by their bindings, open cells
+    /// admitted.
+    // XCR claude for claude: [bug/medium] concrete_holds has no Env, so a type reference
+    // is judged by its parameters alone: `type R = &i64` (or `fn(x: i64) -> i64`,
+    // `Array<&i64>`, `[i64, &i64]`) holds Concrete. `let r: Result<R,
+    // `ParseError(string)> = str::parse("42")` passes --check, and only the run-time
+    // cast refuses it ("a reference can't be read from data"); written out, the same
+    // target is refused by the check. data_holds already walks through definitions with
+    // Type::holds(env, ..). Build concrete_holds on that walk with ByRef, Fn and Bottom
+    // found (Type::is_concrete too), and delete concrete_holds_seen. In
+    // design/tvar_constraints.md, add functions to the Concrete bullet and say it is
+    // judged through type references. probe:
+    // design/review-2026-10-26/repro/t-tvar-concrete-through-typedef.gx (t-tvar-03)
+    // 2026-10-26 claude: concrete_holds moved to typ/cast.rs beside data_holds and
+    // takes the Env: both are one Type::holds walk through type references
+    // (holds_beyond_data), Concrete adding ⊥; contains' Concrete arm is that alone (it
+    // covered holds_uncastable), concrete_holds_seen is gone, and
+    // Type::is_concrete(env) (graphix-package-core's castable, CastTarget, data_target,
+    // net's write_type, db's subscribe) is the same rule. design/tvar_constraints.md's
+    // Concrete bullet names functions and the look-through. The repro and the fn and
+    // Array<&i64> typedefs are refused at the check. Pins:
+    // lang::types::concrete_refuses_a_reference_through_a_typedef,
+    // concrete_refuses_a_function_through_a_typedef,
+    // concrete_takes_data_through_a_typedef. Note: `[i64, &i64]` as a parse target is
+    // accepted written out or through a typedef alike (the call's Result narrowing
+    // gives 'b i64), so it is not this gap.
+    pub(crate) fn concrete_holds(&self, env: &Env) -> bool {
+        !self.holds_beyond_data(env, true)
+    }
+
+    /// Whether some part of this type is no data: a reference, a function,
+    /// an abstract type with no cast, or, with `bottom`, ⊥.
+    fn holds_beyond_data(&self, env: &Env, bottom: bool) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
             Type::ByRef(..) | Type::Fn(_) => Some(true),
+            Type::Bottom => bottom.then_some(true),
             Type::Abstract { id, .. } if !env.casts(*id) => Some(true),
             _ => None,
         })
