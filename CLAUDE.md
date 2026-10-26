@@ -539,7 +539,11 @@ node graph IS the IR — there is no parallel typed IR
   `Qop` uses), except a handler-ful `?` reachable under a select arm,
   callee bodies included: its raise may be owed to a fire the arm
   missed asleep or to a constant at its first entry, and a kernel remembers
-  neither, so it node-walks (`lowering::arm_raise_blocker`); only a
+  neither, so it node-walks (`lowering::arm_raise_blocker`), as does a
+  guard whose handler-ful raise or performing call does not fire with
+  its arm's binds (`lowering::unfollowed_guard`): a kernel runs every
+  guard, those binds bottom where unreached, and the node-walk only
+  those the chain reaches; only a
   `never(..)` arm is a
   standing bottom (its args are still emitted and consumed), any other
   bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
@@ -590,9 +594,10 @@ node graph IS the IR — there is no parallel typed IR
   still routes the taken arm's own fires. **Consulted-guard rule**: arms
   are consulted top-down, structure then guard; a consulted guard whose
   channel is bottom makes the selection undecidable; a never-produced
-  guard is unknown, not false; a guard ticks every cycle but sees the
-  scrutinee's value only where the chain reaches its arm (never one an
-  earlier arm claimed). `&&`/`||` are strict (`false && ⊥ = ⊥`).
+  guard is unknown, not false; a guard runs only where the chain reaches
+  its arm (never on a value an earlier arm claimed, or one its arm's
+  structure refuses): any other sleeps, as an unselected arm does, and
+  wakes caught up when the chain next reaches it. `&&`/`||` are strict (`false && ⊥ = ⊥`).
 - **Sleep is pause, not reset; a wake is a resume, never a rebirth.**
   The views (`View`): `Birth` (standing values read as delivered,
   constants fire), `Wake` (a resume: standing values read stale,

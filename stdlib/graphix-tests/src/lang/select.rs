@@ -3965,21 +3965,10 @@ run!(
     "#
 ; FuseExpect::None);
 
-// A guard sees the scrutinee's value only where the chain reaches its
-// arm: an earlier arm that claims the value keeps it from every guard
-// below, so `check(-1)?` never runs and never raises.
-// CR claude for claude: [risk/low] This pin holds only for the bind spelling. With the
-// guard written over the scrutinee variable, `_ if check(x)?`, the guard still ticks
-// every cycle, so check(-1)? runs on every -1 that arm 0 claimed and raises to the
-// catch: caught ends at 3 instead of 0, on both engines. The two spellings mean the
-// same thing to a reader but differ here. Rule whether a guard below a claiming arm may
-// raise in that cycle; then either change the guard's evaluation or narrow this comment
-// and pin the variable spelling too. probe:
-// design/review-2026-10-19/repro/tests-select-guard-reads-claimed-scrutinee.gx
-// (tests-select-05)
-// 2026-10-24 claude: Eric ruled (2026-10-24): sleep it: a guard the chain does not
-// reach this cycle does not run; it sleeps like an unselected arm and wakes with
-// catch-up when next consulted.
+// A guard runs only where the chain reaches its arm: an earlier arm that
+// claims the value keeps every guard below from running, so `check(-1)?`
+// never runs and never raises, whether the guard reads the arm's bind or
+// the scrutinee's variable.
 run!(guard_below_the_claim_never_sees_the_value, r#"{
   let step = 0;
   step <- select step { n if n < 6 => n + 1, _ => never() };
@@ -4010,16 +3999,32 @@ run!(guard_below_the_claim_never_divides_by_it, r#"{
     matches!(v, Ok(v) if v.to_string() == r#"["zero", i64:0]"#)
 }; FuseExpect::Jit);
 
-// A guard below the claim still ticks on its other inputs: `count` sees
-// every fire of `t` while its arm is not reached.
-run!(guard_below_the_claim_still_ticks, r#"{
+run!(guard_below_the_claim_never_reads_the_variable, r#"{
+  let step = 0;
+  step <- select step { n if n < 6 => n + 1, _ => never() };
+  let x = step % 3 - 1;
+  let caught = 0;
+  let check = |n: i64| select n { k if k < 0 => error(`Neg(k)), k => k > 0 };
+  let r = {
+    catch(e) caught <- e ~ caught + 1;
+    select x { -1 => "neg", _ if check(x)? => "pos", _ => "zero" }
+  };
+  select step { 6 => (r, caught), _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["neg", i64:0]"#)
+}; FuseExpect::Jit);
+
+// A guard below the claim sleeps, as an unselected arm does: `count` sees
+// none of `t`'s fires while its arm is not reached, and the one caught up
+// when the chain first reaches it.
+run!(guard_below_the_claim_sleeps, r#"{
   let t = 0;
   t <- select t { n if n < 4 => n + 1, _ => never() };
   let x = select t { 4 => 2, _ => 1 };
-  let r = select x { 1 => "one", n if count(t) > 3 => "counted [n]", _ => "other" };
+  let r = select x { 1 => "one", n if count(t) == 1 => "counted once [n]", _ => "other" };
   select t { 4 => r, _ => never() }
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "counted 2")
+    matches!(v, Ok(Value::String(s)) if &**s == "counted once 2")
 }; FuseExpect::Jit);
 
 // The kernel's guard prologue reaches an impure guard past an unguarded

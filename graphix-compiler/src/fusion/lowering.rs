@@ -187,7 +187,7 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
     match failure
-        .or_else(|| arm_raise_blocker(node, &selects))
+        .or_else(|| arm_raise_blocker(node, &selects, ctx))
         .or_else(|| arm_io_blocker(&selects, ctx))
     {
         Some(failure) => Err(failure),
@@ -201,11 +201,13 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// (design/wake_catchup.md), and a constant fires at the arm's first
 /// entry only, a wake being a resume. A kernel derives its selection
 /// fresh every run and remembers neither,
-/// so the raise node-walks. `selects` are the region's selects in
-/// pre-order; one nested in another's arm is covered by the outer walk.
+/// so the raise node-walks, as does a guard [`unfollowed_guard`] finds.
+/// `selects` are the region's selects in pre-order; one nested in
+/// another's arm is covered by the outer walk.
 fn arm_raise_blocker<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     selects: &[&Node<R, E>],
+    ctx: &CompileCtx<R, E>,
 ) -> Option<FusionBlocker> {
     // CR claude for eric: [bug/medium] Only handler-ful raises count here and in
     // `claims_no_site_memory`. A handler-less `?` or a `$` over a constant error also
@@ -244,6 +246,20 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
     // idiom this hits. Back to eric: accept that cost, or keep fusion and let a
     // kernel's report be owed only on a fired operand (CLAUDE.md then says a constant
     // swallow in a fused arm may go unreported).
+    for s in selects {
+        if let NodeView::Select(sel) = s.view()
+            && let Some(g) =
+                sel.arms.iter().find_map(|(pat, _)| unfollowed_guard(pat, ctx))
+        {
+            return Some(FusionBlocker {
+                spec: g.spec().clone(),
+                reason: "a guard that may raise or perform on what its arm's binds do \
+                         not carry — a kernel runs every guard, the node-walk only those \
+                         the chain reaches"
+                    .into(),
+            });
+        }
+    }
     let mut any = false;
     if !selects.is_empty() {
         fusion::for_each_reachable_node(root, &mut |n| {
@@ -322,6 +338,29 @@ fn arm_io_blocker<R: Rt, E: UserEvent>(
         }
     }
     None
+}
+
+/// A guard whose run a program could see where its arm is not reached: a
+/// kernel runs every guard, its arm's binds read as bottom there, where
+/// the node-walk runs only those the chain reaches. So a raise to a handler
+/// whose operand, or a performing call whose trigger, does not fire with
+/// those binds (and is not bottom with them) makes the guard node-walk.
+fn unfollowed_guard<'a, R: Rt, E: UserEvent>(
+    pat: &'a crate::node::pattern::PatternNode<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> Option<&'a Node<R, E>> {
+    let g = &pat.guard.as_ref()?.node;
+    let mut binds: LPooled<IntSet<BindId>> = LPooled::take();
+    pat.structure_predicate.ids(&mut |id| {
+        binds.insert(id);
+    });
+    let mut raises = false;
+    fusion::for_each_reachable_node(g, &mut |n| {
+        raises |= matches!(n.view(), NodeView::Qop(q)
+            if q.handler().is_some() && !crate::analysis::fires_with(&q.n, &binds));
+    });
+    let performs = !crate::analysis::io_follows(g, &binds, ctx, &mut IntSet::default());
+    (raises || performs).then_some(g)
 }
 
 /// Whether `n` makes a performing call.

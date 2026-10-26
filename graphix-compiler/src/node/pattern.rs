@@ -1765,13 +1765,20 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    /// Tick the guard (it must see every cycle) and return its
+    /// Update the guard, which the chain reaches, and return its
     /// production tag (`None` = no guard). The caller reads channel
     /// bottomness off `guard.tag`.
     pub(super) fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Option<Tag> {
         match &mut self.guard {
             None => None,
             Some(g) => Some(g.update(ctx)),
+        }
+    }
+
+    /// The chain no longer reaches the guard: it sleeps.
+    pub(super) fn sleep_guard(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Some(g) = &mut self.guard {
+            g.sleep(ctx)
         }
     }
 

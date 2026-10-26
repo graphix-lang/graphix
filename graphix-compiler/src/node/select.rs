@@ -82,6 +82,18 @@ struct LazyArmFacts {
     /// Per arm: a scrutinee fire the chain passed its guard by; the guard
     /// is given the value fired when the chain next reaches it.
     missed: Vec<bool>,
+    /// A select with guards: the ones the chain does not reach sleep.
+    guards: Option<Box<GuardSleep>>,
+}
+
+/// A guard the chain does not reach sleeps, and wakes caught up when it
+/// next does.
+#[derive(Debug)]
+struct GuardSleep {
+    /// The guards' inputs' fires, one slot per arm.
+    fires: TrackedFires,
+    /// Per arm: its guard sleeps, unreached.
+    asleep: Vec<bool>,
 }
 
 impl LazyArmFacts {
@@ -111,6 +123,15 @@ impl LazyArmFacts {
                 .map(|(i, _)| i)
                 .collect(),
             missed: vec![false; arms.len()],
+            guards: arms.iter().any(|(pat, _)| pat.guard.is_some()).then(|| {
+                let fires =
+                    TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
+                        if let Some(g) = &arms[i].0.guard {
+                            g.node.refs(r)
+                        }
+                    });
+                Box::new(GuardSleep { fires, asleep: vec![false; arms.len()] })
+            }),
         }
     }
 }
@@ -1371,6 +1392,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             logged_no_match,
             guarded,
             missed,
+            guards,
         } = arm_facts.as_mut().expect("arm facts built above");
         let woke = slept.take();
         // The guarded arms' production tags. Only guards the chain
@@ -1378,11 +1400,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let mut guard_tags: SmallVec<[(usize, Tag); 4]> = SmallVec::new();
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
-        // Guards are live nodes and tick every cycle, even under a
-        // tainted scrutinee. The bind is delivered only to an arm the
-        // chain reaches whose shape admits the value: the checker narrowed
-        // the binds by that shape, and no guard sees the value an earlier
-        // arm claimed (`open` is the chain still running at arm `i`).
+        if let Some(g) = guards {
+            g.fires.observe(ctx);
+        }
+        // A guard runs where the chain reaches it, an arm whose shape
+        // admits the value with no earlier arm claiming it (`open` is the
+        // chain still running at arm `i`): the checker narrowed the binds
+        // by that shape. Any other guard sleeps, as an unselected arm
+        // does, and wakes caught up when the chain next reaches it.
         // An arm's shape test, which the chain below reuses.
         let guards_end = guarded.last().map_or(0, |l| l + 1);
         let mut shaped: SmallVec<[Option<bool>; 16]> = smallvec![None; guards_end];
@@ -1404,14 +1429,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 Some(_) => missed[i] = false,
                 None => missed[i] |= arg_prod.triggers(),
             }
-            let saved = reach.map(|v| pat.bind_tentative(ctx, v, tag));
-            if let Some(t) = pat.update(ctx) {
+            let GuardSleep { fires, asleep } =
+                &mut **guards.as_mut().expect("a guarded arm builds the guard sleep");
+            let Some(v) = reach else {
+                if !std::mem::replace(&mut asleep[i], true) {
+                    pat.sleep_guard(ctx);
+                }
+                continue;
+            };
+            let saved = pat.bind_tentative(ctx, v, tag);
+            let caught_up = fires.deliver(ctx, i);
+            let t = match std::mem::replace(&mut asleep[i], false) {
+                true => ctx.under(View::Wake, |ctx| pat.update(ctx)),
+                false => pat.update(ctx),
+            };
+            TrackedFires::restore(ctx.event, caught_up);
+            if let Some(t) = t {
                 guard_tags.push((i, t));
             }
-            if let Some(saved) = saved {
-                pat.retract(ctx, saved);
-                open &= matches!(pat.arm_match(true), ArmMatch::GuardFalse);
-            }
+            pat.retract(ctx, saved);
+            open &= matches!(pat.arm_match(true), ArmMatch::GuardFalse);
         }
         // Any guard fire drives a re-match; whether it affects the
         // emission is decided by the consulted set below.

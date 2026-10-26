@@ -101,13 +101,17 @@ expects arm 1's match to make arm 2's guard irrelevant. "If the
 programmer has guards, and they bottom, it makes the select undecidable
 when it happens — we have to bottom."
 
-- A guard sees the scrutinee's value only where the chain reaches its
-  arm: below the take or stop point, and on a structure-failed arm, its
-  binds are not delivered (node-walk) or read as bottom (the kernel
-  prologue's `open` mask), so `n if check(n)?` under a `-1 =>` arm never
-  runs `check(-1)`. Pins: `lang::select::guard_below_the_claim_*`,
+- A guard runs only where the chain reaches its arm: below the take or
+  stop point, and on a structure-failed arm, it sleeps in the node-walk,
+  as an unselected arm does, and wakes caught up (`LazyArmFacts::
+  guard_fires`) when the chain next reaches it; the kernel prologue reads
+  its binds as bottom (the `open` mask), so a guard whose raise to a
+  handler or performing call does not fire with those binds node-walks
+  (`lowering::unfollowed_guard`). So
+  `n if check(n)?` and `_ if check(x)?` under a `-1 =>` arm never run
+  `check(-1)`. Pins: `lang::select::guard_below_the_claim_*`,
   `native_guard_prologue_follows_the_chain`.
-- "Consumed" is chain-scoped. Guards tick every cycle (evaluation), but
+- "Consumed" is chain-scoped. Guards the chain reaches run, but
   only CONSULTED productions are consumed on both planes. The
   interpreter's `arm_match` returns `ArmMatch::{NoStruct, GuardFalse,
   GuardBottom, Matched}`; `Select::consulted` stores the consulted mask
