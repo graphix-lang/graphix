@@ -1068,17 +1068,33 @@ impl Type {
                  it: implement Cast for it where it is defined"
             ));
         }
-        // CR claude for claude: [bug/low] A rank-2 formal whose quantifier
-        // is bounded Data, |#h: fn<'a: Data>(v: 'a) -> i64|, refuses a
-        // monomorphic handler |v: (i64, string)| v.0 with "fn(v: (i64,
-        // string)) -> i64 is not data: a writer writes no function and no
-        // reference": bounded finds the Data cell inside the function type
-        // and code then judges the whole function. The refusal is right (the
-        // handler is not generic), the reason is wrong; with fn<'a:
-        // Concrete> the same call says "does not contain". Judge only the
-        // part of the type at the Data cell's position. (typ-data-rank2-01)
+        // a function type's own Data quantifier (a rank-2 formal's
+        // fn<'a: Data>) judges what that function is called with, not the
+        // function: only another Data cell makes the type data
+        fn data_cell(t: &Type, own: &mut SmallVec<[arcstr::ArcStr; 2]>) -> bool {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => data_cell(&b, own),
+                    None => tv.requires_data() && !own.contains(&tv.name),
+                },
+                Type::Fn(ft) => {
+                    let n = own.len();
+                    own.extend(ft.quantifiers.iter().cloned());
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found |= data_cell(c, own));
+                    own.truncate(n);
+                    found
+                }
+                t => {
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found |= data_cell(c, own));
+                    found
+                }
+            })
+        }
+        let data = |t: &Type| data_cell(t, &mut SmallVec::new());
         let code = |t: &Type| t.holds_fn(env) || t.holds_ref(env);
-        if either(&|tv| tv.requires_data()) && (code(self) || code(t)) {
+        if (data(self) || data(t)) && (code(self) || code(t)) {
             let t = if code(t) { t } else { self };
             return Some(anyhow::anyhow!(
                 "{}",

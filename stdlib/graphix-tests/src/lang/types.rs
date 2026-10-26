@@ -3739,3 +3739,16 @@ run!(
     prints("i64:1");
     FuseExpect::None
 );
+
+// A rank-2 formal bounded Data takes only a generic handler; a
+// monomorphic one is refused as no instance of it, not as a function
+// that is not data.
+run!(
+    rank2_data_formal_refuses_a_monomorphic_handler,
+    r#"{
+  let f = |#h: fn<'a: Data>(v: 'a) -> i64, x: i64| x;
+  f(#h: |v: (i64, string)| v.0, 1)
+}"#,
+    refused("does not contain");
+    FuseExpect::None
+);
