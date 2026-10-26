@@ -385,3 +385,21 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "fallback")
 );
+
+// A try whose value is written to a variable writes the variable the
+// statement names, though a body binds its name: the try body's `let x`
+// and the with body's error `e` take nothing.
+run!(
+    connected_try_writes_past_a_shadowing_name,
+    r#"{
+  let t = 1;
+  let x = 0;
+  let e = 0;
+  seq t {
+    x <- try { let x = 1; x + 4 } with(e) { 0 };
+    e <- try { error(`Boom)?; 5 } with(e) { 7 };
+    x * 10 + e
+  }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(57)))
+);

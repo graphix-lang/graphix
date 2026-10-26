@@ -77,6 +77,39 @@ async fn a_callee_born_with_a_constant_answers_it(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A write through a reference goes where the reference pointed at the
+// writing step's entry, a statement's and a try's alike: both land in `a`
+// though `target` moves to `b` before their values fire.
+async fn a_write_through_a_reference_reads_it_at_entry(mode: Mode) -> Result<()> {
+    let body = "let a = 0; let b = 0; \
+                let target = select step { n if n < 4 => &mut a, _ => &mut b }; \
+                let t = select step { 1 => 1, _ => never() }; \
+                seq t { *target <- live(select step { 5 => 42, _ => never() }); 1 }; \
+                seq t { \
+                  *target <- try { live(select step { 6 => 43, _ => never() }) } \
+                  with(e) { 0 }; \
+                  1 \
+                }; \
+                select step { 9 => a * 100 + b, _ => never() }";
+    assert_eq!(values(body, mode).await?, [4300]);
+    Ok(())
+}
+
+// A seqq capture that a callee writes is read at the step's entry, as the
+// same write spelled in the seq is: the step stalls on the entry value.
+async fn a_capture_a_callee_writes_is_read_at_entry(mode: Mode) -> Result<()> {
+    for write in ["put(1)", "x <- 1"] {
+        let body = format!(
+            "let x = 0; x <- select step {{ 6 => 10, _ => never() }}; \
+             let put = |v| {{ x <- v; v }}; \
+             let t = select step {{ 1 => 1, _ => never() }}; \
+             seqq t {{ {write}; select x > 2 {{ true => x, false => never() }} }}"
+        );
+        assert_eq!(values(&body, mode).await?, [0i64; 0], "{write}");
+    }
+    Ok(())
+}
+
 // An until that reads only the snapshot and calls nothing cannot change
 // after its entry, and the check warns of it; one with a live part is
 // quiet.
@@ -115,3 +148,5 @@ modes!(a_run_reads_its_own_writes);
 modes!(a_callee_reads_live);
 modes!(a_callee_born_with_a_constant_answers_it);
 modes!(a_fixed_until_warns);
+modes!(a_write_through_a_reference_reads_it_at_entry);
+modes!(a_capture_a_callee_writes_is_read_at_entry);

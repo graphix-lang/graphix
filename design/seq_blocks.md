@@ -402,7 +402,9 @@ sample held until the next entry, and one absent then is taken at its
 first arrival, as the issue atom waits for a missing argument. So the
 step fires at entry with the standing value and is not followed after;
 the variables under a `live(e)` are read directly, which keeps
-`any(pc ~! e, e)`'s tracking for them alone.
+`any(pc ~! e, e)`'s tracking for them alone. A reference a step writes
+through (`*r <- v`, a try body's or a join's write included) is read
+the same way, at the writing step's entry.
 A compound `e` is bound once so its nodes are not duplicated (a `?`
 inside it must raise once). A call-free `?` is therefore sampled on
 the entry event too, so a carried error raises at every entry rather
@@ -534,7 +536,11 @@ steps and with-body steps are ordinary steps of the one machine, each
 body in a lexical scope of its own. When the try's value is used, both
 bodies end by writing a join cell, and a join step after them reads it
 and writes the statement's own target; the join reads what both
-bodies' last steps wrote, so it enters the next cycle. Each try-body
+bodies' last steps wrote, so it enters the next cycle. A try whose
+value only writes variables has each body's last step write them, at
+their own types, unless a body binds a target's name where that step
+sees it (a `let` of either body or of a try nested in one, or the with
+body's `e`): then the join cell, written in the try statement's scope. Each try-body
 step carries a generated `Catch` whose handler body is `never()` and
 whose `seq_abort` action is a JUMP (`pc <- \`W` to the with body's
 first step instead of the machine's `pc <- \`Idle`); its `seq_capture`
@@ -645,7 +651,8 @@ body writes stay LIVE (read-modify-write
 state must see its own writes across requests): a direct write target
 is never redirected into a snapshot, and a capture the body writes
 through a function it calls is a `SeqCapture` the analysis sets live
-from the steps' summaries (`dependency_summaries.md` §4); a
+from the steps' summaries (`dependency_summaries.md` §4), which a step
+still reads through its entry snapshot, as `seq` reads a variable; a
 dereferenced write uses the queued reference handle and makes no
 capture live. A reference's target is a value no analysis knows in
 general, so a body that writes `*r` and reads the target by name reads

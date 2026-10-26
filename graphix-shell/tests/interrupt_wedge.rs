@@ -5,6 +5,7 @@
 //! SIGTERM, which asks the process to end) still exits the shell.
 #![cfg(unix)]
 
+use parking_lot::Mutex;
 use std::{
     fs,
     process::{Child, Command, ExitStatus, Stdio},
@@ -22,6 +23,21 @@ const LATER_CYCLE_WEDGE: &str = "{ let x = i64:0; \
      x <- sys::time::timer(duration:1.s, false) ~ i64:1; \
      let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n + i64:1) }; \
      f(x) }";
+
+/// The node-walk's wedges keep an activation per call, so they grow about
+/// 0.5 GB/s: one that has grown past this is wedged, and is signalled
+/// then rather than at its deadline.
+const GROWN: u64 = 512 << 20;
+
+/// The node-walk wedges run one at a time, so their growth never adds up.
+static NODE_WALK: Mutex<()> = Mutex::new(());
+
+/// The resident size of `child`, where the host reports it.
+fn rss(child: &Child) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{}/status", child.id())).ok()?;
+    let kb = status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?;
+    Some(kb.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()? << 10)
+}
 
 fn signal(child: &Child, sig: libc::c_int) {
     unsafe { libc::kill(child.id() as libc::pid_t, sig) };
@@ -55,10 +71,11 @@ fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
         .expect("spawn graphix")
 }
 
-/// Run `program` until `wedged_after`, check it is alive and printing
-/// nothing more, then send `sig` and require it to exit: twice for
-/// SIGINT (cancel, then exit, as a user would), once for SIGTERM.
-// CR claude for claude: [risk/medium] Under --no-fusion these wedges are not a spin:
+/// Run `program` until `wedged_after`, or until it has grown past
+/// [`GROWN`], check it is alive and printing nothing more, then send `sig`
+/// and require it to exit: twice for SIGINT (cancel, then exit, as a user
+/// would), once for SIGTERM.
+// XCR claude for claude: [risk/medium] Under --no-fusion these wedges are not a spin:
 // each call is a retained activation (x-fix-nodes-03), so the debug binary grows about
 // 0.5 GB/s. FIRST_CYCLE_WEDGE is at 2.7 GB when the 6 s wedged_after ends, and the JIT
 // twin stays at 72 MB. The four node-walk tests here run concurrently under cargo test,
@@ -67,6 +84,12 @@ fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
 // parking_lot::Mutex (or cap the child with RLIMIT_AS). probe:
 // design/review-2026-10-26/repro/tests-shell-compiler-interp-wedge-memory.py
 // (tests-shell-compiler-03)
+// 2026-10-26 claude: signal_frees_process signals a wedge once its RSS passes GROWN
+// (512 MB, read from /proc where the host has it) or at its deadline, whichever comes
+// first, and the node-walk runs hold a static parking_lot Mutex (NODE_WALK), so one
+// interp wedge is alive at a time: about 0.5-1 GB peak where the file reached ~10 GB.
+// Pin: the assertion that the child is under 2*GROWN when signalled (with the early
+// signal undone, first-cycle/interp reached 2115 MB and failed).
 fn signal_frees_process(
     program: &str,
     no_fusion: bool,
@@ -74,6 +97,7 @@ fn signal_frees_process(
     wedged_after: Duration,
     sig: libc::c_int,
 ) {
+    let _serial = no_fusion.then(|| NODE_WALK.lock());
     let dir =
         std::env::temp_dir().join(format!("gx-wedge-{}-{}", std::process::id(), label));
     fs::create_dir_all(&dir).expect("tempdir");
@@ -90,8 +114,11 @@ fn signal_frees_process(
             thread::sleep(Duration::from_millis(100));
         }
     }
+    let deadline = Instant::now() + wedged_after;
+    while Instant::now() < deadline && !rss(&child).is_some_and(|r| r >= GROWN) {
+        thread::sleep(Duration::from_millis(100));
+    }
     // If it has already exited it is not wedging and the test proves nothing.
-    thread::sleep(wedged_after);
     let alive = child.try_wait().expect("try_wait").is_none();
     assert!(
         alive,
@@ -104,6 +131,9 @@ fn signal_frees_process(
         printed,
         "{label}: the program is still printing, so it is not wedged"
     );
+    if let Some(r) = rss(&child) {
+        assert!(r < 2 * GROWN, "{label}: grew to {} MB before the signal", r >> 20);
+    }
     signal(&child, sig);
     if sig == libc::SIGINT {
         thread::sleep(Duration::from_millis(750));
