@@ -437,33 +437,6 @@ fn once(
     r
 }
 
-// XCR claude for claude: [bug/high] lower never claims a generic cell, on the assumption
-// that every generic cell is a scheme's. Cells born generic as scratch also become live
-// bindings' types: a let annotation's free variables (`let r: ['a, null] = null`,
-// `never<['a, null]>()`), whose cells node::lambda::body_annotation only aliases, and a
-// let pattern's predicate over a ⊥ initializer (`let (a, b) = never()`, node::bind). A
-// function that writes such a binding (`let f = |x| { r <- x; x }`) merges x's cell
-// with that generic cell and is generalized over it. So `(f(1), f("a"))` passes
-// --check, and the build either refuses it with the internal "an instance at .. of a
-// definition typed .." error (graphix-fuzz: DIVERGENCE) or runs it with r holding an
-// i64 and then a string. Fix: claim those cells for current_level() where they become a
-// binding's type (body_annotation, the ⊥-initializer predicate). Also let merge_into
-// give the merged cell the shallower level of the two (TVar::claim, which takes generic
-// cells), so a live cell never ends up generic. probe:
-// design/review-2026-10-26/repro/t-tvar-annotation-var-generic.gx (t-tvar-01)
-// 2026-10-26 claude: Bind::compile claims the type of each name its block writes (a <-
-// target or &mut referent, the ids it hands mark_connect_target) for the binding's
-// level with Type::claim_free, which claims every cell the type reaches through
-// bindings, generic ones included, except a nested fn type's own quantifiers. An
-// annotation's variables, never<T>'s and a ⊥ initializer's pattern cells are then the
-// binding's, so a definition writing it shares them and is not generalized over them;
-// an unwritten annotated lambda stays generic. The repro and its four variants are
-// refused at the check. Not done: the merge_into backstop (a merge keeping the
-// shallower level through claim): no case is known to reach it after this change, and
-// it would reach every scheme merge. Pins: lang::types::written_annotation_variable_is_monomorphic,
-// written_never_annotation_is_monomorphic, written_bottom_pattern_is_monomorphic,
-// written_body_annotation_variable_is_monomorphic,
-// unwritten_annotated_lambda_stays_generic.
 /// The pairs of distinct open cells at one place in `a` and `b`, which
 /// are equal ([`Type`]'s `PartialEq`, under which open cells are), into
 /// `out`; false where a pair holds a rigid cell, which never merges.
@@ -493,6 +466,33 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
     })
 }
 
+// XCR claude for claude: [bug/high] lower never claims a generic cell, on the assumption
+// that every generic cell is a scheme's. Cells born generic as scratch also become live
+// bindings' types: a let annotation's free variables (`let r: ['a, null] = null`,
+// `never<['a, null]>()`), whose cells node::lambda::body_annotation only aliases, and a
+// let pattern's predicate over a ⊥ initializer (`let (a, b) = never()`, node::bind). A
+// function that writes such a binding (`let f = |x| { r <- x; x }`) merges x's cell
+// with that generic cell and is generalized over it. So `(f(1), f("a"))` passes
+// --check, and the build either refuses it with the internal "an instance at .. of a
+// definition typed .." error (graphix-fuzz: DIVERGENCE) or runs it with r holding an
+// i64 and then a string. Fix: claim those cells for current_level() where they become a
+// binding's type (body_annotation, the ⊥-initializer predicate). Also let merge_into
+// give the merged cell the shallower level of the two (TVar::claim, which takes generic
+// cells), so a live cell never ends up generic. probe:
+// design/review-2026-10-26/repro/t-tvar-annotation-var-generic.gx (t-tvar-01)
+// 2026-10-26 claude: Bind::compile claims the type of each name its block writes (a <-
+// target or &mut referent, the ids it hands mark_connect_target) for the binding's
+// level with Type::claim_free, which claims every cell the type reaches through
+// bindings, generic ones included, except a nested fn type's own quantifiers. An
+// annotation's variables, never<T>'s and a ⊥ initializer's pattern cells are then the
+// binding's, so a definition writing it shares them and is not generalized over them;
+// an unwritten annotated lambda stays generic. The repro and its four variants are
+// refused at the check. Not done: the merge_into backstop (a merge keeping the
+// shallower level through claim): no case is known to reach it after this change, and
+// it would reach every scheme merge. Pins: lang::types::written_annotation_variable_is_monomorphic,
+// written_never_annotation_is_monomorphic, written_bottom_pattern_is_monomorphic,
+// written_body_annotation_variable_is_monomorphic,
+// unwritten_annotated_lambda_stays_generic.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A generic cell stays generic (a scheme bound into a cell is still a
