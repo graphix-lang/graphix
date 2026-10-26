@@ -1704,17 +1704,13 @@ fn site_memory<R: Rt, E: UserEvent>(
             .is_some_and(|sb| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb))
     };
     let mut tail_calls: LPooled<IntSet<ExprId>> = LPooled::take();
-    fusion::for_each_tail_leaf(
-        body,
-        &mut |n| match n.view() {
-            NodeView::CallSite(cs) if is_self(cs) => {
-                tail_calls.insert(n.spec().id);
-                true
-            }
-            _ => false,
-        },
-        &mut |_| (),
-    );
+    fusion::for_each_tail_leaf(body, &mut |n| match n.view() {
+        NodeView::CallSite(cs) if is_self(cs) => {
+            tail_calls.insert(n.spec().id);
+            true
+        }
+        _ => false,
+    });
     let mut held = None;
     fusion::for_each_emitted_node(body, &mut |n| {
         if held.is_some() {
@@ -1759,16 +1755,12 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     self_bind: BindId,
 ) -> bool {
-    fusion::for_each_tail_leaf(
-        node,
-        &mut |n| match n.view() {
-            NodeView::CallSite(cs) => {
-                matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind)
-            }
-            _ => false,
-        },
-        &mut |_| (),
-    )
+    fusion::for_each_tail_leaf(node, &mut |n| match n.view() {
+        NodeView::CallSite(cs) => {
+            matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind)
+        }
+        _ => false,
+    })
 }
 
 /// Does every self-call the body emits feed each positional formal a

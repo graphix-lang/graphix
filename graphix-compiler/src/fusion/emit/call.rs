@@ -441,10 +441,6 @@ fn emit_site_block(
             };
             let base = cx.site_ptr();
             let word = cx.b.ins().iadd_imm_s(base, off as i64);
-            // Our own block can be null; the helper maps null to null.
-            let live = cx.b.ins().icmp_imm_s(IntCC::NotEqual, base, 0);
-            let zero = cx.b.ins().iconst(types::I64, 0);
-            let word = cx.b.ins().select(live, word, zero);
             // The size is read at run time from `site_block_words`: our own
             // layout is not final while we are still emitting into it.
             if !std::ptr::eq(&*info.kernel, cx.ctx.kernel) {
@@ -500,27 +496,15 @@ fn claim_callee_block(
     };
     let i = cx.b.use_var(idx);
     let off = cx.b.ins().imul_imm_s(i, (layout.words as i64) * 8);
-    let addr = cx.b.ins().iadd(table, off);
-    // a null table is a body with no memory, whose callees have none
-    // CR claude for claude: [dead/low] This null guard is dead. Every slot-table helper
-    // returns a Vec's pointer, never null. The self-call guard in emit_site_block is
-    // dead too, because emit_callee_context_word already claimed a site word through
-    // claimed_word, which traps on a null base. So is graphix_site_child_block's null
-    // check. The cleanup that removed callee_table's guard missed these sites. Return
-    // the address directly. Also delete the stale 'null table'/'no memory' phrases in
-    // this function's, callee_table's and emit_site_block's docs. Found by reading; not
-    // run. (f-call-flow-03)
-    let live = cx.b.ins().icmp_imm_s(IntCC::NotEqual, table, 0);
-    let zero = cx.b.ins().iconst(types::I64, 0);
-    Ok(cx.b.ins().select(live, addr, zero))
+    Ok(cx.b.ins().iadd(table, off))
 }
 
 /// A callee's blocks for every slot of the innermost loop `leaf` (its
 /// length and source disc), `layout.words` a slot, in a table reached
-/// from an anchor of this body through the enclosing loops `dirs`; null
-/// when this body has no memory. The truncate record goes with the loop
-/// the table is the leaf of: its len-0 epochs never reach this ensure, so
-/// every enclosing loop's exit re-ensures it to truncate on a shrink.
+/// from an anchor of this body through the enclosing loops `dirs`. The
+/// truncate record goes with the loop the table is the leaf of: its len-0
+/// epochs never reach this ensure, so every enclosing loop's exit
+/// re-ensures it to truncate on a shrink.
 pub(super) fn callee_table(
     cx: &mut BodyCx,
     layout: &SiteLayout,
@@ -949,7 +933,7 @@ pub(super) fn emit_drop_local(
     kind: LocalKind,
     vv: ValueVar,
 ) -> Result<()> {
-    // CR claude for claude: [perf/medium] [perf/medium] This use_vars a local before
+    // XCR claude for claude: [perf/medium] [perf/medium] This use_vars a local before
     // emit_owned_drop returns for a scalar. Scope drops call it for every local, so
     // each scalar is looked up at the drop site, and Cranelift's SSA builder walks it
     // back through every join since its definition, leaving a dead block-param alias at
@@ -959,7 +943,16 @@ pub(super) fn emit_drop_local(
     // LocalKind::Scalar, as emit_pending_abort already filters scalars. probe:
     // design/review-2026-10-26/repro/x-perf-compile-scalar-drop-use-var.sh
     // (x-perf-compile-04)
-    let cv = CompiledExpr::new(b.use_var(vv.disc), b.use_var(vv.payload));
+    // 2026-10-26 claude: emit_drop_local returns for a scalar before reading anything,
+    // and an owned local's drop reads its spill slot (ValueVar::read_spilled), so no
+    // drop walks a variable back through the joins: the CLIF of a 100-select scalar
+    // chain has 99 aliases (was 10197). Pin: graphix-shell/tests/kernel_ssa_growth.rs
+    // scalar_select_chain_has_no_alias_per_join (fails with 10197 aliases with the
+    // early return undone).
+    if matches!(kind, LocalKind::Scalar(_)) {
+        return Ok(());
+    }
+    let cv = vv.read_spilled(b);
     emit_owned_drop(b, ctx, kind, cv)
 }
 
@@ -1022,7 +1015,7 @@ pub(super) fn emit_pending_abort(
     for (kind, vv) in ctx.owned_input_stack.borrow().iter() {
         emit_drop_local(b, ctx, *kind, *vv)?;
     }
-    // CR claude for claude: [bug/high] [bug/high] The abort rungs of x-perf-compile-01
+    // XCR claude for claude: [bug/high] [bug/high] The abort rungs of x-perf-compile-01
     // now crash the process, not just slow it. A fused chain of `let aI =
     // array::fold(aI-1, [], |acc, x| array::push(acc, x))` gets a kernel frame that
     // grows with the square of the chain: 226 KB at 200 lets, 771 KB at 400, 2.83 MB at
@@ -1037,6 +1030,19 @@ pub(super) fn emit_pending_abort(
     // design/review-2026-10-26/repro/x-perf-compile-fold-chain-stack-overflow.sh,
     // design/review-2026-10-26/repro/x-perf-compile-owned-chain-quadratic.sh (cites
     // x-perf-compile-01) (x-perf-compile-01)
+    // 2026-10-26 claude: Every owned ValueVar (abi.rs ValueVar::owned: params, lets,
+    // holds, a fold's acc, a find's taken value) gets a 16-byte stack slot that every
+    // definition writes (ValueVar::define/define_disc; the tail rebind, the acc's
+    // per-slot delivery and the find's take included), and every drop, the abort
+    // ladder's rungs and the held inputs included, reads it there (read_spilled); a
+    // chunk's borrowed locals have none. The 800-let fold chain runs in 1.9 s (was a
+    // stack-overflow abort), 200 lets 0.29 s (was 1.18 s); CLIF aliases 3.8k at 200
+    // lets (was 165k); the struct-with chain links linearly. Link of the one large
+    // kernel is still the bulk of the time (0.6/2.4/4.6 s at 400/800/1600). Pins:
+    // graphix-shell/tests/kernel_ssa_growth.rs owned_fold_chain_has_no_alias_per_exit
+    // and long_owned_fold_chain_runs (53167 aliases and SIGABRT with read_spilled
+    // reading the variables). The outline.rs CR of the same id is the parent finding;
+    // its abort-rung half is this.
     let owned: SmallVec<[(usize, LocalKind, ValueVar); 8]> = env
         .locals_above(ctx.owned_floor)
         .enumerate()

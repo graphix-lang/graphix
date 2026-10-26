@@ -780,29 +780,20 @@ pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
 }
 
 /// Call `f` on each tail-position leaf of `node`; returns whether any
-/// call returned true. Every Select arm is visited (no short-circuit),
-/// and `on_select` fires for each Select on the tail spine with a true leaf.
-// CR claude for claude: [dead/low] `on_select` is dead:
-// analysis::TailSelfCalls::collect, lowering::site_memory and
-// lowering::body_has_self_tail_call all pass `&mut |_| ()`. Remove the parameter and
-// its doc sentence. Found by reading; not run. (f-mod-lowering-05)
+/// call returned true. Every Select arm is visited (no short-circuit).
 pub(crate) fn for_each_tail_leaf<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
     f: &mut impl FnMut(&'a Node<R, E>) -> bool,
-    on_select: &mut impl FnMut(&'a node::select::Select<R, E>),
 ) -> bool {
     match tail_position(node) {
         TailPosition::Block(b) => {
-            b.children.last().is_some_and(|c| for_each_tail_leaf(c, f, on_select))
+            b.children.last().is_some_and(|c| for_each_tail_leaf(c, f))
         }
-        TailPosition::Parens(ep) => for_each_tail_leaf(&ep.n, f, on_select),
+        TailPosition::Parens(ep) => for_each_tail_leaf(&ep.n, f),
         TailPosition::Select(s) => {
             let mut any = false;
             for (_, body) in s.arms.iter() {
-                any |= for_each_tail_leaf(body, f, on_select);
-            }
-            if any {
-                on_select(s);
+                any |= for_each_tail_leaf(body, f);
             }
             any
         }
@@ -995,6 +986,11 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
 // Fix: cache each callee's discovered body and sites by kernel key on the emission and
 // reuse them instead of re-walking. probe:
 // design/review-2026-10-26/repro/x-stack-fusion-callee-chain.py (x-stack-05)
+// 2026-10-26 claude: Not started in batch L4-b02. Caching discovery across regions
+// needs the callee bodies to outlive the region (Discovery holds &'n borrows of the
+// region tree, and later regions splice kernels into callee bodies), so the cache
+// would key by kernel and hold what build_lambda_kernel and the sites walk produce,
+// not node borrows.
 pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     root: &'n Node<R, E>,
     ctx: &CompileCtx<R, E>,
@@ -1145,9 +1141,10 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     if !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_))) {
         return Ok(None);
     }
-    // A feeder runs before the kernel, so a fed argument's raise would
-    // reach its handler ahead of a fused earlier argument's: then nothing
-    // is fed.
+    // A feeder runs before the kernel, while a fused argument's raises and
+    // Io calls are delivered after its run, so a fed argument that raises
+    // or performs would act ahead of a fused earlier argument that does:
+    // then nothing is fed.
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
     for arg in cs.args.values_mut() {
         // CR claude for claude: [perf/low] An argument is fed only when discovery
@@ -1159,6 +1156,11 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         // that does not emit. probe:
         // design/review-2026-10-26/repro/f-mod-lowering-feed-nested-sample.gx
         // (f-mod-lowering-04)
+        // 2026-10-26 claude: Not started in batch L4-b02. try_fuse reports its blocker
+        // only into the failure stats, so a retry needs try_fuse to return the
+        // blocker's spec (a refusal value, not Ok(None)) and try_fuse_feeding_args to
+        // feed the argument that holds it; a ctx field for the last blocker would be a
+        // new ctx global.
         let feed = arg.node.as_mut().is_some_and(|node| {
             let mut discovery = lowering::BuiltinCallDiscovery::default();
             lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err()
@@ -1166,7 +1168,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         feeds.push(feed);
     }
     let Some(last) = feeds.iter().rposition(|f| *f) else { return Ok(None) };
-    // CR claude for claude: [bug/high] The ordering check counts only handler raises. A
+    // XCR claude for claude: [bug/high] The ordering check counts only handler raises. A
     // fused argument's Io call is queued and performed after the kernel's run, while a
     // fed argument's effects happen in its feeder before the kernel. So `f(dbg(a),
     // dbg(once(b)))` prints b's line before a's under fusion and a's first under
@@ -1175,12 +1177,20 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     // raises. The fuzzer cannot catch this, because its oracle ignores printed output.
     // probe: design/review-2026-10-26/repro/f-mod-lowering-fed-arg-io-order.gx
     // (f-mod-lowering-02)
-    let mut fused_raise = false;
+    // 2026-10-26 claude: try_fuse_feeding_args counts an argument's Io calls
+    // (analysis::region_facts(..).io, which also sees an Io builtin with no IoCall in a
+    // fed argument) beside its handler raises: a fed argument that raises or performs
+    // after a fused one that does refuses the feeding. Pin:
+    // lang::printing::arguments_print_in_written_order (jit fails with the fix undone).
+    let mut fused_effect = false;
     for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
         let Some(node) = arg.node.as_ref() else { continue };
-        match (*feed, may_raise_to_handler(node)) {
-            (true, true) if fused_raise => return Ok(None),
-            (false, true) => fused_raise = true,
+        match (
+            *feed,
+            may_raise_to_handler(node) || crate::analysis::region_facts(node, ctx).io,
+        ) {
+            (true, true) if fused_effect => return Ok(None),
+            (false, true) => fused_effect = true,
             _ => (),
         }
     }

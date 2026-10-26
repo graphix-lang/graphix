@@ -34,7 +34,7 @@ use std::{
 use triomphe::Arc;
 
 use super::{
-    abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
+    abi::{JitEnv, LocalKind, STALE, ValueVar},
     body::{BodyRole, BodySource, emit_interrupt_check_every, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
@@ -121,16 +121,9 @@ pub(super) fn compile_into_function<'a>(
                 helper_refs.call(b, "graphix_value_clone", &[disc, payload_in])?[1]
             }
         };
-        let disc_var = b.declare_var(types::I64);
-        b.def_var(disc_var, disc);
-        let payload_var = b.declare_var(local_payload_ty(kind));
-        b.def_var(payload_var, payload);
-        env.bind(
-            d.name.clone(),
-            ValueVar { disc: disc_var, payload: payload_var },
-            kind,
-            param_id(spec.params, d.bind_id),
-        );
+        let words = ValueVar::owned(b, kind);
+        words.define(b, disc, payload);
+        env.bind(d.name.clone(), words, kind, param_id(spec.params, d.bind_id));
     }
     b.seal_block(entry);
     // A tail-call rebind truncates the env back to this mark.

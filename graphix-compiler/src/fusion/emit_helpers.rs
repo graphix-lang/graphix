@@ -1849,20 +1849,16 @@ unsafe fn graphix_slot_state_table_shared(
 
 /// The per-activation block for a self-call, allocated on first use
 /// and stamped with the reach generation. `word` is the root word in
-/// the caller's block (null = no memory); `desc` is the callee's
+/// the caller's block; `desc` is the callee's
 /// `KernelSig::site_block_words`, read at run time because a self-call's
 /// block size is unknown while its body is still emitting.
 unsafe fn graphix_site_child_block(
     word: *mut u64,
     desc: *const AtomicU64,
 ) -> ChildBlock {
-    let none = ChildBlock { block: std::ptr::null_mut(), fresh: 0 };
-    if word.is_null() {
-        return none;
-    }
     let words = unsafe { (*desc).load(Relaxed) } as usize;
     if words == 0 {
-        return none;
+        return ChildBlock { block: std::ptr::null_mut(), fresh: 0 };
     }
     let word = unsafe { &mut *word };
     let fresh = *word == 0;

@@ -8,7 +8,8 @@ use crate::{
 };
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
+    InstBuilder, StackSlot, StackSlotData, StackSlotKind, Type as ClifType,
+    Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use smallvec::SmallVec;
@@ -55,11 +56,87 @@ pub(crate) fn prim_to_value_disc(p: PrimType) -> i64 {
     }
 }
 
-/// The two `Variable`s holding a local's `(disc, payload)` words.
+/// The two `Variable`s holding a local's `(disc, payload)` words. An
+/// owned value's are also kept in a stack slot every definition writes,
+/// which its drops read: a read of the variables at a drop would carry the
+/// local as a block parameter through every join since its definition,
+/// and every abort exit's ladder of drops through all of them.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ValueVar {
     pub(super) disc: Variable,
     pub(super) payload: Variable,
+    spill: Option<StackSlot>,
+}
+
+impl ValueVar {
+    /// The variables of a value of `kind` this body owns.
+    pub(super) fn owned(b: &mut FunctionBuilder, kind: LocalKind) -> Self {
+        let spill = (!matches!(kind, LocalKind::Scalar(_))).then(|| {
+            b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                16,
+                3,
+            ))
+        });
+        Self::with_spill(b, kind, spill)
+    }
+
+    /// The variables of a value of `kind` another body owns and drops.
+    pub(super) fn borrowed(b: &mut FunctionBuilder, kind: LocalKind) -> Self {
+        Self::with_spill(b, kind, None)
+    }
+
+    /// Scalar words: nothing to drop.
+    pub(super) fn scalar(disc: Variable, payload: Variable) -> Self {
+        Self { disc, payload, spill: None }
+    }
+
+    fn with_spill(
+        b: &mut FunctionBuilder,
+        kind: LocalKind,
+        spill: Option<StackSlot>,
+    ) -> Self {
+        let disc = b.declare_var(types::I64);
+        let payload = b.declare_var(local_payload_ty(kind));
+        Self { disc, payload, spill }
+    }
+
+    /// Define both words.
+    pub(super) fn define(
+        self,
+        b: &mut FunctionBuilder,
+        disc: ClifValue,
+        payload: ClifValue,
+    ) {
+        self.define_disc(b, disc);
+        b.def_var(self.payload, payload);
+        if let Some(s) = self.spill {
+            b.ins().stack_store(types::I64, payload, s, 8);
+        }
+    }
+
+    /// Define the disc alone.
+    pub(super) fn define_disc(self, b: &mut FunctionBuilder, disc: ClifValue) {
+        b.def_var(self.disc, disc);
+        if let Some(s) = self.spill {
+            b.ins().stack_store(types::I64, disc, s, 0);
+        }
+    }
+
+    pub(super) fn read(self, b: &mut FunctionBuilder) -> CompiledExpr {
+        CompiledExpr::new(b.use_var(self.disc), b.use_var(self.payload))
+    }
+
+    /// The words as a drop reads them.
+    pub(super) fn read_spilled(self, b: &mut FunctionBuilder) -> CompiledExpr {
+        match self.spill {
+            Some(s) => CompiledExpr::new(
+                b.ins().stack_load(types::I64, types::I64, s, 0),
+                b.ins().stack_load(types::I64, types::I64, s, 8),
+            ),
+            None => self.read(b),
+        }
+    }
 }
 
 /// One emitted expression: a `(disc, payload)` register pair. `disc`
@@ -419,11 +496,8 @@ pub(super) fn bind_local(
     kind: LocalKind,
     bind_id: Option<BindId>,
 ) -> ValueVar {
-    let dv = cx.b.declare_var(types::I64);
-    cx.b.def_var(dv, disc);
-    let pv = cx.b.declare_var(local_payload_ty(kind));
-    cx.b.def_var(pv, payload);
-    let vv = ValueVar { disc: dv, payload: pv };
+    let vv = ValueVar::owned(cx.b, kind);
+    vv.define(cx.b, disc, payload);
     cx.env.bind(name, vv, kind, bind_id);
     vv
 }
@@ -436,7 +510,7 @@ pub(crate) fn bind_scalar_var_with_disc(
     disc: Variable,
     bind_id: Option<BindId>,
 ) {
-    cx.env.bind(name, ValueVar { disc, payload }, LocalKind::Scalar(prim), bind_id);
+    cx.env.bind(name, ValueVar::scalar(disc, payload), LocalKind::Scalar(prim), bind_id);
 }
 
 /// Wrap owned ValArray bits as a composite [`CompiledExpr`].

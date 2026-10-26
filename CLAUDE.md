@@ -728,7 +728,9 @@ node graph IS the IR — there is no parallel typed IR
   included, are node-walk-only (debug with `--no-fusion`).
 - **Emit contracts** (`design/distributed_jit.md`): effects de-fuse,
   never silently skip; owned select-arm binds drop at every arm exit
-  (run `leakcheck` when adding an owned-local class); a bottom is a
+  (run `leakcheck` when adding an owned-local class); an owned local's
+  words are defined only through `ValueVar::define`, which also writes
+  the stack slot its drops read (`abi.rs`); a bottom is a
   production whose STALE bit follows the same trigger fold as a value
   (`nodes::emit_bottom_placeholder` takes the governing discs); kernel
   cache keys carry catch coverage and a resolution fingerprint; a pass

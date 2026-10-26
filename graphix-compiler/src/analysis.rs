@@ -1137,17 +1137,13 @@ struct TailSelfCalls<'a, R: Rt, E: UserEvent> {
 impl<'a, R: Rt, E: UserEvent> TailSelfCalls<'a, R, E> {
     fn collect(body: &'a Node<R, E>, instance: LambdaInstanceId) -> Self {
         let mut res = Self { sites: SmallVec::new() };
-        fusion::for_each_tail_leaf(
-            body,
-            &mut |n| match n.view() {
-                NodeView::CallSite(cs) if is_call_to(cs, instance) => {
-                    res.sites.push(cs);
-                    true
-                }
-                _ => false,
-            },
-            &mut |_| (),
-        );
+        fusion::for_each_tail_leaf(body, &mut |n| match n.view() {
+            NodeView::CallSite(cs) if is_call_to(cs, instance) => {
+                res.sites.push(cs);
+                true
+            }
+            _ => false,
+        });
         res
     }
 

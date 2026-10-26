@@ -614,8 +614,7 @@ pub(super) enum Sink {
     /// The taken flag and value, bound as an env local above `mark`.
     Find {
         found: Variable,
-        disc: Variable,
-        payload: Variable,
+        taken: ValueVar,
         mark: usize,
     },
 }
@@ -637,9 +636,9 @@ impl Slots {
         }
     }
 
-    fn found(&self) -> (Variable, Variable, Variable) {
+    fn found(&self) -> (Variable, ValueVar) {
         match self.sink {
-            Sink::Find { found, disc, payload, .. } => (found, disc, payload),
+            Sink::Find { found, taken, .. } => (found, taken),
             Sink::Buf(_) => unreachable!("a find loop's sink"),
         }
     }
@@ -674,9 +673,9 @@ pub(super) fn open_sink(cx: &mut BodyCx, kind: SinkKind, cap: ClifValue) -> Resu
     Ok(match kind {
         SinkKind::Buf => Sink::Buf(open_value_buf(cx, cap)?),
         SinkKind::Find => {
-            let (found, disc, payload) = found_vars(cx);
-            let mark = bind_taken(cx, disc, payload);
-            Sink::Find { found, disc, payload, mark }
+            let (found, taken) = found_vars(cx);
+            let mark = bind_taken(cx, taken);
+            Sink::Find { found, taken, mark }
         }
     })
 }
@@ -714,9 +713,10 @@ fn emit_slots(
     lp.close(cx)?;
     Ok(match sink {
         Sink::Buf(buf) => Sunk::Buf(finalize_valarray(cx, buf)?),
-        Sink::Find { disc, payload, mark, .. } => {
+        Sink::Find { taken, mark, .. } => {
             cx.env.truncate(mark);
-            Sunk::Find(cx.b.use_var(disc), cx.b.use_var(payload))
+            let taken = taken.read(cx.b);
+            Sunk::Find(taken.disc, taken.payload)
         }
     })
 }
@@ -749,7 +749,7 @@ trait FindStep:
     &mut BodyCx<'x, 'y, 'z>,
     &LoopFrame,
     &Slots,
-    (Variable, Variable, Variable),
+    (Variable, ValueVar),
 ) -> Result<()>
 {
 }
@@ -759,7 +759,7 @@ impl<I> FindStep for I where
         &mut BodyCx<'x, 'y, 'z>,
         &LoopFrame,
         &Slots,
-        (Variable, Variable, Variable),
+        (Variable, ValueVar),
     ) -> Result<()>
 {
 }
@@ -1197,22 +1197,16 @@ where
     arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let kind = acc.local_kind();
-    let acc_var = cx.b.declare_var(match kind {
-        LocalKind::Scalar(p) => prim_to_clif(p),
-        _ => types::I64,
-    });
     // The acc's TAINT and STALE are loop-carried in its own disc; STALE
     // must ride or an acc-consuming body reads FIRED on every run.
-    let acc_disc_var = cx.b.declare_var(types::I64);
-    let acc_vv = ValueVar { disc: acc_disc_var, payload: acc_var };
+    let acc_vv = ValueVar::owned(cx.b, kind);
     let flags = SlotFlags::new(cx, len, LoopKind::Fold);
     let init_cv = init(cx)?;
     // A pointer-shaped acc is loop-owned from the start: a borrowed init
     // clones here.
     let (init_pay, init_disc) = acc.owned(cx, init_cv, acc.init_src())?;
-    cx.b.def_var(acc_var, init_pay);
     let d0 = acc.carry_disc(cx, init_disc);
-    cx.b.def_var(acc_disc_var, d0);
+    acc_vv.define(cx.b, d0, init_pay);
     let lp = open_loop(cx, len, arr.disc, &facts.sites, flags.entered)?;
     // The acc binds before the interrupt poll so the poll's abort cleanup
     // drops an owned acc. Acc leaves carry the acc's loop-carried
@@ -1220,13 +1214,15 @@ where
     let ((bound, acc_leaves), new_acc) = lp.run(
         cx,
         |cx, i| {
-            deliver_acc_to_new_slot(cx, acc_disc_var);
+            if let Some(d) = deliver_acc_to_new_slot(cx, acc_vv.disc) {
+                acc_vv.define_disc(cx.b, d);
+            }
             cx.env.bind(acc_name.clone(), acc_vv, kind, acc_id);
             let bound = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
             let acc_leaves = match &acc {
                 FoldAcc::Composite { leaves, pattern, .. } => {
-                    let acc_ptr = cx.b.use_var(acc_var);
-                    let acc_disc = cx.b.use_var(acc_disc_var);
+                    let CompiledExpr { disc: acc_disc, payload: acc_ptr } =
+                        acc_vv.read(cx.b);
                     let mut owned =
                         bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?;
                     if let Some((pattern, typ)) = pattern {
@@ -1252,26 +1248,21 @@ where
     // mid-chain body that consumed a fired acc fires the fold even if
     // the final carry is stale); TAINT travels only the acc carry.
     flags.accs.fold_stale(cx, new_disc);
-    cx.b.def_var(acc_var, new_pay);
     let d = acc.carry_disc(cx, new_disc);
-    cx.b.def_var(acc_disc_var, d);
+    acc_vv.define(cx.b, d, new_pay);
     lp.close(cx)?;
     arr.drop_held(cx)?;
-    let payload = cx.b.use_var(acc_var);
-    let disc = cx.b.use_var(acc_disc_var);
-    Ok((CompiledExpr::new(disc, payload), flags))
+    Ok((acc_vv.read(cx.b), flags))
 }
 
 /// A new slot's acc is delivered: the chain as it stands, fired. `disc`
-/// is the acc's carried disc.
-fn deliver_acc_to_new_slot(cx: &mut BodyCx, disc: Variable) {
-    if let Some(s) = cx.env.slot {
-        let d = cx.b.use_var(disc);
-        let fired = cx.b.ins().band_imm_u(d, !STALE);
-        let new = cx.b.ins().icmp_imm_s(IntCC::NotEqual, s.new, 0);
-        let d = cx.b.ins().select(new, fired, d);
-        cx.b.def_var(disc, d);
-    }
+/// is the acc's carried disc; in a slot, its value delivered.
+fn deliver_acc_to_new_slot(cx: &mut BodyCx, disc: Variable) -> Option<ClifValue> {
+    let s = cx.env.slot?;
+    let d = cx.b.use_var(disc);
+    let fired = cx.b.ins().band_imm_u(d, !STALE);
+    let new = cx.b.ins().icmp_imm_s(IntCC::NotEqual, s.new, 0);
+    Some(cx.b.ins().select(new, fired, d))
 }
 
 /// How a fold's callback names an acc it carries field by field.
@@ -1337,7 +1328,9 @@ where
     let (bound, new_fields) = lp.run(
         cx,
         |cx, i| {
-            deliver_acc_to_new_slot(cx, carry);
+            if let Some(d) = deliver_acc_to_new_slot(cx, carry) {
+                cx.b.def_var(carry, d);
+            }
             let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
             for (k, (p, v)) in prims.iter().zip(vars.iter()).enumerate() {
                 let id = match acc_names {
@@ -1406,25 +1399,23 @@ where
 /// Bind a find loop's result pair as an owned Value local, so an abort
 /// in a later iteration drops a taken value; returns the mark that
 /// unbinds it once the loop hands the result over.
-fn bind_taken(cx: &mut BodyCx, disc: Variable, payload: Variable) -> usize {
+fn bind_taken(cx: &mut BodyCx, taken: ValueVar) -> usize {
     let mark = cx.env.mark();
-    cx.env.bind(ArcStr::new(), ValueVar { disc, payload }, LocalKind::Value, None);
+    cx.env.bind(ArcStr::new(), taken, LocalKind::Value, None);
     mark
 }
 
 /// A find loop's result pair: `Value::Null` until an iteration takes
 /// its value.
-fn found_vars(cx: &mut BodyCx) -> (Variable, Variable, Variable) {
+fn found_vars(cx: &mut BodyCx) -> (Variable, ValueVar) {
     let found = cx.b.declare_var(types::I8);
     let zero8 = cx.b.ins().iconst(types::I8, 0);
     cx.b.def_var(found, zero8);
-    let disc = cx.b.declare_var(types::I64);
+    let taken = ValueVar::owned(cx.b, LocalKind::Value);
     let null_disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
-    cx.b.def_var(disc, null_disc);
-    let payload = cx.b.declare_var(types::I64);
     let zero64 = cx.b.ins().iconst(types::I64, 0);
-    cx.b.def_var(payload, zero64);
-    (found, disc, payload)
+    taken.define(cx.b, null_disc, zero64);
+    (found, taken)
 }
 
 /// Branch to a take block when `cond` holds and nothing was taken yet;
@@ -1458,11 +1449,7 @@ where
         |cx: &mut BodyCx,
          lp: &LoopFrame,
          s: &Slots,
-         (found_var, result_disc_var, result_payload_var): (
-            Variable,
-            Variable,
-            Variable,
-        )| {
+         (found_var, result): (Variable, ValueVar)| {
             let (bound, keep) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
             s.accs.fold(cx, keep.disc);
@@ -1488,8 +1475,7 @@ where
                     (cx.b.use_var(vv.disc), cx.b.use_var(vv.payload))
                 }
             };
-            cx.b.def_var(result_disc_var, disc);
-            cx.b.def_var(result_payload_var, payload);
+            result.define(cx.b, disc, payload);
             let one = cx.b.ins().iconst(types::I8, 1);
             cx.b.def_var(found_var, one);
             cx.b.ins().jump(advance, &[]);
@@ -1518,11 +1504,7 @@ where
         |cx: &mut BodyCx,
          lp: &LoopFrame,
          s: &Slots,
-         (found_var, result_disc_var, result_payload_var): (
-            Variable,
-            Variable,
-            Variable,
-        )| {
+         (found_var, result): (Variable, ValueVar)| {
             let (bound, (disc, payload)) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
             bound.drop_leaves(cx)?;
@@ -1533,8 +1515,7 @@ where
             let non_null =
                 cx.b.ins().icmp_imm_s(IntCC::NotEqual, clean, value_disc::NULL);
             let (discard, advance) = branch_take(cx, non_null, found_var);
-            cx.b.def_var(result_disc_var, clean);
-            cx.b.def_var(result_payload_var, payload);
+            result.define(cx.b, clean, payload);
             let one = cx.b.ins().iconst(types::I8, 1);
             cx.b.def_var(found_var, one);
             cx.b.ins().jump(advance, &[]);

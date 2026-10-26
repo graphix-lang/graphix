@@ -197,6 +197,30 @@ async fn dbg_fuses_under_native(mode: Mode) -> Result<()> {
 
 modes!(dbg_fuses_under_native);
 
+/// A call's arguments print in the order they are written when one of
+/// them cannot fuse (`once`) and an earlier one prints.
+async fn arguments_print_in_written_order(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let a = 1;
+        let b = 2;
+        let f = |x: i64, y: i64| x + y;
+        f(dbg(#dest: `Stdout, a), dbg(#dest: `Stdout, once(b)))
+    }"#;
+    let (values, out) = run_delta(code, mode).await?;
+    assert_eq!(values, [Value::I64(3)]);
+    // forked arguments print when they run, in no set order
+    let lines = match mode {
+        Mode::Par | Mode::JitPar => sorted_lines(&out),
+        _ => out.lines().collect(),
+    };
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(lines[0].ends_with("dbg(a): 1"), "{out}");
+    assert!(lines[1].ends_with("dbg(once(b)): 2"), "{out}");
+    Ok(())
+}
+
+modes!(arguments_print_in_written_order);
+
 /// A builtin handed to a collection whole reports the place it was
 /// handed, in every engine and session.
 async fn dbg_as_a_callback_reports_its_argument(mode: Mode) -> Result<()> {

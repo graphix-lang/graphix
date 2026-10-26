@@ -129,8 +129,7 @@ pub(super) fn emit_tail_rebind_jump(
     }
     for (vv, kind, disc, payload) in staged {
         emit_drop_local(b, ctx, kind, vv)?;
-        b.def_var(vv.payload, payload);
-        b.def_var(vv.disc, disc);
+        vv.define(b, disc, payload);
     }
     let drops: SmallVec<[(LocalKind, ValueVar); 8]> =
         env.locals_above(ctx.tail.param_mark).collect();
@@ -298,11 +297,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// pending exit there drops it. [`Self::release`] ends the hold
     /// before the normal path consumes or drops the value.
     pub(super) fn hold(&mut self, kind: LocalKind, cv: CompiledExpr) {
-        let disc = self.b.declare_var(types::I64);
-        self.b.def_var(disc, cv.disc);
-        let payload = self.b.declare_var(self.b.func.dfg.value_type(cv.payload));
-        self.b.def_var(payload, cv.payload);
-        self.ctx.owned_input_stack.borrow_mut().push((kind, ValueVar { disc, payload }));
+        let vv = ValueVar::owned(self.b, kind);
+        vv.define(self.b, cv.disc, cv.payload);
+        self.ctx.owned_input_stack.borrow_mut().push((kind, vv));
     }
 
     /// End the latest [`Self::hold`].

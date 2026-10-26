@@ -272,12 +272,8 @@ fn emit_chunk(
     for (i, l) in handed(cx.env, lp.facts).enumerate() {
         let disc = load(&mut b, types::I64, base + 2 * i);
         let payload = load(&mut b, local_payload_ty(l.kind), base + 2 * i + 1);
-        let words = ValueVar {
-            disc: b.declare_var(types::I64),
-            payload: b.declare_var(local_payload_ty(l.kind)),
-        };
-        b.def_var(words.disc, disc);
-        b.def_var(words.payload, payload);
+        let words = ValueVar::borrowed(&mut b, l.kind);
+        words.define(&mut b, disc, payload);
         env.bind(l.name.clone(), words, l.kind, l.bind_id);
     }
     let CtxWord { born: born_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
@@ -414,15 +410,14 @@ fn emit_range(
             close_buf(cx);
             store(cx, buf, 2);
         }
-        Sink::Find { found, disc, payload, mark } => {
+        Sink::Find { found, taken, mark } => {
             cx.env.truncate(mark);
             let found = cx.b.use_var(found);
             let found = cx.b.ins().uextend(types::I64, found);
             store(cx, found, 2);
-            let disc = cx.b.use_var(disc);
-            store(cx, disc, 3);
-            let payload = cx.b.use_var(payload);
-            store(cx, payload, 4);
+            let taken = taken.read(cx.b);
+            store(cx, taken.disc, 3);
+            store(cx, taken.payload, 4);
         }
     }
     cx.b.ins().return_(&[]);
