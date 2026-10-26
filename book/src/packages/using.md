@@ -152,7 +152,7 @@ directory, the same one that holds your init modules:
 The file has two tables. `[stdlib]` lists the standard library packages by
 name, the installed ones and the ones you removed (they track the shell's
 version, so they carry none). `[packages]` maps third-party package names to
-versions, or to a path with an inline table:
+versions, or to an absolute path with an inline table:
 
 ```toml
 [stdlib]

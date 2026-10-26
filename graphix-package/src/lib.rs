@@ -40,10 +40,17 @@ use std::{
     io::IsTerminal,
     path::{Path, PathBuf},
     pin::Pin,
+    process::Stdio,
     sync::mpsc as smpsc,
     time::Duration,
 };
-use tokio::{fs, process::Command, sync::oneshot, task};
+use tokio::{
+    fs,
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+    sync::oneshot,
+    task,
+};
 use toml_edit::DocumentMut;
 use walkdir::WalkDir;
 
@@ -378,8 +385,9 @@ impl Packages {
     }
 }
 
-/// The inputs to a shell build derived from a package set (see
-/// [`Packages::build_plan`]). `features` is sorted (it comes from a `BTreeSet`).
+/// The inputs to a shell build: the Cargo features it turns on and the
+/// external packages it adds, from a package set ([`Packages::build_plan`])
+/// or a standalone package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BuildPlan {
     features: Vec<CompactString>,
@@ -392,13 +400,25 @@ fn parse_entry(k: &str, v: &toml::Value) -> Result<PackageEntry> {
         toml::Value::String(s) => Ok(PackageEntry::Version(s.as_str().into())),
         toml::Value::Table(t) => {
             if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
-                // CR claude for claude: [bug/low] A relative path written into
+                // XCR claude for claude: [bug/low] A relative path written into
                 // packages.toml by hand is kept verbatim. with_external then puts it in
                 // the unpacked source's manifest, where cargo resolves it against
                 // <data>/build/graphix-shell-X, so `rebuild` cannot find the package.
                 // Refuse a relative path here, or resolve it against packages.toml's
                 // directory. Found by reading; not run. (package-07)
-                Ok(PackageEntry::Path(PathBuf::from(p)))
+                // 2026-10-26 claude: parse_entry refuses a relative path in [packages]
+                // (packages.toml takes an absolute path; add --path already
+                // canonicalizes); migrate_old reads an old stdlib override's path for
+                // its warning only, so an old file's relative stdlib override still
+                // migrates. Pin: test::pure::a_relative_external_path_is_refused.
+                let path = PathBuf::from(p);
+                if !path.is_absolute() {
+                    bail!(
+                        "package {k}: path {p} is relative; packages.toml takes an \
+                         absolute path"
+                    )
+                }
+                Ok(PackageEntry::Path(path))
             } else {
                 bail!("package {k}: table entry must have a 'path' key")
             }
@@ -475,18 +495,16 @@ fn migrate_old(doc: &toml::Value) -> Result<Packages> {
             stdlib_installed.insert(replacement.to_compact_string());
             continue;
         }
-        let entry = parse_entry(k, v)?;
         if is_stdlib_package(k) {
-            if let PackageEntry::Path(p) = &entry {
+            if let Some(p) = v.get("path").and_then(|p| p.as_str()) {
                 eprintln!(
-                    "warning: stdlib package '{k}' had a path override ({}); \
-                     stdlib now tracks the shell version, dropping the override",
-                    p.display()
+                    "warning: stdlib package '{k}' had a path override ({p}); \
+                     stdlib now tracks the shell version, dropping the override"
                 );
             }
             stdlib_installed.insert(k.as_str().into());
         } else {
-            external.insert(k.as_str().into(), entry);
+            external.insert(k.as_str().into(), parse_entry(k, v)?);
         }
     }
     // the old file was written from its era's defaults, so a name it lacks
@@ -670,6 +688,32 @@ fn installed_dependents(
         .collect()
 }
 
+/// The installed stdlib packages removed with `stdlib` because they depend
+/// on one of it, by the feature graph `edges`. Refused when the external
+/// packages register (`registered`, [`registered_by_external`]) one of
+/// `stdlib`: the build would compile it again, without its dependents.
+fn removal_cascade(
+    stdlib: &BTreeSet<CompactString>,
+    installed: &BTreeSet<CompactString>,
+    edges: &BTreeMap<CompactString, BTreeSet<CompactString>>,
+    registered: &BTreeSet<CompactString>,
+) -> Result<BTreeSet<CompactString>> {
+    let needed: Vec<&str> =
+        stdlib.iter().filter(|n| registered.contains(*n)).map(|n| n.as_str()).collect();
+    if !needed.is_empty() {
+        bail!(
+            "nothing removed: an installed external package depends on {}",
+            needed.join(", ")
+        )
+    }
+    let mut cascade = BTreeSet::new();
+    for name in stdlib {
+        let dependents = installed_dependents(name, installed, edges);
+        cascade.extend(dependents.into_iter().filter(|d| !stdlib.contains(d)));
+    }
+    Ok(cascade)
+}
+
 /// The shell manifest `content` with the external packages added to its
 /// `[dependencies]`. Stdlib packages are permanent optional deps selected
 /// by Cargo feature; neither they nor `[features]` are touched.
@@ -796,6 +840,77 @@ fn reinstall(
     needed
 }
 
+/// The resolve graph of `cargo metadata`'s output, by package id.
+struct Resolve<'a> {
+    /// Each package's name and version.
+    packages: BTreeMap<&'a str, (&'a str, &'a str)>,
+    /// Each package's dependencies, of every kind.
+    deps: BTreeMap<&'a str, &'a Vec<serde_json::Value>>,
+    /// The package cargo resolved for, the shell.
+    root: Option<&'a str>,
+}
+
+impl<'a> Resolve<'a> {
+    fn new(metadata: &'a serde_json::Value) -> Result<Self> {
+        let malformed = || anyhow!("malformed cargo metadata");
+        let packages = metadata["packages"]
+            .as_array()
+            .ok_or_else(malformed)?
+            .iter()
+            .filter_map(|p| {
+                Some((
+                    p["id"].as_str()?,
+                    (p["name"].as_str()?, p["version"].as_str().unwrap_or("")),
+                ))
+            })
+            .collect();
+        let resolve = &metadata["resolve"];
+        let deps = resolve["nodes"]
+            .as_array()
+            .ok_or_else(malformed)?
+            .iter()
+            .filter_map(|n| Some((n["id"].as_str()?, n["deps"].as_array()?)))
+            .collect();
+        Ok(Self { packages, deps, root: resolve["root"].as_str() })
+    }
+
+    fn name(&self, id: &str) -> Option<&'a str> {
+        self.packages.get(id).map(|(name, _)| *name)
+    }
+
+    /// The ids of the packages named `name`.
+    fn named(&self, name: &str) -> impl Iterator<Item = &'a str> {
+        self.packages.iter().filter(move |(_, (n, _))| *n == name).map(|(id, _)| *id)
+    }
+
+    /// The packages `id` depends on to build, never dev- or build-only.
+    fn normal_deps(&self, id: &str) -> impl Iterator<Item = &'a str> {
+        self.deps.get(id).into_iter().flat_map(|deps| deps.iter()).filter_map(|dep| {
+            let normal = dep["dep_kinds"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|k| k["kind"].is_null()));
+            if normal { dep["pkg"].as_str() } else { None }
+        })
+    }
+
+    /// The packages `from` reaches through normal dependencies, walking
+    /// only through those whose name passes `through`.
+    fn reach(
+        &self,
+        from: impl IntoIterator<Item = &'a str>,
+        through: impl Fn(&str) -> bool,
+    ) -> BTreeSet<&'a str> {
+        let mut stack: Vec<&str> = from.into_iter().collect();
+        let mut reached = BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            if self.name(id).is_some_and(|n| through(n)) && reached.insert(id) {
+                stack.extend(self.normal_deps(id));
+            }
+        }
+        reached
+    }
+}
+
 /// The packages the external packages register, by short name: each one's
 /// `graphix-package-*` dependencies (never a dev- or build-only one),
 /// transitively, in the resolve graph of `metadata` (`cargo metadata`'s
@@ -804,48 +919,59 @@ fn registered_by_external(
     metadata: &serde_json::Value,
     external: &BTreeMap<CompactString, PackageEntry>,
 ) -> Result<BTreeSet<CompactString>> {
-    let malformed = || anyhow!("malformed cargo metadata");
-    let packages = metadata["packages"].as_array().ok_or_else(malformed)?;
-    let names: BTreeMap<&str, &str> = packages
-        .iter()
-        .filter_map(|p| Some((p["id"].as_str()?, p["name"].as_str()?)))
-        .collect();
-    let nodes = metadata["resolve"]["nodes"].as_array().ok_or_else(malformed)?;
-    let deps: BTreeMap<&str, &Vec<serde_json::Value>> = nodes
-        .iter()
-        .filter_map(|n| Some((n["id"].as_str()?, n["deps"].as_array()?)))
-        .collect();
-    let mut stack: Vec<&str> = names
-        .iter()
-        .filter(|(_, name)| {
-            name.strip_prefix("graphix-package-")
-                .is_some_and(|n| external.contains_key(n))
-        })
-        .map(|(id, _)| *id)
-        .collect();
-    let mut registered = BTreeSet::new();
-    while let Some(id) = stack.pop() {
-        let Some(short) = names.get(id).and_then(|n| n.strip_prefix("graphix-package-"))
-        else {
-            continue;
-        };
-        if !registered.insert(short.to_compact_string()) {
-            continue;
-        }
-        for dep in deps.get(id).into_iter().flat_map(|d| d.iter()) {
-            let normal = dep["dep_kinds"]
-                .as_array()
-                .is_some_and(|kinds| kinds.iter().any(|k| k["kind"].is_null()));
-            if normal && let Some(pkg) = dep["pkg"].as_str() {
-                stack.push(pkg)
+    let resolve = Resolve::new(metadata)?;
+    let from = resolve.packages.iter().filter_map(|(id, (name, _))| {
+        let short = name.strip_prefix("graphix-package-")?;
+        external.contains_key(short).then_some(*id)
+    });
+    Ok(resolve
+        .reach(from, |n| n.starts_with("graphix-package-"))
+        .into_iter()
+        .filter_map(|id| Some(short_name(resolve.name(id)?)))
+        .collect())
+}
+
+/// Refuse an external package whose dependencies reach a graphix-package
+/// other than the shell's: its `Package` impl is of another trait, so the
+/// shell could not register it.
+fn refuse_foreign_graphix_package(
+    metadata: &serde_json::Value,
+    external: &BTreeMap<CompactString, PackageEntry>,
+) -> Result<()> {
+    let resolve = Resolve::new(metadata)?;
+    if resolve.named("graphix-package").nth(1).is_none() {
+        return Ok(());
+    }
+    let ours = resolve
+        .root
+        .into_iter()
+        .flat_map(|root| resolve.normal_deps(root))
+        .find(|id| resolve.name(id) == Some("graphix-package"))
+        .ok_or_else(|| anyhow!("the shell does not depend on graphix-package"))?;
+    let version = |id: &str| resolve.packages.get(id).map_or("", |(_, v)| *v);
+    let mut refused = Vec::new();
+    for name in external.keys() {
+        let krate = crate_name(name);
+        let reached = resolve.reach(resolve.named(&krate), |_| true);
+        for id in reached {
+            if id != ours && resolve.name(id) == Some("graphix-package") {
+                refused.push(format_compact!("{name} (graphix-package {})", version(id)));
             }
         }
     }
-    Ok(registered)
+    if !refused.is_empty() {
+        bail!(
+            "this shell is built with graphix-package {}, and these packages are \
+             built with another: {}; update or remove them",
+            version(ours),
+            refused.join(", ")
+        )
+    }
+    Ok(())
 }
 
 /// `cargo metadata` for the shell source in `source_dir` built with
-/// `features`.
+/// `features`, under the cargo configuration its build reads.
 async fn shell_metadata(
     cargo: &Path,
     source_dir: &Path,
@@ -855,9 +981,8 @@ async fn shell_metadata(
     cmd.arg("metadata")
         .arg("--format-version")
         .arg("1")
-        .arg("--manifest-path")
-        .arg(source_dir.join("Cargo.toml"))
         .arg("--no-default-features")
+        .current_dir(source_dir)
         .kill_on_drop(true);
     if !features.is_empty() {
         cmd.arg("--features").arg(features.join(" "));
@@ -919,6 +1044,17 @@ impl Saved {
     }
 }
 
+/// The executable of the shell's `graphix` binary, when `message` (a line
+/// of `cargo build --message-format=json`) reports building it.
+fn graphix_executable(message: &str) -> Option<PathBuf> {
+    let m: serde_json::Value = serde_json::from_str(message).ok()?;
+    let target = &m["target"];
+    let is_graphix = m["reason"] == "compiler-artifact"
+        && target["name"] == "graphix"
+        && target["kind"].as_array()?.iter().any(|k| k == "bin");
+    is_graphix.then(|| m["executable"].as_str().map(PathBuf::from))?
+}
+
 /// The newest stable version a crate has, else its newest.
 fn newest(c: &crates_io_api::Crate) -> CompactString {
     c.max_stable_version.as_deref().unwrap_or(&c.max_version).into()
@@ -945,21 +1081,36 @@ async fn build_dirs(
     Ok((build_dir, graphix_dir))
 }
 
+/// Where cargo keeps its registry: `$CARGO_HOME`, else `~/.cargo`, wherever
+/// the cargo binary lives.
+fn cargo_home() -> Result<PathBuf> {
+    match std::env::var_os("CARGO_HOME") {
+        Some(home) if !home.is_empty() => Ok(PathBuf::from(home)),
+        _ => dirs::home_dir()
+            .map(|home| home.join(".cargo"))
+            .ok_or_else(|| anyhow!("can't find your home directory")),
+    }
+}
+
 // fetch our source from the local cargo cache (preferred method)
-async fn extract_local_source(cargo: &Path, version: &str) -> Result<PathBuf> {
-    let (_, graphix_dir) = build_dirs(&graphix_data_dir()?, version).await?;
+async fn extract_local_source(
+    cargo_home: &Path,
+    graphix_data_dir: &Path,
+    version: &str,
+) -> Result<PathBuf> {
+    let (_, graphix_dir) = build_dirs(graphix_data_dir, version).await?;
     let package = format!("graphix-shell-{version}");
-    // CR claude for claude: [bug/low] The registry is located from the cargo binary's
+    // XCR claude for claude: [bug/low] The registry is located from the cargo binary's
     // grandparent directory. That only works for a cargo in $CARGO_HOME/bin: a distro
     // or Homebrew cargo gives /usr/registry/src, so the cached source is never used,
     // and offline the command fails. Take $CARGO_HOME, else ~/.cargo, as the registry
     // root. Found by reading; not run. (package-08)
-    let cargo_root = cargo
-        .parent()
-        .ok_or_else(|| anyhow!("can't find cargo root"))?
-        .parent()
-        .ok_or_else(|| anyhow!("can't find cargo root"))?;
-    let cargo_src = cargo_root.join("registry").join("src");
+    // 2026-10-26 claude: the registry root is cargo_home(): $CARGO_HOME, else
+    // dirs::home_dir()/.cargo; extract_local_source takes the cargo home and data
+    // dir, and a missing home falls back to the download. Pin:
+    // test::local_source_comes_from_the_cargo_home_registry (a fake cargo home's
+    // registry/src/<index>/graphix-shell-9.9.9 is copied to <data>/build).
+    let cargo_src = cargo_home.join("registry").join("src");
     match fs::metadata(&cargo_src).await {
         Ok(md) if md.is_dir() => (),
         Err(_) | Ok(_) => bail!("can't find cargo cache {cargo_src:?}"),
@@ -1469,6 +1620,8 @@ pub struct GraphixPM {
     version: CompactString,
     /// The running shell's executable, which a rebuild replaces.
     exe: PathBuf,
+    /// Where the unpacked source builds ([`shared_target_dir`]).
+    target_dir: PathBuf,
 }
 
 impl GraphixPM {
@@ -1487,7 +1640,8 @@ impl GraphixPM {
         // replace: refuse an exe under a cargo target directory, require
         // $CARGO_HOME/bin, or require a flag. Found by reading; not run. (package-02)
         let exe = std::env::current_exe().context("locating the running graphix")?;
-        Ok(Self { cratesio, cargo, version: version.into(), exe })
+        let target_dir = shared_target_dir()?;
+        Ok(Self { cratesio, cargo, version: version.into(), exe, target_dir })
     }
 
     /// Open the lock file for the graphix data directory.
@@ -1524,7 +1678,10 @@ impl GraphixPM {
     /// from crates.io.
     async fn unpack_source(&self, version: &str) -> Result<PathBuf> {
         let graphix_data_dir = graphix_data_dir()?;
-        match extract_local_source(&self.cargo, version).await {
+        let local = async {
+            extract_local_source(&cargo_home()?, &graphix_data_dir, version).await
+        };
+        match local.await {
             Ok(p) => Ok(p),
             Err(local) => {
                 match download_source(&self.cratesio, &graphix_data_dir, version).await {
@@ -1551,12 +1708,20 @@ impl GraphixPM {
     /// Build and install `packages` from an unpacked source tree, the record
     /// reconciled with what the source ships first, and back up the current
     /// binary.
-    // CR claude for claude: [test-gap/low] No test runs this path or replace_exe. The
+    // XCR claude for claude: [test-gap/low] No test runs this path or replace_exe. The
     // slow test builds only a standalone with a source override, and `exe` is always
     // current_exe(), so a test could not rebuild without replacing itself. Take the exe
     // as a GraphixPM::new argument and add a slow test that rebuilds the vendored
     // source into a temp exe path, checking the backup, the new binary and the written
     // packages.toml. Found by reading; not run. (package-10)
+    // 2026-10-26 claude: GraphixPM holds target_dir (shared_target_dir by default)
+    // beside exe; the test module sets both. New slow test
+    // test::install_from_source_replaces_the_exe rebuilds the vendored shell with str
+    // and a created path package that depends on array (removed in the record) into a
+    // temp exe: array is installed again, the old exe is backed up, the new one checks
+    // use str/array/testpkg and refuses use http. Ran once 2026-10-26 with
+    // CARGO_PROFILE_RELEASE_OPT_LEVEL=0 CARGO_PROFILE_RELEASE_LTO=false (2.5 min); the
+    // full release profile costs as build_standalone_produces_working_binary does.
     async fn install_from_source(
         &self,
         source_dir: &Path,
@@ -1564,32 +1729,18 @@ impl GraphixPM {
     ) -> Result<()> {
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
-        let mut plan = packages.build_plan();
         println!("Updating Cargo.toml...");
-        rewrite_manifest(source_dir, &plan.external).await?;
-        if !plan.external.is_empty() {
-            let metadata =
-                shell_metadata(&self.cargo, source_dir, &plan.features).await?;
-            // CR claude for claude: [bug/medium] An external that depends on a
-            // semver-incompatible graphix-package (pinned to 0.9 after update takes a
-            // 0.10 shell) gives two copies of the crate. packages!() then fails with an
-            // E0277 trait error only after the whole release tree compiled, and it
-            // names no package. The metadata here already shows it: bail when it holds
-            // more than one graphix-package version, naming the externals that reach
-            // the other one, and run the same check before build_standalone's
-            // cargo_build. Found by reading; not run. (package-04)
-            let registered = registered_by_external(&metadata, &plan.external)?;
-            for name in reinstall_registered(packages, &registered) {
-                println!(
-                    "note: {name} is installed again: an external package depends on it"
-                );
-            }
-            plan = packages.build_plan();
+        let registered = self.add_external(source_dir, &packages.build_plan()).await?;
+        for name in reinstall_registered(packages, &registered) {
+            println!(
+                "note: {name} is installed again: an external package depends on it"
+            );
         }
+        let plan = packages.build_plan();
         // Stdlib packages are selected by Cargo feature; `core` is always compiled.
         println!("Building graphix with updated packages (this may take a while)...");
         let built =
-            self.cargo_build(source_dir, &plan.features, &shared_target_dir()?).await?;
+            self.cargo_build(source_dir, &plan.features, &self.target_dir).await?;
         self.replace_exe(&built).await?;
         // Clean up old previous binaries (>1 week)
         self.cleanup_old_binaries().await;
@@ -1597,28 +1748,80 @@ impl GraphixPM {
         Ok(())
     }
 
+    /// Add `plan`'s external packages to the shell source in `source_dir`:
+    /// what they register ([`registered_by_external`]), refused when one is
+    /// built with another graphix-package.
+    async fn add_external(
+        &self,
+        source_dir: &Path,
+        plan: &BuildPlan,
+    ) -> Result<BTreeSet<CompactString>> {
+        rewrite_manifest(source_dir, &plan.external).await?;
+        if plan.external.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let metadata = shell_metadata(&self.cargo, source_dir, &plan.features).await?;
+        // XCR claude for claude: [bug/medium] An external that depends on a
+        // semver-incompatible graphix-package (pinned to 0.9 after update takes a
+        // 0.10 shell) gives two copies of the crate. packages!() then fails with an
+        // E0277 trait error only after the whole release tree compiled, and it
+        // names no package. The metadata here already shows it: bail when it holds
+        // more than one graphix-package version, naming the externals that reach
+        // the other one, and run the same check before build_standalone's
+        // cargo_build. Found by reading; not run. (package-04)
+        // 2026-10-26 claude: a Resolve view of cargo metadata (shared with
+        // registered_by_external) backs refuse_foreign_graphix_package: when the
+        // resolve holds more than one graphix-package, each external whose
+        // normal-dependency closure reaches one other than the shell root's is
+        // named with its version and the build refused before compiling.
+        // GraphixPM::add_external (rewrite manifest, metadata, this check,
+        // registrations) is the one path for install_from_source, build_embedding
+        // (standalone) and remove_packages. Pin:
+        // test::pure::an_external_built_with_another_graphix_package_is_refused.
+        refuse_foreign_graphix_package(&metadata, &plan.external)?;
+        registered_by_external(&metadata, &plan.external)
+    }
+
     /// Put the binary at `built` in place of the running one, which is kept
     /// beside it as a dated backup: moved aside, since a running executable
-    /// cannot be written over on every host.
+    /// cannot be written over on every host. The new binary is copied
+    /// beside the old first, so the exe path only ever changes by rename.
     async fn replace_exe(&self, built: &Path) -> Result<()> {
         let date = Local::now().format(BACKUP_STAMP);
         let ext = self.exe.extension().map(|e| format!(".{}", e.to_string_lossy()));
         let backup = self
             .exe
             .with_file_name(format!("{BACKUP_PREFIX}{date}{}", ext.unwrap_or_default()));
-        // CR claude for claude: [risk/low] The exe is moved aside before the slow copy
+        let name = self.exe.file_name().ok_or_else(|| anyhow!("the exe has no name"))?;
+        let staged = self.exe.with_file_name(format!(".{}.new", name.to_string_lossy()));
+        // XCR claude for claude: [risk/low] The exe is moved aside before the slow copy
         // of the new binary. A Ctrl-C or kill during the copy leaves no working graphix
         // at the exe path; only a failed copy is rolled back. Copy `built` to a sibling
         // temp file in this directory first, then rename exe -> backup and temp -> exe,
         // so the running binary is only touched by renames. Found by reading; not run.
         // (package-05)
-        fs::rename(&self.exe, &backup)
-            .await
-            .with_context(|| format!("moving {} aside", self.exe.display()))?;
-        if let Err(e) = fs::copy(built, &self.exe).await {
-            let _ = fs::rename(&backup, &self.exe).await;
+        // 2026-10-26 claude: replace_exe copies the build to a sibling .<exe>.new
+        // first, then renames exe -> backup and staged -> exe (rolling back the first
+        // rename if the second fails), so the exe path only changes by rename; a staged
+        // copy an interrupted run left is overwritten. Pin:
+        // test::a_replaced_exe_is_kept_as_a_backup (it pins the outcome and the staged
+        // file's cleanup; the kill window itself is not driven by a test).
+        if let Err(e) = fs::copy(built, &staged).await {
+            let _ = fs::remove_file(&staged).await;
             return Err(e).with_context(|| {
-                format!("copying {} to {}", built.display(), self.exe.display())
+                format!("copying {} to {}", built.display(), staged.display())
+            });
+        }
+        if let Err(e) = fs::rename(&self.exe, &backup).await {
+            let _ = fs::remove_file(&staged).await;
+            return Err(e)
+                .with_context(|| format!("moving {} aside", self.exe.display()));
+        }
+        if let Err(e) = fs::rename(&staged, &self.exe).await {
+            let _ = fs::rename(&backup, &self.exe).await;
+            let _ = fs::remove_file(&staged).await;
+            return Err(e).with_context(|| {
+                format!("moving {} to {}", staged.display(), self.exe.display())
             });
         }
         Ok(())
@@ -1626,9 +1829,7 @@ impl GraphixPM {
 
     /// `cargo build --release` of the shell in `source_dir` with `features`
     /// on and no others, keeping the source's lockfile, into `target_dir`:
-    /// the binary's path. The target directory is pinned, so a global
-    /// build.target-dir or CARGO_TARGET_DIR cannot move the binary out from
-    /// under the copy.
+    /// the binary's path, as cargo reports it.
     async fn cargo_build(
         &self,
         source_dir: &Path,
@@ -1641,25 +1842,43 @@ impl GraphixPM {
             .arg("--target-dir")
             .arg(target_dir)
             .arg("--no-default-features")
+            .arg("--message-format=json-render-diagnostics")
             .current_dir(source_dir)
+            .stdout(Stdio::piped())
             .kill_on_drop(true);
         if !features.is_empty() {
             cmd.arg("--features").arg(features.join(" "));
         }
-        let status = cmd.status().await.context("running cargo build")?;
-        if !status.success() {
-            bail!("cargo build --release failed with status {status}")
-        }
-        // CR claude for claude: [risk/low] A `build.target` setting or
+        let mut child = cmd.spawn().context("running cargo build")?;
+        let stdout = child.stdout.take().ok_or_else(|| anyhow!("cargo has no stdout"))?;
+        let mut stdout = BufReader::new(stdout);
+        let mut line = String::new();
+        let mut built = None;
+        // XCR claude for claude: [risk/low] A `build.target` setting or
         // CARGO_BUILD_TARGET moves the binary to <target_dir>/<triple>/release, so the
         // copy after a full build fails with a missing file, despite the doc's claim
         // that pinning the target dir is enough. Use
         // --message-format=json-render-diagnostics and take the executable path from
         // the graphix bin's compiler-artifact message. Found by reading; not run.
         // (package-06)
-        Ok(target_dir
-            .join("release")
-            .join(format!("graphix{}", std::env::consts::EXE_SUFFIX)))
+        // 2026-10-26 claude: cargo_build runs with
+        // --message-format=json-render-diagnostics, stdout piped, and takes the path
+        // from the compiler-artifact message of the bin target graphix
+        // (graphix_executable); a successful build reporting none is an error. Pin:
+        // test::pure::the_built_binary_is_the_one_cargo_reports (a target-triple path
+        // is taken; a build script or another bin is not);
+        // test::install_from_source_replaces_the_exe drives it end to end.
+        while stdout.read_line(&mut line).await.context("reading cargo build")? > 0 {
+            if let Some(exe) = graphix_executable(&line) {
+                built = Some(exe);
+            }
+            line.clear();
+        }
+        let status = child.wait().await.context("running cargo build")?;
+        if !status.success() {
+            bail!("cargo build --release failed with status {status}")
+        }
+        built.ok_or_else(|| anyhow!("cargo build --release reported no graphix binary"))
     }
 
     /// Rebuild the graphix binary with the given package set
@@ -1683,11 +1902,13 @@ impl GraphixPM {
         }
     }
 
-    /// The version in the Cargo.toml at `path`, which must be crate `crate_name`'s
+    /// The version written in the Cargo.toml at `path`, which must be crate
+    /// `crate_name`'s; none when it is inherited from a workspace, which
+    /// cargo resolves for a path dependency.
     async fn read_package_version(
         path: &Path,
         crate_name: &str,
-    ) -> Result<CompactString> {
+    ) -> Result<Option<CompactString>> {
         let cargo_toml_path = path.join("Cargo.toml");
         let contents = fs::read_to_string(&cargo_toml_path)
             .await
@@ -1704,16 +1925,19 @@ impl GraphixPM {
                 name.unwrap_or("nothing")
             ),
         }
-        // CR claude for claude: [bug/medium] A path package whose version is inherited
+        // XCR claude for claude: [bug/medium] A path package whose version is inherited
         // (`version.workspace = true`) is refused here with "no version found", though
         // add_packages only prints the version and cargo resolves an inherited one for
         // a path dependency. Keep the name check, but print the version only when it is
         // a string (or read the workspace's [workspace.package].version), and never
         // fail on it. probe:
         // design/review-2026-10-26/repro/package-path-workspace-version.sh (package-01)
-        field("version")
-            .map(|s| s.to_compact_string())
-            .ok_or_else(|| anyhow!("no version found in {}", cargo_toml_path.display()))
+        // 2026-10-26 claude: read_package_version keeps the crate-name check and
+        // returns the version only when it is written as a string (None when
+        // inherited); add_packages prints it when present. Pin:
+        // test::a_path_package_may_inherit_its_version (version.workspace = true reads
+        // as None, a written version reads back, a wrong name is refused).
+        Ok(field("version").map(|s| s.to_compact_string()))
     }
 
     /// Add packages and rebuild
@@ -1749,9 +1973,12 @@ impl GraphixPM {
                 let path = path
                     .canonicalize()
                     .with_context(|| format!("resolving path {}", path.display()))?;
-                let version =
-                    Self::read_package_version(&path, &pkg.crate_name()).await?;
-                println!("Adding {name} @ path {} (version {version})", path.display());
+                match Self::read_package_version(&path, &pkg.crate_name()).await? {
+                    Some(v) => {
+                        println!("Adding {name} @ path {} (version {v})", path.display())
+                    }
+                    None => println!("Adding {name} @ path {}", path.display()),
+                }
                 PackageEntry::Path(path)
             } else if skip_crates_io_check {
                 match pkg.version() {
@@ -1825,26 +2052,31 @@ impl GraphixPM {
                 println!("{name} is not installed");
             }
         }
-        // a stdlib removal needs the shell's feature graph: the source,
-        // unpacked once and built from
-        let prepared = match stdlib.is_empty() {
-            true => None,
+        // a stdlib removal needs the shell's feature graph and what the
+        // external packages kept register: the source, unpacked once and
+        // built from
+        let (prepared, cascade) = match stdlib.is_empty() {
+            true => (None, BTreeSet::new()),
             false => {
                 let source = self.prepare_source(&version).await?;
                 let cargo = fs::read_to_string(source.join("Cargo.toml")).await?;
                 let edges = feature_edges(&cargo)?;
-                Some((source, edges))
+                let mut plan = installed.build_plan();
+                plan.external.retain(|name, _| !external.contains(&name.as_str()));
+                // the build adds the external packages to the source again
+                let saved = Saved::take(&source).await?;
+                let registered = self.add_external(&source, &plan).await;
+                saved.put_back().await?;
+                let cascade = removal_cascade(
+                    &stdlib,
+                    &installed.stdlib_installed,
+                    &edges,
+                    &registered?,
+                )?;
+                (Some(source), cascade)
             }
         };
-        let mut cascade: BTreeSet<CompactString> = BTreeSet::new();
-        if let Some((_, edges)) = &prepared {
-            for name in &stdlib {
-                let dependents =
-                    installed_dependents(name, &installed.stdlib_installed, edges);
-                cascade.extend(dependents.into_iter().filter(|d| !stdlib.contains(d)));
-            }
-        }
-        // CR claude for claude: [bug/medium] The cascade is decided and confirmed
+        // XCR claude for claude: [bug/medium] The cascade is decided and confirmed
         // before anyone asks what the external packages register. install_from_source's
         // reinstall_registered then puts the target back, but its cascaded dependents
         // stay removed. With netidx-admin installed, `remove sys --yes` keeps sys and
@@ -1852,6 +2084,13 @@ impl GraphixPM {
         // prepared source here first, and refuse (or drop with a note) the requested
         // names it registers before computing the cascade. Found by reading; not run.
         // (package-03)
+        // 2026-10-26 claude: remove_packages now asks what the kept external packages
+        // register before the cascade: add_external over the prepared source (its
+        // manifest and lockfile put back by Saved for the build), then removal_cascade
+        // refuses the whole removal when a requested stdlib package is registered,
+        // before any prompt. shell_metadata runs in the source dir so the source's
+        // cargo config applies as it does to the build. Pin:
+        // test::pure::a_removal_an_external_package_needs_is_refused.
         if !cascade.is_empty() {
             let list: Vec<&str> = cascade.iter().map(|s| s.as_str()).collect();
             println!(
@@ -1883,7 +2122,7 @@ impl GraphixPM {
             println!("Removing {name}");
         }
         match &prepared {
-            Some((source, _)) => self.install_from_source(source, &mut installed).await?,
+            Some(source) => self.install_from_source(source, &mut installed).await?,
             None => self.rebuild(&mut installed, &version).await?,
         }
         write_packages(&installed).await
@@ -1991,13 +2230,16 @@ impl GraphixPM {
         // the stdlib packages it depends on, as the shell ships them, are
         // features: the feature graph pulls their closure and `core` is always
         // compiled.
-        let mut external = BTreeMap::new();
-        external.insert(
-            short_name.to_compact_string(),
-            PackageEntry::Path(package_dir.clone()),
-        );
         let shell_manifest = fs::read_to_string(source_dir.join("Cargo.toml")).await?;
-        let features = standalone_features(&contents, &shell_manifest)?;
+        let mut features = standalone_features(&contents, &shell_manifest)?;
+        features.push(format_compact!("{crate_name}/standalone"));
+        let plan = BuildPlan {
+            features,
+            external: BTreeMap::from([(
+                short_name.to_compact_string(),
+                PackageEntry::Path(package_dir.clone()),
+            )]),
+        };
         // an override is the caller's own tree: its manifest and lockfile are
         // put back however the build ends, an interrupt included
         let saved = match source_override {
@@ -2007,10 +2249,10 @@ impl GraphixPM {
         // a caller's own tree builds in its own target directory
         let target_dir = match source_override {
             Some(_) => source_dir.join("target"),
-            None => shared_target_dir()?,
+            None => self.target_dir.clone(),
         };
         let built = tokio::select! {
-            built = self.build_embedding(&source_dir, &external, &features, crate_name, &target_dir) => built,
+            built = self.build_embedding(&source_dir, &plan, &target_dir) => built,
             _ = tokio::signal::ctrl_c() => Err(anyhow!("interrupted")),
         };
         if let Some(saved) = saved {
@@ -2026,22 +2268,18 @@ impl GraphixPM {
         Ok(())
     }
 
-    /// Build the shell in `source_dir` with `external` added and
-    /// `features` on, into `target_dir`: the binary's path.
+    /// Build the shell in `source_dir` as `plan` says, into `target_dir`:
+    /// the binary's path.
     async fn build_embedding(
         &self,
         source_dir: &Path,
-        external: &BTreeMap<CompactString, PackageEntry>,
-        features: &[CompactString],
-        crate_name: &str,
+        plan: &BuildPlan,
         target_dir: &Path,
     ) -> Result<PathBuf> {
         println!("Updating Cargo.toml...");
-        rewrite_manifest(source_dir, external).await?;
+        self.add_external(source_dir, plan).await?;
         println!("Building standalone binary (this may take a while)...");
-        let mut f = features.to_vec();
-        f.push(format_compact!("{crate_name}/standalone"));
-        self.cargo_build(source_dir, &f, target_dir).await
+        self.cargo_build(source_dir, &plan.features, target_dir).await
     }
 
     /// Query crates.io for the latest version of a crate

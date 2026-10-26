@@ -137,6 +137,83 @@ async fn download_source_extracts_package_at_expected_root() {
     );
 }
 
+/// The cached source is found in the registry under the cargo home, an
+/// index directory down, wherever the cargo binary is installed.
+#[tokio::test]
+async fn local_source_comes_from_the_cargo_home_registry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cargo_home = tmp.path().join("cargo");
+    let cached = cargo_home
+        .join("registry")
+        .join("src")
+        .join("index.crates.io-0123456789abcdef")
+        .join("graphix-shell-9.9.9");
+    std::fs::create_dir_all(cached.join("src")).unwrap();
+    std::fs::write(cached.join("Cargo.toml"), "[package]\n").unwrap();
+    std::fs::write(cached.join("src").join("main.rs"), "fn main() {}\n").unwrap();
+    let data = tmp.path().join("data");
+    let source = super::extract_local_source(&cargo_home, &data, "9.9.9").await.unwrap();
+    assert_eq!(source, data.join("build").join("graphix-shell-9.9.9"));
+    assert!(source.join("Cargo.toml").is_file());
+    assert!(source.join("src").join("main.rs").is_file());
+}
+
+/// A path package's version may be inherited from its workspace; its
+/// crate name must still be the one asked for.
+#[tokio::test]
+async fn a_path_package_may_inherit_its_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = |version: &str| {
+        format!(
+            "[package]\nname = \"graphix-package-foo\"\n{version}edition = \"2024\"\n"
+        )
+    };
+    let read = |path: &Path| {
+        let path = path.to_path_buf();
+        async move {
+            super::GraphixPM::read_package_version(&path, "graphix-package-foo").await
+        }
+    };
+    std::fs::write(tmp.path().join("Cargo.toml"), manifest("version.workspace = true\n"))
+        .unwrap();
+    assert_eq!(read(tmp.path()).await.unwrap(), None);
+    std::fs::write(tmp.path().join("Cargo.toml"), manifest("version = \"0.1.0\"\n"))
+        .unwrap();
+    assert_eq!(read(tmp.path()).await.unwrap().as_deref(), Some("0.1.0"));
+    let e = super::GraphixPM::read_package_version(tmp.path(), "graphix-package-bar")
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not graphix-package-bar"), "{e}");
+}
+
+/// The new binary takes the exe's path and the old one is kept beside it
+/// as a dated backup; the staged copy, one an interrupted run left
+/// included, does not stay.
+#[tokio::test]
+async fn a_replaced_exe_is_kept_as_a_backup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let exe = bin.join("graphix");
+    std::fs::write(&exe, "old").unwrap();
+    std::fs::write(bin.join(".graphix.new"), "partial").unwrap();
+    let built = tmp.path().join("built");
+    std::fs::write(&built, "new").unwrap();
+    let mut pm = super::GraphixPM::new("0.0.0").await.unwrap();
+    pm.exe = exe.clone();
+    pm.replace_exe(&built).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+    let others: Vec<_> = std::fs::read_dir(&bin)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| *p != exe)
+        .collect();
+    assert_eq!(others.len(), 1, "{others:?}");
+    let name = others[0].file_name().unwrap().to_str().unwrap();
+    assert!(super::backup_stamp(name).is_some(), "{name}");
+    assert_eq!(std::fs::read_to_string(&others[0]).unwrap(), "old");
+}
+
 /// An external package named like a dependency the shell already has is
 /// refused, never written over it.
 #[test]
@@ -248,6 +325,91 @@ fn write_vendor_config(dir: &Path, ws: &Path) {
     .unwrap();
 }
 
+/// A copy of the vendored graphix-shell source (its dependencies resolved)
+/// in `dir`, building from the vendored crates.
+fn vendored_shell(ws: &Path, dir: &Path) -> std::path::PathBuf {
+    let vendored = std::fs::read_dir(ws.join("vendor"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("graphix-shell-")))
+        .expect("vendored graphix-shell not found")
+        .path();
+    let source_dir = dir.join("graphix-shell");
+    cp_r::CopyOptions::new()
+        .copy_tree(&vendored, &source_dir)
+        .expect("copy vendored graphix-shell");
+    write_vendor_config(&source_dir, ws);
+    source_dir
+}
+
+/// A rebuild from the vendored source with str and an external path
+/// package that depends on array, which the record had removed: the
+/// record installs array again, the exe is replaced by a shell with str,
+/// array and the package and without http, and the old exe is backed up.
+#[tokio::test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
+async fn install_from_source_replaces_the_exe() {
+    let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    vendor(ws);
+    let _lock = build_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
+    let pkg_dir = tmp.path().join("graphix-package-testpkg");
+    let manifest = pkg_dir.join("Cargo.toml");
+    let deps = std::fs::read_to_string(&manifest).unwrap().replace(
+        "graphix-package-core = ",
+        &format!(
+            "graphix-package-array = \"{}\"\ngraphix-package-core = ",
+            crate_version(&ws.join("stdlib/graphix-package-array/Cargo.toml"))
+        ),
+    );
+    std::fs::write(&manifest, deps).unwrap();
+    let source_dir = vendored_shell(ws, tmp.path());
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let exe = bin.join(format!("graphix{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&exe, "old").unwrap();
+    let mut pm = super::GraphixPM::new(env!("CARGO_PKG_VERSION")).await.unwrap();
+    pm.exe = exe.clone();
+    pm.target_dir = tmp.path().join("target");
+    let mut packages = super::Packages {
+        stdlib_installed: ["core", "str"].into_iter().map(Into::into).collect(),
+        stdlib_removed: ["array"].into_iter().map(Into::into).collect(),
+        external: [("testpkg".into(), super::PackageEntry::Path(pkg_dir.clone()))]
+            .into_iter()
+            .collect(),
+    };
+    pm.install_from_source(&source_dir, &mut packages).await.expect("install");
+    assert_eq!(
+        packages.stdlib_installed,
+        ["array", "core", "str"].into_iter().map(Into::into).collect()
+    );
+    assert!(packages.stdlib_removed.is_empty());
+    let backups: Vec<_> = std::fs::read_dir(&bin)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| *p != exe)
+        .collect();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), "old");
+    let check = |src: &str| -> bool {
+        let f = tmp.path().join("prog.gx");
+        std::fs::write(&f, src).unwrap();
+        std::process::Command::new(&exe)
+            .arg("--check")
+            .arg(&f)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run the rebuilt graphix")
+            .success()
+    };
+    assert!(check("use str;\nstr::len(\"hi\")\n"), "use str should check");
+    assert!(check("use array;\narray::len([1])\n"), "use array should check");
+    assert!(check("use testpkg;\ntestpkg::var\n"), "use testpkg should check");
+    assert!(!check("use http;\n1\n"), "use http should fail (not installed)");
+}
+
 /// A package whose root module could never be named, or that would shadow
 /// a stdlib package, is refused.
 #[tokio::test]
@@ -320,23 +482,7 @@ println(select entries { 2 => \"GRAPHIX_STANDALONE_OK var=[v] ex=[ex] args=[a]\"
     );
     std::fs::write(&manifest, deps).unwrap();
     write_vendor_config(&pkg_dir, ws);
-    // Copy vendored graphix-shell source (already has resolved deps)
-    let vendored = std::fs::read_dir(ws.join("vendor"))
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .find(|e| {
-            e.file_name()
-                .to_str()
-                .map(|n| n.starts_with("graphix-shell-"))
-                .unwrap_or(false)
-        })
-        .expect("vendored graphix-shell not found")
-        .path();
-    let source_dir = tmp.path().join("graphix-shell");
-    cp_r::CopyOptions::new()
-        .copy_tree(&vendored, &source_dir)
-        .expect("copy vendored graphix-shell");
-    write_vendor_config(&source_dir, ws);
+    let source_dir = vendored_shell(ws, tmp.path());
     // Surface a build_standalone error directly rather than as "binary not found".
     let pm = super::GraphixPM::new(env!("CARGO_PKG_VERSION")).await.unwrap();
     pm.build_standalone(&pkg_dir, Some(&source_dir)).await.expect("build_standalone");
@@ -406,10 +552,11 @@ mod pure {
     use super::super::{
         DEFAULT_PACKAGES, PackageEntry, Packages, Selection, ShellBump, UpdatePlan,
         apply_selection, compute_update_plan, feature_depends_on, feature_edges,
-        installed_dependents, normalize_selection, parse_packages, parse_toggles,
-        plan_items, registered_by_external, reinstall_dependencies, reinstall_registered,
-        selection_from_indices, standalone_features, stdlib_packages_in_cargo_toml,
-        to_toml_string, version_gt,
+        graphix_executable, installed_dependents, normalize_selection, parse_packages,
+        parse_toggles, plan_items, refuse_foreign_graphix_package,
+        registered_by_external, reinstall_dependencies, reinstall_registered,
+        removal_cascade, selection_from_indices, standalone_features,
+        stdlib_packages_in_cargo_toml, to_toml_string, version_gt,
     };
     use compact_str::{CompactString, ToCompactString};
     use std::{
@@ -518,6 +665,18 @@ mod pure {
         assert!(!p.external.contains_key("gui"));
     }
 
+    /// cargo would resolve a relative path against the unpacked shell
+    /// source, never against packages.toml or the user's directory.
+    #[test]
+    fn a_relative_external_path_is_refused() {
+        let toml = "[stdlib]\ninstalled = [\"core\"]\n[packages]\nmine = { path = \"../mine\" }\n";
+        let e = parse_packages(toml).unwrap_err();
+        assert!(e.to_string().contains("relative"), "{e}");
+        // an old file's stdlib override is dropped whatever it names
+        let p = parse("[packages]\ncore = \"0.4.0\"\ngui = { path = \"../gui\" }\n");
+        assert!(p.stdlib_installed.contains("gui"));
+    }
+
     #[test]
     fn core_cannot_be_removed() {
         let mut p = Packages {
@@ -537,7 +696,7 @@ mod pure {
             stdlib_removed: sset(&["gui"]),
             external: ext(&[
                 ("widgets", ver("1.2.3")),
-                ("local", PackageEntry::Path(PathBuf::from("/tmp/local"))),
+                ("local", PackageEntry::Path(std::env::temp_dir().join("local"))),
             ]),
         };
         let s = to_toml_string(&p).unwrap();
@@ -868,6 +1027,90 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         );
         assert_eq!(pkgs.stdlib_installed, sset(&["core", "tui", "str", "array"]));
         assert_eq!(pkgs.stdlib_removed, sset(&["json", "sqlite"]));
+    }
+
+    /// The shell is built with graphix-package 0.9; foo reaches 0.8
+    /// through a helper crate, bar depends on 0.9 itself. Only foo is
+    /// named, and without it the build goes ahead.
+    #[test]
+    fn an_external_built_with_another_graphix_package_is_refused() {
+        let normal =
+            |pkg: &str| serde_json::json!({"pkg": pkg, "dep_kinds": [{"kind": null}]});
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": "shell", "name": "graphix-shell", "version": "0.9.0"},
+                {"id": "gp9", "name": "graphix-package", "version": "0.9.0"},
+                {"id": "gp8", "name": "graphix-package", "version": "0.8.0"},
+                {"id": "foo", "name": "graphix-package-foo", "version": "0.1.0"},
+                {"id": "helper", "name": "helper", "version": "1.0.0"},
+                {"id": "bar", "name": "graphix-package-bar", "version": "0.2.0"},
+            ],
+            "resolve": {"root": "shell", "nodes": [
+                {"id": "shell", "deps": [normal("gp9"), normal("foo"), normal("bar")]},
+                {"id": "foo", "deps": [normal("helper")]},
+                {"id": "helper", "deps": [normal("gp8")]},
+                {"id": "bar", "deps": [normal("gp9")]},
+                {"id": "gp9", "deps": []},
+                {"id": "gp8", "deps": []},
+            ]}
+        });
+        let both = BTreeMap::from([
+            ("foo".into(), PackageEntry::Version("0.1.0".into())),
+            ("bar".into(), PackageEntry::Version("0.2.0".into())),
+        ]);
+        let e = refuse_foreign_graphix_package(&metadata, &both).unwrap_err().to_string();
+        assert!(e.contains("foo (graphix-package 0.8.0)"), "{e}");
+        assert!(!e.contains("bar"), "{e}");
+        let bar = BTreeMap::from([("bar".into(), PackageEntry::Version("0.2.0".into()))]);
+        refuse_foreign_graphix_package(&metadata, &bar).unwrap();
+    }
+
+    /// netidx-admin registers tui and sys: removing sys would cascade tui
+    /// and json, then the build would compile sys and tui again for it,
+    /// json lost. Refused whole; json alone goes.
+    #[test]
+    fn a_removal_an_external_package_needs_is_refused() {
+        let edges = feature_edges(FEATURES_TOML).unwrap();
+        let installed = sset(&["core", "array", "str", "sys", "tui", "json"]);
+        let registered = sset(&["netidx-admin", "core", "array", "str", "sys", "tui"]);
+        let e = removal_cascade(&sset(&["sys"]), &installed, &edges, &registered)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("depends on sys"), "{e}");
+        assert_eq!(
+            removal_cascade(&sset(&["json"]), &installed, &edges, &registered).unwrap(),
+            BTreeSet::new()
+        );
+        assert_eq!(
+            removal_cascade(&sset(&["sys"]), &installed, &edges, &BTreeSet::new())
+                .unwrap(),
+            sset(&["json", "tui"])
+        );
+    }
+
+    /// The binary is wherever cargo says it built it, a target triple's
+    /// directory included; a build script or another bin is not it.
+    #[test]
+    fn the_built_binary_is_the_one_cargo_reports() {
+        let exe = "/t/x86_64-unknown-linux-gnu/release/graphix";
+        let artifact = |name: &str, kind: &str| {
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "target": {"name": name, "kind": [kind]},
+                "executable": exe,
+            })
+            .to_string()
+        };
+        assert_eq!(
+            graphix_executable(&artifact("graphix", "bin")),
+            Some(PathBuf::from(exe))
+        );
+        assert_eq!(graphix_executable(&artifact("graphix", "custom-build")), None);
+        assert_eq!(graphix_executable(&artifact("other", "bin")), None);
+        assert_eq!(
+            graphix_executable(r#"{"reason":"build-finished","success":true}"#),
+            None
+        );
     }
 
     fn shell_cargo_toml() -> String {
