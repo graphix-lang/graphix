@@ -1283,6 +1283,46 @@ async fn wake_over_a_republished_let_catches_up(mode: Mode) -> Result<()> {
 
 modes!(wake_over_a_republished_let_catches_up);
 
+// A let republished quietly at its arm's wake did not fire: a callee bound
+// fresh at another arm's wake is owed none of it, so `count(x)` stays
+// silent and `b` keeps -7.
+async fn quiet_republish_is_owed_no_fire(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    use graphix_package_core::testing::data;
+    let (values, _) = run_delta(
+        r#"{
+  let n = 0;
+  n <- select n { k if k < 7 => (k ~ n) + 1, _ => never() };
+  let in0 = 0;
+  in0 <- select n { 3 => 1, 4 => 0, _ => never() };
+  let in1 = 0;
+  let in2 = 1;
+  in2 <- select n { 1 => 0, 5 => 1, _ => never() };
+  let in3 = 0;
+  in3 <- select n { 2 => 1, _ => never() };
+  let g: fn(v: i64) -> i64 = |v| v + 100;
+  let a = select in0 {
+    0 => {
+      let x = in1 + 0;
+      g <- select in3 { 0 => never(), _ => |v| count(x) };
+      count(x)
+    },
+    _ => -1
+  };
+  let b = select in2 { 0 => -7, _ => g(5) };
+  (a, b)
+}"#,
+        mode,
+    )
+    .await?;
+    let got: Vec<String> =
+        values.into_iter().map(|v| data(v).to_string().replace("i64:", "")).collect();
+    assert_eq!(got, ["[1, 105]", "[1, -7]", "[-1, -7]", "[1, -7]"], "{mode:?}");
+    Ok(())
+}
+
+modes!(quiet_republish_is_owed_no_fire);
+
 // `error as e` types `e` as the errors that reach the arm, so its
 // payload reads and it passes where the scrutinee's errors are taken.
 run!(

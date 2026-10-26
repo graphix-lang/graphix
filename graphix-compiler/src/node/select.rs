@@ -984,6 +984,7 @@ fn deselect<R: Rt, E: UserEvent>(
     if sleep {
         super::deselecting_arm(true, || arm.1.sleep(ctx));
     }
+    tracked.fell_asleep(j, ctx.rt.cycle());
     tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
 }
 
@@ -1559,6 +1560,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             let Some(v) = reach else {
                 if runs[i].unreached() {
                     pat.sleep_guard(ctx);
+                    fires.fell_asleep(i, ctx.rt.cycle());
                     fires.refresh(&ctx.env, i, |r| guard_refs(pat, r));
                 }
                 continue;
@@ -1879,10 +1881,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted_guard_mask: _,
             resident: _,
             slept,
-            arm_facts: _,
+            arm_facts,
             flags: _,
         } = self;
         slept.set();
+        if let Some(facts) = arm_facts {
+            let cycle = ctx.rt.cycle();
+            facts.tracked.all_fell_asleep(cycle);
+            if let Some(g) = &mut facts.guards {
+                g.fires.all_fell_asleep(cycle);
+            }
+        }
         arg.sleep(ctx);
         for (pat, body) in arms {
             body.sleep(ctx);

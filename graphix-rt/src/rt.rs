@@ -316,10 +316,6 @@ impl<X: GXExt> GXRt<X> {
             || self.var_watches.len() > 1
     }
 
-    fn previous_cycle(&self) -> u64 {
-        self.cycle.wrapping_sub(1)
-    }
-
     /// An execution state over a new runtime, its event's user part
     /// the extension's empty event.
     pub fn new_state() -> anyhow::Result<ExecState<Self, X::UserEvent>> {
@@ -383,8 +379,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.custom_updates.forget(&id);
     }
 
-    fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        self.store.insert(id, (tv, self.previous_cycle()));
+    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>) {
+        match entry {
+            None => self.store.remove(&id),
+            Some(e) => self.store.insert(id, e),
+        };
     }
 
     fn cycle(&self) -> u64 {

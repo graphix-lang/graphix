@@ -13,8 +13,8 @@ use triomphe::Arc;
 
 /// What an evaluation catching up owes the inputs it learns only as it
 /// runs (a callee bound at its dispatch, a reference's new target): the
-/// fire of one written after `since`, the evaluating arm's last run,
-/// unless an enclosing select tracks it, whose bits decide.
+/// fire of one written after `since`, the last cycle the evaluating arm
+/// was awake, unless an enclosing select tracks it, whose bits decide.
 #[derive(Debug)]
 pub(crate) struct CatchUp {
     since: u64,
@@ -36,7 +36,7 @@ impl CatchUp {
 }
 
 /// Whether the catch-up scope owes `id` a fire: it was written after the
-/// arm's last run, untracked, and is not delivered this cycle.
+/// arm was last awake, untracked, and is not delivered this cycle.
 pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) -> bool {
     let Some(scope) = &ctx.catch_up else { return false };
     // CR claude for claude: [bug/medium] [bug/medium] This refuses every input any arm
@@ -56,7 +56,7 @@ pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) ->
         && ctx
             .rt
             .store_get(id)
-            // CR claude for claude: [bug/medium] [bug/medium] owed compares the store's
+            // XCR claude for claude: [bug/medium] [bug/medium] owed compares the store's
             // write stamp with the arm's last run, but writes that are not fires also
             // move that stamp: a `let` republishing quietly at its wake (Bind::update),
             // and a formal re-seeded standing (store_insert_standing). A callee bound
@@ -69,6 +69,16 @@ pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) ->
             // that here. probe:
             // design/review-2026-10-26/repro/c-prune-wake-owed-quiet-stamp.gx
             // (c-prune-wake-02)
+            // 2026-10-26 claude: Fixed: a standing store entry keeps the stamp of the
+            // entry it replaces when that one is from an earlier cycle
+            // (branch::standing_stamp, shared by Rt::store_insert_standing's default
+            // and RtView's), Rt::store_put is now exact (stamp and all, so a fork's
+            // merge keeps it), and Bind's quiet publication (a let republishing at its
+            // wake, a first quiet publish) stands instead of stamping a delivery. The
+            // formal re-seeded standing (QuietAtRoot::Stand) gets the same through
+            // store_insert_standing. The probe's last cycle is [] in every engine. Pin:
+            // lang::select::quiet_republish_is_owed_no_fire (interp, jit, par, jit_par;
+            // fails without the fix with a last [1, 1]).
             .is_some_and(|(tv, stamp)| *stamp > scope.since && !tv.tag().is_bottom())
 }
 
@@ -121,11 +131,37 @@ pub(crate) struct TrackedFires {
     /// evaluation, which names what a node knows only once it ran (a
     /// `Deref`'s target).
     ran: Vec<bool>,
-    /// Per arm: the cycle it last ran, or the one the tracker was built.
-    last_run: Vec<u64>,
+    /// Per arm: the last cycle it was awake.
+    clock: Vec<ArmClock>,
     /// `all`'s keys for a catch-up scope, built when one opens after
     /// `all` changed.
     keys: Option<Arc<IntSet<BindId>>>,
+}
+
+/// An arm's last cycle awake, as the arm stands.
+#[derive(Debug, Clone, Copy)]
+enum ArmClock {
+    /// It ran in this cycle and has not fallen asleep since.
+    Awake(u64),
+    /// It was last awake in this cycle, the tracker's build cycle if it
+    /// never ran.
+    Asleep(u64),
+}
+
+impl ArmClock {
+    fn awake_until(self) -> u64 {
+        match self {
+            ArmClock::Awake(c) | ArmClock::Asleep(c) => c,
+        }
+    }
+
+    /// Stopped running in `cycle`: it stood selected, walked or not,
+    /// until the cycle before.
+    fn fell_asleep(&mut self, cycle: u64) {
+        if let ArmClock::Awake(ran) = *self {
+            *self = ArmClock::Asleep(ran.max(cycle.saturating_sub(1)))
+        }
+    }
 }
 
 /// The catch-up deliveries made for one evaluation, with what each
@@ -181,7 +217,12 @@ impl TrackedFires {
             // cycle. probe:
             // design/review-2026-10-26/repro/tests-select-dynamic-callee-misses-build-cycle-fire.gx
             // Also reported as (x-refs-catchup-04). (tests-select-03)
-            last_run: vec![cycle; n],
+            // 2026-10-26 claude: last_run is now ArmClock (x-prune-01): a never-run arm is
+            // ArmClock::Asleep(build cycle), and TrackedFires::open takes no later than the
+            // enclosing catch-up scope's since, so a nested arm's first entry inside a woken or
+            // first-entered arm already counts from the enclosing arm's cycle; the top-level
+            // build-cycle case this CR names is unchanged.
+            clock: vec![ArmClock::Asleep(cycle); n],
             keys: None,
         };
         for i in 0..n {
@@ -390,7 +431,11 @@ impl TrackedFires {
             .keys
             .get_or_insert_with(|| Arc::new(all.keys().copied().collect()))
             .clone();
-        let since = self.last_run[i];
+        // an arm sleeps whenever the arm around it does
+        let since = match &ctx.catch_up {
+            Some(outer) => self.clock[i].awake_until().min(outer.since),
+            None => self.clock[i].awake_until(),
+        };
         let scope = CatchUp { since, tracked, outer: ctx.catch_up.clone() };
         Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))))
     }
@@ -405,7 +450,7 @@ impl TrackedFires {
         if let Some(outer) = outer {
             ctx.catch_up = outer;
         }
-        // CR claude for claude: [bug/high] last_run records the last cycle a walk
+        // XCR claude for claude: [bug/high] last_run records the last cycle a walk
         // evaluated the arm, and wake::owed treats anything written after it as a fire
         // missed in sleep. Walk pruning moves that cycle: a select nothing marks is not
         // walked while its arm stays selected, so at the arm's wake a write that landed
@@ -417,7 +462,20 @@ impl TrackedFires {
         // design/review-2026-10-26/repro/x-prune-catchup-since-last-walk.gx
         // (GRAPHIX_PRUNE=on prints 0 1 0 101, off prints 0 1 0; graphix-fuzz check
         // reports a walk pruning divergence) (x-prune-01)
-        // CR claude for claude: [bug/high] [bug/high] last_run is set at every
+        // 2026-10-26 claude: Fixed: TrackedFires keeps an ArmClock per arm (Awake(last
+        // run) | Asleep(last cycle awake)); a run sets Awake, and the arm's falling
+        // asleep (select.rs deselect, a guard the chain passes by, Select::sleep and
+        // the seq machine's deselect and sleep for every awake arm) records the cycle
+        // before it, so 'since' is when the arm fell asleep whether or not pruning
+        // walked it; TrackedFires::open also takes no later than the enclosing scope's
+        // since (an arm sleeps whenever the arm around it does). The probe prints 0 1 0
+        // in both prune modes. Pins: lang::prune::catch_up_counts_from_the_deselect
+        // (this probe), catch_up_counts_from_the_enclosing_sleep (fails without
+        // Select::sleep's stamp), guard_catch_up_counts_from_the_pass and
+        // guard_catch_up_counts_from_the_enclosing_sleep (the guard tracker's two
+        // stamps). No pin for the seq machine's stamps or the enclosing-scope min,
+        // which I could not reach from a program.
+        // XCR claude for claude: [bug/high] [bug/high] last_run is set at every
         // evaluation of the arm, so it is the last cycle a walk reached the arm, and
         // walk pruning changes it: a skipped statement leaves it behind where the
         // unpruned walk advances it. wake::owed compares input write stamps against it.
@@ -429,7 +487,26 @@ impl TrackedFires {
         // asleep' in both walks, as the ruling ('fired while it slept') asks. probe:
         // design/review-2026-10-26/repro/c-prune-wake-last-run-pruned.gx
         // (c-prune-wake-01)
-        self.last_run[i] = ctx.rt.cycle();
+        // 2026-10-26 claude: Fixed with x-prune-01 (ArmClock: since is the cycle before
+        // the arm fell asleep, set at its deselect or its select's or machine's sleep,
+        // not at every walk). graphix-fuzz check of the probe now AGREEs. Pin:
+        // lang::prune::skipped_statement_owes_its_awake_fires_nothing (this probe on a
+        // counter; fails without the fix pruned, prints (2, 1) last).
+        self.clock[i] = ArmClock::Awake(ctx.rt.cycle());
+    }
+
+    /// Arm `i` stops running in `cycle` (deselected, or put to sleep
+    /// while selected): it was awake until the cycle before. An arm
+    /// already asleep stays asleep since it fell.
+    pub(crate) fn fell_asleep(&mut self, i: usize, cycle: u64) {
+        self.clock[i].fell_asleep(cycle)
+    }
+
+    /// Every awake arm falls asleep in `cycle`: the node holding them sleeps.
+    pub(crate) fn all_fell_asleep(&mut self, cycle: u64) {
+        for c in self.clock.iter_mut() {
+            c.fell_asleep(cycle)
+        }
     }
 
     /// Arm `i` is entered: the carried fires it reads are its entry's.

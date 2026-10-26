@@ -317,6 +317,7 @@ fn deselect<R: Rt, E: UserEvent>(
             n.sleep(ctx)
         }
     });
+    tracked.fell_asleep(j, ctx.rt.cycle());
     tracked.refresh(&ctx.env, j, |r| step.refs(r));
 }
 
@@ -401,6 +402,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
             for n in s.nodes.iter_mut() {
                 n.sleep(ctx)
             }
+        }
+        if let Some((tracked, _)) = &mut self.tracked {
+            tracked.all_fell_asleep(ctx.rt.cycle());
         }
         self.current = None;
     }

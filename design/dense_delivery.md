@@ -72,9 +72,11 @@ including bottom: the store keeps an at-rest bottom and does NOT retain
 the pre-bottom value (`Rt::store_value` answers `None` for a bottomed
 bind). A reader interprets `stamp == cycle()` as delivered this cycle
 (the entry's tag), an older stamp as Stale (StaleBottom for a bottom
-entry), absence as the phantom. `store_insert_standing` stamps an entry
-as an earlier cycle — value-channel maintenance that is deliberately not
-a delivery (`ByRef`'s seed).
+entry), absence as the phantom. `store_insert_standing` keeps the
+stamp of the entry it replaces, or stamps it as an earlier cycle when
+that entry is absent or this cycle's — value-channel maintenance that is
+deliberately not a delivery (`ByRef`'s seed, a `let`'s quiet
+republication).
 
 `event.variables` is the OVERLAY, not the store: same-cycle transient
 deliveries (select arm binds, call-site formal publishes). Reads fall

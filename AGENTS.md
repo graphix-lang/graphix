@@ -811,8 +811,9 @@ node graph IS the IR — there is no parallel typed IR
   consumes that input's bit, and it is never delivered; an arm a guard's
   flip selects binds stale). An input an arm learns as it runs (a callee
   a function value binds, a reference's new target) that no enclosing
-  select tracks is caught up by its write stamp against the arm's last
-  run (`node::wake::CatchUp`). An input that
+  select tracks is caught up by its write stamp against the last cycle
+  the arm was awake, walked or not (`node::wake::CatchUp`); a standing
+  entry keeps its stamp (`branch::standing_stamp`). An input that
   went bottom during the sleep is bottom at the wake: a bottom input
   SETS a node's resident (`TagValue::set_bottom`), never rides it, and
   every wake refresh stands a stale bottom like a value. Sleep state is

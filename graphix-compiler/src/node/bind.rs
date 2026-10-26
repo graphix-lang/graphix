@@ -564,11 +564,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                         return;
                     }
                     ctx.event.variables.insert(id, TagValue::tagged(Value::Null, tag));
-                    ctx.rt.store_insert(
-                        id,
-                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
-                    );
-                    if !quiet {
+                    let stored = TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM);
+                    if quiet {
+                        ctx.rt.store_insert_standing(id, stored)
+                    } else {
+                        ctx.rt.store_insert(id, stored);
                         ctx.rt.notify_set(id);
                     }
                 });
@@ -579,8 +579,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                         return;
                     }
                     ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    ctx.rt.store_insert(id, TagValue::fired(v));
-                    if !quiet {
+                    if quiet {
+                        ctx.rt.store_insert_standing(id, TagValue::fired(v))
+                    } else {
+                        ctx.rt.store_insert(id, TagValue::fired(v));
                         ctx.rt.notify_set(id);
                     }
                 });

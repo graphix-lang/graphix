@@ -199,6 +199,79 @@ async fn second_sleep_keeps_the_first_sleeps_cycle() -> Result<()> {
     agrees_last(code, "[100, 2]").await
 }
 
+// A wake owes a callee bound fresh the fires that landed after its arm
+// fell asleep, not after the arm's last walk: `v` is written while arm 1
+// stands selected and unwalked, so `g`, bound at the wake, counts nothing.
+const SINCE_THE_ARM_FELL_ASLEEP: &str = "{
+  let n = 0;
+  n <- select n < 30 { true => n + 1, false => never() };
+  let v = 0;
+  v <- select n == 10 { true => 7, false => never() };
+  let g = |x: i64| count(v) * 100 + x;
+  let k = |x: i64| x;
+  let f = select uniq(n >= 15) { true => g, false => k };
+  let sc = 0;
+  sc <- select n { 5 => 1, 12 => 2, 20 => 1, _ => never() };
+  select sc { 1 => CALL, _ => 0 }
+}";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn catch_up_counts_from_the_deselect() -> Result<()> {
+    agrees(&SINCE_THE_ARM_FELL_ASLEEP.replace("CALL", "f(1)"), &["0", "1", "0"]).await
+}
+
+// The same arm falls asleep with the select around it while still
+// selected.
+#[tokio::test(flavor = "multi_thread")]
+async fn catch_up_counts_from_the_enclosing_sleep() -> Result<()> {
+    let code =
+        SINCE_THE_ARM_FELL_ASLEEP.replace("CALL", "select 0 { 0 => f(1), _ => 0 }");
+    agrees(&code, &["0", "1", "0"]).await
+}
+
+// A guard's callee is owed the same, from the cycle the chain passed the
+// guard by.
+#[tokio::test(flavor = "multi_thread")]
+async fn guard_catch_up_counts_from_the_pass() -> Result<()> {
+    let code = SINCE_THE_ARM_FELL_ASLEEP
+        .replace("1 => CALL, _ => 0", "1 if f(1) > 50 => 1, 1 => 2, _ => 0");
+    agrees(&code, &["0", "2", "0"]).await
+}
+
+// Or from the cycle the select around it slept.
+#[tokio::test(flavor = "multi_thread")]
+async fn guard_catch_up_counts_from_the_enclosing_sleep() -> Result<()> {
+    let code = SINCE_THE_ARM_FELL_ASLEEP
+        .replace("CALL", "select 0 { 0 if f(1) > 50 => 1, _ => 2 }");
+    agrees(&code, &["0", "2", "0"]).await
+}
+
+// `x` fires while arm 1 of the `in2` select stands selected and its
+// statement is skipped: at the arm's wake the callee bound there counts
+// none of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn skipped_statement_owes_its_awake_fires_nothing() -> Result<()> {
+    let code = "{
+  let n = 0;
+  n <- select n { k if k < 7 => (k ~ n) + 1, _ => never() };
+  let in1 = 0;
+  in1 <- select n { 1 => 5, _ => never() };
+  let in2 = 1;
+  in2 <- select n { 2 => 0, 4 => 0, 5 => 1, _ => never() };
+  let in3 = 0;
+  in3 <- select n { 3 => 1, _ => never() };
+  let g: fn(v: i64) -> i64 = |v| v + 100;
+  let a = {
+    let x = in1 + 0;
+    g <- select in3 { 0 => never(), _ => |v| count(x) };
+    count(x)
+  };
+  let b = select in2 { 0 => -7, _ => g(5) };
+  (a, b)
+}";
+    agrees(code, &["[1, 105]", "[2, 105]", "[2, -7]", "[2, -7]"]).await
+}
+
 async fn agrees_last(code: &str, expected: &str) -> Result<()> {
     for mode in [Mode::Unpruned, Mode::Jit] {
         let (values, _) = walks(code, mode).await?;

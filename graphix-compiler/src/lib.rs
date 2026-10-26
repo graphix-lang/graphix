@@ -1190,19 +1190,17 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// that landed now would leave a store entry nothing removes.
     fn forget_writes(&mut self, id: BindId);
 
-    /// Insert a standing entry, stamped as an earlier cycle so a
-    /// same-cycle reader never sees it as delivered.
-    fn store_insert_standing(&mut self, id: BindId, tv: TagValue);
-
-    /// Put back an entry [`Self::store_get`] read: absent, delivered this
-    /// cycle or standing, as it was.
-    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>) {
-        match entry {
-            None => self.store_remove(&id),
-            Some((tv, stamp)) if stamp == self.cycle() => self.store_insert(id, tv),
-            Some((tv, _)) => self.store_insert_standing(id, tv),
-        }
+    /// Insert a standing entry: no delivery, so it keeps the stamp of
+    /// the last one, and a same-cycle reader never sees it as delivered
+    /// ([`branch::standing_stamp`]).
+    fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
+        let stamp = branch::standing_stamp(self.store_get(&id), self.cycle());
+        self.store_put(id, Some((tv, stamp)))
     }
+
+    /// Put back an entry [`Self::store_get`] read, stamp and all, or
+    /// remove it when it was absent.
+    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>);
 
     /// The current cycle number.
     fn cycle(&self) -> u64;
@@ -2223,6 +2221,9 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     // Route every site through this function with one stored form and a notify flag; a
     // quiet republication takes store_insert_standing. Found by reading; not run.
     // (x-dup-02)
+    // 2026-10-26 claude: Bind's quiet publication now takes store_insert_standing,
+    // which keeps the replaced entry's stamp (c-prune-wake-02); the other hand-rolled
+    // sites are unchanged.
     pub fn deliver(&mut self, id: BindId, tv: TagValue) {
         let standing = if tv.tag().is_bottom() {
             TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)

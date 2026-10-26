@@ -43,6 +43,17 @@ pub(crate) fn stored_value(e: Option<&(TagValue, u64)>) -> Option<Value> {
     )
 }
 
+/// The stamp of a standing entry replacing `e` in `cycle`: a standing
+/// entry is no delivery, so it keeps the stamp of the last one from an
+/// earlier cycle, else an earlier cycle's, which no same-cycle reader
+/// sees as delivered.
+pub(crate) fn standing_stamp(e: Option<&(TagValue, u64)>, cycle: u64) -> u64 {
+    match e {
+        Some((_, stamp)) if *stamp < cycle => *stamp,
+        _ => cycle.wrapping_sub(1),
+    }
+}
+
 /// A runtime call a forked branch made, replayed into its parent at the
 /// merge in the order the branch made it.
 enum RtOp {
@@ -292,13 +303,10 @@ impl<'a, R: Rt> RtView<'a, R> {
         self.mark_readers(id)
     }
 
+    /// See [`Rt::store_insert_standing`].
     pub fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        match self {
-            Self::Root(r) => r.store_insert_standing(id, tv),
-            Self::Fork(f) => {
-                f.store.insert(id, Some((tv, f.cycle.wrapping_sub(1))));
-            }
-        }
+        let stamp = standing_stamp(self.store_get(&id), self.cycle());
+        self.store_put(id, Some((tv, stamp)));
         self.mark_readers(id)
     }
 
