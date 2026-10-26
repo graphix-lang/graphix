@@ -3899,6 +3899,74 @@ run!(
 );
 
 run!(
+    bind_over_any_is_any,
+    r#"{
+    let f = |v: (Any, i64)| select v { (x, 1) => "[x]", _ => "none" };
+    let g = |v: [`A(i64), `B(string), `C]| select v {
+        [`A(Any), `B(Any)] as `A(x) => "[x]",
+        _ => "none"
+    };
+    let w: Any = 1;
+    [f((w, 1)), g(`A(2))]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => a
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.as_str(),
+                _ => "",
+            })
+            .eq(["1", "2"]),
+        _ => false,
+    };
+    FuseExpect::None
+);
+
+run!(
+    bind_over_any_tuple_position_refused,
+    r#"{
+    let f = |v: (Any, i64)| select v { (x, 1) => str::len(x), _ => 0 - 1 };
+    let w: Any = 1;
+    f((w, 1))
+}"#,
+    refused("string does not contain Any")
+);
+
+run!(
+    bind_over_any_element_refused,
+    r#"{
+    let f = |v: Array<Any>| select v { [x, ..] => str::len(x), _ => 0 };
+    let w: Any = 1;
+    f([w])
+}"#,
+    refused("string does not contain Any")
+);
+
+run!(
+    bind_over_any_written_union_refused,
+    r#"{
+    let f = |v: [`A(i64), `B(string), `C]| select v {
+        [`A(Any), `B(Any)] as `A(x) => str::len(x),
+        _ => 0
+    };
+    f(`A(1))
+}"#,
+    refused("string does not contain Any")
+);
+
+run!(
+    bind_over_any_written_element_refused,
+    r#"{
+    let f = |v: [Array<i64>, null]| select v {
+        [Array<Any>, null] as [x, ..] => str::len(x),
+        _ => 0
+    };
+    f([1])
+}"#,
+    refused("string does not contain [Any")
+);
+
+run!(
     nested_union_slice_bind_is_the_union,
     r#"{
     let g = |v: Array<[{a: i64, b: string}, {a: string, b: i64}]>|

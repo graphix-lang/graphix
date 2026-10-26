@@ -2202,7 +2202,7 @@ impl Type {
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.
-    // CR claude for claude: [bug/high] A predicate cell standing over an `Any` part of
+    // XCR claude for claude: [bug/high] A predicate cell standing over an `Any` part of
     // self stays open here: `Any ⊇ 'a` binds nothing, and a plain bind's cell is not
     // fresh, so bind_narrowed never checks it. The arm body's uses then decide the
     // bind's type. `(x, 1)` over (Any, i64) with `str::len(x)` passes the check, and
@@ -2213,6 +2213,17 @@ impl Type {
     // still open and whose part of self is Any to Any: a pattern bind receives the
     // scrutinee's value. probe:
     // design/review-2026-10-26/repro/c-pattern-bind-over-any-open.gx (c-pattern-03)
+    // 2026-10-26 claude: narrow_member (every path of narrow_pattern and each member
+    // narrow_per_member takes) ends with Type::open_over_any: a cell of pred still
+    // open where self's part is Any is bound by 'a ⊇ Any, through tuple positions,
+    // struct fields, variant payloads, array and list elements (a slice's element set
+    // member by member) and a union's members pred could match; the written-union
+    // narrowing at compile goes through the same narrow_pattern. All four repro forms
+    // are refused at the check (string does not contain Any). Pins:
+    // lang::select::bind_over_any_tuple_position_refused,
+    // bind_over_any_element_refused, bind_over_any_written_union_refused,
+    // bind_over_any_written_element_refused, and bind_over_any_is_any for the accepted
+    // use.
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;
@@ -2260,22 +2271,79 @@ impl Type {
             // name to the union of its parts over the element's members, not to each in turn,
             // so an or-name an element binds is no longer bound to its first member's part
             // ([`A(y) | `B(y), ..] in nested_union_binds_take_every_member).
-            0 => self.contains(env, pred),
-            1 if members[0].needs_split(env, pred)? => members[0].narrow_parts(env, pred),
-            1 => self.contains(env, pred),
+            1 if members[0].needs_split(env, pred)? => {
+                members[0].narrow_member(env, pred)
+            }
+            0 | 1 => self.narrow_member(env, pred),
             _ => pred.narrow_per_member(env, &members).map(|()| true),
         }
     }
 
     /// `self ⊇ pred` for one member of what reaches a pattern: by
     /// [`Self::narrow_parts`] where a union stands under a constructor
-    /// `pred` has, else by containment.
+    /// `pred` has, else by containment; then a cell of `pred` left open
+    /// over an `Any` part is `Any` ([`Self::open_over_any`]).
     fn narrow_member(&self, env: &Env, pred: &Type) -> Result<bool> {
-        if self.needs_split(env, pred)? {
-            self.narrow_parts(env, pred)
+        let narrowed = if self.needs_split(env, pred)? {
+            self.narrow_parts(env, pred)?
         } else {
-            self.contains(env, pred)
+            self.contains(env, pred)?
+        };
+        if narrowed {
+            self.open_over_any(env, pred)?
         }
+        Ok(narrowed)
+    }
+
+    /// Bind each cell of `pred` still open where `self`'s part is `Any`
+    /// to `Any`: `Any ⊇ 'a` binds nothing, but a pattern bind receives
+    /// the scrutinee's value, whatever the arm body does with it.
+    fn open_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
+        ensure_sufficient(|| {
+            if let Type::TVar(tv) = pred {
+                return match tv.binding() {
+                    Some(b) => self.open_over_any(env, &b),
+                    None if self.with_deref(|t| matches!(t, Some(Type::Any))) => {
+                        pred.contains(env, &Type::Any).map(|_| ())
+                    }
+                    None => Ok(()),
+                };
+            }
+            let Some(p) = pred.deref_cloned() else { return Ok(()) };
+            if let Type::Set(qs) = &p {
+                return qs.iter().try_for_each(|q| self.open_over_any(env, q));
+            }
+            let Some(t) = self.shape_under(env, &p)? else { return Ok(()) };
+            let each = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
+                for (t, p) in parts {
+                    t.open_over_any(env, p)?
+                }
+                Ok(())
+            };
+            match (&t, &p) {
+                (Type::Set(_), p) => {
+                    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                    crate::expr::union_members(env, &t, &mut members)?;
+                    for m in members.iter() {
+                        if p.could_match(env, m)? {
+                            m.open_over_any(env, p)?
+                        }
+                    }
+                    Ok(())
+                }
+                (Type::Tuple(ts), Type::Tuple(ps))
+                | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
+                    each(&mut ts.iter().zip(ps.iter()))
+                }
+                (Type::Struct(fs), Type::Struct(pfs)) => each(
+                    &mut fs.iter().zip(pfs.iter()).map(|((_, t, _), (_, p, _))| (t, p)),
+                ),
+                (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
+                    e.open_over_any(env, pe)
+                }
+                _ => Ok(()),
+            }
+        })
     }
 
     /// Whether a union of `self` stands where `pred` has a constructor
