@@ -3625,6 +3625,35 @@ run!(
     }
 );
 
+// The run-time test admits any member's value at every position, so a
+// name an element binds holds each member the element's structure admits.
+run!(
+    slice_element_binds_hold_every_member,
+    r#"{
+    let f = |a: Any| select a { [x, ..] => str::len(x), _ => 0 };
+    let g = |a: Any| select a { [<x, ..>] => str::len(x), _ => 0 };
+    let h = |a| select a { [x, 1] => x, _ => 0 };
+    let i = |a: Array<[(i64, i64), (string, string)]>| select a { [(1, x), (s, "a")] => x + str::len(s), _ => 0 };
+    [f([5]), f(["ab"]), g([<5>]), g([<"ab">]), h([3, 1]), i([(1, 2), ("bc", "a")])]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [0, 2, 0, 2, 3, 4],
+        _ => false,
+    }
+);
+
+run!(
+    slice_elements_share_an_open_type,
+    "{ let f = |a| select a { [x, y] => str::len(x) + y, _ => 0 }; f([\"abc\", 1]) }",
+    refused("cannot compute i64 + string")
+);
+
+run!(
+    slice_nested_binds_hold_every_member,
+    "{ let f = |a| select a { [(1, x), (y, 2)] => str::len(x) + y, _ => 0 }; f([(1, \"a\"), (3, 2)]) }",
+    refused("string does not contain i64")
+);
+
 run!(
     slice_rest_scrutinee_type,
     r#"{

@@ -2,12 +2,14 @@
 //! they survive a failed check; the check adds the types.
 
 use crate::{
+    position::LineIndex,
     query::{display_type, in_file},
     state::ServerState,
     text::zero_based,
     uri::{path_to_uri, uri_to_path},
     workspace::{FileKind, summarize},
 };
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use graphix_compiler::{
     SourcePosition,
@@ -94,32 +96,35 @@ fn declared(path: &Path, text: ArcStr) -> Arc<[Symbol]> {
 
 impl ServerState {
     /// The range of a symbol's name, LSP-encoded.
-    fn name_range(&self, text: &str, s: &Symbol) -> Range {
+    fn name_range(&self, lines: &LineIndex, s: &Symbol) -> Range {
         let start = zero_based(s.at);
         let len = s.name.chars().count() as u32;
         let end = Position { line: start.line, character: start.character + len };
-        Range { start: self.encode(text, start), end: self.encode(text, end) }
+        Range { start: self.encode(lines, start), end: self.encode(lines, end) }
     }
 
     pub fn document_symbols(&self, uri: &Uri) -> Vec<DocumentSymbol> {
         let (Some(doc), Some(file)) = (self.document(uri), uri_to_path(uri)) else {
             return vec![];
         };
-        let text = doc.text.clone();
-        let checked = self.checked_for(&file);
+        let lines = LineIndex::new(&doc.text);
+        let mut binds: AHashMap<(SourcePosition, &str), &Type> = AHashMap::default();
+        let checked = self.checked_for(&file).into_iter();
+        for b in
+            checked.flat_map(|c| c.ide.binds.iter()).filter(|b| in_file(&b.ori, &file))
+        {
+            binds.entry((b.pos, b.name.as_str())).or_insert(&b.typ);
+        }
         let typ = |s: &Symbol| {
-            let binds = checked.iter().flat_map(|c| c.ide.binds.iter());
-            let mut binds = binds
-                .filter(|b| in_file(&b.ori, &file) && b.pos == s.at && b.name == *s.name);
-            binds.next().map(|b| display_type(&b.typ).to_string())
+            binds.get(&(s.at, s.name.as_str())).map(|t| display_type(t).to_string())
         };
-        let symbols = declared(&file, text.clone());
+        let symbols = declared(&file, doc.text.clone());
         symbols
             .iter()
             .map(|s| {
-                let selection_range = self.name_range(&text, s);
+                let selection_range = self.name_range(&lines, s);
                 let start =
-                    self.encode(&text, zero_based(s.pos)).min(selection_range.start);
+                    self.encode(&lines, zero_based(s.pos)).min(selection_range.start);
                 #[allow(deprecated)]
                 DocumentSymbol {
                     name: s.name.to_string(),
@@ -132,7 +137,7 @@ impl ServerState {
                         start,
                         end: s
                             .end
-                            .map(|e| self.encode(&text, zero_based(e)))
+                            .map(|e| self.encode(&lines, zero_based(e)))
                             .unwrap_or(selection_range.end)
                             .max(selection_range.end),
                     },
@@ -172,11 +177,13 @@ impl ServerState {
                     (uri, wf.text.clone(), wf.symbols.clone())
                 }
             };
+            let mut lines = None;
             for s in symbols.iter() {
                 if !s.name.to_ascii_lowercase().contains(&needle) {
                     continue;
                 }
-                let range = self.name_range(&text, &s);
+                let lines = lines.get_or_insert_with(|| LineIndex::new(&text));
+                let range = self.name_range(lines, &s);
                 #[allow(deprecated)]
                 out.push(SymbolInformation {
                     name: s.name.to_string(),

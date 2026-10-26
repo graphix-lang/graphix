@@ -22,7 +22,7 @@ pub struct ErrorLocation {
 /// outermost context of a type, so an error wrapped without `At::at`
 /// falls back to the outermost `ErrorContext`.
 pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
-    // CR claude for claude: [bug/medium] A ParserContext wins here even when it sits
+    // XCR claude for claude: [bug/medium] A ParserContext wins here even when it sits
     // outside the error's ErrorSite. Module's interface checks wrap
     // check_hidden_typedef's `.at(e)` (the implementation's typedef) in a ParserContext
     // at the sig item, so "T is defined by its interface; delete this definition" is
@@ -32,12 +32,22 @@ pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
     // and let `At::at`/`sited` treat a ParserContext as the site. probe:
     // design/review-2026-10-26/repro/x-lsp-probe-parser-context-wins.py
     // (x-lsp-probe-03)
+    // 2026-10-26 claude: A ParserContext is now a site: At::placed adds one only to an
+    // error with no site (module.rs's interface checks use it), At::at/sited treat it
+    // as one, and error_location takes the ErrorSite first, then a ParserContext, then
+    // the outermost ErrorContext. Pins: graphix-shell tests/lsp
+    // an_implementation_error_stands_on_the_implementation (the probe's case, util.gx
+    // line 2), graphix-lsp
+    // diagnostics::tests::an_interface_item_places_only_an_unsited_error.
+    if let Some(site) = err.downcast_ref::<ErrorSite>() {
+        let e = site.expr();
+        return location(&e.ori.source, e.pos, e.end);
+    }
     if let Some(pc) = err.downcast_ref::<ParserContext>() {
         return location(&pc.ori.source, pc.pos, WrittenAt::NOWHERE);
     }
-    let site = err.downcast_ref::<ErrorSite>().map(|s| s.expr());
-    match site.or_else(|| err.downcast_ref::<ErrorContext>().map(|c| c.expr())) {
-        Some(e) => location(&e.ori.source, e.pos, e.end),
+    match err.downcast_ref::<ErrorContext>() {
+        Some(c) => location(&c.expr().ori.source, c.expr().pos, c.expr().end),
         None => ErrorLocation::default(),
     }
 }
@@ -98,6 +108,27 @@ mod tests {
         let loc = error_location(&err);
         assert_eq!(loc.position, Some(Position { line: 19, character: 25 }));
         assert_eq!(loc.file, Some(PathBuf::from("/tmp/foo.gx")));
+    }
+
+    /// An interface item places only an error that has no site: one
+    /// raised at an implementation's expression stays there, and one it
+    /// places keeps its place through the frames above it.
+    #[test]
+    fn an_interface_item_places_only_an_unsited_error() {
+        let imp = ori("/tmp/util.gx");
+        let sig = ori("/tmp/util.gxi");
+        let pos = SourcePosition { line: 1, column: 1 };
+        let err = anyhow!("delete this definition")
+            .at(&expr_at(4, 1, imp.clone()))
+            .placed(&sig, pos)
+            .at(&expr_at(1, 1, imp.clone()));
+        let loc = error_location(&err);
+        assert_eq!(loc.position, Some(Position { line: 3, character: 0 }));
+        assert_eq!(loc.file, Some(PathBuf::from("/tmp/util.gx")));
+        let err = anyhow!("missing").placed(&sig, pos).at(&expr_at(9, 2, imp));
+        let loc = error_location(&err);
+        assert_eq!(loc.position, Some(Position { line: 0, character: 0 }));
+        assert_eq!(loc.file, Some(PathBuf::from("/tmp/util.gxi")));
     }
 
     /// Parser failures wrap their error in `ParserContext`. The LSP

@@ -2,6 +2,7 @@
 //! value being read, else every name visible at the cursor.
 
 use crate::{
+    position::LineIndex,
     query::{display_type, in_file, typedef_decl},
     state::{Checked, ServerState},
     text::{
@@ -374,7 +375,8 @@ impl ServerState {
         }
         let callee = call_context(&doc.text, cursor);
         if let Some(start) = label_start(&doc.text, cursor) {
-            let replace = Range { start: self.encode(&doc.text, start), end: position };
+            let start = self.encode(&LineIndex::new(&doc.text), start);
+            let replace = Range { start, end: position };
             return callee.map(|f| c.labels(&f, Some(replace))).unwrap_or_default();
         }
         let Some(typed) = typed_before(&doc.text, cursor) else { return vec![] };

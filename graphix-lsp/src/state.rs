@@ -8,9 +8,7 @@
 
 use crate::{
     diagnostics::{error_leaf_message, error_location},
-    position::{
-        PositionEncoding, char_col_to_position_in_text, position_to_char_col_in_text,
-    },
+    position::{LineIndex, LineIndexes, PositionEncoding},
     text::{extent, zero_based},
     uri::{path_to_uri, uri_to_path},
     workspace::{WorkspaceModel, detect_package_scope, scan},
@@ -346,14 +344,16 @@ impl ServerState {
     /// The warnings of a check, by file.
     fn warned(&self, checked: &Checked) -> AHashMap<PathBuf, Vec<Diagnostic>> {
         let mut out: AHashMap<PathBuf, Vec<Diagnostic>> = AHashMap::default();
+        let mut texts = LineIndexes::default();
         for w in checked.ide.warnings.iter() {
             let Source::File(path) = &w.ori.source else { continue };
             let (start, end) = (zero_based(w.pos), zero_based(w.end));
             let end = if end > start { end } else { extent(&w.ori.text, start) };
+            let lines = texts.of(&w.ori.text);
             out.entry(path.clone()).or_default().push(Diagnostic {
                 range: Range {
-                    start: self.encode(&w.ori.text, start),
-                    end: self.encode(&w.ori.text, end),
+                    start: self.encode(lines, start),
+                    end: self.encode(lines, end),
                 },
                 severity: Some(DiagnosticSeverity::WARNING),
                 source: Some("graphix".to_string()),
@@ -371,14 +371,17 @@ impl ServerState {
         let loc = error_location(err);
         let path = loc.file.unwrap_or_else(|| root.to_path_buf());
         let at = loc.position.unwrap_or_default();
-        let range = |text: &str| Range {
-            start: self.encode(text, at),
-            end: self.encode(text, loc.end.unwrap_or_else(|| extent(text, at))),
+        let range = |text: &ArcStr| {
+            let lines = LineIndex::new(text);
+            Range {
+                start: self.encode(&lines, at),
+                end: self.encode(&lines, loc.end.unwrap_or_else(|| extent(text, at))),
+            }
         };
         let range = match self.documents.get(&path) {
             Some(doc) => range(&doc.text),
             None => match std::fs::read_to_string(&path) {
-                Ok(text) => range(&text),
+                Ok(text) => range(&ArcStr::from(text)),
                 Err(_) => Range { start: at, end: at },
             },
         };
@@ -392,8 +395,9 @@ impl ServerState {
         (path, diag)
     }
 
-    /// The check that answers queries about `path`.
-    // CR claude for claude: [bug/medium] This takes the first root that has any
+    /// The check that answers queries about `path`: a root's whose last
+    /// check succeeded, else the last successful check of any.
+    // XCR claude for claude: [bug/medium] This takes the first root that has any
     // Checked. That can be a root whose last check failed and so predates the edit,
     // while another root of the same file has just checked the current buffer. Example:
     // with util.gx shared by two tools and only one tool broken by an edit, hover on
@@ -401,15 +405,23 @@ impl ServerState {
     // Prefer a root with `error.is_none()`, and fall back to a stale check only when no
     // current one exists. probe:
     // design/review-2026-10-26/repro/x-lsp-probe-stale-shared-root.py (x-lsp-probe-02)
+    // 2026-10-26 claude: checked_for takes the check of a root whose last check
+    // succeeded, and a stale one only when no root of the file has a current check.
+    // Pin: graphix-shell tests/lsp a_shared_file_answers_from_a_current_check (the
+    // probe's two tools, one broken by the edit).
     pub(crate) fn checked_for(&self, path: &Path) -> Option<&Checked> {
-        self.roots_of(path).iter().find_map(|root| self.roots.get(root)?.checked.as_ref())
+        let roots = self.roots_of(path);
+        let roots = || roots.iter().filter_map(|root| self.roots.get(root));
+        let current =
+            roots().find(|r| r.error.is_none()).and_then(|r| r.checked.as_ref());
+        current.or_else(|| roots().find_map(|r| r.checked.as_ref()))
     }
 
     /// An LSP position as (line, char column); unchanged when the
     /// document or the line is unknown.
     pub(crate) fn decode(&self, uri: &Uri, position: Position) -> Position {
         let col = self.document(uri).and_then(|doc| {
-            position_to_char_col_in_text(&doc.text, position, self.position_encoding)
+            LineIndex::new(&doc.text).char_col(position, self.position_encoding)
         });
         match col {
             None => position,
@@ -417,8 +429,9 @@ impl ServerState {
         }
     }
 
-    /// A (line, char column) in `text` as an LSP position.
-    // CR claude for claude: [perf/medium] Every call rescans `text` from the top
+    /// A (line, char column) in the text `lines` indexes as an LSP
+    /// position.
+    // XCR claude for claude: [perf/medium] Every call rescans `text` from the top
     // (`lines(text).nth(line)`), and document_symbols, workspace_symbols, references
     // and warned call it per item, so those requests are O(items x file size).
     // document_symbols' `typ` also scans all of ide.binds per symbol. On 2000 vs 4000
@@ -427,12 +440,15 @@ impl ServerState {
     // once per request (per ArcStr for references), have the position conversions index
     // into them, and key this file's binds by (pos, name) once for `typ`. probe:
     // design/review-2026-10-26/repro/lsp-quadratic-positions.py (lsp-02)
-    pub(crate) fn encode(&self, text: &str, at: Position) -> Position {
-        char_col_to_position_in_text(
-            text,
-            at.line,
-            at.character as usize,
-            self.position_encoding,
-        )
+    // 2026-10-26 claude: Position conversions go through position::LineIndex (each
+    // line's range found once per text); a request builds one per text (documentSymbol,
+    // workspace/symbol per file, a Query's LineIndexes per Origin text, warned per
+    // warning text), and documentSymbol keys the file's binds by (pos, name) once. The
+    // probe now gives documentSymbol 0.06/0.09 s, workspace/symbol 0.05/0.10 s,
+    // references 0.01/0.02 s at N=2000/4000 (was 0.36/1.47, 0.19/0.79, 0.15/0.68 on
+    // this host). No timing pin; LineIndex's conversions are pinned by
+    // position::tests::lines_break_as_lsp_does.
+    pub(crate) fn encode(&self, lines: &LineIndex, at: Position) -> Position {
+        lines.position(at.line, at.character as usize, self.position_encoding)
     }
 }

@@ -5,6 +5,7 @@
 //! keyword) has no target.
 
 use crate::{
+    position::LineIndexes,
     state::{Checked, ServerState},
     text::{covers, ident_at, zero_based},
     uri::uri_to_path,
@@ -22,7 +23,7 @@ use lsp_types::{
     Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range, Uri,
 };
 use netidx_core::path::Path as NPath;
-use std::{fmt::Write, path::Path};
+use std::{cell::RefCell, fmt::Write, path::Path};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +42,8 @@ pub(crate) struct Query<'a> {
     file: &'a Path,
     cursor: Position,
     ident: String,
+    /// The lines of each text a location is read in.
+    texts: RefCell<LineIndexes>,
 }
 
 pub(crate) fn in_file(ori: &Origin, file: &Path) -> bool {
@@ -108,16 +111,18 @@ impl<'a> Query<'a> {
         let checked = state.checked_for(file)?;
         let cursor = state.decode(uri, position);
         let ident = ident_at(&state.document(uri)?.text, cursor)?;
-        Some(Self { state, checked, file, cursor, ident })
+        Some(Self { state, checked, file, cursor, ident, texts: RefCell::default() })
     }
 
     /// The `len` characters written at `at`.
     fn location(&self, ori: &Origin, at: Position, len: usize) -> Option<Location> {
         let Source::File(path) = &ori.source else { return None };
         let end = Position { line: at.line, character: at.character + len as u32 };
+        let mut texts = self.texts.borrow_mut();
+        let lines = texts.of(&ori.text);
         let range = Range {
-            start: self.state.encode(&ori.text, at),
-            end: self.state.encode(&ori.text, end),
+            start: self.state.encode(lines, at),
+            end: self.state.encode(lines, end),
         };
         Some(Location { uri: self.state.uri_of(path)?, range })
     }

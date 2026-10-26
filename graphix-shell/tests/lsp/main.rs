@@ -1066,3 +1066,41 @@ fn birth_only_io_through_a_function_is_a_warning() {
     let texts: Vec<&str> = w.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(texts, ["say(\"saved\")"], "{w:?}");
 }
+
+/// An error raised at an implementation's definition while its
+/// interface is checked stands on the implementation, where `--check`
+/// names it, not on the interface item that was being checked.
+#[test]
+fn an_implementation_error_stands_on_the_implementation() {
+    let mut c = Client::start(&[
+        ("main.gx", "mod util;\nutil::f(1)\n"),
+        ("util.gx", "let f = |x: i64| -> i64 x + 1;\ntype T = i64;\n"),
+        ("util.gxi", "type T = i64;\nval f: fn(x: i64) -> i64;\n"),
+    ]);
+    c.open("util.gx");
+    assert_eq!(c.files_with_diagnostics(), vec!["util.gx".to_string()]);
+    let errors = c.diagnostics("util.gx");
+    assert!(
+        matches!(&errors[..], [(1, _, m)] if m.contains("delete this definition")),
+        "{errors:?}"
+    );
+}
+
+/// A file two projects share answers from the project whose check of
+/// the current buffer succeeded, not from another's older check.
+#[test]
+fn a_shared_file_answers_from_a_current_check() {
+    let mut c = Client::start(&[
+        ("tool_a.gx", "mod util;\nutil::f(1) + 1\n"),
+        ("tool_b.gx", "mod util;\nutil::f(1)\n"),
+        ("util.gx", "let f = |x: i64| x + 1;\n"),
+    ]);
+    c.open("util.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    c.edit("util.gx", "let f = |x: i64| \"s[x]\";\nlet g = 2;\n");
+    assert_eq!(c.files_with_diagnostics(), vec!["tool_a.gx".to_string()]);
+    let g = c.hover("util.gx", "let |g");
+    assert!(g.as_deref().is_some_and(|h| h.contains("i64")), "{g:?}");
+    let f = c.hover("util.gx", "let |f");
+    assert!(f.as_deref().is_some_and(|h| h.contains("string")), "{f:?}");
+}

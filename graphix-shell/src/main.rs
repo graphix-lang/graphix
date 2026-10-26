@@ -18,7 +18,7 @@ use netidx::{
     publisher::{BindCfg, DesiredAuth, Publisher, PublisherBuilder},
     subscriber::{Subscriber, SubscriberBuilder},
 };
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{mem, path::PathBuf, str::FromStr, time::Duration};
 
 #[derive(Debug, Clone, Copy)]
 enum RawFlag {
@@ -196,8 +196,6 @@ struct Params {
     /// check the program and print each seq's lowered machine
     #[arg(long = "expand")]
     expand: bool,
-    /// run the program in the specified file instead of starting the REPL
-    file: Option<ArcStr>,
     /// enable or disable compiler flags. Currently supported flags are,
     /// - unhandled, no-unhandled: warn about unhandled ? operators (default)
     /// - error, no-error makes warnings errors
@@ -206,8 +204,10 @@ struct Params {
     /// always wins
     #[arg(short = 'W')]
     warn: Vec<RawFlag>,
-    /// arguments passed to the graphix program (everything after the filename)
-    // CR claude for claude: [bug/medium] trailing_var_arg only applies once
+    /// the program to run instead of starting the REPL (a file, or
+    /// netidx:/path), then the arguments passed to it: everything after
+    /// the program is the program's
+    // XCR claude for claude: [bug/medium] trailing_var_arg only applies once
     // program_args has a value, so a first program argument that names a graphix option
     // or subcommand is taken by graphix. `graphix cli.gx --help` shows graphix's help,
     // `graphix cli.gx -n 3 foo` turns on --no-netidx and the script sees ["3", "foo"],
@@ -216,8 +216,19 @@ struct Params {
     // filename is the program's, as the help text promises. probe:
     // design/review-2026-10-26/repro/examples-rest-program-args-intercepted.sh
     // (examples-rest-02)
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    program_args: Vec<String>,
+    // 2026-10-26 claude: The script and its arguments are one trailing positional
+    // (Params::program, the script first), so everything after the script is the
+    // script's: a graphix option or subcommand name included; main splits it into the
+    // file and program_args, and a standalone binary keeps every argument as the
+    // program's. Pin: graphix-shell tests/program_args.rs
+    // arguments_after_the_script_are_the_scripts (--help, -n 3, fmt x, --check after
+    // the script).
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "FILE [ARGS]"
+    )]
+    program: Vec<String>,
 }
 
 /// The netidx a run uses, loaded when the program first touches it.
@@ -274,7 +285,7 @@ impl NetArgs {
     }
 
     async fn pub_sub(&self, bind: Option<BindCfg>) -> Result<(Publisher, Subscriber)> {
-        // CR claude for claude: [bug/high] With no netidx config file, `graphix
+        // XCR claude for claude: [bug/high] With no netidx config file, `graphix
         // netidx:/path` panics ("Cannot start a runtime from within a runtime"). This
         // load runs on the async main runtime, and Config::load_default_or_local_only
         // falls back to Config::local_only, which builds a runtime and block_on's it.
@@ -284,7 +295,16 @@ impl NetArgs {
         // NetState's loader. probe:
         // design/review-2026-10-26/repro/book-core-netidx-script-panic.sh
         // (book-core-01)
-        let (cfg, auth) = self.load()?;
+        // a fallback to the machine-local resolver blocks on a runtime of its own
+        // 2026-10-26 claude: NetArgs::pub_sub loads the config on a blocking-pool
+        // thread (spawn_blocking), so the local-only fallback's block_on runs outside
+        // the async runtime. Pin: graphix-shell tests/netidx_zero_config.rs
+        // netidx_script_loads_without_a_config_file (no config, a held port standing in
+        // for the local resolver; panicked before).
+        let net = self.clone();
+        let (cfg, auth) = tokio::task::spawn_blocking(move || net.load())
+            .await
+            .context("loading the netidx config")??;
         let publisher = PublisherBuilder::new(cfg.clone())
             .desired_auth(auth.clone())
             .bind_cfg(bind)
@@ -365,7 +385,12 @@ async fn handle_package(action: PackageAction) -> Result<()> {
     }
 }
 
-fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
+fn tokio_main(
+    p: Params,
+    file: Option<ArcStr>,
+    program_args: Vec<ArcStr>,
+    run_on_main: MainThreadHandle,
+) -> Result<Option<i32>> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -400,7 +425,7 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
         // loads netidx when the program first touches it
         let net_config = if p.no_netidx {
             NetConfig::Internal
-        } else if p.file.as_ref().is_some_and(|f| f.starts_with("netidx:")) {
+        } else if file.as_ref().is_some_and(|f| f.starts_with("netidx:")) {
             let (publisher, subscriber) = p.netidx.pub_sub(p.bind).await?;
             NetConfig::Ready { publisher, subscriber }
         } else {
@@ -408,8 +433,6 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
             NetConfig::Load { load: std::sync::Arc::new(move || net.load()), bind: p.bind }
         };
         let mut shell = ShellBuilder::<NoExt>::default();
-        let program_args: Vec<ArcStr> =
-            p.program_args.iter().map(|s| ArcStr::from(s.as_str())).collect();
         shell = shell.program_args(program_args);
         shell = shell.no_init(p.no_init);
         shell = shell.cache(match (p.no_cache, p.warm) {
@@ -438,10 +461,10 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
             shell = shell.resolver_factories(factories);
         }
         let check = p.check || p.expand;
-        if p.file.is_none() && check {
+        if file.is_none() && check {
             bail!("check mode requires a file to check")
         }
-        if let Some(f) = &p.file {
+        if let Some(f) = &file {
             let source = match f.strip_prefix("netidx:") {
                 #[cfg(feature = "sys")]
                 Some(path) => {
@@ -520,16 +543,15 @@ fn main() -> Result<()> {
     let standalone = graphix_shell::stdlib_packages::<NoExt>()
         .iter()
         .any(|p| p.main_program().is_some());
-    let p = if standalone {
+    let (p, file, program_args) = if standalone {
         // a standalone binary is its program: every argument is the program's
-        let mut p = Params::parse_from(std::env::args_os().take(1));
-        p.program_args = std::env::args_os()
-            .skip(1)
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        p
+        let p = Params::parse_from(std::env::args_os().take(1));
+        let args = std::env::args_os().skip(1).map(|a| ArcStr::from(a.to_string_lossy()));
+        (p, None, args.collect())
     } else {
-        Params::parse()
+        let mut p = Params::parse();
+        let mut program = mem::take(&mut p.program).into_iter().map(ArcStr::from);
+        (p, program.next(), program.collect())
     };
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
@@ -549,7 +571,7 @@ fn main() -> Result<()> {
     let (handle, main_rx) = MainThreadHandle::new();
     let tokio_handle = std::thread::Builder::new()
         .name("graphix-tokio".into())
-        .spawn(move || tokio_main(p, handle))
+        .spawn(move || tokio_main(p, file, program_args, handle))
         .expect("failed to spawn tokio thread");
     while let Ok(f) = main_rx.recv() {
         f();

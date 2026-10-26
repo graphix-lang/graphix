@@ -112,6 +112,17 @@ pub trait At {
     /// Place an error that has no site at `spec`, adding no frame to one
     /// that has.
     fn sited(self, spec: &Expr) -> Self;
+
+    /// Place an error that has no site at `pos` in `ori`, a place only a
+    /// position names (an interface item), adding nothing to one that has.
+    fn placed(self, ori: &Arc<Origin>, pos: SourcePosition) -> Self;
+}
+
+/// Whether `e` knows where it arose.
+fn has_site(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<ErrorSite>().is_some()
+        || e.downcast_ref::<ErrorContext>().is_some()
+        || e.downcast_ref::<ParserContext>().is_some()
 }
 
 impl At for anyhow::Error {
@@ -121,9 +132,7 @@ impl At for anyhow::Error {
     /// frame is found first, the site only under none, and an error always
     /// gets its site.
     fn at(self, spec: &Expr) -> Self {
-        let has_site = self.downcast_ref::<ErrorSite>().is_some()
-            || self.downcast_ref::<ErrorContext>().is_some();
-        if has_site && spec.is_lowered() {
+        if spec.is_lowered() && has_site(&self) {
             return self;
         }
         let frames = match self.downcast_ref::<ErrorContext>() {
@@ -134,6 +143,7 @@ impl At for anyhow::Error {
             None => match self.downcast_ref::<ErrorSite>() {
                 Some(site) if site.expr().id == spec.id => return self,
                 Some(_) => 1,
+                None if self.downcast_ref::<ParserContext>().is_some() => 1,
                 None => return self.context(ErrorSite(ErrorContext(spec.clone(), 0))),
             },
         };
@@ -141,11 +151,16 @@ impl At for anyhow::Error {
     }
 
     fn sited(self, spec: &Expr) -> Self {
-        match self.downcast_ref::<ErrorSite>().is_some()
-            || self.downcast_ref::<ErrorContext>().is_some()
-        {
+        match has_site(&self) {
             true => self,
             false => self.context(ErrorSite(ErrorContext(spec.clone(), 0))),
+        }
+    }
+
+    fn placed(self, ori: &Arc<Origin>, pos: SourcePosition) -> Self {
+        match has_site(&self) {
+            true => self,
+            false => self.context(ParserContext { ori: ori.clone(), pos }),
         }
     }
 }
@@ -157,6 +172,10 @@ impl<T> At for anyhow::Result<T> {
 
     fn sited(self, spec: &Expr) -> Self {
         self.map_err(|e| e.sited(spec))
+    }
+
+    fn placed(self, ori: &Arc<Origin>, pos: SourcePosition) -> Self {
+        self.map_err(|e| e.placed(ori, pos))
     }
 }
 

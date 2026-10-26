@@ -527,11 +527,13 @@ async fn a_restored_function_prints_its_source() -> Result<()> {
 /// does.
 #[tokio::test]
 async fn a_restored_interface_keeps_its_positions() -> Result<()> {
-    let program = r#"{ trait Val { val v: fn(self) -> i64 }; let status = mod foo dynamic { sandbox whitelist [core]; sig { use super::Val; type Box<'a>; impl<'a> Val for Box<'a>; val make: fn(x: 'a) -> Box<'a> }; source r"type Box<'a> = Abstract<'a>; impl Val for Box<i64> { let v = |b| b.0 }; let make = |x| Box(x)" }; select status { error as e => e, null as _ => 2 } }"#;
+    let program = r#"{ trait Val { val v: fn(self) -> i64 }; let status = mod foo dynamic { sandbox whitelist [core]; sig { use super::Val; type Box<'a>; impl<'a> Val for Box<'a>; val make: fn(x: 'a) -> Box<'a> }; source r"type Box<'a> = Abstract<'a>; let make = |x| Box(x)" }; select status { error as e => e, null as _ => 2 } }"#;
+    let item = program.find("impl<'a> Val").expect("the declared impl") + 1;
     let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
     let refused = cold.last().expect("the module refused its body");
     assert!(
-        format!("{refused}").contains("compile error at line: 1, column: 134"),
+        format!("{refused}")
+            .contains(&format!("compile error at line: 1, column: {item}")),
         "{refused}"
     );
     assert_eq!(cold, warm);

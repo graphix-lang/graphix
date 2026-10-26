@@ -985,8 +985,11 @@ cycle, across workers; the compiler never pins threads.
   of each position's parts, so it fits the scrutinee's own type. Never type a capture from
   `infer_type_predicate`. A slice's inferred element type is a Set with
   one member per element and a cell for the rest, so each element
-  narrows on its own. Pins: `lang::select::capture_*`,
-  `slice_elements_typed_apart`, `slice_rest_scrutinee_type`.
+  narrows on its own; its run-time test admits any member at any
+  position, so a name an element binds holds its part of every member
+  the element's structure admits (`hold_slice_members`). Pins:
+  `lang::select::capture_*`, `slice_elements_typed_apart`,
+  `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`.
 - **Or-patterns** (`design/or_patterns.md`): select arms and bracketed
   element positions; each alternative is typed over the scrutinee as a
   separate arm is, alternatives bind the same names, and a shared name

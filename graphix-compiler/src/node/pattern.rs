@@ -221,6 +221,18 @@ pub(crate) fn set_members(typ: &Type, n: usize) -> Option<Arc<[Type]>> {
     })
 }
 
+/// The members of the union `t`, an open cell as itself.
+fn members_or_open(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
+    crate::stack::ensure_sufficient(|| match &t.deref_cloned() {
+        None => {
+            out.push(t.clone());
+            Ok(())
+        }
+        Some(Type::Set(ts)) => ts.iter().try_for_each(|t| members_or_open(env, t, out)),
+        Some(_) => crate::expr::union_members(env, t, out),
+    })
+}
+
 /// `typ` through its bindings and aliases: the constructor at its head.
 /// The chase fills no alias's cell: a name the body names may yet be
 /// declared by a later statement.
@@ -550,7 +562,8 @@ impl StructPatternNode {
             };
             match self {
                 Self::Ignore | Self::Bind(_) => Type::Any,
-                Self::Literal(_) | Self::Abstract { .. } => typ.clone(),
+                Self::Literal(v) => Type::of_literal(v).unwrap_or_else(|_| typ.clone()),
+                Self::Abstract { .. } => typ.clone(),
                 Self::Slice { kind: SliceKind::List, .. }
                 | Self::SlicePrefix { list: true, .. } => Type::List(Arc::new(Type::Any)),
                 Self::Slice { kind: SliceKind::Array, .. }
@@ -590,6 +603,49 @@ impl StructPatternNode {
                     Type::Struct(Arc::from_iter(fields))
                 }
             }
+        })
+    }
+
+    /// Under an inferred predicate each element of an array or list slice
+    /// stands over its own member, but the run-time test admits a value
+    /// of any member at every position: every name an element binds holds
+    /// its part of each member the element's structure admits.
+    fn hold_slice_members(&self, env: &Env, typ: &Type) -> Result<()> {
+        crate::stack::ensure_sufficient(|| {
+            let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
+            if let Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
+            | Self::SlicePrefix { .. }
+            | Self::SliceSuffix { .. } = self
+            {
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                if let Some(Type::Array(et) | Type::List(et)) = &expand(env, typ) {
+                    members_or_open(env, &et, &mut members)?
+                }
+                let mut leaves: SmallVec<[Leaf; 4]> = SmallVec::new();
+                for c in self.children() {
+                    for m in members.iter() {
+                        if !c.footprint(env, m, false).could_match(env, m)? {
+                            continue;
+                        }
+                        leaves.clear();
+                        c.leaves(env, m, false, false, &mut leaves)?;
+                        for l in leaves.iter() {
+                            if let Some(b) = env.by_id.get(&l.id) {
+                                b.typ.check_contains(env, &l.typ)?
+                            }
+                        }
+                    }
+                }
+            }
+            if !self.children_inferred(true) {
+                return Ok(());
+            }
+            for (c, t) in self.children().into_iter().zip(ts) {
+                if let Some((t, _)) = t {
+                    c.hold_slice_members(env, &t)?
+                }
+            }
+            Ok(())
         })
     }
 
@@ -1704,6 +1760,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
         if !self.explicit_type_predicate {
             self.structure_predicate.narrow_payloads(env, narrowed)?;
+            self.structure_predicate.hold_slice_members(env, narrowed)?;
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;

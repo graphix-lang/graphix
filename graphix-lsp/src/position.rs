@@ -2,7 +2,10 @@
 //! position encoding (UTF-16 code units or UTF-32 scalars). The compiler and the cursor helpers speak char columns, so
 //! these translate at the LSP boundary; ASCII lines are a no-op.
 
+use ahash::AHashMap;
+use arcstr::ArcStr;
 use lsp_types::{Position, PositionEncodingKind};
+use poolshark::local::LPooled;
 
 /// Position encoding negotiated with the client: the UTF-16 default, or
 /// UTF-32 when the client offers it (the server never picks UTF-8).
@@ -111,27 +114,60 @@ pub fn lines(text: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// `position_to_char_col` over the full document text; `None` if the
-/// line index is out of range.
-pub fn position_to_char_col_in_text(
-    text: &str,
-    position: Position,
-    encoding: PositionEncoding,
-) -> Option<usize> {
-    let line = lines(text).nth(position.line as usize)?;
-    Some(position_to_char_col(line, position, encoding))
+/// A text's lines, found once: each conversion indexes them where a
+/// scan would read the text from its top.
+pub struct LineIndex {
+    text: ArcStr,
+    /// Each line's byte range, its break left out.
+    lines: LPooled<Vec<(usize, usize)>>,
 }
 
-/// `char_col_to_position` over the full document text; `character: 0`
-/// if the line index is out of range.
-pub fn char_col_to_position_in_text(
-    text: &str,
-    line: u32,
-    char_col: usize,
-    encoding: PositionEncoding,
-) -> Position {
-    let line_text = lines(text).nth(line as usize).unwrap_or("");
-    char_col_to_position(line_text, line, char_col, encoding)
+impl LineIndex {
+    pub fn new(text: &ArcStr) -> Self {
+        let base = text.as_ptr() as usize;
+        let mut index: LPooled<Vec<(usize, usize)>> = LPooled::take();
+        index.extend(lines(text).map(|l| {
+            let start = l.as_ptr() as usize - base;
+            (start, start + l.len())
+        }));
+        Self { text: text.clone(), lines: index }
+    }
+
+    fn line(&self, line: u32) -> Option<&str> {
+        self.lines.get(line as usize).map(|&(start, end)| &self.text[start..end])
+    }
+
+    /// `position_to_char_col` at `position`'s line; `None` if there is
+    /// no such line.
+    pub fn char_col(
+        &self,
+        position: Position,
+        encoding: PositionEncoding,
+    ) -> Option<usize> {
+        Some(position_to_char_col(self.line(position.line)?, position, encoding))
+    }
+
+    /// `char_col_to_position` at `line`; `character: 0` if there is no
+    /// such line.
+    pub fn position(
+        &self,
+        line: u32,
+        char_col: usize,
+        encoding: PositionEncoding,
+    ) -> Position {
+        char_col_to_position(self.line(line).unwrap_or(""), line, char_col, encoding)
+    }
+}
+
+/// The [`LineIndex`] of each text a request converts positions in,
+/// built at its first conversion.
+#[derive(Default)]
+pub struct LineIndexes(AHashMap<usize, LineIndex>);
+
+impl LineIndexes {
+    pub fn of(&mut self, text: &ArcStr) -> &LineIndex {
+        self.0.entry(text.as_ptr() as usize).or_insert_with(|| LineIndex::new(text))
+    }
 }
 
 #[cfg(test)]
@@ -147,10 +183,13 @@ mod tests {
         let got: Vec<&str> = lines("a\r\nb\rc\n\nd\n").collect();
         assert_eq!(got, ["a", "b", "c", "", "d", ""]);
         assert_eq!(lines("").collect::<Vec<_>>(), [""]);
-        assert_eq!(
-            position_to_char_col_in_text("x\n", at(1, 0), PositionEncoding::Utf16),
-            Some(0)
-        );
+        let index = LineIndex::new(&arcstr::literal!("x\n"));
+        assert_eq!(index.char_col(at(1, 0), PositionEncoding::Utf16), Some(0));
+        assert_eq!(index.char_col(at(2, 0), PositionEncoding::Utf16), None);
+        let index = LineIndex::new(&ArcStr::from("a\r\nb𝒜c\rd"));
+        assert_eq!(index.position(1, 2, PositionEncoding::Utf16), at(1, 3));
+        assert_eq!(index.char_col(at(2, 1), PositionEncoding::Utf32), Some(1));
+        assert_eq!(index.position(5, 2, PositionEncoding::Utf16), at(5, 0));
     }
 
     #[test]

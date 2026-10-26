@@ -56,14 +56,9 @@ pub enum StructurePattern {
         binds: Arc<[(ArcStr, StructurePattern, WrittenAt)]>,
     },
     /// Or-alternatives `p1 | p2 | …`. Flat: ≥ 2 alternatives, none itself
-    /// an `Or`. Every alternative binds the same names at the same types,
-    /// so name-set walks read alternative 0.
-    // CR claude for claude: [doc-drift/low] The doc above says the alternatives bind
-    // the same names "at the same types". But a shared name is the union of the
-    // alternatives' types, per CLAUDE.md and the checker: `` `A(n) | `B(n) `` over ``
-    // [`A(i64), `B(string)] `` gives `n: [i64, string]`. Only the name set is shared,
-    // which is all alternative 0 can be read for. Reword it to say that. Found by
-    // running a two-type or-arm (it yields both an i64 and a string). (t-parser-b-06)
+    /// an `Or`. Every alternative binds the same names (a shared name's
+    /// type is the union of the alternatives'), so name-set walks read
+    /// alternative 0.
     Or(Arc<[StructurePattern]>),
 }
 
@@ -237,7 +232,7 @@ impl StructurePattern {
     /// cell last for the elements the rest stands over, so each element
     /// narrows against the scrutinee's element type on its own and the
     /// rest takes it whole.
-    // CR claude for claude: [bug/critical] Each element of a slice pattern is typed
+    // XCR claude for claude: [bug/critical] Each element of a slice pattern is typed
     // apart here (one Set member per element), but PatternNode::shape_matches tests the
     // value against the whole Array<Set{..}>, that is, each element against the union
     // of the element types. Over an open or Any element type the uses bind the members
@@ -250,6 +245,15 @@ impl StructurePattern {
     // probe:
     // design/review-2026-10-26/repro/x-typecheck-patterns-slice-elements-untested.gx
     // (x-typecheck-patterns-01)
+    // 2026-10-26 claude: Each name a slice element binds now holds its part of every
+    // member the element's structure admits (StructPatternNode::hold_slice_members,
+    // called from PatternNode::bind_narrowed), so an open or Any element type no longer
+    // lets uses type the elements apart; a literal's footprint is its own type so a
+    // literal-discriminated element is not over-constrained. Pins:
+    // lang::select::slice_element_binds_hold_every_member (Any, List and generic forms;
+    // SIGSEGV with the call removed), slice_elements_share_an_open_type,
+    // slice_nested_binds_hold_every_member. Still open: `[x, _]` over Any, whose `_`
+    // member Any.narrow_pattern leaves open, closes with (c-pattern-03).
     fn infer_slice(
         env: &Env,
         scope: &ModPath,

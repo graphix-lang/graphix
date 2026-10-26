@@ -219,9 +219,7 @@ fn bind_sig(
         }
     }
     for (i, si) in sig.items.iter().enumerate() {
-        let ori = si.ori.clone();
-        bind_sig_item(env, pending, scope, i, si, &ori)
-            .map_err(|e| e.context(ParserContext { ori, pos: si.pos }))?;
+        bind_sig_item(env, pending, scope, i, si, &si.ori).placed(&si.ori, si.pos)?;
     }
     Ok(())
 }
@@ -650,7 +648,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
         };
         check_redefinition(&scope.lexical, si, nodes)
             .and_then(|()| check_interface_names(&view, &scope.lexical, si, val))
-            .map_err(|e| e.context(ParserContext { ori: si.ori.clone(), pos: si.pos }))?;
+            .placed(&si.ori, si.pos)?;
     }
     // CR claude for claude: [bug/medium] A file module with a .gxi declared in a
     // function body is refused: with m.gx `let y = 2` and m.gxi `val y: i64;`, `let h =
@@ -724,10 +722,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
         check_node().at(n.spec())?;
     }
     for si in sig.items.iter() {
-        let at = |e: anyhow::Error| {
-            let ori = si.ori.clone();
-            e.context(ParserContext { ori, pos: si.pos })
-        };
+        let at = |e: anyhow::Error| e.placed(&si.ori, si.pos);
         let missing = (|| -> Result<bool> { Ok(match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name.name.as_str()),
             SigKind::Impl(im) => {
@@ -824,10 +819,7 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let view = interface_env(&ctx.env, scope, sig)?;
     for si in sig.items.iter() {
-        let at = |e: anyhow::Error| {
-            let ori = si.ori.clone();
-            e.context(ParserContext { ori, pos: si.pos })
-        };
+        let at = |e: anyhow::Error| e.placed(&si.ori, si.pos);
         let missing = || at(anyhow!("sig item {si} is missing an implementation"));
         if !matches!(si.kind, SigKind::Bind(_)) {
             check_interface_names(&view, scope, si, None).map_err(at)?
