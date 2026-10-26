@@ -427,6 +427,20 @@ run!(select_slice_cover_union, SELECT_SLICE_COVER_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
 }; FuseExpect::Jit);
 
+// A ladder under a written union of collections covers each member.
+run!(
+    select_slice_ladder_under_a_written_union,
+    r#"{
+  type A = [Array<i64>, Array<string>];
+  type L = [List<i64>, List<string>];
+  let f = |x: [A, null]| select x { A as [] => 0, A as [_, ..] => 1, null => 2 };
+  let g = |x: [L, null]| select x { L as [<>] => 0, L as [<_, ..>] => 1, null => 2 };
+  let (a, l): (A, L) = (["a"], [<"b">]);
+  [f([]), f(a), f(null), g([<>]), g(l), g(null)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:2, i64:0, i64:1, i64:2]")
+);
+
 // A hole in the length ladder refuses and the message names it.
 const SELECT_SLICE_HOLE: &str = r#"
 {
@@ -1331,6 +1345,182 @@ run!(
 }"#,
     is(Value::I64(3));
     FuseExpect::Jit
+);
+
+// A nested abstract pattern over a union of its type's instances binds
+// its payload at the union of their representations, and the arm covers
+// them all, as the top-level form does.
+run!(
+    nested_abstract_payload_over_a_union_of_instances,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let s = |b: [bool, i64]| select b { bool as x => select x { true => 1, false => 0 }, i64 as i => i };
+    let h = |x: ([Box<bool>, Box<i64>], i64)| select x { (Box(b), n) => s(b) + n };
+    let g = |x: {f: [Box<bool>, Box<i64>]}| select x { {f: Box(b)} => s(b) };
+    let k = |x: Array<[Box<bool>, Box<i64>]>| select x { [Box(b), ..] => s(b), _ => 0 };
+    [h((Box(false), 1)), h((Box(5), 1)), g({f: Box(true)}), g({f: Box(7)}), k([Box(true)]), k([Box(3)])]
+}"#,
+    prints("[i64:1, i64:6, i64:1, i64:7, i64:1, i64:3]")
+);
+
+run!(
+    nested_abstract_payload_is_no_one_instance,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let h = |x: ([Box<bool>, Box<i64>], i64)| select x { (Box(b), n) => b + n };
+    h((Box(false), 1))
+}"#,
+    refused("cannot compute [i64, bool] + i64");
+    FuseExpect::None
+);
+
+// Over `Any` an abstract pattern's payload is its representation at `Any`.
+run!(
+    abstract_payload_over_any_is_any,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let f = |a: Any| select a { Box(p) => p, _ => 0 };
+    let g = |a: (Any, i64)| select a { (Box(p), _) => p, _ => 0 };
+    [f(Box(5)), f(Box("abc")), f(3), g((Box("x"), 1))]
+}"#,
+    prints(r#"[i64:5, "abc", i64:0, "x"]"#);
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_over_any_decides_nothing,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let f = |a: Any| select a { Box(p) => str::len(p), _ => 0 };
+    f(Box(5))
+}"#,
+    refused("string does not contain Any");
+    FuseExpect::None
+);
+
+run!(
+    nested_abstract_payload_over_any_decides_nothing,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let f = |a: (Any, i64)| select a { (Box(p), _) => str::len(p), _ => 0 };
+    f((Box(5), 1))
+}"#,
+    refused("string does not contain Any");
+    FuseExpect::None
+);
+
+// A name or-alternatives bind under an abstract pattern is typed by its
+// representation, and joins the union of a name another alternative binds
+// outside one.
+run!(
+    or_names_under_an_abstract_payload,
+    r#"{
+    type T = Abstract<i64>;
+    let f = |v: [`A(T), `B(T)]| select v { `A(T(n)) | `B(T(n)) => n + 1 };
+    let g = |v: [(string, i64), (T, i64)]| select v {
+      (x, 1) | (T(x), 2) => select x { string as s => s, T as _ => "t", i64 as _ => "i" },
+      _ => "miss"
+    };
+    ([f(`A(T(3))), f(`B(T(4)))], [g((T(4), 2)), g(("s", 1)), g((T(4), 1)), g(("s", 3))])
+}"#,
+    prints(r#"[[i64:4, i64:5], ["i", "s", "t", "miss"]]"#)
+);
+
+run!(
+    or_name_under_an_abstract_payload_is_typed,
+    r#"{
+    type T = Abstract<i64>;
+    let f = |v: [`A(T), `B(T)]| select v { `A(T(n)) | `B(T(n)) => str::len(n) };
+    f(`A(T(3)))
+}"#,
+    refused("string does not contain i64");
+    FuseExpect::None
+);
+
+// A whole capture over a union of collections takes its part of each
+// member, element by element against the whole element type.
+run!(
+    whole_capture_in_a_slice_element_takes_its_member,
+    r#"{
+    let f = |x: [Array<[`A(i64), `B(string)]>, null]| select x {
+      [y@ `B(_), ..] => select y { `B(s) => s },
+      _ => "none"
+    };
+    [f([`B("s")]), f([`A(1)]), f(null)]
+}"#,
+    prints(r#"["s", "none", "none"]"#)
+);
+
+run!(
+    whole_capture_in_a_slice_element_is_not_another_tag,
+    r#"{
+    let f = |x: [Array<[`A(i64), `B(string)]>, null]| select x {
+      [y@ `B(_), ..] => select y { `A(n) => n + 1 },
+      _ => 0
+    };
+    f([`B("s")])
+}"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+// An or-name stands at its position in whichever alternative's structure
+// a value passes first: over a scrutinee that may hold either, it is the
+// union of every alternative's part.
+run!(
+    or_name_over_an_open_scrutinee_is_every_position,
+    r#"{
+    let f = |a| select a { (x, _) | (_, x) => str::len(x) };
+    [f(("abc", 5)), f((5, "abcd"))]
+}"#,
+    refused("string does not contain Any");
+    FuseExpect::None
+);
+
+run!(
+    or_name_over_any_is_every_position,
+    r#"{
+    let f = |a: Any| select a { `A(x, _) | `A(_, x) => str::len(x), _ => 0 };
+    [f(`A("abc", 5)), f(`A(5, "abcd"))]
+}"#,
+    refused("string does not contain Any");
+    FuseExpect::None
+);
+
+run!(
+    or_names_over_unions_keep_working,
+    r#"{
+    let f = |a| select a { `A(x) | `B(x) => x + 1 };
+    let g = |a| select a { (x, 1) | (1, x) => x + 1, _ => 0 };
+    let h = |a: [(i64, string), (string, i64)]| select a {
+      (x, _) | (_, x) => select x { i64 as i => "[i]", string as s => s }
+    };
+    ([f(`A(1)), f(`B(2)), g((7, 1)), g((1, 9)), g((3, 3))], [h((1, "a")), h(("b", 2))])
+}"#,
+    prints(r#"[[i64:2, i64:3, i64:8, i64:10, i64:0], ["1", "b"]]"#)
+);
+
+// Under a written union a capture, a rest and an element bind take
+// their part of each member the pattern can match.
+run!(
+    written_union_names_take_each_member,
+    r#"{
+    type U = [(i64, string), (string, i64)];
+    type A = [Array<i64>, Array<string>];
+    let h = |u: U| select u { (i64, string) as (i, _) => i, (string, i64) as (_, i) => i };
+    let k = |a: A| select a { Array<i64> as x => array::len(x), Array<string> as x => array::len(x) * 10 };
+    let f = |v: U| { let a@ (_, _) = v; h(a) };
+    let g2 = |v: [U, null]| select v { U as a@ (_, _) => h(a), null => 0 };
+    let g3 = |v: [A, null]| select v { A as [_, r..] => k(r), A as [] => 1, null => 0 };
+    let g4 = |v: [A, null]| select v {
+      A as [x, ..] => select x { i64 as i => i, string as _ => 100 },
+      A as [] => 1,
+      null => 0
+    };
+    let (u, a): (U, A) = (("abc", 1), ["x", "y", "z"]);
+    [f(u), g2(u), g3(a), g4(a)]
+}"#,
+    prints("[i64:1, i64:1, i64:20, i64:100]")
 );
 
 // A bottom initializer that an arm's wake only re-reads, through `$`, a
@@ -4255,6 +4445,16 @@ run!(
   [h({a: null}), h({a: 3})]
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:3]")
+);
+
+run!(
+    null_literal_in_a_variant_covers_beside_a_type_test,
+    r#"{
+  let k = |x: [`A([i64, null]), `B]| select x { `A(null) => 0, `A(i64) as `A(n) => n, `B => 9 };
+  [k(`A(null)), k(`A(4)), k(`B)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:4, i64:9]");
+    FuseExpect::None
 );
 
 run!(null_literal_alone_leaves_the_rest_open, r#"{

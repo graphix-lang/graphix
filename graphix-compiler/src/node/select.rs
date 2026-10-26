@@ -754,11 +754,9 @@ impl Reach {
                 },
                 Claim::Dead | Claim::Open | Claim::Unpooled => (),
             }
-            if let StructPatternNode::Abstract { .. } = sp
-                && !pat.explicit_type_predicate
-            {
+            if !pat.explicit_type_predicate && sp.holds_abstract() {
                 // an inferred abstract predicate tests the tag at run time: the
-                // atom covers each member its payload covers
+                // atom covers each member its pattern covers
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
                 union_members(env, scrut, &mut members)?;
                 for m in members {
@@ -2081,9 +2079,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.
             let reaching = reach.atype.clone();
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            union_members(&ctx.env, &reaching, &mut members)?;
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
-            pat.bind_narrowed(&ctx.env, &narrowed, &reaching, checking).at(&site)?;
+            pat.bind_narrowed(&ctx.env, &narrowed, &members, checking).at(&site)?;
             // a runtime test can't tell apart two types with one runtime form
             if checking
                 && pat.explicit_type_predicate

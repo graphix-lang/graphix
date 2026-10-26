@@ -23,7 +23,7 @@ use crate::{
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     typ::{
-        Mutability, TVal, TVar, Type, TypeMismatch,
+        Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
         tvar::{InTask, TaskContext, TaskId, current_task, new_task},
     },
 };
@@ -33,7 +33,10 @@ use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::{
+    pack::{Pack, PackError},
+    path::Path,
+};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
@@ -880,10 +883,22 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
             ctx.env.modules.insert_cow(p);
         }
     }
+    let n = exprs.len();
+    let typedefs: SmallVec<[ArcStr; 4]> = exprs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match &e.kind {
+            ExprKind::TypeDef(td) if module || i + 1 < n => Some(td.name.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let declares_types = !typedefs.is_empty();
+    if declares_types {
+        ctx.block_typedefs.push((scope.lexical.clone(), typedefs));
+    }
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R, E>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
-    let n = exprs.len();
     ctx.written_lets.push(written_lets(&exprs));
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
@@ -899,11 +914,39 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         Ok::<_, anyhow::Error>(())
     });
     ctx.written_lets.pop();
+    if declares_types {
+        ctx.block_typedefs.pop();
+    }
     compiled?;
     for n in children.iter() {
         defer_typedef_names(ctx, n);
     }
     Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
+}
+
+/// Whether the name `tr` writes means, by the end of the compile, a type
+/// a later statement of a block being compiled declares: the block declares
+/// it and has not yet, and no scope between declares it either. What the
+/// name means now is not what it will mean.
+pub(crate) fn later_typedef<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    tr: &TypeRef,
+) -> bool {
+    let (1, Some(name)) = (Path::levels(&*tr.name), Path::basename(&*tr.name)) else {
+        return false;
+    };
+    let key = CompactString::from(name);
+    let declared = |scope: &str| {
+        let scope = ModPath(Path::from(ArcStr::from(scope)));
+        ctx.env.typedefs.get(&scope).is_some_and(|m| m.get(&key).is_some())
+    };
+    ctx.block_typedefs.iter().any(|(block, names)| {
+        names.iter().any(|n| n.as_str() == name)
+            && Path::is_parent(&**block, &*tr.scope)
+            && !Path::dirnames(&*tr.scope)
+                .filter(|s| Path::is_parent(&**block, s))
+                .any(declared)
+    })
 }
 
 /// The lets among a block's statements that a `<-` or a `&mut` in the

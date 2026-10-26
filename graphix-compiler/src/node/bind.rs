@@ -285,6 +285,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 ctx,
                 partial.as_ref().or(narrowed.as_ref()).unwrap_or(&typ),
             )?;
+            if let Some(shape) = &narrowed {
+                pattern.retype_by_member(ctx, &typ, shape).at(&spec)?;
+            }
             (node, pattern, typ)
         };
         if partial.is_none()

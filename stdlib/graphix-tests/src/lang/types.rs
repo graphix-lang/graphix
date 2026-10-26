@@ -3801,3 +3801,49 @@ run!(
     refused("does not contain");
     FuseExpect::None
 );
+
+// A type name means one thing throughout its statement list: a name a
+// pattern binds at it means what a later statement of the block declares,
+// and a pattern that takes it apart may not name it before it.
+run!(
+    a_pattern_binds_at_the_blocks_final_type,
+    r#"{
+    type Foo = string;
+    let r = { let a: Foo = 42; type Foo = i64; a };
+    r + 1
+}"#,
+    is(Value::I64(43))
+);
+
+run!(
+    a_pattern_binds_at_no_type_a_later_statement_shadows,
+    r#"{
+    type Foo = string;
+    let r = { let a: Foo = 42; type Foo = i64; a };
+    str::len(r)
+}"#,
+    refused("string does not contain");
+    FuseExpect::None
+);
+
+run!(
+    a_destructure_names_no_type_a_later_statement_declares,
+    r#"{
+    type P = (string, string);
+    let r = { let (a, b): P = (1, 2); type P = (i64, i64); a };
+    r
+}"#,
+    refused("P names the type a later statement of this block declares");
+    FuseExpect::None
+);
+
+run!(
+    a_pattern_names_the_types_declared_before_it,
+    r#"{
+    type Foo = string;
+    let r = { type Foo = i64; let a: Foo = 42; a };
+    let s = { let b: Foo = "x"; let q = { type Foo = i64; let c: Foo = 1; c }; type Bar = i64; (b, q) };
+    (r + 1, s)
+}"#,
+    prints(r#"[i64:43, ["x", i64:1]]"#)
+);

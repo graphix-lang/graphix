@@ -1436,6 +1436,10 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Per block being compiled, innermost last: the lets something in
     /// it writes, by statement and name ([`node::written_lets`]).
     pub(crate) written_lets: Vec<AHashSet<(ExprId, CompactString)>>,
+    /// Per block being compiled that declares types, innermost last: its
+    /// scope and the names its type definitions declare
+    /// ([`node::later_typedef`]).
+    pub(crate) block_typedefs: Vec<(ModPath, SmallVec<[ArcStr; 4]>)>,
     /// Builtin metadata for `let foo = |...| 'builtin_name` bindings.
     /// Keyed by `(scope, name)` because a sig and its impl share the
     /// name but have distinct `BindId`s.
@@ -1639,6 +1643,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             connect_targets: self.connect_targets.fork(),
             static_callees: self.static_callees.fork(),
             written_lets: self.written_lets.clone(),
+            block_typedefs: self.block_typedefs.clone(),
             builtin_bindings: self.builtin_bindings.fork(),
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
@@ -1688,6 +1693,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             connect_targets,
             static_callees,
             written_lets: _,
+            block_typedefs: _,
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,
@@ -2032,6 +2038,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 connect_targets: TrackedSet::default(),
                 static_callees: TrackedMap::default(),
                 written_lets: Vec::new(),
+                block_typedefs: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
                 def_gate_params: nohash::IntMap::default(),
@@ -3337,6 +3344,7 @@ impl Saved {
             connect_targets,
             static_callees,
             written_lets: _,
+            block_typedefs: _,
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,
