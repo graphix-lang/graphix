@@ -144,7 +144,7 @@ async fn regress(bless: bool) -> Regression {
     );
     for (name, d) in &r.regressions {
         println!("  REGRESSION {name} — {}", d.bisect());
-        let (a, b) = d.labels();
+        let (a, b) = d.pair.labels();
         println!("    {a}={}", render(&d.reference));
         println!("    {b}={}", render(&d.tested));
     }
@@ -585,6 +585,9 @@ async fn main() -> Result<ExitCode> {
             let par =
                 std::thread::available_parallelism().map(|n| n.get() * 2).unwrap_or(8);
             let (mut compiled, mut quiesced, mut advanced, mut wedged) = (0, 0, 0, 0);
+            // programs with a ceremony, and those whose ceremonies never
+            // completed a run (every completed run prints `run ..`)
+            let (mut ceremonies, mut unrun) = (0, 0);
             let mut ok = vec![false; progs.len()];
             let mut rejects: std::collections::BTreeMap<String, usize> =
                 std::collections::BTreeMap::new();
@@ -616,6 +619,12 @@ async fn main() -> Result<ExitCode> {
                     Outcome::Checked => unreachable!("a run never answers Checked"),
                     Outcome::Trace(t) => {
                         compiled += 1;
+                        if progs[i].contains("println(\"run [") {
+                            ceremonies += 1;
+                            if !t.stdout.iter().any(|l| l.text.starts_with("run ")) {
+                                unrun += 1;
+                            }
+                        }
                         if !t.epochs.iter().any(|e| e.capped) {
                             quiesced += 1;
                         }
@@ -634,7 +643,7 @@ async fn main() -> Result<ExitCode> {
             println!(
                 "reactive-check: seed={seed}: {compiled}/{n} compiled ({:.1}%), \
                  quiesced {quiesced} ({:.1}%), epochs-advanced {advanced} ({:.1}%), \
-                 wedged {wedged}",
+                 wedged {wedged}, ceremonies {ceremonies} ({unrun} never completed a run)",
                 pct(compiled),
                 pct(quiesced),
                 pct(advanced),
@@ -1059,7 +1068,7 @@ async fn main() -> Result<ExitCode> {
                         println!("AGREE ({v}) — every comparison the program owes holds")
                     }
                     (Some(d), _) => {
-                        let (la, lb) = d.labels();
+                        let (la, lb) = d.pair.labels();
                         println!("DIVERGENCE — {}", d.bisect());
                         println!("  {la}: {}", render(&d.reference));
                         println!("  {lb}: {}", render(&d.tested));

@@ -22,6 +22,7 @@ pub mod typemorph;
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use bytes::Bytes;
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     FusionStats, ParMode, Scope,
     env::Env,
@@ -703,10 +704,11 @@ async fn drive_inner(
                             return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
                         }
                     );
+                    seg.end_cycle = more.end_cycle;
                     if more.events.is_empty() {
                         break;
                     }
-                    // CR claude for claude: [bug/medium] The settle rounds merge each
+                    // XCR claude for claude: [bug/medium] The settle rounds merge each
                     // later segment's events but keep the first segment's end_cycle,
                     // and the stdout capture below takes prints only through
                     // `seg.end_cycle`. A print that follows an async reply landing
@@ -718,7 +720,12 @@ async fn drive_inner(
                     // more.end_cycle;` with the merge. probe:
                     // design/review-2026-10-26/repro/fuzz-lib-a-settle-prints-dropped.sh
                     // Also reported as (fuzz-main-aux-01). (fuzz-lib-a-01)
-                    // CR claude for claude: [bug/medium] The merged segment keeps the
+                    // 2026-10-26 claude: wait_settled! now takes each settle round's
+                    // end_cycle (a quiet round's included), so the stdout capture spans
+                    // the whole settled epoch; pin: graphix-fuzz
+                    // trace_probes::settle_rounds_capture_late_prints (a 20 MB read_all
+                    // whose print is lost without the fix).
+                    // XCR claude for claude: [bug/medium] The merged segment keeps the
                     // first segment's end_cycle, so the stdout capture after the drive
                     // (`sink.take_through(seg.end_cycle)`) drops every line printed
                     // after the first idle, while the trace keeps those cycles' values.
@@ -729,6 +736,9 @@ async fn drive_inner(
                     // Set `seg.end_cycle = more.end_cycle` here. probe:
                     // design/review-2026-10-26/repro/examples-rest-fuzz-late-print.gx
                     // (examples-rest-01)
+                    // 2026-10-26 claude: Fixed with (fuzz-lib-a-01): the merged segment
+                    // takes every settle round's end_cycle; pin: graphix-fuzz
+                    // trace_probes::settle_rounds_capture_late_prints.
                     seg.events.extend(more.events.iter().cloned());
                     seg.capped_cycles |= more.capped_cycles;
                     seg.capped_events |= more.capped_events;
@@ -1175,17 +1185,20 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // `iter(` is a self-clocked sequence: one element per cycle,
         // so anything async landing beside it samples whichever element
         // that cycle held.
-        // CR claude for claude: [bug/medium] `queue(` is listed but `queuefn(` is not,
+        // XCR claude for claude: [bug/medium] `queue(` is listed but `queuefn(` is not,
         // and mentions() does not match one with the other. queuefn hands its credit to
         // whichever call's arguments arrive first, so with two async-read arguments the
         // reply order picks the call that runs. Such a program stays FinalValues and
         // flakes as a false divergence. Add "queuefn(" here. probe:
         // design/review-2026-10-26/repro/fuzz-gen-a-queuefn-async-tier.gx (one run of
         // seven: forked node-walk printed 103 where serial printed 101) (fuzz-gen-a-02)
+        // 2026-10-26 claude: queuefn( joins oracle_tier's fire-count-sensitive markers,
+        // so a queuefn program beside an async reader is Excluded; pin: graphix-fuzz
+        // tests::oracle_markers_are_whole_names (the queued case).
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
-            "any(", "queue(", "take(", "skip(", "window(", "iterq", "iter(", "group(",
-            "hold(",
+            "any(", "queue(", "queuefn(", "take(", "skip(", "window(", "iterq", "iter(",
+            "group(", "hold(",
         ];
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| mentions(code, m)) {
             return OracleTier::Excluded;
@@ -1434,24 +1447,40 @@ async fn cold_warm_with(
 ) -> (Outcome, Outcome) {
     let (cold, image) =
         run_session(code, mode, route, SessionImage::Write, timeout, opts).await;
-    let warm = match (&cold, image) {
-        // nothing compiled, so nothing to restore
-        // CR claude for claude: [risk/medium] The runtime writes the program image at
-        // construction (GX::new), so a cold run that timed out at run time (Deadline or
-        // a budget) has already reported its write, and this Err may be "the program
-        // image write failed", a codec gap. Cloning the cold timeout as the warm
-        // outcome makes Pair::Warm (and Pair::Cold) agree, so a codec gap is never
-        // reported for any contained program. Only Timeout(Containment::Compile) has no
-        // image to restore: match that alone, and let any other Err become the warm
-        // RuntimeErr as below. Found by reading; not run. (fuzz-lib-a-03)
-        (Outcome::CompileErr(_), _) | (Outcome::Timeout(_), Err(_)) => cold.clone(),
-        (_, Ok(image)) => {
+    let warm = match restorable(&cold, image) {
+        Ok(image) => {
             let image = SessionImage::Read(image);
             run_session(code, mode, route, image, timeout, opts).await.0
         }
-        (_, Err(e)) => Outcome::RuntimeErr(e),
+        Err(warm) => warm,
     };
     (cold, warm)
+}
+
+/// The image a cold run leaves its warm run, else the warm outcome. The
+/// runtime writes the image at its construction, so only a program whose
+/// compile failed or outlived the deadline has none to restore; any other
+/// run's missing image is the write's failure.
+fn restorable(cold: &Outcome, image: Result<Bytes, String>) -> Result<Bytes, Outcome> {
+    // XCR claude for claude: [risk/medium] The runtime writes the program image at
+    // construction (GX::new), so a cold run that timed out at run time (Deadline or
+    // a budget) has already reported its write, and this Err may be "the program
+    // image write failed", a codec gap. Cloning the cold timeout as the warm
+    // outcome makes Pair::Warm (and Pair::Cold) agree, so a codec gap is never
+    // reported for any contained program. Only Timeout(Containment::Compile) has no
+    // image to restore: match that alone, and let any other Err become the warm
+    // RuntimeErr as below. Found by reading; not run. (fuzz-lib-a-03)
+    // 2026-10-26 claude: The warm decision is restorable(): only CompileErr and
+    // Timeout(Compile) clone the cold outcome; a run contained after construction
+    // with a failed write becomes the warm RuntimeErr. Pin: graphix-fuzz
+    // trace_probes::contained_runs_report_a_failed_image_write.
+    match (cold, image) {
+        (Outcome::CompileErr(_) | Outcome::Timeout(Containment::Compile), _) => {
+            Err(cold.clone())
+        }
+        (_, Ok(image)) => Ok(image),
+        (_, Err(e)) => Err(Outcome::RuntimeErr(e)),
+    }
 }
 
 /// The routes a subject's sessions run on.
@@ -1567,53 +1596,46 @@ pub enum Pair {
 }
 
 /// The label of one session run, for a finding's outcome fields.
-fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
-    use {Mode::*, Route::*, Session::*};
-    match (mode, route, session) {
-        (Interp, InLanguage, NoCache) => "interp/nocache",
-        (Interp, InLanguage, Cold) => "interp/cold",
-        (Interp, InLanguage, Warm) => "interp/warm",
-        (Jit, InLanguage, NoCache) => "jit/nocache",
-        (Jit, InLanguage, Cold) => "jit/cold",
-        (Jit, InLanguage, Warm) => "jit/warm",
-        (Interp, Dispatch, NoCache) => "interp/dispatch/nocache",
-        (Interp, Dispatch, Cold) => "interp/dispatch/cold",
-        (Interp, Dispatch, Warm) => "interp/dispatch/warm",
-        (Jit, Dispatch, NoCache) => "jit/dispatch/nocache",
-        (Jit, Dispatch, Cold) => "jit/dispatch/cold",
-        (Jit, Dispatch, Warm) => "jit/dispatch/warm",
-        (Par, _, _) => "par",
-        // CR claude for claude: [readability/low] Every JitPar run, whatever its route
-        // and session, gets this one label. Pair::Cold(JitPar, r) and
-        // Pair::Warm(JitPar, r) findings therefore print "jit-par" vs "jit-par" and
-        // lose the route, and Pair::Par(JitPar) calls the same nocache run "jit/par".
-        // Give JitPar route/session arms as Interp and Jit have (or label from
-        // Run::token). Found by reading; not run. (fuzz-lib-a-06)
-        (JitPar, _, _) => "jit-par",
-        (Unpruned, _, _) => "unpruned",
+fn session_label(mode: Mode, route: Route, session: Session) -> CompactString {
+    // XCR claude for claude: [readability/low] Every JitPar run, whatever its route
+    // and session, gets this one label. Pair::Cold(JitPar, r) and
+    // Pair::Warm(JitPar, r) findings therefore print "jit-par" vs "jit-par" and
+    // lose the route, and Pair::Par(JitPar) calls the same nocache run "jit/par".
+    // Give JitPar route/session arms as Interp and Jit have (or label from
+    // Run::token). Found by reading; not run. (fuzz-lib-a-06)
+    // 2026-10-26 claude: session_label composes mode_label (interp, jit,
+    // interp/par, jit/par, interp/unpruned), the route and the session, so every
+    // forked or unpruned session run names both; Pair::labels (moved from
+    // Divergence) labels Par and Prune by mode_label too. Pin: graphix-fuzz
+    // trace_probes::session_labels_name_the_route_and_session.
+    let route = match route {
+        Route::InLanguage => "",
+        Route::Dispatch => "/dispatch",
+    };
+    format_compact!("{}{route}/{}", mode_label(mode), session.name())
+}
+
+fn mode_label(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Interp => "interp",
+        Mode::Jit => "jit",
+        Mode::Par => "interp/par",
+        Mode::JitPar => "jit/par",
+        Mode::Unpruned => "interp/unpruned",
     }
 }
 
 impl Divergence {
     /// A one-line classification.
     pub fn bisect(&self) -> &'static str {
-        // Survived the slow retry: either the JIT fabricated a value or the
-        // node-walk is >8x slower on a heavy terminating program. Verify by
-        // hand.
         let engines = matches!(self.pair, Pair::Engine | Pair::EngineDispatch);
-        // CR claude for claude: [readability/low] This label (and the comment above)
-        // offers an honest >8x slowdown as an explanation, but Oracle::settle now drops
-        // that case as SLOW and drops a node-walk budget beside a JIT trace as
-        // contained. A divergence reaching here has a reference that wedged at near 0%
-        // CPU or that the probe showed starting no cycle at the slow budget. Say that,
-        // so triage does not re-time a stall the ladder already proved. Found by
-        // reading; not run. (fuzz-lib-a-05)
         if engines
             && matches!(self.reference, Outcome::Timeout(_))
             && self.tested.has_events()
         {
-            return "asymmetric timeout (interp exceeded 8x budget; JIT produced a value — \
-                    verify the node-walk terminates and agrees before reading this as a JIT bug)";
+            return "asymmetric timeout (the node-walk did not finish at 8x the budget, \
+                    wedged near 0% CPU or looping inside one cycle, while the JIT produced a \
+                    value: a node-walk hang, or a JIT that skipped work the node-walk does)";
         }
         match (self.pair, self.tier) {
             (Pair::Twin, _) => {
@@ -1678,31 +1700,6 @@ impl Divergence {
             }
             (Pair::Warm(Mode::Jit | Mode::JitPar, _), _) => {
                 "image bug: the restored program differs from the cold one (jit)"
-            }
-        }
-    }
-
-    /// Human labels for `reference` and `tested`, by pair.
-    pub fn labels(&self) -> (&'static str, &'static str) {
-        match self.pair {
-            Pair::Engine => ("interp", "jit"),
-            Pair::EngineDispatch => ("interp/dispatch", "jit/dispatch"),
-            Pair::Route => ("in-language", "dispatch"),
-            Pair::Twin => ("trace", "trace"),
-            Pair::Rejected | Pair::Accepted => ("interp", "jit"),
-            Pair::Check => ("check", "build"),
-            Pair::Prune => ("interp/unpruned", "interp"),
-            Pair::Rerun(_) => ("first run", "rerun"),
-            Pair::Construction => ("construction", "construction"),
-            Pair::Unparsed => ("parse", "parse"),
-            Pair::Par(Mode::Par) => ("interp", "interp/par"),
-            Pair::Par(_) => ("interp", "jit/par"),
-            Pair::Cold(m, r) => (
-                session_label(m, r, Session::NoCache),
-                session_label(m, r, Session::Cold),
-            ),
-            Pair::Warm(m, r) => {
-                (session_label(m, r, Session::Cold), session_label(m, r, Session::Warm))
             }
         }
     }
@@ -1933,6 +1930,36 @@ impl Run {
 }
 
 impl Pair {
+    /// Human labels for `reference` and `tested`.
+    pub fn labels(self) -> (CompactString, CompactString) {
+        let (reference, tested) = match self {
+            Pair::Engine => ("interp", "jit"),
+            Pair::EngineDispatch => ("interp/dispatch", "jit/dispatch"),
+            Pair::Route => ("in-language", "dispatch"),
+            Pair::Twin => ("trace", "trace"),
+            Pair::Rejected | Pair::Accepted => ("interp", "jit"),
+            Pair::Check => ("check", "build"),
+            Pair::Prune => (mode_label(Mode::Unpruned), mode_label(Mode::Interp)),
+            Pair::Rerun(_) => ("first run", "rerun"),
+            Pair::Construction => ("construction", "construction"),
+            Pair::Unparsed => ("parse", "parse"),
+            Pair::Par(m) => (mode_label(Mode::Interp), mode_label(m)),
+            Pair::Cold(m, r) => {
+                return (
+                    session_label(m, r, Session::NoCache),
+                    session_label(m, r, Session::Cold),
+                );
+            }
+            Pair::Warm(m, r) => {
+                return (
+                    session_label(m, r, Session::Cold),
+                    session_label(m, r, Session::Warm),
+                );
+            }
+        };
+        (reference.into(), tested.into())
+    }
+
     /// The reference and tested runs of a comparison; `None` for the
     /// findings that are not one.
     fn runs(self) -> Option<(Run, Run)> {
@@ -2993,7 +3020,7 @@ pub struct Finding {
 
 impl Finding {
     pub fn of(d: &Divergence) -> Self {
-        let (la, lb) = d.labels();
+        let (la, lb) = d.pair.labels();
         Finding {
             key: finding_key(d),
             bisect: d.bisect().to_string(),
@@ -7286,6 +7313,71 @@ mod trace_probes {
         assert_eq!(oracle_tier(summed), OracleTier::FinalValues);
         let counted = "{ let c = count(i64:1); sys::fs::read_all(\"/x\") }";
         assert_eq!(oracle_tier(counted), OracleTier::Excluded);
+        let queued = "{ let qf = queuefn(#trigger: 1, |x: i64| x); qf(json::read(b)$) }";
+        assert_eq!(oracle_tier(queued), OracleTier::Excluded);
+    }
+
+    /// A session pair's labels name its mode, route and session, the
+    /// forked modes' included.
+    #[test]
+    fn session_labels_name_the_route_and_session() {
+        let labels = |p: Pair| {
+            let (a, b) = p.labels();
+            (a.to_string(), b.to_string())
+        };
+        let cold = labels(Pair::Cold(Mode::JitPar, Route::Dispatch));
+        assert_eq!(
+            cold,
+            ("jit/par/dispatch/nocache".into(), "jit/par/dispatch/cold".into())
+        );
+        let warm = labels(Pair::Warm(Mode::Par, Route::InLanguage));
+        assert_eq!(warm, ("interp/par/cold".into(), "interp/par/warm".into()));
+        assert_eq!(labels(Pair::Par(Mode::JitPar)), ("interp".into(), "jit/par".into()));
+        let jit = labels(Pair::Cold(Mode::Jit, Route::InLanguage));
+        assert_eq!(jit, ("jit/nocache".into(), "jit/cold".into()));
+    }
+
+    /// A run contained after the runtime's construction wrote its image
+    /// there, so a failed write is the warm outcome, never the cold one.
+    #[test]
+    fn contained_runs_report_a_failed_image_write() {
+        let failed = || Err("the program image write failed: x".to_string());
+        for c in [
+            Containment::Deadline,
+            Containment::StackBudget,
+            Containment::ActivationBudget,
+        ] {
+            let warm = restorable(&Outcome::Timeout(c), failed());
+            assert!(matches!(warm, Err(Outcome::RuntimeErr(_))), "{c:?}: {warm:?}");
+        }
+        let compile = Outcome::Timeout(Containment::Compile);
+        let warm = restorable(&compile, no_image());
+        assert!(matches!(warm, Err(Outcome::Timeout(Containment::Compile))), "{warm:?}");
+        let rejected = Outcome::CompileErr("e".into());
+        assert!(matches!(restorable(&rejected, no_image()), Err(Outcome::CompileErr(_))));
+    }
+
+    /// A FinalValues epoch spans every settle round, so a print that
+    /// follows an async reply landing after the first idle is captured in
+    /// the epoch it happened in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_rounds_capture_late_prints() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        std::fs::write(&path, format!("{}\n", "x".repeat(99)).repeat(200_000)).unwrap();
+        let prog = format!(
+            "{{ let n = str::len(sys::fs::read_all(\"{}\")$); println(\"got [n]\"); n }}",
+            path.display()
+        );
+        assert_eq!(oracle_tier(&prog), OracleTier::FinalValues);
+        let Outcome::Trace(t) =
+            run_program(&prog, Mode::Interp, std::time::Duration::from_secs(60)).await
+        else {
+            panic!("{prog}: no trace");
+        };
+        let printed: Vec<_> =
+            t.stdout.iter().map(|l| (l.epoch, l.text.as_str())).collect();
+        assert_eq!(printed, [(0, "got 20000000\n")], "{prog}");
     }
 
     /// A comment above the body is legal, the reject marker included: a

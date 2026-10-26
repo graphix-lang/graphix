@@ -42,6 +42,10 @@ pub struct ReactiveStats {
     pub flushes: usize,
     /// Ceremonies whose trigger binds a tuple pattern.
     pub tuple_triggers: usize,
+    /// Ceremony step reads and waits written `live(..)`.
+    pub live_reads: usize,
+    /// Ceremonies whose run counter fires on every injection.
+    pub reliable_ceremonies: usize,
     /// Ceremony steps by kind, in [`STEP_KINDS`] order.
     pub steps: [usize; STEP_KINDS.len()],
 }
@@ -57,7 +61,8 @@ pub enum StepKind {
     Connect,
     /// `{ let y = e; acc <- e }`: statements issued together.
     Block,
-    /// `until cond`: a wait on a bool level.
+    /// `until live(cond)`: a wait on a bool level, read live; now and
+    /// then `until (cond)`, which reads the step's entry snapshot.
     Until,
     /// `let t = try { bad(e)? } with(e) { e }`: the error branch taken
     /// on even arguments.
@@ -132,7 +137,7 @@ fn gen_callable_ceremony(rng: &mut Rng) -> String {
             1 => format!("let {a} = {h}({})", exprs::gen_typed(&ctx, rng, &I64, 1)),
             2 => format!("acc <- acc + {}", exprs::gen_typed(&ctx, rng, &I64, 1)),
             3 => format!("println(\"[{}]\")", exprs::gen_typed(&ctx, rng, &I64, 1)),
-            4 if flag => "until b".into(),
+            4 if flag => "until live(b)".into(),
             _ => format!(
                 "{{ let {a} = {}; acc <- {a} }}",
                 exprs::gen_typed(&ctx, rng, &I64, 1)
@@ -652,6 +657,23 @@ fn dyn_reload(
     ctx.push(v, I64);
 }
 
+/// A ceremony step's `i64` expression, a quarter of the time over a live
+/// read of a visible `i64`, which the step follows past its entry.
+fn step_read(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    st: &mut ReactiveStats,
+    depth: usize,
+) -> String {
+    let e = exprs::gen_typed(ctx, rng, &I64, depth);
+    let vars = ctx.vars_of(&I64);
+    if vars.is_empty() || !chance(rng, 0.25) {
+        return e;
+    }
+    st.live_reads += 1;
+    format!("live({}) + ({e})", vars[rng.below(vars.len())])
+}
+
 /// A `seq`/`seqq` ceremony. The trigger is an injected input (one run
 /// per epoch) or a burst counter restarted by an injection, whose two
 /// triggers land a cycle apart so `seq` drops the second and `seqq`
@@ -664,8 +686,9 @@ fn dyn_reload(
 /// `abort(..)` or `flush(..)` event is a cycle of a clock the ceremony's
 /// input restarts (before, at, or inside the run) or an injected input
 /// (which frees a run stalled since an earlier epoch). A body that can stall (an `until` on
-/// a level nothing in the program is guaranteed to flip), abort, or be
-/// aborted keeps its cells out of `fires_per_injection`.
+/// a level nothing in the program is guaranteed to flip, or one that reads
+/// its entry snapshot), abort, or be aborted keeps its cells out of
+/// `fires_per_injection`.
 fn ceremony(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -771,18 +794,18 @@ fn ceremony(
         match kind {
             StepKind::Let => {
                 let v = ctx.fresh();
-                let e = exprs::gen_typed(ctx, rng, &I64, 2);
+                let e = step_read(ctx, rng, st, 2);
                 body.push(format!("let {v} = {e}"));
                 ctx.push(v, I64);
             }
             StepKind::Call => {
                 let v = ctx.fresh();
-                let e = exprs::gen_typed(ctx, rng, &I64, 1);
+                let e = step_read(ctx, rng, st, 1);
                 body.push(format!("let {v} = {h}({e})"));
                 ctx.push(v, I64);
             }
             StepKind::Connect => {
-                let e = exprs::gen_typed(ctx, rng, &I64, 2);
+                let e = step_read(ctx, rng, st, 2);
                 body.push(format!("{acc} <- {e}"));
             }
             StepKind::Block => {
@@ -796,7 +819,7 @@ fn ceremony(
             }
             StepKind::Until => {
                 let cond = match (&burst_counter, bool_inputs.is_empty()) {
-                    // CR claude for claude: [test-gap/medium] A seq step reads every
+                    // XCR claude for claude: [test-gap/medium] A seq step reads every
                     // outer variable at its entry, so `until (b >= i64:3)` on the burst
                     // counter waits on the counter as it stood when the step began. A
                     // run that reaches the step at b = 1 or 2 stalls for good, and a
@@ -812,7 +835,17 @@ fn ceremony(
                     // plain reads. probe:
                     // design/review-2026-10-26/repro/x-rerun-3-fuzz-until-snapshot.sh
                     // (x-rerun-3-02)
-                    (Some(b), _) if chance(rng, 0.6) => format!("({b} >= i64:3)"),
+                    // 2026-10-26 claude: Ceremony waits are written until live(..) (the
+                    // burst counter's, run_event's clock wait, the callable handler's
+                    // until live(b)); a bare until, drawn 15% of the time, reads its
+                    // entry snapshot and marks the ceremony unreliable;
+                    // Let/Call/Connect steps draw a live(v) read a quarter of the time
+                    // (ReactiveStats::live_reads, asserted by ceremony_presence). Pin:
+                    // graphix-fuzz
+                    // generate::reactive::test::reliable_ceremonies_complete (23 of 24
+                    // reliable until-ceremonies complete a run; 3 of 24 with the fix
+                    // undone).
+                    (Some(b), _) if chance(rng, 0.6) => format!("{b} >= i64:3"),
                     (_, false) if chance(rng, 0.7) => {
                         reliable = false;
                         bool_inputs[rng.below(bool_inputs.len())].to_string()
@@ -822,7 +855,14 @@ fn ceremony(
                         exprs::gen_typed(ctx, rng, &GenType::Bool, 1)
                     }
                 };
-                // CR claude for claude: [bug/high] A step reads the world once, at its
+                let cond = if chance(rng, 0.85) {
+                    st.live_reads += 1;
+                    format!("live({cond})")
+                } else {
+                    reliable = false;
+                    format!("({cond})")
+                };
+                // XCR claude for claude: [bug/high] A step reads the world once, at its
                 // entry, and waits for a change only through `live(..)`. This generator
                 // never emits `live`, so every `until` here stalls whenever its
                 // condition is false at entry. The same holds for the clock wait in
@@ -838,6 +878,13 @@ fn ceremony(
                 // design/review-2026-10-26/repro/fuzz-gen-b-until-stall.gx,
                 // design/review-2026-10-26/repro/fuzz-gen-b-until-stall-count.py
                 // (fuzz-gen-b-01)
+                // 2026-10-26 claude: Fixed with (x-rerun-3-02): every wait meant to end
+                // is until live(..), step reads draw live(..), the StepKind::Until doc
+                // says so, and reactive-check prints how many ceremony programs never
+                // completed a run. Census (gen 600 21 --reactive, first 60): until
+                // without abort 3 of 7 never complete, each over a constant-false
+                // condition (was 9 of 10). Pin: graphix-fuzz
+                // generate::reactive::test::reliable_ceremonies_complete.
                 body.push(format!("until {cond}"));
             }
             StepKind::Try => {
@@ -926,7 +973,7 @@ fn ceremony(
         });
         let at = 1 + rng.below(5);
         if chance(rng, 0.7) {
-            let wait = format!("until ({k} >= i64:{})", at + 1 + rng.below(6 - at));
+            let wait = format!("until live({k} >= i64:{})", at + 1 + rng.below(6 - at));
             body.insert(rng.below(body.len()), wait);
         }
         format!("select {k} {{ i64:{at} => {k}, _ => never() }}")
@@ -980,6 +1027,7 @@ fn ceremony(
     stmts.push(format!("let {last} = i64:0"));
     stmts.push(format!("{last} <- {done}"));
     if reliable {
+        st.reliable_ceremonies += 1;
         fires_per_injection.push(runs.clone());
     }
     ctx.push(runs, I64);
@@ -1076,6 +1124,37 @@ mod test {
         assert!(slept * 100 / N >= 8, "slept-arm selects in only {slept}/{N}");
     }
 
+    /// A ceremony's waits are written to end: nearly every program whose
+    /// ceremonies the generator counts on to fire per injection, one with
+    /// an `until`, completes a run (a generated step may still bottom).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reliable_ceremonies_complete() {
+        use crate::{OracleTier, Outcome, oracle_tier, run_program};
+        use graphix_package_core::testing::Mode;
+        let mut rng = Rng::new(21);
+        let progs: Vec<String> =
+            std::iter::repeat_with(|| gen_reactive_stats(&GenCfg::default(), &mut rng))
+                .filter(|(p, st)| {
+                    st.reliable_ceremonies == st.seqs + st.seqqs
+                        && p.contains("until")
+                        && oracle_tier(p) != OracleTier::Excluded
+                })
+                .map(|(p, _)| p)
+                .take(24)
+                .collect();
+        let mut done = 0;
+        for p in &progs {
+            let timeout = std::time::Duration::from_secs(60);
+            if let Outcome::Trace(t) = run_program(p, Mode::Interp, timeout).await
+                && t.stdout.iter().any(|l| l.text.starts_with("run "))
+            {
+                done += 1;
+            }
+        }
+        let n = progs.len();
+        assert!(done * 4 >= n * 3, "{done} of {n} reliable ceremonies completed a run");
+    }
+
     /// Both ceremony forms, both trigger shapes, a tuple-bound trigger,
     /// both head clauses and every step kind appear at the default profile.
     #[test]
@@ -1092,6 +1171,7 @@ mod test {
             sum.flushes += st.flushes;
             sum.tuple_triggers += st.tuple_triggers;
             sum.labeled_calls += st.labeled_calls;
+            sum.live_reads += st.live_reads;
             for (a, b) in sum.steps.iter_mut().zip(st.steps) {
                 *a += b;
             }
@@ -1107,6 +1187,7 @@ mod test {
         assert!(sum.flushes * 100 / N >= 2, "flushes: {}/{N}", sum.flushes);
         assert!(sum.tuple_triggers * 100 / N >= 2, "tuples: {}/{N}", sum.tuple_triggers);
         assert!(sum.labeled_calls * 100 / N >= 5, "labeled: {}/{N}", sum.labeled_calls);
+        assert!(sum.live_reads * 100 / N >= 5, "live reads: {}/{N}", sum.live_reads);
         for (kind, n) in STEP_KINDS.iter().zip(sum.steps) {
             assert!(n * 100 / N >= 3, "{kind:?} steps: only {n} over {N} programs");
         }
