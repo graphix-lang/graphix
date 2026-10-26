@@ -2645,6 +2645,19 @@ impl Type {
             .expect("a committing lookup refuses by error"))
     }
 
+    /// [`Self::lookup_ref_with`]'s probe that fills no resolution cell,
+    /// as [`Self::lookup_ref_peek`], with the key of the definition it
+    /// found: a walk that only looks decides no name for a check that may
+    /// resolve it in another environment. `None` where it does not
+    /// resolve or a parameter bound is violated.
+    #[doc(hidden)]
+    pub fn lookup_ref_probe(&self, env: &Env) -> Option<(usize, Type)> {
+        let Type::Ref(tr) = self else { return None };
+        let key = tr.resolve_peek(env)?.def_key();
+        let t = self.lookup_ref_by(env, false, TypeRef::resolve_peek).ok()??;
+        Some((key, t))
+    }
+
     fn lookup_ref_by(
         &self,
         env: &Env,

@@ -597,13 +597,7 @@ fn quantified_formal(
 /// holds its definition already (a recursive typedef met inside its own
 /// expansion).
 fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> {
-    let Type::Ref(tr) = t else { return None };
-    let unexpanded = |key: usize| !expanding.contains(&key);
-    if !tr.def_key().is_none_or(unexpanded) {
-        return None;
-    }
-    let whole = t.lookup_ref_with(env, false).ok()??;
-    tr.def_key().filter(|k| unexpanded(*k)).map(|key| (key, whole))
+    t.lookup_ref_probe(env).filter(|(key, _)| !expanding.contains(key))
 }
 
 /// Push to `out` the quantifiers of each function type at a data position
@@ -1078,6 +1072,14 @@ fn holds_invariantly(env: &Env, t: &Type, expanding: &mut SmallVec<[usize; 4]>) 
         // the env for it, and the call's formals are keyed once before the sort. Pin:
         // lang::types::an_alias_is_its_expansion (the repro, plus a recursive alias
         // that still checks); it fails with the expansion disabled.
+        // 2026-10-26 claude: The expansion is a probe that fills no resolution cell
+        // (Type::lookup_ref_probe, peek resolution, with the found definition's key):
+        // filling the cells of another module's typedef body from a call site's env
+        // during a parallel module check made gui::data_table's ColumnSpec return check
+        // fail now and then ('ColumnSpec does not contain {..}', two refs of one name
+        // resolved apart), seen twice in the full gate with lookup_ref_with; gone over 3
+        // runs of the gui lib suite and 5 of examples_compile with the probe.
+        // rank2_parts (x-typecheck-generics-05) uses the same probe.
         Type::Ref(_) if let Some((key, whole)) = expansion(env, t, expanding) => {
             expanding.push(key);
             let r = holds_invariantly(env, &whole, expanding);
