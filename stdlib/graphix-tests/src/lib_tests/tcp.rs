@@ -252,3 +252,28 @@ const TCP_ACCEPT_BUSY_TRIGGER: &str = r#"
 run!(tcp_accept_busy_trigger, TCP_ACCEPT_BUSY_TRIGGER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(50), Value::I64(0)])
 });
+
+// A listen or a connect whose arm sleeps while it runs finishes asleep
+// and answers at the wake: the bound listener and the connection the
+// server already saw are not lost.
+const TCP_LISTEN_CONNECT_ANSWER_AT_THE_WAKE: &str = r#"
+{
+  let on = true;
+  on <- false;
+  on <- on ~ select on { false => true, true => never() };
+  let listener = select on { true => sys::tcp::listen("127.0.0.1:0")?, false => never() };
+  let addr = sys::tcp::listener_addr(listener)?;
+  let again = true;
+  again <- addr ~ false;
+  again <- again ~ select again { false => true, true => never() };
+  let client = select again { true => sys::tcp::connect(addr)?, false => never() };
+  client ~ true
+}
+"#;
+
+run!(
+    tcp_listen_connect_answer_at_the_wake,
+    TCP_LISTEN_CONNECT_ANSWER_AT_THE_WAKE,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    FuseExpect::Jit
+);

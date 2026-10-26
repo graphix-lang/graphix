@@ -15,6 +15,7 @@ impl EvalCachedAsync for FileOpenEv {
     type Args = (ArcStr, ArcStr);
 
     const NAME: &str = "sys_fs_open";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let (mode, []) = rep::variant(cached.value(0)?)? else { return None };

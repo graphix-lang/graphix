@@ -667,7 +667,9 @@ answers, a cycle later if need be (`Latest`: `accept`, `wait`), or each at once,
 completion order (`Concurrent`: the tls handshakes); `delete` and `sleep`
 abort every call in flight, except that a sleep lets the calls of an eval
 not `CANCEL_SAFE` (a stream read or write, a cursor read, a handshake, a
-file seek) finish, their replies kept until the wake answers them. Bottom never reaches builtin authors: a bottomed arg bottoms the
+file open or seek, a db or sqlite op, a spawn, a tcp connect or listen:
+whatever a dropped reply would lose) finish, their replies kept until the
+wake answers them. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`; raw `Apply` authors read args through
 `seam_arg`/`seam_tick`/`seam_value`. Configuration a fast fn derives
 from its args (a regex, a template registry) lives in a bounded

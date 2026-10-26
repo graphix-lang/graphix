@@ -427,6 +427,7 @@ impl EvalCachedAsync for DbTxnCommitEv {
     type Args = Arc<TxnInner>;
 
     const NAME: &str = "db_txn_commit";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_txn(cached)
@@ -446,6 +447,7 @@ impl EvalCachedAsync for DbTxnRollbackEv {
     type Args = Arc<TxnInner>;
 
     const NAME: &str = "db_txn_rollback";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_txn(cached)

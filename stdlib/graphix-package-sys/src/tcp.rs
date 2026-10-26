@@ -37,6 +37,7 @@ impl EvalCachedAsync for TcpConnectEv {
     type Args = ArcStr;
 
     const NAME: &str = "sys_tcp_connect";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -61,6 +62,7 @@ impl EvalCachedAsync for TcpListenEv {
     type Args = ArcStr;
 
     const NAME: &str = "sys_tcp_listen";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)

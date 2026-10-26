@@ -1428,3 +1428,46 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+// A db op runs on a blocking thread no abort stops, so an op whose arm
+// sleeps while it runs finishes asleep and answers at the wake: the
+// popped entry, and a commit's outcome, are not lost.
+run_with_tempdir!(
+    name: db_pop_answers_at_the_wake,
+    code: r#"{{
+        let d = db::open("{}")?;
+        let t: db::Tree<i64, string> = db::tree(d, null)?;
+        let ins = db::insert(t, 1, "one")$;
+        let on = true;
+        let popped = select on {{ true => db::pop_min(ins ~ t)?, false => never() }};
+        on <- ins ~ false;
+        on <- on ~ select on {{ false => true, true => never() }};
+        (popped, db::len(popped ~ t)?)
+    }}"#,
+    setup: |td| { td.path().join("pop_asleep.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"[[i64:1, "one"], u64:0]"#);
+        Ok(())
+    }
+);
+
+run_with_tempdir!(
+    name: db_txn_commit_answers_at_the_wake,
+    code: r#"{{
+        let d = db::open("{}")?;
+        let t: db::Tree<string, i64> = db::tree(d, "txn")?;
+        let txn = db::txn::begin(t ~ d)?;
+        let tt = db::txn::tree(txn, txn ~ "txn")?;
+        let ins = db::txn::insert(tt, "k1", 42)?;
+        let on = true;
+        let committed = select on {{ true => db::txn::commit(ins ~ txn), false => never() }};
+        on <- ins ~ false;
+        on <- on ~ select on {{ false => true, true => never() }};
+        (committed, db::get(t, committed ~ "k1")?)
+    }}"#,
+    setup: |td| { td.path().join("commit_asleep.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"[null, i64:42]"#);
+        Ok(())
+    }
+);

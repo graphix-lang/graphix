@@ -125,3 +125,18 @@ run!(sqlite_duplicate_columns_refused, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.contains("two columns are named id"))
 }; FuseExpect::Jit);
+
+// A statement runs on a blocking thread no abort stops, so an exec whose
+// arm sleeps while it runs finishes asleep and answers at the wake, once.
+run!(sqlite_exec_answers_at_the_wake, r#"{
+    let db = sqlite::open(":memory:")$;
+    let made = sqlite::exec_batch(db, "CREATE TABLE t(x INTEGER)")$;
+    let on = true;
+    let n = select on { true => sqlite::exec(db, made ~ "INSERT INTO t VALUES (?)", [1])$, false => never() };
+    on <- made ~ false;
+    on <- on ~ select on { false => true, true => never() };
+    let rows: Array<{c: i64}> = sqlite::query(n ~ db, "SELECT count(*) AS c FROM t", [])$;
+    (n, (rows[0]$).c)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[u64:1, i64:1]")
+}; FuseExpect::Jit);

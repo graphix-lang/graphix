@@ -121,3 +121,20 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(20000)))
 );
+
+// An open whose arm sleeps while it runs finishes asleep and answers at
+// the wake: a `CreateNew` that made its file hands the program the file.
+const OPEN_ANSWERS_AT_THE_WAKE: &str = r#"{
+  use sys::fs::open;
+  let temp = sys::fs::tempdir::create(null)?;
+  let path = sys::join_path(sys::fs::tempdir::path(temp), "new.txt");
+  let on = true;
+  let f = select on { true => open(`CreateNew, path)?, false => never() };
+  on <- path ~ false;
+  on <- on ~ select on { false => true, true => never() };
+  f ~ true
+}"#;
+
+run!(test_open_answers_at_the_wake, OPEN_ANSWERS_AT_THE_WAKE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+}; FuseExpect::Jit);

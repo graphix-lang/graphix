@@ -1814,8 +1814,9 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     /// Whether an `eval` dropped before it completes, or whose reply is
     /// dropped, loses nothing a later call cannot get again. One that would
     /// (a read that consumed input, a partial write, a handshake holding the
-    /// stream) is let finish when its site sleeps, and its reply answers at
-    /// the wake. Never `false` under [`Calls::Latest`], which aborts.
+    /// stream, work on a blocking thread, a spawned child) is let finish when
+    /// its site sleeps, and its reply answers at the wake. Never `false`
+    /// under [`Calls::Latest`], which aborts.
     // CR claude for eric: [bug/high] The default makes a sleep throw away the reply of
     // evals whose work no abort stops. The db and sqlite ops run under spawn_blocking,
     // process spawn completes on its first poll, and a tcp accept may have completed
@@ -1829,6 +1830,11 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     // only the first fix covers it. probe:
     // design/review-2026-10-26/repro/x-async-io-db-pop-reply-lost.gx,
     // design/review-2026-10-26/repro/x-async-io-spawn-reply-lost.gx (x-async-io-01)
+    // 2026-10-26 claude: The 'failing that' branch is done for the evals named in
+    // db2-01, x-builtin-effects-01, http-sqlite-db1-01 and sys-io-01 (db and sqlite
+    // ops, spawn, open, tcp connect/listen are CANCEL_SAFE = false, pinned by
+    // lib_tests::*::*answer*_at_the_wake). The root fix (keep every completed reply
+    // across a sleep) and tcp accept under Latest remain for this decision.
     const CANCEL_SAFE: bool = true;
 
     /// The arguments that leave as data (a store's keys and values):

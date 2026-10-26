@@ -127,7 +127,7 @@ type SqliteOpen = CachedArgsAsync<SqliteOpenEv>;
 #[derive(Debug, Default)]
 struct SqliteExecEv;
 
-// CR claude for claude: [bug/medium] exec, exec_batch, begin, commit, rollback and
+// XCR claude for claude: [bug/medium] exec, exec_batch, begin, commit, rollback and
 // close keep the default CANCEL_SAFE = true. But their work runs in spawn_blocking,
 // which an abort cannot stop, so a sleep of the call site drops only the reply and the
 // statement still runs. An INSERT in an arm that sleeps the cycle after it is issued
@@ -136,10 +136,16 @@ struct SqliteExecEv;
 // the reply is kept and answers at the wake, as the cursor reads and stream writes do.
 // probe: design/review-2026-10-26/repro/http-sqlite-db1-exec-reply-lost.gx
 // (http-sqlite-db1-01)
+// 2026-10-26 claude: SqliteExecEv, SqliteExecBatchEv, SqliteCloseEv and
+// simple_sql_builtin! (begin/commit/rollback) are CANCEL_SAFE = false; the exec
+// answers at the wake, once. Pin: graphix-tests
+// lib_tests::sqlite::sqlite_exec_answers_at_the_wake (times out with the constant
+// removed). sqlite_open and sqlite_query keep the default.
 impl EvalCachedAsync for SqliteExecEv {
     type Args = (Conn, ArcStr, ValArray);
 
     const NAME: &str = "sqlite_exec";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let conn = conn(cached)?;
@@ -171,6 +177,7 @@ impl EvalCachedAsync for SqliteExecBatchEv {
     type Args = (Conn, ArcStr);
 
     const NAME: &str = "sqlite_exec_batch";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let conn = conn(cached)?;
@@ -275,6 +282,7 @@ macro_rules! simple_sql_builtin {
             type Args = Conn;
 
             const NAME: &str = $builtin_name;
+            const CANCEL_SAFE: bool = false;
 
             fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
                 conn(cached)
@@ -308,6 +316,7 @@ impl EvalCachedAsync for SqliteCloseEv {
     type Args = Conn;
 
     const NAME: &str = "sqlite_close";
+    const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         conn(cached)

@@ -416,3 +416,23 @@ run!(
     graphix_package_core::testing::refused("ChildStdin does not implement Read");
     FuseExpect::None
 );
+
+// A spawn has started its child by the time its arm can sleep, so it
+// finishes asleep and its Child answers at the wake: never a child the
+// program cannot reach.
+#[cfg(unix)]
+run!(
+    spawn_answers_at_the_wake,
+    r#"{
+  let on = true;
+  on <- false;
+  on <- on ~ select on { false => true, true => never() };
+  let c = select on {
+    true => sys::process::spawn(sys::process::options(#kill_on_drop: true, "/bin/true"))$,
+    false => never()
+  };
+  c ~ true
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    FuseExpect::Jit
+);

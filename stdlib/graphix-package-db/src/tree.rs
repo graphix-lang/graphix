@@ -530,7 +530,7 @@ fn stored_type(t: &Type, env: &Env) -> ArcStr {
     ArcStr::from(format_compact!("{t}").as_str())
 }
 
-// CR claude for claude: [bug/high] Every db builtin built here, and
+// XCR claude for claude: [bug/high] Every db builtin built here, and
 // DbTxnCommitEv/DbTxnRollbackEv, keeps EvalCachedAsync::CANCEL_SAFE = true. Their eval
 // is `blocking`, a spawn_blocking that an abort cannot stop, so a sleeping site drops
 // the reply of a write that still happens. A pop_min's entry is removed and never
@@ -540,13 +540,20 @@ fn stored_type(t: &Type, env: &Env) -> ArcStr {
 // Fifo site can land out of order. Fix: set `const CANCEL_SAFE: bool = false;` here and
 // on the txn commit/rollback evals, as cursor.rs does for its reads, and pin the repro.
 // probe: design/review-2026-10-26/repro/db2-pop-reply-lost.gx (db2-01)
+// 2026-10-26 claude: blocking_op's evals (every db tree, db and txn-tree op),
+// OpenTreeEv and DbTxnCommitEv/DbTxnRollbackEv are CANCEL_SAFE = false: a sleep lets
+// the op finish and its reply answers at the wake, and since a sleep no longer renews,
+// the next call waits for it (Fifo order kept). Pins: graphix-tests
+// lib_tests::db::db_pop_answers_at_the_wake and db_txn_commit_answers_at_the_wake (time
+// out with the constants removed). DbOpenEv still takes the default (its open_db also
+// runs on spawn_blocking; losing its reply loses only a handle).
 macro_rules! blocking_op {
     ($ev:ident, $alias:ident, $name:literal, $args:ty,
      |$cached:ident| $prepare:expr, |$arg:pat_param| $body:expr) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
 
-        // CR claude for claude: [bug/high] Every op built here runs on spawn_blocking,
+        // XCR claude for claude: [bug/high] Every op built here runs on spawn_blocking,
         // which the abort in CachedArgsAsync::sleep/delete cannot stop. Yet CANCEL_SAFE
         // keeps its default of true, so a sleeping arm drops the reply while the op
         // still completes. db::pop_min/pop_max lose the popped entry for good. remove,
@@ -557,9 +564,16 @@ macro_rules! blocking_op {
         // built on `blocking`, as the cursor reads already do. probe:
         // design/review-2026-10-26/repro/x-builtin-effects-db-pop-lost-on-sleep.gx
         // (x-builtin-effects-01)
+        // 2026-10-26 claude: Same fix as (db2-01): blocking_op, OpenTreeEv,
+        // DbTxnCommitEv/DbTxnRollbackEv and the sqlite
+        // exec/exec_batch/begin/commit/rollback/close evals are CANCEL_SAFE = false.
+        // Pins: lib_tests::db::db_pop_answers_at_the_wake,
+        // db_txn_commit_answers_at_the_wake,
+        // lib_tests::sqlite::sqlite_exec_answers_at_the_wake.
         impl EvalCachedAsync for $ev {
             type Args = $args;
             const NAME: &str = $name;
+            const CANCEL_SAFE: bool = false;
             // every argument past the handle is a key or a value
             const DATA_ARGS: &[usize] = &[1, 2, 3, 4];
             const DATA_RESULT: bool = true;
@@ -1001,6 +1015,7 @@ impl<O: TreeOpener> EvalCachedAsync for OpenTreeEv<O> {
     type Args = (O::Handle, Option<ArcStr>, TreeTypes);
 
     const NAME: &str = O::NAME;
+    const CANCEL_SAFE: bool = false;
 
     fn init<R: Rt, E: UserEvent>(
         ctx: &mut CompileCtx<R, E>,
