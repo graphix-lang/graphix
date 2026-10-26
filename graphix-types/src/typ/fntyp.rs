@@ -842,21 +842,28 @@ impl FnType {
         any
     }
 
-    /// Each of the signature's own quantifiers whose cell is open, as the
-    /// signature names it and as its open cell.
-    fn open_quantifiers(&self, mut f: impl FnMut(&TVar, TVar)) {
+    /// Each of the signature's own quantifiers, as the signature names it.
+    pub fn each_quantifier(&self, mut f: impl FnMut(&ArcStr, &TVar)) {
         if self.quantifiers.is_empty() {
             return;
         }
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut named);
         for (name, tv) in named.iter() {
-            if self.quantifiers.contains(name)
-                && let Some(open) = tv.open_cell()
-            {
-                f(tv, open)
+            if self.quantifiers.contains(name) {
+                f(name, tv)
             }
         }
+    }
+
+    /// Each of the signature's own quantifiers whose cell is open, as the
+    /// signature names it and as its open cell.
+    fn open_quantifiers(&self, mut f: impl FnMut(&TVar, TVar)) {
+        self.each_quantifier(|_, tv| {
+            if let Some(open) = tv.open_cell() {
+                f(tv, open)
+            }
+        })
     }
 
     /// Map each of the signature's own open quantifiers to a fresh cell
@@ -915,27 +922,14 @@ impl FnType {
     /// The open quantifiers of every function type the signature holds
     /// (a rank-2 formal's `fn<'b: C>`), by cell.
     pub fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
-        fn go(t: &Type, out: &mut AHashMap<usize, TVar>, seen: &mut AHashSet<usize>) {
-            crate::stack::ensure_sufficient(|| match t {
-                Type::TVar(tv) => {
-                    if seen.insert(tv.cell_addr())
-                        && let Some(b) = tv.binding()
-                    {
-                        go(&b, out, seen)
-                    }
-                }
-                t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
-                Type::Fn(ft) => {
-                    ft.open_quantifiers(|_, open| {
-                        out.insert(open.cell_addr(), open);
-                    });
-                    ft.for_each_part(&mut |t, _| go(t, out, seen))
-                }
-                t => t.for_each_child(&mut |c| go(c, out, seen)),
-            })
-        }
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-        self.for_each_part(&mut |t, _| go(t, out, &mut seen));
+        self.for_each_part(&mut |t, _| {
+            t.quantifiers_seen(&mut seen, &mut |_, tv| {
+                if let Some(open) = tv.open_cell() {
+                    out.insert(open.cell_addr(), open);
+                }
+            })
+        });
     }
 
     /// A call's copy of a signature whose cells it shares (a parameter

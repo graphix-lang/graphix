@@ -1552,7 +1552,7 @@ fn external_reads<R: Rt, E: UserEvent>(
         }
         // a callee the node walk does not reach is read the long way
         let mut own: LPooled<Vec<BindId>> = LPooled::take();
-        if callees.iter().any(|(id, _)| !by_id.contains_key(id)) {
+        if callees.iter().any(|id| !by_id.contains_key(id)) {
             let mut refs = Refs::default();
             g.body().refs(&mut refs);
             refs.with_external_refs(|id| own.push(id));
@@ -1567,7 +1567,7 @@ fn external_reads<R: Rt, E: UserEvent>(
                 reads.insert(id);
             }
         }
-        for (id, _) in callees.iter() {
+        for id in callees.iter() {
             for b in external_reads(by_id[id], ec, memo).iter() {
                 if !refs.bound.contains(b) && !formals.contains(b) {
                     reads.insert(*b);

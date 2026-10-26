@@ -526,11 +526,17 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
     Ok(res)
 }
 
-/// A formal of quantified function type `fn<'b: C>(..)`, its aliases expanded,
-/// with its quantifiers held rigid for the argument's check: the argument
-/// must be well typed for every 'b the bound admits, since the callee may
-/// call it at any. `None` for any other formal.
-// CR claude for claude: [bug/medium] Only a formal whose type IS a quantified function
+/// The rank-2 quantifiers of a formal: those of each function type at a
+/// data position of it (the formal itself, a field, an element, a
+/// member; never inside a function type), as the function type names them.
+type Quantified = SmallVec<[(ArcStr, TVar); 2]>;
+
+/// A formal holding a quantified function type `fn<'b: C>(..)`, with the
+/// typedefs on the way to one expanded, and its [`Quantified`] held rigid
+/// for the argument's check: the argument must be well typed for every
+/// 'b the bound admits, since the callee may call it at any. `None` for
+/// any other formal.
+// XCR claude for claude: [bug/medium] Only a formal whose type IS a quantified function
 // type is held rigid. A rank-2 type nested in a struct or tuple formal (`|s: {f: fn<'b:
 // Any>(x: 'b) -> 'b}|`) returns None here, so pre_unify_arg binds 'b to the argument's
 // type. `run(s)` with `s = {f: |x: i64| x + 1}` passes the check, and the build refuses
@@ -541,15 +547,24 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 // every quantified fn type the formal holds. probe:
 // design/review-2026-10-26/repro/x-typecheck-generics-rank2-nested-in-struct.gx
 // (x-typecheck-generics-05)
+// 2026-10-26 claude: quantified_formal now takes, through rank2_parts, the quantifiers
+// of every function type at a data position of the formal (the formal itself, a field,
+// a tuple slot, an element, a union member; never inside a function type), expanding
+// the typedefs and bindings on the way so the cells it holds rigid are the ones the
+// argument meets, and typecheck_arg judges each with added_bound, polymorphic_in and
+// escapes_through. The repro, its struct-literal and tuple variants are refused at the
+// call. Pins: lang::types::rank2_field_refuses_mono (the repro),
+// rank2_tuple_element_refuses_mono, rank2_data_positions_take_poly (polymorphic lambdas
+// at a field, a member, a tuple slot and a typedef field still run). Stricter now: an
+// argument whose own literal holds a top-level cell, a struct literal of a let-bound
+// generic function or an array literal of lambdas (r({f: id}), gs([|x| x])), is refused
+// as not polymorphic, as apply(select c { .. }) already is at a plain rank-2 formal:
+// carried_out counts every top-level cell as the environment's.
 fn quantified_formal(
     env: &Env,
     typ: &Type,
-) -> Result<Option<(Type, LPooled<Vec<RigidGate>>, SmallVec<[TVar; 2]>)>> {
-    let mut expanded = typ.with_deref(|t| t.cloned());
-    while let Some(t @ Type::Ref(_)) = &expanded {
-        expanded = t.lookup_ref_with(env, false)?;
-    }
-    // CR claude for claude: [bug/high] A quantified function type that sits inside a
+) -> Result<Option<(Type, LPooled<Vec<RigidGate>>, Quantified)>> {
+    // XCR claude for claude: [bug/high] A quantified function type that sits inside a
     // formal (a struct field `{f: fn<'b: [i64, string]>(x: 'b) -> 'b}`, an `Array<F>`
     // element, a `[F, null]` member) is not held here. Only a formal that is itself
     // `fn<..>` gets its quantifiers made rigid and checked by `added_bound`. So
@@ -561,26 +576,96 @@ fn quantified_formal(
     // formal's type (FnType::inner_quantifiers, as the definition's own check does),
     // and hold and judge each the same way. probe:
     // design/review-2026-10-26/repro/x-rerun-3-rank2-nested-formal.gx (x-rerun-3-01)
-    let Some(formal @ Type::Fn(ft)) = &expanded else { return Ok(None) };
-    if ft.quantifiers.is_empty() {
+    // 2026-10-26 claude: Fixed with x-typecheck-generics-05: every quantifier of a
+    // function type at a data position of the formal (through typedefs: S's field,
+    // Array<F>'s element, [F, null]'s member) is held rigid and judged by added_bound.
+    // The repro is refused ('the argument requires 'b: [u8, ..], which the parameter's
+    // quantifier does not declare'). Pins:
+    // lang::types::rank2_typedef_field_keeps_its_bound (the repro),
+    // rank2_element_keeps_its_bound, rank2_member_keeps_its_bound.
+    let mut quantified = Quantified::new();
+    let formal = rank2_parts(env, typ, &mut SmallVec::new(), &mut quantified)?;
+    if quantified.is_empty() {
         return Ok(None);
     }
-    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.collect_tvars(&mut named);
-    let quantifiers: SmallVec<[TVar; 2]> = named
-        .iter()
-        .filter(|(name, _)| ft.quantifiers.contains(*name))
-        .map(|(_, tv)| tv.clone())
-        .collect();
-    let gates = quantifiers.iter().map(|tv| tv.open_quantifier_rigid()).collect();
-    Ok(Some((formal.clone(), gates, quantifiers)))
+    let gates = quantified.iter().map(|(_, tv)| tv.open_quantifier_rigid()).collect();
+    Ok(Some((formal.unwrap_or_else(|| typ.clone()), gates, quantified)))
+}
+
+/// `t`, a typedef reference, expanded, with its definition's key; `None`
+/// where it does not resolve or `expanding` holds its definition already
+/// (a recursive typedef met inside its own expansion).
+fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Result<Option<(usize, Type)>> {
+    let Type::Ref(tr) = t else { return Ok(None) };
+    let unexpanded = |key: usize| !expanding.contains(&key);
+    if !tr.def_key().is_none_or(unexpanded) {
+        return Ok(None);
+    }
+    let Some(whole) = t.lookup_ref_with(env, false)? else { return Ok(None) };
+    Ok(tr.def_key().filter(|k| unexpanded(*k)).map(|key| (key, whole)))
+}
+
+/// Push to `out` the quantifiers of each function type at a data position
+/// of `t`; `t` rebuilt with every binding and typedef on the way to one
+/// expanded, `None` where it is unchanged. A typedef already being
+/// expanded (`expanding`, by definition) is not expanded again.
+fn rank2_parts(
+    env: &Env,
+    t: &Type,
+    expanding: &mut SmallVec<[usize; 4]>,
+    out: &mut Quantified,
+) -> Result<Option<Type>> {
+    ensure_sufficient(|| {
+        let before = out.len();
+        let expanded = |r: Option<Type>, whole: Type, out: &Quantified| {
+            (out.len() > before).then(|| r.unwrap_or(whole))
+        };
+        match t {
+            Type::Fn(ft) => {
+                ft.each_quantifier(|name, tv| out.push((name.clone(), tv.clone())));
+                Ok(None)
+            }
+            Type::TVar(tv) => match tv.binding() {
+                None => Ok(None),
+                Some(b) => {
+                    let r = rank2_parts(env, &b, expanding, out)?;
+                    Ok(expanded(r, b, out))
+                }
+            },
+            Type::Ref(_) => {
+                let Some((key, whole)) = expansion(env, t, expanding)? else {
+                    return Ok(None);
+                };
+                expanding.push(key);
+                let r = rank2_parts(env, &whole, expanding, out);
+                expanding.pop();
+                Ok(expanded(r?, whole, out))
+            }
+            Type::Abstract { .. } => Ok(None),
+            t => {
+                let mut err = None;
+                let r =
+                    t.cow_children(&mut |c| match rank2_parts(env, c, expanding, out) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            err.get_or_insert(e);
+                            None
+                        }
+                    });
+                match err {
+                    Some(e) => Err(e),
+                    None => Ok(r),
+                }
+            }
+        }
+    })
 }
 
 /// A rank-2 quantifier `q` keeps exactly the bounds its formal `declared`:
 /// the callee may call the argument at any type they admit, so the
 /// argument's check may add no conjunct, a predicate included, that none
 /// of them implies.
-fn added_bound(env: &Env, q: &TVar, declared: &[Type]) -> Result<()> {
+fn added_bound(env: &Env, name: &ArcStr, q: &TVar, declared: &[Type]) -> Result<()> {
     for c in q.cell_constraints() {
         let mut implied = false;
         for d in declared {
@@ -592,9 +677,8 @@ fn added_bound(env: &Env, q: &TVar, declared: &[Type]) -> Result<()> {
         if !implied {
             format_with_flags(PrintFlag::DerefTVars, || {
                 bail!(
-                    "the argument requires '{}: {c}, which the parameter's quantifier \
-                     does not declare: the callee may call it at any type its bound admits",
-                    q.name
+                    "the argument requires '{name}: {c}, which the parameter's quantifier \
+                     does not declare: the callee may call it at any type its bound admits"
                 )
             })?
         }
@@ -688,13 +772,13 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
                 ArgFit::Misfit
             })
         }
-        Some((formal, _rigid, quantifiers)) => {
+        Some((formal, _rigid, quantified)) => {
             let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
-                quantifiers.iter().map(|q| q.cell_constraints()).collect();
+                quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
-            for (q, declared) in quantifiers.iter().zip(declared.iter()) {
-                wrap!(n, added_bound(&ctx.env, q, declared))?;
+            for ((name, q), declared) in quantified.iter().zip(declared.iter()) {
+                wrap!(n, added_bound(&ctx.env, name, q, declared))?;
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
             // CR claude for claude: [bug/medium] A lambda argument that writes an outer
@@ -710,7 +794,24 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             // body's refs in escapes_through. probe:
             // design/review-2026-10-26/repro/t-fntyp-rank2-quantifier-escapes.gx
             // (t-fntyp-02)
-            wrap!(n, polymorphic_in(&formal, n.typ()))?;
+            // 2026-10-26 claude: Not fixed; the rank-2 parts it reads now take every
+            // quantifier at a data position (x-typecheck-generics-05). Tried: walking
+            // each lambda literal of the argument through the types its definition's
+            // check recorded (DefTable rows, nested tables included) for a cell above
+            // the literal's level that reaches a quantifier. That refuses the repro and
+            // the nested-lambda form, but not r <- [x], {f: |x| { r <- x; x }} or *p <-
+            // x: a Connect target is no node of the body, so r's binding type is in no
+            // row, and where r's cell MERGES with the quantifier copy the merged cell
+            // stays generic (t-tvar-01's merge_into level rule), so no level test sees
+            // it. Reverted. What a fix needs: the bindings a literal's body reads and
+            // WRITES (Connect targets included, nested literals' too), recorded by its
+            // definition's check (DefTable, imaged) and walked by escapes_through, plus
+            // t-tvar-01's shallower-level merge for the *p <- x form.
+            let quantified: SmallVec<[(ArcStr, usize); 2]> = quantified
+                .iter()
+                .map(|(name, tv)| (name.clone(), tv.cell_addr()))
+                .collect();
+            wrap!(n, polymorphic_in(&quantified, n.typ()))?;
             let mut refs = Refs::default();
             n.refs(&mut refs);
             let mut free: SmallVec<[Type; 4]> = SmallVec::new();
@@ -720,7 +821,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
                 }
             });
             for t in free.iter() {
-                wrap!(n, escapes_through(&formal, t))?;
+                wrap!(n, escapes_through(&quantified, t))?;
             }
             Ok(ArgFit::Fits)
         }
@@ -768,14 +869,7 @@ fn callee_param<R: Rt, E: UserEvent>(
         // a rank-2 site's quantifiers stand for any type, so they are held
         // rigid while `gates` lives
         let site = site.replace_tvars(&Default::default());
-        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        site.collect_tvars(&mut named);
-        gates.extend(
-            named
-                .iter()
-                .filter(|(n, _)| site.quantifiers.contains(*n))
-                .map(|(_, tv)| tv.open_quantifier_rigid()),
-        );
+        site.each_quantifier(|_, tv| gates.push(tv.open_quantifier_rigid()));
         let keys =
             |args: &[FnArgType]| ArgKey::of_formals(args).collect::<SmallVec<[_; 4]>>();
         let (site_keys, inst_keys) = (keys(&site.args), keys(&inst.args));
@@ -816,23 +910,23 @@ fn callee_param<R: Rt, E: UserEvent>(
 /// holds for every choice of them only if none was aliased to a cell the
 /// argument does not own: a top-level variable or an enclosing
 /// definition's, which would carry the quantifier out.
-// CR claude for claude: [structure/low] The quantifier cells of a formal are collected
+// XCR claude for claude: [structure/low] The quantifier cells of a formal are collected
 // by hand here and in quantified_formal, callee_param, bound_quantifiers and
 // escapes_through: `collect_tvars` then a filter on `quantifiers.contains`.
 // FnType::open_quantifiers already does this but is private. typecheck_arg computes the
 // same set three times per argument. Fix: expose one FnType accessor, use it at all
 // five sites, and compute `quantified` once in typecheck_arg and pass it down. Found by
 // reading; not run. (t-fntyp-06)
-fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
-    let Type::Fn(ft) = formal else { return Ok(()) };
-    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.collect_tvars(&mut named);
-    let quantified: SmallVec<[(ArcStr, usize); 2]> = named
-        .iter()
-        .filter(|(name, _)| ft.quantifiers.contains(*name))
-        .map(|(name, tv)| (name.clone(), tv.cell_addr()))
-        .collect();
-    if let Some((q, tv)) = carried_out(&quantified, arg) {
+// 2026-10-26 claude: FnType::each_quantifier (pub, beside open_quantifiers, which now
+// rides it) is the one accessor, and Type::each_quantifier walks it over every function
+// type under a type (inner_quantifiers and bound_quantifiers ride that).
+// quantified_formal, callee_param, bound_quantifiers, polymorphic_in and
+// escapes_through use them; typecheck_arg collects the quantified set once
+// (quantified_formal's Quantified) and passes (name, cell) pairs to polymorphic_in and
+// escapes_through. Behaviour pinned by the lang::types rank2_* and NESTED_QUANTIFIER
+// fixtures.
+fn polymorphic_in(quantified: &[(ArcStr, usize)], arg: &Type) -> Result<()> {
+    if let Some((q, tv)) = carried_out(quantified, arg) {
         bail!(
             "the argument is not polymorphic in '{q}: its type holds {tv}, a variable \
              of its environment, which would carry '{q} out"
@@ -842,52 +936,18 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
 }
 
 /// The cells of the quantifiers a function type under `t` binds.
-pub(crate) fn bound_quantifiers(
-    t: &Type,
-    out: &mut AHashSet<usize>,
-    seen: &mut AHashSet<usize>,
-) {
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            if seen.insert(tv.cell_addr())
-                && let Some(b) = tv.binding()
-            {
-                bound_quantifiers(&b, out, seen)
-            }
-        }
-        Type::Fn(ft) => {
-            if !ft.quantifiers.is_empty() {
-                let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                ft.collect_tvars(&mut named);
-                out.extend(
-                    named
-                        .iter()
-                        .filter(|(n, _)| ft.quantifiers.contains(*n))
-                        .map(|(_, tv)| tv.cell_addr()),
-                );
-            }
-            t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
-        }
-        t => {
-            if t.shared_identity().is_none_or(|a| seen.insert(a)) {
-                t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
-            }
-        }
-    })
+pub(crate) fn bound_quantifiers(t: &Type) -> AHashSet<usize> {
+    let mut out = AHashSet::new();
+    t.each_quantifier(&mut |_, tv| {
+        out.insert(tv.cell_addr());
+    });
+    out
 }
+
 /// A binding the argument reads or writes holds none of the formal's
 /// quantifiers: its cell would carry the quantifier out.
-fn escapes_through(formal: &Type, env: &Type) -> Result<()> {
-    let Type::Fn(ft) = formal else { return Ok(()) };
-    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.collect_tvars(&mut named);
-    let quantified: SmallVec<[(ArcStr, usize); 2]> = named
-        .iter()
-        .filter(|(name, _)| ft.quantifiers.contains(*name))
-        .map(|(name, tv)| (name.clone(), tv.cell_addr()))
-        .collect();
-    let mut own = AHashSet::new();
-    bound_quantifiers(env, &mut own, &mut AHashSet::new());
+fn escapes_through(quantified: &[(ArcStr, usize)], env: &Type) -> Result<()> {
+    let own = bound_quantifiers(env);
     let mut reached = None;
     let mut seen = AHashSet::new();
     reaches_cell(env, &mut seen, &mut |c| {
@@ -909,13 +969,17 @@ fn escapes_through(formal: &Type, env: &Type) -> Result<()> {
 }
 
 /// Every cell under `t`, following bindings.
-// CR claude for claude: [structure/low] carried_out's nested `walk` is this function
+// XCR claude for claude: [structure/low] carried_out's nested `walk` is this function
 // with its arguments reordered: delete it and call this one. The 'collect_tvars, keep
 // the names in ft.quantifiers' step is also written five times in this file
 // (quantified_formal, callee_param, polymorphic_in, bound_quantifiers,
 // escapes_through). Make it one FnType method next to the private
 // FnType::open_quantifiers, so a change to quantifier identity happens once. Found by
 // reading; not run. (c-callsite-05)
+// 2026-10-26 claude: carried_out's nested walk is gone; it calls reaches_cell. The
+// quantifier collection is FnType::each_quantifier / Type::each_quantifier at every
+// site (see t-fntyp-06). Covered by the lang::types rank2_* and
+// NESTED_QUANTIFIER_ENV_CELL fixtures.
 fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar)) {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
@@ -943,44 +1007,21 @@ pub(crate) fn carried_out(
         Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
         _ => SmallVec::new(),
     };
-    let mut bound = AHashSet::new();
-    bound_quantifiers(value, &mut bound, &mut AHashSet::new());
-    fn walk(t: &Type, f: &mut impl FnMut(&TVar), seen: &mut AHashSet<usize>) {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr()) {
-                    f(tv);
-                    if let Some(b) = tv.binding() {
-                        walk(&b, f, seen)
-                    }
-                }
-            }
-            t => t.for_each_child(&mut |c| walk(c, f, seen)),
-        })
-    }
+    let bound = bound_quantifiers(value);
     let mut foreign: SmallVec<[TVar; 4]> = SmallVec::new();
-    walk(
-        value,
-        &mut |tv| match tv.level() {
-            _ if bound.contains(&tv.cell_addr()) => (),
-            Level::Top => foreign.push(tv.clone()),
-            Level::Def { owner, .. } if !own.contains(&owner) => foreign.push(tv.clone()),
-            Level::Def { .. } | Level::Generic => (),
-        },
-        &mut AHashSet::new(),
-    );
+    reaches_cell(value, &mut AHashSet::new(), &mut |tv| match tv.level() {
+        _ if bound.contains(&tv.cell_addr()) => (),
+        Level::Top => foreign.push(tv.clone()),
+        Level::Def { owner, .. } if !own.contains(&owner) => foreign.push(tv.clone()),
+        Level::Def { .. } | Level::Generic => (),
+    });
     foreign.into_iter().find_map(|tv| {
         let mut reached = None;
-        walk(
-            &Type::TVar(tv.clone()),
-            &mut |c| {
-                if let Some((q, _)) = quantified.iter().find(|(_, a)| *a == c.cell_addr())
-                {
-                    reached = Some(q.clone())
-                }
-            },
-            &mut AHashSet::new(),
-        );
+        reaches_cell(&Type::TVar(tv.clone()), &mut AHashSet::new(), &mut |c| {
+            if let Some((q, _)) = quantified.iter().find(|(_, a)| *a == c.cell_addr()) {
+                reached = Some(q.clone())
+            }
+        });
         reached.map(|q| (q, tv))
     })
 }
@@ -989,8 +1030,10 @@ pub(crate) fn carried_out(
 /// is data: never under a function, a reference, a typedef application,
 /// a nominal type or a constructor application. Bindings are walked.
 fn data_positions(
+    env: &Env,
     t: &Type,
     data: bool,
+    expanding: &mut SmallVec<[usize; 4]>,
     seen: &mut AHashSet<(usize, bool)>,
     out: &mut AHashMap<ArcStr, (TVar, bool)>,
 ) {
@@ -1000,17 +1043,26 @@ fn data_positions(
             if seen.insert((tv.cell_addr(), data))
                 && let Some(b) = tv.binding()
             {
-                data_positions(&b, data, seen, out)
+                data_positions(env, &b, data, expanding, seen, out)
             }
         }
         // a shared node is walked once in each kind of position
         t if t.shared_identity().is_some_and(|n| !seen.insert((n, data))) => (),
+        Type::Ref(_) if let Ok(Some((key, whole))) = expansion(env, t, expanding) => {
+            expanding.push(key);
+            data_positions(env, &whole, data, expanding, seen, out);
+            expanding.pop();
+        }
         Type::Fn(_)
         | Type::ByRef(..)
         | Type::Ref(_)
         | Type::Abstract { .. }
-        | Type::App(..) => t.for_each_child(&mut |c| data_positions(c, false, seen, out)),
-        t => t.for_each_child(&mut |c| data_positions(c, data, seen, out)),
+        | Type::App(..) => {
+            t.for_each_child(&mut |c| data_positions(env, c, false, expanding, seen, out))
+        }
+        t => {
+            t.for_each_child(&mut |c| data_positions(env, c, data, expanding, seen, out))
+        }
     })
 }
 
@@ -1019,11 +1071,13 @@ fn data_positions(
 /// fixes the variable exactly, so its argument is checked first and the
 /// order a call writes its arguments in decides nothing. A function's
 /// positions stay in order: an earlier argument types a callback's.
-fn holds_invariantly(t: &Type) -> bool {
+fn holds_invariantly(env: &Env, t: &Type, expanding: &mut SmallVec<[usize; 4]>) -> bool {
     ensure_sufficient(|| match t {
-        Type::TVar(tv) => tv.binding().is_some_and(|b| holds_invariantly(&b)),
+        Type::TVar(tv) => {
+            tv.binding().is_some_and(|b| holds_invariantly(env, &b, expanding))
+        }
         Type::Fn(_) => false,
-        // CR claude for claude: [bug/medium] A `Type::Ref` is counted as invariant here
+        // XCR claude for claude: [bug/medium] A `Type::Ref` is counted as invariant here
         // and in `data_positions` whatever it names, so a transparent alias types a
         // call differently from its expansion. With `type M<'a> = ['a, null]`, `|x: 'a,
         // y: M<'a>|` refuses `f(n, u64:0)` (n: [u64, null]) with "'a: u64 does not
@@ -1033,6 +1087,20 @@ fn holds_invariantly(t: &Type) -> bool {
         // an_invariant_argument_decides_first. probe:
         // design/review-2026-10-26/repro/tests-functions-alias-not-transparent.gx
         // (tests-functions-03)
+        // 2026-10-26 claude: holds_invariantly and data_positions now expand a typedef
+        // reference (callsite::expansion, a probe lookup) and judge its expansion, so
+        // an abstract type stays invariant and a transparent alias is its expansion; a
+        // typedef met again inside its own expansion, or one that does not resolve,
+        // stays a type application (invariant). Widening's hint, waits and cells take
+        // the env for it, and the call's formals are keyed once before the sort. Pin:
+        // lang::types::an_alias_is_its_expansion (the repro, plus a recursive alias
+        // that still checks); it fails with the expansion disabled.
+        Type::Ref(_) if let Ok(Some((key, whole))) = expansion(env, t, expanding) => {
+            expanding.push(key);
+            let r = holds_invariantly(env, &whole, expanding);
+            expanding.pop();
+            r
+        }
         Type::Abstract { .. } | Type::App(..) | Type::Ref(_) | Type::ByRef(..) => {
             let mut tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             t.collect_tvars(&mut tvars);
@@ -1040,7 +1108,7 @@ fn holds_invariantly(t: &Type) -> bool {
         }
         t => {
             let mut any = false;
-            t.for_each_child(&mut |c| any = any || holds_invariantly(c));
+            t.for_each_child(&mut |c| any = any || holds_invariantly(env, c, expanding));
             any
         }
     })
@@ -1050,12 +1118,15 @@ fn holds_invariantly(t: &Type) -> bool {
 /// rather than the first: open in the definition `def`, and met only as
 /// data in `inst`, so a value of a wider type is well typed wherever the
 /// signature holds one.
-fn widenable(def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
+fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
-    inst.for_each_type(&mut |t| data_positions(t, true, &mut seen, &mut found));
+    let mut expanding = SmallVec::new();
+    inst.for_each_type(&mut |t| {
+        data_positions(env, t, true, &mut expanding, &mut seen, &mut found)
+    });
     found
         .drain()
         .filter(|(name, (tv, data))| {
@@ -1083,12 +1154,13 @@ impl Widening {
 
     fn cells<'a>(
         cells: &'a mut Option<LPooled<AHashMap<ArcStr, TVar>>>,
+        env: &Env,
         def: &Type,
         inst: &FnType,
     ) -> &'a AHashMap<ArcStr, TVar> {
         cells.get_or_insert_with(|| {
             def.with_deref(|t| match t {
-                Some(Type::Fn(def)) => widenable(def, inst),
+                Some(Type::Fn(def)) => widenable(env, def, inst),
                 _ => LPooled::take(),
             })
         })
@@ -1115,11 +1187,17 @@ impl Widening {
     /// argument settled a widenable variable `formal` holds, the copy
     /// with it open, so the hint cannot refuse a wider argument before
     /// [`Self::misfit`] probes it.
-    fn hint(&mut self, def: &Type, inst: &FnType, formal: &Type) -> Option<Type> {
+    fn hint(
+        &mut self,
+        env: &Env,
+        def: &Type,
+        inst: &FnType,
+        formal: &Type,
+    ) -> Option<Type> {
         if !self.fresh {
             return None;
         }
-        let cells = Self::cells(&mut self.cells, def, inst);
+        let cells = Self::cells(&mut self.cells, env, def, inst);
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         formal.collect_tvars(&mut held);
         held.iter()
@@ -1131,11 +1209,11 @@ impl Widening {
     /// waits for the end of the argument loop: `formal` holds a widenable
     /// variable, which the argument would take as it stands so far, not
     /// as the widest argument settles it.
-    fn waits(&mut self, def: &Type, inst: &FnType, formal: &Type) -> bool {
+    fn waits(&mut self, env: &Env, def: &Type, inst: &FnType, formal: &Type) -> bool {
         if !self.fresh {
             return false;
         }
-        let cells = Self::cells(&mut self.cells, def, inst);
+        let cells = Self::cells(&mut self.cells, env, def, inst);
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         formal.collect_tvars(&mut held);
         held.keys().any(|name| cells.contains_key(name))
@@ -1175,7 +1253,7 @@ impl Widening {
         if !self.fresh || n.typ().has_unbound() {
             return check();
         }
-        let cells = Self::cells(&mut self.cells, def, inst);
+        let cells = Self::cells(&mut self.cells, env, def, inst);
         if cells.is_empty() {
             return check();
         }
@@ -1250,12 +1328,10 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     Failed { def: Value },
     /// Pre-bound at compile time by [`CallSite::try_static_resolve`]; the
     /// per-cycle identity check is skipped (`fnode.update()` still runs
-    /// for effects). `first_update` primes the body's refs once.
-    // CR claude for claude: [doc-drift/low] The doc above is stale. Nothing primes refs
-    // with first_update. It marks the next update as the instance's first dispatch:
-    // update_call keeps every quiet production (Keep::Every), delivers arguments and
-    // defaults fired and dispatches under View::Birth. Say that. Found by reading; not
-    // run. (c-callsite-07)
+    /// for effects). `first_update` marks the next update as the
+    /// instance's first dispatch: it keeps every quiet production,
+    /// delivers its arguments and defaults fired and dispatches under
+    /// `View::Birth`.
     Static { apply: Box<dyn Apply<R, E>>, first_update: bool },
     /// A statically bound instance the image holds in its heap, decoded
     /// by the first dispatch; `refs` is the body's summary until then.
@@ -1274,43 +1350,37 @@ impl ImagedRefs {
     fn flat(&self, instance: LambdaInstanceId) -> &RefsSummary {
         self.flat.get_or_init(|| {
             let mut refed: LPooled<IntSet<BindId>> = LPooled::take();
-            let mut triggering: LPooled<IntSet<BindId>> = LPooled::take();
             let mut bound: LPooled<IntSet<BindId>> = LPooled::take();
-            let mut seen: LPooled<AHashSet<(LambdaInstanceId, bool)>> = LPooled::take();
-            let mut stack: LPooled<Vec<(LambdaInstanceId, bool)>> = LPooled::take();
-            stack.push((instance, false));
-            while let Some((i, banked)) = stack.pop() {
-                if !seen.insert((i, banked)) {
+            let mut seen: LPooled<IntSet<LambdaInstanceId>> = LPooled::take();
+            let mut stack: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
+            stack.push(instance);
+            while let Some(i) = stack.pop() {
+                if !seen.insert(i) {
                     continue;
                 }
                 let Some(r) = self.table.get(&i) else { continue };
                 refed.extend(r.own.refed.iter().copied());
                 bound.extend(r.own.bound.iter().copied());
-                if !banked {
-                    triggering.extend(r.own.triggering.iter().copied());
-                }
-                stack.extend(r.callees.iter().map(|(c, b)| (*c, banked || *b)));
+                stack.extend(r.callees.iter().copied());
             }
-            RefsSummary::of_sets(&refed, &triggering, &bound)
+            RefsSummary::of_sets(&refed, &bound)
         })
     }
 }
 
-/// What a heap instance's own nodes read, and its callees by instance,
-/// each marked when a sample's right side holds it.
+/// What a heap instance's own nodes read, and its callees by instance.
 #[derive(Debug, Clone, netidx_derive::Pack)]
 pub(crate) struct InstanceRefs {
     own: RefsSummary,
-    callees: Vec<(LambdaInstanceId, bool)>,
+    callees: Vec<LambdaInstanceId>,
 }
 
 pub(crate) type InstanceRefsTable = AHashMap<LambdaInstanceId, InstanceRefs>;
 
-/// A walk's reads, each sorted.
+/// An imaged site's reads for registration, each sorted.
 #[derive(Debug, Clone, netidx_derive::Pack)]
 pub(crate) struct RefsSummary {
     refed: Vec<BindId>,
-    triggering: Vec<BindId>,
     bound: Vec<BindId>,
 }
 
@@ -2849,34 +2919,17 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
 }
 
 impl RefsSummary {
-    fn of_sets(
-        refed: &IntSet<BindId>,
-        triggering: &IntSet<BindId>,
-        bound: &IntSet<BindId>,
-    ) -> Self {
+    fn of_sets(refed: &IntSet<BindId>, bound: &IntSet<BindId>) -> Self {
         let sorted = |ids: &IntSet<BindId>| {
             let mut v: Vec<BindId> = ids.iter().copied().collect();
             v.sort_unstable();
             v
         };
-        RefsSummary {
-            refed: sorted(refed),
-            triggering: sorted(triggering),
-            bound: sorted(bound),
-        }
+        RefsSummary { refed: sorted(refed), bound: sorted(bound) }
     }
 
-    // CR claude for claude: [dead/low] Nothing reads an imaged site's triggering set.
-    // Refs::triggering has one reader, scrutinee_inputs, which runs in Select::compile
-    // over freshly compiled scrutinees whose call sites are unbound, so it never meets
-    // a Callee::Imaged. The triggering list in RefsSummary, the banked bit in
-    // InstanceRefs::callees and Refs::callees, and the doubled walk in ImagedRefs::flat
-    // only add image bytes and work. This method also extends refs.triggering directly,
-    // skipping Refs::read's banked rule. Drop the triggering list and the banked bits,
-    // or make this go through Refs::read. Found by reading; not run. (c-callsite-04)
     fn add_to(&self, refs: &mut Refs) {
         refs.refed.extend(self.refed.iter().copied());
-        refs.triggering.extend(self.triggering.iter().copied());
         refs.bound.extend(self.bound.iter().copied());
     }
 }
@@ -2912,7 +2965,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let mut refs = Refs::stopping_at_callees();
             apply.refs(&mut refs);
             let callees = refs.take_callees();
-            let own = RefsSummary::of_sets(&refs.refed, &refs.triggering, &refs.bound);
+            let own = RefsSummary::of_sets(&refs.refed, &refs.bound);
             image::encoding(|e| {
                 e.ext::<image::Compiled>()
                     .instance_refs
@@ -3406,13 +3459,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         };
         let mut widening = Widening::new(fresh);
-        let mut formals: SmallVec<[_; 8]> =
-            ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)).collect();
-        formals.sort_by_key(|(farg, _)| !holds_invariantly(&farg.typ));
-        for (farg, key) in formals {
+        let mut expanding = SmallVec::new();
+        let mut formals: SmallVec<[_; 8]> = ftype
+            .args
+            .iter()
+            .zip(ArgKey::of_formals(&ftype.args))
+            .map(|(farg, key)| {
+                (!holds_invariantly(&ctx.env, &farg.typ, &mut expanding), farg, key)
+            })
+            .collect();
+        formals.sort_by_key(|(later, ..)| *later);
+        for (_, farg, key) in formals {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
-                let waits = widening.waits(self.fnode.typ(), ftype, &farg.typ);
-                let hint = widening.hint(self.fnode.typ(), ftype, &farg.typ);
+                let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
+                let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
                 let fit = typecheck_arg(ctx, &farg.typ, hint.as_ref(), waits, n)?;
                 widening.fit(
                     &ctx.env,
@@ -3430,8 +3490,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             for key in ArgKey::variadic(positional) {
                 let Some(arg) = self.args.get_mut(&key) else { break };
                 if let Some(n) = arg.node.as_mut() {
-                    let waits = widening.waits(self.fnode.typ(), ftype, typ);
-                    let hint = widening.hint(self.fnode.typ(), ftype, typ);
+                    let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, typ);
+                    let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, typ);
                     let fit = typecheck_arg(ctx, typ, hint.as_ref(), waits, n)?;
                     widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
@@ -3592,7 +3652,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if let Some(fun) = self.callee.apply() {
                 match (fun.view(), refs.callees.as_mut()) {
                     (ApplyView::Lambda(g), Some(callees)) => {
-                        callees.push((g.instance_id(), refs.banked > 0))
+                        callees.push(g.instance_id())
                     }
                     _ => fun.refs(refs),
                 }

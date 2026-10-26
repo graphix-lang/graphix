@@ -293,15 +293,16 @@ impl<E: UserEvent> Event<E> {
 pub struct Refs {
     refed: LPooled<IntSet<BindId>>,
     /// The refs a fire can reach the collected node through: `refed`
-    /// minus those read only under a sample's right side.
+    /// minus those read only under a sample's right side. Only a walk of
+    /// freshly compiled nodes reads it, so an imaged site adds none.
     triggering: LPooled<IntSet<BindId>>,
     bound: LPooled<IntSet<BindId>>,
     banked: usize,
     /// Leave callee instance bodies out of the walk.
     skip_callees: bool,
-    /// Stop at each lambda callee, recording its instance and whether a
-    /// sample's right side holds it, instead of walking its body.
-    callees: Option<Vec<(LambdaInstanceId, bool)>>,
+    /// Stop at each lambda callee, recording its instance, instead of
+    /// walking its body.
+    callees: Option<Vec<LambdaInstanceId>>,
 }
 
 impl Refs {
@@ -316,7 +317,7 @@ impl Refs {
         Self { callees: Some(Vec::new()), ..Self::default() }
     }
 
-    pub(crate) fn take_callees(&mut self) -> Vec<(LambdaInstanceId, bool)> {
+    pub(crate) fn take_callees(&mut self) -> Vec<LambdaInstanceId> {
         self.callees.take().unwrap_or_default()
     }
 
@@ -1867,12 +1868,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
                 return false;
             }
             // a function type's own quantifiers are generic whatever compiled it
-            let mut quantified = AHashSet::new();
-            node::callsite::bound_quantifiers(
-                &b.typ,
-                &mut quantified,
-                &mut AHashSet::new(),
-            );
+            let quantified = node::callsite::bound_quantifiers(&b.typ);
             generic.any(|(addr, _)| !quantified.contains(addr))
         })
     }

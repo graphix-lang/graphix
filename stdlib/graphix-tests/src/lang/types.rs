@@ -2073,6 +2073,19 @@ run!(an_invariant_argument_decides_first, r#"{
   (f("aa", b), g(#k: "aa", &o))
 }"#, prints("[i64:1, i64:2]"); FuseExpect::Jit);
 
+// A transparent alias is its expansion: 'a held only as data in M<'a>
+// settles to the widest argument, as it does under ['a, null], and a
+// recursive alias stays a type application.
+run!(an_alias_is_its_expansion, r#"{
+  type M<'a> = ['a, null];
+  type L<'a> = [null, ('a, L<'a>)];
+  let n: [u64, null] = null;
+  let f = |x: 'a, y: M<'a>| -> ['a, null] y;
+  let g = |x: 'a, l: L<'a>| -> i64 3;
+  let l: L<[string, i64]> = ("x", null);
+  (f(n, u64:0), g("aa", l))
+}"#, prints("[u64:0, i64:3]"); FuseExpect::Jit);
+
 // Mixed sets compare by == like any union, numeric ones included: values
 // of two numeric types are never equal.
 // XCR claude for claude: [test-gap/medium] No test feeds a NaN to a comparison. The
@@ -3378,6 +3391,54 @@ run!(
     |v: Result<&Value>| {
         matches!(v, Ok(Value::Array(a)) if a[..] == [Value::F64(4.0), Value::I64(3)])
     }
+);
+
+// A quantified function type at a data position of a formal (a field, an
+// element, a member) holds its argument as the formal itself would: the
+// callee may call it at any type the bound admits.
+run!(rank2_field_refuses_mono, r#"{
+    let run = |s: {f: fn<'b: Any>(x: 'b) -> 'b}| (s.f(1), s.f("s"));
+    let s = {f: |x: i64| x + 1};
+    run(s)
+}"#, refused("does not contain { f: fn(x: i64) -> i64 }"); FuseExpect::None);
+
+run!(rank2_typedef_field_keeps_its_bound, r#"{
+    type S = {f: fn<'b: [i64, string]>(x: 'b) -> 'b};
+    let app = |s: S| s.f("a");
+    app({f: |x| x * x})
+}"#, refused("which the parameter's quantifier does not declare"); FuseExpect::None);
+
+run!(rank2_element_keeps_its_bound, r#"{
+    type F = fn<'b: [i64, string]>(x: 'b) -> 'b;
+    let app = |gs: Array<F>| array::map(gs, |g| g("a"));
+    app([|x| x * x])
+}"#, refused("does not contain"); FuseExpect::None);
+
+run!(rank2_member_keeps_its_bound, r#"{
+    type F = fn<'b: [i64, string]>(x: 'b) -> 'b;
+    let app = |g: [F, null]| select g { null => "none", g => g("a") };
+    app(|x| x * x)
+}"#, refused("which the parameter's quantifier does not declare"); FuseExpect::None);
+
+run!(rank2_tuple_element_refuses_mono, r#"{
+    let run = |s: (fn<'b: Any>(x: 'b) -> 'b, i64)| (s.0(1), s.0("s"));
+    run((|x: i64| x + 1, 1))
+}"#, refused("does not contain"); FuseExpect::None);
+
+run!(
+    rank2_data_positions_take_poly,
+    r#"{
+    type F = fn<'b: [i64, string]>(x: 'b) -> 'b;
+    type S = {f: F};
+    let app = |s: S| (s.f("a"), s.f(2));
+    let o = |g: [F, null]| select g { null => "none", g => g("b") };
+    let t = |s: (fn<'b: Any>(x: 'b) -> 'b, i64)| (s.0(1), s.0("s"), s.1);
+    let (a0, a1) = app({f: |x| x});
+    let (t0, t1, t2) = t((|x| x, 3));
+    "[a0] [a1] [o(|x| x)] [o(null)] [t0] [t1] [t2]"
+}"#,
+    is(Value::from("a 2 b none 1 s 3"));
+    FuseExpect::None
 );
 
 // A union of primitives the cell's bound refuses whole holds the cell in

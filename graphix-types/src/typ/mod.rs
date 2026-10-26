@@ -2035,6 +2035,34 @@ impl Type {
         });
     }
 
+    /// Each own quantifier ([`FnType::each_quantifier`]) of every function
+    /// type under this one, itself included, bindings followed.
+    pub fn each_quantifier(&self, f: &mut impl FnMut(&ArcStr, &TVar)) {
+        self.quantifiers_seen(&mut LPooled::take(), f)
+    }
+
+    pub(crate) fn quantifiers_seen(
+        &self,
+        seen: &mut AHashSet<usize>,
+        f: &mut impl FnMut(&ArcStr, &TVar),
+    ) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                if seen.insert(tv.cell_addr())
+                    && let Some(b) = tv.binding()
+                {
+                    b.quantifiers_seen(seen, f)
+                }
+            }
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
+            Type::Fn(ft) => {
+                ft.each_quantifier(|name, tv| f(name, tv));
+                ft.for_each_part(&mut |t, _| t.quantifiers_seen(seen, f))
+            }
+            t => t.for_each_child(&mut |c| c.quantifiers_seen(seen, f)),
+        })
+    }
+
     /// Rebuild this type's immediate structural children through `f`
     /// (`None` from `f` means unchanged); `None` when nothing changed.
     /// Leaves, `TVar` included, return `None`. `Ref` params rebuild
