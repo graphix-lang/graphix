@@ -2463,7 +2463,7 @@ const DEFAULT_RUNS_ONCE_PER_BIND: &str = r#"
 run!(default_runs_once_per_bind, DEFAULT_RUNS_ONCE_PER_BIND, |v: Result<&Value>| {
     let pair = |x: i64| Value::Array([Value::I64(x), Value::I64(1)].into_iter().collect());
     matches!(v, Ok(Value::Array(a)) if a[..] == [pair(1), pair(2), pair(3)])
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A default that calls a trait method resolves in its definition's
 // environment and is elaborated at every bind: a slot's and a recursive
@@ -2607,6 +2607,113 @@ run!(default_hidden_by_a_rank2_formal, r#"
     app(f)
 }
 "#, refused("does not contain i64"); FuseExpect::None);
+
+// A union member built by the value's constructor holds the value, so a
+// function under it meets the fn type there: a field of an optional
+// struct, a tuple member, an array element of an option, a variant's
+// payload.
+run!(default_hidden_under_an_optional_struct, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let t: [{f: fn(y: string) -> bool}, null] = {f: g};
+    select t { null => false, s => (s.f)("seven") }
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_under_a_tuple_member, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let t: [(fn(y: string) -> bool, i64), null] = (g, 1);
+    select t { null => false, s => (s.0)("seven") }
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_under_an_element_member, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let t: Array<[{f: fn(y: string) -> bool}, null]> = [{f: g}];
+    select t[0]$ { null => false, s => (s.f)("seven") }
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_under_a_variant_member, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let t: [`A(fn(y: string) -> bool), `B(i64)] = `A(g);
+    select t { `A(f) => f("seven"), `B(_) => false }
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+// Only the member with the value's constructor judges it.
+run!(default_fits_its_variant_member, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let t: [`A(fn(y: i64) -> bool), `B(fn(y: string) -> bool)] = `A(g);
+    select t { `A(f) => f(4096), `B(f) => f("s") }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);
+
+// A hidden label's type that only the result or the throws hold is fixed
+// by the fn type's result or throws.
+run!(default_hidden_by_a_result_type, r#"
+{
+    let f = |#n = 1, x: i64| (x, n);
+    let h: fn(x: i64) -> (i64, string) = f;
+    let s = h(1).1;
+    (str::len(s), "[s]!")
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_result_element, r#"
+{
+    let f = |#d = 1, x| [d, x];
+    let g: fn(x: string) -> Array<string> = f;
+    g("s")
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_generic_formal_result, r#"
+{
+    let f = |#d = 1, x| [d, x];
+    let h = |g: fn(x: 'q) -> Array<'q>, v: 'q| g(v);
+    h(f, "s")
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_throws, r#"
+{
+    let f = |#e = `Small, x: i64| select x { 0 => error(e)?, x => x };
+    let g: fn(x: i64) -> i64 throws Error<ErrChain<`Big>> = f;
+    let r = 0;
+    catch(e) r <- e ~ 1;
+    g(0) ~ r
+}
+"#, refused("`Big does not contain `Small"); FuseExpect::None);
+
+// A default a fn type hides narrows the label of the function it is
+// passed as, so what decides the result later meets the default's type.
+run!(default_hidden_by_a_callback_result, r#"
+{
+    let r: Array<(i64, string)> = array::map([1, 2, 3], |#n = count(1), x: i64| (x, n));
+    r
+}
+"#, refused("does not contain"); FuseExpect::None);
+
+run!(default_hidden_by_a_generic_result, r#"
+{
+    let m = |f: fn(x: i64) -> 'b, x: i64| -> 'b f(x);
+    let r: (i64, string) = m(|#n = 1, x: i64| (x, n), 3);
+    r
+}
+"#, refused("(i64, string) does not contain (i64, i64)"); FuseExpect::None);
+
+run!(default_fits_a_result_type, r#"
+{
+    let f = |#d = 1, x| [d, x];
+    let g: fn(x: i64) -> Array<i64> = f;
+    g(5)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::I64(5)]); FuseExpect::Jit);
 
 const DEFAULT_HIDDEN_BY_A_CALLBACK: &str = r#"
 {

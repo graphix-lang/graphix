@@ -216,7 +216,8 @@ impl ArgStage {
 /// A labeled default of `f` compiled and checked in `f`'s environment,
 /// where its names are, against the site's view of the label, which the
 /// default narrows and the instance runs with; where the site hides the
-/// label, against `f`'s own parameter.
+/// label, against `f`'s own parameter, and then against the label of
+/// `value`, the function as the site holds it, which it narrows.
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
@@ -228,6 +229,7 @@ fn checked_default<R: Rt, E: UserEvent>(
     expr: &Expr,
     defaults: &mut Refs,
     site: Option<&FnType>,
+    value: Option<&FnType>,
 ) -> Result<Node<R, E>> {
     let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
@@ -236,12 +238,20 @@ fn checked_default<R: Rt, E: UserEvent>(
         let mut node = compile(ctx, flags, expr.clone(), &local_scope, top_id)?;
 
         let res = node.typecheck0(ctx).and_then(|()| {
-            match site.and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name))) {
-                Some(a) => a.typ.check_contains(&ctx.env, node.typ()),
-                None => match callee_param(ctx, f, name, site, &mut gates) {
-                    Some(t) => t.check_contains(&ctx.env, node.typ()),
-                    None => Ok(()),
-                },
+            let label = |ft: &FnType| -> Option<Type> {
+                ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
+            };
+            match site.and_then(label) {
+                Some(t) => t.check_contains(&ctx.env, node.typ()),
+                None => {
+                    for t in callee_param(ctx, f, name, site, &mut gates)
+                        .into_iter()
+                        .chain(value.and_then(label))
+                    {
+                        t.check_contains(&ctx.env, node.typ())?
+                    }
+                    Ok(())
+                }
             }
         });
         Ok::<_, anyhow::Error>((node, res))
@@ -290,6 +300,7 @@ fn judge_hidden_defaults<R: Rt, E: UserEvent>(
                 expr,
                 &mut Refs::default(),
                 Some(formal),
+                Some(value),
             )?;
             ctx.discard(node);
         }
@@ -309,8 +320,9 @@ pub(crate) enum Narrowing {
 }
 
 /// [`judge_hidden_defaults`] wherever `declared` and `value` both give a
-/// function at one place: a union's one function arm, a struct field, a
-/// tuple, variant, array, list, map or reference part, through typedefs.
+/// function at one place: a struct field, a tuple, variant, array, list,
+/// map or reference part, through typedefs, and in a union the one
+/// member built by the value's constructor.
 /// What a call's formal, a `let`'s annotation, a `<-` target and a
 /// declared return type hold.
 pub(crate) fn check_hidden_defaults<R: Rt, E: UserEvent>(
@@ -360,21 +372,13 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     value: &Type,
     expanded: u8,
 ) -> Result<()> {
-    // typedefs expand this deep at most, so a recursive one ends
-    const MAX_EXPANSIONS: u8 = 16;
-    let (Some(d), Some(v)) = (declared.deref_cloned(), value.deref_cloned()) else {
+    let mut expanded = expanded;
+    let (Some(d), Some(v)) = (
+        opened(&ctx.env, declared, &mut expanded),
+        opened(&ctx.env, value, &mut expanded),
+    ) else {
         return Ok(());
     };
-    let mut expanded = expanded;
-    let mut open = |t: Type| match t {
-        Type::Ref(_) if expanded < MAX_EXPANSIONS => {
-            expanded += 1;
-            t.lookup_ref(&ctx.env).ok()
-        }
-        Type::Ref(_) => None,
-        t => Some(t),
-    };
-    let (Some(d), Some(v)) = (open(d), open(v)) else { return Ok(()) };
     let at = |ctx: &mut CompileCtx<R, E>, d: &Type, v: &Type| {
         hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded)
     };
@@ -382,7 +386,7 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
         (Type::Fn(formal), Type::Fn(fv)) => {
             judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
         }
-        // CR claude for claude: [bug/medium] A union is searched here for bare fn
+        // XCR claude for claude: [bug/medium] A union is searched here for bare fn
         // members only, so a function inside a union member is never judged: a struct
         // field of an option, a tuple in a union, a variant payload. `let t: [{f: fn(y:
         // string) -> bool}, null] = {f: g}` with `g = |#x = 4096, y| x == y` passes the
@@ -394,17 +398,31 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
         // probe:
         // design/review-2026-10-26/repro/c-callsite-hidden-default-under-union-member.gx
         // (c-callsite-02)
+        // 2026-10-26 claude: hidden_defaults_at now flattens both sides' union members
+        // (typedefs and cells opened, opened/union_members) and judges each value member
+        // against the one declared member built by the same constructor
+        // (same_constructor: fn, struct with the same fields, tuple or variant of the
+        // same arity and tag, array, list, map, error, reference); a value member that
+        // two declared members could hold, or none, is not judged. The bare-fn case is
+        // the same rule. Pins: lang::functions::default_hidden_under_an_optional_struct,
+        // _under_a_tuple_member, _under_an_element_member, _under_a_variant_member (each
+        // fails with the pairing restricted to fn members), and
+        // default_fits_its_variant_member (only the matching member judges).
         (Type::Set(_), _) | (_, Type::Set(_)) => {
-            let mut formals: LPooled<Vec<TArc<FnType>>> = LPooled::take();
-            collect_fn_arms(&d, &mut formals);
-            let mut values: LPooled<Vec<TArc<FnType>>> = LPooled::take();
-            collect_fn_arms(&v, &mut values);
-            match &formals[..] {
-                [formal] => values.iter().try_for_each(|fv| {
-                    judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
-                }),
-                _ => Ok(()),
-            }
+            let mut expanded = expanded;
+            let mut formals: LPooled<Vec<Type>> = LPooled::take();
+            union_members(&ctx.env, &d, &mut expanded, &mut formals);
+            let mut values: LPooled<Vec<Type>> = LPooled::take();
+            union_members(&ctx.env, &v, &mut expanded, &mut values);
+            values.iter().try_for_each(|v| {
+                let mut holders = formals.iter().filter(|d| same_constructor(d, v));
+                match (holders.next(), holders.next()) {
+                    (Some(d), None) => {
+                        hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded)
+                    }
+                    _ => Ok(()),
+                }
+            })
         }
         (Type::Struct(df), Type::Struct(vf)) => df.iter().try_for_each(|(n, dt, _)| {
             match vf.iter().find(|(m, _, _)| m == n) {
@@ -430,17 +448,53 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     })
 }
 
-/// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
-/// `Fn` arms of a `[fn(...), null]` / Set union.
-fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
+/// `t` through its cells and typedefs; `None` where a cell is open or
+/// the typedefs nest too deep (`expanded` counts the expansions, so a
+/// recursive one ends).
+fn opened(env: &Env, t: &Type, expanded: &mut u8) -> Option<Type> {
+    const MAX_EXPANSIONS: u8 = 16;
+    let mut t = t.deref_cloned()?;
+    while let Type::Ref(_) = &t {
+        if *expanded >= MAX_EXPANSIONS {
+            return None;
+        }
+        *expanded += 1;
+        t = t.lookup_ref(env).ok()?.deref_cloned()?;
+    }
+    Some(t)
+}
+
+/// The members of the union `t`, nested unions flattened, each opened;
+/// an open member is left out.
+fn union_members(env: &Env, t: &Type, expanded: &mut u8, out: &mut LPooled<Vec<Type>>) {
     match t {
-        Type::Fn(ft) => out.push(ft.clone()),
         Type::Set(ts) => {
-            for arm in ts.iter() {
-                collect_fn_arms(arm, out)
+            for m in ts.iter() {
+                if let Some(m) = opened(env, m, expanded) {
+                    union_members(env, &m, expanded, out)
+                }
             }
         }
-        _ => (),
+        t => out.push(t.clone()),
+    }
+}
+
+/// Whether `d` and `v` are built by one constructor, so a value of `v`
+/// can only be a `d` among a union's members.
+fn same_constructor(d: &Type, v: &Type) -> bool {
+    match (d, v) {
+        (Type::Fn(_), Type::Fn(_))
+        | (Type::Array(_), Type::Array(_))
+        | (Type::List(_), Type::List(_))
+        | (Type::Error(_), Type::Error(_))
+        | (Type::ByRef(..), Type::ByRef(..))
+        | (Type::Map { .. }, Type::Map { .. }) => true,
+        (Type::Tuple(a), Type::Tuple(b)) => a.len() == b.len(),
+        (Type::Variant(t, a, _), Type::Variant(u, b, _)) => t == u && a.len() == b.len(),
+        (Type::Struct(a), Type::Struct(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(f, g)| f.0 == g.0)
+        }
+        _ => false,
     }
 }
 
@@ -675,9 +729,10 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
 
 /// `f`'s parameter `name` as a call through `site` instantiates it: a
 /// fresh instance of `f`'s signature whose other parameters take the
-/// arguments of a copy of the site's, so a variable the site fixes
-/// through another parameter fixes this one.
-// CR claude for claude: [bug/critical] A hidden label's default is judged here against
+/// arguments of a copy of the site's, and whose result and throws fit
+/// the copy's, so a variable the site fixes through another parameter,
+/// its result or its throws fixes this one.
+// XCR claude for claude: [bug/critical] A hidden label's default is judged here against
 // a fresh instance whose parameters alone take the site's types; the return type and
 // throws are never related. `let f = |#d = 1, x| [d, x]; let g: fn(x: string) ->
 // Array<string> = f` ties d to string through the return type, but in this copy d is
@@ -688,6 +743,18 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
 // and site.throws ⊇ inst.throws before the default is judged. probe:
 // design/review-2026-10-26/repro/x-typecheck-generics-hidden-default-return-tie.gx
 // (x-typecheck-generics-01)
+// 2026-10-26 claude: callee_param now holds the fresh instance's result and throws to
+// the site copy's (site.rtype contains inst.rtype, site.throws contains inst.throws),
+// and checked_default, where a fn type hides the label, also checks the default against
+// the label of the function value as the site holds it (judge_hidden_defaults passes
+// it), which narrows that value's cell: a hidden default now decides its label's type
+// the way an omitting site's view does, so a result decided later (an annotation on a
+// HOF's result) meets the default's type; CLAUDE.md says so. Before, such a cell
+// settled to bottom while the instance ran the default's i64
+// (default_runs_once_per_bind's (i64, _) result, which now fuses: its FuseExpect is
+// Jit). Pins: lang::functions::default_hidden_by_a_result_element,
+// _by_a_generic_formal_result, _by_a_result_type, _by_a_throws, _by_a_callback_result,
+// _by_a_generic_result, default_fits_a_result_type; rank-2 shape probed (refused).
 fn callee_param<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     f: &LambdaDef<R, E>,
@@ -720,8 +787,10 @@ fn callee_param<R: Rt, E: UserEvent>(
                 let _ = inst.args[i].typ.contains(&ctx.env, &sa.typ);
             }
         }
+        let _ = site.rtype.contains(&ctx.env, &inst.rtype);
+        let _ = site.throws.contains(&ctx.env, &inst.throws);
     }
-    // CR claude for claude: [bug/critical] The site's arguments are linked into `inst`
+    // XCR claude for claude: [bug/critical] The site's arguments are linked into `inst`
     // above, but its return type never is. So a hidden label whose type only the result
     // holds is judged against a fresh, unconstrained cell. `let f = |#n = 1, x: i64|
     // (x, n); let h: fn(x: i64) -> (i64, string) = f; h(1).1` passes the check, and the
@@ -733,6 +802,13 @@ fn callee_param<R: Rt, E: UserEvent>(
     // fixture in which the label appears only in the result. probe:
     // design/review-2026-10-26/repro/tests-functions-hidden-default-unsound.gx
     // (tests-functions-01)
+    // 2026-10-26 claude: Fixed with x-typecheck-generics-01: the instance callee_param
+    // builds takes the site's result and throws, and the default narrows the label of
+    // the function value the fn type hides. The repro, its array::map/count variant and
+    // the str::len variant are refused by the check; default_runs_once_per_bind passes
+    // under GRAPHIX_NO_SUBST=1. Pins: lang::functions::default_hidden_by_a_result_type
+    // (the repro), default_hidden_by_a_callback_result (the array::map variant),
+    // default_hidden_by_a_generic_result.
     inst.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
 }
 
@@ -1588,6 +1664,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             expr,
             defaults,
             self.ftype.as_deref(),
+            None,
         );
         if entered {
             ctx.leave_default(f.id, name)
