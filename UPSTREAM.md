@@ -42,9 +42,25 @@ the state of a fix, and Graphix's side.
   `worksheet_cells_reader`, or a caller-set cell limit at open.
 - **Graphix's side.** Worked around (a crafted file OOM-kills the
   runtime): `check_ods` streams `content.xml` before calamine opens it and
-  refuses past `MAX_CELLS`, mirroring by hand which attributes calamine
-  reads a value from (`ODS_VALUE_ATTRIBUTES`), so it must follow
-  calamine's parser. Not reported.
+  refuses where the tables together pass `MAX_CELLS`, mirroring by hand
+  which attributes calamine reads a value from (`ODS_VALUE_ATTRIBUTES`),
+  so it must follow calamine's parser. Not reported.
+
+## calamine 0.34: the xlsx open reserves the declared shared string count
+
+- **Bug.** `Xlsx::read_shared_strings` reserves its strings vector to the
+  `sst` element's `uniqueCount` attribute, unchecked, when the workbook
+  opens. A 1 KB xlsx declaring `uniqueCount="100000000000"` asks for
+  2.4 TB, and the failed allocation aborts the process.
+- **Repro.** `stdlib/graphix-package-xls/src/lib.rs` test
+  `xlsx_refuses_an_overstated_string_count` builds such a file.
+- **Upstream fix.** Cap the reservation (by the part's size, or a fixed
+  bound), or treat the count as a hint only.
+- **Graphix's side.** Worked around (a crafted file aborts the runtime):
+  `check_shared_strings` streams every zip entry calamine would take for
+  `xl/sharedStrings.xml` before it opens and refuses a count past the
+  bytes the part holds, mirroring how calamine finds the part and reads
+  the attribute. Not reported.
 
 ## handlebars-rust 6.4: template depth recurses without a bound
 

@@ -11,11 +11,12 @@ use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use quick_xml::events::{BytesStart, Event};
 use std::{
-    io::{BufReader, Cursor, Read, Seek},
+    io::{BufRead, BufReader, Cursor, Read, Seek},
     time::Duration,
 };
 use tokio::task;
 use triomphe::Arc as TArc;
+use zip::ZipArchive;
 
 fn data_to_value(cell: &Data) -> Value {
     match cell {
@@ -139,16 +140,16 @@ fn ods_count(e: &BytesStart, name: &[u8]) -> Result<u64, String> {
 
 /// calamine reads every table of an ods file densely when the workbook
 /// opens, so a few kilobytes of repeat counts can ask it for any amount of
-/// memory. Refuse a file whose tables expand past `MAX_CELLS` before
-/// calamine builds them; a file that is no ods passes.
-fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
-    let Ok(mut zip) = zip::ZipArchive::new(rs) else { return Ok(()) };
+/// memory. Refuse a file whose tables together expand past `MAX_CELLS`
+/// before calamine builds them; a zip that is no ods passes.
+fn check_ods<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(), String> {
     let Ok(content) = zip.by_name("content.xml") else { return Ok(()) };
     let mut reader = quick_xml::Reader::from_reader(BufReader::new(content));
     let (mut buf, mut skip): (LPooled<Vec<u8>>, LPooled<Vec<u8>>) =
         (LPooled::take(), LPooled::take());
     let mut table: Option<OdsTable> = None;
     let mut row: Option<OdsRow> = None;
+    let mut done: u64 = 0;
     loop {
         let event = reader.read_event_into(&mut buf).map_err(|e| e.to_string())?;
         let (e, empty) = match &event {
@@ -158,13 +159,17 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
             Event::End(e) if e.name().as_ref() == b"table:table-row" => {
                 if let Some(t) = &mut table {
                     t.end_row(row.take());
-                    t.check()?;
+                    if done.saturating_add(t.cells()) > MAX_CELLS as u64 {
+                        return Err(format!(
+                            "the ods tables span over {MAX_CELLS} cells"
+                        ));
+                    }
                 }
                 buf.clear();
                 continue;
             }
             Event::End(e) if e.name().as_ref() == b"table:table" => {
-                // CR claude for claude: [bug/high] The bound resets at every table's
+                // XCR claude for claude: [bug/high] The bound resets at every table's
                 // end, but calamine builds every table of the workbook at open, so
                 // memory is the sum over tables. An 814-byte ods of 16 tables, each
                 // under MAX_CELLS, OOM-kills the runtime through xls::sheets.
@@ -173,7 +178,15 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
                 // tables whose sum is over the bound. probe:
                 // design/review-2026-10-26/repro/small-pkgs-ods-many-tables-oom.sh
                 // (small-pkgs-04)
-                table = None;
+                // 2026-10-26 claude: check_ods now sums each finished table's cells
+                // (OdsTable::cells, pushed.max(area)) into a workbook total and refuses
+                // at a row end where the total with the current table passes MAX_CELLS.
+                // Pin: graphix-package-xls test ods_bounds_the_tables_together (two
+                // 3000x3000 tables: one reads, both are refused; fails with the sum
+                // undone).
+                if let Some(t) = table.take() {
+                    done = done.saturating_add(t.cells());
+                }
                 buf.clear();
                 continue;
             }
@@ -242,14 +255,78 @@ impl OdsTable {
         self.row += repeats;
     }
 
-    fn check(&self) -> Result<(), String> {
+    /// The cells calamine holds for the table at most: its rows as pushed,
+    /// or the range built from them.
+    fn cells(&self) -> u64 {
         let rows = self.first_row.map_or(0, |f| self.row_end - f);
         let area = rows.saturating_mul(self.col_end.saturating_sub(self.col_min));
-        if self.pushed.max(area) > MAX_CELLS as u64 {
-            return Err(format!("an ods table spans over {MAX_CELLS} cells"));
-        }
-        Ok(())
+        self.pushed.max(area)
     }
+}
+
+/// Whether a zip entry is the one calamine reads as `path`, which it looks
+/// up ignoring ascii case and the separator.
+fn is_zip_path(name: &str, path: &str) -> bool {
+    name.len() == path.len()
+        && name
+            .bytes()
+            .zip(path.bytes())
+            .all(|(n, p)| n.eq_ignore_ascii_case(&p) || (n == b'\\' && p == b'/'))
+}
+
+/// The `uniqueCount` calamine reads off an `sst` element: the first
+/// attribute so named, written as digits, and none past a malformed one.
+fn sst_unique_count(e: &BytesStart) -> Option<u64> {
+    for a in e.attributes() {
+        let a = a.ok()?;
+        if a.key.as_ref() == b"uniqueCount" {
+            return std::str::from_utf8(&a.value).ok()?.parse().ok();
+        }
+    }
+    None
+}
+
+/// calamine's xlsx open reserves room for as many shared strings as the
+/// `sst` element declares, and a reservation that cannot be met aborts the
+/// process. Refuse a count past the bytes the part holds, every string
+/// taking more than one; a zip without the part passes.
+fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(), String> {
+    for i in 0..zip.len() {
+        let Ok(part) = zip.by_index(i) else { continue };
+        if !is_zip_path(part.name(), "xl/sharedStrings.xml") {
+            continue;
+        }
+        let mut reader = quick_xml::Reader::from_reader(BufReader::new(part));
+        let config = reader.config_mut();
+        config.check_end_names = false;
+        config.expand_empty_elements = true;
+        let mut buf: LPooled<Vec<u8>> = LPooled::take();
+        let declared = loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"sst" => {
+                    break sst_unique_count(&e);
+                }
+                Ok(Event::Eof) | Err(_) => break None,
+                Ok(_) => buf.clear(),
+            }
+        };
+        let Some(declared) = declared else { continue };
+        let mut held = reader.buffer_position();
+        let mut rest = reader.into_inner();
+        while let Ok(read) = rest.fill_buf()
+            && !read.is_empty()
+        {
+            let n = read.len();
+            held += n as u64;
+            rest.consume(n);
+        }
+        if declared > held {
+            return Err(format!(
+                "the shared strings part declares {declared} strings in {held} bytes"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
@@ -262,10 +339,12 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // cannot be vouched for. The UPSTREAM.md calamine entry should name the xls reader
     // too. probe: design/review-2026-10-26/repro/small-pkgs-xls-dense-oom.sh
     // (small-pkgs-03)
-    if let Err(e) = check_ods(rs.clone()) {
+    if let Ok(mut zip) = ZipArchive::new(rs.clone())
+        && let Err(e) = check_ods(&mut zip).and_then(|()| check_shared_strings(&mut zip))
+    {
         return Err(errf!("XlsErr", "{e}"));
     }
-    // CR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
+    // XCR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
     // to sharedStrings.xml's uniqueCount attribute, unchecked. A 1 KB xlsx declaring
     // uniqueCount="100000000000" makes xls::read fail to allocate 2.4 TB and abort the
     // process; spawn_blocking cannot contain an abort. Guard xlsx as check_ods guards
@@ -273,6 +352,14 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // entry's uncompressed size could hold (or past a bound tied to MAX_CELLS). Add the
     // calamine entry to UPSTREAM.md. probe:
     // design/review-2026-10-26/repro/small-pkgs-xlsx-sst-abort.sh (small-pkgs-02)
+    // 2026-10-26 claude: open now runs check_shared_strings beside check_ods over one
+    // ZipArchive: every entry calamine would take for xl/sharedStrings.xml (ascii case
+    // and backslash ignored, as build_zip_path_cache does) is streamed with calamine's
+    // reader config, the first sst element's uniqueCount read as calamine's
+    // get_attribute does, and a count past the bytes the part holds is refused.
+    // UPSTREAM.md has the calamine entry. Pins: graphix-package-xls tests
+    // xlsx_refuses_an_overstated_string_count (aborts with the check undone, for each
+    // path spelling) and xlsx_reads_shared_strings.
     open_workbook_auto_from_rs(rs).map_err(|e| errf!("XlsErr", "{e}"))
 }
 
@@ -426,25 +513,117 @@ mod test {
     use std::io::Write;
     use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-    /// An ods workbook of one sheet `S` whose table holds `rows`.
-    fn ods(rows: &str) -> Bytes {
+    /// A zip of `files`, each a name and its contents, stored.
+    fn zip_of(files: &[(&str, &str)]) -> Bytes {
         let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
         let opts =
             SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-        zip.start_file("mimetype", opts).unwrap();
-        zip.write_all(b"application/vnd.oasis.opendocument.spreadsheet").unwrap();
-        zip.start_file("META-INF/manifest.xml", opts).unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
-<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>"#)
-            .unwrap();
-        zip.start_file("content.xml", opts).unwrap();
-        write!(
-            zip,
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet><table:table table:name="S">{rows}</table:table></office:spreadsheet></office:body></office:document-content>"#
-        )
-        .unwrap();
+        for (name, contents) in files {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(contents.as_bytes()).unwrap();
+        }
         Bytes::from(zip.finish().unwrap().into_inner())
+    }
+
+    /// An ods workbook whose spreadsheet holds `tables`.
+    fn ods_of(tables: &str) -> Bytes {
+        let content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet>{tables}</office:spreadsheet></office:body></office:document-content>"#
+        );
+        zip_of(&[
+            ("mimetype", "application/vnd.oasis.opendocument.spreadsheet"),
+            (
+                "META-INF/manifest.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>"#,
+            ),
+            ("content.xml", &content),
+        ])
+    }
+
+    /// An ods workbook of one sheet `S` whose table holds `rows`.
+    fn ods(rows: &str) -> Bytes {
+        ods_of(&format!(r#"<table:table table:name="S">{rows}</table:table>"#))
+    }
+
+    /// An xlsx workbook of one sheet `S` whose A1 is the shared string
+    /// `hi`, at `path` in a table that declares `unique` strings.
+    fn xlsx(path: &str, unique: &str) -> Bytes {
+        let sst = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="{unique}"><si><t>hi</t></si></sst>"#
+        );
+        zip_of(&[
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>"#,
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>"#,
+            ),
+            (path, &sst),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>"#,
+            ),
+        ])
+    }
+
+    #[test]
+    fn xlsx_reads_shared_strings() {
+        let v = parse_sheet(Cursor::new(xlsx("xl/sharedStrings.xml", "1")), "S");
+        let hi = Value::String(arcstr::literal!("hi"));
+        assert_eq!(v, Value::Array(ValArray::from([Value::Array(ValArray::from([hi]))])));
+    }
+
+    /// A shared strings table declaring more strings than its bytes could
+    /// hold, under every name calamine finds it by: calamine would reserve
+    /// room for them all and abort.
+    #[test]
+    fn xlsx_refuses_an_overstated_string_count() {
+        for path in
+            ["xl/sharedStrings.xml", "XL/SHAREDSTRINGS.XML", "xl\\sharedStrings.xml"]
+        {
+            let bytes = xlsx(path, "100000000000");
+            for v in [
+                parse_sheets(Cursor::new(bytes.clone())),
+                parse_sheet(Cursor::new(bytes.clone()), "S"),
+            ] {
+                let Value::Error(e) = v else {
+                    panic!("{path}: expected XlsErr, got {v}")
+                };
+                assert!(format!("{e}").contains("declares 100000000000 strings"), "{e}");
+            }
+        }
+    }
+
+    /// Two tables each under the bound whose sum is over it: calamine
+    /// holds every table of the workbook at once.
+    #[test]
+    fn ods_bounds_the_tables_together() {
+        let table = |name: &str| {
+            format!(
+                r#"<table:table table:name="{name}"><table:table-row>{ONE}</table:table-row><table:table-row table:number-rows-repeated="2999"><table:table-cell table:number-columns-repeated="2999"/>{ONE}</table:table-row></table:table>"#
+            )
+        };
+        let one = ods_of(&table("A"));
+        let Value::Array(names) = parse_sheets(Cursor::new(one)) else {
+            panic!("one table is under the bound")
+        };
+        assert_eq!(&names[..], &[Value::String(arcstr::literal!("A"))]);
+        let two = ods_of(&format!("{}{}", table("A"), table("B")));
+        let v = parse_sheets(Cursor::new(two));
+        let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
+        assert!(format!("{e}").contains("ods tables span"), "{e}");
     }
 
     const ONE: &str = r#"<table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell>"#;
@@ -477,7 +656,7 @@ mod test {
             parse_sheet(Cursor::new(bytes), "S"),
         ] {
             let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
-            assert!(format!("{e}").contains("ods table spans"), "{e}");
+            assert!(format!("{e}").contains("ods tables span"), "{e}");
         }
     }
 
@@ -498,7 +677,7 @@ mod test {
             );
             let v = parse_sheets(Cursor::new(ods(&row.repeat(2000))));
             let Value::Error(e) = v else { panic!("{value}: expected XlsErr, got {v}") };
-            assert!(format!("{e}").contains("ods table spans"), "{value}: {e}");
+            assert!(format!("{e}").contains("ods tables span"), "{value}: {e}");
         }
     }
 
@@ -511,7 +690,7 @@ mod test {
         );
         let v = parse_sheets(Cursor::new(ods(&rows)));
         let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
-        assert!(format!("{e}").contains("ods table spans"), "{e}");
+        assert!(format!("{e}").contains("ods tables span"), "{e}");
     }
 
     /// A table or row inside a cell, which calamine skips, counts for
@@ -524,7 +703,7 @@ mod test {
         );
         let v = parse_sheets(Cursor::new(ods(&row.repeat(2000))));
         let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
-        assert!(format!("{e}").contains("ods table spans"), "{e}");
+        assert!(format!("{e}").contains("ods tables span"), "{e}");
     }
 
     /// A duration-formatted cell is a duration, an ods time value too; a
