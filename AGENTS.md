@@ -785,7 +785,10 @@ node graph IS the IR — there is no parallel typed IR
   nested views join (`View::join`). An arm's first entry is a `Step`,
   every later one a `Wake`; a seq step entered for a run is a `Step`. A
   `let` re-raises, fired, a write to it that landed while it slept (a
-  fire no reader saw: `Bind::reraise_writes_while_asleep`). State
+  fire no reader saw: `Bind::reraise_writes_while_asleep`), to the
+  readers that slept with it alone: its block takes it back after its
+  last statement, so a reader outside (an escaped `&mut`) sees the write
+  once. State
   survives an arm's sleep (`Held` residents at the select scrutinee,
   pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
   a `<-` target's value, which only a fired input of its initializer

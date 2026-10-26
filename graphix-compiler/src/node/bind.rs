@@ -57,6 +57,10 @@ pub struct Bind<R: Rt, E: UserEvent> {
     partial: Option<Type>,
     pub(crate) node: Node<R, E>,
     ever_published: bool,
+    /// The ids a wake re-raised into this cycle's event, absent from it
+    /// before: the enclosing block takes them back after its last
+    /// statement, so only the readers that slept with this `let` see them.
+    reraised: SmallVec<[BindId; 1]>,
 }
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
@@ -104,6 +108,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             ever_published: false,
             slept: WakeBit::default(),
             slept_at: 0,
+            reraised: SmallVec::new(),
         }));
     }
     let mut body = compile(ctx, flags, body, &scope, top_id)?;
@@ -146,20 +151,11 @@ fn builtin_binding<R: Rt, E: UserEvent>(
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// A write that landed while the binding slept (one queued before the
-    /// sleep, a seq machine's reset) was seen by no reader, all of which
-    /// slept with it: deliver it fired, once, at the wake.
-    // CR claude for claude: [bug/medium] The re-raise is published to every reader of the
-    // binding (`ctx.publish`), but not every reader slept with it. A `&mut x` that
-    // escapes the arm lets a reader outside read the write live through its Deref. At
-    // the wake that reader gets the same write again as a phantom fire, and `count(*h)`
-    // counts one write twice. Scope the re-raise to the readers that slept: inject it
-    // for the woken region's evaluation and restore it afterwards, as
-    // TrackedFires::deliver does, or skip it for a binding a reference names. Which one
-    // depends on the escaped-reference rule, so it is your call. probe:
-    // design/review-2026-10-19/repro/c-bind-reraise-escaped-ref.gx (c-bind-02)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): scope the re-raise to the readers
-    // that slept, as TrackedFires does.
-    fn reraise_writes_while_asleep(&self, ctx: &mut ExecCtx<'_, R, E>) {
+    /// sleep, a seq machine's reset) was seen by none of the readers that
+    /// slept with it: deliver it to them fired, once, at the wake. A reader
+    /// outside (a `&mut` that escaped) saw it live, so the enclosing block
+    /// takes the delivery back after its last statement.
+    fn reraise_writes_while_asleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let slept_at = self.slept_at;
         let mut late: SmallVec<[(BindId, TagValue); 2]> = SmallVec::new();
         self.pattern.ids(&mut |id| {
@@ -171,8 +167,17 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 late.push((id, TagValue::fired(tv.value_cloned())))
             }
         });
+        self.reraised.clear();
         for (id, tv) in late {
-            ctx.publish(id, tv)
+            ctx.publish(id, tv);
+            self.reraised.push(id);
+        }
+    }
+
+    /// Take back what the wake re-raised ([`Self::reraised`]).
+    pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        for id in self.reraised.drain(..) {
+            ctx.event.variables.remove(&id);
         }
     }
 
@@ -337,6 +342,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             ever_published: false,
             slept: WakeBit::default(),
             slept_at: 0,
+            reraised: SmallVec::new(),
         }))
     }
 
@@ -467,6 +473,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             ever_published: false,
             slept: WakeBit::default(),
             slept_at: 0,
+            reraised: SmallVec::new(),
         }))
     }
 }
@@ -520,6 +527,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             );
         }
         if publish {
+            self.reraised.retain(|id| held.contains(id));
             let quiet = !tag.triggers();
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {

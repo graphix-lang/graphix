@@ -721,6 +721,9 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// reverse syntactic order: an inner handler's rethrow delivers to
     /// its predecessor, which only sees it if it updates after.
     pub(crate) catches: Box<[usize]>,
+    /// The children that are `let`s, which take back at the block's end
+    /// what a wake re-raised (`Bind::take_back_reraised`).
+    lets: Box<[u32]>,
     /// The block's production when it cannot hand back its last
     /// child's borrow: after a catch pass or a forked run.
     resident: TagValue,
@@ -786,10 +789,21 @@ impl Runs {
 impl<R: Rt, E: UserEvent> Block<R, E> {
     /// [`Update::update`] forking each run of its plan.
     fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        match self.runs.update(ctx, &mut self.children, &self.catches) {
+        let res = self.runs.update(ctx, &mut self.children, &self.catches);
+        self.take_back_reraised(ctx);
+        match res {
             _ if self.module => TagValue::phantom_ref(),
             Some(tv) => self.resident.set(tv),
             None => self.resident.ride(),
+        }
+    }
+
+    fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        for i in self.lets.iter() {
+            if let Some(b) = self.children[*i as usize].downcast_mut::<bind::Bind<R, E>>()
+            {
+                b.take_back_reraised(ctx)
+            }
         }
     }
 
@@ -799,6 +813,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         Node::new(Self {
             module,
             spec,
+            lets: lets_of(&children),
             children,
             catches: Box::default(),
             resident: TagValue::phantom(),
@@ -820,12 +835,24 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         Ok(Node::new(Self {
             module,
             spec,
+            lets: lets_of(&children),
             children,
             catches,
             resident: TagValue::phantom(),
             runs: Runs::default(),
         }))
     }
+}
+
+/// The indices of the `let`s among a block's children.
+fn lets_of<R: Rt, E: UserEvent>(children: &[Node<R, E>]) -> Box<[u32]> {
+    let mut lets: SmallVec<[u32; 8]> = SmallVec::new();
+    for (i, n) in children.iter().enumerate() {
+        if matches!(n.view(), NodeView::Bind(_)) {
+            lets.push(i as u32)
+        }
+    }
+    lets.into_iter().collect()
 }
 
 /// Compile a statement list: each `catch(e) expr` child compiles
@@ -1458,6 +1485,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         Ok(Node::new(Self {
             module,
             spec,
+            lets: lets_of(&children),
             children,
             catches,
             resident: TagValue::phantom(),
@@ -1488,12 +1516,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         if self.children.len() > 1 && ctx.fork_mode() != ParMode::Off {
             return self.update_forking(ctx);
         }
-        if self.catches.is_empty() {
+        if self.catches.is_empty() && self.lets.is_empty() {
             let res = self
                 .children
                 .iter_mut()
                 .fold(TagValue::phantom_ref(), |_, n| n.update(ctx));
             return if self.module { TagValue::phantom_ref() } else { res };
+        }
+        if self.catches.is_empty() {
+            let Some((last, rest)) = self.children.split_last_mut() else {
+                return TagValue::phantom_ref();
+            };
+            for n in rest {
+                n.update(ctx);
+            }
+            if self.module {
+                last.update(ctx);
+                self.take_back_reraised(ctx);
+                return TagValue::phantom_ref();
+            }
+            let res = last.update(ctx).clone();
+            self.take_back_reraised(ctx);
+            return self.resident.set(res);
         }
         // the value is the last syntactic child's (absent if it is a catch)
         let last = self.children.len() - 1;
@@ -1504,6 +1548,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
                 res = Some(r.clone());
             }
         }
+        self.take_back_reraised(ctx);
         match res {
             Some(tv) if !self.module => self.resident.set(tv),
             _ if self.module => TagValue::phantom_ref(),

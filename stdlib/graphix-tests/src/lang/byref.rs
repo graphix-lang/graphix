@@ -837,3 +837,26 @@ run!(reference_never_equals_an_array, r#"{
     a == b
   }))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
+
+// A write that lands while a `let` sleeps is re-raised at its wake to the
+// readers that slept with it, not to one outside that read it live
+// through an escaped `&mut`: the count outside sees the write once.
+run!(
+    reraise_skips_a_reader_outside,
+    r#"{
+  let n = 0;
+  n <- select n { k if k < 6 => k + 1, _ => never() };
+  let sel = select n { 2 => false, 3 => false, 4 => false, _ => true };
+  let holder: [&mut i64, null] = null;
+  let inner = select sel {
+    true => { let x = 0; holder <- &mut x; x },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select n { 3 => n ~ 100, _ => never() };
+  let c = count(*h);
+  select n { 6 => (inner, c), _ => never() }
+}"#,
+    prints("[i64:100, i64:2]");
+    FuseExpect::Jit
+);
