@@ -918,6 +918,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // (x-concurrency-01)
         // 2026-10-24 claude: Eric ruled (2026-10-24): re-deliver: the run loop
         // re-delivers, next cycle, the deliveries an interrupted cycle left unconsumed.
+        // 2026-10-25 claude: Plan, not started: the run loop marks each reply it
+        // delivers (Via::Reply variables and custom deliveries) in the cycle's event; a
+        // reader marks its own reply consumed; at the end of a cycle the interrupt cut
+        // short, the replies left unmarked are queued again, Via::Reply, for the next.
+        // Custom deliveries are mostly taken already (Event::take_custom), so what stays
+        // in the map is unconsumed, but db subscribe and watch peek with with_custom and
+        // must mark instead. Reply variables have no mark: the readers are core's
+        // CachedArgsAsync (lib.rs, three sites), time.rs's timer and after_idle,
+        // net.rs's subscribe/rpc, io.rs's lines reader, http, db, gui, the admin
+        // ceremony, and anything reading one through read_var. A reader missed is
+        // re-delivered a reply it consumed, but only after an interrupted cycle. Pin:
+        // the probe's timer re-arms after an interrupt.
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
