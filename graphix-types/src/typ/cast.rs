@@ -1223,13 +1223,19 @@ impl Type {
     /// `InvalidCast` error value. An array and a list are told apart by
     /// shape.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
+        self.cast_value_int(env, None, v).unwrap_or_else(|e| e)
+    }
+
+    /// [`Self::cast_value`] with its refusal apart from a cast value that
+    /// is an error: `Err` is the `InvalidCast` error value.
+    pub fn try_cast_value(&self, env: &Env, v: Value) -> Result<Value, Value> {
         self.cast_value_int(env, None, v)
     }
 
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
     /// decides whether a value is an array or a list.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
-        self.cast_value_int(env, Some(src), v)
+        self.cast_value_int(env, Some(src), v).unwrap_or_else(|e| e)
     }
 
     // CR claude for claude: [bug/medium] The cast recurses once per nesting level of
@@ -1240,7 +1246,12 @@ impl Type {
     // Fix: count depth in CastCx and refuse past the json reader's MAX_DEPTH with an
     // InvalidCast. probe: design/review-2026-10-26/repro/x-security-pack-deep-cast.sh
     // (x-security-03)
-    fn cast_value_int(&self, env: &Env, src: Option<&Type>, v: Value) -> Value {
+    fn cast_value_int(
+        &self,
+        env: &Env,
+        src: Option<&Type>,
+        v: Value,
+    ) -> Result<Value, Value> {
         let mut cx = CastCx {
             hist: LPooled::take(),
             sizes: LPooled::take(),
@@ -1248,9 +1259,9 @@ impl Type {
             exact: false,
         };
         match self.cast_int(env, &mut cx, src, &v) {
-            Ok(None) => v,
-            Ok(Some(v)) => v,
-            Err(e) => errf!(CAST_ERR_TAG, "{e}"),
+            Ok(None) => Ok(v),
+            Ok(Some(v)) => Ok(v),
+            Err(e) => Err(errf!(CAST_ERR_TAG, "{e}")),
         }
     }
 

@@ -430,12 +430,11 @@ fn text_response(
 }
 
 fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
-    if let Value::Error(e) = v {
-        let data = rep::strip(e);
+    if let Value::Error(_) = v {
         log::error!(
             target: graphix_compiler::FAILURE_TARGET,
             "an http handler raised: {}",
-            data.as_ref().unwrap_or(e)
+            graphix_compiler::typ::Naked(v)
         );
         return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
     }

@@ -42,6 +42,24 @@ use tokio::{
 
 graphix_compiler::dbg_flag!(rpc_dbg, "GXDBG_RPC");
 
+/// How long a released write target that has not connected yet is kept
+/// for the writes queued on it.
+const QUEUED_WRITE_GRACE: Duration = Duration::from_secs(10);
+
+/// Drop a Dval [`NetState`] handed out: the subscription ends with its last
+/// holder, and its route with it.
+fn drop_dval(routes: &Mutex<Routes>, dv: Dval) {
+    let sub_id = dv.id();
+    drop(dv);
+    let mut routes = routes.lock();
+    if let Some(route) = routes.subs.get_mut(&sub_id) {
+        route.held -= 1;
+        if route.held == 0 {
+            routes.subs.remove(&sub_id);
+        }
+    }
+}
+
 fn error_value(error: Error) -> Value {
     Value::error(format_compact!("{error:#}").as_str())
 }
@@ -582,23 +600,19 @@ impl NetState {
         Ok(dv)
     }
 
-    /// Release a Dval [`Self::write_target`] gave.
+    /// Release a Dval [`Self::write_target`] gave. One holding writes it
+    /// queued while connecting is kept until it connects, which sends them,
+    /// or for [`QUEUED_WRITE_GRACE`], where a runtime is there to wait.
     pub(crate) fn release(&self, dv: Dval) {
-        self.drop_dval(dv)
-    }
-
-    /// Drop a Dval this state handed out: the subscription ends with its
-    /// last holder, and its route with it.
-    fn drop_dval(&self, dv: Dval) {
-        let sub_id = dv.id();
-        drop(dv);
-        let mut routes = self.0.routes.lock();
-        if let Some(route) = routes.subs.get_mut(&sub_id) {
-            route.held -= 1;
-            if route.held == 0 {
-                routes.subs.remove(&sub_id);
-            }
-        }
+        let rt = match tokio::runtime::Handle::try_current() {
+            Ok(rt) if dv.queued_writes() > 0 => rt,
+            Ok(_) | Err(_) => return drop_dval(&self.0.routes, dv),
+        };
+        let routes = self.0.routes.clone();
+        rt.spawn(async move {
+            let _ = time::timeout(QUEUED_WRITE_GRACE, dv.wait_subscribed()).await;
+            drop_dval(&routes, dv)
+        });
     }
 
     pub(crate) fn unsubscribe(&self, dv: Dval, id: BindId) {
@@ -610,7 +624,7 @@ impl NetState {
                 }
             }
         }
-        self.drop_dval(dv)
+        drop_dval(&self.0.routes, dv)
     }
 
     pub(crate) fn publish<R: Rt, E: UserEvent>(

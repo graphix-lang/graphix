@@ -1,6 +1,7 @@
 use crate::netstate::{NetRpcWake, NetState, NetWrite};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
+use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
     UserEvent,
@@ -10,7 +11,7 @@ use graphix_compiler::{
     image::{self, ImageBuf},
     node::{WakeBit, coretraits, genn},
     rep,
-    typ::{FnType, Type},
+    typ::{FnType, Naked, Type},
 };
 use graphix_package_core::{
     CastTarget, ErrorText, Handler, Inbox, Reply, RtVar, castable, seam_arg, write_data,
@@ -27,7 +28,7 @@ use netidx_core::{
 use netidx_derive::FromValue;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use poolshark::local::LPooled;
-use std::{any::Any, collections::VecDeque};
+use std::{any::Any, collections::VecDeque, fmt};
 use triomphe::Arc as TArc;
 
 fn as_path(v: Value) -> Option<Path> {
@@ -43,10 +44,18 @@ fn as_path(v: Value) -> Option<Path> {
     }
 }
 
-/// An error an rpc answers its caller with, which the caller reads as
-/// `RpcError(msg)` (`remote_err`).
-fn remote_failure(msg: &str) -> Value {
-    Value::Error(Value::String(ArcStr::from(msg)).into())
+/// An error a caller is answered with, as netidx carries one: its message
+/// alone, which the caller reads as `RpcError(msg)` (`remote_err`).
+fn remote_failure(msg: impl fmt::Display) -> Value {
+    Value::Error(Value::String(format_compact!("{msg}").as_str().into()).into())
+}
+
+/// A refusal ([`Type::try_cast_value`]'s error) as the caller is answered.
+fn refusal(e: &Value) -> Value {
+    match e {
+        Value::Error(payload) => remote_failure(ErrorText(payload)),
+        e => remote_failure(Naked(e)),
+    }
 }
 
 fn remote_err(tag: &ArcStr, e: &Value) -> Value {
@@ -115,9 +124,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
 }
 
 impl Write {
-    fn same_path(&self, new_path: &Value) -> bool {
+    fn same_path(&self, new_path: Option<&Path>) -> bool {
         match (new_path, &self.dv) {
-            (Value::String(p0), Either::Left((p1, _))) => &**p0 == &**p1,
+            (Some(p0), Either::Left((p1, _))) => p0 == p1,
             _ => false,
         }
     }
@@ -128,7 +137,7 @@ impl Write {
             && let Either::Left((_, dv)) =
                 std::mem::replace(&mut self.dv, Either::Right(VecDeque::new()))
         {
-            // CR claude for claude: [bug/medium] Dropping the Dval here discards any
+            // XCR claude for claude: [bug/medium] Dropping the Dval here discards any
             // write netidx queued because the subscription has not connected yet
             // (Dval::write queues while Dead). A write issued while the arm was
             // selected is then lost when the arm sleeps, the node is deleted or the
@@ -138,6 +147,13 @@ impl Write {
             // timeout) before dropping it, so issued writes still go out. probe:
             // design/review-2026-10-26/repro/sys-net-write-lost-at-sleep.gx
             // (sys-net-03)
+            // 2026-10-26 claude: NetState::release keeps a write target holding writes
+            // queued while it connects (Dval::queued_writes) in a task until it
+            // connects (Dval::wait_subscribed, which follows the queued writes' send)
+            // or QUEUED_WRITE_GRACE (10 s) passes, then drops it and its route; one
+            // with nothing queued drops at once. Covers sleep, delete and a moved path.
+            // Pin: lib_tests::net::net_write_survives_a_sleep_before_connect, which
+            // hung with the fix undone.
             NetState::get(ctx).release(dv)
         }
     }
@@ -165,10 +181,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         let mut standing = val_fired;
         if (woke || path_fired)
             && let Some(path) = &path
-            && (woke || !self.same_path(path))
+            && let p = as_path(path.clone())
+            && (woke || !self.same_path(p.as_ref()))
         {
             self.release(ctx);
-            let Some(p) = as_path(path.clone()) else {
+            let Some(p) = p else {
                 let e = errf!(literal!("WriteError"), "invalid path {path}");
                 return self.out.set(TagValue::fired(e));
             };
@@ -292,8 +309,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         let woke = self.slept.take();
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         match (path, path_fired || woke) {
-            (_, false) => (),
-            // CR claude for claude: [bug/medium] This guard compares the stored Path,
+            (_, false) | (None, true) => (),
+            // XCR claude for claude: [bug/medium] This guard compares the stored Path,
             // which Path::from canonicalised, with the raw string, so a non-canonical
             // path ("/local/x/", "//x") never matches. Every re-fire of the unchanged
             // path tears the subscription down and replays its value. Write::same_path
@@ -303,41 +320,48 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             // Path from the incoming string first and compare Path with Path at all
             // three sites. probe:
             // design/review-2026-10-26/repro/sys-net-noncanonical-path.sh (sys-net-02)
-            (Some(Value::String(path)), true)
-                if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
-            {
-                if let Some((_, dv)) = self.cur.take() {
-                    NetState::get(ctx).unsubscribe(dv, self.var.id);
-                    self.var.remint(ctx);
-                }
-                let net = NetState::get(ctx);
+            // 2026-10-26 claude: Subscribe, Write and Publish compare Path with Path:
+            // the incoming string is canonicalised with Path::from (as_path for Write)
+            // before the comparison. Pin:
+            // lib_tests::net::net_noncanonical_path_refires (a trailing-slash path
+            // refiring 10 times: subscription delivers once, the standing value is
+            // written once, the publication is seen once); with the fix undone it
+            // counted (9, 9, 5).
+            (Some(Value::String(path)), true) => {
                 let path = Path::from(path);
-                if !Path::is_absolute(&path) {
-                    return self
-                        .out
-                        .set(TagValue::fired(err!(ERR_TAG, "expected absolute path")));
-                }
-                let dval = match net.subscribe(
-                    ctx,
-                    UpdatesFlags::BEGIN_WITH_LAST,
-                    path.clone(),
-                    self.var.id,
-                ) {
-                    Ok(dv) => dv,
-                    Err(e) => {
-                        return self.out.set(TagValue::fired(errf!(ERR_TAG, "{e:#}")));
+                if self.cur.as_ref().is_none_or(|(p, _)| *p != path) {
+                    if let Some((_, dv)) = self.cur.take() {
+                        NetState::get(ctx).unsubscribe(dv, self.var.id);
+                        self.var.remint(ctx);
                     }
-                };
-                self.cur = Some((path, dval));
+                    if !Path::is_absolute(&path) {
+                        return self.out.set(TagValue::fired(err!(
+                            ERR_TAG,
+                            "expected absolute path"
+                        )));
+                    }
+                    let dval = match NetState::get(ctx).subscribe(
+                        ctx,
+                        UpdatesFlags::BEGIN_WITH_LAST,
+                        path.clone(),
+                        self.var.id,
+                    ) {
+                        Ok(dv) => dv,
+                        Err(e) => {
+                            return self
+                                .out
+                                .set(TagValue::fired(errf!(ERR_TAG, "{e:#}")));
+                        }
+                    };
+                    self.cur = Some((path, dval));
+                }
             }
-            (Some(Value::String(_)), true) => (),
             (Some(v), true) => {
                 return self.out.set(TagValue::fired(errf!(
                     ERR_TAG,
                     "invalid path {v}, expected string"
                 )));
             }
-            (None, true) => (),
         }
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
@@ -863,7 +887,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         // bottom, so the next value goes to the new path
         if (path_fired || woke)
             && let Some(Value::String(path)) = &pathv
-            && self.current.as_ref().is_some_and(|(p, _)| &**p != path)
+            && self.current.as_ref().is_some_and(|(p, _)| *p != Path::from(path.clone()))
             && let Some((_, id)) = self.current.take()
         {
             NetState::get(ctx).unpublish(id);
@@ -891,7 +915,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     let req = &mut w.0;
 
                     // a write the handler cannot take is the writer's error
-                    // CR claude for claude: [bug/high] A remote write of an error value
+                    // XCR claude for claude: [bug/high] A remote write of an error value
                     // reaches the handler. cast_value refuses an error (an error is not
                     // data) and returns InvalidCast. The `!matches!(req.value,
                     // Value::Error(_))` guard then accepts that InvalidCast as Ok
@@ -902,24 +926,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     // Value::Error the cast returns, and pin it. probe:
                     // design/review-2026-10-26/repro/x-security-net-write-error.gx
                     // (x-security-01)
+                    // 2026-10-26 claude: Publish casts a write with
+                    // Type::try_cast_value (new: cast_value's refusal as Err), so a
+                    // refusal is answered to the writer whatever the written value was,
+                    // and an error reaches only a handler whose type holds it. Pin:
+                    // lib_tests::net::net_write_of_an_error (a [i64, string] handler
+                    // never sees the written error, a [i64, Error<`Boom(string)>]
+                    // handler does); with the fix undone the first handler recorded the
+                    // InvalidCast error.
                     let taken = match &self.write_typ {
                         Some(typ) if self.handler => {
-                            let v = coretraits::with_display_hooks(ctx, |env| {
-                                typ.cast_value(env, req.value.clone())
-                            });
-                            match &v {
-                                Value::Error(_)
-                                    if !matches!(req.value, Value::Error(_)) =>
-                                {
-                                    Err(v)
-                                }
-                                _ => Ok(v),
-                            }
+                            coretraits::with_display_hooks(ctx, |env| {
+                                typ.try_cast_value(env, req.value.clone())
+                            })
+                            .map_err(|e| refusal(&e))
                         }
-                        Some(_) | None => Err(errf!(
-                            literal!("WriteError"),
+                        Some(_) | None => Err(remote_failure(format_args!(
                             "{path} has no write handler"
-                        )),
+                        ))),
                     };
                     match taken {
                         Ok(v) => self.on_write.feed_arg(ctx, 0, TagValue::fired(v)),
@@ -988,15 +1012,12 @@ impl Reply for RpcReply {
 
     /// The error is logged here and the caller told only that the call
     /// failed: an error's chain names the server's source.
-    // CR claude for claude: [bug/low] This logs the raised error with the Value's Rust
-    // Display, so the operator reads `error:[abstract:EnwukQtE2EoTn2Uo4FoXw40B,
-    // ["cause", null], ["error", [abstract:...40C, "Boom", "bad"]], ...]`. The http
-    // twin (build_hyper_response) strips the markers but prints the data form, struct
-    // fields as pairs. Format both with graphix_types::typ::Naked so each logs
-    // error:{cause: null, error: `Boom("bad"), ..}. probe:
-    // design/review-2026-10-26/repro/gx-stdlib-rpc-raise-log-markers.gx (gx-stdlib-03)
     fn raised(self, e: Value) {
-        log::error!(target: graphix_compiler::FAILURE_TARGET, "an rpc handler raised: {e}");
+        log::error!(
+            target: graphix_compiler::FAILURE_TARGET,
+            "an rpc handler raised: {}",
+            Naked(&e)
+        );
         self.reply(remote_failure("the rpc failed"))
     }
 
@@ -1046,6 +1067,24 @@ fn parse_spec(spec: &Value) -> Result<Vec<ArgSpec>> {
         .collect()
 }
 
+/// A published procedure and the path, doc and spec it was published from.
+#[derive(Debug)]
+struct Published {
+    path: Path,
+    doc: Value,
+    spec: Value,
+    /// Dropping it unpublishes the procedure.
+    _proc: server::Proc,
+}
+
+impl Published {
+    fn is(&self, path: &Value, doc: &Value, spec: &Value) -> bool {
+        self.doc == *doc
+            && self.spec == *spec
+            && as_path(path.clone()).is_some_and(|p| p == self.path)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     /// Wake catch-up: `sleep()` drops the published proc, so the first
@@ -1055,7 +1094,7 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     handler: Handler<R, E, RpcReply>,
     /// Calls posted under `id`, taken at each wake.
     inbox: std::sync::Arc<Inbox<server::RpcCall>>,
-    current: Option<(Path, server::Proc)>,
+    current: Option<Published>,
     /// The handler's argument type, which a call's arguments are cast to.
     cast_typ: Option<Type>,
     /// The published spec's defaults, which a call's arguments override.
@@ -1076,8 +1115,12 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
 
     /// The call's arguments as the handler takes them: the spec's
     /// defaults under the arguments given, sorted into a struct and cast to
-    /// its argument type.
-    fn arg(&self, ctx: &mut ExecCtx<'_, R, E>, call: &server::RpcCall) -> Value {
+    /// its argument type; `Err` is the cast's refusal.
+    fn arg(
+        &self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        call: &server::RpcCall,
+    ) -> Result<Value, Value> {
         let mut args: LPooled<Vec<(ArcStr, Value)>> = self
             .defaults
             .iter()
@@ -1088,9 +1131,9 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         let args = args_struct(&mut args);
         match &self.cast_typ {
             Some(typ) => {
-                coretraits::with_display_hooks(ctx, |env| typ.cast_value(env, args))
+                coretraits::with_display_hooks(ctx, |env| typ.try_cast_value(env, args))
             }
-            None => args,
+            None => Ok(args),
         }
     }
 
@@ -1102,9 +1145,9 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         spec: &Value,
     ) -> Result<()> {
         let path = as_path(path.clone()).ok_or_else(|| anyhow!("invalid path {path}"))?;
-        let spec = parse_spec(&write_data(ctx, spec)?)?;
+        let parsed = parse_spec(&write_data(ctx, spec)?)?;
         self.defaults =
-            spec.iter().map(|a| (a.name.clone(), a.default_value.clone())).collect();
+            parsed.iter().map(|a| (a.name.clone(), a.default_value.clone())).collect();
         if let Some(typ) = &self.cast_typ {
             let mut defaults: LPooled<Vec<(ArcStr, Value)>> =
                 self.defaults.iter().cloned().collect();
@@ -1119,11 +1162,12 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
             ctx,
             path.clone(),
             doc.clone(),
-            spec,
+            parsed,
             self.var.id,
             self.inbox.clone(),
         )?;
-        self.current = Some((path, proc));
+        self.current =
+            Some(Published { path, doc: doc.clone(), spec: spec.clone(), _proc: proc });
         Ok(())
     }
 }
@@ -1215,7 +1259,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 }
             }
         }
-        // CR claude for claude: [bug/medium] This republishes whenever path, doc or
+        // XCR claude for claude: [bug/medium] This republishes whenever path, doc or
         // spec fires, even with the value already published. Every subscriber of the
         // procedure, its doc and its args sees an unsubscribe, and callers wait out the
         // gap. Publish::update unpublishes only when the path really moved. Fix: keep
@@ -1223,21 +1267,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         // differs, or at the wake. probe:
         // design/review-2026-10-26/repro/sys-net-rpc-republish-same-path.gx
         // (sys-net-05)
+        // 2026-10-26 claude: PublishRpc keeps what it published from (Published: path,
+        // doc, spec, proc) and republishes only when one differs or after a sleep
+        // (which drops it); a bottom path, doc or spec still drops it. Pin:
+        // lib_tests::net::net_noncanonical_path_refires, whose rpc doc subscriber
+        // counted 11 deliveries over 10 path refires with the fix undone, 1 with it.
         if path_fired || doc_fired || spec_fired || woke {
-            if crate::netstate::rpc_dbg() {
-                eprintln!(
-                    "RPCDBG publish_rpc {:?}: (re)publish changed={:?} had={:?}",
-                    self.var.id,
-                    [path_fired, doc_fired, spec_fired, f_fired],
-                    self.current.as_ref().map(|(p, _)| p)
-                );
-            }
-            // dropping the proc unpublishes it
-            self.current = None;
-            if let (Some(path), Some(doc), Some(spec)) = (&pathv, &docv, &specv)
-                && let Err(e) = self.publish(ctx, path, doc, spec)
-            {
-                failed = Some(errf!(literal!("PublishRpcError"), "{e:#}"));
+            match (&pathv, &docv, &specv) {
+                (Some(path), Some(doc), Some(spec))
+                    if self.current.as_ref().is_some_and(|p| p.is(path, doc, spec)) => {}
+                (Some(path), Some(doc), Some(spec)) => {
+                    if crate::netstate::rpc_dbg() {
+                        eprintln!(
+                            "RPCDBG publish_rpc {:?}: (re)publish changed={:?} had={:?}",
+                            self.var.id,
+                            [path_fired, doc_fired, spec_fired, f_fired],
+                            self.current.as_ref().map(|p| &p.path)
+                        );
+                    }
+                    self.current = None;
+                    if let Err(e) = self.publish(ctx, path, doc, spec) {
+                        failed = Some(errf!(literal!("PublishRpcError"), "{e:#}"));
+                    }
+                }
+                _ => self.current = None,
             }
         }
         if let Some(cbt) = ctx.event.take_custom(&self.var.id)
@@ -1248,13 +1301,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             for c in calls.drain(..) {
                 if self.handler.in_flight() >= self.max_inflight {
                     let n = self.max_inflight;
-                    let msg =
-                        compact_str::format_compact!("{n} calls are already in flight");
-                    RpcReply(c).reply(remote_failure(&msg));
+                    let msg = format_args!("{n} calls are already in flight");
+                    RpcReply(c).reply(remote_failure(msg));
                     continue;
                 }
                 match self.arg(ctx, &c) {
-                    // CR claude for claude: [bug/high] This error reply, and
+                    // XCR claude for claude: [bug/high] This error reply, and
                     // Publish::update's write refusal (`reply.send(e)`), go to netidx
                     // as a marked graphix variant without write_data. Netidx cannot
                     // encode it, so the caller's whole connection to this publisher
@@ -1268,8 +1320,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     // design/review-2026-10-26/repro/sys-net-rpc-cast-error-kills-connection.gx,
                     // design/review-2026-10-26/repro/sys-net-write-refusal-kills-connection.gx
                     // (sys-net-01)
-                    e @ Value::Error(_) => RpcReply(c).reply(e),
-                    arg => self.handler.push(arg, RpcReply(c)),
+                    // 2026-10-26 claude: Every reply that leaves for netidx is now data: a
+                    // refused call's cast error, a refused write's cast error and a write to a
+                    // publication with no handler answer Value::Error(message) through
+                    // remote_failure/refusal (the netidx convention, read by the caller as
+                    // RpcError(msg)), never a marked graphix variant. PublishRpc::arg and
+                    // Publish's write cast return Result (Type::try_cast_value), so a refusal is
+                    // told apart from data that is an error. Pins:
+                    // lib_tests::net::net_rpc_refused_cast_answered now asserts the message,
+                    // lib_tests::net::net_write_refusal_answers_the_writer (sys::net::call to a
+                    // plain publication); both got "call cancelled before a reply was received"
+                    // with the fix undone.
+                    Err(e) => RpcReply(c).reply(refusal(&e)),
+                    Ok(arg) => self.handler.push(arg, RpcReply(c)),
                 }
             }
         }

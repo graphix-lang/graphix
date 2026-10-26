@@ -204,8 +204,8 @@ run!(net_rpc_defaults, r#"{
   r
 }"#, is(Value::I64(12)); FuseExpect::None);
 
-// A call whose arguments fail the cast is answered with the error and
-// never reaches the handler; the next call is served.
+// A call whose arguments fail the cast is answered with the cast's message
+// and never reaches the handler; the next call is served.
 run!(net_rpc_refused_cast_answered, r#"{
   let p = "/local/rpc_cast";
   sys::net::rpc(
@@ -216,9 +216,11 @@ run!(net_rpc_refused_cast_answered, r#"{
   let bad: [i64, Error<[`RpcError(string), `InvalidCast(string)]>] =
     sys::net::call(p, {a: "x", b: 1});
   let good: i64 = sys::net::call(bad ~ p, {a: 3, b: 4})?;
-  (is_err(bad), good)
+  (bad, good)
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::I64(7)])
+    let bad = r#"error:["RpcError", "can't cast \"x\" to i64: no primitive conversion"]"#;
+    matches!(v, Ok(Value::Array(a))
+        if a.len() == 2 && a[0].to_string() == bad && a[1] == Value::I64(7))
 }; FuseExpect::Jit);
 
 // A changed #doc republishes the rpc at its path: the old one frees the
@@ -357,6 +359,91 @@ run!(net_write_refused_cast, r#"
 }
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(5)])
+}; FuseExpect::None);
+
+// A write a publication's handler cannot take answers a writer that waits
+// for the answer with the cast's message.
+run!(net_write_refusal_answers_the_writer, r#"
+{
+  let x = 0;
+  sys::net::publish(#on_write: |v: i64| x <- v, "/local/pin/wrefuse", x);
+  let s: i64 = sys::net::subscribe("/local/pin/wrefuse")$;
+  let r: [i64, Error<[`RpcError(string), `InvalidCast(string)]>] =
+    sys::net::call(s ~ "/local/pin/wrefuse", null);
+  r
+}
+"#, |v: Result<&Value>| {
+    let want = r#"error:["RpcError", "can't cast [] to i64: no primitive conversion"]"#;
+    matches!(v, Ok(v) if v.to_string() == want)
+}; FuseExpect::None);
+
+// A written error reaches a handler whose argument type holds it, and is
+// refused for one whose type does not.
+run!(net_write_of_an_error, r#"
+{
+  let refused: Array<string> = [];
+  let taken: Array<string> = [];
+  sys::net::publish(
+    #on_write: |v: [i64, string]| refused <- v ~ array::push(refused, "[v]"),
+    "/local/pin/werr/refused",
+    0
+  );
+  sys::net::publish(
+    #on_write: |v: [i64, Error<`Boom(string)>]| taken <- v ~ array::push(taken, "[v]"),
+    "/local/pin/werr/taken",
+    0
+  );
+  let s: i64 = sys::net::subscribe("/local/pin/werr/refused")$;
+  let s2: i64 = sys::net::subscribe("/local/pin/werr/taken")$;
+  let e = once(s ~ s2 ~ error(`Boom("remote")));
+  sys::net::write("/local/pin/werr/refused", e);
+  sys::net::write("/local/pin/werr/taken", e);
+  sys::net::write("/local/pin/werr/refused", sys::time::after_idle(duration:50.ms, e) ~ 5);
+  select (array::len(refused), array::len(taken)) {
+    (1, 1) => (refused, taken),
+    _ => never()
+  }
+}
+"#, prints(r#"[["5"], ["error:`Boom(\"remote\")"]]"#); FuseExpect::Jit);
+
+// A write issued before its target connects goes out though the arm that
+// issued it sleeps the next cycle.
+run!(net_write_survives_a_sleep_before_connect, r#"
+{
+  let got = never();
+  sys::net::publish(#on_write: |x: i64| got <- x, "/local/pin/writesleep", 0);
+  let ev: [`Go(i64), `Stop] = `Go(42);
+  ev <- once(ev ~ `Stop);
+  select ev { `Go(v) => sys::net::write("/local/pin/writesleep", v), `Stop => never() };
+  got
+}
+"#, is(Value::I64(42)); FuseExpect::Jit);
+
+// An unchanged path written in a form other than its canonical one
+// re-fires without tearing down what it names: the subscription delivers
+// once, the standing value is written once, and the publication and the
+// rpc are published once.
+run!(net_noncanonical_path_refires, r#"
+{
+  sys::net::publish("/local/pin/canon/s", 7);
+  let writes = 0;
+  sys::net::publish(#on_write: |v: i64| writes <- v ~ writes + 1, "/local/pin/canon/w", 0);
+  let t = sys::time::timer(duration:20.ms, true);
+  let v: i64 = sys::net::subscribe(t ~ "/local/pin/canon/s/")$;
+  sys::net::write(t ~ "/local/pin/canon/w/", 5);
+  sys::net::publish(t ~ "/local/pin/canon/p/", 7);
+  let p: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> =
+    sys::net::subscribe("/local/pin/canon/p");
+  sys::net::rpc(#path: t ~ "/local/pin/canon/r/", #doc: "d", #spec: null, #f: |a: null| 1);
+  let d: Result<string, [`SubscribeError(string), `InvalidCast(string)]> =
+    sys::net::subscribe("/local/pin/canon/r/doc");
+  let counts = (count(v), writes, count(p), count(d));
+  let ticks = count(t);
+  select ticks { 10 => ticks ~ counts, _ => never() }
+}
+"#, |v: Result<&Value>| {
+    let one = [Value::I64(1), Value::I64(1), Value::I64(1), Value::I64(1)];
+    matches!(v, Ok(Value::Array(a)) if a[..] == one)
 }; FuseExpect::None);
 
 // A write in an arm that sleeps writes again after its wake, to the path

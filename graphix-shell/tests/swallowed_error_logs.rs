@@ -110,3 +110,36 @@ sys::exit(sys::time::after_idle(duration:200.ms, 0))
         );
     }
 }
+
+/// An rpc or http handler's raise is logged as Graphix prints the error,
+/// with none of its kind markers.
+#[test]
+fn a_handler_raise_is_logged_as_graphix_prints_it() {
+    const RPC: &str = r#"
+let p = "/local/raise";
+sys::net::rpc(#path: p, #doc: "d", #spec: null, #f: |a: null| -> i64 {
+    let x: i64 = error(`Boom("bad"))?;
+    x
+});
+let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
+    sys::net::call(sys::time::after_idle(duration:100.ms, p), null);
+sys::exit(r ~ 0)
+"#;
+    const HTTP: &str = r#"
+let handler = |req: http::Request| {
+    let b: Result<string, `Boom(string)> = error(`Boom("bad"));
+    { body: req.path ~ b?, headers: [], status: u16:200 }
+};
+let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+let client = http::default_client(server)$;
+let resp = http::request(client, "http://[http::server_addr(server)]/")$;
+sys::exit(resp ~ 0)
+"#;
+    for (program, label) in [(RPC, "rpc"), (HTTP, "http")] {
+        let (_, log) = run(program, false, label);
+        let want = format!(
+            "an {label} handler raised: error:{{cause: null, error: `Boom(\"bad\")"
+        );
+        assert!(log.contains(&want), "{label}: {log}");
+    }
+}

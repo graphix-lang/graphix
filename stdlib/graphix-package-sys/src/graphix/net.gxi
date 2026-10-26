@@ -24,7 +24,8 @@ val call: fn<'a: Data, 'b: Concrete>(path: string, args: 'a) -> Result<'b, [`Rpc
 /// wants the caller to see details answers its own error value. A call runs
 /// to its answer whether or not the caller is still waiting; one f never
 /// answers holds the call. Past `#max_inflight` calls (1024 by default)
-/// unanswered, a new call is answered an `RpcError`.
+/// unanswered, a new call is answered an `RpcError`, as is one whose
+/// arguments do not cast to f's argument type, with the cast's message.
 val rpc: fn<'spec: Data, 'result: Data, 'args: Concrete + Data>(
     #path:string,
     #doc:string,
@@ -41,7 +42,7 @@ val list_table: fn(?#update:Any, path: string) -> Result<Table, `ListError(strin
 
 /// Publish the specifed value at the specified path. A write to it is cast
 /// to #on_write's argument type, and a value that does not cast answers the
-/// writer with the cast's error. Without a handler the publication takes no
-/// writes, and while the handler is null a write answers the writer with an
-/// error.
+/// writer with the cast's message as its error. Without a handler the
+/// publication takes no writes, and while the handler is null a write
+/// answers the writer with an error.
 val publish: fn<'v: Data, 'a: Concrete + Data>(?#on_write:[fn(v: 'a) -> _ throws 'e, null], path: string, v: 'v) -> Result<_, `PublishError(string)> throws 'e;
