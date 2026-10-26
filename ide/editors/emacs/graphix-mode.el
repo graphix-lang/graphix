@@ -112,7 +112,7 @@
 ;; ("""...""") may hold bare quotes, so the syntax table alone mis-pairs
 ;; them: their delimiters are string fences and a backslash inside is
 ;; punctuation.
-;; CR claude for claude: [bug/medium] The closing delimiter is searched with no bound,
+;; XCR claude for claude: [bug/medium] The closing delimiter is searched with no bound,
 ;; so when a raw or template string closes after END, point passes END and the loop's
 ;; next `re-search-forward` with bound END signals "Invalid search bound (wrong side of
 ;; point)". Calling syntax-ppss anywhere inside a multi-line template (jit-lock chunks,
@@ -125,25 +125,50 @@
 ;; python.el's python-syntax-stringify does. probe:
 ;; design/review-2026-10-26/repro/ide-tooling-emacs-multiline-template.sh
 ;; (ide-tooling-01)
+;; 2026-10-26 claude: graphix--syntax-propertize now judges each quote and backslash
+;; alone from the syntax-ppss state before it (python.el's way): in code a raw or triple
+;; opener's quote is a fence, in a fenced string the first quote of the string's closer
+;; is a fence and a backslash is punctuation, and point never passes END; so a pass may
+;; start anywhere, inside a string included. Pin:
+;; ide/editors/emacs/graphix-mode-tests.el graphix-mode-fenced-strings-any-pass (chunk
+;; sizes 1..500, queries up, down and from the middle); it fails with the old function
+;; (Invalid search bound) and with the old one bounded to END (a string runs on). Not in
+;; cargo test: run with emacs --batch, as ide/README.md says.
+(defun graphix--raw-hashes (at)
+  "The hashes before the quote at AT when it opens a raw string, else nil."
+  (save-excursion
+    (goto-char at)
+    (skip-chars-backward "#")
+    (let ((hashes (buffer-substring-no-properties (point) at)))
+      (and (eq (char-before) ?r)
+           (progn (backward-char) (looking-at-p "\\_<"))
+           hashes))))
+
 (defun graphix--syntax-propertize (start end)
-  "Mark the raw and triple-quoted strings between START and END."
+  "Mark the raw and triple-quoted strings between START and END.
+Each quote and backslash is judged alone from the state before it, so a
+pass may start anywhere: an opening quote in code and the first quote of
+a closer are string fences, and a backslash inside is punctuation."
   (goto-char start)
-  (while (re-search-forward "\\_<r\\(#*\\)\"\\|\"\"\"" end t)
-    (let* ((beg (match-beginning 0))
-           (raw (match-beginning 1))
-           (close (if raw (concat "\"" (match-string 1)) "\"\"\"")))
-      (if (nth 8 (save-excursion (syntax-ppss beg)))
-          (goto-char (1+ beg))
-        (put-text-property beg (1+ beg) 'syntax-table (string-to-syntax "|"))
-        (let ((body (point)))
-          (when (search-forward close nil t)
-            (let ((cend (point)))
-              (put-text-property (1- cend) cend 'syntax-table (string-to-syntax "|"))
-              (save-excursion
-                (goto-char body)
-                (while (search-forward "\\" (- cend (length close)) t)
-                  (put-text-property (1- (point)) (point) 'syntax-table
-                                     (string-to-syntax ".")))))))))))
+  (while (re-search-forward "[\"\\]" end t)
+    (let* ((at (match-beginning 0))
+           (ppss (save-excursion (syntax-ppss at))))
+      (cond
+       ((eq (nth 3 ppss) t)
+        (if (eq (char-after at) ?\\)
+            (put-text-property at (1+ at) 'syntax-table (string-to-syntax "."))
+          (let* ((hashes (graphix--raw-hashes (nth 8 ppss)))
+                 (close (if hashes (concat "\"" hashes) "\"\"\"")))
+            (when (save-excursion (goto-char at) (looking-at-p (regexp-quote close)))
+              (put-text-property at (1+ at) 'syntax-table (string-to-syntax "|"))
+              (goto-char (min end (+ at (length close))))))))
+       ((or (nth 3 ppss) (nth 4 ppss) (eq (char-after at) ?\\)))
+       (t
+        (let ((raw (graphix--raw-hashes at)))
+          (when (or raw (save-excursion (goto-char at) (looking-at-p "\"\"\"")))
+            (put-text-property at (1+ at) 'syntax-table (string-to-syntax "|"))
+            (unless raw
+              (goto-char (min end (+ at 3)))))))))))
 
 ;;;###autoload
 (define-derived-mode graphix-mode prog-mode "Graphix"
@@ -329,7 +354,7 @@ Falls back to this mode when tree-sitter is not available.
        (no-node parent-bol 0)))
     "Tree-sitter indentation rules for Graphix.")
 
-  ;; CR claude for claude: [risk/low] This recipe builds GitHub's default branch, but
+  ;; XCR claude for claude: [risk/low] This recipe builds GitHub's default branch, but
   ;; the font-lock queries below come from the checkout this file was loaded from. A
   ;; checkout that is not main can get a grammar its queries do not match, and treesit
   ;; then refuses a whole feature's query: those colors vanish silently. nvim got the
@@ -338,15 +363,33 @@ Falls back to this mode when tree-sitter is not available.
   ;; load-file-name (../../tree-sitter-graphix/grammar.js) and use its root as the
   ;; recipe URL, falling back to GitHub outside a checkout. Found by reading; not run.
   ;; (ide-tooling-02)
+  ;; 2026-10-26 claude: graphix--treesit-grammar-recipe now takes its URL from the
+  ;; checkout the file was loaded from (file-truename of load-file-name, three
+  ;; directories up, when ide/tree-sitter-graphix/grammar.js is there), else GitHub;
+  ;; treesit uses a local directory in place (Emacs 30+) or clones it (29). Checked by
+  ;; installing the grammar from this checkout into a temp dir with Emacs 31 and
+  ;; opening a buffer in graphix-ts-mode with no parse errors. ide/README.md says to
+  ;; put editors/emacs on the load-path. Pin: graphix-mode-tests.el
+  ;; graphix-mode-grammar-recipe-is-this-checkout, which fails with the GitHub-only
+  ;; recipe.
   (defvar graphix--treesit-grammar-recipe
-    '(graphix "https://github.com/graphix-lang/graphix"
-              nil                        ; tag
-              "ide/tree-sitter-graphix/src") ; source dir
-    "Tree-sitter grammar recipe for Graphix.")
+    (let ((root (and load-file-name
+                     (expand-file-name "../../.." (file-name-directory
+                                                   (file-truename load-file-name))))))
+      (list 'graphix
+            (if (and root (file-exists-p
+                           (expand-file-name "ide/tree-sitter-graphix/grammar.js" root)))
+                root
+              "https://github.com/graphix-lang/graphix")
+            nil                         ; tag
+            "ide/tree-sitter-graphix/src")) ; source dir
+    "Tree-sitter grammar recipe for Graphix: the checkout this file was
+loaded from, so the grammar matches its queries, else GitHub.")
 
   (defun graphix-ts-mode-install-grammar ()
     "Install the Graphix tree-sitter grammar.
-Downloads and compiles the grammar from the graphix repository."
+Compiles the grammar of the checkout this file was loaded from, else
+downloads it from the graphix repository."
     (interactive)
     (add-to-list 'treesit-language-source-alist graphix--treesit-grammar-recipe)
     (treesit-install-language-grammar 'graphix))

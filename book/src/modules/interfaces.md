@@ -249,6 +249,58 @@ mod child;
 use super::{private_setup, public_helper};
 ```
 
+### Impls Between Siblings
+
+Siblings reach each other only through their interfaces, trait
+implementations included. An `impl` that a module with an interface
+adds in its body without declaring it in its `.gxi` is hidden while
+the module's siblings are checked; the code after the modules sees it.
+Declare it in the interface to make it visible to the siblings:
+
+```graphix
+// a.gxi
+use super::Show;
+val x: i64;
+impl Show for i64;
+```
+
+```graphix
+// a.gx
+use super::Show;
+impl Show for i64 { let show = |x| "int [x]" };
+let x = 1
+```
+
+Without the declaration, a sibling's `Show::show(1)` is refused: "i64
+does not implement Show here: the impl in module /a is not in its
+interface (declare `impl Show for i64;` there)".
+
+### A Module Decides Only Its Own Types
+
+A module with an interface is checked on its own, beside its
+siblings, so its check may not decide a type the code around it left
+open. Here the parent leaves the type of `cell` open and the child,
+which has an interface, would decide it by writing to it:
+
+```graphix
+// p.gx
+let cell = never();
+let v = 1;
+mod c;
+```
+
+```graphix
+// p/c.gx
+use super::cell;
+let w = 2;
+cell <- w
+```
+
+The check refuses it: "the check decides a type the code around the
+module left open: annotate `cell`". Annotate the binding where it is
+declared, `let cell: i64 = never();`, and the child's write is checked
+against that type.
+
 ## Interfaces with Netidx Modules
 
 Interface files also work with modules stored in netidx. The naming convention

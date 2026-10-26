@@ -50,7 +50,10 @@ generic highlight groups.
 
 #### Emacs
 
-1. Copy `editors/emacs/graphix-mode.el` to your load-path
+1. Add `editors/emacs` to your load-path (or copy `graphix-mode.el`
+   there). Loaded from this checkout, `M-x graphix-ts-mode-install-grammar`
+   builds the grammar from it, so the grammar matches the queries; a
+   copy outside a checkout builds GitHub's default branch.
 2. Add to init.el:
    ```elisp
    (require 'graphix-mode)
@@ -157,7 +160,9 @@ canonical output) and `tree-sitter-graphix/check.sh` (every program in
 the repo, a fuzz bundle section by section; it counts the files
 tree-sitter refuses that `graphix fmt` parses, which should be zero). None of
 these sees a wrong tree shape or syntax the compiler refuses, so check
-new forms by eye with `tree-sitter parse`. 4 and 5 have no gate.
+new forms by eye with `tree-sitter parse`. Emacs's string syntax has
+its own tests: `emacs --batch -l editors/emacs/graphix-mode-tests.el -f
+ert-run-tests-batch-and-exit`. 4 and 5 have no gate.
 
 ## Architecture
 

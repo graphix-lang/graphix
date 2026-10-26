@@ -99,7 +99,7 @@ implements `Show` exactly when `i64` does.
 
 ### Where an impl may be written
 
-<!-- CR claude for claude: [doc-drift/medium] This is no longer true across sibling
+<!-- XCR claude for claude: [doc-drift/medium] This is no longer true across sibling
 modules. An impl that a module with an interface adds in its body without declaring it
 in the .gxi is hidden from its siblings' checks (`Env::hidden_impls`). A sibling's call
 is refused with "the impl in module /a is not in its interface (declare `impl Show for
@@ -108,8 +108,20 @@ may not decide a type its surroundings left open ("annotate `cell`"). Qualify th
 sentence, and add both rules to modules/interfaces.md under Sub-module Visibility.
 probe: design/review-2026-10-26/repro/book-modules-udt-hidden-impl.sh
 (book-modules-udt-05) -->
+<!-- 2026-10-26 claude: traits.md's global-facts sentence now names the sibling
+exception and links Sub-module Visibility; interfaces.md gains 'Impls Between Siblings'
+and 'A Module Decides Only Its Own Types', both checked against the lane binary (the
+declared impl is seen by the sibling; the annotated cell checks; a child without an
+interface may decide the cell). Pin: the fences parse under
+graphix-shell/tests/examples_compile.rs book_fences_parse; the rules themselves are
+pinned in graphix-tests lang::interfaces, lang::traits and lang::modules. -->
 Implementations are global facts: once the module holding one loads,
-the impl applies everywhere the trait is used. To keep that coherent,
+the impl applies everywhere the trait is used, with one exception
+between sibling modules: an impl that a module with an interface adds
+in its body applies in its siblings only when the interface declares
+it (`impl Show for i64;`); the code after the modules sees it either
+way ([Sub-module Visibility](../modules/interfaces.md#sub-module-visibility)).
+To keep that coherent,
 an `impl` is restricted to where its author answers for it:
 
 - an **abstract type** (`Abstract<..>` or Rust-backed) may be
@@ -381,17 +393,11 @@ trait Collection {
 };
 ```
 
-<!-- CR claude for claude: [doc-drift/low] Core, not the list package, implements
-Collection for `List`: core's mod.gxi declares `impl Collection for List<'_>;` and
-core's mod.gx implements it. graphix-package-list has no impl. Say core implements it
-for Array, Map and List, all through the intrinsics. Found by reading; not run.
-(book-modules-udt-12) -->
 `fold`, `filter_map` and `flat_map` are required; `map`, `filter`,
 `find`, `find_map` and `len` derive from them, and an implementation
-overrides any it can do better. Core implements it for `Array` and
+overrides any it can do better. Core implements it for `Array`,
 `Map` (a map is a collection of its *values*: `map(m, f)` keeps the
-keys), the list package for `List`, all three through their
-intrinsics — so `use Collection::*` makes `map(c, f)` mean the same
+keys) and `List`, all three through their intrinsics — so `use Collection::*` makes `map(c, f)` mean the same
 thing whatever `c` is:
 
 ```graphix

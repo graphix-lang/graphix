@@ -137,16 +137,23 @@ References have no order, so `<` and the other orderings refuse them,
 and so does anything that orders or hashes values: map keys, `min`,
 `max`, the sorts and `array::dedup`. `uniq` compares them as `==` does.
 
-<!-- CR claude for claude: [doc-drift/low] The chapter never teaches place references,
+<!-- XCR claude for claude: [doc-drift/low] The chapter never teaches place references,
 though comparing them is covered above. It should explain that `&a[i]`, `&s.f`, `&t.0`
 and `&m{k}` are a root plus a path, and that a write through `&mut a[1]` patches the
 root. It should also explain that a dynamic key (`&a[i]`) moves with `i`, that a write
 while the address is bottom is dropped, and that `&mut` of a non-place is a fresh cell.
 Add a Places section with an example like the probe. probe:
 design/review-2026-10-26/repro/book-modules-udt-place-refs.gx (book-modules-udt-07) -->
-## Referencing a Name vs Referencing an Expression
+<!-- 2026-10-26 claude: references.md gains a Places section (root plus path, a &mut
+place patches the root, moving keys, missing places, a write while the address is
+bottom, &mut *r, the O(n) copy) and a note that &mut of a non-place is a fresh cell
+reaching no binding; both examples run on the lane binary with the outputs their
+comments state. Pin: the fences parse under examples_compile.rs book_fences_parse; the
+rules are pinned by lang::byref (place_read_write, place_bottom_key, place_missing_key,
+place_through_deref). -->
+## Referencing a Name, a Place or an Expression
 
-`&` does slightly different things depending on what follows it.
+`&` does different things depending on what follows it.
 
 `&v`, where `v` is a binding, is a reference to that binding. Dereferencing it
 reads the binding, so `*r` and `v` always agree — on the same cycle, in the same
@@ -160,13 +167,62 @@ v <- 7;
 (v, *r)
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] This section splits references into a name
+<!-- XCR claude for claude: [doc-drift/medium] This section splits references into a name
 or a fresh cell and never mentions place references. `&mut a[1]` is not a fresh cell: a
 write through it patches `a` at delivery (design/place_references.md), and the book has
 no page that says so. Add the accessor-chain case (`&a[i]`, `&s.f`, `&t.0`, `&m{k}`: the
 root plus a path, written back into the root, with a dynamic key moving the reference)
 and an example, then rebuild docs/. probe:
 design/review-2026-10-26/repro/x-doc-drift-place-ref-book.gx (x-doc-drift-02) -->
+<!-- 2026-10-26 claude: The section is now 'Referencing a Name, a Place or an
+Expression' with the Places subsection written for (book-modules-udt-07) between the
+name and expression cases, and its closing sentence says a name or an accessor chain is
+a place. Pin: as for (book-modules-udt-07). -->
+### Places
+
+An accessor chain over a binding, `&a[i]`, `&s.f`, `&t.0`, `&m{k}` or
+any nesting of them, is a reference to a *place*: the root binding plus
+a path into it. It is typed as a reference to the element (`&a[1]` is
+`&i64` for `a: Array<i64>`). Reading it reads the root along the path,
+and a write through a `&mut` place patches the root: the root is
+rebuilt along the path and the new value delivered to the binding.
+
+```graphix
+let a = [1, 2, 3];
+let s = {x: 1, y: 2};
+let r = &mut a[1];
+let q = &mut s.y;
+*r <- 20;
+*q <- 5;
+// ([1, 2, 3], {x: 1, y: 2}) then ([1, 20, 3], {x: 1, y: 5})
+(a, s)
+```
+
+A key that changes makes a moving reference: it points at whatever the
+key names now, reads and writes there, and fires its readers when it
+moves.
+
+```graphix
+let a = [10, 20, 30];
+let i = 0;
+let r = &a[i];
+i <- 2;
+// 10 then 30
+*r
+```
+
+A read of a place that does not exist (an index past the end) is
+bottom. A write to a key a map lacks inserts it, as `map::insert` would;
+any other write into a place that does not exist is dropped and logged,
+the root untouched. A write while the reference's address is bottom (a
+moving reference whose key is bottom) does not happen, and when the key
+returns nothing written meanwhile lands there. `&mut *r` is a place with
+an empty path: a write through it lands where `r` points. Arrays are
+immutable values, so a write through a place copies along the path:
+fine for a form's state, O(n) per write for an array.
+
+### Expressions
+
 `&(a + b)` has no binding to name, so it makes a fresh cell that holds the
 expression's value. The cell is updated in the same cycle as the expression, as
 a `let` would be, so a deref sees each new value right away:
@@ -180,5 +236,9 @@ a <- 10;
 (a + b, *r)
 ```
 
-So a reference to a name is a reference to a place, and a reference to an
-expression is a reference to a value that is being kept up to date for you.
+`&mut` of an expression that is not a place makes the same kind of cell,
+writable: a write through it lands in that cell and reaches no binding.
+
+So a reference to a name or an accessor chain is a reference to a place, and a
+reference to any other expression is a reference to a value that is being kept
+up to date for you.
