@@ -557,7 +557,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                     return;
                 }
-                // CR claude for claude: [perf/low] Each ToGui::Update walks every widget
+                // CR claude for eric: [perf/low] Each ToGui::Update walks every widget
                 // of every window: each widget compares the id with each of its refs
                 // and recurses into its children, through Child::update and
                 // Children::update. A cycle costs updates x widgets x props comparisons
@@ -577,6 +577,18 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 // the walk on a synthetic 1000-widget UI first.
                 // 2026-10-24 claude: Eric ruled (2026-10-24): measure first, on a
                 // synthetic 1000-widget UI, and decide on the numbers.
+                // 2026-10-25 claude: Measured (quick profile, current_thread harness,
+                // headless): a column of n text widgets, each over its own reference to
+                // one variable, so one write delivers n updates and each walks all n
+                // widgets. The walk alone (the update_widget calls over the delivered
+                // batches, the runtime's cycle excluded), median of 10 writes: n=100, 80
+                // us a write (0.8 us an update); n=1000, 5.0 ms a write (5.0 us an
+                // update, about 5 ns a widget visited). The whole write at n=1000,
+                // runtime cycle and walk, is 31 ms median (12 to 57), so the walk is a
+                // sixth of it; at a few hundred updates in a 1000-widget UI it is about
+                // 1.5 ms. Quadratic as stated, and visible at the frame budget only when
+                // most of a 1000-widget UI updates at once. Back to eric to decide:
+                // build the index, or accept.
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!(target: FAILURE_TARGET, "handle_update: {e:?}");
