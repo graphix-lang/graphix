@@ -1,0 +1,13 @@
+// Title: #[parallel] over an expression whose only "fork" is a nested block
+//   of constant lets is accepted; the same block decorated directly is refused.
+// Command: graphix --no-cache --expand c-analysis-branch-parallel-const-block.gx
+// Expected: refused, "#[parallel] has nothing to run in parallel" (the only
+//   fork point with two children has one that is work, and the nested block's
+//   two-statement run is two constants), as `#[parallel] { let a = 1; let b = 2; a + b }`
+//   is refused.
+// Observed: exit 0, no error. check_parallel's nested-Block arm counts a run of
+//   two statements (z - a >= 2) without asking is_work, which the top-level
+//   Block arm does.
+let t = 3;
+let x = #[parallel] (t, { let a = 1; let b = 2; a + b });
+x

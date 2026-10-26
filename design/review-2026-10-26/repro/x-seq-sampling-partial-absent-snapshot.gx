@@ -1,0 +1,15 @@
+// A step's snapshot reads a variable present at entry at the cycle another, absent one
+// arrives, not at the entry
+// command: graphix --no-cache x-seq-sampling-partial-absent-snapshot.gx  (--no-fusion: same)
+// The step enters at step ~1 with x = 0; y arrives at step 6, when x is 5.
+// expected by CLAUDE.md's wording ("read once, at the step's entry ..., or at its first
+//   arrival if absent"): 100 (x as it stood at entry, y at its arrival)
+// observed (both engines): 5100: the snapshot is one tuple taken when all of it is present
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let x = 0;
+x <- step ~ step;
+let y = never();
+y <- select step { 5 => 100, _ => never() };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+seq { x * 1000 + y }

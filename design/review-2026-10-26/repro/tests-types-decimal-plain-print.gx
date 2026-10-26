@@ -1,0 +1,9 @@
+// Title: a decimal of scale 0 prints "plainly" with a trailing '.', a float without one
+// Command: timeout -s KILL 5 graphix --no-cache tests-types-decimal-plain-print.gx
+// CLAUDE.md: a cast prints a number plainly ("42"). fmt_naked (netidx-value print.rs) prints f64 5.0 as "5"
+// but routes a decimal through DecimalFmt, which appends the literal syntax's '.'.
+// Observed: ("12345678901234567890.", "12345678901234567890.", "5", "5")
+{
+  let e = cast<decimal>("12345678901234567890")$;
+  (cast<string>(e), "[e]", cast<string>(f64:5.0), "[f64:5.0]")
+}

@@ -1,0 +1,13 @@
+// Title: the clipboard (gui::clipboard::* and every text input's copy/paste)
+//   only ever talks X11: arboard is built without `wayland-data-control`, so
+//   a Wayland session with no XWayland (DISPLAY unset) has no clipboard, and
+//   the event loop's iced Clipboard drops the error silently.
+// Command (no compositor needed; WAYLAND_DISPLAY only has to be set):
+//   env -u DISPLAY WAYLAND_DISPLAY=wayland-0 timeout -s KILL 30 \
+//     graphix --no-cache gui-core-clipboard-x11-only.gx
+// Expected: a Wayland attempt (a Wayland connection error, or the text).
+// Observed: error:`ClipboardError("... X11 server connection timed out
+//   because it was unreachable"): WAYLAND_DISPLAY is never consulted.
+let t = sys::time::timer(duration:10.ms, false);
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+gui::clipboard::read_text(t)

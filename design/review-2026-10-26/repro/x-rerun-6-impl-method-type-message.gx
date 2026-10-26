@@ -1,0 +1,10 @@
+// Title: c-module-traits-04 follow-up: the refusal prints the method's type and the trait's as the same text
+// Command: timeout -s KILL 10 graphix --no-cache --check x-rerun-6-impl-method-type-message.gx
+// Expected: the first context line names the method's actual type, e.g.
+//   "method fmt of impl Display for Box<'a> has type fn(self: Box<i64>) -> string, the trait declares fn(self: Box<'a>) -> string"
+// Observed: "... has type fn(self: Box<'a>) -> string, the trait declares fn(self: Box<'a>) -> string";
+//   only the next line ("fn(self: Box<'a: unbound>) -> string does not contain fn(self: Box<'a: i64>) -> string")
+//   shows the difference.
+type Box<'a> = Abstract<'a>;
+impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
+"[Box(41)]"

@@ -1,0 +1,20 @@
+// Title: a pattern bind standing over an `Any` part of the scrutinee (or of
+// a written union type test) is left an open cell, so the arm body decides
+// its type: the check accepts str::len over an i64.
+// Command: graphix --no-cache c-pattern-bind-over-any-open.gx
+//   (graphix --check accepts it; graphix --no-cache --no-fusion prints nothing)
+// Expected: refused by the check (x is Any; str::len takes a string), as
+// `let (x, _) = v; str::len(x)` and `array::map(v, |x| str::len(x))` are
+// ("string does not contain Any").
+// Observed: --check accepts; the JIT run panics:
+//   kernel param `x`: runtime I64(1) does not match the compiled String slot
+// and the node-walk takes the arm and runs str::len over 1 (prints nothing).
+// The same with each of these as f's select (all accepted, all panic):
+//   select v { [x, ..] => str::len(x), _ => 0 }                 // v: Array<Any>
+//   select v { [Array<Any>, null] as [x, ..] => str::len(x), _ => 0 } // v: [Array<i64>, null]
+//   select v { [`A(Any), `B(Any)] as `A(x) => str::len(x), _ => 0 }   // v: [`A(i64), `B(string), `C]
+// Without a fallback arm the body's choice surfaces as a misleading
+// "missing match cases: no arm covers (Any, i64)".
+let f = |v: (Any, i64)| select v { (x, 1) => str::len(x), _ => -1 };
+let w: Any = 1;
+f((w, 1))

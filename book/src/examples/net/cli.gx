@@ -30,5 +30,11 @@ let cli: args::ParseResult = select args::parse(
     }
 };
 
+// CR claude for claude: [readability/low] The help and error arms exit, but a
+// successful parse prints these two lines and then the script runs forever (`graphix
+// cli.gx foo.txt` is killed by the timeout, exit 137), which is a poor model for a CLI
+// tool. End the success path with `sys::exit(cli ~ 0)`. probe: timeout -s KILL 10
+// graphix --no-cache -n book/src/examples/net/cli.gx foo.txt -> exit 137
+// (examples-rest-05)
 println("Command: [cli.command]");
 println("Values: [cli.values]");

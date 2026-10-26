@@ -1,0 +1,25 @@
+// Title: net_on_write_null_handler cannot see a write made while the handler is null
+//
+// The fixture (stdlib/graphix-tests/src/lib_tests/net.rs, net_on_write_null_handler)
+// asserts n == 7 at 400 ms. A write of 5 that reached the handler while it was
+// null (or was queued and delivered when it arrived) would set n to 5 and then
+// to 7: the final sample is 7 either way, so the "reaches nothing" half of the
+// claim has no pin. Recording every value the handler takes pins both halves.
+//
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/tests-lib-b2-null-handler-write.gx
+// Expected (the rule): [7]
+// Observed: [7] (the code is right today; this is the stronger predicate the test should assert)
+let result = {
+    let got: Array<i64> = [];
+    let p = "/local/ow_null";
+    let armed = false;
+    let h = select armed { false => null, true => |v: i64| got <- v ~ array::push(got, v) };
+    sys::net::publish(#on_write: h, p, 0);
+    let s: i64 = sys::net::subscribe(p)$;
+    sys::net::write(p, once(s) ~ 5);
+    armed <- sys::time::after_idle(duration: 100.ms, once(s)) ~ true;
+    sys::net::write(p, sys::time::after_idle(duration: 200.ms, once(s)) ~ 7);
+    sys::time::after_idle(duration: 400.ms, s) ~ got
+};
+sys::exit(sys::time::after_idle(duration:600.ms, result) ~ 0);
+result

@@ -575,6 +575,16 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
 impl<K: WatchKind> WatchStream<K> {
     fn unwatch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for bid in self.bind_ids.drain(..) {
+            // CR claude for claude: [bug/high] A watch's bind id belongs to the Watch,
+            // and every stream reading it refs the same id. release_var calls
+            // forget_writes, which drops that id's queued custom deliveries for all
+            // readers. So when one stream sleeps, or re-watches because its argument
+            // fired, in the middle of a burst, the rest of the burst is lost for every
+            // stream on the watch, this one included. Use ctx.unref_var here (the
+            // stream does not own the id), and pin two streams over one watch with one
+            // asleep during a burst. probe:
+            // design/review-2026-10-26/repro/sys-io-watch-sibling-sleep-drops-events.gx
+            // (4 events instead of 9) (sys-io-02)
             ctx.release_var(bid, self.var.top_id());
         }
     }
@@ -599,6 +609,12 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         if let Invocation::Bottom { fresh } = invocation {
             return self.out.set_bottom(fresh);
         }
+        // CR claude for claude: [bug/low] The || short-circuits, so a wake whose
+        // arguments fire (a WatchApply in the same arm rebuilds and fires at the wake)
+        // leaves the WakeBit set. The next update then unwatches and re-refs again, and
+        // release_var's forget_writes drops the deliveries queued behind its event.
+        // Take the bit first: `let woke = self.slept.take();`, as WatchApply::update
+        // does. Found by reading; not run. (sys-io-04)
         if invocation == Invocation::Fired || self.slept.take() {
             self.unwatch(ctx);
             for v in self.cached.values().flatten() {

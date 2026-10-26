@@ -1,0 +1,16 @@
+// Title: the Concrete bound does not look through a type reference, so the
+//        check accepts a read target that names a reference or a function
+//        through a typedef
+// Command: timeout -s KILL 30 graphix --check t-tvar-concrete-through-typedef.gx
+//          timeout -s KILL 30 graphix --no-cache t-tvar-concrete-through-typedef.gx
+// Expected: the check refuses the target as it refuses the same type
+//   written out (`Result<fn(x: i64) -> i64, ..>` and `Result<&i64, ..>`
+//   are refused: "does not contain ['b: unbound within Concrete & NoError, ..]").
+// Observed: --check exits 0; the run reaches the run-time cast, which
+//   refuses: error:`ParseError("can't cast 42 to &i64: a reference can't be
+//   read from data"). Same with `type F = fn(x: i64) -> i64`,
+//   `type R = Array<&i64>` and `type R = [i64, &i64]`.
+type R = &i64;
+let r: Result<R, `ParseError(string)> = str::parse("42");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

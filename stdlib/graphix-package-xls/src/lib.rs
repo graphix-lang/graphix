@@ -28,6 +28,13 @@ fn data_to_value(cell: &Data) -> Value {
             Some(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
             None => Value::F64(edt.as_f64()),
         },
+        // CR claude for claude: [bug/medium] A date-only ISO cell (`2020-01-01`, the
+        // common ods date cell) and one with fractional seconds
+        // (`2020-01-01T10:00:00.5`) match neither parse and come back as strings, while
+        // the same dates in xlsx/xls read as datetimes. Parse `%Y-%m-%dT%H:%M:%S%.f`,
+        // then a bare `%Y-%m-%d` at midnight UTC, before falling back to a string, and
+        // pin both forms. probe:
+        // design/review-2026-10-26/repro/small-pkgs-ods-date-cells.sh (small-pkgs-05)
         Data::DateTimeIso(s) => match chrono::DateTime::parse_from_rfc3339(s) {
             Ok(dt) => Value::DateTime(TArc::new(dt.with_timezone(&chrono::Utc))),
             Err(_) => match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
@@ -157,6 +164,15 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
                 continue;
             }
             Event::End(e) if e.name().as_ref() == b"table:table" => {
+                // CR claude for claude: [bug/high] The bound resets at every table's
+                // end, but calamine builds every table of the workbook at open, so
+                // memory is the sum over tables. An 814-byte ods of 16 tables, each
+                // under MAX_CELLS, OOM-kills the runtime through xls::sheets.
+                // Accumulate each finished table's pushed.max(area) into a workbook
+                // total and refuse when the total passes MAX_CELLS; pin it with several
+                // tables whose sum is over the bound. probe:
+                // design/review-2026-10-26/repro/small-pkgs-ods-many-tables-oom.sh
+                // (small-pkgs-04)
                 table = None;
                 buf.clear();
                 continue;
@@ -237,9 +253,26 @@ impl OdsTable {
 }
 
 fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
+    // CR claude for eric: [bug/high] Only ods is guarded against calamine's dense open.
+    // The BIFF .xls reader also builds every sheet over its cells' bounding box when
+    // the workbook opens, so a 5.6 KB .xls with cells at A1 and at (65535, 65535)
+    // OOM-kills the runtime through xls::sheets alone. MAX_CELLS is checked only after
+    // the range exists. Either scan the BIFF cell or DIMENSIONS records before open and
+    // refuse past MAX_CELLS, as check_ods does, or decide to refuse .xls input that
+    // cannot be vouched for. The UPSTREAM.md calamine entry should name the xls reader
+    // too. probe: design/review-2026-10-26/repro/small-pkgs-xls-dense-oom.sh
+    // (small-pkgs-03)
     if let Err(e) = check_ods(rs.clone()) {
         return Err(errf!("XlsErr", "{e}"));
     }
+    // CR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
+    // to sharedStrings.xml's uniqueCount attribute, unchecked. A 1 KB xlsx declaring
+    // uniqueCount="100000000000" makes xls::read fail to allocate 2.4 TB and abort the
+    // process; spawn_blocking cannot contain an abort. Guard xlsx as check_ods guards
+    // ods: stream xl/sharedStrings.xml first and refuse a uniqueCount larger than the
+    // entry's uncompressed size could hold (or past a bound tied to MAX_CELLS). Add the
+    // calamine entry to UPSTREAM.md. probe:
+    // design/review-2026-10-26/repro/small-pkgs-xlsx-sst-abort.sh (small-pkgs-02)
     open_workbook_auto_from_rs(rs).map_err(|e| errf!("XlsErr", "{e}"))
 }
 

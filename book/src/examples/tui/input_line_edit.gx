@@ -11,6 +11,16 @@ let ed = line_edit::state("");
 let saved = "";
 
 // Enter saves the text and clears the editor; every other key edits
+// CR claude for claude: [bug/medium] A paste never reaches the editor. on_press answers
+// `Continue to every non-key event, a `Paste included, so the `_ =>
+// line_edit::handle(&mut ed, e)` fallback runs only for key presses. input.md says
+// handle applies a paste, and says a handler that wants paste must select on the Event.
+// Select on the Event first, as form.gx does: `select e { `Paste(_) =>
+// line_edit::handle(&mut ed, e), _ => on_press(e, ..) }`. netidx-admin copied this
+// shape: `text_keys` in its tui/mod.gx (text and secret prompts) and `connect_keys` in
+// tui/remote.gx drop pastes the same way. Add a paste case for this example to the tui
+// examples_test. probe: design/review-2026-10-26/repro/book-ui-b-line-edit-paste.gx
+// Also reported as (examples-tui-01). (book-ui-b-01)
 let handle = |e: Event| on_press(e, |k| select k.code {
   kk@ `Enter => {
     saved <- kk ~ ed.value;

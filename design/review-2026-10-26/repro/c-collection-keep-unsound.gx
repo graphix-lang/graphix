@@ -1,0 +1,13 @@
+// filter_map unwraps a 'b value that is itself `Keep(..): Array<'x> holds i64s
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache c-collection-keep-unsound.gx
+//   (same with --no-fusion)
+// Expected: [`Keep(1), `Keep(2)] then (r, n) = ([`Keep(1), `Keep(2)], 1); or a check refusal
+// Observed: --check accepts; r prints [1, 2] though typed Array<`Keep(i64)>, and the
+//   exhaustive select logs "select h { `Keep(n) => n }: no arm matches[ i64:1]: a
+//   coverage hole in the check" and the tuple never produces.
+let f = |a: Array<'x>| -> Array<'x> array::filter_map(a, |x| x);
+let r: Array<`Keep(i64)> = f([`Keep(1), `Keep(2)]);
+let h = select r { [h, ..] => h, [] => `Keep(0) };
+let n = select h { `Keep(n) => n };
+println(r);
+(r, n)

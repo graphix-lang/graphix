@@ -1,0 +1,22 @@
+// Title: a netidx write of an error value reaches a publish #on_write
+// handler typed to refuse it: the cast's own InvalidCast error is handed
+// to the handler as its argument.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/x-security-net-write-error.gx
+// Expected: the write refused as the writer's error (an error is not data,
+//   so no value of [i64, string] comes from it); the handler never runs.
+// Observed (both engines): the handler runs on the InvalidCast error as if it
+//   were an [i64, string]:
+//   select v { i64 as n => .., s => .. }: no arm matches error:[.., "InvalidCast",
+//   "can't cast error:[\"Boom\", \"remote\"] to [i64, string]: an error is not
+//   data"]: a coverage hole in the check
+//   (with GRAPHIX_ABORT_ON_NO_MATCH=1 the process aborts there)
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+let got: Array<string> = [];
+let p = sys::net::publish(
+    #on_write: |v: [i64, string]| got <- array::push(got, select v { i64 as n => "int [n]", s => "str: [s]" }),
+    "/review/w",
+    0
+);
+let t = sys::time::timer(duration:100.ms, false);
+let w = sys::net::write("/review/w", t ~ error(`Boom("remote")));
+println("handler saw: [got]")

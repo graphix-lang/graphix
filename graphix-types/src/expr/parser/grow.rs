@@ -197,6 +197,11 @@ impl std::fmt::Display for ParseFailure {
 /// Where `pos` is the end of `text`, the innermost bracket left open and
 /// where it opens. Comments and string contents are skipped, the
 /// expressions a string interpolates are not.
+// CR claude for claude: [readability/low] The first three lines of this doc ("The
+// source line at `pos` with a caret...") describe `snippet`, which has none. Move them
+// onto `snippet`. In mod.rs, `seq_stmts`'s doc starts with a line about "a seq
+// statement" parser that no longer exists; delete it. Found by reading; not run.
+// (t-parser-a-08)
 fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosition)> {
     #[derive(Clone, Copy)]
     enum Ctx {

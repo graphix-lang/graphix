@@ -1,0 +1,22 @@
+// Title: a second sys::net::call while the first is in flight aborts the first:
+// the server served both, the caller hears one answer.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-net-rpc-latest-aborts.gx
+// Expected under Fifo (the async default, and the only order a non-cancel-safe call may take): (2, 2, 2).
+// Observed: (2, 0, 2) then (2, 1, 2): the reply to {x: 1} is dropped.
+let p = "/local/rpc_latest";
+let served = 0;
+sys::net::rpc(
+  #path: p,
+  #doc: "slow",
+  #spec: {x: {default: 0, doc: "x"}},
+  #f: |a: {x: i64}| {
+    served <- a ~ served + 1;
+    sys::time::after_idle(duration:300.ms, a.x)
+  });
+let x = 1;
+x <- sys::time::after_idle(duration:100.ms, p) ~ 2;
+let answers = 0;
+let r: i64 = sys::net::call(p, {x})$;
+answers <- r ~ answers + 1;
+sys::exit(sys::time::after_idle(duration:1500.ms, 0));
+(served, answers, r)

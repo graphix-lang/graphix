@@ -1,0 +1,17 @@
+// An input an enclosing select tracks for ANOTHER arm is never caught up for
+// the arm that learns it through a fresh callee: wake::owed refuses it
+// (CatchUp::tracks) and TrackedFires::deliver injects only the bits the
+// waking arm names itself.
+// Run: graphix-fuzz run design/review-2026-10-26/repro/c-prune-wake-tracked-elsewhere.gx
+// x fires (in1=5) while the select sits in `_ => -1`, so no reader sees it.
+// g then moves to `|v| count(x)` and arm 0 wakes, binding that callee.
+// Arm 1 (`count(x)`), never selected in this run, names x, so x counts as
+// tracked and its fire is dropped for arm 0.
+// Expected (as with arm 1 reading in1 instead, which leaves x untracked):
+//   last cycle [0:1]
+// Observed (both engines):
+//   Trace([0:105]; [0:105]; [0:-1]; []; []; [0:-1]; [])
+// Control, arm 1 = `i64:1 => count(in1)`:
+//   Trace([0:105]; [0:105]; [0:-1]; []; []; [0:-1]; [0:1])
+// schedule-v1: cap=208 events=1664; in0=i64:0 in1=i64:0 in3=i64:0; in0=i64:2; in1=i64:5; in3=i64:1; in0=i64:2; in0=i64:0
+{let x = in1 + i64:0; let g: fn(v: i64) -> i64 = |v| v + i64:100; g <- select in3 {i64:0 => never(), _ => |v| count(x)}; let s = select in0 {i64:0 => g(i64:5), i64:1 => count(x), _ => i64:-1}; s}

@@ -1,0 +1,24 @@
+// Title: a let annotation naming a type a LATER statement of its block declares
+//        is checked against the block's type but binds the outer one: the JIT
+//        then reads the i64 42 as a string pointer and aborts
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/t-env-forward-typedef-confusion.gx
+//          (and with --no-fusion; `graphix --check` accepts the program)
+// Expected: either refused, or `r: i64` (Foo is the block's `type Foo = i64`,
+//           as CLAUDE.md's "every type name ... must name something by the
+//           check's end" and the design's order-free type names imply); then
+//           `str::len(r)` is refused.
+// Observed: --check passes. The let's own check resolves `Foo` to the block's
+//   i64 (it accepts 42), but node/pattern.rs compile_int_inner expanded the
+//   annotation at COMPILE time with lookup_ref_peek, before the block's
+//   `type Foo` was registered, so `a` is bound as the outer `string`.
+//   JIT:       panicked at arcstr .../arc_str.rs: misaligned pointer
+//              dereference: address must be a multiple of 0x8 but is 0x2a;
+//              aborting (core dumped)
+//   node-walk: prints nothing (str::len of an i64)
+//   With `type Foo = string` outside and `let a: Foo = "s"; type Foo = i64`
+//   inside, the JIT prints a heap address (e.g. 140686419989680) where the
+//   node-walk prints "s".
+type Foo = string;
+let r = { let a: Foo = 42; type Foo = i64; a };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+str::len(r)

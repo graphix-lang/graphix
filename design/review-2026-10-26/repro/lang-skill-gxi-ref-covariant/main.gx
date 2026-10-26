@@ -1,0 +1,7 @@
+// Title: SKILL.md says `&selstyle` for a list's `#highlight_style: &[Style, null]`
+// needs `val selstyle: [Style, null]`; `&T` is covariant, so `val selstyle: Style` is accepted.
+// Command: graphix --check main.gx
+// Expected (per SKILL.md): refused. Observed: accepted (exit 0).
+mod a;
+use tui::list::list;
+list(#highlight_style: &a::selstyle, &[])

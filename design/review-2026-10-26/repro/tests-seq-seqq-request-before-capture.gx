@@ -1,0 +1,18 @@
+// seqq serves every request queued before a capture's first value with the
+// LAST request's value: the request rides the held capture tuple, so the bank
+// pays each queued trigger with the tuple as it stands when the capture lands.
+// Run: timeout -s KILL 30 graphix --no-cache tests-seq-seqq-request-before-capture.gx
+// Expected (CLAUDE.md "seqq queues triggers with captured values"; the book:
+// "Under seqq it is the value that queued the run"): "a 7" then "b 7"
+// Observed: "b 7" twice (request `A is lost, `B runs twice)
+let step = 0;
+step <- select step { n if n < 20 => n + 1, _ => never() };
+let request = select step { 1 => `A, 2 => `B, _ => never() };
+let ready = never<i64>();
+ready <- select step { 5 => 7, _ => never() };
+let r = seqq let req = request {
+    let name = select req { `A => "a", `B => "b" };
+    "[name] [ready]"
+};
+sys::exit(sys::time::after_idle(duration:200.ms, step) ~ 0);
+r

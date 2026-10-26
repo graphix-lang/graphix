@@ -1,0 +1,22 @@
+// Title: a non-cancel-safe async call's kept reply answers the NEXT seq run
+// Command: timeout -s KILL 30 graphix --no-cache core-lib-kept-reply-crosses-rebirth.gx
+// Run 1 reads child A (whose data comes after the abort); run 2 reads child B.
+// Expected: run 2 answers with child B's data ("run 2: BBBB"), run 3 stalls (B has no more).
+// Observed: "run 2: AAAA" (run 1's read of child A, kept across the abort, answers run 2's
+// step), then "run 3: BBBB" (run 2's own read answers run 3): every later run is one behind.
+// Without the abort (kept0 variant) the output is "run 1: AAAA", "run 2: BBBB".
+use sys::io::Read;
+use sys::process::{options, spawn, stdio};
+let opts = |script| options(#stdio: stdio(#stdout: `Pipe), #args: ["-c", script], "sh");
+let outa = spawn(opts("sleep 0.5; printf AAAA; sleep 10"))$.stdout$;
+let outb = spawn(opts("printf BBBB; sleep 10"))$.stdout$;
+let go = sys::time::timer(duration:300.ms, 3);
+let k = count(go);
+let r = seq let n = k; abort(select n == 1 { true => sys::time::after_idle(duration:100.ms, n), false => never() }) {
+  let s = select n == 1 { true => outa, false => outb };
+  let b = Read::read(s, u64:100)$;
+  println("run [n]: [buffer::to_string_lossy(b)]");
+  n
+};
+sys::exit(sys::time::after_idle(duration:3.s, 0));
+r

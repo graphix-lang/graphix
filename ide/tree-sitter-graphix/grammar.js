@@ -150,6 +150,16 @@ module.exports = grammar({
     // interface item or a trait method, on a line of its own), and
     // anywhere else it is `//` and then an error, as the graphix parser
     // refuses it.
+    // CR claude for eric: [bug/low] graphix takes `///` ending a list item's line (`1,
+    // /// first`) as a plain end-of-line comment: eol_comment takes `//` and any text.
+    // It refuses the same `///` on a line of its own in a .gx (comment_line notes it is
+    // a doc comment). This token refuses a third `/`, and the doc_comment scanner
+    // refuses off a line start, so tree-sitter makes it an ERROR. The comment above,
+    // which says the parser refuses `///` elsewhere, is stale. Decide which is right:
+    // eol_comment refusing `///` like comment_line does, or this token taking `//` plus
+    // any text (the scanner runs first, so doc_comment still wins where a doc is
+    // legal). probe: design/review-2026-10-26/repro/ide-tooling-eol-triple-slash.gx
+    // (ide-tooling-05)
     line_comment: $ => token(choice(
       '//',
       seq('//', /[^\/\n]/, optional(/[^\n]*/)),
@@ -828,6 +838,14 @@ module.exports = grammar({
     labeled_arg_shorthand: $ => seq('#', $._binding_name),
 
     // Select (pattern matching)
+    // CR claude for claude: [bug/low] graphix accepts a body brace written tight
+    // against the scrutinee or trigger (`select x{ _ => 1 }`, `seq t{ 1; 2 }`): the map
+    // access it tries there is backtracked. Here the lexer takes a tight `{` as
+    // map_ref's token.immediate('{'), which select and seq_block do not accept, so the
+    // body is an ERROR. Fix: open both bodies with `choice('{', token.immediate('{'))`
+    // and add the conflict `[$._expression, $.map_ref]`. In a scratch copy this fixed
+    // select and left the repo corpus's refusals unchanged. probe:
+    // design/review-2026-10-26/repro/ide-tooling-tight-body-brace.gx (ide-tooling-03)
     select: $ => seq(
       'select',
       field('value', $._expression),
@@ -913,6 +931,16 @@ module.exports = grammar({
     ),
 
     // The value that never arrives, typed where given
+    // CR claude for claude: [doc-drift/low] `live(e)` is a construct keyword in the
+    // parser (live_expr), like never/cast/any, but this grammar has no node for it. It
+    // parses as a call of a reference named live, so highlights.scm and the emacs ts
+    // queries color it as a function, and `let live = 1`, which graphix refuses, is
+    // accepted here. book/theme/graphix-highlight.js has the same drift: its KEYWORDS
+    // lack live and its TYPES lack Data and NoError. Fix: add `live: $ => seq('live',
+    // '(', $._expression, ')')` to _primary_expression, and "live" to the keyword lists
+    // of highlights.scm, graphix-mode.el and graphix-highlight.js. probe: tree-sitter
+    // parse of `until live(x > 1)` gives (until (apply (reference ...))).
+    // (ide-tooling-06)
     never: $ => seq(
       'never',
       optional(seq('<', $._type, '>')),
@@ -1231,6 +1259,14 @@ module.exports = grammar({
     // The CJK ideograph and Hangul syllable blocks are spelled out:
     // tree-sitter-cli keeps only the endpoints of UnicodeData's range
     // entries in \p{Lo}.
+    // CR claude for claude: [bug/low] The continuation class [\p{L}\p{N}_..] leaves out
+    // combining marks. graphix's ident() continues with char::is_alphanumeric, whose
+    // Alphabetic includes the Other_Alphabetic vowel signs of Devanagari, Bengali,
+    // Tamil and other scripts. So `let कि = 1` parses in graphix and is an ERROR here,
+    // and so is nearly every identifier in those scripts. type_identifier has the same
+    // class. Fix: continue both with [\p{Alphabetic}\p{N}_..]; tree-sitter-cli accepts
+    // it, and in a regenerated copy the probe parses. probe:
+    // design/review-2026-10-26/repro/ide-tooling-indic-identifier.sh (ide-tooling-04)
     identifier: $ =>
       /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3][\p{L}\p{N}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3]*/,
 

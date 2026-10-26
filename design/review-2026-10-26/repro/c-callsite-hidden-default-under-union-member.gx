@@ -1,0 +1,19 @@
+// Title: a labeled default hidden by a fn type under a union member (a struct
+// field of an option) passes the check and is refused by the run-time bind
+// Command:
+//   timeout -s KILL 10 graphix --no-cache c-callsite-hidden-default-under-union-member.gx
+//   timeout -s KILL 10 graphix --check c-callsite-hidden-default-under-union-member.gx
+// Expected: the check refuses it, as it refuses the same program without the
+//   `, null` member ("string does not contain i64" at 4096), the
+//   default_hidden_by_a_field pin's shape.
+// Observed: --check exits 0; the run logs
+//   s.f("seven"): binding the callee failed: ... in: 4096: type mismatch
+//   string does not contain i64
+// and the call stays bottom. The same with `[(fn(y: string) -> bool, i64), null]`
+// or `Array<[{f: fn(y: string) -> bool}, null]>`, or a variant member:
+//   let t: [`A(fn(y: string) -> bool), `B(i64)] = `A(g)
+{
+  let g = |#x = 4096, y| x == y;
+  let t: [{f: fn(y: string) -> bool}, null] = {f: g};
+  select t { null => false, s => (s.f)("seven") }
+}

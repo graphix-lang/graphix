@@ -42,6 +42,13 @@ Subcommands: `check`/`run`/`minimize`/`typemorph <file>`; `generate
 `regress` alone, or re-recording its manifest). `check-one`/`minimize-one`/`selfcheck-one`/
 `typemorph-one` are the hidden child-process forms.
 
+<!-- CR claude for claude: [doc-drift/low] The reactive-generation part of this
+paragraph is stale. "usually with an `until` on the same clock holding the run open past
+it" no longer holds: a bare `until` reads the step's entry snapshot and never ends, so
+only `until live(..)` holds a run open. The code also keeps the burst-clock `until` in
+the tail set, which contradicts "a body with an `until` ... stays out". Rewrite both
+once the generator emits `live`. probe:
+design/review-2026-10-26/repro/fuzz-gen-b-until-stall.gx (fuzz-gen-b-04) -->
 Sources: **corpus mutation** (seeds = the hand seeds plus every `run!`
 fixture harvested at build time by `build.rs`; a type-blind
 subexpression replacement applied 1–5×, a donor subtree from any seed
@@ -355,6 +362,12 @@ Three rules learned from a campaign that died of its own exhaust:
   is noise (an ENOSPC flood dedups nowhere, since the key varies with
   program text). Excluded-tier hangs do not count; finding-write
   failures are fatal too.
+<!-- CR claude for claude: [doc-drift/low] The fuzzer also reads
+GRAPHIX_FUZZ_TIMEOUT_SCALE (scales every deadline, set per host by fleet.sh),
+GRAPHIX_FUZZ_DUMP_REJECTS (gen-check writes its rejects to a dir), GRAPHIX_FUZZ_BATCH
+(pool batch size), and the parent-to-child GRAPHIX_FUZZ_SERIAL_RUNS,
+GRAPHIX_FUZZ_RUN_LOG and GRAPHIX_FUZZ_CHILD_ASAN_OPTIONS. None is documented here. List
+them. Found by reading; not run. (x-doc-drift-10) -->
 - **Campaign output lives OUTSIDE the repo** (`~/tmp/target/fuzz/`,
   `GRAPHIX_FUZZ_CORPUS` overrides); the repo's corpus dir syncs across
   machines. Children get `GRAPHIX_STACK_BUDGET` and an `RLIMIT_AS` of 8GB
@@ -424,6 +437,14 @@ text artifact on two routes: **in-language** (dispatch epochs as
 `set_many` injections) and **dispatch** (`compile_callable` + `call` per
 epoch, with gap compiles first — the embedder timeline has cycles
 between building a handler and the first event). `check` runs the 2×2
+<!-- CR claude for claude: [doc-drift/low] Strength::of holds EngineDispatch and the
+Dispatch-route Cold/Warm pairs at Exact; only Pair::Route compares at final strength.
+This line, and the sessions paragraph's "the dispatch route compared at final-values
+strength like its engine pair", describe the older rule. In §3, "an ActivationBudget ...
+on either side of a forked comparison stays a divergence" also needs narrowing to
+Pair::Par(Mode::Par): Oracle::settle drops a serial node-walk budget beside a
+Pair::Par(JitPar) trace as engine containment, which is right. The code is right; fix
+the doc. (fuzz-lib-a-07) -->
 matrix: engine pairs per route (the dispatch pair at finals strength),
 then the route pair. `Divergence` carries which pair (`Pair`: the
 comparisons `Engine`, `EngineDispatch`, `Route`, `Cold`, `Warm`, `Par`
@@ -515,6 +536,13 @@ lanes, and `abi_kind`/`freeze_for_abi` crash rather than shrug.
 accepts, apply an acceptance-preserving `Expr → Expr` transform, print
 it back, check again; accept→reject is a flip. Transforms are graded,
 and the grade is the triage default: parens-wrap is SOUND (a flip is a
+<!-- CR claude for claude: [doc-drift/low] This paragraph drifts from typemorph.rs. The
+transforms bind `tm__0` (not `__t`/`__c`). Only alias-swap's hoist is built (no
+reverse). stmt-permute permutes any statement kind outside its exclusion list, not only
+binds. label-permute (SOUND), default-materialize and default-elide (EXPECTED) are
+missing. Update the names and the catalog; keep "adjacent independent binds" as the rule
+once stmt-permute stops moving the block's last statement. Found by reading; not run.
+(fuzz-mutate-06) -->
 compiler bug); block-wrap (`e` → `{ let __t = e; __t }`, not on direct
 or parenthesized lambda literals (a `let rec` takes only a lambda) nor
 on `never()`: a `let` over ⊥ is an open

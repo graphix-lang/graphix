@@ -1,0 +1,19 @@
+// Title: a lines site whose reader finished (EOF or stopped by a seek) ignores the same handle re-delivered
+// Setup: printf 'a\nb\n' > /home/eric/tmp/review-2026-10-26/review/work/sys-io/lines.txt
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-io-lines-dead-after-seek.gx
+// Expected (if a re-delivered handle starts a new reader once the old one is done):
+//   (0, ["a", "b", "a", "b"])
+// Observed: (0, ["a", "b"]) — the seek back to 0 and the re-delivery of `f` into the same
+//   Lines::lines site read nothing: IoLines::update ignores a handle Arc::ptr_eq to the one
+//   its finished reader held.
+use sys::{io::Lines, fs::Seek};
+let f = sys::fs::open(`Read, "/home/eric/tmp/review-2026-10-26/review/work/sys-io/lines.txt")$;
+let src = f;
+let t = sys::time::timer(duration:300.ms, false);
+let pos = Seek::seek(t ~ f, `Start(u64:0))$;
+src <- pos ~ f;
+let l = Lines::lines(src)$;
+let all = [];
+all <- l ~ array::push(all, l);
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+(pos, all)

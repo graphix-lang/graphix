@@ -1,0 +1,27 @@
+// seq.rs SEQ_BARE_SAMPLE_STALLS_SECOND_RUN: the comment says an entry that
+// finds x bottom "consumes the sample's debt"; under banked `~` it banks it.
+// And the FIRST run issues nothing too: pc is `Wait for one cycle per run,
+// so the fixture's n == 0 says nothing about a second run.
+// Run: timeout -s KILL 30 graphix --no-cache --no-fusion tests-seq-bare-sample-both-runs.gx
+// Observed: n stays 0 at every step, pc `Wait for one cycle at steps 2 and 9
+let step = 0;
+step <- select step { s if s < 16 => s + 1, _ => never() };
+type Pc = [`Idle, `Wait];
+let pc: Pc = `Idle;
+pc <- select step { 1 => `Wait, 7 => `Idle, 8 => `Wait, _ => never() };
+let x = select step {
+  s if s < 4 => never(),
+  s if s < 6 => 1,
+  s if s < 12 => never(),
+  _ => 2
+};
+let n = 0;
+select pc {
+  `Idle => never(),
+  `Wait => {
+    n <- (pc ~ x) ~ (n + 1);
+    pc <- pc ~ `Idle
+  }
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(step ~ n, step ~ pc)

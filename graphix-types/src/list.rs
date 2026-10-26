@@ -8,6 +8,11 @@ use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
 
+// CR claude for claude: [perf/low] Every list built clones this one global Value, so
+// lists built in forked slots all write its single refcount. That is the contention
+// rep.rs removed for the kind markers by making MARKS thread-local. Make NIL a
+// thread_local the same way (nil compares by content, as markers do). Found by reading;
+// not run. (x-kind-markers-07)
 static NIL: LazyLock<Value> = LazyLock::new(|| rep::build(Kind::List, []));
 
 pub fn nil() -> Value {
@@ -104,6 +109,10 @@ impl Iterator for Iter {
     }
 }
 
+// CR claude for claude: [structure/low] The local Counted iterator duplicates
+// crate::valarray_of, the exact-size wrapper the array and map packages already use.
+// Write the body as Some(crate::valarray_of(len(value)?, Iter::new(value.clone()))) and
+// delete Counted. Found by reading; not run. (collections-str-04)
 pub fn to_array(value: &Value) -> Option<ValArray> {
     /// A list's `left` elements, the count known.
     struct Counted {

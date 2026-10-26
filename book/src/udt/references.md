@@ -137,6 +137,13 @@ References have no order, so `<` and the other orderings refuse them,
 and so does anything that orders or hashes values: map keys, `min`,
 `max`, the sorts and `array::dedup`. `uniq` compares them as `==` does.
 
+<!-- CR claude for claude: [doc-drift/low] The chapter never teaches place references,
+though comparing them is covered above. It should explain that `&a[i]`, `&s.f`, `&t.0`
+and `&m{k}` are a root plus a path, and that a write through `&mut a[1]` patches the
+root. It should also explain that a dynamic key (`&a[i]`) moves with `i`, that a write
+while the address is bottom is dropped, and that `&mut` of a non-place is a fresh cell.
+Add a Places section with an example like the probe. probe:
+design/review-2026-10-26/repro/book-modules-udt-place-refs.gx (book-modules-udt-07) -->
 ## Referencing a Name vs Referencing an Expression
 
 `&` does slightly different things depending on what follows it.
@@ -153,6 +160,13 @@ v <- 7;
 (v, *r)
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] This section splits references into a name
+or a fresh cell and never mentions place references. `&mut a[1]` is not a fresh cell: a
+write through it patches `a` at delivery (design/place_references.md), and the book has
+no page that says so. Add the accessor-chain case (`&a[i]`, `&s.f`, `&t.0`, `&m{k}`: the
+root plus a path, written back into the root, with a dynamic key moving the reference)
+and an example, then rebuild docs/. probe:
+design/review-2026-10-26/repro/x-doc-drift-place-ref-book.gx (x-doc-drift-02) -->
 `&(a + b)` has no binding to name, so it makes a fresh cell that holds the
 expression's value. The cell is updated in the same cycle as the expression, as
 a `let` would be, so a deref sees each new value right away:

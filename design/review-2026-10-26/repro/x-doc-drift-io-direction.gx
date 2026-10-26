@@ -1,0 +1,10 @@
+// x-doc-drift: book/src/stdlib/sys/io.md says writing to stdin "returns an
+// IOError rather than failing to compile" and lists sys::io::Stdio and
+// sys::process::Pipe as stream types.
+// Command: graphix --check design/review-2026-10-26/repro/x-doc-drift-io-direction.gx
+// Expected (per the book): accepted, IOError at run time.
+// Observed: refused at check: "Stdin does not implement Write"; and
+// `let p: sys::io::Stdio = never()` is "undefined type sys::io::Stdio".
+use sys::io::Write;
+let s = sys::io::stdin(null);
+Write::write(s, cast<bytes>([104, 105]))

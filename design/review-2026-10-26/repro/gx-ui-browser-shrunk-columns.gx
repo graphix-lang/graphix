@@ -1,0 +1,27 @@
+// Title: tui::browser freezes and keeps reporting a vanished column after the columns shrink
+// Command: timeout -s KILL 30 graphix --no-cache gx-ui-browser-shrunk-columns.gx | uniq
+// A table listing with 8 columns in a narrow browser, scrolled right with
+// Right(1) until viewport.x passes 2, then the columns drop to col0/col1
+// under the same path. `(structure.columns)[viewport.x ..]$` is an index
+// error, so visible_columns, widths, the header and every cell go bottom:
+// the table stops updating and #selected_path keeps naming row0/col7.
+// Expected: from i=14 (the listing shows [col1, col0]) the selected path
+// names a column the listing has (row0/col1 or row0/col0).
+// Observed: (14 .. 20, 1, "/local/gxui-cols2/row0/col7", ["col1", "col0"])
+use tui::{Tui, browser::{MoveCursor, browser}};
+let n = 8;
+let pubs = array::init(n, |k| [sys::net::publish("/local/gxui-cols2/row0/col[k]", k), sys::net::publish("/local/gxui-cols2/row1/col[k]", k)]);
+let path = sys::time::after_idle(duration:200.ms, "/local/gxui-cols2");
+let sel: [string, null] = never();
+let cur: MoveCursor = never();
+let b: Tui = browser(#size: {width: 24, height: 6}, #cursor: cur, #selected_path: &mut sel, path);
+let fired = 0;
+fired <- b ~ fired + 1;
+let clock = sys::time::timer(duration:300.ms, true);
+let i = 0;
+i <- clock ~ i + 1;
+cur <- select i { x if x >= 3 && x < 10 => i ~ `Right(1), _ => never() };
+n <- select i { 11 => i ~ 2, _ => never() };
+let l = sys::net::list_table("/local/gxui-cols2")$;
+sys::exit(select i { 20 => i ~ 0, _ => never() });
+(i ~ (i, fired, sel, l.columns))

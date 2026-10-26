@@ -202,6 +202,12 @@ val bit_xor: fn<'a: Int + Singleton>(a: 'a, b: 'a) -> 'a;
 /// bitwise complement
 val bit_not: fn<'a: Int>(a: 'a) -> 'a;
 
+// CR claude for claude: [doc-drift/low] "wrapping" here is Rust's wrapping_shl: the
+// shift AMOUNT is taken modulo the bit width, so shl(1, 64) is 1, shl(1, -1) is
+// i64::MIN and shr(u8:128, u8:9) is 64. shr of a signed value is arithmetic (shr(-8, 1)
+// is -4). Say both in the shl and shr docs; "wrapping" alone reads as rotated bits or
+// as shifting out to 0. probe:
+// design/review-2026-10-26/repro/gx-stdlib-shift-amount-masked.gx (gx-stdlib-08)
 /// shift left (wrapping)
 val shl: fn<'a: Int + Singleton>(a: 'a, b: 'a) -> 'a;
 

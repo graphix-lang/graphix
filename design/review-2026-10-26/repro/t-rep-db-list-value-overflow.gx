@@ -1,0 +1,14 @@
+// Title: a db value holding a List of a few hundred elements aborts the runtime
+// (stack overflow in abstract_value::rewrite / rep::map_parts, Forms::Keep).
+// Command:
+//   rm -rf /home/eric/tmp/review-2026-10-26/review/work/t-rep/dbr
+//   timeout -s KILL 120 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-rep-db-list-value-overflow.gx
+// Expected: "done null"
+// Observed: thread 'tokio-rt-worker' has overflowed its stack / fatal runtime error: stack overflow, aborting
+//   (100 elements pass; 300 abort). json::write_str / pack::write_bytes of a 300000-element list pass.
+let db = db::open("/home/eric/tmp/review-2026-10-26/review/work/t-rep/dbr")$;
+let t: db::Tree<string, List<i64>> = db::tree(db, null)$;
+let l = list::from_array(array::init(400, |i| i));
+let r = db::insert(t, "k", l)$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+"done [r]"

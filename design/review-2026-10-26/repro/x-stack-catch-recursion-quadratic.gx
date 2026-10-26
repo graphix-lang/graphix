@@ -1,0 +1,14 @@
+// x-stack: a recursion whose body installs a catch is quadratic in its depth:
+// each activation's Catch::compile calls ErrorHandler::polled_by, whose machine()
+// walks the dynamic scope's whole parent chain (one handler per enclosing activation)
+// looking for a seq machine that is not there.
+// run: timeout -s KILL 170 graphix --no-cache x-stack-catch-recursion-quadratic.gx
+// expected: about as fast as the same recursion without the catch under the
+//   node-walk (--no-fusion: 0.5 s at 20000, 2.4 s at 100000).
+// observed (debug build): 2.5 s at 20000, 51.6 s at 100000, prints 100000.
+let rec f = |n: i64| -> i64 {
+  catch(e) e;
+  select n { 0 => 0, n => 1 + f(n - 1) }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(100000)

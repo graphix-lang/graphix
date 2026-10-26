@@ -1,0 +1,9 @@
+// Title: a field every member of a union has cannot be read unless the
+// members share all their field names (structs) or one arity (tuples).
+// Command: graphix --check design/review-2026-10-26/repro/c-data-map-union-field-read.gx
+// Expected: either 1 (each member has `a`, at sorted index 0 in both), or a
+//   refusal that says the members' field names differ.
+// Observed: refused with "expected struct not [{ a: i64, b: i64 }, { a: i64, c: i64 }]";
+//   `[(i64, i64), (i64, i64, i64)]` .0 likewise says "expected tuple not [..]".
+let f = |s: [{a: i64, b: i64}, {a: i64, c: i64}]| s.a;
+f({a: 1, c: 2})

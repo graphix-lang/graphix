@@ -1,0 +1,13 @@
+// Title: deep_nesting's "nofusion" mode runs with fusion on
+// graphix-shell/tests/deep_nesting.rs passes CFlag::FusionDisabled to
+// ShellBuilder::disable_flags in its "nofusion" mode; no default flag
+// set holds FusionDisabled, so removing it changes nothing and the mode
+// runs fused, as "run" does. This program is the "parens" shape at depth 4:
+// its top-level arithmetic fuses, so a fused run never walks the deep
+// node-walk update the "nofusion" mode exists to exercise.
+// Command: graphix-fuzz run design/review-2026-10-26/repro/shell-deep-nesting-nofusion.gx
+// Expected (for the claim): the JIT run reports fused >= 1.
+// Observed: "fusion: attempted=3 fused=1".
+let z = 1;
+let x = (z + (z + (z + (z + 1))));
+x

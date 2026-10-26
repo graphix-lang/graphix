@@ -1,0 +1,10 @@
+// Title: an out-of-range integer literal in a select pattern is refused without a reason (t-parser-a-06 variant)
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-26/bin/graphix --check design/review-2026-10-26/repro/x-rerun-4-pattern-int-range-note.gx
+// Expected: the note the same literal gets as an expression
+//   ("note: ... `300` is out of the range of u8"), as a pattern's float literal
+//   already gets "a float literal out of its type's range" (finite runs in both).
+// Observed: "Expected whitespaces or =>" with the caret after `u8:`, and no note.
+//   `let a = duration:99999999999999999999.s` is likewise refused with no reason
+//   ("the parser could not continue past this point").
+let a = select 1 { u8:300 => 0, _ => 1 };
+a

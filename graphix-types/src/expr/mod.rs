@@ -1353,6 +1353,16 @@ impl Expr {
 
     /// The value this expression writes when it is a literal: a constant,
     /// or an array, list, map, tuple, struct or variant of literals.
+    // CR claude for eric: [bug/medium] str::parse (fc_parse) promises to read what
+    // Graphix prints, but several values print as text that is no Graphix literal. A
+    // datetime prints `2020-01-01 00:00:00 UTC` (refused even alone), bytes print
+    // `AQI=`, a string holding brackets prints `"a[b]"` (the parser reads an
+    // interpolation), and NaN/inf print as names. So this returns None, and the
+    // fallback cast refuses every collection holding one of them. Decide whether the
+    // printer emits literal syntax inside collections or str::parse learns the printed
+    // forms, then pin `str::parse("[v]") == v` per primitive. probe:
+    // design/review-2026-10-26/repro/t-expr-core-parse-printed-collections.gx
+    // (t-expr-core-01)
     pub fn literal_value(&self) -> Option<Value> {
         fn all(args: &[Expr]) -> Option<LPooled<Vec<Value>>> {
             let mut vals: LPooled<Vec<Value>> = LPooled::take();
@@ -1384,6 +1394,13 @@ impl Expr {
                 for (k, v) in args.iter() {
                     pairs.push((k.literal_value()?, v.literal_value()?))
                 }
+                // CR claude for claude: [bug/low] Map::from_iter keeps the first
+                // binding of a repeated key, but the map literal node and the JIT keep
+                // the last, so `str::parse(r#"{"a" => 1, "a" => 2}"#)` gives `{"a" =>
+                // 1}` where the same literal compiled gives `{"a" => 2}`. Insert the
+                // pairs in order with insert_cow, as node::map does. probe:
+                // design/review-2026-10-26/repro/t-expr-core-parse-dup-map-key.gx
+                // (t-expr-core-02)
                 Some(Value::Map(netidx_value::Map::from_iter(pairs.drain(..))))
             }
             _ => None,
@@ -1561,6 +1578,14 @@ impl Expr {
     }
     /// This node rebuilt with each direct sub-expression replaced by
     /// `f(child)`, in `for_each_child`'s order, with a fresh id.
+    // CR claude for claude: [risk/low] Three spots copy an Expr-holding struct
+    // wholesale: the select arm's `p.clone()` with only `guard` replaced, `SeqStep {
+    // items, ..s.clone() }`, and `other => other.clone()` over ArgKind. for_each_child
+    // reads only guard/items/default(). A new Expr field in Pattern or SeqStep, or a
+    // new ArgKind variant holding one, would compile and be skipped by both walks
+    // alike, and children_agree cannot see it. Destructure Pattern, SeqStep and ArgKind
+    // exhaustively here (and in for_each_child) so the compiler forces each new field
+    // to be handled. Found by reading; not run. (t-expr-core-03)
     pub fn map_children(&self, f: &mut impl FnMut(&Expr) -> Expr) -> Expr {
         use ExprKind::*;
         let a = |f: &mut dyn FnMut(&Expr) -> Expr, x: &Arc<Expr>| Arc::new(f(x));

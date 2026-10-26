@@ -1,0 +1,9 @@
+// c-collection: slots whose callback is a builtin are never charged to the activation budget
+// Command:
+//   GRAPHIX_ACTIVATION_BUDGET=1000 timeout -s KILL 120 graphix --no-cache c-collection-budget-builtin-slots.gx
+// Expected: the runtime stops with the budget error (300000 live slots, budget 1000).
+// Observed: prints 300000 and exits normally; no budget error.
+let n = array::iter([300000]);
+let a = array::init(n, count);
+sys::exit(sys::time::after_idle(duration:100.ms, array::len(a)));
+array::len(a)

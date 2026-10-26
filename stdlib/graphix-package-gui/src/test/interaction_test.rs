@@ -774,6 +774,15 @@ async fn combo_box_keeps_typing_across_equal_options() -> Result<()> {
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     let _ = h.type_text("ban");
+    // CR claude for claude: [style/low] This writes test::opts the long way. It
+    // compiles one Ref, then compiles a fresh one each iteration only to call set and
+    // drop it, a runtime round trip and a ref registration per pass.
+    // GuiTestHarness::set_var does this in one call, and
+    // combo_box_keeps_typing_across_new_options already uses it.
+    // the_tooltip_follows_new_data_under_a_resting_cursor (chart_test) and
+    // a_changed_result_rebuilds_the_root (reconcile_test) repeat the same find_bind_id
+    // + compile_ref + set. Read the value once and call set_var at all three sites.
+    // Found by reading; not run. (tests-gui-b-05)
     let opts = graphix_package_core::testing::find_bind_id(
         &h.inner.f.compiled.env,
         "test::opts",
@@ -1307,6 +1316,17 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/medium] These echo tests judge a rejected send
+// through GuiTestHarness::drain, which calls root.w.idle() after every drain whether or
+// not a widget asked. testing::drain_idle drops GXEvent::Idle. A real window runs
+// idle() only on GXEvent::Idle, which the runtime sends only after a widget's ask_idle
+// -> GXHandle::notify_idle. So these tests still pass if ToggleW, TextInputW or
+// TextEditorW stop calling ask_idle, or if the runtime stops sending GXEvent::Idle,
+// while a rejected toggle or edit in a real window keeps the user's value forever. No
+// test anywhere calls notify_idle or observes GXEvent::Idle. Fix: have the harness call
+// root.w.idle() only when a GXEvent::Idle batch arrives (a hook in drain_idle or
+// GuiTestHarness::drain), as event_loop.rs does on ToGui::Idle. Found by reading; not
+// run. (tests-gui-b-01)
 async fn rejected_toggles_return_to_the_program_value() -> Result<()> {
     for kind in ["checkbox", "toggler"] {
         let code = format_compact!(
@@ -1383,6 +1403,14 @@ async fn continuous_slider_keys_and_wheel_move_one_percent() -> Result<()> {
         );
         let mut h = InteractionHarness::with_viewport(&code, size).await?;
         h.move_cursor(hit);
+        // CR claude for claude: [structure/low] This closure (the f64 first argument of
+        // the Call in msgs) is written out four times in this file: here, in
+        // stepped_slider_keys_wheel_and_drags_share_one_lattice (identical), in
+        // sliders_are_f64_and_continuous and in
+        // continuous_slider_extreme_range_clicks_stay_inside. Add one `fn f64_arg(msgs:
+        // &[Message]) -> f64` beside expect_call in test/mod.rs, built on expect_call
+        // so it also asserts exactly one call, and use it at all four. Found by
+        // reading; not run. (tests-gui-b-04)
         let value = |msgs: &[super::Message]| -> f64 {
             msgs.iter()
                 .find_map(|m| match m {

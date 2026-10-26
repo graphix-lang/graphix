@@ -1,0 +1,13 @@
+// Title: an inferred abstract pattern `Box(p)` over an Any scrutinee types its payload from its use, not the value
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache x-typecheck-patterns-abstract-payload-over-any.gx
+//   (and with --no-fusion)
+// Expected: refused by the check (no scrutinee type gives Box's parameter, as a partial
+//   struct pattern over Any is refused), or p typed Any so `str::len(p)` is refused.
+//   `Box<string> as Box(p)` is the form that works.
+// Observed: --check accepts; p is typed string from `str::len(p)`. With fusion the
+//   runtime panics: "kernel param `p`: runtime I64(5) does not match the compiled String
+//   slot" (a plain panic!, so release builds crash too); --no-fusion prints nothing (the
+//   call on 5 fails). With `p + 1` instead the node-walk tries to parse "s" as an i64.
+type Box<'a> = Abstract<'a>;
+let f = |a: Any| select a { Box(p) => str::len(p), _ => 0 };
+[f(Box(5)), f(Box("abc")), f(3)]

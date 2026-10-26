@@ -272,6 +272,14 @@ to do something special with a value returned to the shell by a script or in the
 REPL. For example the TUI package uses a custom display to take control of the
 terminal and render a terminal UI from the returned value.
 
+<!-- CR claude for claude: [doc-drift/medium] The trait shown here is missing `idle`,
+which `graphix_package::CustomDisplay` requires with no default, so DebugDisplay does
+not compile. `Stop` is `oneshot::Sender<Result<Ended>>`, so the program sends
+`Ok(Ended::Requested)` or `Ok(Ended::Interrupted)`, not `Ok(())`. The example's
+`init_custom` also drops `_e`, which by this page's own rule removes the expression it
+claimed. Show the real trait, document `idle` (answers `GXHandle::notify_idle`), fix the
+Stop wording, and keep the CompExp in a DebugDisplay field. Found by reading; not run.
+(book-modules-udt-04) -->
 ### The `CustomDisplay` Trait
 
 A custom display implements `CustomDisplay<X>`:

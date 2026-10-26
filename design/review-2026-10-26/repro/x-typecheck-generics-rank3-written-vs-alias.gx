@@ -1,0 +1,18 @@
+// Title: calling a function-typed formal whose parameter is a WRITTEN
+// rank-2 type refuses every polymorphic argument ("not polymorphic in 'b"),
+// while the same program with the rank-2 type behind a typedef runs.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-rank3-written-vs-alias.gx
+// Expected: accepted, and the run prints ((1, "s"), (1, "s")): `|x| x`
+//   (or a let-bound generic `id`) is polymorphic in 'b, and the typedef
+//   form `type Id = fn<'b: Any>(x: 'b) -> 'b` (run2 below, alone) is
+//   accepted and prints (1, "s").
+// Observed: refused at `k(|x| x)` in run1: "the argument is not
+//   polymorphic in 'b: its type holds '_7775, a variable of its
+//   environment, which would carry 'b out". Passing a top-level `let id =
+//   |x| x` instead of the literal is refused the same way. Delete run1 and
+//   its call and the program runs.
+type Id = fn<'b: Any>(x: 'b) -> 'b;
+let run1 = |k: fn(f: fn<'b: Any>(x: 'b) -> 'b) -> (i64, string)| k(|x| x);
+let run2 = |k: fn(f: Id) -> (i64, string)| k(|x| x);
+(run1(|f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"))), run2(|f: Id| (f(1), f("s"))))

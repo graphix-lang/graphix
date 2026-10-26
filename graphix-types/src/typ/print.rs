@@ -261,6 +261,14 @@ fn opens_with_bracket(t: &Type) -> bool {
 /// A lone argument that opens with a bracket hugs the brackets it
 /// stands between, as a lone bracketed call argument does: `` `Tag({ ``,
 /// `` `Outer(`Inner([ ``, `Array<{`.
+// CR claude for claude: [bug/low] The type printer lays out a hugged argument flat
+// without reserving the closing brackets that follow it. The expression printer's hug
+// wraps its body in `buf.with_tail(close)`. As a result, `type T = Array<`A({ <62 a's>:
+// i64 })>;` prints as 92 columns at width 90. BindExpr's annotation has the same gap
+// for the ` =` after the type: `let zz: Array<{ <58 a's>: i64, b: i64 }> =` is 92
+// columns. Fix: lay out `t` under `buf.with_tail(close.chars().count(), ..)` here, and
+// the annotation under a tail of 2 in BindExpr::fmt_pretty_inner. probe:
+// design/review-2026-10-26/repro/x-rerun-3-fmt-type-hug-width.sh (x-rerun-3-07)
 fn pretty_lone_arg(
     buf: &mut PrettyBuf,
     open: &str,

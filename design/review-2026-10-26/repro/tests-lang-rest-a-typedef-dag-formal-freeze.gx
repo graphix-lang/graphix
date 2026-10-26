@@ -1,0 +1,23 @@
+// Title: a formal of a recursive typedef DAG freezes in exponential time;
+// typedef_dag_freezes_in_linear_time never freezes one.
+// Command: timeout -s KILL 100 graphix --no-cache --expand tests-lang-rest-a-typedef-dag-formal-freeze.gx
+//   (GRAPHIX_PROFILE=1 attributes the time to phase=Freeze)
+// Expected: built in well under a second, as `--check` (0.1 s) and the same
+//   chain read as `let v: T0 = null; v` (the pinned fixture, 40 levels) are.
+// Observed: 12.2 s for N = 9 levels (11.2 s in Freeze, 7 calls);
+//   N = 6: 0.25 s, 7: 0.63 s, 8: 2.8 s, 9: 12.1 s (about x4.4 a level);
+//   N >= 10 builds fast but `f` de-fuses: "formal `x` has no kernel encoding".
+{
+type T0 = [null, (T1, T1)];
+type T1 = [null, (T2, T2)];
+type T2 = [null, (T3, T3)];
+type T3 = [null, (T4, T4)];
+type T4 = [null, (T5, T5)];
+type T5 = [null, (T6, T6)];
+type T6 = [null, (T7, T7)];
+type T7 = [null, (T8, T8)];
+type T8 = [null, (T9, T9)];
+type T9 = [null, (T0, T0)];
+let f = |x: T0| -> T0 x;
+let v: T0 = null;
+f(v) }

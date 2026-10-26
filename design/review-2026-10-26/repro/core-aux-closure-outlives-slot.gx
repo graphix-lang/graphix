@@ -1,0 +1,17 @@
+// A closure that escaped a collection slot cannot be called from a call site
+// first bound after the slot was deleted: the run-time bind fails with
+// "k not defined" (k is the slot's captured parameter).
+// cmd: timeout -s KILL 20 graphix --no-cache core-aux-closure-outlives-slot.gx
+//      (same with --no-fusion)
+// expected: 50, 60, 70, ... (g0 is |x| x * 10)
+// observed: no value; stderr: "g0(k): binding the callee failed: ... k: k not defined"
+// A call site of g0 bound while the slot was alive keeps working.
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let src = select n { k if k < 3 => [10], _ => [] };
+let gs = array::map(src, |k| |x: i64| -> i64 x * k);
+let g0: fn(x: i64) -> i64 = never();
+g0 <- gs[0]$;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select n { k if k >= 5 => g0(k), _ => never() }

@@ -1,0 +1,37 @@
+// t-seq: a nullary call in a step is lowered as a level read at entry
+// (issue_call: `entry_fire(f(), pc)`), so the step completes on whatever the
+// callee's result cell holds when the step is entered:
+//  - `stale`: a nullary function whose body re-runs at each entry (its timer's
+//    constants fire under View::Step) completes every run after the first with the
+//    previous run's answer: 1, 1, 1, where the unary spelling `g(tt)` gives 1, 2, 3.
+//  - `nullary`: a reload written as a nullary function returns the first run's
+//    contents forever while the file changes (inline: versions 1, 2, 3).
+//  - variant: when the nullary call is not the seq's first step,
+//    `seq t { let n = str::len(path); let a = load()$; a }`, no run ever completes.
+// Command:
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-seq-nullary-call-level.gx
+// Expected (seq_blocks.md §5: completion is a FIRED production after the step's
+// entry; a lambda instance's cell standing from the previous run is not one):
+//   stale: 1, 2, 3. nullary: the same answer as the first-step and later-step forms.
+// Observed: stale: 1 three times; nullary: version 1 three times. (Same with --no-fusion.)
+let path = "/home/eric/tmp/review-2026-10-26/review/work/t-seq/nullary.txt";
+let load = || sys::fs::read_all(path);
+let w = sys::time::timer(duration:100.ms, 3);
+let k = 0;
+k <- w ~ k + 1;
+let wrote = sys::fs::write_all(#path: path, "version [k]");
+let t = sys::time::timer(duration:100.ms, 3);
+let tt = sys::time::after_idle(duration:30.ms, t);
+let r = seq tt { let a = load()$; a };
+let r2 = seq tt { let a = sys::fs::read_all(path)$; a };
+println("nullary: [r]");
+println("inline: [r2]");
+let runs = 0;
+let f = || sys::time::timer(duration:20.ms, false) ~ runs;
+let g = |u| sys::time::timer(duration:20.ms, false) ~ runs;
+let r3 = seq tt { runs <- runs + 1; let a = f(); a };
+let r4 = seq tt { let a = g(tt); a };
+println("stale: [r3]");
+println("unary: [r4]");
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+0

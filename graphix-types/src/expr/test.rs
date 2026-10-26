@@ -161,6 +161,26 @@ fn comments() -> impl Strategy<Value = Comments> {
 /// The `//` comment lines and `#[..]` attributes an expression can carry.
 /// Comment text must not open with `/` (that reads back as `///`). `None`
 /// when there are none of either.
+// CR claude for claude: [test-gap/medium] This never sets `eol` or `below`, and
+// format.rs has no end-of-line or below case, so no test checks how the printer writes
+// them (`write_eol`, `item_sep`, `item_end`, `trails`). Removing either write from
+// `item_sep`/`item_end` passes the suite; a comment below a trailing `;` is already
+// refused in the field (see the CR at `item_sep`). Generate `eol` on list items and
+// `below` on a list's last item, and add fixed format cases per list kind, with and
+// without a trailing separator. Found by reading; not run. (x-formatter-02)
+// CR claude for claude: [test-gap/medium] No strategy makes `Decorations::eol` or
+// `below`, and `check_dec` ignores both. So the round-trip, pack and tree-sitter
+// proptests never print or parse an end-of-line comment or one below a list's last
+// item. `item_sep`, `item_end`, `trail` and `commented` are pinned only by a few parser
+// unit tests, which missed that a comment below a statement before a trailing `;` is
+// never printed (see the CR on `item_sep`). Fix: give list items (statements, arms,
+// fields, arguments, elements) an optional eol and the last one optional below lines,
+// including before `do_block`'s trailing NoOp, and compare both in `check_dec`. Also,
+// five of six decorated positions get a decoration here, and one anywhere below a node
+// makes it unprintable flat. So flat layouts of selects, blocks and structs almost
+// never run in `expr_pp_round_trip`. Weight `None` up (e.g. 4 to 1). Found by reading;
+// the bug it misses was run:
+// design/review-2026-10-26/repro/tests-expr-fmt-trailing-semi-below.gx (tests-expr-04)
 fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
     (collection::vec(comment(), 0..3), collection::vec(attr(), 0..2)).prop_map(
         |(comments, attrs)| {
@@ -400,6 +420,14 @@ fn str_form() -> impl Strategy<Value = StrForm> {
 
 /// The delimiters of every string in `e`, in order: what printing as
 /// written must keep, an interpolation's text told from its splices.
+// CR claude for claude: [test-gap/low] Only expression strings are collected here, and
+// `check_structure_pattern` ignores a `Literal`'s `WrittenForm`. So the round-trip
+// proptests pass even if the pattern printer ignores a string pattern's written
+// delimiters, for example if `StructurePattern`'s Display wrote `Literal(v)` for
+// strings. Fix: collect pattern string literals too (walk binds, lambda args, select
+// arms and a seq `let` trigger's pattern, as `format::Ornaments::pattern` does), and
+// apply `constant`'s CRLF rule in `structure_pattern`'s literal leaf. Found by reading;
+// not run. (tests-expr-07)
 fn str_forms(e: &Expr, out: &mut Vec<StrForm>) {
     if let ExprKind::Constant(Value::String(_)) | ExprKind::StringInterpolate { .. } =
         &e.kind
@@ -1587,6 +1615,16 @@ fn add_parens(mut e: Expr) -> Expr {
     }
 }
 
+// CR claude for claude: [test-gap/low] Binary operators are generated only here, over
+// operands from this strategy alone. So no generated tree has `?`/`$` over an operator
+// or prefix form, or a lambda (or an operator ending in one) as an operand.
+// `printer_parenthesizes_unparenthesized_trees` therefore never tests `print::suffixed`
+// or the lambda case of `print::under`. And `under` is wrong without written parens:
+// `BinOp(+, BinOp(+, a, |x| x), b)` prints `a + |x| x + b`, which reads back as a
+// lambda over `x + b`; a lone lambda left operand misprints the same way. Fix: add a
+// `qop!` arm and a lambda leaf here; have `add_parens` parenthesize what those need;
+// and make `under` parenthesize an operand that ends in a lambda unless it is the
+// operator's last. Found by reading; not run. (tests-expr-05)
 fn arithexpr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![constant(), reference()];
     leaf.prop_recursive(5, 20, 10, |inner| {
@@ -2700,6 +2738,13 @@ fn ts_list_closer_parses() {
 /// What the parser takes at a file's head, between its tokens and in a
 /// pattern, tree-sitter takes too.
 #[test]
+// CR claude for claude: [test-gap/low] These sources are asserted against tree-sitter
+// only, so the claim in the test's name is never checked. `val x: i64; // c\n/// d\nval
+// y: i64` is refused by the parser ("a comment stands on a line of its own"; an
+// interface takes no end-of-line comment), yet it stays in this list. Fix: parse each
+// source with `parser::parse` or `parse_sig` too, assert the parser's refusals in
+// `ts_refuses_what_the_parser_does`, and drop or move that entry. probe:
+// design/review-2026-10-26/repro/tests-expr-gxi-eol-comment.gxi (tests-expr-06)
 fn ts_accepts_what_the_parser_does() {
     use tree_sitter_compat::find_probe_error;
     const SRCS: &[&str] = &[

@@ -1,0 +1,12 @@
+// Title: book/src/core/select.md says a new value read by a guard makes the
+//   select produce; only a CONSULTED guard does (CLAUDE.md, organic firing).
+// Command: timeout -s KILL 5 graphix --no-cache design/review-2026-10-26/repro/book-core-unconsulted-guard.gx
+// Expected per the book: "zero" printed four times (once, then at each of
+//   the three updates of g, read by the second arm's guard)
+// Observed: "zero" once (the first arm claims x = 0, so the guard is never
+//   consulted), which is the intended semantics.
+let x = 0;
+let g = 0;
+g <- sys::time::timer(duration:100.ms, 3) ~ g + 1;
+sys::exit(sys::time::after_idle(duration:600.ms, 0));
+select x { 0 => "zero", n if n > g => "big", _ => "small" }

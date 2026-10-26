@@ -1,0 +1,20 @@
+// x-async-io: a spawn whose arm sleeps before its reply lands starts the
+// process and loses its handle (an orphan child, never killed or waited)
+// Run: timeout -s KILL 30 graphix --no-cache x-async-io-spawn-reply-lost.gx; pgrep -a sleep | grep '31[.]4159'
+// Expected: at the wake `pid N` is shown (or no process is left running).
+// Observed: nothing is shown and `sleep 31.4159` keeps running after graphix exits
+// (kill it by hand). Same class: db::pop_min (x-async-io-db-pop-reply-lost.gx).
+use sys::process::{spawn, options, stdio};
+let x: [`A, `B] = `A;
+x <- `B;
+let back = sys::time::timer(duration:200.ms, false);
+x <- back ~ `A;
+let r = select x {
+  `A => spawn(options(#args: ["31.4159"], #stdio: stdio(#stdout: `Pipe), "sleep")),
+  `B => never()
+};
+let shown = select r { error as e => "err", c => "pid [c.pid]" };
+println("x=[x]");
+println(shown);
+sys::exit(sys::time::after_idle(duration:600.ms, back ~ 0));
+shown

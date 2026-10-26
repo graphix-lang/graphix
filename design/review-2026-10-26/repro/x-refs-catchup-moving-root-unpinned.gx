@@ -1,0 +1,34 @@
+// A place reference rooted at a dereference (`&mut *r`) pins only the binding it
+// named at its first publication: ByRef::update makes its Keep once
+// (keep.get_or_insert_with) with that root as the target, and a retarget keeps
+// the old pin. Here `&mut *r` first names x, then y (a slot-local let); its site
+// is deleted at c = 4 with a copy kept in `outer`; y's own scope goes at c = 5
+// and the last other reference to y at c = 6, so y is released while `o` still
+// names it, and the write at c = 8 is dropped.
+// command: timeout -s KILL 10 graphix --no-cache x-refs-catchup-moving-root-unpinned.gx
+// expected: the write of 80 lands on y: (8, 30, ..) then (9, 80, 1, 2) ...
+//           (a reference keeps the binding it names alive while any copy lives)
+// observed: "a write through a reference ... was dropped: its root has no value"
+//           after (8, 30, 1, 2); *o stays 30 (jit and --no-fusion alike)
+let clk = sys::time::timer(duration:20.ms, true);
+let c = 0;
+c <- clk ~ c + 1;
+let x = 1;
+let z = 2;
+let holder: [&mut i64, null] = null;
+let rs = array::map(select c { k if k < 5 => [0], _ => [] }, |_| {
+  let y = 5;
+  holder <- &mut y;
+  y
+});
+holder <- select c { 6 => c ~ &mut z, _ => never() };
+let r = select c { k if k < 2 => &mut x, _ => holder$ };
+let outer: [&mut i64, null] = null;
+let ss = array::map(select c { k if k < 4 => [0], _ => [] }, |_| {
+  outer <- &mut *r;
+  0
+});
+let o = outer$;
+*o <- select c { 3 => c ~ 30, 8 => c ~ 80, _ => never() };
+sys::exit(select c { 11 => c ~ 0, _ => never() });
+(c, c ~ *o, x, z)

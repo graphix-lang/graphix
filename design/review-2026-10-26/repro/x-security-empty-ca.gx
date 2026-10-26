@@ -1,0 +1,10 @@
+// Title: a #ca_cert holding no certificate is accepted: the client trusts
+// nothing and every https request fails later as an unknown issuer.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/x-security-empty-ca.gx
+// Expected: client: error:`HTTPError("invalid ca_cert PEM: no certificate ...")
+// Observed: client: built
+// (sys::tls::connect's client_config takes the same bytes as an empty root
+// store: rustls_pemfile::certs yields nothing for text with no PEM block.)
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let c = http::client(#ca_cert: buffer::from_string("this is not a certificate"), null);
+println("client: [select c { error as e => "[e]", _ => "built" }]")

@@ -28,6 +28,11 @@ type DirEntry = {
     kind: FileType
 };
 
+// CR claude for claude: [doc-drift/low] Nothing in the interface says what each mode
+// does, and two of them destroy data. In FileOpenEv, `Write is write+create+truncate,
+// `Create is read+write+create+truncate, and `ReadWrite neither creates nor truncates.
+// Someone who opens an existing file with `Write to patch it after a seek loses its
+// contents. Document each mode here. Found by reading; not run. (gx-stdlib-09)
 type Mode = [`Read, `Write, `Append, `ReadWrite, `Create, `CreateNew];
 type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
 

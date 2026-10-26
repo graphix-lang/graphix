@@ -204,6 +204,13 @@ pub fn record_self_blocks(n: i64) {
 /// `GRAPHIX_EVAL_THREADS`, else one worker a core: the workers an
 /// evaluation pool is built with.
 pub fn eval_threads() -> usize {
+    // CR claude for claude: [risk/low] A value this cannot use (`abc`, `0`, `-2`) falls
+    // back to one worker per core without a word, and cost.rs reads GRAPHIX_PAR_T the
+    // same way. GRAPHIX_PAR and GRAPHIX_PRUNE report a bad value through env_mode, and
+    // the stack and activation budgets report theirs, so a mistyped thread count or
+    // threshold silently benchmarks the default. Read both through a reporting count
+    // helper beside env_mode, which GRAPHIX_ACTIVATION_BUDGET can share. probe:
+    // design/review-2026-10-26/repro/t-misc-eval-threads-typo.sh (t-misc-02)
     static THREADS: LazyLock<usize> = LazyLock::new(|| {
         std::env::var("GRAPHIX_EVAL_THREADS")
             .ok()
@@ -452,6 +459,20 @@ impl Control {
                         log::warn!("the evaluation pool: {threads} workers: {e}");
                         threads /= 2
                     }
+                    // CR claude for claude: [bug/medium] The halving above does not
+                    // degrade. A failed rayon build only signals its spawned threads to
+                    // terminate, and they still count when the next, smaller build is
+                    // tried at once. So under a thread limit every retry fails down to
+                    // one worker, this panic fires, and the program dies at startup
+                    // ('loading initial modules: channel closed'). cost::calibrate
+                    // makes it worse: it builds a second all-core pool at the same
+                    // moment and `.expect`s it, which panicked the calibration thread
+                    // in the same runs. Wait for the failed build's threads to exit, or
+                    // size the pool from the threads that can actually be spawned. Run
+                    // parts inline rather than panicking here. Calibrate on a few
+                    // workers and leave the calibration unset when that fails. probe:
+                    // design/review-2026-10-26/repro/x-perf-runtime-thread-limit.sh
+                    // (x-perf-runtime-04)
                     Err(e) => panic!("the evaluation pool: {e}"),
                 }
             }

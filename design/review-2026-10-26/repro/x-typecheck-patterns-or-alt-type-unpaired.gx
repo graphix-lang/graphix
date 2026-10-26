@@ -1,0 +1,15 @@
+// Title: an or-arm passes on one alternative's types and binds by another's structure: an i64 bind holds a string
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache x-typecheck-patterns-or-alt-type-unpaired.gx
+//   (and with --no-fusion)
+// Expected: refused (x is position 0 of a tuple in one alternative and position 1 in the
+//   other, so its type is the union of both positions, and `x + 1` needs one number), or
+//   each alternative matched by its own types and structure together, so ("s", 5) binds
+//   x = 5 and prints [6, 6].
+// Observed: --check accepts. The arm's type test passes ("s", 5) on the second
+//   alternative's types (_, i64), and the binds come from the first alternative whose
+//   structure matches, (x, _), so x = "s" under type i64. With fusion the runtime panics
+//   "kernel param `x`: runtime String("s") does not match the compiled Scalar(I64) slot";
+//   the node-walk logs an arith error parsing "s" as an i64. The same arm over `a: Any`, or
+//   `` `A(x, _) | `A(_, x) ``, does the same.
+let f = |a| select a { (x, _) | (_, x) => x + 1 };
+[f(("s", 5)), f((5, "s"))]

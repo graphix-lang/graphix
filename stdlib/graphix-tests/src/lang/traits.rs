@@ -171,6 +171,15 @@ run!(
 );
 
 // A union member without an implementation is refused at the call.
+// CR claude for claude: [test-gap/low] Nothing pins the refusal of a union dispatch
+// over members that share a runtime form (Type::dispatch_collision): no fixture
+// produces "a Show call over .. can't tell .." or its open-member "annotate it"
+// variant. Dropping the check from trait_contains would let a dispatch over two
+// function types compile to a select that cannot tell them apart. Add refused fixtures
+// beside this one: impls for fn(x: i64) -> i64 and fn(x: string) -> i64 with a dispatch
+// over their union, and the open-member case. probe:
+// design/review-2026-10-26/repro/tests-fusion-traits-union-dispatch-same-form.gx
+// (tests-fusion-traits-05)
 run!(
     trait_union_member_missing_refused,
     refused("string does not implement Show"),

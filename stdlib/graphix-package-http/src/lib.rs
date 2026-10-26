@@ -458,6 +458,17 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
         if let Some([Value::String(k), Value::String(v)]) =
             rep::read_tuple(h).map(rep::Parts::elems)
         {
+            // CR claude for claude: [bug/medium] A content-length the handler returns
+            // is passed to hyper next to a Full body of another length. hyper checks
+            // that they match only in debug builds, where the connection task panics.
+            // In release it writes the handler's value and then the real body, so the
+            // extra bytes are read as the next response on a keep-alive connection
+            // (response splitting). A handler that forwards an upstream response's
+            // headers hits this whenever lossy UTF-8 decoding changes the body's
+            // length. Fix: drop content-length here (hyper sets it from the body), or
+            // answer 500 on a mismatch. probe:
+            // design/review-2026-10-26/repro/x-security-http-content-length.sh
+            // (x-security-04)
             response = response.header(&**k, &**v);
         }
     }
@@ -940,6 +951,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
         self.stop();
+        // CR claude for claude: [bug/medium] mod.gxi promises that a request the server
+        // drops because it sleeps or is deleted is answered 500. But abort_all here,
+        // and in Listening::drop on delete, kills each connection task before its
+        // handle_http_request sees the dropped reply sender, so the client gets a
+        // closed connection with no status line. Drop the reply senders first, then ask
+        // each connection to close gracefully (a per-Listening shutdown signal that
+        // serve_connection selects on to call hyper's graceful_shutdown, awaited with a
+        // short bound), and keep abort_all only as the fallback. Otherwise change the
+        // gxi to say what happens. probe:
+        // design/review-2026-10-26/repro/http-sqlite-db1-serve-sleep-no-500.sh
+        // (http-sqlite-db1-02)
         if let Some(l) = &self.listening {
             l.conns.0.lock().abort_all();
         }

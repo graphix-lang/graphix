@@ -1,0 +1,13 @@
+// x-doc-drift: book/src/udt/references.md ("Referencing a Name vs
+// Referencing an Expression") says `&` of anything but a binding makes a
+// fresh cell holding the expression's value; it never mentions place
+// references, so `&mut a[1]` reads as a cell detached from `a`.
+// Command: graphix --no-cache design/review-2026-10-26/repro/x-doc-drift-place-ref-book.gx
+// Expected (per the book): [1, 2] only (the write lands in a fresh cell).
+// Observed (per CLAUDE.md/design/place_references.md, the intended rule):
+// [1, 2] then [1, 5]: the write patches the root `a`.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let a = [1, 2];
+let r = &mut a[1];
+*r <- 5;
+a

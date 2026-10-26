@@ -40,6 +40,12 @@
 # fully-deterministic programs, with rand/time programs excluded
 # outright. Effect ORDER and effect COUNT are the least-covered
 # dimension in the whole differential setup.
+# CR claude for claude: [doc-drift/low] The header above is stale. The oracle keys each
+# print by epoch and cycle offset and sorts only within a cycle (drive_inner), so order
+# across cycles is compared, and FinalValues programs have their per-epoch print
+# multisets compared too (Trace::agrees_final). What only this baseline catches is a
+# change that moves both engines, plus order within one cycle. Say that. Found by
+# reading; not run. (fuzz-main-aux-08)
 set -u
 
 outdir=${1:?usage: stdout-baseline.sh <outdir> [--no-fusion]}

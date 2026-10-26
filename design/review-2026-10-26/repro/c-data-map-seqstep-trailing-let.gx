@@ -1,0 +1,18 @@
+// Title: a value block that ends in a let is refused everywhere except
+//        nested anywhere inside a seq step, where CFlag::SeqStep exempts it;
+//        there it is accepted and the step never completes.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --check \
+//          design/review-2026-10-26/repro/c-data-map-seqstep-trailing-let.gx
+//          (and the same without --check, --no-cache)
+// Expected: refused at `let b = a + 1`: "a block's value is its last statement,
+//           and a let has none: end the block with an expression" (what the
+//           same tuple outside a seq gets).
+// Observed: --check passes; the run prints nothing (r never produces) and
+//           exits 0 at the idle exit.
+let t = 1;
+let r = seq t {
+  let v = (1, { let a = 1; let b = a + 1 });
+  v
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

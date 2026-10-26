@@ -37,6 +37,17 @@ impl EvalCachedAsync for IoReadEv {
     type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_io_read";
+    // CR claude for eric: [bug/medium] `read` is one `read_buf`, which is cancel-safe:
+    // dropped before it completes, it has read nothing. Declaring it not cancel-safe
+    // lets a read in a sleeping arm keep the reader lock and take the next chunk. Only
+    // that arm's wake answers it, while the selected arm's read of the same stream
+    // waits behind. With `A => read(out, 100), `B => read(out, 100)` and `B selected,
+    // the bytes go to `A at its wake, or are lost if it never wakes. read_exact and
+    // read_all accumulate and should stay not cancel-safe. Decide whether `read` aborts
+    // at a sleep. It is safe once completed replies are kept (see
+    // EvalCachedAsync::CANCEL_SAFE). probe:
+    // design/review-2026-10-26/repro/x-async-io-read-diverted-to-sleeping-arm.gx
+    // (x-async-io-05)
     const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -306,6 +317,15 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         // One reader per stream: a re-delivery of the same handle is
         // ignored (the reader consumes it); another stream replaces the
         // reader, under a fresh id so the old one's lines land nowhere.
+        // CR claude for eric: [bug/medium] A re-delivered handle is ignored even when
+        // the reader that held it has finished: at EOF, on an error, or stopped by a
+        // seek or a TLS upgrade (stop_lines). So a site can never read lines from that
+        // handle again. Seeking a file back to 0 and re-delivering it, or re-triggering
+        // after appended lines, yields nothing. The reason in the comment (two readers
+        // racing) does not apply to a finished reader. Rule needed: either restart when
+        // the old task is finished (test the AbortHandle's is_finished and remint the
+        // var), or document in io.gxi that a site reads a handle once. probe:
+        // design/review-2026-10-26/repro/sys-io-lines-dead-after-seek.gx (sys-io-03)
         if let Some(tv) = seam_value(from[0].update(ctx))
             && tv.is_fired()
             && let Some(stream) = stream_of(&tv.value_cloned())
@@ -418,6 +438,14 @@ impl EvalCachedAsync for IoWriteEv {
         Some((get_stream(cached, 0)?, cached.get::<Bytes>(1)?))
     }
 
+    // CR claude for claude: [structure/low] This and five sibling evals (read,
+    // read_exact, read_all, write_exact, flush) repeat the half-lock / "stream
+    // unavailable" preamble. The read copies run under Halves::until_closed; the write
+    // and flush copies do not. Halves::close awaits the `w` lock, so a close issued
+    // while a write is blocked on a peer that does not read never answers, while a
+    // blocked read is cut off with BrokenPipe. Add one Halves method per half that
+    // locks it, maps a missing half to the IOError and runs the call under
+    // until_closed, and use it in all six. Found by reading; not run. (x-dup-04)
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let mut guard = stream.writer().await;

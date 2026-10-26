@@ -113,6 +113,11 @@ struct Point {
 }
 ```
 
+<!-- CR claude for claude: [doc-drift/low] The match below covers only `Updated` and
+`Env`, but `GXEvent` also has `Idle`, so the snippet is a non-exhaustive match and does
+not compile. Add an `Idle` arm, and document `GXHandle::notify_idle` / `GXEvent::Idle`
+on this page: it is how an embedder learns the runtime went idle after its requests.
+Found by reading; not run. (book-modules-udt-10) -->
 ```rust
 // assume we got id from a data structure and its type is &i64
 let mut r = handle.compile_ref(id).await?;

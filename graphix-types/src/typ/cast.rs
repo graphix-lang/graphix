@@ -63,6 +63,15 @@ type Cast = std::result::Result<Option<Value>, CastFail>;
 /// the member whose outer form `v` has, or the kind of collection all
 /// such members are (a list, an array, a tuple and a struct share
 /// `Value::Array`); `None` when they differ.
+// CR claude for claude: [perf/medium] Since kind markers, a list is told apart by its
+// marker (list::is_list), so the static source type decides nothing. Its only effect is
+// the 'not a list' refusal when the type says List and the value is not one, which a
+// marked list never triggers. Yet src_head clones and expands the type at every node of
+// the value: casting a 200k-element Array<P> of a named struct takes ~56 ms with a
+// typed source and ~34 ms from Any. Delete src_head, the src parameter and the two
+// refusals, and fold cast_from into cast_value (TypeCast::update and the lowering cast
+// pseudo-site both call it). probe:
+// design/review-2026-10-26/repro/t-cast-setops-src-head-cost.sh (t-cast-setops-07)
 fn src_head(src: Option<&Type>, env: &Env, v: &Value) -> Option<Type> {
     let mut cur = src?.clone();
     loop {
@@ -364,6 +373,18 @@ impl Type {
     pub fn holds_ref(&self, env: &Env) -> bool {
         self.holds(env, &mut Verdicts::new(), &|t| match t {
             Type::ByRef(..) => Some(true),
+            // CR claude for claude: [bug/medium] A cast does take a Graphix abstract
+            // apart when its Cast impl leaves from_value to the representation:
+            // cast_inner's CastHook::Representation casts the payload at the target's
+            // params. So with type Box<'a> = Abstract<'a> and impl<'a> Cast for Box<'a>
+            // {}, cast<Box<Any>>(Box(&v)) passes this check and carries the reference
+            // into Any. json::write_str of the result is then accepted by the check
+            // that refuses Box<&i64> itself, and fails at run time with JsonErr("a
+            // reference is not data"). Stop only at an abstract without a Cast impl
+            // (`!env.casts(id)`), as data_holds does, and walk the params otherwise.
+            // probe:
+            // design/review-2026-10-26/repro/t-cast-setops-abstract-ref-escape.gx
+            // (t-cast-setops-04)
             Type::Fn(_) | Type::Abstract { .. } => Some(false),
             _ => None,
         })
@@ -560,6 +581,20 @@ impl Type {
                     }
                 }
                 t => {
+                    // CR claude for claude: [bug/high] walked is keyed by node address,
+                    // but at depth 0 this walk also visits temporaries: app_filled in
+                    // the App arm, a TVar bound to a filled App (with_deref), and
+                    // lookup_ref when def_key is None. Each is freed after its walk,
+                    // and the next temporary of the same size gets the same address, so
+                    // it is skipped unwalked. Every holds-based predicate (holds_ref,
+                    // data_holds, holds_fn, reaches_out, holds_abstract, ...) can
+                    // therefore answer by allocator luck. In the probe,
+                    // cast<(Array<i64>, Array<Any>)>((map(c, |x| 1), map(c, |x| y)))
+                    // with y = &v returns the references instead of InvalidCast. Keep
+                    // every temporary the walk builds alive in Verdicts until the walk
+                    // ends, or bump depth while walking one, and add a pin. probe:
+                    // design/review-2026-10-26/repro/t-cast-setops-walked-addr-reuse.gx
+                    // (t-cast-setops-01)
                     let node = super::node_addr(t).filter(|_| seen.depth == 0);
                     if node.is_some_and(|n| seen.walked.contains(&n)) {
                         return false;
@@ -985,6 +1020,18 @@ impl Type {
                         })
                     }
                     // a payload written without its tag, as json may carry it
+                    // CR claude for eric: [bug/medium] This tagless read takes any
+                    // array of the payload's length, including another variant's
+                    // written form. json::write_str(`B(2)) is ["B",2], and reading it
+                    // into `A(string, i64) gives `A("B", 2) instead of InvalidCast. An
+                    // untagged [1, 2] read into [`A(i64, i64), `B(i64, i64)] becomes
+                    // `A(1, 2), with nothing to choose the member. No writer here emits
+                    // a tagless payload (rep::strip and core's shape always write the
+                    // tag), so the arm only turns a mismatch into a wrong value. Delete
+                    // it, or admit it only for a lone variant target whose data does
+                    // not open with a string. probe:
+                    // design/review-2026-10-26/repro/x-kind-markers-tagless-variant-read.gx
+                    // (x-kind-markers-03)
                     (_, Some(elts)) if elts.len() == ts.len() => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for (i, el) in elts.iter().enumerate() {
@@ -1044,6 +1091,18 @@ impl Type {
             // part of it (a fraction, a sub-second part, a rounding).
             Type::Set(ts) => {
                 let outer = cx.exact;
+                // CR claude for claude: [bug/high] A failing union read is exponential
+                // in the data's depth. This inexact round re-runs every nested union in
+                // both rounds. cast_member also tries a tuple or struct member in its
+                // rank pass and then again in its own-class pass, and nothing remembers
+                // a failure. With type J = [i64, (J, i64), Array<J>], json::read of a
+                // 41-byte document 10 brackets deep takes 6.6 s on the runtime thread
+                // (x3.2 per level), so external data can hang a program. Memoize failed
+                // (member node, value address, exact) attempts in CastCx, skip in the
+                // own-class pass what the rank pass tried, and pin a deep failing read.
+                // probe:
+                // design/review-2026-10-26/repro/t-cast-setops-union-cast-exponential.gx
+                // (t-cast-setops-02)
                 let rounds: &[bool] = if outer { &[true] } else { &[true, false] };
                 let mut failed = None;
                 for exact in rounds {
@@ -1075,6 +1134,18 @@ impl Type {
     ) -> Cast {
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
+        // CR claude for eric: [bug/medium] The data a writer emits does not say which
+        // union member it came from, and this order reads it back as the wrong one. A
+        // tuple ("B", 7) of [(string, i64), `B(i64)] comes back from pack, json and db
+        // as `B(7), against the stated rule that unmarked data reads as a tuple of its
+        // length first. A List of [List<i64>, (i64, i64)] comes back from pack as a
+        // tuple. A Map of [Map<string, i64>, Array<(string, i64)>] comes back from json
+        // as the pairs. The checker accepts these unions, so a reloaded state takes the
+        // wrong select arm. Decide one rule: refuse, under Data/Concrete, unions whose
+        // members share a data form (as Discernible refuses shared runtime forms), or
+        // have pack and db keep kinds, since only Graphix reads them back. probe:
+        // design/review-2026-10-26/repro/x-kind-markers-tuple-reads-back-as-variant.gx
+        // (x-kind-markers-02)
         let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
         if tagged.peek().is_some() {
             let mut read = Err(None);
@@ -1093,6 +1164,27 @@ impl Type {
             };
         }
         // a writer wrote the tuple or the struct the data reads back as
+        // CR claude for claude: [bug/medium] This rank, and the tagged pass above it,
+        // run before the inhabits check even when the cast's source is statically an
+        // Array. So cast<[(i64, i64), Array<i64>]>(a) with a: Array<i64> = [1, 2]
+        // returns the tuple (1, 2), and an Array<string> ["B", "x"] cast to
+        // [`B(string), Array<string>] becomes `B("x"). That contradicts the Type::Set
+        // comment ('a member the value already inhabits wins'). The rank exists for
+        // writer data. Skip both passes when src_head(src) is an Array or List, and
+        // keep them for a None/Any source. probe:
+        // design/review-2026-10-26/repro/x-kind-markers-cast-array-becomes-tuple.gx
+        // (x-kind-markers-04)
+        // CR claude for eric: [bug/medium] The rank pass takes the first same-length
+        // tuple (then struct) that casts at all, including by printing a number into a
+        // string, ahead of a member the data reads without leaving its class. With T =
+        // [List<i64>, (i64, string), Array<[i64, f64]>], json::write_str of [[<1, 2>],
+        // [1, 2.5]] reads back as [(1, "2"), (1, "2.5")], and an Array<i64> value cast
+        // to [Array<i64>, (i64, i64)] becomes a tuple. The Set arm's 'a member the
+        // value already inhabits wins' and this function's doc both claim otherwise.
+        // Should the tuple and struct rank only win when no element leaves its class,
+        // with the comments updated to the order chosen? probe:
+        // design/review-2026-10-26/repro/t-cast-setops-tuple-rank-cross-class.gx
+        // (t-cast-setops-06)
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
         {
@@ -1140,6 +1232,14 @@ impl Type {
         self.cast_value_int(env, Some(src), v)
     }
 
+    // CR claude for claude: [bug/medium] The cast recurses once per nesting level of
+    // foreign data, with no limit, and each level costs 10-20 KB of stacker stack in a
+    // debug build. pack::read of 1.2 MB of crafted bytes into `type N = Array<N>` runs
+    // past 6 GB in half a second. json and toml limit nesting while parsing, but pack,
+    // netidx values (subscribe, write, rpc) and db values reach this cast unbounded.
+    // Fix: count depth in CastCx and refuse past the json reader's MAX_DEPTH with an
+    // InvalidCast. probe: design/review-2026-10-26/repro/x-security-pack-deep-cast.sh
+    // (x-security-03)
     fn cast_value_int(&self, env: &Env, src: Option<&Type>, v: Value) -> Value {
         let mut cx = CastCx {
             hist: LPooled::take(),
@@ -1421,6 +1521,14 @@ impl Type {
 /// shape (`arr_overlap`). A typedef is expanded once, whatever its
 /// parameters: a non-regular one's grow at every level, and what they
 /// hold is walked at the first.
+// CR claude for claude: [perf/medium] `seen` is only the path, so a typedef that names
+// the next one twice (`type T0 = [null, (T1, T1)]`, ...) is walked once per path,
+// 2^depth. This runs at a select's first consult through shallow_discriminant, on the
+// runtime path with or without fusion: a select over T0 at depth 22 stalls its first
+// cycle 2.6 s, and 10.5 s at 24, while --check takes 0.1 s. Keep a set of refs already
+// found collision-free (key plus params), as Type::holds now does, so a shared node is
+// walked once. probe: design/review-2026-10-26/repro/x-rerun-5-select-dag-shallow.gx
+// (x-rerun-5-01)
 fn shapes_collide(t: &Type, env: &Env, seen: &mut LPooled<Vec<usize>>) -> bool {
     ensure_sufficient(|| match t {
         Type::Ref(tr) => {
@@ -1625,8 +1733,28 @@ fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
 const SHARED_PRIMS: BitFlags<Typ> = make_bitflags!(Typ::{Map | Error | Array});
 
 /// Whether a value of `t` may also be a value of a type `t` doesn't hold.
+// CR claude for claude: [bug/medium] Every abstract answers false here. A Rust-backed
+// one with parameters carries only its id, though, so its other instantiations share
+// its form (rep_collision says so for a written pair). As a result `|x: ['a,
+// db::Tree<string, i64>]| select x { db::Tree<string, i64> as t => "i64 tree", v =>
+// "other" }` is not refused for its open member, and a Tree<string, string> passed as
+// 'a takes the first arm. Answer true for a parameterized abstract with no
+// abstract_reps entry, and pin it in a select and in a union dispatch. probe:
+// design/review-2026-10-26/repro/x-typecheck-patterns-rust-abstract-open-member.gx
+// (x-typecheck-patterns-04)
 fn shares_form(env: &Env, t: &Type) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
+        // CR claude for claude: [bug/high] A Rust-backed abstract's values carry only
+        // its id, so another instantiation of it shares its form, as rep_collision's
+        // Abstract arm already says. Answering false here makes open_collision accept
+        // an open member beside one. `|x: [db::Tree<string, i64>, 'a]| select x {
+        // Tree<string, i64> as t => db::insert(t, "k", 42)$, _ => null }` is accepted,
+        // and called with a Tree<string, string> it takes the first arm and inserts 42
+        // into the string tree. The same select over [Array<i64>, 'a] is refused with
+        // 'annotate it'. Answer true for a Rust-backed abstract with parameters (no
+        // entry in env.abstract_reps). probe:
+        // design/review-2026-10-26/repro/t-cast-setops-open-vs-rust-abstract.gx
+        // (t-cast-setops-03)
         None | Some(Type::Bottom | Type::Abstract { .. }) => false,
         Some(Type::Variant(_, ps, _)) if ps.is_empty() => false,
         Some(Type::Primitive(p)) => p.intersects(SHARED_PRIMS),
@@ -1654,6 +1782,19 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
         _ => None,
     };
     // a `NoError` cell is never an error, so it shares no error's form
+    // CR claude for claude: [bug/medium] The open-member rule looks past a primitive
+    // bound only (prims_only). A cell with a structural bound is still read as any
+    // type. `'a: (i64, string) |t: 'a| select t { (n, _) => n }` is refused with "a
+    // type variable there isn't known here and may share (i64, Any)'s runtime form:
+    // annotate it", though the parameter is annotated. The same happens to `{x}` under
+    // `'a: {x: i64}` and `` `A(n) `` under `'a: [`A(i64), `B]`. Coverage refuses `[h,
+    // ..] => h, [] => 0` under `'a: Array<i64>` ("no arm covers 'a: unbound within
+    // Array<i64>"). Reads of the same parameters (`t.0`, `s.x`, `x[0]`) are accepted,
+    // because deref_typ! reads through a single structural bound. Fix: read a cell with
+    // one structural bound as that bound here and in the select's coverage, as
+    // deref_typ! does. probe:
+    // design/review-2026-10-26/repro/x-rerun-3-bounded-quantifier-select.gx
+    // (x-rerun-3-04)
     let shares = |cell: &super::TVar, t: &Type| {
         let bounds = cell.cell_constraints();
         shares_form(env, t)
@@ -1811,6 +1952,16 @@ fn abstract_at(t: &Type) -> Option<At<Type>> {
 /// abstract has none to look into, and one with an implementation is
 /// what the implementation says.
 fn compared_rep(env: &Env, id: AbstractId, params: &[Type]) -> Option<Type> {
+    // CR claude for eric: [bug/medium] Either impl excuses the representation from both
+    // judgments, but an Eq impl says nothing about order. type B = Abstract<[i64, f64]>
+    // with only `impl Eq for B` passes Ordered, and array::sort([B(2), B(1.5), B(1)])
+    // returns [B(1), B(2), B(1.5)], the mixed-numeric order Ordered refuses when the
+    // impl is absent. An Ord-only abstract likewise escapes the Discernible check that
+    // == relies on. Should the representation be skipped per trait instead (Ordered
+    // when Ord is implemented, Discernible and compared_ref when Eq is)? The CLAUDE.md
+    // sentence 'no Eq or Ord implementation' would need the same change. probe:
+    // design/review-2026-10-26/repro/t-cast-setops-eq-only-ordered.gx
+    // (t-cast-setops-05)
     if env.implements(CoreTrait::Eq, id) || env.implements(CoreTrait::Ord, id) {
         return None;
     }
@@ -1927,6 +2078,14 @@ impl Type {
     /// the other (a tuple, struct, list or payload variant and an array; a
     /// bare variant and a string; two references; two function types). A
     /// test that tells them apart can't tell such a value's type.
+    // CR claude for claude: [doc-drift/low] The doc above still lists
+    // tuple/struct/list/variant against an array, and a bare variant against a string,
+    // as sharing a runtime form. Since the kind markers they are told apart, and a
+    // select testing each of them is accepted and runs correctly. List what collides
+    // now: two references, two function types, a Rust-backed abstract at two
+    // instantiations, a primitive against a head whose form holds it. probe:
+    // /home/eric/tmp/review-2026-10-26/review/work/x-typecheck-patterns/105_forms.gx
+    // (x-typecheck-patterns-08)
     pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
         rep_collision(env, &mut RepSeen::default(), Open::Benign, self, t)
     }
@@ -2006,6 +2165,15 @@ impl Indiscernible {
     }
 }
 
+// CR claude for claude: [perf/medium] [perf/medium] This walk has no memo of shared
+// nodes: `Expanded` covers only Type::Ref expansion, so a DAG type is walked once per
+// path to each node. A let chain of pairs makes `xN == xN`, `uniq(xN)` or `{xN => 1}`
+// cost 2^N in the check: N=26 takes 3.4 s, while `[xN, xN]` stays at 0.03 s. Every
+// Discernible/Ordered judgment comes through here (lib.rs discernible and site_bounds,
+// contains.rs). Remember the shared nodes a walk found nothing under, outside a
+// recursive decision, as Type::holds now does, and give rep_collision's RepSeen the
+// same treatment. probe: design/review-2026-10-26/repro/c-lib-discernible-dag.sh
+// (c-lib-02)
 fn rep_ambiguity(
     env: &Env,
     seen: &mut Expanded<Type>,
@@ -2029,9 +2197,48 @@ fn rep_ambiguity(
             };
             let ordered = refs && !keys_only;
             match &t {
+                // CR claude for eric: [bug/medium] This check refuses an order over two
+                // numeric types only where the type shows them. Any reaches the `_ =>
+                // None` arm and passes Ordered, and the run-time order then puts every
+                // i64 below every f64. json::read(r"[3, 2.5, 1, 0.5]") read as
+                // Array<Any> sorts to [1, 3, 0.5, 2.5], and under Any `i64:3 < f64:2.5`
+                // is true. The other ways around this check found this round (a union
+                // the normalizer did not merge, an abstract with Eq but no Ord, an open
+                // member beside a number) share the cause: the run-time numeric order
+                // is by class. Decide between ordering numbers by value in the run-time
+                // comparison (ties broken by class so it stays consistent with ==),
+                // which closes all of these at once, and documenting Any's class order.
+                // probe:
+                // design/review-2026-10-26/repro/x-rerun-6-any-mixed-numeric-order.gx
+                // (x-rerun-6-01)
                 Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
                     Some(Indiscernible::Numbers(t.clone()))
                 }
+                // CR claude for claude: [bug/medium] The Numbers test sees only
+                // primitive members, so a union whose members hold two numeric types at
+                // one position inside a constructor passes Ordered whenever
+                // normalization did not merge the members: [Array<i64>, Array<f64>],
+                // [Map<i64, string>, Map<f64, string>], [{x: i64, y: string}, {x: f64,
+                // y: bool}]. Map keys, `<` and sort then order [1] below [0.5] by
+                // discriminant, while the merged form [`A(i64), `A(f64)] is refused.
+                // Group members by runtime constructor (same names, arity or tag),
+                // union their parts per position, and run the Numbers test on each
+                // union. Pin an array, a map and a struct case in
+                // ordering_refuses_two_numeric_types. probe:
+                // design/review-2026-10-26/repro/c-data-map-ordered-union-numbers.gx
+                // (c-data-map-02)
+                // CR claude for claude: [bug/high] The two-numeric-types test counts
+                // only members prims_only can read, so an open member beside a numeric
+                // one is dropped. [i64, 'y] then passes Ordered at a generic
+                // definition's settle, and the call that binds 'y to f64 is an
+                // instance, which is never checked again. `let g = |y| array::sort([3,
+                // y, 1]); g(2.5)` prints [1, 3, 2.5]. `[3, y] < [1, y]` and a map keyed
+                // by [1, y] pass the same way. `array::sort([1, 2.5])` and max(..) at
+                // the same call are refused. Fix: under Open::Unknown, return a Pair of
+                // the numeric member and the open member, so discernible's 'annotate
+                // it' refusal fires at the definition. probe:
+                // design/review-2026-10-26/repro/x-typecheck-generics-ordered-open-beside-number.gx
+                // (x-typecheck-generics-02)
                 Type::Set(ts)
                     if ordered
                         && (ts
@@ -2184,6 +2391,15 @@ impl Type {
 
     /// Hand `bound` (`Discernible` or `Ordered`) to every open cell a
     /// comparison of this type reaches.
+    // CR claude for claude: [perf/medium] This walk follows every binding and child
+    // with no seen set, so a bind of a Discernible/Ordered cell to a shared type DAG
+    // takes time exponential in its depth. Type::indiscernible (rep_ambiguity), which
+    // judges the comparison, has the same problem. With `let x1 = (x0, x0); ..; let x24
+    // = (x23, x23)`, `uniq(x24)` checks in 1.7 s and `x24 == x24` in 0.9 s, doubling
+    // per level, while the bare value takes 40 ms. Give this walk a seen set of cells
+    // and shared nodes, as require_everywhere has, and give rep_ambiguity a memo of
+    // shared nodes judged benign, as Type::holds now has. probe:
+    // design/review-2026-10-26/repro/t-tvar-compared-dag-exponential.sh (t-tvar-04)
     pub(crate) fn require_compared(
         &self,
         bound: &Type,
@@ -2282,6 +2498,15 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         Some(Type::Primitive(s)) => rep::kind(v).is_none() && s.intersects(own_class(v)),
         Some(Type::Set(ts)) => ts.iter().any(|t| in_own_class(env, t, v)),
         Some(Type::Array(_)) => rep::array_elems(v).is_some(),
+        // CR claude for eric: [bug/medium] Unmarked array data never counts as a List
+        // member's class, while any Array member counts however its elements must
+        // convert. Data from a list writer therefore reads back as another member:
+        // cast<[List<i64>, Array<string>]> of [1, 2] is ["1", "2"], a pack round trip
+        // of [<1, 2>] typed so gives ["1", "2"], and a Map member round-tripped through
+        // json reads back as the array-of-pairs member. The t-rep-01 fix ranked tuples
+        // and structs only. Decide whether data counts as a List's (and an object's as
+        // a Map's) own class, or whether the class test looks at elements. probe:
+        // design/review-2026-10-26/repro/x-rerun-5-list-member-cast.gx (x-rerun-5-03)
         Some(Type::List(_)) => list::is_list(v),
         Some(Type::Tuple(_)) => rep::tuple_elems(v).is_some(),
         Some(Type::Struct(_)) => rep::struct_fields(v).is_some(),
@@ -2373,6 +2598,15 @@ fn printed(v: &Value) -> Option<Value> {
         Value::Bool(b) => format_compact!("{b}"),
         Value::DateTime(d) => format_compact!("{}", d.to_rfc3339()),
         Value::Duration(d) => format_compact!("{}", d.as_secs_f64()),
+        // CR claude for claude: [bug/low] For a decimal this goes through
+        // netidx-value's literal printer, which appends a `.` to a whole decimal, so
+        // `cast<string>(decimal:5.)` is "5." while `cast<string>(5.0)` is "5" and json
+        // writes "5". CLAUDE.md promises a number prints plainly. Format
+        // `Value::Decimal` with rust_decimal's own Display here, as the
+        // decimal-to-float arms of `convert` already do; `parse` reads "5" back
+        // exactly. probe:
+        // design/review-2026-10-26/repro/x-formatter-decimal-string-trailing-dot.gx
+        // (x-formatter-04)
         v if Typ::get(v).is_number() => format_compact!("{}", NakedValue(v)),
         _ => return None,
     };

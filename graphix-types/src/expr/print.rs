@@ -253,6 +253,17 @@ fn pretty_items(buf: &mut PrettyBuf, exprs: &[Expr], sep: &str) -> fmt::Result {
         }
     }
     match exprs.last() {
+        // CR claude for claude: [bug/medium] When a `;` list ends in its separator, its
+        // last element is the NoOp `statements` makes for the empty slot. The parser
+        // (`commented`'s `place`) puts the comments below that separator on the
+        // statement before it. Here, and in `pretty_file_items`, only the last
+        // element's trailing comments are printed, so they are dropped and the
+        // formatter refuses its own output. A file `let a = 1;\nlet b = 2;\n// the
+        // end\n` cannot be formatted, nor can a block or seq ending `2;\n// below\n}`.
+        // Print the trailing comments of the last item that is not the trailing NoOp,
+        // after the NoOp's `;`. probe:
+        // design/review-2026-10-26/repro/t-parser-a-below-after-trailing-semi.sh
+        // (t-parser-a-01)
         Some(last) => item_end(buf, last),
         None => Ok(()),
     }
@@ -617,6 +628,14 @@ fn write_eol(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
 }
 
 /// `sep` after the list item `prev`, then the comment ending its line.
+// CR claude for claude: [bug/medium] A statement list ending in `;` and then an
+// own-line comment (`{ a; b;\n// c\n}`, or a file `x;\n// c`) cannot be formatted. The
+// parser's `commented` hangs the comment on `b` as `below`, but only `item_end` prints
+// `below`, and it runs on the empty statement after the `;`. The comment is lost and
+// the guard reports "formatter bug". Fix: write `prev`'s `below` lines here after the
+// eol comment. Add both shapes to format.rs's `an_empty_statement_is_its_semicolon`.
+// probe: design/review-2026-10-26/repro/t-format-resolver-trailing-semi-comment.sh Also
+// reported as (tests-expr-01), (x-formatter-01). (t-format-resolver-01)
 fn item_sep(buf: &mut PrettyBuf, prev: &Expr, sep: &str) -> fmt::Result {
     buf.kill_newline();
     write!(buf, "{sep}")?;
@@ -1317,6 +1336,13 @@ enum PatElt<'a> {
 }
 
 /// A bracketed pattern, one element to a line.
+// CR claude for eric: [readability/low] A pattern's lone bracketed element never hugs.
+// `` `Beta({ first, second: s }) `` prints as `` `Beta( ``, `{`, the fields, `}`, `)`,
+// while the same shape as a type or a value hugs (`` `Beta({ ``), per the Formatter
+// rule for expressions and types. Decide whether patterns follow the hug rule. If they
+// do, give a single bracketed PatElt::Pat the hug_parens treatment here. If they do
+// not, the Formatter rules in CLAUDE.md should say so. probe:
+// design/review-2026-10-26/repro/t-print-pattern-no-hug.gx (t-print-03)
 fn pretty_pattern_elts(
     buf: &mut PrettyBuf,
     open: &str,
@@ -1467,6 +1493,12 @@ fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result 
 
 impl StructWithExpr {
     fn write_head(&self, f: &mut impl Write) -> fmt::Result {
+        // CR claude for claude: [structure/low] This copies with_source's
+        // `chain_on_name` in parser/mod.rs: what reads bare as a functional-update
+        // source. The two already differ in where they check decorations, and a change
+        // to the parser's rule must be repeated here by hand. Fix: make the parser's
+        // `chain_on_name` a pub(crate) free function, call it here, and keep only the
+        // `shows(&e.dec)` test local. Found by reading; not run. (t-print-04)
         fn chain_on_name(e: &Expr) -> bool {
             match &e.kind {
                 ExprKind::Ref { .. } => !shows(&e.dec),
@@ -1542,6 +1574,14 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 /// (`(a+b).c`; `(42).0` would lex as a float; the editor grammar reads no
 /// select, block or cast as a source), and so is a decorated source, whose
 /// decorations would otherwise stand above the whole chain.
+// CR claude for claude: [readability/low] Any postfix source not listed here gets
+// parens. So `graphix fmt` rewrites `any(a, b).f`, `cast<T>(x).f`, `T(1).0`,
+// `never<T>().f` and `select x { .. }.f` as `(any(a, b)).f` and so on. The parser reads
+// each back bare to the same tree, because it drops parens around a postfix source.
+// Fix: add the forms that close with their own bracket (`Any`, `Never`, `TypeCast`,
+// `Construct`, `Live`, `Select`, and `Variant` with arguments), checking each against
+// `trigger_parens` for the seq-head context. probe:
+// design/review-2026-10-26/repro/tests-expr-fmt-postfix-parens.gx (tests-expr-08)
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     use ExprKind::*;
     !shows(&e.dec)
@@ -1929,6 +1969,13 @@ fn ends_bodyless(e: &Expr) -> bool {
 /// `select` and its scrutinee, continuation lines nested under it; a
 /// scrutinee ending in a bodyless impl gets the impl's empty body, which
 /// the arms' `{` would otherwise be read as.
+// CR claude for claude: [bug/low] The scrutinee is laid out with no tail, but ` {`
+// follows it on its line. fmt_flat keeps one column for the newline and ` {` takes two.
+// So `select ffffffffffffffffffffffffff(1, 2) {` prints 41 columns at --width 40.
+// pretty_seq_head's trigger closure has the same gap, and head_fits already counts the
+// ` {` for a Select. Fix: run pretty_after under `buf.with_tail(" {".len(), ..)`, and
+// do the same around the trigger's `t.fmt_pretty` in pretty_seq_head. probe:
+// design/review-2026-10-26/repro/t-print-select-head-overflow.sh (t-print-01)
 fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
     pretty_after(buf, "select", arg)?;
     buf.kill_newline();

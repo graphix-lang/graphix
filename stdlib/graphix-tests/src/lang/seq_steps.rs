@@ -84,6 +84,15 @@ async fn passed_let_does_not_track(mode: Mode) -> Result<()> {
 
 // A fire of an input while its step waits its turn is re-raised when the
 // step is entered.
+// CR claude for claude: [test-gap/low] This cannot fail. `click` is an outer variable,
+// so the step reads it through its entry snapshot, which fires at every entry while it
+// stands: `click ~ 7` answers 7 whether or not click fired while the step waited.
+// Removing the machine's re-raise (`tracked.deliver` in seq_machine.rs::evaluate)
+// leaves it green. With click firing once before run 1, run 2 still answers 7.
+// let_fire_reaches_a_later_cycle already pins the re-raise through a seq-local let, so
+// delete this test or make it read a let or callee capture that only a re-raise can
+// deliver. probe: design/review-2026-10-26/repro/tests-seq-entry-reraise-vacuous.gx
+// (tests-seq-02)
 async fn entry_reraises_an_earlier_fire(mode: Mode) -> Result<()> {
     let code = r#"{
         let click = never();
@@ -187,6 +196,12 @@ async fn own_trigger_write_starts_the_next_run(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// CR claude for claude: [test-gap/low] This pins rebirth for count, take, uniq and hold
+// only. The reborn bodies of once, skip, queue, iterq, iter, range, throttle and filter
+// (graphix-package-core lib.rs) can be deleted without a failure, and no test enters an
+// async call site for a second run while its previous call is in flight. Add those
+// columns, plus a non-cancel-safe read aborted mid-run. Found by reading; not run.
+// (core-lib-07)
 async fn restart_builtins_are_reborn_at_each_run(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;

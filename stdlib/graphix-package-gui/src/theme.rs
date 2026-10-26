@@ -286,6 +286,14 @@ impl CheckboxSpec {
             | checkbox::Status::Hovered { is_checked }
             | checkbox::Status::Disabled { is_checked } => is_checked,
         };
+        // CR claude for claude: [readability/low] This 35-line ladder is one rule: the
+        // box fills with `accent` when checked and `background` when not, each only if
+        // set. `let fill = if is_checked { self.accent } else { self.background }; if
+        // let Some(ColorV(c)) = fill { s.background = shade(c).into() }` is equivalent
+        // in all four Some/None cases. The disabled-dim / hovered-lighten choice is
+        // written out three times here and again in TogglerSpec::resolve. One `fn
+        // shade(c, is_disabled, is_hovered, is_dark) -> Color` serves all four. Found
+        // by reading; not run. (gui-core-05)
         if let Some(ColorV(accent)) = self.accent {
             if let Some(ColorV(bg)) = self.background {
                 let c = if is_checked { accent } else { bg };

@@ -392,6 +392,12 @@ fn parse_entry(k: &str, v: &toml::Value) -> Result<PackageEntry> {
         toml::Value::String(s) => Ok(PackageEntry::Version(s.as_str().into())),
         toml::Value::Table(t) => {
             if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
+                // CR claude for claude: [bug/low] A relative path written into
+                // packages.toml by hand is kept verbatim. with_external then puts it in
+                // the unpacked source's manifest, where cargo resolves it against
+                // <data>/build/graphix-shell-X, so `rebuild` cannot find the package.
+                // Refuse a relative path here, or resolve it against packages.toml's
+                // directory. Found by reading; not run. (package-07)
                 Ok(PackageEntry::Path(PathBuf::from(p)))
             } else {
                 bail!("package {k}: table entry must have a 'path' key")
@@ -943,6 +949,11 @@ async fn build_dirs(
 async fn extract_local_source(cargo: &Path, version: &str) -> Result<PathBuf> {
     let (_, graphix_dir) = build_dirs(&graphix_data_dir()?, version).await?;
     let package = format!("graphix-shell-{version}");
+    // CR claude for claude: [bug/low] The registry is located from the cargo binary's
+    // grandparent directory. That only works for a cargo in $CARGO_HOME/bin: a distro
+    // or Homebrew cargo gives /usr/registry/src, so the cached source is never used,
+    // and offline the command fails. Take $CARGO_HOME, else ~/.cargo, as the registry
+    // root. Found by reading; not run. (package-08)
     let cargo_root = cargo
         .parent()
         .ok_or_else(|| anyhow!("can't find cargo root"))?
@@ -1468,6 +1479,13 @@ impl GraphixPM {
             "Graphix Package Manager <eestokes@pm.me>",
             Duration::from_secs(1),
         )?;
+        // CR claude for eric: [risk/medium] A rebuild replaces whatever binary is
+        // running, a cargo dev build (target/debug/graphix) included, with a release
+        // build of the crates.io source of the same version number. The install_root
+        // guard that refused an exe outside a cargo install root is gone, and cargo
+        // will not notice its output was swapped. Decide which binaries a rebuild may
+        // replace: refuse an exe under a cargo target directory, require
+        // $CARGO_HOME/bin, or require a flag. Found by reading; not run. (package-02)
         let exe = std::env::current_exe().context("locating the running graphix")?;
         Ok(Self { cratesio, cargo, version: version.into(), exe })
     }
@@ -1533,6 +1551,12 @@ impl GraphixPM {
     /// Build and install `packages` from an unpacked source tree, the record
     /// reconciled with what the source ships first, and back up the current
     /// binary.
+    // CR claude for claude: [test-gap/low] No test runs this path or replace_exe. The
+    // slow test builds only a standalone with a source override, and `exe` is always
+    // current_exe(), so a test could not rebuild without replacing itself. Take the exe
+    // as a GraphixPM::new argument and add a slow test that rebuilds the vendored
+    // source into a temp exe path, checking the backup, the new binary and the written
+    // packages.toml. Found by reading; not run. (package-10)
     async fn install_from_source(
         &self,
         source_dir: &Path,
@@ -1546,6 +1570,14 @@ impl GraphixPM {
         if !plan.external.is_empty() {
             let metadata =
                 shell_metadata(&self.cargo, source_dir, &plan.features).await?;
+            // CR claude for claude: [bug/medium] An external that depends on a
+            // semver-incompatible graphix-package (pinned to 0.9 after update takes a
+            // 0.10 shell) gives two copies of the crate. packages!() then fails with an
+            // E0277 trait error only after the whole release tree compiled, and it
+            // names no package. The metadata here already shows it: bail when it holds
+            // more than one graphix-package version, naming the externals that reach
+            // the other one, and run the same check before build_standalone's
+            // cargo_build. Found by reading; not run. (package-04)
             let registered = registered_by_external(&metadata, &plan.external)?;
             for name in reinstall_registered(packages, &registered) {
                 println!(
@@ -1574,6 +1606,12 @@ impl GraphixPM {
         let backup = self
             .exe
             .with_file_name(format!("{BACKUP_PREFIX}{date}{}", ext.unwrap_or_default()));
+        // CR claude for claude: [risk/low] The exe is moved aside before the slow copy
+        // of the new binary. A Ctrl-C or kill during the copy leaves no working graphix
+        // at the exe path; only a failed copy is rolled back. Copy `built` to a sibling
+        // temp file in this directory first, then rename exe -> backup and temp -> exe,
+        // so the running binary is only touched by renames. Found by reading; not run.
+        // (package-05)
         fs::rename(&self.exe, &backup)
             .await
             .with_context(|| format!("moving {} aside", self.exe.display()))?;
@@ -1612,6 +1650,13 @@ impl GraphixPM {
         if !status.success() {
             bail!("cargo build --release failed with status {status}")
         }
+        // CR claude for claude: [risk/low] A `build.target` setting or
+        // CARGO_BUILD_TARGET moves the binary to <target_dir>/<triple>/release, so the
+        // copy after a full build fails with a missing file, despite the doc's claim
+        // that pinning the target dir is enough. Use
+        // --message-format=json-render-diagnostics and take the executable path from
+        // the graphix bin's compiler-artifact message. Found by reading; not run.
+        // (package-06)
         Ok(target_dir
             .join("release")
             .join(format!("graphix{}", std::env::consts::EXE_SUFFIX)))
@@ -1659,6 +1704,13 @@ impl GraphixPM {
                 name.unwrap_or("nothing")
             ),
         }
+        // CR claude for claude: [bug/medium] A path package whose version is inherited
+        // (`version.workspace = true`) is refused here with "no version found", though
+        // add_packages only prints the version and cargo resolves an inherited one for
+        // a path dependency. Keep the name check, but print the version only when it is
+        // a string (or read the workspace's [workspace.package].version), and never
+        // fail on it. probe:
+        // design/review-2026-10-26/repro/package-path-workspace-version.sh (package-01)
         field("version")
             .map(|s| s.to_compact_string())
             .ok_or_else(|| anyhow!("no version found in {}", cargo_toml_path.display()))
@@ -1792,6 +1844,14 @@ impl GraphixPM {
                 cascade.extend(dependents.into_iter().filter(|d| !stdlib.contains(d)));
             }
         }
+        // CR claude for claude: [bug/medium] The cascade is decided and confirmed
+        // before anyone asks what the external packages register. install_from_source's
+        // reinstall_registered then puts the target back, but its cascaded dependents
+        // stay removed. With netidx-admin installed, `remove sys --yes` keeps sys and
+        // tui and removes gui. Run shell_metadata + registered_by_external on the
+        // prepared source here first, and refuse (or drop with a note) the requested
+        // names it registers before computing the cascade. Found by reading; not run.
+        // (package-03)
         if !cascade.is_empty() {
             let list: Vec<&str> = cascade.iter().map(|s| s.as_str()).collect();
             println!(

@@ -122,6 +122,15 @@ graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort);
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => {
+            // CR claude for eric: [perf/medium] Under the hook loan, every abstract
+            // value whose type implements Eq hashes to its id alone (GxAbstract::hash,
+            // eq_applies), so this set compares each element with every kept one
+            // through the Eq hook. That is quadratic: 4000 elements take 7 s in debug
+            // where the impl-free run takes 0.1 s. Decide whether dedup keys by Ord
+            // where the type implements it (as map keys do), or accept and document the
+            // cost. probe:
+            // design/review-2026-10-26/repro/c-module-traits-dedup-quadratic.sh Also
+            // reported as (tests-fusion-traits-04). (c-module-traits-05)
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
             let mut kept: LPooled<Vec<Value>> = LPooled::take();
             for v in a.iter() {
@@ -311,6 +320,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                             }
                             break Some(group);
                         }
+                        // CR claude for claude: [bug/medium] After a false answer, the
+                        // next queued element is fed and f is updated again in the same
+                        // cycle. Whatever made f fire this cycle (the input behind the
+                        // answer just consumed) fires it again, and that stale fire is
+                        // taken as the new element's answer. With f = |n, x| { let r =
+                        // never(); r <- x; r % 2 == 0 }, a late answerer the gxi
+                        // allows, group yields [1, 2, 3, 4] where element 2 answered
+                        // true, so the result should be [1, 2] then [3, 4]. Both
+                        // engines agree. Fix: start each queued element for the next
+                        // cycle with rt.set_var on pred.args(), as the true branch
+                        // already does, and drop the same-cycle re-update. Then one
+                        // answer per cycle belongs to the element in flight. Add a pin
+                        // with a late-answering predicate; every current group test
+                        // answers synchronously. probe:
+                        // design/review-2026-10-26/repro/collections-str-group-stale-answer.gx
+                        // (collections-str-01)
                         _ => match self.queue.pop_front() {
                             None => break None,
                             Some(v) => set!(v),
@@ -392,6 +417,10 @@ fn fc_rotate(args: &[Value]) -> Option<Value> {
                 return Some(Value::Array(a.clone()));
             }
             let p = a.len() - r;
+            // CR claude for claude: [perf/low] The length is known, so the scratch Vec
+            // is a needless second copy of every element. Build the result directly
+            // with array_of(a.len(), a[p..].iter().chain(&a[..p]).cloned()) and drop
+            // tmp. Found by reading; not run. (collections-str-05)
             let mut tmp: LPooled<Vec<Value>> = LPooled::take();
             tmp.extend(a[p..].iter().chain(&a[..p]).cloned());
             Some(Value::Array(ValArray::from_iter_exact(tmp.drain(..))))

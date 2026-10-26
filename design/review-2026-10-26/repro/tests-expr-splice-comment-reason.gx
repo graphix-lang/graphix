@@ -1,0 +1,11 @@
+// Title: the refusal of an own-line comment inside a string's splice loses
+// its reason.
+// Command: graphix --check design/review-2026-10-26/repro/tests-expr-splice-comment-reason.gx
+// Expected: a parse error naming "a comment cannot stand inside a string's splice".
+// Observed: "the parser could not continue past this point", with the caret
+// at the splice's closing `)]`, not at the comment.
+let x = "a[f(
+  // above
+  1
+)]b";
+x

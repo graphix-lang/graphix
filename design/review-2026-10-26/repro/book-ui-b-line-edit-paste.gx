@@ -1,0 +1,29 @@
+// The book's line_edit example (book/src/examples/tui/input_line_edit.gx,
+// shown in book/src/ui/tui/input.md "Text Entry") routes every event
+// through on_press, which answers `Continue to a `Paste without calling
+// its callback, so line_edit::handle never sees a paste: pasting into the
+// example does nothing, though the page says handle applies a paste.
+//
+// Run: timeout -s KILL 60 graphix --no-cache book-ui-b-line-edit-paste.gx
+// Expected (the example's handler takes a paste as line_edit::handle does):
+//   (`Stop, `Stop, "hellohello")
+// Observed:
+//   (`Continue, `Stop, "")
+//   (`Continue, `Stop, "hello")
+// (r is the example's handler, direct is line_edit::handle called itself.)
+use tui::{line_edit, input_handler::{Event, on_press}};
+let ed = line_edit::state("");
+let saved = "";
+let handle = |e: Event| on_press(e, |k| select k.code {
+  kk@ `Enter => {
+    saved <- kk ~ ed.value;
+    ed <- kk ~ line_edit::state("");
+    `Stop
+  },
+  _ => line_edit::handle(&mut ed, e)
+});
+let ev: Event = `Paste("hello");
+let r = handle(ev);
+let direct = line_edit::handle(&mut ed, ev);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(r, direct, ed.value)

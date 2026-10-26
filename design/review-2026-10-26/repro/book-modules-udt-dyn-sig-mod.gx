@@ -1,0 +1,15 @@
+// Title: book/src/modules/interfaces.md says a dynamic module's sig uses the
+// same declaration forms "(val, type, mod)" as an interface; `mod` is refused.
+// Command: graphix --check book-modules-udt-dyn-sig-mod.gx
+// Expected (per interfaces.md "Interfaces and Dynamic Modules"): accepted.
+// Observed: "a dynamic module has no sub-modules, so its sig cannot declare
+//   `mod bar`" (node/module.rs), as dynamic.md itself says.
+let status = mod foo dynamic {
+    sandbox unrestricted;
+    sig {
+        val add: fn(x: i64) -> i64;
+        mod bar
+    };
+    source "let add = |x| x + 1"
+};
+status

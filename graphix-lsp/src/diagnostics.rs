@@ -22,6 +22,16 @@ pub struct ErrorLocation {
 /// outermost context of a type, so an error wrapped without `At::at`
 /// falls back to the outermost `ErrorContext`.
 pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
+    // CR claude for claude: [bug/medium] A ParserContext wins here even when it sits
+    // outside the error's ErrorSite. Module's interface checks wrap
+    // check_hidden_typedef's `.at(e)` (the implementation's typedef) in a ParserContext
+    // at the sig item, so "T is defined by its interface; delete this definition" is
+    // published on the .gxi's `type T`. That tells the user to delete the interface's
+    // declaration, while `--check` names util.gx. Make ParserContext a site: add it at
+    // those module.rs sites only when the error has no ErrorSite (as `At::sited` does),
+    // and let `At::at`/`sited` treat a ParserContext as the site. probe:
+    // design/review-2026-10-26/repro/x-lsp-probe-parser-context-wins.py
+    // (x-lsp-probe-03)
     if let Some(pc) = err.downcast_ref::<ParserContext>() {
         return location(&pc.ori.source, pc.pos, WrittenAt::NOWHERE);
     }

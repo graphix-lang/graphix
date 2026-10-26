@@ -579,6 +579,16 @@ impl Env {
             typedefs: self.typedefs.clone(),
             traits: self.traits.clone(),
             hidden_impls: self.hidden_impls.clone(),
+            // CR claude for claude: [bug/low] A task shares the parent's warning
+            // record, so Env::publish_warning records a task's warning when the task
+            // warns, while IdeMode::Warnings prints it only at the task's join. A
+            // program image therefore carries a parallel module run's warnings in the
+            // order the tasks ran, and a warm start replays them in an order different
+            // from the cold run's program order (nondeterministic too). Give each task
+            // a fresh record when the parent is recording, and have Env::join append it
+            // to the parent's, so the record follows join order like the printed copy.
+            // probe: design/review-2026-10-26/repro/t-misc-warning-order-image.sh
+            // (t-misc-01)
             recorded: self.recorded.clone(),
         }
     }
@@ -621,6 +631,14 @@ impl Env {
     /// and holding the global tables too would make every later write
     /// to them copy what the snapshot shares.
     #[doc(hidden)]
+    // CR claude for eric: [structure/low] This is the only constructor of the lexical
+    // set that is not exhaustive: it fills everything but the four maps with
+    // `..Self::default()`, as image::env::lexical_decode does. A new lexical field is
+    // silently left out of every definition and module snapshot. Each snapshot is also
+    // a whole Env with default globals, and building it allocates an Arc<Vec> and an
+    // Arc<Mutex> that are never used. Suggest a `Lexical` struct field for binds,
+    // modules, typedefs and traits: swap_lexical becomes one mem::swap, and snapshots
+    // and with_restored take a `Lexical`. Found by reading; not run. (t-env-08)
     pub fn lexical(&self) -> Self {
         Self {
             binds: self.binds.clone(),
@@ -719,6 +737,17 @@ impl Env {
         match self.ide.sink() {
             None => {
                 let warning = format_compact!("WARNING at {pos} {ori}: {message}");
+                // CR claude for claude: [bug/low] The record is shared by every compile
+                // task (Env::fork clones the Arc) and is written when a warning is
+                // generated, while the print goes through IdeMode::Warnings and is
+                // joined in program order. Parallel module checks therefore record in
+                // completion order, and a warm image's replay_warnings prints a
+                // different order from the cold run, one that also changes between
+                // runs. Fix: record in program order, at the point the joined warnings
+                // are printed (IdeMode::join), or with a per-fork record that Env::join
+                // appends in order. probe:
+                // design/review-2026-10-26/repro/t-env-warning-replay-order.sh
+                // (t-env-05)
                 if let Some(r) = &mut *self.recorded.lock() {
                     r.push(warning.as_str().into())
                 }
@@ -805,6 +834,15 @@ impl Env {
             Sandbox::Blacklist(bl) => {
                 let mut t = self.clone();
                 for n in bl.iter() {
+                    // CR claude for claude: [bug/low] Each entry is classified against
+                    // `t`, which the earlier entries already pruned. `blacklist [sys,
+                    // sys::net]` removes /sys first, then takes `sys::net` for a value
+                    // and fails with "no value net in module /sys and no module
+                    // sys::net", while `[sys::net, sys]` works. Fix: test
+                    // `self.modules.contains(n)` and skip an entry that is already
+                    // under a removed module. probe:
+                    // design/review-2026-10-26/repro/t-env-blacklist-order.gx
+                    // (t-env-06)
                     if t.modules.contains(n) {
                         t.unbind_lexical_under(n);
                     } else {
@@ -933,6 +971,15 @@ impl Env {
             // (`use gui::text::{self, *}`).
         }
         let mut found: Option<(usize, T)> = None;
+        // CR claude for claude: [bug/medium] Two globs that reach the same binding are
+        // refused as ambiguous here. From a submodule declared in a block, `use
+        // super::*; use package::*` both reach a top-level `let x`, and `x` is refused
+        // with "both `#do4611686018427395233` and `` provide it". Rust's rule, which
+        // design/module_system.md cites, accepts that, and the message leaks a lowered
+        // block scope and prints the root as an empty string. Fix: have Glob::find
+        // return the level it hit at, bail only when two hits are at different levels,
+        // and print the sources the way written_scope does. probe:
+        // design/review-2026-10-26/repro/t-env-glob-same-item-ambiguous.sh (t-env-03)
         for (i, g) in sn.globs.iter().enumerate() {
             if let Some(t) = g.find(n, f) {
                 match &found {
@@ -1913,8 +1960,22 @@ impl Env {
         // Every self-reference must sit under a constructor: `type T =
         // [i64, T]` (or `type A = B; type B = A`) names no value, and
         // contains' coinductive memo would accept it against anything.
+        // CR claude for claude: [perf/low] Each typedef walks every earlier typedef its
+        // body reaches unguarded (and `seen` is a linear scan), so a chain `type T_i =
+        // [`A_i(i64), T_{i+1}]` checks in quadratic time in either order: 0.20/0.82/4.5
+        // s at 1000/2000/4000 types (debug), against 0.07 s at 4000 for a guarded
+        // chain. The 1000-type pin cannot see it. Mark a parameterless TypeDef whose
+        // walk ended Guarded with every name resolved, and stop at it: an earlier
+        // definition cannot reach a newer key except through parameters. probe:
+        // design/review-2026-10-26/repro/x-rerun-5-typedef-chain-quadratic.py
+        // (x-rerun-5-10)
         match typ.reaches_unguarded(self, key) {
             Unguarded::Reaches => {
+                // CR claude for claude: [dead/low] Unreachable. Type::reaches_unguarded
+                // returns Guarded for a Type::Abstract (its `_` arm), so an abstract
+                // typedef never gets here. The removal also contradicts undeftype's
+                // rule that an abstract representation stays. Delete the block. Found
+                // by reading; not run. (t-env-07)
                 if let Type::Abstract { id, .. } = &typ {
                     self.abstract_reps.remove(id);
                 }
@@ -1944,6 +2005,16 @@ impl Env {
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
         let r = self.abstract_reps.get(&id)?;
+        // CR claude for eric: [bug/medium] under_some_instance matches any `#`
+        // component against any other, so a sibling block or a lambda body in the same
+        // module counts as an instance of the block that declared the abstract type.
+        // `let v = { type T = Abstract<i64>; let x = T(5); x }; let w = { let k = 1;
+        // v.0 + k }; w` prints 6, while `v.0` at the top level is refused. That breaks
+        // the rule that `x.0` works only where the definition is visible. Decide what
+        // an instance of the defining body is, for example the declaration place
+        // AbstractId::declared already uses, store it in AbstractRep, and match only
+        // components of that body. probe:
+        // design/review-2026-10-26/repro/t-env-abstract-rep-sibling-block.gx (t-env-04)
         (r.public || under_some_instance(from, &r.scope)).then_some(&**r)
     }
 
@@ -1953,6 +2024,16 @@ impl Env {
     /// name's final target is registered: before elaboration, whose
     /// instances expand their callers' types under their definitions'
     /// envs, and again before fusion for what elaboration registered.
+    // CR claude for claude: [bug/high] This walks only self.typedefs, the lexical map
+    // of the env it is called on. A module with an interface, or a dynamic module,
+    // keeps its typedefs in Module::env, which with_restored_mut swaps out, so the
+    // check-end seed never reaches them. A recursive type there keeps an empty inner
+    // cell. The array::map instance then resolves it by name under /array and fails:
+    // `type T = Array<[null, T]>; let a: T = [null]; let r = array::map([a], |x| 7)` in
+    // m.gx with an m.gxi passes --check and fails the build with "undefined type T in
+    // m". Fix: have deftype record each TypeDef in a global (non-lexical,
+    // forked/joined) registry of unseeded definitions, and have this walk drain it.
+    // probe: design/review-2026-10-26/repro/t-env-module-typedef-unseeded.sh (t-env-02)
     pub fn seed_typedef_refs(&self) {
         let _profile = profile::phase(Phase::SeedTypes);
         for (_, defs) in self.typedefs.into_iter() {

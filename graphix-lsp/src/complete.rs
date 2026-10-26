@@ -111,6 +111,12 @@ impl<'a> Completer<'a> {
 
     /// Every binding declared before the cursor in a scope enclosing
     /// it, innermost and latest first.
+    // CR claude for claude: [bug/low] Completion inside a seq body offers the
+    // lowering's bindings (#seqpc.., #seqv.._N, #seqe.., #seqt.._clk, ...):
+    // Env::bind_variable records them in ide.binds, and neither this filter nor the
+    // `lookup_matching` loop in `names` drops them. Filter `graphix_types::is_lowered`
+    // names in both, or skip the ide.binds push for them in bind_variable. probe:
+    // design/review-2026-10-26/repro/x-lsp-probe-seq-lowered-names.py (x-lsp-probe-05)
     fn locals(&self) -> impl Iterator<Item = &'a Bind> {
         let binds = self.checked.into_iter().flat_map(|c| c.ide.binds.iter().rev());
         let defining = self.defining();

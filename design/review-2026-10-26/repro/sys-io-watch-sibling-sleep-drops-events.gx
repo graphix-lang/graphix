@@ -1,0 +1,22 @@
+// Title: a watch stream's sleep drops the queued events of a watch another stream still reads
+// Command: rm -rf /home/eric/tmp/review-2026-10-26/review/work/sys-io/wd; mkdir -p /home/eric/tmp/review-2026-10-26/review/work/sys-io/wd;
+//   timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-io-watch-sibling-sleep-drops-events.gx | tail -1
+// Expected: 9 (Established + 8 creates, every one reaching the top-level `events` stream)
+// Observed: 4 — the `path` stream in arm 0 sleeps after the first Create and
+//   WatchStream::unwatch -> ExecCtx::release_var -> forget_writes drops the rest of the
+//   watch's queued custom deliveries for every reader. Control: change the `~ 1` on the
+//   `mode <-` line to `~ 0` (no sleep) and it prints 9.
+let d = "/home/eric/tmp/review-2026-10-26/review/work/sys-io/wd";
+let w = sys::fs::watch::create(null)$;
+let wa = sys::fs::watch::watch(#interest: [`Established, `Create], w, d)$;
+let ev = sys::fs::watch::events(wa)$;
+let n = 0;
+n <- ev ~ n + 1;
+let est = select ev.event { `Established => true, _ => false };
+let go = filter(est, |e| e);
+let mode = 0;
+let side = select mode { 0 => sys::fs::watch::path(wa), _ => never() };
+mode <- filter(est, |e| !e) ~ 1;
+let c = sys::process::spawn(sys::process::options(#args: ["-c", "cd [d] && touch a b c d e f g h"], go ~ "/bin/sh"));
+sys::exit(sys::time::after_idle(duration:500.ms, n) ~ 0);
+n

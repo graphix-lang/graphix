@@ -990,6 +990,14 @@ async fn main() -> Result<ExitCode> {
             match cmd {
                 "run" => {
                     let routes: &[graphix_fuzz::Route] =
+                        // CR claude for claude: [structure/low] This is lib's private
+                        // `session_routes` written out again, and selfcheck_one has a
+                        // third copy. Make session_routes pub and call it here and in
+                        // selfcheck_one, so a new route or a changed rule cannot leave
+                        // `run` and selfcheck on a different route set from the oracle.
+                        // typemorph-scan and detcheck below also each build the same
+                        // corpus-plus-`gen#i` program list: give them one helper. Found
+                        // by reading; not run. (fuzz-main-aux-07)
                         if graphix_fuzz::callable::has_header(code) {
                             &[
                                 graphix_fuzz::Route::InLanguage,

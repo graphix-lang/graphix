@@ -1,0 +1,18 @@
+// Title: an open union member is judged not to share a Rust-backed abstract's form, so a select tells two instantiations apart
+// Command: rm -rf /home/eric/tmp/review-2026-10-26/review/work/t-cast-setops/dbx; timeout -s KILL 20 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-cast-setops-open-vs-rust-abstract.gx
+// Expected: the definition's check refuses the select: 'a may bind another Tree<..> instantiation,
+//           whose values share Tree<string, i64>'s runtime form ("annotate it")
+// Observed: accepted; f(ts) with ts: Tree<string, string> takes the Tree<string, i64> arm and
+//           inserts the i64 42 into the string tree (prints "got 42, ...": the db's read cast hides it)
+use db::Tree;
+let f = |x: [Tree<string, i64>, 'a]| select x {
+  Tree<string, i64> as t => db::insert(t, "k", 42)$,
+  _ => null
+};
+let d = db::open("/home/eric/tmp/review-2026-10-26/review/work/t-cast-setops/dbx")$;
+let ts: Tree<string, string> = db::tree(d, "strs")$;
+let w = f(ts);
+let got = db::get(ts, w ~ "k")$;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let s: [string, null] = got;
+println("got [s], is string: [select s { string as _ => true, _ => false }]")

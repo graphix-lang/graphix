@@ -1,0 +1,18 @@
+// Title: data written from a List member reads back as a converted Array member of the union (t-rep-01 variant)
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/x-rerun-5-list-member-cast.gx
+// Expected (CLAUDE.md: what the writers emit reads back into its type; a member that
+//   holds the value exactly before one that would change it): ([<1, 2>], [<1, 2>], [<1, 2>], {"a" => 1})
+// Observed: (["1", "2"], [1, 2], ["1", "2"], [("a", 1)]): in_own_class counts an
+//   Array member as the class of unmarked array data however its elements must
+//   convert, and a List member never (list::is_list), so Array<string> wins by
+//   stringifying every element, and Array<f64> by converting each i64; a Map written
+//   to json reads back as the array-of-pairs member.
+let c: Any = [1, 2];
+type L = [List<i64>, Array<string>];
+let l: L = [<1, 2>];
+let pl: Result<L, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(l)$);
+type M = [Map<string, i64>, Array<(string, i64)>];
+let m: M = {"a" => 1};
+let jm: Result<M, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(m)$);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(cast<[List<i64>, Array<string>]>(c), cast<[List<i64>, Array<f64>]>(c), pl, jm)

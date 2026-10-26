@@ -1,0 +1,14 @@
+// Title: the printer wraps a bracket-closed postfix source in parens the
+// parser does not need.
+// Command: graphix fmt --stdout design/review-2026-10-26/repro/tests-expr-fmt-postfix-parens.gx
+// Expected: each line printed back as written (each reads back bare: the
+// parser drops parens around a postfix source, so both spellings are one tree).
+// Observed: `(any(a, b)).f`, `(cast<T>(x)).f`, `(`A(1)).0`, `(T(1)).0`,
+// `(never<T>()).f`, `(select x { _ => y }).f`.
+let a = any(a, b).f;
+let b = cast<T>(x).f;
+let c = `A(1).0;
+let d = T(1).0;
+let h = never<T>().f;
+let f = select x { _ => y }.f;
+a

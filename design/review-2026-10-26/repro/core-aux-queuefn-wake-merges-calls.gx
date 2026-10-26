@@ -1,0 +1,20 @@
+// queuefn: a site waking releases its banked calls in one cycle, so two
+// calls whose fired arguments are disjoint reach `f` as ONE invocation.
+// cmd: timeout -s KILL 30 graphix --no-cache core-aux-queuefn-wake-merges-calls.gx
+// expected: [(1, 1, 0), (2, 1, 6), (2, 2, 6)]  (f sees each queued call, as it does
+//           when the site does not sleep: change the trig/on lines to n=3,4 / n>=5)
+// observed: [(1, 1, 0), (2, 2, 6)]  (the call q(2, 1) never reaches f)
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let a = 1;
+let b = 1;
+a <- select n { 1 => 2, _ => never() };
+b <- select n { 2 => 2, _ => never() };
+let trig = select n { 4 => n, 5 => n, _ => never() };
+let log: Array<(i64, i64, i64)> = [];
+let q = queuefn(#trigger: trig, |x: i64, y: i64| -> i64 { log <- (x, y) ~ array::push(log, (x, y, n)); x + y });
+let on = n < 3 || n >= 6;
+let r = select on { true => q(a, b), false => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select n { k if k >= 8 => log, _ => never() }

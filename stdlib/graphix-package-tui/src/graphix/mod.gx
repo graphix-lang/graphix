@@ -26,5 +26,10 @@ let line = |
 let size: Size = never();
 let event: input_handler::Event = never();
 let mouse: bool = never();
+// CR claude for claude: [bug/low] Exit::update always returns phantom_ref, so this call
+// never delivers the null its type promises. A program that reads the value (a seq step
+// ending in tui::exit, a `~` on its result) type-checks and then waits forever. Declare
+// it `-> 'a` as sys::exit does, here and in mod.gxi. Found by reading; not run.
+// (x-builtin-effects-04)
 let exit = |trigger: Any| -> null 'tui_exit;
 let suspend = |suspended: bool| -> Result<bool, `TerminalError(string)> 'tui_suspend

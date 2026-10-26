@@ -1,0 +1,14 @@
+// c-collection: slot growth is not bounded by the activation budget or the interrupt
+// Command:
+//   GRAPHIX_ACTIVATION_BUDGET=1000 timeout -s KILL 170 graphix --no-cache c-collection-budget-slot-growth.gx
+// Expected: the runtime stops with "a runaway recursion exceeded the runtime's budget"
+//   once about 1000 slots are live, using little memory.
+// Observed (debug build, 6 GB cap):
+//   GRAPHIX_PAR=auto (default): OOM-killed after about 5 s. build_fresh prebinds every
+//     fresh slot's instance in compile tasks and never looks at ctx.interrupted().
+//   GRAPHIX_PAR=off: stops with the budget error, but only after about 4 s spent building
+//     all 2M slot shells in take_source's resize; with n = 8000000 (under
+//     MAX_ARRAY_INIT_LEN) the shells alone are OOM-killed after about 5 s.
+let n = array::iter([2000000]);
+let a = array::init(n, |i| i + count(i));
+array::len(a)

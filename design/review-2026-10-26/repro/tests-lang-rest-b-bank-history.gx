@@ -1,0 +1,21 @@
+// Title: `~` banks a trigger that finds its argument bottom only if the
+// argument never produced; one that produced before going bottom drops it.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --no-fusion tests-lang-rest-b-bank-history.gx
+//          (same with fusion on)
+// `a` and `b` are both bottom at step 3, when `t` fires, and both arrive
+// (60) at step 6. Only their history before step 3 differs: `b` was 0 at
+// step 0.
+// Expected (CLAUDE.md: "banking one trigger however many find v absent,
+// paid once when v arrives"): oa and ob alike, both paid 60, or neither.
+// Observed: (7, 60, null) ... (10, 60, null): oa is paid, ob never is.
+let step = 0;
+step <- select step { s if s < 10 => s + 1, _ => never() };
+let a = select step { k if k >= 6 => k * 10, _ => never() };
+let b = select step { 0 => 0, k if k >= 6 => k * 10, _ => never() };
+let t = select step { 3 => null, _ => never() };
+let oa: [i64, null] = null;
+oa <- t ~ a;
+let ob: [i64, null] = null;
+ob <- t ~ b;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(step, oa, ob)

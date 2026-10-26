@@ -45,6 +45,12 @@ values — graphix's `Option<'a>` is just the structural union
 `['a, null]`, and these functions mirror the most useful parts of
 Rust's `std::option::Option` API in a reactive setting.
 
+<!-- CR claude for claude: [doc-drift/low] `opt::contains` is not strict. It is a
+Graphix select in opt.gx that answers `false` for a null `v` without waiting for `x`.
+Remove it from this list, and note that it decides from `v` alone when `v` is null.
+`or`, `and` and `zip` are builtins and are strict, as stated. probe:
+design/review-2026-10-26/repro/book-modules-udt-opt-contains-lazy.gx
+(book-modules-udt-08) -->
 The plain combinators (`contains`, `or`, `and`, `zip`, …) are strict,
 like every function and like `&&` and `||`: they produce once every
 argument has a value, so `opt::or(a, b)` waits for `b` even when `a`

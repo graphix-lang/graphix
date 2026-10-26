@@ -1,0 +1,14 @@
+// mono-reuse and label-default find the uses of `f` by its name, so a
+// forwarding alias `let g = f` hides uses that share the mutated
+// binding: the checker refuses at a use of `g`, outside the expected
+// sites, and the verdict is a false MISPLACED.
+// command: design/review-2026-10-26/repro/fuzz-mutate-run-typemorph-one.sh <this file>
+// expected: REJECT mono-reuse#1 ok
+// observed: FLIP mono-reuse#1 MISPLACED: N: type mismatch fn(x: 'a: string) -> 'b: unbound
+//           throws 'e: unbound does not contain fn(x: iN) -> iN
+//   (refused at `let c = array::map(["s"], g)`)
+// label-default, same shape (observed FLIP label-default#1 MISPLACED):
+//   { let f = |#a: i64 = 1, x: i64| -> i64 a + x;
+//     let w = |h: fn(?#a: i64, x: i64) -> i64| -> i64 h(2);
+//     let g = f; let p = w(g); let q = w(f); p + q }
+{ let f = |x| x; let g = f; let a = array::map([1], f); let c = array::map(["s"], g); let b = array::map(["s"], f); (a, b, c) }

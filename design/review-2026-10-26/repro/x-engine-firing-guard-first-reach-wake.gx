@@ -1,0 +1,23 @@
+// A guard the chain first reaches after its select's birth runs under
+// View::Wake, not View::Step: its constants stand instead of firing, so a
+// stateful builtin over a constant in the guard never produces and the select
+// is bottom (undecidable) for good. The common way in is a scrutinee that is
+// bottom at birth (data not loaded yet): every guard sleeps at cycle 0.
+// Command: graphix-fuzz run x-engine-firing-guard-first-reach-wake.gx
+//   (or graphix --no-cache / --no-fusion; every mode agrees)
+// Expected (CLAUDE.md: "An arm's first entry is a Step, every later one a
+// Wake"; a guard's first reach is its birth as an arm body's first entry is):
+//   Trace([1:(1, 1) 2:(2, 1) 3:(3, 1) 4:(4, 1) 5:(5, 1)])
+// Observed: Trace([]): the select never produces.
+// With `0 => 0` in place of `0 => never()` (the guard reached at cycle 0), or
+// `once(true)` in an arm body instead of a guard, it produces as expected.
+// A second shape: a guard an earlier arm shields until step 3,
+//   select step { s if s < 3 => (s, 0), s if hold(#clock: s, true) => (s, 1), s => (s, 2) }
+// prints (0, 0) (1, 0) (2, 0) and then nothing.
+let step = 0;
+step <- select step { s if s < 5 => s + 1, _ => never() };
+let data = select step { 0 => never(), s => s };
+select data {
+  s if once(true) => (s, 1),
+  s => (s, 2)
+}

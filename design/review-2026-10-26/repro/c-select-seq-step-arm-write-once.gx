@@ -1,0 +1,23 @@
+// Title: a constant write in a select arm inside a seq step fires only at the
+// arm's first entry ever, not at each run, when the scrutinee arrives after the
+// step's entry cycle (no warning: warn_birth_only skips CFlag::SeqStep).
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache c-select-seq-step-arm-write-once.gx
+// Expected (a seq step is born at every run): status alternates odd/even every run:
+//   n=1 k=1 status=odd / n=2 k=0 status=even / n=3 k=1 status=odd / ...
+// Observed (same with --no-fusion and GRAPHIX_PRUNE=off):
+//   n=1 k=1 status=odd / n=2 k=0 status=even / n=3 k=1 status=none / n=4 k=0 status=none / ...
+let clock = sys::time::timer(duration:30.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+sys::exit(select n { 9 => 0, _ => never() });
+let status = "none";
+let r = seq clock {
+  status <- "none";
+  let k = select sys::time::after_idle(duration:5.ms, n % 2) {
+    0 => { status <- "even"; 0 },
+    _ => { status <- "odd"; 1 }
+  };
+  sys::time::after_idle(duration:5.ms, k);
+  println("n=[n] k=[k] status=[status]")
+};
+r

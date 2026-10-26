@@ -1,0 +1,9 @@
+// Title: book/src/core/fundamental_types.md says map keys can be any type;
+//   a key type must be Ordered (no reference, function, or two numeric types)
+// Command: graphix --check design/review-2026-10-26/repro/book-core-map-key-any-type.gx
+// Expected per the book: accepted
+// Observed: "a map key type can't hold [i64, f64], more than one numeric
+//   type: values of two numeric types have no order between them; cast them
+//   to one" (and `{&x => 1}`: "a map key type can't hold the reference &i64")
+let k: [i64, f64] = 1;
+{k => "a"}

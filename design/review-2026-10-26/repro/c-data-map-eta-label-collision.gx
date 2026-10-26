@@ -1,0 +1,12 @@
+// Title: a trait method whose label is spelled like an eta parameter
+// (`#eta1`) cannot be named as a value: eta_dispatcher binds source-writable
+// names `eta{i}` for its positional parameters.
+// Command: graphix --no-cache design/review-2026-10-26/repro/c-data-map-eta-label-collision.gx
+// Expected: x5 (Sh::sh as a value, called like the method).
+// Observed: refused: "arguments must have unique names", at
+//   'eta_self: Sh |#eta1: i64, eta1: 'eta_..  (the lowering's text in the error).
+trait Sh { val sh: fn(#eta1: i64, self) -> string };
+impl Sh for string { let sh = |#eta1: i64, s| "[s][eta1]" };
+let g = Sh::sh;
+sys::exit(sys::time::after_idle(duration:50.ms, 0));
+g(#eta1: 5, "x")

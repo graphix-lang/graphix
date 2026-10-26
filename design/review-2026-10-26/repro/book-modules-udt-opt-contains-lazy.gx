@@ -1,0 +1,9 @@
+// Title: book/src/stdlib/core.md lists opt::contains among the strict
+// combinators that "produce once every argument has a value"; it is not strict.
+// Command: timeout -s KILL 5 graphix --no-cache book-modules-udt-opt-contains-lazy.gx
+// Expected (per core.md): nothing (x never has a value).
+// Observed: prints `false` — opt::contains is a Graphix select that answers
+//   from `v` alone when it is null.
+let a: [i64, null] = null;
+let x: i64 = never();
+opt::contains(a, x)

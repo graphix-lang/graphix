@@ -1,0 +1,16 @@
+// An `until` over a dereference warns that it cannot change, yet it follows the referent live
+// command: graphix --no-cache x-seq-sampling-until-deref-false-warning.gx
+// expected: no warning (a read through a reference is live in a step, design/seq_blocks.md §8),
+//   or no warning and the same (6, 6)
+// observed (both engines): "WARNING ... this until reads only the step's entry snapshot and
+//   calls nothing, so it cannot change after the step is entered: wrap what it waits for in
+//   live(..)", then (6, 6): the until did change and completed at x = 6.
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let x = 0;
+x <- step ~ step;
+let r = &x;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let a = seq { select *r > 5 { true => *r, false => never() } };
+let b = seq { until *r > 5; *r };
+(a, b)

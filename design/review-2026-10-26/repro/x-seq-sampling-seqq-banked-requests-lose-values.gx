@@ -1,0 +1,18 @@
+// seqq: requests queued while a capture is absent all run with the LAST request's value
+// command: graphix-fuzz run x-seq-sampling-seqq-banked-requests-lose-values.gx
+//   (or graphix --no-cache with a println of the result)
+// expected: three runs, x = 2, 3, 4: Trace([..:102 ..:103 ..:104])
+//   (CLAUDE.md: "seqq queues triggers with captured values"; a `seqq let` names
+//    "the value that queued the run")
+// observed (node-walk and JIT agree): Trace([10:104 14:104 18:104])
+// cause: desugar_queued puts the request in the banked payload as hold(request);
+//   BinOp::BankedSample pays each banked request with the payload as it stands
+//   when the capture `c` arrives, so every banked request carries the latest x.
+{
+  let step = 0;
+  step <- select step { n if n < 12 => n + 1, _ => never() };
+  let t = select step { 2 | 3 | 4 => step, _ => never() };
+  let c = never();
+  c <- select step { 6 => 100, _ => never() };
+  seqq let x = t { x + c }
+}

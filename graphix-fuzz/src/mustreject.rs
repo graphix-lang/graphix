@@ -609,6 +609,21 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         ExprKind::Block { exprs } => {
             exprs.last().is_some_and(|l| open_init(types, exprs, exprs.len() - 1, l))
         }
+        // CR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
+        // whose own type is a TVar, bound or not. So this fallback calls an operator's,
+        // a negation's and a `$`/`?` result open, and retype, widen-hop, shared-var and
+        // ref-widen (and abstract_widen's own `types.cell` test) skip every let over `a
+        // + 1`, `-a` or `cast<i64>(x)$`, the commonest lets in generated programs. In
+        // the other direction, the Apply arm checks a callee's body only for syntactic
+        // ⊥ (`open_init(types, &[], 0, b)`). So `mk(1)` with `let mk = |u: i64| z` over
+        // `let z = never()` looks concrete, retype writes `v <- "tm"` before the use
+        // that decides z's cell, and the refusal at that use is a false MISPLACED.
+        // Decide openness one way in both modules: reuse typemorph's `Open` closure
+        // (lambda captures included) plus the generalized-return rule, and recurse into
+        // operator and postfix operands instead of reading `cell`. probe:
+        // design/review-2026-10-26/repro/fuzz-mutate-cell-skips-operators.sh and
+        // design/review-2026-10-26/repro/fuzz-mutate-open-init-captured-cell.gx
+        // (fuzz-mutate-02)
         _ => types.cell(value),
     }
 }
@@ -868,6 +883,15 @@ fn shared_var(
         if !concrete(t) || primitive(t).is_none() {
             continue;
         }
+        // CR claude for claude: [bug/low] The literal is disjoint from the first
+        // argument's type only, but every argument at the shared variable's parameters
+        // takes part in the widest-argument rule. A third argument whose type contains
+        // both (`g(1, "tm", u)` with `u: [i64, string]`) makes the call legal, so the
+        // mutant is a false LEAK. Require every other argument at a parameter of that
+        // cell to be concrete and pick the literal disjoint from all their types, or
+        // skip such a call. probe:
+        // design/review-2026-10-26/repro/fuzz-mutate-shared-var-third-arg.gx
+        // (fuzz-mutate-05)
         let Some(u) = disjoint_literal(t) else { continue };
         let at = arg_indices(i, &sizes, ap.args.len())[b];
         let cand = mutate::replace(root, at, &u);
@@ -1074,6 +1098,17 @@ fn widen_consumer(
             }
         }
     }
+    // CR claude for claude: [bug/low] A bare name counts as a consumer unless a `let
+    // NAME = <lambda with an unannotated parameter>` binds it. A callee bound by a
+    // destructuring let (`let (f, k) = (|y| z <- y, 0)`), or a subject-module function
+    // brought in by `use m0::f` or `use m0::f as g` (the generator writes both forms),
+    // therefore passes as rigid, though its unannotated parameter is a cell shared with
+    // the environment that the call widens. Each case gives a false LEAK. Put every
+    // name the body binds by any form into `untyped`: let patterns via `with_names`,
+    // select-arm and lambda binders, and `use` items' bound names (a glob makes every
+    // bare name untyped). probe:
+    // design/review-2026-10-26/repro/fuzz-mutate-widen-consumer-callee-holes.gx
+    // (fuzz-mutate-03)
     let consumer_callee = |f: &Expr| match &typemorph::unparen(f).kind {
         ExprKind::Ref { name } => {
             let name = name.to_string();
@@ -1369,6 +1404,16 @@ fn mono_reuse(
         let jb = *jb;
         // every value use shares the wrapped binding's cells, so the
         // checker refuses at whichever reached use conflicts first
+        // CR claude for claude: [bug/low] The value uses here, and labels_default's
+        // sites, follow `f` by name only. A forwarding alias `let g = f` shares the
+        // wrapped binding's cells once `f` is no longer generalized, so a use of `g`
+        // before the second use of `f` meets the conflict first, and the refusal there
+        // is a false MISPLACED. labels_default does the same with `w(g)`. Follow
+        // unannotated `let g = f` forwards, as affected_stmts follows lets built from a
+        // value, and count their uses as value uses and sites; or skip a base where `f`
+        // is forwarded. probe:
+        // design/review-2026-10-26/repro/fuzz-mutate-alias-misplaced.gx
+        // (fuzz-mutate-04)
         let mut sites = vec![si];
         sites.extend(values.iter().map(|(_, j)| *j).filter(|j| *j <= jb));
         sites.dedup();

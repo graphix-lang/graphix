@@ -73,6 +73,11 @@ fn array(v: Value, what: &str) -> Result<netidx::protocol::valarray::ValArray> {
 }
 
 /// XY data; x is in ms since the epoch when `time`.
+// CR claude for claude: [structure/low] XYData has exactly the shape of Series<(f64,
+// f64)>, so DatasetEntry::mode repeats its non-empty-mode body once per point type.
+// Make it `pub type XYData = Series<(f64, f64)>` and give Series<P> a `mode()` that the
+// XY, Candlestick and ErrorBar arms call. BarData, XYZData and SurfaceData also match
+// Value::Array by hand where array() exists; use it. Found by reading. (gui-chart-06)
 pub struct XYData {
     pub time: bool,
     pub pts: LPooled<Vec<(f64, f64)>>,

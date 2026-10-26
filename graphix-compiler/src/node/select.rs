@@ -111,6 +111,20 @@ impl LazyArmFacts {
                 .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
                 .collect(),
             entered: vec![false; arms.len()],
+            // CR claude for claude: [perf/medium] [perf/medium] Each arm's
+            // shallow_discriminant re-walks the whole scrutinee union
+            // (covers_what_it_meets -> union_members, Type::shallow_discriminant ->
+            // flatten_union_members), expanding every named member's typedef. That is
+            // O(arms x members) per select instance, paid again by every call instance
+            // and every collection slot. 2000 slots calling a function whose select has
+            // N type-test arms over N abstract types reach their first value in 0.66 /
+            // 2.35 / 7.7 s at N = 25 / 50 / 100 (node-walk). All gdb samples are here,
+            // and a warm image start of a 1600-arm select spends 0.89 s here. Compute
+            // the scrutinee's members once per build and hand them to every arm.
+            // Better, compute the discriminants once per definition, since they depend
+            // only on the patterns and the scrutinee type. probe:
+            // design/review-2026-10-26/repro/x-perf-compile-select-facts-per-instance.sh
+            // (x-perf-compile-05)
             shallow: arms
                 .iter()
                 .map(|(pat, _)| pat.shallow_discriminant(&ctx.env, scrut))
@@ -123,6 +137,17 @@ impl LazyArmFacts {
                 .map(|(i, _)| i)
                 .collect(),
             missed: vec![false; arms.len()],
+            // CR claude for eric: [bug/medium] The guards get a catch-up tracker of
+            // their own, separate from the arms', so neither side consumes the other's
+            // bits. A fire a selected arm body read is caught up again by a woken guard
+            // (`n if count(b) > 1` gives "guard 2" where the body twin `n => count(b)`
+            // gives 1). A fire a consulted guard read is caught up again at an arm's
+            // first entry. Between bodies, a fire reaches one arm. Rule whether a
+            // guard's read spends a fire. If it does, track guard refs in the select's
+            // one TrackedFires with a consumer slot per guard. If not, say so in
+            // CLAUDE.md's guard rule and pin it. probe:
+            // design/review-2026-10-26/repro/tests-select-guard-and-arm-catch-up-the-same-fire.gx
+            // (tests-select-04)
             guards: arms.iter().any(|(pat, _)| pat.guard.is_some()).then(|| {
                 let fires =
                     TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
@@ -340,6 +365,16 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         NodeView::Lambda(_) | NodeView::Select(_) | NodeView::SeqMachine(_) => Ok(()),
         // a handler's action runs on its errors, not at an entry
         NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
+        // CR claude for claude: [bug/medium] A handler-ful `?` whose operand reads no
+        // variable (`0 => error(`Bad)?`) raises only at the arm's first entry, just as
+        // a constant write fires only then, but nothing here warns of it. A raise to a
+        // handler is an event, as a write is. Add `NodeView::Qop(q) if
+        // q.handler().is_some() && reads_nothing(&q.n) => warn(n.spec(), "this
+        // raise")`. warn_triggerless_seq has the same gap: it tests only
+        // `trigger.is_none()`, so `seq 1 { .. }` in an arm also runs once with no
+        // warning; warn there too when the trigger reads no variable. probe:
+        // design/review-2026-10-26/repro/x-engine-seq-errors-const-raise-no-warning.gx
+        // (x-engine-seq-errors-02)
         NodeView::Connect(c) if reads_nothing(&c.node) => warn(&c.spec, "this write"),
         NodeView::CallSite(cs)
             if cs.arg_nodes().all(|a| reads_nothing(a)) && acts_on_the_world(ctx, cs) =>
@@ -364,6 +399,13 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     cs: &super::callsite::CallSite<R, E>,
 ) -> bool {
+    // CR claude for claude: [readability/low] A builtin call with no arguments
+    // (sys::dirs::home_dir, sys::args) is Async because it produces at its birth only.
+    // Here it counts as acting on the world, and the vacuous all(reads_nothing) makes
+    // it warn 'acts only at this arm's first entry ... Sample the event'. It acts on
+    // nothing, its value stands at every re-entry, and no event can be sampled into it.
+    // Return false here for a call with no arguments. probe:
+    // design/review-2026-10-26/repro/sys-io-dirs-arm-spurious-warning.gx (sys-io-05)
     if let Some(b) = super::callsite::static_builtin(ctx, cs) {
         return matches!(
             ctx.builtin_effect(b),
@@ -374,6 +416,14 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
     ctx.bind_to_lambda
         .get(&r.id)
         .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
+        // CR claude for claude: [bug/low] A function counts as acting only when it
+        // performs Io. So a call that writes a captured variable (`let set = |v: i64| {
+        // m <- v; v }`, then `set(5)` in an arm) gets no warning. Like `m <- 5` written
+        // in the arm, it writes only at the arm's first entry (count(m) stays 1 over
+        // three entries). Fix: also count `facts.event` (the function may raise, or
+        // write a binding it does not own), which is the same once-per-birth effect.
+        // probe: design/review-2026-10-26/repro/x-rerun-3-birth-warn-misses-write-fn.gx
+        // (x-rerun-3-06)
         .is_some_and(|d| d.facts.lock().io)
 }
 
@@ -620,6 +670,13 @@ impl Reach {
         };
         let probe = BitFlags::empty();
         for (sp, at) in atoms.iter() {
+            // CR claude for claude: [readability/low] When the arm's own earlier
+            // alternatives (or earlier arms) have taken everything, self.atype is
+            // empty, and this prints "`A will never match []", which reads as an empty
+            // scrutinee type. Say the alternative is covered by the earlier arms or
+            // alternatives when nothing reaches. probe:
+            // design/review-2026-10-26/repro/x-typecheck-patterns-or-alt-empty-diag.gx
+            // (x-typecheck-patterns-07)
             if checking && or_arm && !at.could_match(env, &self.atype)? {
                 let atype = &self.atype;
                 format_with_flags(PrintFlag::DerefTVars, || {
@@ -998,6 +1055,17 @@ fn pooled_leaves(
     ) -> Result<bool> {
         let admitted = match sp {
             StructPatternNode::Bind(_) | StructPatternNode::Ignore => None,
+            // CR claude for claude: [bug/medium] `leaf` recurses into a tuple or struct
+            // position, but not into an abstract constructor pattern there. `Box(true)`
+            // under a tuple falls to head_of, which has no head for it, and the whole
+            // arm goes unpooled. So `(Box(true), _) => 1, (Box(false), n) => n` over
+            // `(Box<bool>, i64)` is refused "missing match cases". So is `{b: Box(`A),
+            // ..}` with `{b: Box(`B), ..}`, though `children` already reads an
+            // abstract's payload and the same arms at top level are accepted. Fix: send
+            // `StructPatternNode::Abstract` to `children` here, with the tuple and
+            // struct cases. probe:
+            // design/review-2026-10-26/repro/x-rerun-3-abstract-pool-nested.gx
+            // (x-rerun-3-05)
             StructPatternNode::Slice { kind: SliceKind::Tuple, .. }
             | StructPatternNode::Struct { .. } => {
                 return crate::stack::ensure_sufficient(|| {
@@ -1211,6 +1279,19 @@ impl LiteralPool {
         let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
         // the atom pools against the one member of its shape it can match:
         // under its type test, with a head each position admits
+        // CR claude for claude: [bug/medium] An atom that can match only one member is
+        // still refused pooling, in two ways. Leaf::reachable calls a bool head at an
+        // i64 position reachable (domain None), so `(true, _)` reaches (i64, bool) as
+        // well as (bool, i64) and claim returns Unpooled. And a pooled_leaves failure
+        // on another member (a struct width the pattern does not admit) returns
+        // Unpooled instead of skipping that member. `(true, _), (false, _), (i64, bool)
+        // as t` over [(bool, i64), (i64, bool)], `Box(true), Box(false), Box<i64> as b`
+        // over [Box<bool>, Box<i64>] and `{a: true}, {a: false}, {a, b}` over [{a:
+        // bool}, {a: bool, b: i64}] are all refused as missing cases. Judge
+        // reachability from whether the position's type can hold the head, and
+        // `continue` past a member the atom cannot match. probe:
+        // design/review-2026-10-26/repro/x-typecheck-patterns-pool-member-ambiguous.gx
+        // (x-typecheck-patterns-05)
         let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
         for m in shape.members(env, scrut)? {
             if let Some(t) = explicit
@@ -1438,8 +1519,42 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 continue;
             };
             let saved = pat.bind_tentative(ctx, v, tag);
+            // CR claude for claude: [bug/medium] A reached guard gets only the
+            // tracker's bits. That tracker was built from the guard's refs before any
+            // Deref in it ran, and is never refreshed, and the guard opens no
+            // write-stamp catch-up scope (TrackedFires::open/ran) here. So a woken
+            // guard misses the fires of inputs it learns as it runs. In the probe, b
+            // moves while the guard is unreached and `count(*r)` never sees it: the
+            // select prints (9, 0) where `count(b)`, or the same count(*r) in an arm
+            // body, catches up. Fix: open and close the scope around the guard's update
+            // and call `fires.evaluated` after its first run, as the arm path does.
+            // Then pin it. probe:
+            // design/review-2026-10-26/repro/x-engine-firing-guard-deref-catchup.gx
+            // Also reported as (x-refs-catchup-06). (x-engine-firing-03)
+            // CR claude for claude: [bug/medium] A woken guard catches up only the refs
+            // its tracker named when the select was first updated. The guard never
+            // opens the write-stamp catch-up scope (TrackedFires::open/ran) and never
+            // refreshes its refs (TrackedFires::evaluated), as evaluate_arm does for an
+            // arm. So a fire it reads through a reference (`n if count(*r) > 1`) or a
+            // function value (`n if gd(n)`) while asleep is lost; the direct read and
+            // the arm-body twins both catch it up. Fix: wrap pat.update in
+            // fires.open/fires.ran and call fires.evaluated with the guard's refs
+            // afterwards, then pin both cases beside guard_below_the_claim_sleeps. Both
+            // engines agree, so the fuzzer cannot see it. probe:
+            // design/review-2026-10-26/repro/tests-select-sleeping-guard-misses-learned-inputs.gx
+            // (tests-select-01)
             let caught_up = fires.deliver(ctx, i);
             let t = match std::mem::replace(&mut asleep[i], false) {
+                // CR claude for claude: [bug/medium] A guard the chain did not reach at
+                // birth is first run here under View::Wake, but an arm's first entry is
+                // a Step (`entered`). The guard's constants stand, so a stateful
+                // builtin over a constant never produces. `n if count(5) == 1` then
+                // stays never-produced and leaves the select bottom at every reach of
+                // its arm, while the arm-body twin `n => count(5)` gives 1. Fix: record
+                // whether each guard ever ran (an enum instead of the `asleep` bool)
+                // and run its first reach as a Step. probe:
+                // design/review-2026-10-26/repro/tests-select-guard-first-reach-is-a-wake.gx
+                // Also reported as (x-engine-firing-02). (tests-select-02)
                 true => ctx.under(View::Wake, |ctx| pat.update(ctx)),
                 false => pat.update(ctx),
             };
@@ -1564,6 +1679,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
+                // CR claude for eric: [bug/high] An arm's `entered` bit is never reset,
+                // so a select inside a seq step enters its arms as a Wake from the
+                // second run on whenever the scrutinee arrives after the step's entry
+                // cycle (an async call, a timer). A constant write or constant-argument
+                // effect in the arm then fires on the first run that takes the arm and
+                // never again. The check stays silent, because typecheck0 exempts
+                // CFlag::SeqStep on the claim that a step is born at every run.
+                // CallSite::update_call reborns on `woke && ctx.event.born()`; doing
+                // the same here (clear `entered` and the guard sleep state when the
+                // select wakes under a born view) makes the arm's first entry in each
+                // run a Step. Needs your ruling on whether an arm entered in a reborn
+                // step is born; add a seq_steps pin either way. probe:
+                // design/review-2026-10-26/repro/c-select-seq-step-arm-write-once.gx
+                // (c-select-seq-01)
                 let view = match std::mem::replace(&mut entered[i], true) {
                     true => {
                         if !sleep_on_deselect[i] {
@@ -1574,6 +1703,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                             false => View::Wake,
                         }
                     }
+                    // CR claude for eric: [bug/medium] An arm's first entry under a
+                    // Birth (a fresh collection slot, a callee instance bound at run
+                    // time, a REPL input) runs as Birth join Step = Step, so it reads
+                    // standing values stale while the rest of the same born subtree
+                    // reads them as delivered. `{ b <- k ~ b + 1 }` therefore fires in
+                    // a new slot, but the same statement inside `select e { _ => .. }`
+                    // in that slot does not. Taking View::Birth here when the enclosing
+                    // view is Birth would make the two agree; alternatively make
+                    // View::join(Birth, Step) Birth if the rule should be general. Your
+                    // ruling: which does an arm born with its subtree see? probe:
+                    // design/review-2026-10-26/repro/c-select-seq-arm-in-birth-reads-stale.gx
+                    // (and c-select-seq-arm-in-birth-instance.gx) (c-select-seq-02)
                     false => View::Step,
                 };
                 // XCR claude for claude: [bug/medium] An arm's tracked inputs come from
@@ -1871,6 +2012,19 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         // a partial struct over Any has no struct type to
                         // complete it, so its test would be the exact struct
                         // of the fields it names
+                        // CR claude for claude: [bug/high] This refusal looks only at a
+                        // top-level `StructurePattern::Struct { exhaustive: false, ..
+                        // }`. A partial struct nested in a tuple, variant or slice over
+                        // an `Any` scrutinee is not completed either:
+                        // `complete_type_predicate` finds no member under Any. So it
+                        // falls through to `Ok(None) => ()`, and its runtime test is
+                        // the exact struct of the named fields. Over `(1, {a: 1, b:
+                        // 2})` the arm `(_, {a, ..})` misses while `(_, {a, b})` hits.
+                        // Test `spec_pat.structure_predicate.has_partial_struct()` here
+                        // instead, as the let path in node/bind.rs already does, so the
+                        // nested case gets this same refusal. probe:
+                        // design/review-2026-10-26/repro/t-parser-b-nested-partial-struct-any.gx
+                        // (t-parser-b-01)
                         Ok(None)
                             if matches!(
                                 spec_pat.structure_predicate,

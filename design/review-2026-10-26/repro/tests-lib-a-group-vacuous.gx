@@ -1,0 +1,23 @@
+// Title: lib_tests::array::group_answers_only_a_waiting_element cannot fail.
+// This is the fixture with the old bug emulated: `fake` emits the empty
+// group [] in the cycle the `limit` write lands (c = 6), which is when the
+// pre-fix Group delivered it. run! judges only the FIRST update, and the
+// fixture's `select c { 6 => log, .. }` fires in that same cycle, before
+// `log <- g ~ ..` lands the [] a cycle later.
+// Command: timeout -s KILL 30 graphix --no-cache tests-lib-a-group-vacuous.gx
+// Expected (for the pin to bite): first update [[1, 2, 3], []]
+// Observed: [[1, 2, 3]] then [[1, 2, 3], []] -- the first, the one run!
+// asserts on, is the passing value. With the counter run to 8 and the
+// select on `8 => log`, the first update is [[1, 2, 3], []].
+let c = 0;
+c <- select c { n if n < 6 => n + 1, _ => never() };
+let limit = 3;
+let x = array::iter([1, 2, 3]);
+let g = array::group(x, |n, x| n >= limit);
+limit <- select c { 5 => 1, _ => never() };
+let fake: Array<i64> = select c { 6 => [], _ => never() };
+let g2 = any(g, fake);
+let log: Array<Array<i64>> = [];
+log <- g2 ~ array::push(log, g2);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select c { 6 => log, _ => never() }

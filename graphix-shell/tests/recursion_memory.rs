@@ -15,6 +15,13 @@ use std::{
 const DEPTHS: [i64; 3] = [1, 5_000, 20_000];
 /// What an interpreted activation of a three-arm function may cost: about
 /// 8.7KB measured, with a margin.
+// CR claude for claude: [doc-drift/low] The "about 8.7KB measured" above is stale. At
+// HEAD the dev-profile binary measures 11964 B per activation below 5000 deep and 11724
+// B above, 97% of this 12288 B ceiling, so the next few hundred bytes added to an
+// activation fail the plain gate. Re-measure, write the current figure, and choose the
+// ceiling as part of x-fix-nodes-03's decision on activation cost, with a real margin.
+// probe: design/review-2026-10-26/repro/tests-shell-compiler-activation-cost.py
+// (tests-shell-compiler-04)
 const MAX_BYTES_PER_ACTIVATION: i64 = 12 * 1024;
 
 /// The peak RSS in KB of `f(depth)`, which must compute its sum.

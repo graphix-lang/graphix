@@ -191,6 +191,13 @@ async fn caught_panics_do_not_leave_the_display_cooked() -> anyhow::Result<()> {
         })
         .await?
     {
+        // CR claude for claude: [test-gap/low] This is the only check of this test, and
+        // it also passes when the child ran nothing. If the name passed to in_child, or
+        // the terminal_test module path, stops matching, the child's `--exact` filter
+        // selects 0 tests and libtest exits 0. With no input to type, nothing else
+        // fails. Assert that the child's stdout reports "1 passed", here or in in_child
+        // for every child that exits successfully. Found by reading; not run.
+        // (tests-tui-02)
         assert!(output.status.success(), "{output:?}");
     }
     Ok(())

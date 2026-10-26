@@ -1,0 +1,24 @@
+// Title: the Collection trait's derived map (and filter) no longer fuse: their
+// filter_map callback returns `Keep, which emit_filter_map_kind sends to the node-walk.
+// Command: timeout -s KILL 180 /home/eric/tmp/review-2026-10-26/bin/graphix-fuzz run f-call-flow-keep-derived-map-defuses.gx
+// Expected: Jit/InLanguage: Trace([0:[1, 2, 0] 1:[2, 3, 2] 2:[3, 4, 4]]) (the map fuses, as
+//   the derived map did before filter_map's `Keep; design/collection_intrinsics.md promises
+//   the trait's map default fuses at parity with the intrinsic).
+// Observed: Jit/InLanguage: CompileErr(.. #[native] expression did not fully fuse to native
+//   code: - emit_clif: lambda call site `array::filter_map(b.0, f)` not discovered — subtree
+//   node-walks). Collection::filter on the same Bag fails the same way. The reason named
+//   is "not discovered", not the `Keep callback.
+type Bag<'a> = Abstract<Array<'a>>;
+impl Collection for Bag<'_> {
+  let fold = |b, init, f| array::fold(b.0, init, f);
+  let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+  let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+};
+let g = |xs: Array<i64>, k: i64| -> Array<i64> {
+  let b = Bag(xs);
+  #[native]
+  Collection::map(b, |x| x + k).0
+};
+let n = 0;
+n <- select n < 2 { true => n + 1, false => never() };
+g([1, 2, n], n)

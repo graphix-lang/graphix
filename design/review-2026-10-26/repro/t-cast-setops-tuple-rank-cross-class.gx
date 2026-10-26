@@ -1,0 +1,10 @@
+// Title: a union read ranks a tuple of the data's length first even when its elements must leave their class (2 -> "2")
+// Command: timeout -s KILL 20 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-cast-setops-tuple-rank-cross-class.gx
+// Expected: [<1, 2>] and [1, 2.5] read back as written (each element reads in its own class as List<i64> / Array<[i64, f64]>)
+// Observed: [[1, 2], [1, 2.5]] reads back as [(1, "2"), (1, "2.5")]; `back == vs` is false
+type T = [List<i64>, (i64, string), Array<[i64, f64]>];
+let vs: Array<T> = [[<1, 2>], [1, 2.5]];
+let s = json::write_str(vs)$;
+let back: Array<T> = json::read(s)$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("[s] [back] [back == vs]")

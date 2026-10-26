@@ -544,6 +544,12 @@ fn gen_slots(
         } else if chance(rng, cfg.p_error_lambda) {
             stmts.extend(funcs::gen_error_arm_lambda(ctx, rng, cfg, stats));
         } else if !ctx.codecs && chance(rng, cfg.p_catch) {
+            // CR claude for claude: [structure/low] This error-sink-plus-counter is
+            // written again, statement for statement, in reactive.rs's template, and it
+            // is the only slot template inlined in gen_slots and the only one naming
+            // its bindings from stmts.len() rather than ctx.fresh(). Move it into a
+            // funcs.rs emitter built on one catch_counter helper that reactive.rs calls
+            // too. Found by reading; not run. (fuzz-gen-a-07)
             let n = stmts.len();
             let acc = format!("cerr{n}");
             stmts.push(format!("let {acc}: Error<Any> = never()"));
@@ -680,6 +686,12 @@ fn observe(ctx: &GenCtx, mark: usize) -> Vec<String> {
         if let Entry::Val(t) = e
             && t.printable()
         {
+            // CR claude for claude: [test-gap/low] For a GenType::Ref binding this
+            // prints `&ref`, the same text whatever the reference names, so a moving or
+            // place reference that reads the wrong target in one engine or session
+            // never shows on stdout. Print `[*{n}]` for references instead. probe:
+            // design/review-2026-10-26/repro/fuzz-gen-a-observe-ref.gx (`[r]` prints
+            // &ref twice, `[*r]` prints 1 then 2) (fuzz-gen-a-05)
             out.push(format!("println(\"[{n}]\")"));
         }
     }

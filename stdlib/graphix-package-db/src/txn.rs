@@ -213,6 +213,13 @@ impl TxnState {
             trees[..self.trees.len()].iter().map(|t| self.db.watches(t)).collect();
         let locked: SmallVec<[_; 4]> =
             watches.iter().map(|w| &**w).zip(trees.iter()).collect();
+        // CR claude for claude: [structure/low] This block repeats import_data's
+        // watched transaction: watches per tree, the zip into `locked`, the RefCell
+        // around `changes`, the clear on each sled attempt and the clear on failure.
+        // Both copies must stay in step for subscribers to get exactly the applied
+        // changes. Move it into one watch.rs function taking the trees, how many are
+        // watched and the per-attempt body, and call it from here and from import_data.
+        // Found by reading; not run. (db2-05)
         let res = watch::write(&locked, |changes| {
             let changes = RefCell::new(changes);
             let res = (&trees[..]).transaction(|tx| self.check_and_apply(tx, &changes));
@@ -225,6 +232,16 @@ impl TxnState {
             Ok(()) => {
                 // applied and visible either way: a failed flush is its own
                 // outcome, never a DbErr a retry would apply again
+                // CR claude for claude: [perf/low] This fsync runs under `creating`,
+                // which TxnState::commit holds, so every commit, import, db::tree open
+                // and drop_tree waits on it. Concurrent commits fsync one after another
+                // instead of sharing one make_stable. A commit with no writes and no
+                // new meta flushes too. commit also runs drop_unclaimed after an
+                // applied NotDurable, and its `?` can turn a Conflict or NotDurable
+                // into a DbErr, which a program would retry. Fix: let apply report
+                // applied or not, call drop_unclaimed only when not applied (log its
+                // error), release `creating`, then flush only when something was
+                // written. Found by reading; not run. (db2-04)
                 match self.db.flush() {
                     Ok(_) => Ok(Value::Null),
                     Err(e) => Ok(Value::Error(

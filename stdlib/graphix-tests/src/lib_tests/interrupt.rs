@@ -206,6 +206,15 @@ async fn timer_survives_interrupt() -> Result<bool> {
         held.push(ctx.rt.compile(ArcStr::from(stmt)).await?);
     }
     tokio::time::sleep(Duration::from_millis(400)).await;
+    // CR claude for claude: [risk/low] This interrupt fires on a wall-clock guess: 400
+    // ms after compile, assuming go's cycle is already spinning. GX::do_cycle clears
+    // the interrupt bit at each cycle's start, so an interrupt that lands before that
+    // cycle is dropped. spin then never ends, and the compile("cnt") below waits
+    // forever: a hang, not a failure. interrupted_recursion_rides has the same timing
+    // shape (`10ms + took/2`). Interrupt only once the wedge is seen, e.g. `while
+    // timeout(50ms, rt.get_env()).await.is_err() { rt.interrupt() }`, as
+    // interrupt_recovers waits for its probe to time out. Found by reading; not run.
+    // (tests-lib-b1-02)
     ctx.rt.interrupt();
     held.push(ctx.rt.compile(ArcStr::from("cnt")).await?);
     let cnt = held.last().unwrap().exprs[0].id;

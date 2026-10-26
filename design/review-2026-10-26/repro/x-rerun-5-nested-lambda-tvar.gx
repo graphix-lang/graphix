@@ -1,0 +1,13 @@
+// Title: a type variable two lambdas inside its definition is a fresh variable, not the definition's (c-lambda-02 variant)
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/x-rerun-5-nested-lambda-tvar.gx
+// Expected (CLAUDE.md: a name a definition around it declares, and the written place
+//   does not declare itself, is that definition's variable): refused at g("s"),
+//   "type mismatch 'a: i64 does not contain string", as it is when the inner lambda
+//   sits directly in mk's body (`'a: Number |k: 'a| |x: 'a| [x, k]`).
+// Observed: accepted; prints ["s", 1]. The middle lambda's instance is built at the
+//   call site `mk(1)(0)`, whose ctx.body chain does not contain mk, so make_init's
+//   `enclosing` (taken from ctx.body at instantiation) omits mk's signature.
+//   Same with `{ let h = |y: i64| |x: 'a| [x, k]; h(0) }` as mk's body.
+let mk = 'a: Number |k: 'a| |y: i64| |x: 'a| [x, k];
+let g = mk(1)(0);
+g("s")

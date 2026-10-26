@@ -1,0 +1,25 @@
+// db keys of an abstract type with an Eq impl are told apart by their Cast data, where the language (and a Map) says they are one key
+// cmd: rm -rf /home/eric/tmp/review-2026-10-26/review/work/http-sqlite-db1/rev; mkdir -p /home/eric/tmp/review-2026-10-26/review/work/http-sqlite-db1/rev;
+//      timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/http-sqlite-db1-abstract-eq-key.gx
+// expected: db get X: lower   (Key("x") == Key("X"), and a Map holds them as one key)
+// observed: lang: true; map {Key("X") => 2}
+//           db get X: null
+type Key = Abstract<string>;
+impl Cast for Key {};
+impl Eq for Key {
+  let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0)
+};
+impl Ord for Key {
+  let cmp = |a, b| select (str::to_lower(a.0), str::to_lower(b.0)) {
+    (x, y) if x < y => `Less,
+    (x, y) if x > y => `Greater,
+    _ => `Equal
+  }
+};
+let db = db::open("/home/eric/tmp/review-2026-10-26/review/work/http-sqlite-db1/rev/db")$;
+let t: db::Tree<Key, string> = db::tree(db, "t")$;
+let ins = db::insert(t, Key("x"), "lower")$;
+println("lang: [Key("x") == Key("X")]; map [{Key("x") => 1, Key("X") => 2}]");
+println("db get X: [db::get(t, ins ~ Key("X"))]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+null

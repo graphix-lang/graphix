@@ -1,0 +1,26 @@
+// Title: a labeled default whose parameter type is tied to the value's
+// return type is not judged against it where a fn type hides the label:
+// the check accepts, the node-walk produces an i64 typed as a string, and
+// the JIT reads that i64 as an ArcStr (misaligned pointer dereference,
+// abort).
+// callsite::callee_param builds the fresh instance a hidden default is
+// judged against from the site's PARAMETERS only, never its return type,
+// so `#d`'s variable is still open there and `1` fits it; the real
+// instance has it string through `-> Array<string>`.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-hidden-default-return-tie.gx   (exit 0)
+//   timeout -s KILL 5 graphix --no-cache x-typecheck-generics-hidden-default-return-tie.gx
+//   timeout -s KILL 5 graphix --no-cache --no-fusion x-typecheck-generics-hidden-default-return-tie.gx
+// Expected: refused at `let g ... = f`: the default 1 does not fit the
+//   label's type string (as `'a: Any |#d: 'a = 1, x: 'a| [d, x]` is refused
+//   there, lang probe 161 of this review).
+// Observed: check exit 0. Default run: "panicked at arcstr-1.2.0/src/
+//   arc_str.rs:1293:9: misaligned pointer dereference: address must be a
+//   multiple of 0x8 but is 0x1 ... aborting". --no-fusion prints [1, "s"]
+//   for an Array<string>. graphix-fuzz check aborts the same way.
+//   Variants: `let f = |#d = 1, x: i64| d; let g: fn(x: i64) -> string = f;
+//   str::len(g(0))` (aborts under the JIT; the node-walk never produces);
+//   `let h = |g: fn(x: 'q) -> Array<'q>, v: 'q| g(v); h(f, "s")`.
+let f = |#d = 1, x| [d, x];
+let g: fn(x: string) -> Array<string> = f;
+g("s")

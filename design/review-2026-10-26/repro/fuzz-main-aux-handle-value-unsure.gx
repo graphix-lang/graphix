@@ -1,0 +1,8 @@
+// Title: a Rust-backed handle in the watched value makes every run "disagree" with itself
+// Command: timeout -s KILL 170 graphix-fuzz check design/review-2026-10-26/repro/fuzz-main-aux-handle-value-unsure.gx
+// Expected: AGREE (both engines open the same file; the handle is the same value as the program sees it)
+// Observed: NONDETERMINISTIC — the reference disagreed with its rerun; not recorded
+//           first: Trace([3:abstract:]) / rerun: Trace([3:abstract:]); then UNSURE.
+// trace::same falls back to Value's == on a Rust-backed abstract, which is identity,
+// and trace::normalize renumbers only references and lambdas.
+sys::fs::open(`Read, "/etc/passwd")$

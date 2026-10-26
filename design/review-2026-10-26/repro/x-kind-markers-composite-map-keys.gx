@@ -1,0 +1,23 @@
+// Title: json/toml write a bare-variant or composite map key as quoted
+// Naked text that json::read/toml::read cannot read back.
+// Command: timeout -s KILL 30 graphix --no-cache x-kind-markers-composite-map-keys.gx
+// Expected: {"A":1,"B":2}, then {`A => 1, `B => 2} read back; a tuple key
+//   readable back into Map<(i64, string), i64>.
+// Observed:
+//   {"\"A\"":1,"\"B\"":2}
+//   [m] '"A"' = 1 ...
+//   error:`InvalidCast("can't cast \"\\\"A\\\"\" to [`A, `B]: no member admits it")
+//   {"[1, \"a\"]":1}
+//   error:`InvalidCast("can't cast \"[1, \\\"a\\\"]\" to (i64, string): not a tuple")
+type K = [`A, `B];
+let m: Map<K, i64> = {`A => 1, `B => 2};
+println(json::write_str(m)$);
+println(toml::write_str({m: m})$);
+let r: Result<Map<K, i64>, [`JsonErr(string), `InvalidCast(string)]> = json::read(json::write_str(m)$);
+println(r);
+let t: Map<(i64, string), i64> = {(1, "a") => 1};
+println(json::write_str(t)$);
+let rt: Result<Map<(i64, string), i64>, [`JsonErr(string), `InvalidCast(string)]> = json::read(json::write_str(t)$);
+println(rt);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

@@ -1,0 +1,17 @@
+// Title: array::dedup over an abstract type with an Eq impl is quadratic in hook dispatches
+// Command: graphix --no-cache tests-fusion-traits-dedup-eq-quadratic.gx
+//   (edit N; then delete the `impl Eq` line and run again)
+// Expected: dedup of N distinct keys costs O(N) (or O(N log N)) hook calls.
+// Observed (debug build, HEAD e6ffc6eed): with the impl, N=500 0.14 s,
+//   N=1000 0.61 s, N=2000 2.43 s (x4 per doubling); without the impl,
+//   N=2000 0.47 ms. GxAbstract's Hash hashes only the type id where an Eq
+//   impl applies, so fc_dedup's AHashSet puts every element in one bucket and
+//   compares each new element with every kept one through the Eq hook.
+type Key = Abstract<i64>;
+impl Eq for Key { let eq = |a, b| a.0 == b.0 };
+let xs = array::init(2000, |i| Key(i));
+let t0 = sys::time::now(xs);
+let d = array::len(array::dedup(xs));
+let t1 = sys::time::now(d);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(d, sys::time::diff(t1, t0))

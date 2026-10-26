@@ -1,0 +1,11 @@
+// t-seq: a step stalls on a variable only an untaken select arm reads
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-seq-untaken-arm-stalls.gx
+// expected (as `t ~ select mode { .. }` outside a seq gives): 1, 1
+// observed: nothing: the entry snapshot (pc, mode, a_val, b_val) waits for b_val
+let mode: [`A, `B] = `A;
+let a_val = 1;
+let b_val: i64 = never();
+let t = sys::time::timer(duration:20.ms, 2);
+let r = seq t { select mode { `A => a_val, `B => b_val } };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+r

@@ -1,0 +1,18 @@
+// Title: Collection's map default (filter_map with `Keep) does not fuse,
+// though lang::collection comments say the default's shape fuses.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --expand tests-lang-rest-b-keep-default-nodewalks.gx
+// Expected per the comments on filter_map_total_callback and
+// collection_newtype_defaults: builds (the default's shape fuses).
+// Observed: refused: "#[native] expression did not fully fuse to native
+// code: emit_clif: lambda call site `array::filter_map(b.0, f)` not
+// discovered -- subtree node-walks" (the same for a direct
+// `array::filter_map(a, |x| `Keep(x * 3 + 1))` under #[native]).
+type Bag<'a> = Abstract<Array<'a>>;
+impl Collection for Bag<'_> {
+    let fold = |b, init, f| array::fold(b.0, init, f);
+    let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+    let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+};
+use Collection::*;
+let b = Bag([1, 2, 3, 4]);
+#[native] map(b, |x| x * 10)

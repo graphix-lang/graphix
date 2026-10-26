@@ -1,0 +1,21 @@
+// Title: `~` banks a trigger that finds its argument never-produced, but drops one
+// that finds it bottom after it once had a value.
+// Command: timeout -s KILL 30 graphix --no-cache --no-fusion c-node-mod-bank-after-bottom.gx
+//   (the JIT run prints the same; `~` node-walks)
+// The trigger fires once, at n == 1, when v = 10 / 0 is bottom. v is 10 again at n == 2.
+// Expected (CLAUDE.md: "`e ~ v` ... banking one trigger however many find `v` absent,
+//   paid once when `v` arrives"; book select.md: "`~!` ... bottom with no bank when `v`
+//   is bottom. `~` still banks"): s prints 10 once, at n == 2; exit 4.
+// Observed: s never prints; exit 4. With z bottom from n == 0 instead (v never had a
+//   value: `select n { 0 => 0, 1 => 0, _ => 1 }`) the same trigger is banked and s
+//   prints 10: Sample::update answers the trigger from the held stale value, consuming
+//   the debt, even though arg.tag is bottom.
+let t = sys::time::timer(duration:20.ms, 4);
+let n = 0;
+n <- t ~ n + 1;
+let z = select n { 1 => 0, _ => 1 };
+let v = 10 / z;
+let trig = select n { 1 => null, _ => never() };
+let s = trig ~ v;
+sys::exit(sys::time::after_idle(duration:200.ms, n));
+s

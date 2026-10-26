@@ -852,6 +852,12 @@ where
     let n_disc = cx.b.ins().select(oversize, forced_disc, n_disc);
     let n = cx.b.ins().select(oversize, zero, n);
     let flags = SlotFlags::new(cx, n, LoopKind::Slots);
+    // CR claude for claude: [dead/low] [dead/low] These four lines do nothing. Folding
+    // STALE into the accumulator (an AND that starts at STALE) changes nothing, and the
+    // oversize TAINT already rides `n_disc`, forced above, which emit_init_kind hands
+    // to `SlotFlags::apply` as `src`; apply ORs its TAINT into the result. Delete the
+    // three constants and the `flags.accs.fold` call. Found by reading; not run.
+    // (f-scaffold-body-01)
     let stale = cx.b.ins().iconst(types::I64, STALE);
     let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
     let disc = cx.b.ins().select(oversize, tainted, stale);
@@ -1090,6 +1096,15 @@ pub(crate) enum FoldAcc<'a> {
     /// An owned two-word Value. Its real value disc varies per
     /// iteration (a nullable acc alternates Null and its value), so the
     /// disc Variable carries the whole disc, never a re-based constant.
+    // CR claude for claude: [structure/low] [structure/low] The init/body sources here
+    // repeat an ownership rule that already lives elsewhere. For Composite they come
+    // from `body::slot_source`, which re-derives `emit_into_slot`'s `Slotted::source`
+    // ahead of time, while the fold's operand closure calls `emit_into_slot` and throws
+    // that source away. For Value both are always `Owned`. If the two rules ever drift,
+    // the fold drops an acc it only borrowed. Have the init/body closures return the
+    // `Slotted` source and make the acc owned from it, then delete `slot_source`, these
+    // fields and the `init_src()`/`body_src()` accessors. Found by reading; not run.
+    // (f-scaffold-body-02)
     Value { init_src: CompositeSource, body_src: CompositeSource },
 }
 

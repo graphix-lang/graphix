@@ -83,6 +83,12 @@ pub(super) fn emit_outlined(
     *cx.ctx.closed_frame.borrow_mut() =
         Some(ClosedFrame { depth: 1, len: lp.len, src_disc: lp.src_disc, pending });
     cx.emit_slot_truncates()?;
+    // CR claude for claude: [risk/low] The frame's local section is laid out here and
+    // again in emit_chunk, each by its own handed() call. They agree only because
+    // nothing between the two binds a local. Collect the handed locals once, before
+    // emit_chunk, and pass the same list to both. Otherwise a later change can make the
+    // chunk read other locals' words as pointers, with nothing to catch it. Found by
+    // reading; not run. (f-call-flow-05)
     let locals: SmallVec<[ValueVar; 16]> =
         handed(cx.env, lp.facts).map(|l| l.words).collect();
     let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());

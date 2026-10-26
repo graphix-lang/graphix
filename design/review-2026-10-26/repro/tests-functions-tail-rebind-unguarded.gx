@@ -1,0 +1,26 @@
+// Title: tail_rebind_carries_bottom still passes when its tail loop node-walks
+// Command: graphix-fuzz run tests-functions-tail-rebind-unguarded.gx
+// This is the fixture with `0 => x` changed to `0 => x + count(0) * 0`, which
+// keeps the value and makes `f` stateful, so f's native loop is not built.
+// Expected (for a guard on the fixture's subject): FuseExpect::Jit fails.
+// Observed: Trace([6:(null, 7)]) in both engines and "fusion: attempted=12
+//   fused=5": other regions fuse, so FuseExpect::Jit holds and the fixture
+//   passes with no native loop in it. `#[native] f(3, 7, k)` in the original
+//   fixture builds today (graphix --no-cache --expand), so the guard costs nothing.
+
+{
+  let rec f = |n: i64, x: i64, k: i64| -> i64 select n {
+    0 => x + count(0) * 0,
+    _ => f(n - 1, select n { m if m == k => null$, _ => x }, k)
+  };
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let k = 2;
+  k <- select step { 3 => 9, _ => never() };
+  let r = f(3, 7, k);
+  let obs: [i64, null] = null;
+  obs <- r;
+  let first: [i64, null] = never();
+  first <- select step { 1 => obs, _ => never() };
+  select step { 6 => (first, obs), _ => never() }
+}

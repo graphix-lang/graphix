@@ -837,6 +837,11 @@ run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
 async fn raises_once_per_slot(code: &str, mode: Mode) -> Result<()> {
     let (values, _) =
         super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit).await?;
+    // CR claude for claude: [style/low] `as_i64s` is already imported at the top; here
+    // and in default_fires_at_first_dispatch and rebind_reads_quiet_args it is still
+    // written with its full path. `super::dense_deltas::run_delta`/`run_delta_fused`
+    // also appear at five call sites: import them once in the top-level use group.
+    // Found by reading; not run. (tests-functions-10)
     assert_eq!(graphix_package_core::testing::as_i64s(&values), [0, 1, 2, 3, 4]);
     Ok(())
 }
@@ -954,6 +959,12 @@ run!(
 );
 
 // A non-tail recursion's result as a fold's init: the fold fires.
+// CR claude for claude: [test-gap/medium] This fixture cannot fail on its subject: the
+// callback never reads acc, so the fold yields 42 with any init. A recursion whose base
+// arm bottoms gives 42 too, in both engines, and so does `never<i64>()` as the init.
+// Read the accumulator and pin the exact value: `|acc, x| acc + x` gives 32937. probe:
+// design/review-2026-10-26/repro/tests-functions-fold-init-vacuous.gx
+// (tests-functions-04)
 const NONTAIL_RESULT_AS_FOLD_INIT: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
@@ -1177,6 +1188,12 @@ run!(rec_transient_capture_wake, REC_TRANSIENT_CAPTURE_WAKE, prints("[i64:100, i
 
 // State inside a recursive function persists across fires: three
 // levels of count step across three fires, sums [3, 6, 9].
+// CR claude for claude: [test-gap/low] No fixture pins 'shrink = delete': a depth left
+// unreached for a cycle starts fresh when it is reached again, while a depth still
+// reached keeps its state. `t = array::iter([3, 1, 3, 0, 3]); let rec f = |n: i64| ->
+// i64 select n { 0 => 0, _ => count(n) + f(n - 1) }; f(t)` traces 3, 2, 6, 0, 6 in both
+// engines today. Pin it with run_delta here. Probe: graphix-fuzz run of that program,
+// AGREE. (tests-functions-08)
 const REC_TRANSIENT_STATEFUL_RETAINED: &str = r#"
 {
   let go = 0;
@@ -1775,6 +1792,13 @@ const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] This fixture's subject is the native loop, but
+// FuseExpect::Jit passes when any region fuses. With f made stateful (no loop built), 5
+// other regions still fuse and the fixture passes. Write `let r = #[native] f(3, 7,
+// k);`, which builds today. TAIL_LOOP_DEEP needs the same: `#[native] count(500000,
+// 0)`, since the node-walk also finishes it under the timeout. probe:
+// design/review-2026-10-26/repro/tests-functions-tail-rebind-unguarded.gx
+// (tests-functions-05)
 run!(tail_rebind_carries_bottom, TAIL_REBIND_CARRIES_BOTTOM, prints("[null, i64:7]"); FuseExpect::Jit);
 
 // An omitted default is checked against its own parameter, found by
@@ -2023,6 +2047,16 @@ run!(
 
 // Nor one a reference holds: the callee could write the wider type
 // through it.
+// CR claude for eric: [bug/medium] This pins a refusal for read-only `&'a` formals, and
+// its reason is wrong: nothing can write through a `&'a`, only through `&mut`. The
+// refusal also depends on argument order: `f(r, n)` is refused, but `f(n, r)` is
+// accepted and yields 0, because callsite.rs `holds_invariantly`/`data_positions` treat
+// every `ByRef` as fixing 'a and the first argument wins. CLAUDE.md says the arguments
+// settle 'whatever the order the call writes'. Decide: either a read-only `&` holds 'a
+// as data (covariant, so widen and flip this fixture to accept), or both orders are
+// refused. Then rewrite this fixture: with `&mut 'a` it says what its comment says.
+// probe: design/review-2026-10-26/repro/tests-functions-readonly-ref-order.gx
+// (tests-functions-02)
 run!(
     reference_variable_does_not_widen,
     r#"{
@@ -2987,6 +3021,10 @@ run!(quantified_lambda_through_a_builtin_callback, r#"{
 // A compile job stolen while a statement waits in a join runs under its
 // own context: the defaults in check are the compile's, not the
 // thread's, so every `f(i)` omitting `#k` resolves statically and fuses.
+// CR claude for claude: [structure/low] These 60 statements and the 60-name array
+// differ only in their index. Generate the source in a small helper (format_compact!
+// per index, joined), so the count is one number and the fixture shows what it varies.
+// Found by reading; not run. (tests-functions-09)
 run!(omitted_defaults_resolve_under_stolen_jobs, r#"{
   let f = |#k = 1, x: i64| -> i64 { let a = x + k; let c = a * 3; let b = c * 2; b };
   let r0 = #[native] f(0);

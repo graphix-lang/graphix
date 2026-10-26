@@ -113,6 +113,12 @@ async fn error_bar_renders() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] This passes whether the line is dashed, solid or
+// not drawn. draw_xy_chart records plot_info before any series is drawn, and a series
+// error only reaches annotate's log. No other test looks at a dashed line's pixels.
+// Fix: screenshot a magenta dashed_line(#dash: 10.0, #gap: 10.0) and a magenta solid
+// line over the same points, as line_pixels does. Assert the dashed count is above zero
+// and well below the solid count. Found by reading; not run. (tests-gui-b-03)
 async fn dashed_line_renders() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
@@ -694,6 +700,18 @@ async fn numeric_and_datetime_series_do_not_mix() -> Result<()> {
 
 /// A surface draws from its grid whatever order its axes run in.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/medium] This pin cannot fail except by a panic.
+// draw_3d_chart never sets plot_info, so draw() returns None for every 3D chart, and
+// the result is discarded. The defect it pins (a descending grid drawn with the first
+// row's z everywhere, design/review-2026-10-05/repro/gui-chart-08.rs) draws a wrong
+// picture without panicking, so the test passes with it back. mesh_style_3d and the 3D
+// case of zero_and_negative_mesh_counts_draw have the same problem.
+// invalid_3d_points_are_omitted_and_break_lines compares against charts that draw no
+// series, so it passes if Line3D, Surface or Scatter3D draw nothing. Fix: fix all three
+// ranges and screenshot, as assert_same_series_pixels does. Assert the descending
+// surface differs from the same grid with every z set to the first row's z, and from an
+// axes-only 3D chart. Add the same 'differs from empty' control to the invalid-3D
+// comparisons. Found by reading; not run. (tests-gui-b-02)
 async fn a_descending_surface_draws() -> Result<()> {
     let h = chart_harness(
         "&[surface(#color_by_z: true, &[\

@@ -1,0 +1,8 @@
+// Title: a dead or-alternative after its arm's own earlier alternative is reported as "will never match []"
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --check x-typecheck-patterns-or-alt-empty-diag.gx
+// Expected: refused, naming the cause: `A is covered by the first arm.
+// Observed: "unreachable or-pattern alternative: `A will never match [], unused match cases":
+//   the arm's `C alternative was taken off what reaches before `A was tested, so the
+//   message prints the empty remainder, which reads as an empty scrutinee type.
+let f = |x: [`A, `B, `C]| select x { `A | `B => 1, `C | `A => 2 };
+f(`A)

@@ -1,0 +1,17 @@
+// x-async-io: queuefn banks one credit per idle trigger fire without bound,
+// so after idle ticks a burst of calls is released in one tick
+// Run: timeout -s KILL 30 graphix --no-cache x-async-io-queuefn-unbounded-credit.gx
+// design/queue_fn.md's example says "at most one release per tick".
+// Observed: five calls made after six idle ticks all answer within tick 6
+// (r=1..5 printed with ticks=6).
+let tick = sys::time::timer(duration:50.ms, 10);
+let ticks = 0;
+ticks <- tick ~ ticks + 1;
+let q = queuefn(#trigger: tick, |x: i64| -> i64 x);
+let c = 0;
+c <- select (ticks, c) { (t, k) if t >= 6 && k < 5 => k + 1, _ => never() };
+let x = select c { 0 => never(), k => k };
+let r = q(x);
+println("ticks=[ticks] r=[r]");
+sys::exit(sys::time::after_idle(duration:200.ms, tick ~ 0));
+r

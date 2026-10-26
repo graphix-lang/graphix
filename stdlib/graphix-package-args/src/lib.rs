@@ -262,6 +262,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
             return self.out.ride();
         };
         let spec = tv.value_cloned();
+        // CR claude for claude: [bug/low] Only the first spec a call site receives is
+        // ever parsed: a later fire of cmd rides the old answer, and neither
+        // args/mod.gxi nor the book says so. The parse is a pure function of cmd and a
+        // constant argv, so parse on every fire and drop the FireOnce state, or
+        // document the once. probe:
+        // design/review-2026-10-26/repro/gx-stdlib-args-parse-once.gx (gx-stdlib-06)
         if !self.once.take() {
             return self.out.ride();
         }

@@ -45,6 +45,16 @@ impl Lives {
 
     /// The binding `id` is deleted: true when a reference still names it,
     /// whose value then goes with the last such reference.
+    // CR claude for eric: [bug/medium] An orphan whose own stored value holds a copy of
+    // the reference that pins it is never released. Its value keeps the Keep alive, and
+    // the Keep keeps the value. A slot doing `x <- {me: &x, data: ..}` leaks x's value
+    // and the cell's entries each time it is deleted (about 800 MB per 100 cycles in
+    // the probe, against a flat run with `me: null`). Either collect such cycles in
+    // ExecCtx::release_references, for example by releasing orphans pinned only from
+    // orphaned values, or rule the leak acceptable and document it in
+    // design/place_references.md. probe:
+    // design/review-2026-10-26/repro/x-refs-catchup-self-ref-leak.gx
+    // (x-refs-catchup-02)
     pub fn orphan_if_pinned(&self, id: BindId) -> bool {
         let mut st = self.0.lock();
         let pinned = st.pins.contains_key(&id);
@@ -125,6 +135,18 @@ impl PartialOrd for Reference {
     }
 }
 
+// CR claude for eric: [bug/medium] References typed Any still sort, key maps and dedup
+// through this impl, by the cell id that ByRef::compile mints. Slot instances compiled
+// or bound on forked branches mint those ids in scheduling order, so array::sort of an
+// Array<Any> of references differs between serial and parallel runs and from run to run
+// (force: a different order on each of 5 runs; off: always slot order). This
+// contradicts design/parallel_eval.md §8, which says reference ids reach no sort.
+// CLAUDE.md admits the problem only for functions under Any, and the fuzzer misses it
+// because oracle_tier excludes Any + sort programs. Needs a ruling: refuse ordering a
+// reference under Any, order references deterministically, or document the case beside
+// functions. probe:
+// design/review-2026-10-26/repro/x-parallel-any-ref-sort-nondeterministic.gx
+// (x-parallel-02)
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
         self.cell.cmp(&other.cell)

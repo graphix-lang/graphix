@@ -1,0 +1,28 @@
+// Title: a pattern's constructor under a nested union narrows to the union's
+// FIRST matching member, so the arm refuses values of the others.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache c-pattern-nested-union-first-member.gx
+//   (the same with --no-fusion)
+// Expected: every arm matches both members (the patterns are irrefutable
+//   below the outer constructor; `a` is [i64, string]):
+//   ["one 1", "one s", "f 1", "f s", "t 1", "t s", "v 1", "v s"]
+// Observed (both engines): ["one 1", "other", "f 1", "other", "t 1", "other", "v 1", "other"]
+//   `a` is typed i64 and the arm's predicate tests (i64, i64), so ("s", "t")
+//   falls to the fallback arm. Without the `_` arm each select is refused:
+//   "missing match cases: no arm covers `A([(i64, i64), (string, string)])".
+// Under a slice with a rest it is unsound: in
+//   let g = |v: Array<[{a: i64, b: string}, {a: string, b: i64}]>|
+//     select v { [{a, b}, ..] => a + 1, [] => -1 };
+//   g([{a: "q", b: 1}])
+// `a` is typed i64 and the run-time test (the element union, see
+// x-typecheck-patterns-01) admits the second member: the JIT panics
+// "kernel param `a`: runtime String("q") does not match the compiled
+// Scalar(I64) slot"; the node-walk logs an arith error parsing "q".
+// The same pattern at the top level, `select y { (a, _) => .. }` over
+// [(i64, i64), (string, string)], types `a` as [i64, string] and matches both.
+type P = [(i64, i64), (string, string)];
+let f = |x: Array<P>| select x { [(a, _)] => "one [a]", _ => "other" };
+let g = |x: {f: P}| select x { {f: (a, _)} => "f [a]", _ => "other" };
+let h = |x: (P, i64)| select x { ((a, _), _) => "t [a]", _ => "other" };
+let k = |x: `A(P)| select x { `A((a, _)) => "v [a]", _ => "other" };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[f([(1, 2)]), f([("s", "t")]), g({f: (1, 2)}), g({f: ("s", "t")}), h(((1, 2), 0)), h((("s", "t"), 0)), k(`A((1, 2))), k(`A(("s", "t")))]

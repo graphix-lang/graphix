@@ -78,6 +78,21 @@ pub fn char_col_to_position(
 
 /// A document's lines as LSP numbers them: a line ends at "\r\n", "\r"
 /// or "\n", and what follows the last break, empty or not, is a line.
+// CR claude for claude: [bug/low] This counts a lone \r as a line break, but the parser
+// does not, and diagnostics and query positions come from the parser. In a lone-CR
+// document, `let x = 1;\rlet y = "a" + 1;\ry` publishes its error at line 0, character
+// 10, instead of line 1, characters 8..15. Have the parser count \r as a line break, or
+// translate parser positions through this function before they reach the client. probe:
+// design/review-2026-10-26/repro/x-rerun-5-lsp-lone-cr-diag.py (x-rerun-5-08)
+// CR claude for claude: [bug/low] These lines break at a lone \r, but the compiler's
+// SourcePosition starts a line only at \n. In a lone-CR document every compiler
+// position is read against the wrong line: "nope not defined" on the third line is
+// published at (0,10), and hover on line 1 answers nothing. Also text::text_between
+// (str::lines), text::use_path (split_inclusive) and text::call_context (counts \n)
+// each split lines their own way. Fix: make the parser's positioner count a lone \r as
+// a newline, so compiler lines match the client's, and route those three helpers
+// through this function. probe: design/review-2026-10-26/repro/lsp-lone-cr-positions.py
+// Also reported as (x-lsp-probe-06). (lsp-03)
 pub fn lines(text: &str) -> impl Iterator<Item = &str> {
     let mut rest = Some(text);
     std::iter::from_fn(move || {

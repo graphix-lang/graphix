@@ -163,6 +163,15 @@ where
         structure_pattern_or(),
         sptoken(')'),
     )
+        // CR claude for claude: [bug/medium] The type path's WrittenPath is discarded
+        // here and in `construct` in parser/mod.rs. Neither StructurePattern::Abstract
+        // nor ExprKind::Construct records a TypeRefSite when it resolves the typedef.
+        // So LSP references on an abstract type `T` miss every `T(v)` and pattern
+        // `T(p)`, and go-to-definition there returns nothing. Keep the WrittenPath in
+        // both nodes, as ImplExpr keeps trait_at, and push a TypeRefSite where they
+        // resolve the typedef under `env.ide.is_lsp()`. probe:
+        // design/review-2026-10-26/repro/t-parser-b-abstract-ctor-refs.py
+        // (t-parser-b-04)
         .map(move |((name, _), bind, _)| StructurePattern::Abstract {
             all: all.clone(),
             name,
@@ -258,6 +267,13 @@ where
     })
 }
 
+// CR claude for claude: [bug/low] A pattern literal gets the float range note
+// (`finite`) but not the integer one. `select 1 { u8:300 => 0, _ => 1 }` is refused
+// with 'Expected whitespaces or =>' and no reason, while `let a = u8:300` says "`300`
+// is out of the range of u8". Put int_range_note behind the literal choice here as
+// `literal` does. A `duration:` literal past its range
+// (duration:99999999999999999999.s) is likewise refused with no reason. probe:
+// design/review-2026-10-26/repro/x-rerun-4-pattern-int-range-note.gx (x-rerun-4-06)
 fn literal_pattern<I>() -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

@@ -1,0 +1,12 @@
+// Title: a rank-2 argument's quantifier escapes through a variable the argument writes
+// Command: graphix --check t-fntyp-rank2-quantifier-escapes.gx ; graphix --no-cache t-fntyp-rank2-quantifier-escapes.gx
+// Expected: the check refuses `apply(|x| { r <- x; x })`: the argument is not
+//   polymorphic in 'b (r would receive both 1 and "s").
+// Observed: --check exits 0; the run refuses the instance: "an instance at
+//   fn(f: fn(x: i64) -> i64) -> (i64, string) of a definition typed
+//   fn(f: fn<'b: Any>(x: 'b) -> 'b) -> (i64, string)" (GRAPHIX_ELAB_AUDIT reports it).
+//   Writing through `*p <- x` with `let p = &mut r` escapes the same way.
+let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+let r = never();
+let t = apply(|x| { r <- x; x });
+r + 1

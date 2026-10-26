@@ -1,0 +1,12 @@
+// Title: a union trait dispatch over two function types is refused, and no test pins it
+// Command: graphix --no-cache tests-fusion-traits-union-dispatch-same-form.gx
+// Expected and observed (HEAD e6ffc6eed): refused, "a Show call over [fn(x: i64) -> i64,
+//   fn(x: string) -> i64] can't tell fn(x: i64) -> i64 from fn(x: string) -> i64: both
+//   have the same runtime form; wrap them in distinct variants". No fixture in
+//   stdlib/graphix-tests reaches Type::dispatch_collision.
+trait Show { val show: fn(self) -> string };
+impl Show for fn(x: i64) -> i64 { let show = |f| "int fn" };
+impl Show for fn(x: string) -> i64 { let show = |f| "str fn" };
+let f: [fn(x: i64) -> i64, fn(x: string) -> i64] = |x: string| str::len(x);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+Show::show(f)

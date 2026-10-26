@@ -1,0 +1,15 @@
+// A select in a generic definition that tells a quantifier 'b apart from
+// `Keep('b) is accepted, though an instance may bind 'b to a `Keep variant:
+// the arm then takes a bare 'b value apart and returns its payload as 'b.
+// The same select with `Keep(i64) in place of `Keep('b) is refused ("may
+// share `Keep(i64)'s runtime form: annotate it").
+// command: graphix --check x-engine-collections-own-cell-told.gx  (accepts)
+//          graphix --no-cache x-engine-collections-own-cell-told.gx
+// expected: the check refuses g's select (or v = `Keep(5) and 5 printed)
+// observed: v = 5, then
+//   "select v { `Keep(n) => n }: no arm matches: a coverage hole in the check"
+let g = |y: 'b, x: ['b, `Keep('b)]| -> 'b select x { `Keep(r) => r, r => r };
+let v = g(`Keep(6), `Keep(5));
+println("v = [v]");
+println("[select v { `Keep(n) => n }]");
+sys::exit(sys::time::after_idle(duration: 100.ms, 0))

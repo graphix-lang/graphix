@@ -1,0 +1,14 @@
+// Title: graphix takes `///` ending a list item's line as a comment; tree-sitter
+//        reads it as an ERROR (and graphix refuses the same `///` on its own line)
+// Command: graphix fmt --stdout design/review-2026-10-26/repro/ide-tooling-eol-triple-slash.gx
+//          tree-sitter parse --scope source.graphix design/review-2026-10-26/repro/ide-tooling-eol-triple-slash.gx
+//          (from ide/tree-sitter-graphix, with a config naming its parent as a parser directory)
+// Expected: both parsers agree (both take it, or both refuse it)
+// Observed: graphix fmt prints the program back with `/// first` kept as an
+//   end-of-line comment; tree-sitter: (ERROR [11, 9] - [11, 16]) ... the line_comment
+//   token refuses a third `/` and doc_comment is refused off a line start.
+let f = |a, b| a + b;
+f(
+    1, /// first
+    2
+)

@@ -1,0 +1,16 @@
+// c-bind: a destructuring let whose value's type is still an open cell
+// at compile (a select's, a call's result) binds that cell to the
+// pattern's shape (Bind::compile -> fits_every_member, members.len() < 2
+// -> ptyp.contains(typ)) before the value is checked, so a value that is a
+// union of two tuple (or struct) types is refused, with the error at the
+// value (here the select). `select t { (a, b) => (b, a) }` and
+// `let t: [(i64, string), (string, i64)] = ..` both accept it.
+// run: timeout -s KILL 30 graphix --no-cache c-bind-let-shape-binds-value.gx
+// expected: (2, "y")
+// observed: "type mismatch (i64, string) does not contain
+//   [(i64, string), (string, i64)]" at the select; the same with
+//   `let (a, b) = f(1)` for a function returning that union (error at `f`).
+let c = 1;
+let t = select c { 0 => (1, "x"), _ => ("y", 2) };
+let (a, b) = t;
+(b, a)

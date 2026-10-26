@@ -69,6 +69,27 @@ parser! {
         }
         // a splice prints on its string's line, where no comment can stand
         let spliced = |e: Expr| {
+            // CR claude for claude: [bug/medium] This checks only comments above a
+            // node. A comment ending a line (`Decorations::eol`) or below a list's last
+            // item (`below`) inside a splice parses and runs, but the printer writes a
+            // splice flat and drops it, so `graphix fmt` refuses the file as a
+            // "formatter bug". Refuse those too. Separately, the reason noted at
+            // `e.pos` never reaches the report when the splice spans lines, because the
+            // failure is reported at the splice's end. The user sees only "the parser
+            // could not continue past this point". Note the reason where the splice
+            // ends. probe:
+            // design/review-2026-10-26/repro/tests-expr-splice-eol-comment.gx,
+            // design/review-2026-10-26/repro/tests-expr-splice-comment-reason.gx
+            // (tests-expr-02)
+            // CR claude for claude: [bug/medium] This checks only `dec.comments`, so a
+            // comment ending a line inside a splice (`"[{ let x = 1; // hi\n x }]"`) or
+            // standing below a list in one parses. The formatter then refuses the file
+            // as its own bug. An attribute in a splice also gets through, and the
+            // printer breaks the splice across lines. Refuse any decoration with no
+            // single-line form here: comments, eol, below and attributes, or ask Eric
+            // whether attributes stay legal in splices. probe:
+            // design/review-2026-10-26/repro/t-parser-a-splice-eol-comment.sh
+            // (t-parser-a-02)
             let commented = e.fold(false, &mut |c, e| {
                 c || e.dec.as_ref().is_some_and(|d| !d.comments.is_empty())
             });

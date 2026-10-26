@@ -1,0 +1,12 @@
+// Title: a zero-argument sys::dirs call in a select arm draws the "acts only at this arm's first entry" warning
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-io-dirs-arm-spurious-warning.gx
+// Expected: no warning: home_dir acts on nothing, its value stands at every re-entry, and
+//   no event can be sampled into a call that takes no argument.
+// Observed: "WARNING at line: N, column: 25 ... this call reads no variable, so it acts only
+//   at this arm's first entry ... Sample the event that selects the arm (`k ~ v`), or use a
+//   seq", then "/home/eric", "other", "/home/eric", "other" (the value is right at re-entry).
+let x = 0;
+x <- sys::time::timer(duration:10.ms, 3) ~ (x + 1) % 2;
+let r = select x { 0 => sys::dirs::home_dir(), _ => "other" };
+sys::exit(sys::time::after_idle(duration:200.ms, r) ~ 0);
+r

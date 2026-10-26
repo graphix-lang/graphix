@@ -1,0 +1,16 @@
+// Title: a type test's bind takes the written type, not the part of the scrutinee that reaches it (errors excepted)
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --check x-typecheck-patterns-typetest-bind-not-narrowed.gx
+// Expected: accepted. Only i64 reaches `Number as n` in f, so n: i64 and n + 1 is
+//   i64 arithmetic; in g only i64 and string reach the written union, so the inner
+//   select over n is exhaustive. Running prints ([2, 0], ["i", "s", "b"]).
+// Observed: f is refused: "cannot compute [Int, Real] + i64: arithmetic is fn<'a: Number +
+//   Singleton>..." (n is the whole Number set); with f removed, g is refused "missing
+//   match cases: no arm covers f64". PatternNode::capture_type narrows a written test's
+//   bind to the reaching members only when the test is an error test.
+let f = |x: [i64, string]| select x { Number as n => n + 1, string as s => 0 };
+let g = |x: [i64, string, bool]| select x {
+  [i64, string, f64] as n => select n { i64 as a => "i", string as b => "s" },
+  bool as b => "b"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+([f(1), f("s")], [g(1), g("x"), g(true)])

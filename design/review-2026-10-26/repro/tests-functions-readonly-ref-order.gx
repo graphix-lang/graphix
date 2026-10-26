@@ -1,0 +1,13 @@
+// Title: a call's argument order decides whether read-only reference formals typecheck
+// Command: graphix --no-cache --check tests-functions-readonly-ref-order.gx
+//   (then swap the call to f(n, r) and check again)
+// Expected: both orders accepted ('a settles to [u64, null]; `&T` is covariant,
+//   so `&u64` fits `&[u64, null]`), or both refused.
+// Observed: f(r, n) refused "type mismatch &'a: u64 does not contain &[u64, null]";
+//   f(n, r) accepted and yields u64:0.
+{
+  let r: &u64 = &u64:0;
+  let n: &[u64, null] = &null;
+  let f = |x: &'a, y: &'a| -> &'a y;
+  *f(r, n)
+}

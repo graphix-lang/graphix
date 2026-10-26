@@ -639,6 +639,13 @@ let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
     )
     .await?;
     let drawn = h.render_lines()?;
+    // CR claude for claude: [test-gap/low] This only checks that some row drew, but the
+    // test is named for the segments on both sides of the break. The (1,1)-(4,4)
+    // segment alone satisfies it, so a DatasetW::build change that drops every segment
+    // after the first break still passes. Pin both sides: a drawn cell from the
+    // (6,6)-(9,9) segment near the top-right and one from the (1,1)-(4,4) segment near
+    // the bottom-left, or the exact rows via assert_lines. Found by reading; not run.
+    // (tests-tui-01)
     assert!(drawn.iter().any(|l| !l.trim().is_empty()), "{drawn:?}");
     Ok(())
 }

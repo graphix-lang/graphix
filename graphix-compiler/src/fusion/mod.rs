@@ -782,6 +782,10 @@ pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
 /// Call `f` on each tail-position leaf of `node`; returns whether any
 /// call returned true. Every Select arm is visited (no short-circuit),
 /// and `on_select` fires for each Select on the tail spine with a true leaf.
+// CR claude for claude: [dead/low] `on_select` is dead:
+// analysis::TailSelfCalls::collect, lowering::site_memory and
+// lowering::body_has_self_tail_call all pass `&mut |_| ()`. Remove the parameter and
+// its doc sentence. Found by reading; not run. (f-mod-lowering-05)
 pub(crate) fn for_each_tail_leaf<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
     f: &mut impl FnMut(&'a Node<R, E>) -> bool,
@@ -983,6 +987,14 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
 /// and the region de-fuses (never a partial kernel). A callee already
 /// in `bodies` is not re-scanned, which closes self- and mutual
 /// recursion.
+// CR claude for claude: [perf/low] Every region's discovery walks its whole transitive
+// callee closure again, building each callee's kernel lookup and enqueuing its body,
+// even when an earlier region already discovered that callee. A static call chain over
+// a leaf that does not fuse makes every level a region, so fusion is quadratic: 1500
+// functions take 13.4 s (6 s in the Callees phase) against 0.39 s with a fusable leaf.
+// Fix: cache each callee's discovered body and sites by kernel key on the emission and
+// reuse them instead of re-walking. probe:
+// design/review-2026-10-26/repro/x-stack-fusion-callee-chain.py (x-stack-05)
 pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     root: &'n Node<R, E>,
     ctx: &CompileCtx<R, E>,
@@ -1138,6 +1150,15 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     // is fed.
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
     for arg in cs.args.values_mut() {
+        // CR claude for claude: [perf/low] An argument is fed only when discovery
+        // refuses it, and discovery rejects a `~` (or Any, Never, a reference) only at
+        // its root. So `f(a, t ~ a)` fuses with its argument fed, while `f(a, (t ~ a) +
+        // 1)` passes discovery, fails at emission and keeps the call in the node-walk.
+        // Feed the argument that holds the blocker named by the failed attempt's
+        // FusionBlocker and retry once, so the rule in CLAUDE.md holds for any argument
+        // that does not emit. probe:
+        // design/review-2026-10-26/repro/f-mod-lowering-feed-nested-sample.gx
+        // (f-mod-lowering-04)
         let feed = arg.node.as_mut().is_some_and(|node| {
             let mut discovery = lowering::BuiltinCallDiscovery::default();
             lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err()
@@ -1145,6 +1166,15 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         feeds.push(feed);
     }
     let Some(last) = feeds.iter().rposition(|f| *f) else { return Ok(None) };
+    // CR claude for claude: [bug/high] The ordering check counts only handler raises. A
+    // fused argument's Io call is queued and performed after the kernel's run, while a
+    // fed argument's effects happen in its feeder before the kernel. So `f(dbg(a),
+    // dbg(once(b)))` prints b's line before a's under fusion and a's first under
+    // --no-fusion. Treat an earlier fused argument that performs (lowering::performs)
+    // like one that raises, and refuse to feed when a later fed argument performs or
+    // raises. The fuzzer cannot catch this, because its oracle ignores printed output.
+    // probe: design/review-2026-10-26/repro/f-mod-lowering-fed-arg-io-order.gx
+    // (f-mod-lowering-02)
     let mut fused_raise = false;
     for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
         let Some(node) = arg.node.as_ref() else { continue };
@@ -1625,6 +1655,10 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
             freeze_for_abi_normalized(&resolved)?
         }
     };
+    // CR claude for claude: [structure/low] This AbiKind list (everything but Unit)
+    // duplicates lowering::is_call_arg_supported. Make that function pub(crate), give
+    // it one name for both uses, and call it here so a new AbiKind is decided in one
+    // place. Found by reading; not run. (f-mod-lowering-06)
     match kernel_abi::abi_kind(&return_type) {
         Some(
             AbiKind::Scalar(_)

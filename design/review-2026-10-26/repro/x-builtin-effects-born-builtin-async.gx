@@ -1,0 +1,13 @@
+// Title: sys::args and sys::dirs::* (born_builtin) are classified Async though
+// they answer in the cycle they are born.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --expand x-builtin-effects-born-builtin-async.gx
+// Expected: builds; `cfg` is sync (its only builtin answers at its birth, the
+//   same cycle), and printing the cfg path.
+// Observed: "#[sync]: this function is async — its body reaches an async
+//   builtin or an async callee". Without the attribute, the same call in a
+//   select arm (`0 => sys::dirs::home_dir()`) draws the spurious warning "this
+//   call reads no variable, so it acts only at this arm's first entry", though
+//   the arm's value is right at every entry.
+#[sync]
+let cfg = |name: string| -> string "[sys::dirs::config_dir()$]/[name]";
+cfg("x.toml")

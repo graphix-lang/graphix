@@ -1,0 +1,17 @@
+// Title: json::read's exact-number mode is decided for the whole document,
+// so an Any-typed number is a decimal or an f64 depending on an unrelated
+// sibling field's type.
+// Command: timeout -s KILL 30 graphix --no-cache x-kind-markers-json-exact-leaks-to-any.gx
+// Expected: both lines ["f64 0.1", "f64 9007199254740994"] (an Any position
+//   holds neither an integer nor a decimal, so it reads f64, as `b` does).
+// Observed:
+//   ["decimal 0.1000000000000000000001", "decimal 9007199254740993.5"]
+//   ["f64 0.1", "f64 9007199254740994"]
+type E = [`JsonErr(string), `InvalidCast(string)];
+let a: Result<{n: i64, xs: Array<Any>}, E> = json::read(r#"{"n": 1, "xs": [0.1000000000000000000001, 9007199254740993.5]}"#);
+let b: Result<{xs: Array<Any>}, E> = json::read(r#"{"xs": [0.1000000000000000000001, 9007199254740993.5]}"#);
+let show = |v: Any| select v { f64 as f => "f64 [f]", decimal as d => "decimal [d]", _ => "other" };
+println(array::map(a$.xs, show));
+println(array::map(b$.xs, show));
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

@@ -68,6 +68,14 @@ pub struct WorkspaceModel {
     pub file_to_projects: AHashMap<PathBuf, Vec<usize>>,
 }
 
+// CR claude for claude: [perf/medium] The scan walks and parses hidden directories, and
+// ServerState::new runs it before the server answers anything. With this repository as
+// the workspace root, the 40953 .gx files under `.claude/worktrees` hold off the first
+// answer for 27 s (debug build), and every didSave re-stats them all (0.38 s). Skip
+// every dot-directory below the root in filter_entry, not only `.git` and `.cache`: no
+// module layout lives in one. probe:
+// design/review-2026-10-26/repro/x-lsp-probe-scan-hidden-dirs.py Also reported as
+// (lsp-05). (x-lsp-probe-04)
 const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor"];
 
 /// Walk each root and collect the project graph. A file unchanged since
@@ -77,6 +85,23 @@ const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor
 pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
     let mut files: AHashMap<PathBuf, WorkspaceFile> = AHashMap::default();
     for root in roots {
+        // CR claude for claude: [bug/medium] A link to a directory is not descended,
+        // but the resolver reads `mod util;` through one, so a module under a symlinked
+        // directory is a lone root: an edit to proj/util/mod.gx (proj/util ->
+        // ../shared/util) leaves main.gx unchecked until it is reopened. This is the
+        // lsp-02 failure for directories. Walk with follow_links(true); walkdir yields
+        // a loop as an error entry, which is skipped below. probe:
+        // design/review-2026-10-26/repro/x-rerun-5-lsp-symlinked-dir.py (x-rerun-5-07)
+        // CR claude for claude: [bug/medium] The scan does not descend a symlinked
+        // directory, but the resolver reads modules through one (resolve_from_files). A
+        // module under a linked directory is therefore missing from its project.
+        // Opened, it is checked as a lone script: false errors such as "`super` goes
+        // above the package root", no hover, and edits to it never recheck the real
+        // root. The earlier symlink fix covered files only. Fix: walk with
+        // `follow_links(true)`; WalkDir reports loops as error entries, which the loop
+        // already skips. Then drop the metadata special case and add an LSP test with a
+        // linked directory. probe:
+        // design/review-2026-10-26/repro/lsp-symlinked-module-dir.py (lsp-01)
         for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
             !e.file_name().to_str().map(|s| SKIP_DIRS.contains(&s)).unwrap_or(false)
         }) {

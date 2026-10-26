@@ -364,6 +364,16 @@ enum Equality {
 }
 
 impl Equality {
+    // CR claude for eric: [bug/medium] References held under Any compare by cell, not
+    // by what they name: Targets is chosen only when an operand TYPE compares_refs, and
+    // Any holds no reference statically. `let a: Any = &x; let b: Any = &x; (a == b, &x
+    // == &x)` is (false, true) in both engines, against the CLAUDE.md rule that ==
+    // compares references by what they name. Either give map_refs an Any arm that walks
+    // the value and rewrites every reference abstract it finds (chosen here when an
+    // operand type holds Any, never fused), or rule that Any compares references by
+    // cell and document and pin it. The orderings under Any order references by cell
+    // number, too. probe: design/review-2026-10-26/repro/c-error-op-any-ref-eq.gx
+    // (c-error-op-02)
     fn of(env: &Env, lhs: &Type, rhs: &Type) -> Self {
         match [lhs, rhs].into_iter().find(|t| t.compares_refs(env)) {
             Some(t) => Self::Targets(t.clone()),

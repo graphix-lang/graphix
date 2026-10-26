@@ -1,0 +1,16 @@
+// TrackedFires::last_run is the last cycle the arm was WALKED, so pruning
+// changes what wake::owed catches up (pruned != unpruned).
+// Run: graphix-fuzz check design/review-2026-10-26/repro/c-prune-wake-last-run-pruned.gx
+// x fires in the 2nd event (in1=5) while the in2 select's arm 1 is selected
+// but reads nothing of x (its callee is g0 = |v| v + 100). Unpruned, the
+// arm is walked that cycle (the one root is scheduled) and its last_run
+// moves past x's write; pruned, its statement is skipped and last_run stays
+// at its earlier run. The arm then sleeps, g moves to `|v| count(x)`, and
+// the arm wakes: the fresh callee's x is owed only in the pruned walk.
+// Expected: AGREE.
+// Observed:
+//   DIVERGENCE — walk pruning bug (pruned node-walk != unpruned node-walk)
+//   interp/unpruned: Trace([0:(1, -7)]; [0:(2, 105)]; [0:(3, 105)]; [0:(3, -7)]; []; [0:(3, -7)]; [])
+//   interp: Trace([0:(1, -7)]; [0:(2, 105)]; [0:(3, 105)]; [0:(3, -7)]; []; [0:(3, -7)]; [0:(3, 1)])
+// schedule-v1: cap=208 events=1664; in0=i64:0 in1=i64:0 in2=i64:1 in3=i64:0; in1=i64:5; in2=i64:0; in3=i64:1; in2=i64:0; in2=i64:1
+{let g: fn(v: i64) -> i64 = |v| v + i64:100; let a = select in0 {i64:0 => {let x = in1 + i64:0; g <- select in3 {i64:0 => never(), _ => |v| count(x)}; count(x)}, _ => i64:-1}; let b = select in2 {i64:0 => i64:-7, _ => g(i64:5)}; (a, b)}

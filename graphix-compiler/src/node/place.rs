@@ -126,6 +126,15 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
 
 /// `root` with the value at `path` replaced by `v`. A map step compares
 /// keys, so the caller runs this under `coretraits::with_hooks`.
+// CR claude for claude: [bug/medium] write_path recurses once per path step with no
+// stack guard, and paths compose: `&mut (*r)[0]` extends r's path, so a flat chain of
+// lets builds a path as long as the program. A 10000-step chain overflows the tokio
+// worker at the write and aborts. Each reference also clones its whole prefix, so the
+// chain's paths take O(n^2) memory: n = 20000 is OOM-killed at 6 GB. Fix: make
+// write_path iterative, collecting the spine as read_path walks it and rebuilding
+// bottom-up (or guard each level with ensure_sufficient), and share path prefixes
+// instead of copying them. probe:
+// design/review-2026-10-26/repro/x-stack-place-path-chain.py (x-stack-03)
 pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
     let Some((step, rest)) = path.split_first() else { return Ok(v) };
     if let (Step::Index(0), Some(g)) = (step, abstract_value::get(root)) {

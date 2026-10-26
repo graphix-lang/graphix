@@ -1,0 +1,17 @@
+// filter_map unwraps a bare `Keep(v) of the element type 'b: a well-typed
+// program gets Array<T> holding i64s, and a select over T matches no arm.
+// command: graphix --no-cache x-engine-collections-keep-unsound.gx
+//   (graphix-fuzz check agrees: both engines print the same wrong value)
+// expected: r = [`Keep(1), `Other, `Keep(2)] and mapped = [10, -1, 20]
+//   (or the check refusing g's instantiation at a 'b that holds `Keep)
+// observed: r = [1, `Other, 2], then
+//   "select v { `Keep(n) => n * 10, `Other => -1 }: no arm matches: a coverage hole in the check"
+//   (an abort under GRAPHIX_ABORT_ON_NO_MATCH=1)
+type T = [`Keep(i64), `Other];
+let g = |xs: Array<'b>| -> Array<'b> array::filter_map(xs, |x| x);
+let xs: Array<T> = [`Keep(1), `Other, `Keep(2)];
+let r = g(xs);
+let f = |v: T| -> i64 select v { `Keep(n) => n * 10, `Other => -1 };
+println("r = [r]");
+println("mapped = [array::map(r, |v| f(v))]");
+sys::exit(sys::time::after_idle(duration: 100.ms, 0))

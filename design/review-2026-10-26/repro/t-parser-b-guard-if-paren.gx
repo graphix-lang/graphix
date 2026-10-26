@@ -1,0 +1,9 @@
+// Title: a select guard needs whitespace on both sides of `if`, so
+// `n if(n > 1)` and `(a, b)if a > b` are refused, although `select(x)`
+// takes its keyword followed directly by a bracket.
+// Command: /home/eric/tmp/review-2026-10-26/bin/graphix --check design/review-2026-10-26/repro/t-parser-b-guard-if-paren.gx
+// Expected: check passes (the guard keyword ends at a non-identifier char).
+// Observed: Parse error at line 8, column 31: "Unexpected `i`, Expected
+//   whitespace or =>", the caret on `if`.
+let f = |x: i64| select x { n if(n > 1) => 1, _ => 2 };
+f(3)

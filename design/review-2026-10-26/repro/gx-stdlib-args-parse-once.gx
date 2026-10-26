@@ -1,0 +1,12 @@
+// args::parse answers only the first spec its call site receives: a later fire of
+// cmd is dropped (Parse's FireOnce), so a spec that changes is silently ignored.
+// Neither mod.gxi nor the book says so.
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/gx-stdlib-args-parse-once.gx
+// Expected: a second line for the second spec, {"b" => "false"}.
+// Observed: only {"a" => "false"}.
+let name = "a";
+name <- sys::time::after_idle(duration:100.ms, "b");
+let cmd = args::command(#name: name, [args::flag(#name: name)]);
+let r = args::parse(cmd);
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+select r { error as e => "err", v => "[v.values]" }

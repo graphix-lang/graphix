@@ -416,6 +416,16 @@ impl Halves {
     }
 
     /// Cancel pending reads, shut down the writer, and release both halves.
+    // CR claude for claude: [bug/medium] Only reads run under `until_closed`. write,
+    // write_exact, flush and tcp shutdown hold the writer lock across an unbounded
+    // await, so a write blocked on a peer that stopped reading makes close wait
+    // forever. The descriptor is never released, and take (seek, a TLS upgrade) blocks
+    // behind it too. Closing the stdin of a child that never reads, after a 300000-byte
+    // write_exact, never answers. Fix: run the write-side evals under `until_closed`,
+    // and drop the write half here instead of awaiting an unbounded shutdown (a TLS
+    // close_notify can block too). probe:
+    // design/review-2026-10-26/repro/x-async-io-close-blocked-by-write.gx
+    // (x-async-io-04)
     pub(crate) async fn close(self: &Arc<Self>) -> IoResult<()> {
         self.closing.store(true, AtomicOrdering::Release);
         self.closed.notify_waiters();
@@ -461,6 +471,13 @@ impl<K: StreamMark> PartialOrd for Stream<K> {
     }
 }
 
+// CR claude for eric: [bug/medium] Streams order (and hash) by heap address, and the
+// checker accepts them as Ordered, so array::sort, min/max, dedup and map keys over
+// files, sockets or std streams give a different answer from run to run. The same holds
+// for TempDirValue's random names. References are refused as Ordered for this reason.
+// Decide: refuse ordering for handle types (keep identity Eq), or order by a
+// per-runtime creation id minted in Halves::new. probe:
+// design/review-2026-10-26/repro/sys-net-stream-order-by-address.gx (sys-net-06)
 impl<K: StreamMark> Ord for Stream<K> {
     fn cmp(&self, other: &Self) -> Ordering {
         Arc::as_ptr(&self.inner).cmp(&Arc::as_ptr(&other.inner))

@@ -581,6 +581,16 @@ pub(super) fn gen_module(
             _ => {
                 let (fname, fty) = &public[rng.below(public.len())];
                 let alias = ctx.fresh();
+                // CR claude for claude: [test-gap/low] The imported name goes into the
+                // vocabulary, but nothing makes a later slot read it. Measured over 100
+                // module programs: 50 of 63 item imports are never referenced and only
+                // draw an "unused import" warning, yet the feature report counts them
+                // as `use-main` coverage. Fix: read each import right away (`let w =
+                // alias(args)`, or a let over the constant), as the abstract arm does
+                // for `mk`. List in the road-0 header only the modules the body
+                // actually references. probe:
+                // design/review-2026-10-26/repro/fuzz-gen-b-unused-imports.sh
+                // (fuzz-gen-b-03)
                 stmts.push(format!("use {mname}::{fname} as {alias}"));
                 ctx.push(alias, plain(fty));
             }

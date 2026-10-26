@@ -1104,6 +1104,12 @@ async fn a_recursive_kernel_chain_images_its_layouts_once() -> Result<()> {
         s.push_str(&format!("let x = 3;\nf{}(x)\n", n - 1));
         s
     };
+    // CR claude for claude: [test-gap/low] Nothing asserts that the chains fuse. If
+    // recursive cross-kernel calls stopped fusing, both images would hold no kernel
+    // records and this size check would pass while testing nothing. Have
+    // fused_program_image hand back fusion_stats too and assert `fused > 0` for both
+    // chains, as program_image_restores_kernels does. (chain(8) fuses today:
+    // graphix-fuzz run reports fused=1.) (tests-modules-image-06)
     let short = fused_program_image(&chain(8)).await?.len();
     let long = fused_program_image(&chain(12)).await?.len();
     assert!(long - short < 256 * 1024, "8 links: {short} bytes, 12 links: {long} bytes");

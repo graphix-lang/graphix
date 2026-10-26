@@ -1,0 +1,12 @@
+// Title: #[native] calls a dynamic lambda call a "builtin call site"
+// Command: graphix --no-cache --expand tests-functions-native-builtin-misnamed.gx
+// Expected: a reason naming what blocks: the call `f(2)` has no static target
+//   (`f` is written by `<-`), so it dispatches at run time.
+// Observed: "emit_clif: builtin call site `\n#[native]\nf(2)` not discovered —
+//   doesn't fuse": f is a lambda binding, not a builtin, and the quoted spec
+//   carries the attribute and a line break.
+{
+  let f: fn(x: i64) -> i64 = |x| x + 1;
+  f <- |x| x * 2;
+  #[native] f(2)
+}

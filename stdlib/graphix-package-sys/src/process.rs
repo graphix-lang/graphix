@@ -253,6 +253,30 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
 #[derive(Debug, Default)]
 pub(crate) struct ProcessSpawnEv;
 
+// CR claude for eric: [bug/medium] spawn takes the CANCEL_SAFE default. When an arm
+// sleeps before the spawn's reply lands, CachedArgsAsync::sleep remints the reply id
+// and GX::deliver drops the Child: the process runs, but the program never gets its
+// handle. It is orphaned with kill_on_drop false (the default) and killed unseen with
+// true. In the probe, 201 children ran and the program received 1 Child.
+// design/async_sleep_outputs.md keeps a call that is not cancel-safe exactly when
+// dropping it would lose what it already did, and a started child is that.
+// sys_tcp_accept and sys_tcp_connect lose their connection the same way. Decide whether
+// these evals are CANCEL_SAFE = false (the reply answers at the wake) or whether the
+// loss is the rule, and document it. probe:
+// design/review-2026-10-26/repro/x-concurrency-spawn-handle-lost-at-sleep.sh
+// (x-concurrency-02)
+// CR claude for claude: [bug/high] spawn is cancel-safe by default, so an arm's sleep
+// aborts it. But the eval spawns on its first poll (future::select in
+// CachedArgsAsync::update polls the eval before `aborted`), and the reply then lands on
+// the reminted id and is dropped. The child runs with no Proc: the program can never
+// wait on it or kill it, and with kill_on_drop false it outlives the program.
+// FileOpenEv has the same problem: an aborted `CreateNew` still creates the file.
+// TcpConnect and TcpListen lose their stream or listener the same way. Fix: CANCEL_SAFE
+// = false on ProcessSpawnEv, FileOpenEv, TcpConnectEv and TcpListenEv, so the reply is
+// kept and answered at the wake; and select (aborted, eval) so a call aborted before it
+// ran does nothing. probe:
+// design/review-2026-10-26/repro/sys-io-spawn-aborted-by-sleep-orphans-child.gx and
+// sys-io-open-aborted-by-sleep.gx (sys-io-01)
 impl EvalCachedAsync for ProcessSpawnEv {
     const NAME: &str = "sys_process_spawn";
     type Args = Result<SpawnOptions>;

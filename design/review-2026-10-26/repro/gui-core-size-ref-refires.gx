@@ -1,0 +1,19 @@
+// Title: a window's `&mut app.size` refires on every update of `app`, and
+//   TrackedWindow::handle_update then calls request_inner_size with the
+//   program's (possibly stale) size each time, undoing a user resize that has
+//   not settled yet (RESIZE_END_DEBOUNCE).
+// This probe shows the precondition without a display: the place reference's
+// cell (what the GUI's TRef reads) fires each time `app` is written, though
+// `app.size` never changes.
+// Command: timeout -s KILL 30 graphix --no-cache gui-core-size-ref-refires.gx
+// Expected (if a field reference fired only when its field changed): 1
+// Observed: a count that grows with every tick (about 15 in 300 ms), i.e. one
+//   size update, and so one request_inner_size, per write of `app`.
+let app = {size: {width: 800.0, height: 600.0}, ticks: 0};
+let t = sys::time::timer(duration:20.ms, true);
+app <- t ~ {app with ticks: app.ticks + 1};
+let size = &mut app.size;
+let fires = 0;
+fires <- *size ~ fires + 1;
+sys::exit(sys::time::timer(duration:300.ms, false) ~ 0);
+fires

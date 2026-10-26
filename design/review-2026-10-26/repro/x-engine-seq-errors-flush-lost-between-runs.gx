@@ -1,0 +1,23 @@
+// Title: seqq's flush(e) never empties the queue unless it fires strictly inside a run, after
+// the run's entry cycle; with a short body it never empties it at all
+// Command: graphix --no-cache x-engine-seq-errors-flush-lost-between-runs.gx
+// Ten requests (k = 0..9) queue; each run is two steps that complete in their entry cycle, so the
+// backlog drains one request every 4 cycles. The flush fires at every cycle from k = 13 to 29,
+// while requests are still queued.
+// Expected (design/seq_blocks.md §9: "flush is an abort that also empties the queue"): the
+// queue is emptied at the first flush, so rs stops growing around [0, 1, 2]
+// Observed: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]: all 17 flushes are dropped. The flush event goes
+// through run_event (seq.rs), which passes only fires after a run's entry cycle; a run that ends
+// in its entry cycle, and the 3 cycles of handoff between queued runs, leave no such cycle.
+// A body with `until live(k) > s + 5` (a long run) lets the same flush empty the queue.
+let k = 0;
+k <- select k { s if s < 60 => s + 1, _ => never() };
+let go = select k < 10 { true => k, false => never() };
+let fl = filter(k, |x| (x > 12) && (x < 30));
+let r = seqq let c = go; flush(fl) {
+  let s = live(k);
+  c
+};
+let rs = [];
+rs <- r ~ array::push(rs, r);
+rs

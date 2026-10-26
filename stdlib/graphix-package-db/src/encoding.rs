@@ -35,6 +35,13 @@ pub(crate) fn encode_value(v: &Value) -> Result<GPooled<Vec<u8>>> {
     Ok(buf)
 }
 
+// CR claude for claude: [bug/medium] A stored value can decode to a top-level
+// Value::Error. CachedArgsAsync skips read_back for every error a DATA_RESULT eval
+// returns, so db::get hands the file's error to the program as the call's error,
+// outside its declared `DbErr`. db::import copies raw bytes, so a crafted import file
+// (or db directory) produces a coverage hole in the caller's select. Fix: refuse a
+// top-level error here as undecodable data, since data never holds an error. probe:
+// design/review-2026-10-26/repro/x-security-db-stored-error.sh (x-security-02)
 pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
     Value::decode(&mut &*data).map_err(|e| anyhow!("undecodable value: {e}"))
 }
@@ -46,6 +53,17 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // self-delimiting, its tuples, structs, variants and lists by their
 // markers (the abstract tag and the kind), a list's elements in one run.
 
+// CR claude for eric: [bug/medium] A key of an abstract type that implements core Eq or
+// Ord reaches this function as its Cast data, so a tree stores, matches and orders it
+// by the representation's bytes, while the language uses its Ord::cmp and Eq::eq. With
+// a reversing Ord, db::first returns Rev(1) where `<` and array::sort put Rev(2) first.
+// With a case-insensitive Eq, db::get(Key("X")) misses Key("x"), which a Map holds as
+// the same key. That breaks mod.gxi's 'Keys are kept in the language's order'. Either
+// refuse such key types at db::tree's check, or document that keys compare and order by
+// their data form. probe:
+// design/review-2026-10-26/repro/http-sqlite-db1-abstract-ord-key.gx and
+// design/review-2026-10-26/repro/http-sqlite-db1-abstract-eq-key.gx
+// (http-sqlite-db1-03)
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {

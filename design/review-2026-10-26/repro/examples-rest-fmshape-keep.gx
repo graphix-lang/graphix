@@ -1,0 +1,18 @@
+// Title: the Collection default `map` body (filter_map with a `Keep
+// callback) node-walks, while bench/collection/map_fmshape.gx, which says
+// it measures that body, uses a bare total callback that fuses.
+// Command: /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache -n design/review-2026-10-26/repro/examples-rest-fmshape-keep.gx
+//   and, for comparison, the same with bench/collection/map_fmshape.gx
+// Expected: the default body's shape costs what map_fmshape reports.
+// Observed (debug build): map_fmshape elapsed_s=0.002, this file
+// elapsed_s=1.14 (about 550x); filter_fmshape 0.001 s vs its `Keep(x)
+// variant 1.78 s.
+let n = 100000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(src);
+let seed = cast<i64>(t0)$;
+let result = array::fold(array::filter_map(src, |x| `Keep(x * 3 + seed)), 0, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("map_keep n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

@@ -1,0 +1,16 @@
+// Title: a type test for a Rust-backed parametric abstract beside an open member is not refused, and takes the other instantiation
+// Command: rm -rf /tmp/xtp-db; timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache x-typecheck-patterns-rust-abstract-open-member.gx
+// Expected: refused by the check, as `|x: ['a, &i64]| select x { &i64 as r => .., v => .. }`
+//   is ("a type variable there isn't known here and may share &i64's runtime form:
+//   annotate it"): a Rust-backed abstract carries only its id, so Tree<string, string>
+//   and Tree<string, i64> share one runtime form (rep_collision says so for a written pair).
+// Observed: --check accepts; running prints "i64 tree": the Tree<string, string> passed as
+//   'a takes the Tree<string, i64> arm, and t is typed Tree<string, i64>.
+let d = db::open("/tmp/xtp-db")$;
+let ts: db::Tree<string, string> = db::tree(d, "s")$;
+let g = |x: ['a, db::Tree<string, i64>]| select x {
+  db::Tree<string, i64> as t => "i64 tree",
+  v => "other"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+g(ts)

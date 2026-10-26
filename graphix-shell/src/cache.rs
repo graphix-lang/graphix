@@ -245,6 +245,17 @@ impl RegistrationCache {
         let format = [image::REGISTRATION_FORMAT];
         let flags = flags.to_le_bytes();
         let registration = digest(&[&format, root.as_bytes()]);
+        // CR claude for claude: [bug/medium] The program key leaves out the resolvers
+        // Shell::configure adds from ShellBuilder::module_resolvers. The source record
+        // only re-verifies the files the first compile read. So an embedder running the
+        // same program over another module directory restores the first run's modules:
+        // Load::Text("mod m; ..") under FilesResolver(d1), then under
+        // FilesResolver(d2), runs d1's m both times. The CLI is safe only because its
+        // one file resolver follows from the script path. Fix: configure derives the
+        // script's directory resolver from the canonical path itself, and a shell given
+        // extra module_resolvers keeps no program entry (or folds each resolver's base
+        // dir into this digest). probe:
+        // design/review-2026-10-26/repro/shell-embedder-resolvers-key.rs (shell-01)
         let program = program.and_then(|p| {
             let id = match p {
                 Load::File(path) => path.to_string_lossy().into_owned().into_bytes(),
@@ -259,6 +270,14 @@ impl RegistrationCache {
                 search.extend_from_slice(&(dir.len() as u64).to_le_bytes());
                 search.extend_from_slice(dir.as_encoded_bytes());
             }
+            // CR claude for claude: [test-gap/low] No test pins the flags and search
+            // parts of this key. Dropping `&flags` would let `-W error` restore a
+            // warned program and run it. Dropping `&search` would let a module in a
+            // newly prepended GRAPHIX_MODPATH directory go unseen, because the record
+            // lists only the directories that were searched. Every test stays green
+            // either way. Add a shell test under one cache: a warned program cold, then
+            // with -W error, must fail; `mod m` from GRAPHIX_MODPATH=b, then a,b with a
+            // different a/m.gx, must take a's. Found by reading; not run. (shell-03)
             Some(digest(&[
                 &format,
                 root.as_bytes(),
@@ -295,6 +314,16 @@ impl RegistrationCache {
     /// never rewritten in place (written to a temporary file and renamed),
     /// so the mapping stays valid. A program entry whose sources changed
     /// is a miss.
+    // CR claude for eric: [risk/medium] An entry's integrity rests on the cache
+    // directory's permissions alone, and nothing checks them. load restores any entry
+    // at the keyed path whatever its owner or mode, store applies 0700 only to
+    // directories it creates itself, and the crc32 seal can be recomputed by anyone.
+    // The entry carries JIT machine code. With a cache root another user can write
+    // first (HOME or XDG_CACHE_HOME under /tmp, a shared CI cache), a planted or
+    // patched entry runs as the next user's program; patching a literal and resealing
+    // ran the modified program. Proposal: on Unix, refuse an entry or directory not
+    // owned by the euid or writable by group/other. probe:
+    // design/review-2026-10-26/repro/x-security-cache-trust.sh (x-security-05)
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = match fs::File::open(&path) {

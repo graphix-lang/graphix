@@ -1,0 +1,13 @@
+// hbs::render's refusals print the offending value with its Rust Display, so the
+// error string a program receives carries the kind-marker abstracts of a tuple or a
+// variant (fc_render's "the data must be a struct or a map" and register_partials'
+// "partials must be a struct, map, or null").
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/gx-stdlib-hbs-marker-leak.gx
+// Expected: messages naming the values as Graphix prints them, e.g. "... not (1, 2)"
+//   and "... got `A(1)".
+// Observed: error:`HbsErr("the data must be a struct or a map, not
+//   [abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1, i64:2]") and
+//   error:`HbsErr("partials must be a struct, map, or null, got
+//   [abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"A\", i64:1]")
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(hbs::render("x", (1, 2)), hbs::render(#partials: `A(1), "x", {a: 1}))

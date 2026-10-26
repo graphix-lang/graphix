@@ -1,0 +1,12 @@
+// Title: holds_ref stops at an abstract type, but a Cast impl's representation default reads its payload: a reference crosses a cast
+// Command: timeout -s KILL 20 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-cast-setops-abstract-ref-escape.gx
+// Expected: the check refuses the cast ("can't cast a reference"), as it refuses json::write_str(b)
+//           with "'a: Data does not contain Box<&i64>"
+// Observed: the program builds; the cast hands back Box<Any> holding the reference and the
+//           writer, accepted by the check, fails at run time: error:`JsonErr("a reference is not data")
+type Box<'a> = Abstract<'a>;
+impl<'a> Cast for Box<'a> {};
+let v = 5;
+let b = Box(&v);
+let c = cast<Box<Any>>(b)$;
+json::write_str(c)

@@ -8,6 +8,13 @@ The `table` widget displays structured data in rows and columns with support for
 {{#include ../../../../stdlib/graphix-package-tui/src/graphix/table.gxi}}
 ```
 
+<!-- CR claude for claude: [doc-drift/low] This list misses six parameters the interface
+has: `footer`, `flex`, `cell_highlight_style`, `column_highlight_style`,
+`selected_cell`, `selected_column`. It also misses the positional rows, typed
+`&Array<&Row>`: every row is a reference. A reader passing `&[row(..)]` gets an
+`Array<&Row>` type mismatch the page gives no clue to. Document all of them. Found by
+comparing with table.gxi and checking `table(&[row([cell(line("a"))])])`, which is
+refused. (book-ui-a-04) -->
 ## Parameters
 
 - **header** - Row object for the table header

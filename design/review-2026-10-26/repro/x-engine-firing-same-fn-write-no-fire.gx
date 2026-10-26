@@ -1,0 +1,26 @@
+// Organic firing disagrees between two consumed inputs of the same kind: a
+// dynamic call whose function variable is rewritten with the definition it
+// already holds fires nothing, while a dereference whose reference variable
+// is rewritten with the reference it already holds fires.
+// Command: graphix-fuzz run x-engine-firing-same-fn-write-no-fire.gx
+//   (every mode agrees)
+// At step 2 both `g` and `r` are rewritten with their current value (landing
+// at cycle 3). n1 counts c1 = g(x)'s fires, n2 counts c2 = *r's (a cycle late).
+// Expected under "a node fires iff a consumed input fires" (CLAUDE.md,
+// organic firing): both fire at cycle 3, so n1 and n2 are both 2 from cycle 4.
+// Observed: Trace([.. 3:(3, 1, 1) 4:(4, 1, 2) ..]): *r fires, g(x) does not
+// (CallSite::rebind returns false for the same definition and the site rides).
+let step = 0;
+step <- select step { s if s < 6 => s + 1, _ => never() };
+let f = |x: i64| x + 1;
+let g = f;
+g <- select step { s if s == 2 => s ~ f, _ => never() };
+let a = 10;
+let r = &a;
+r <- select step { s if s == 2 => s ~ &a, _ => never() };
+let x = 5;
+let c1 = g(x);
+let c2 = *r;
+let n1 = 0; n1 <- c1 ~ n1 + 1;
+let n2 = 0; n2 <- c2 ~ n2 + 1;
+(step, n1, n2)

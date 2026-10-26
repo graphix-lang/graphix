@@ -1,0 +1,23 @@
+// c-bind: a write through a held copy of a place reference whose key is
+// bottom lands in the reference's own mirror cell, and the deref reads it.
+// design/place_references.md: "A write while the reference's address is
+// bottom ... does not happen"; ConnectDeref::update -> ExecCtx::write_target
+// -> ref_target falls back to the cell itself once ByRef::unregister cleared
+// the place's ref_path.
+// run: timeout -s KILL 60 graphix --no-cache c-bind-addressless-write.gx | grep -v '^[0-9]*$'
+// expected: c=2 and c=3 print no *w (address bottom, write dropped); c=4 *w=10
+// observed: c=3 *w=99, c=4 *w=99 (a never changes), c=5 *w=10
+let c = 0;
+c <- select c { k if k < 5 => k + 1, _ => never() };
+let a = [10, 20, 30];
+let k = select c { 2 => never(), 3 => never(), _ => 0 };
+let holder: [&mut i64, null] = null;
+holder <- &mut a[k];
+let w = holder$;
+*w <- select c { 2 => c ~ 99, _ => never() };
+let rd = *w;
+println("c=[c]");
+println(c ~ "  *w=[rd]");
+println(c ~ "  a=[a]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+c

@@ -50,6 +50,15 @@ let browser = |
         }
     };
     let row_slots = max(1, size.height - 1);
+    // CR claude for claude: [bug/low] The window start is clamped to the last row, not
+    // to a full window, and viewport.y itself is never clamped. When the listing
+    // shrinks under the same path while scrolled down (or the window grows while at the
+    // bottom), only the last row or rows show while every row would fit. Up steps from
+    // the stale viewport.y, so several presses change nothing. Clamp to
+    // `array::len(structure.rows) - row_slots` and read first_row instead of viewport.y
+    // in the Up/Down arms' updates. Fix it together with the column offset in the
+    // candidates slice, which has the same flaw. probe:
+    // design/review-2026-10-26/repro/gx-ui-browser-shrunk-listing.gx (gx-ui-02)
     let first_row = max(0, min(array::len(structure.rows) - 1, viewport.y));
     let visible_rows = {
         let end = min(array::len(structure.rows), first_row + row_slots);
@@ -74,6 +83,18 @@ let browser = |
             cols: [],
             widths: [`Min(name_width)]
         };
+        // CR claude for claude: [bug/medium] viewport.x is never clamped to the
+        // listing. When a refresh under the same path has fewer columns than
+        // viewport.x, this slice is an index error and `$` makes it bottom. Then
+        // widths, visible_columns, the header, every Table-mode cell (the
+        // `structure.columns` index in row_cells) and the #selected_path write all go
+        // bottom: the table stops updating, and #selected_path keeps naming a column
+        // that is gone until the path changes. Fix: derive `first_col = max(0,
+        // min(array::len(structure.columns) - 1, viewport.x))` and read it wherever
+        // viewport.x is read, the Left/Right arms' updates included. Pin it beside
+        // a_browser_selection_stays_in_a_shrunk_window. The row offset has the same
+        // flaw (see the CR on first_row). probe:
+        // design/review-2026-10-26/repro/gx-ui-browser-shrunk-columns.gx (gx-ui-01)
         let candidates = array::enumerate((structure.columns)[viewport.x ..]$);
         array::fold(candidates, init, |{total, cols, widths}, (i, col)| {
             let len = min(max_width, max(str::char_len(col), get_width(i + 1)));

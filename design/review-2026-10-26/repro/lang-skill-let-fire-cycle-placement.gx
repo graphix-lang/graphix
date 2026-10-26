@@ -1,0 +1,24 @@
+// Title: in a seq, a later step's `v ~ k` over a step-local let fires or
+// stalls the run depending on the planner's same-cycle/next-cycle choice,
+// while the same step over an outer variable always fires (the outer one
+// is in the step's entry snapshot, the local one rides one catch-up bit).
+// Command: timeout -s KILL 10 graphix --no-cache lang-skill-let-fire-cycle-placement.gx
+// Expected: res 9, res2 9 and res3 9 (res2 differs from res only by an
+// unrelated `*r <- 7`; res3 reads an outer `w` instead of a local `v`).
+// Observed (default and --no-fusion alike): "res 9", "res3 9", then 0;
+// res2 never produces: its `b <- v ~ 6` never fires (GXDBG_SEQPLAN=1
+// shows the `*r <- 7` step puts the next ones a cycle later).
+let note = 0;
+let r = &mut note;
+let a = 0;
+let b = 0;
+let go = 1;
+let w = go + 1;
+let res = seq go { let v = go + 1; a <- v ~ 5; b <- v ~ 6; v ~ 9 };
+let res2 = seq go { let v = go + 1; a <- v ~ 5; *r <- 7; b <- v ~ 6; v ~ 9 };
+let res3 = seq go { a <- w ~ 5; *r <- 7; b <- w ~ 6; w ~ 9 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("res [res]");
+println("res2 [res2]");
+println("res3 [res3]");
+0

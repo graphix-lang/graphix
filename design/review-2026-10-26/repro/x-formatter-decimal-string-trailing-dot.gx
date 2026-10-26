@@ -1,0 +1,7 @@
+// x-formatter: cast<string> of a whole decimal keeps the literal printer's trailing `.`
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/x-formatter-decimal-string-trailing-dot.gx
+// Expected (CLAUDE.md: a cast prints a number plainly, "42"): ("5", "5", "5", "\"5\"")
+// Observed: ("5", "5", "5.", "\"5\"") -- the decimal casts to "5." while f64 5.0 casts to "5"
+// and json::write_str writes the decimal as the JSON string "5"
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(cast<string>(5.0), cast<string>(f32:5.0), cast<string>(decimal:5.), json::write_str(decimal:5.)$)

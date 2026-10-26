@@ -364,6 +364,14 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
+    // CR claude for claude: [perf/low] Float operands of a checked op fall through to
+    // emit_value_arith_node, which boxes both scalars and calls
+    // graphix_value_checked_<op> on every evaluation. But float checked arithmetic
+    // follows IEEE and never fails, so the helper always returns what compile_bin (or
+    // graphix_f64_rem / graphix_f32_rem for `%`) computes inline. Add a float-scalar
+    // arm that emits the unchecked op and widens the payload with scalar_to_payload_i64
+    // under the scalar disc. Found by reading; the engines agree on the values (probe
+    // t11.gx). (f-nodes-scalar-03)
     match (cx.node_kind(lhs.typ()), cx.node_kind(rhs.typ())) {
         (Some(AbiKind::Scalar(p)), Some(AbiKind::Scalar(q)))
             if p == q && p.is_integer() =>
@@ -377,6 +385,16 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
 /// [`emit_checked_arith_node`] over two integers of `prim`: the operation
 /// and whether it fails (an overflow, a zero divisor, `MIN / -1` and
 /// `MIN % -1`) in plain instructions every host lowers.
+// CR claude for claude: [structure/low] This duplicates emit_arith_node's divisor guard
+// (zero test, the signed MIN table, select of a safe divisor), and the two copies
+// disagree on `%`. Here `MIN % -1` counts as bad and goes through
+// graphix_value_checked_rem, which returns 0 (int_arith's wrapping_rem). The doc above
+// says it fails, but the language rule and the rem_by_neg_one_is_zero pin say it is 0,
+// checked or not. Extract one guard from emit_arith_node's version (Mod's -1 is a
+// divisor-one rewrite, not a failure), use it in both, and keep the MIN table in one
+// PrimType method. value_is_zero / value_is_neg_one / value_is_int_min also match
+// varint variants that never reach the register path. Found by reading; the values
+// agree today (probe t2.gx). (f-nodes-scalar-01)
 fn emit_checked_int_arith<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: ArithOp,
@@ -1127,6 +1145,13 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
 /// discs here (a fresh bottom returned unfolded re-fires every cycle).
 /// Pass `&[]` only where the whole run is being torn down. The absent-delivery twin,
 /// `select::placeholder_for_kind`, is unconditionally standing.
+// CR claude for claude: [structure/low] Every caller (emit_taint_guarded_read, the
+// select tail, both qop paths, the call site) passes exactly one governing disc. An
+// empty slice is the one input that returns the unfolded FRESH bottom the doc calls a
+// bug, and the `&[]` teardown case the doc allows has no caller. Take a single
+// `governing: ClifValue` here and in emit_bottom_placeholder_of_kind, so a placeholder
+// is always folded, and drop the stale sentence. Found by reading; not run.
+// (f-nodes-scalar-02)
 pub(super) fn emit_bottom_placeholder(
     cx: &mut BodyCx,
     elem: &Type,

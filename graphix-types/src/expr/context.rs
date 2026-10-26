@@ -53,6 +53,15 @@ impl fmt::Display for ErrorContext {
             }
         }
         let mut head = Head(LPooled::take(), false);
+        // CR claude for claude: [bug/low] The snippet is the Expr's flat Display. For a
+        // decorated expression that Display starts with write_leading_flat's newline
+        // and puts each attribute on its own line. So a frame reads `in: ` and then
+        // `#[serial]` and `s + 1` on lines of their own, and the 38-byte head spends
+        // its room on the attributes. Fix: write `print::Bare(&self.0)`, which leaves
+        // the decorations off, and have `Head` turn every newline into a space so a
+        // snippet stays on one line even with a decorated child. probe:
+        // design/review-2026-10-26/repro/t-print-decorated-error-snippet.gx
+        // (t-print-02)
         let complete = self.0.mentions_lowered() || write!(head, "{}", self.0).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {

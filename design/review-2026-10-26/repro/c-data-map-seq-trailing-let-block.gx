@@ -1,0 +1,16 @@
+// Title: inside a seq step a block ending in a let is accepted and never
+// produces, so the seq stalls; outside a seq the same block is refused.
+// Command: graphix --no-cache design/review-2026-10-26/repro/c-data-map-seq-trailing-let-block.gx
+//   (and --check on it)
+// Expected: refused like `let a = (1, { let c = 2; let b = c + 1 }); a` at top
+//   level is ("a block's value is its last statement, and a let has none").
+// Observed: --check passes (exit 0); the run prints nothing and exits 0 at the
+//   idle exit: the step's value never arrives. CFlag::SeqStep, which every
+//   expression nested in a step inherits, exempts the block in compile_kind.
+let t = sys::time::timer(duration:10.ms, false);
+let r = seq t {
+  let a = (1, { let c = 2; let b = c + 1 });
+  a
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

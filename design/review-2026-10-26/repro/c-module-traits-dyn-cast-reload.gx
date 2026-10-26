@@ -1,0 +1,16 @@
+// A dynamic module reload whose Cast impl gains to_value keeps writing the representation
+// Run: timeout -s KILL 30 graphix --no-cache c-module-traits-dyn-cast-reload.gx
+// Expected: (null, "3") then (null, "30")  -- the second load's to_value writes c.0 * 10
+// Observed: (null, "3") twice: the first load narrowed the registered declaration
+//           (narrow_to_representation) to no methods, and the reload narrows that.
+// Control: start from the source with to_value and reload to `* 100`: (null, "30"), (null, "300").
+let source = "type C = Abstract<i64>; impl Cast for C {}; let make = |x: i64| C(x)";
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { type C; impl Cast for C; val make: fn(x: i64) -> C };
+    source source
+};
+source <- once(status) ~ "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)";
+let r = select status { error as e => never(dbg(e)), null as _ => json::write_str(foo::make(3)) };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(status, r)

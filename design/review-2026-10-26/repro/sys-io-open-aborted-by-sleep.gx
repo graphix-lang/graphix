@@ -1,0 +1,15 @@
+// Title: an fs::open(`CreateNew) aborted by its arm's sleep still creates the file, and the handle is lost
+// Command: rm -f /home/eric/tmp/review-2026-10-26/review/work/sys-io/created_new;
+//   timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-io-open-aborted-by-sleep.gx;
+//   ls /home/eric/tmp/review-2026-10-26/review/work/sys-io/created_new
+// Expected: no file (the call never acted) or the File delivered at the wake.
+// Observed: prints "deselected" and the file exists (3 of 3 runs); a later CreateNew of
+//   the path fails with AlreadyExists though the program never received a handle.
+let sel = 0;
+sel <- 1;
+let r = select sel {
+  0 => select sys::fs::open(`CreateNew, "/home/eric/tmp/review-2026-10-26/review/work/sys-io/created_new") { error as e => "err", _ => "opened" },
+  _ => "deselected"
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

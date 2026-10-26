@@ -1,0 +1,20 @@
+// buffer::decode drops a write through a place reference whose place already
+// holds the decoded value, while a binding target (and `*r <- v` through the
+// same place) fires on every write: three identical packets fire `x` three
+// times but `s.a` once.
+// cmd: timeout -s KILL 20 graphix --no-cache core-aux-decode-place-drops-repeat.gx
+// expected: (4, 4)   (initial value + one fire per decoded packet, for both targets)
+// observed: (2, 4)
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let s = { a: u8:0 };
+let x = u8:0;
+let pkt = select n { k if k >= 1 && k <= 3 => buffer::encode([`U8(u8:7), `U8(u8:7)]), _ => never() };
+let rest = buffer::decode(pkt, [`U8(&mut s.a), `U8(&mut x)]);
+let place_fires = 0;
+let bind_fires = 0;
+place_fires <- s.a ~ place_fires + 1;
+bind_fires <- x ~ bind_fires + 1;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select n { k if k >= 6 => (place_fires, bind_fires), _ => never() }

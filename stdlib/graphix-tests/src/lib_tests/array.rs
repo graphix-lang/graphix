@@ -1232,6 +1232,14 @@ async fn group_takes_what_queued_while_it_waited() -> Result<()> {
 
 // A predicate re-fired by what else it reads, with no element waiting,
 // answers nothing: no empty group (collections-str-04).
+// CR claude for claude: [test-gap/medium] This pin cannot fail. The `limit` write lands
+// at c = 6, which is when the old Group delivered its empty group. The result `select c
+// { 6 => log, .. }` also fires at c = 6, one cycle before `log <- g ~ ..` lands the [].
+// run! judges only the first update, so the fixture sees [[1, 2, 3]] with or without
+// the `Some(_) if self.ready` arm in Group::update. Run the counter to 8 and select `8
+// => log` (or assert on the settled log via Collect::Quiet); then the bug shows as the
+// first value [[1, 2, 3], []]. probe:
+// design/review-2026-10-26/repro/tests-lib-a-group-vacuous.gx (tests-lib-a-01)
 run!(group_answers_only_a_waiting_element, r#"{
     let c = 0;
     c <- select c { n if n < 6 => n + 1, _ => never() };

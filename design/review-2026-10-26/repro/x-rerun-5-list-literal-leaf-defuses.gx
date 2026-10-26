@@ -1,0 +1,8 @@
+// Title: a literal in a list pattern's element position de-fuses (tests-select-02 variant)
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --expand design/review-2026-10-26/repro/x-rerun-5-list-literal-leaf-defuses.gx
+// Expected: builds, as the same literal in a slice (`["a", ..]`) or tuple element does,
+//   and as `[<x, ..>]` does.
+// Observed: "#[native] expression did not fully fuse to native code:
+//   - emit_clif: nested list element pattern not lowerable" (also for `[<1, ..>]` over List<i64>).
+let f = |a: List<string>| -> i64 #[native] select a { [<"a", ..>] => 1, _ => 0 };
+f([<"a">])

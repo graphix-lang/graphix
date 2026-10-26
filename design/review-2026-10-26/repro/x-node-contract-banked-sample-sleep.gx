@@ -1,0 +1,24 @@
+// x-node-contract: a banked sample (seqq's request queue) drops payments
+// it sent through its debt variable but had not received when its arm sleeps.
+// Run: timeout -s KILL 30 graphix --no-cache x-node-contract-banked-sample-sleep.gx
+// Four requests (n = 1..4) queue while the capture `payload` is absent; it
+// arrives at n = 6, the arm sleeps the next cycle and wakes at n = 10.
+// Expected: four runs ("run 4 100 n=10" four times; the shared snapshot is
+// design/seq_blocks.md's documented sample behaviour). Delete the
+// `on <- payload ~ false;` line and four runs print at n = 6.
+// Observed: two runs; the two payments in flight at the sleep are lost.
+let clk = sys::time::timer(duration:30.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let payload: i64 = never();
+payload <- select n { 6 => 100, _ => never() };
+let trig = select n { 1 => n, 2 => n, 3 => n, 4 => n, _ => never() };
+let on = true;
+on <- payload ~ false;
+on <- select n { 10 => true, _ => never() };
+let r = select on {
+  true => seqq trig { println("run [trig] [payload] n=[live(n)]"); trig },
+  false => never()
+};
+sys::exit(select n { 20 => 0, _ => never() });
+r

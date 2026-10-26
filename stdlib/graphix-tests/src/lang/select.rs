@@ -2007,6 +2007,12 @@ run!(
 // The same through a tuple head. A structural pattern over a nullable
 // composite has no kernel lowering, so this select node-walks; the
 // #[native] twin pins that.
+// CR claude for claude: [doc-drift/low] The comment above says this select node-walks
+// and that the #[native] twin pins it. The twin, select_tuple_union_member_native, puts
+// #[native] on the same select and builds, so the select fuses whole and the comment
+// states the opposite. Delete this fixture (the twin covers the same program and the
+// fusion claim) and give the twin a correct one-line comment. Checked by running the
+// twin under graphix --expand: no #[native] refusal. (tests-select-07)
 const SELECT_TUPLE_UNION_MEMBER: &str = r#"
 {
   let v: [([`A, `B], i64), null] = (`B, 7);
@@ -2352,6 +2358,13 @@ run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, prints(r#"[[i64:0
 // `v`'s first value: `v` lands with the live trigger at step 6, so the
 // three banked and the live one are one write; `~!` drops the banked ones
 // (one write) (x-engine-firing-05).
+// CR claude for claude: [test-gap/low] `v` lands in the same cycle as the last live
+// trigger, so `~` pays its bank and `~!` fires live in one write each. [1, 1] holds
+// whether or not either operator banks, so the fixture cannot tell them apart. Land v
+// alone one step earlier (`4 => "v"`) and expect [i64:2, i64:1]: `~` pays the bank at
+// step 5 and the live trigger at step 6, while `~!` writes only at step 6. probe:
+// design/review-2026-10-26/repro/tests-select-strict-sample-bank-apart.gx
+// (tests-select-06)
 const STRICT_SAMPLE_NO_BANK: &str = r#"
 {
   let step = 0;
@@ -4017,6 +4030,14 @@ run!(guard_below_the_claim_never_reads_the_variable, r#"{
 // A guard below the claim sleeps, as an unselected arm does: `count` sees
 // none of `t`'s fires while its arm is not reached, and the one caught up
 // when the chain first reaches it.
+// CR claude for claude: [test-gap/medium] This fixture cannot catch a lost guard
+// catch-up: at t=4, the guard's first reach, t also fires live, so count(t) is 1 even
+// if GuardSleep delivered nothing. It pins only that the guard did not run while
+// unreached, and no other fixture pins the catch-up. Add one whose input fires only
+// while the guard sleeps: b <- 7 at t=2, `n if count(b) > 1` reached at t=5, expecting
+// "guard 2", as in the `direct` line of
+// design/review-2026-10-26/repro/tests-select-sleeping-guard-misses-learned-inputs.gx.
+// Found by reading; not run. (tests-select-05)
 run!(guard_below_the_claim_sleeps, r#"{
   let t = 0;
   t <- select t { n if n < 4 => n + 1, _ => never() };

@@ -233,6 +233,15 @@ run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, prints("[i64:10, i64:20]");
 
 // A key move a selected reader saw is read stale by an arm woken after it:
 // the woken arm's counter does not tick.
+// CR claude for claude: [test-gap/medium] This test only asserts that the woken arm
+// does not tick. It also passes if a woken Deref never fires, and nothing pins the
+// positive half: Deref::update's `wake::owed` read of a new target written while the
+// arm slept. Deleting that read fails no test. Add a twin. The other arm reads `r`
+// without dereferencing it (`r ~ -1`), so no arm tracks the new target `y`; `y` is
+// written during the sleep, and the woken arm's `count(*r)` must reach 2, while staying
+// at 1 when `y` is never written. probe:
+// design/review-2026-10-26/repro/tests-lang-rest-b-deref-stamp-catchup.gx
+// (tests-lang-rest-b-02)
 async fn woken_deref_reads_a_seen_move_stale(mode: Mode) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(
         r#"{
@@ -260,6 +269,12 @@ modes!(woken_deref_reads_a_seen_move_stale);
 // A place's address is evaluated once: a key with an effect runs it
 // once per fire (`n` fires at its binding and once more, not twice
 // more), and the read sees that one evaluation.
+// CR claude for claude: [risk/low] This fixture, deref_null_ref_is_bottom and
+// place_root_bottom_mirror race a 20 ms timer against the runtime's next cycle (or a
+// 200 ms window). Under load the timer can win, and the test fails with the code right:
+// count 1, or the old target read. Sample on a step counter as the other place fixtures
+// do (`select step { 5 => null, _ => never() }`), so the read derives from the write.
+// Found by reading; not run. (tests-lang-rest-b-08)
 const PLACE_KEY_EVALUATED_ONCE: &str = r#"
 {
   let a = [10, 20];
@@ -276,6 +291,15 @@ run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, prints("[i64:2, i64:10]
 // happen, as no operation with a bottom input does; when the key returns
 // the reference retargets, and nothing written meanwhile lands there
 // (tests-lang-rest-b-03).
+// CR claude for claude: [test-gap/medium] This and the other byref fixtures pin only
+// one side of the rule: a write whose reference is BOTTOM is dropped. The other side,
+// 'a write made before the reference first arrives waits for it and lands at its first
+// target' (ConnectDeref::pending), has no pin, and removing `pending` fails nothing.
+// Add a fixture where the reference is absent, not bottom, at the write, e.g. `let w =
+// sys::time::after_idle(duration:50.ms, &mut x); *w <- 42` (x becomes 42). Set it
+// beside the `k$`-over-null form, which must leave x alone. probe:
+// design/review-2026-10-26/repro/tests-lang-rest-b-write-before-ref-arrives.gx
+// (tests-lang-rest-b-03)
 const PLACE_BOTTOM_KEY: &str = r#"
 {
   let step = 0;
@@ -804,6 +828,12 @@ async fn place_reference_fires_on_a_move(mode: Mode) -> Result<()> {
 modes!(place_reference_fires_on_a_move);
 
 // A typedef naming a reference is that reference as a union member too.
+// CR claude for claude: [test-gap/low] run! judges the first update only, which is `a`
+// at birth (1), so the `1 | 10` predicate never sees the write and the fixture only
+// proves the program compiles. A write through `[Cell, &mut i64]` that is dropped or
+// misrouted would pass. Observe after the write (run_delta asserting [1, 10], or sample
+// `a` a cycle later) and pin 10. Found by reading; the program prints 1 then 10 today.
+// (tests-lang-rest-b-09)
 run!(write_through_aliased_reference_union, r#"{
   type Cell = &mut i64;
   let a = 1;

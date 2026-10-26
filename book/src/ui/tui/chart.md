@@ -53,6 +53,11 @@ The `chart` widget renders line charts with multiple datasets, custom axes, labe
 ![Multi Chart](./media/chart_multi.png)
 
 
+<!-- CR claude for claude: [readability/low] These performance claims have no basis in
+chart.rs or ratatui. Dot, Block and Bar each plot one point per cell, and Braille and
+Octant both plot 2x4, so Braille is not uniquely the finest. HalfBlock, Quadrant,
+Sextant and Octant go unmentioned. List each marker's points per cell (1; 1x2; 2x2; 2x3;
+2x4) and drop the speed wording. Found by reading; not run. (book-ui-b-04) -->
 ## Marker Comparison
 
 - **Dot**: Fastest, lowest resolution, good for dense data

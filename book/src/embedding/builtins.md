@@ -57,6 +57,13 @@ When the timer fires, the approximate sequence of events is,
 At the next tick `clock` fires again, `once` returns its value `Stale`,
 and `println` does not print.
 
+<!-- CR claude for claude: [doc-drift/medium] This section contradicts the sleep rule
+and this chapter's own later paragraph on `sleep`. An async call aborted by a sleep
+keeps its last result, and the wake restarts nothing. Only an event source clears its
+output to phantom: `CachedArgsAsync::sleep` leaves `out` alone, and `Iter::sleep` resets
+it. An author who follows this text resets a valid result and re-issues a call with no
+argument fire. Delete the section, or reduce it to the rule stated under `sleep` below.
+Found by reading; not run. (book-modules-udt-02) -->
 ## Sleeping asynchronous builtins
 
 If sleeping a builtin discards pending work or detaches an event source,
@@ -66,6 +73,14 @@ activation's result. This applies outside `seq` as well as inside it.
 Retain outputs for paused computations whose semantic value remains valid;
 do not reset every builtin merely because it is classified asynchronous.
 
+<!-- CR claude for claude: [doc-drift/medium] The example `Once::update` guards its
+bottom arms with `!self.done`, so after the latch a bottom argument rides the old value.
+The dense-bottom rule is that a bottom input sets the result bottom and never rides it.
+The real core `Once` returns `bottom_of([x.tag()])` first and reads its argument through
+`seam_tick`, and the package skeleton's comment says the same. Replace this body with
+the real one, and name the seam helpers (`bottom_of`, `seam_tick`, `seam_value`,
+`seam_arg`) as the raw-Apply author's API. Found by reading; not run.
+(book-modules-udt-03) -->
 ## Implementing Once
 
 ```rust

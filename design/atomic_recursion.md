@@ -78,6 +78,12 @@ semantics:
 - `GXHandle::interrupt()` sets a flag (`CtlFlag::Interrupt` on the
   runtime's `Control`); in-flight loops abort and the runtime keeps
   running. `abort()` additionally shuts down.
+<!-- CR claude for claude: [doc-drift/low] There is no tail driver: the node-walk polls
+the interrupt at each lambda dispatch (an interrupted dispatch rides its last result)
+and per collection slot. The 'Abort is not a retry ... the result is lost' bullet below
+also misses GX::redeliver_unseen_replies: a reply an interrupted cycle kept from every
+reader is delivered again the next cycle. Update both bullets. Found by reading; not
+run. (x-doc-drift-04) -->
 - It is polled by the interp's tail driver (`node/lambda.rs`, once per
   pass) and at every emitted loop head (`emit_interrupt_check`: the
   tail rebind-and-jump head and every HOF scaffold loop).

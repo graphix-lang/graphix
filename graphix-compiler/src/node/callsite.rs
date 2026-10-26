@@ -382,6 +382,18 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
         (Type::Fn(formal), Type::Fn(fv)) => {
             judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
         }
+        // CR claude for claude: [bug/medium] A union is searched here for bare fn
+        // members only, so a function inside a union member is never judged: a struct
+        // field of an option, a tuple in a union, a variant payload. `let t: [{f: fn(y:
+        // string) -> bool}, null] = {f: g}` with `g = |#x = 4096, y| x == y` passes the
+        // check, and the run-time bind of `(s.f)("seven")` then refuses the default
+        // (string does not contain i64) and leaves the call bottom. Without `, null`
+        // the check refuses it. Recurse with `at` into the declared member that has the
+        // value's constructor (or pair members by constructor when both sides are
+        // unions), and pin the union-member shapes beside default_hidden_by_a_field.
+        // probe:
+        // design/review-2026-10-26/repro/c-callsite-hidden-default-under-union-member.gx
+        // (c-callsite-02)
         (Type::Set(_), _) | (_, Type::Set(_)) => {
             let mut formals: LPooled<Vec<TArc<FnType>>> = LPooled::take();
             collect_fn_arms(&d, &mut formals);
@@ -464,6 +476,17 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 /// with its quantifiers held rigid for the argument's check: the argument
 /// must be well typed for every 'b the bound admits, since the callee may
 /// call it at any. `None` for any other formal.
+// CR claude for claude: [bug/medium] Only a formal whose type IS a quantified function
+// type is held rigid. A rank-2 type nested in a struct or tuple formal (`|s: {f: fn<'b:
+// Any>(x: 'b) -> 'b}|`) returns None here, so pre_unify_arg binds 'b to the argument's
+// type. `run(s)` with `s = {f: |x: i64| x + 1}` passes the check, and the build refuses
+// it with the internal 'an instance at fn(s: { f: fn(x: i64) -> i64 }) ..' error
+// (graphix-fuzz: DIVERGENCE). A struct literal holding a lambda and a tuple formal
+// behave the same. This is a reachable case of x-typecheck-generics-02's unjudged
+// FnType::contains_int gates. Fix: gate, and judge with added_bound and polymorphic_in,
+// every quantified fn type the formal holds. probe:
+// design/review-2026-10-26/repro/x-typecheck-generics-rank2-nested-in-struct.gx
+// (x-typecheck-generics-05)
 fn quantified_formal(
     env: &Env,
     typ: &Type,
@@ -472,6 +495,18 @@ fn quantified_formal(
     while let Some(t @ Type::Ref(_)) = &expanded {
         expanded = t.lookup_ref_with(env, false)?;
     }
+    // CR claude for claude: [bug/high] A quantified function type that sits inside a
+    // formal (a struct field `{f: fn<'b: [i64, string]>(x: 'b) -> 'b}`, an `Array<F>`
+    // element, a `[F, null]` member) is not held here. Only a formal that is itself
+    // `fn<..>` gets its quantifiers made rigid and checked by `added_bound`. So
+    // `app({f: |x| x * x})` passes the check, and the callee's `s.f("a")` fails at run
+    // time ("binding the callee failed: a run-time bind ... did not type"): bottom
+    // forever, in both engines. This is a witness for the still-open half of
+    // x-typecheck-generics-02 (FnType::contains_int's own quantifier gates are not
+    // judged). Fix: collect every quantifier of a quantified Fn reachable in the
+    // formal's type (FnType::inner_quantifiers, as the definition's own check does),
+    // and hold and judge each the same way. probe:
+    // design/review-2026-10-26/repro/x-rerun-3-rank2-nested-formal.gx (x-rerun-3-01)
     let Some(formal @ Type::Fn(ft)) = &expanded else { return Ok(None) };
     if ft.quantifiers.is_empty() {
         return Ok(None);
@@ -608,6 +643,19 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
                 wrap!(n, added_bound(&ctx.env, q, declared))?;
             }
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
+            // CR claude for claude: [bug/medium] A lambda argument that writes an outer
+            // variable (`apply(|x| { r <- x; x })`, or `*p <- x`) carries the rank-2
+            // quantifier out, and neither check here sees it. The quantifier's copy is
+            // generic (FnType::generic_inner_quantifiers), and tvar::lower never lowers
+            // a generic cell, so the merged cell keeps Level::Generic and carried_out
+            // does not count it as foreign. escapes_through walks only refs, and a
+            // Lambda node has no children and a Connect target is not a ref. The check
+            // accepts the program and the build refuses the instance
+            // (GRAPHIX_ELAB_AUDIT). Fix: let a merge with a Top/Def cell lower a
+            // generic cell, or walk the argument's written bindings and its lambda
+            // body's refs in escapes_through. probe:
+            // design/review-2026-10-26/repro/t-fntyp-rank2-quantifier-escapes.gx
+            // (t-fntyp-02)
             wrap!(n, polymorphic_in(&formal, n.typ()))?;
             let mut refs = Refs::default();
             n.refs(&mut refs);
@@ -629,6 +677,17 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
 /// fresh instance of `f`'s signature whose other parameters take the
 /// arguments of a copy of the site's, so a variable the site fixes
 /// through another parameter fixes this one.
+// CR claude for claude: [bug/critical] A hidden label's default is judged here against
+// a fresh instance whose parameters alone take the site's types; the return type and
+// throws are never related. `let f = |#d = 1, x| [d, x]; let g: fn(x: string) ->
+// Array<string> = f` ties d to string through the return type, but in this copy d is
+// still open, so the default 1 fits and the check accepts. At run time the JIT reads
+// the i64 as an ArcStr and aborts (misaligned pointer dereference). The node-walk
+// prints [1, "s"] as an Array<string>. The same holds through a struct field, a `<-`
+// target, a generic HOF formal and a rank-2 formal. Fix: relate site.rtype ⊇ inst.rtype
+// and site.throws ⊇ inst.throws before the default is judged. probe:
+// design/review-2026-10-26/repro/x-typecheck-generics-hidden-default-return-tie.gx
+// (x-typecheck-generics-01)
 fn callee_param<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     f: &LambdaDef<R, E>,
@@ -662,6 +721,18 @@ fn callee_param<R: Rt, E: UserEvent>(
             }
         }
     }
+    // CR claude for claude: [bug/critical] The site's arguments are linked into `inst`
+    // above, but its return type never is. So a hidden label whose type only the result
+    // holds is judged against a fresh, unconstrained cell. `let f = |#n = 1, x: i64|
+    // (x, n); let h: fn(x: i64) -> (i64, string) = f; h(1).1` passes the check, and the
+    // JIT then reads the i64 1 as an ArcStr pointer: 'misaligned pointer dereference
+    // ... 0x1', an abort in debug builds and UB in release. The same hole makes
+    // GRAPHIX_NO_SUBST=1 refuse functions.rs's default_runs_once_per_bind ('_ does not
+    // contain i64' at `count(1)`). Fix: also hold `inst.rtype` (and throws) to
+    // `site.rtype` before the default is checked, and pin it with a default_hidden_*
+    // fixture in which the label appears only in the result. probe:
+    // design/review-2026-10-26/repro/tests-functions-hidden-default-unsound.gx
+    // (tests-functions-01)
     inst.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
 }
 
@@ -669,6 +740,13 @@ fn callee_param<R: Rt, E: UserEvent>(
 /// holds for every choice of them only if none was aliased to a cell the
 /// argument does not own: a top-level variable or an enclosing
 /// definition's, which would carry the quantifier out.
+// CR claude for claude: [structure/low] The quantifier cells of a formal are collected
+// by hand here and in quantified_formal, callee_param, bound_quantifiers and
+// escapes_through: `collect_tvars` then a filter on `quantifiers.contains`.
+// FnType::open_quantifiers already does this but is private. typecheck_arg computes the
+// same set three times per argument. Fix: expose one FnType accessor, use it at all
+// five sites, and compute `quantified` once in typecheck_arg and pass it down. Found by
+// reading; not run. (t-fntyp-06)
 fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
     let Type::Fn(ft) = formal else { return Ok(()) };
     let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
@@ -755,6 +833,13 @@ fn escapes_through(formal: &Type, env: &Type) -> Result<()> {
 }
 
 /// Every cell under `t`, following bindings.
+// CR claude for claude: [structure/low] carried_out's nested `walk` is this function
+// with its arguments reordered: delete it and call this one. The 'collect_tvars, keep
+// the names in ft.quantifiers' step is also written five times in this file
+// (quantified_formal, callee_param, polymorphic_in, bound_quantifiers,
+// escapes_through). Make it one FnType method next to the private
+// FnType::open_quantifiers, so a change to quantifier identity happens once. Found by
+// reading; not run. (c-callsite-05)
 fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar)) {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
@@ -862,6 +947,16 @@ fn holds_invariantly(t: &Type) -> bool {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => tv.binding().is_some_and(|b| holds_invariantly(&b)),
         Type::Fn(_) => false,
+        // CR claude for claude: [bug/medium] A `Type::Ref` is counted as invariant here
+        // and in `data_positions` whatever it names, so a transparent alias types a
+        // call differently from its expansion. With `type M<'a> = ['a, null]`, `|x: 'a,
+        // y: M<'a>|` refuses `f(n, u64:0)` (n: [u64, null]) with "'a: u64 does not
+        // contain [u64, null]", but `y: ['a, null]` accepts it and widens. Follow the
+        // ref's resolution and recurse into the expansion; keep it invariant only when
+        // it resolves to an abstract type. Pin it with an alias next to
+        // an_invariant_argument_decides_first. probe:
+        // design/review-2026-10-26/repro/tests-functions-alias-not-transparent.gx
+        // (tests-functions-03)
         Type::Abstract { .. } | Type::App(..) | Type::Ref(_) | Type::ByRef(..) => {
             let mut tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             t.collect_tvars(&mut tvars);
@@ -1080,6 +1175,11 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// Pre-bound at compile time by [`CallSite::try_static_resolve`]; the
     /// per-cycle identity check is skipped (`fnode.update()` still runs
     /// for effects). `first_update` primes the body's refs once.
+    // CR claude for claude: [doc-drift/low] The doc above is stale. Nothing primes refs
+    // with first_update. It marks the next update as the instance's first dispatch:
+    // update_call keeps every quiet production (Keep::Every), delivers arguments and
+    // defaults fired and dispatches under View::Birth. Say that. Found by reading; not
+    // run. (c-callsite-07)
     Static { apply: Box<dyn Apply<R, E>>, first_update: bool },
     /// A statically bound instance the image holds in its heap, decoded
     /// by the first dispatch; `refs` is the body's summary until then.
@@ -2598,6 +2698,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             _ => false,
         };
+        // CR claude for eric: [bug/low] When the function variable fires with the
+        // definition already bound, the site keeps its instance and, with no argument
+        // fired, rides: the call does not fire. A dereference whose reference variable
+        // is rewritten with the same reference does fire. In the probe, `*r` fires at
+        // cycle 3 and `g(x)` does not. Organic firing (a node fires iff a consumed
+        // input fires) names neither exception. Rule whether a same-definition write is
+        // a fire. If it is, re-tag the standing output fired here and keep the
+        // instance. If not, stop Deref firing on a same-target write. Then document and
+        // pin it. probe:
+        // design/review-2026-10-26/repro/x-engine-firing-same-fn-write-no-fire.gx
+        // (x-engine-firing-06)
         if same {
             return false;
         }
@@ -2678,6 +2789,14 @@ impl RefsSummary {
         }
     }
 
+    // CR claude for claude: [dead/low] Nothing reads an imaged site's triggering set.
+    // Refs::triggering has one reader, scrutinee_inputs, which runs in Select::compile
+    // over freshly compiled scrutinees whose call sites are unbound, so it never meets
+    // a Callee::Imaged. The triggering list in RefsSummary, the banked bit in
+    // InstanceRefs::callees and Refs::callees, and the doubled walk in ImagedRefs::flat
+    // only add image bytes and work. This method also extends refs.triggering directly,
+    // skipping Refs::read's banked rule. Drop the triggering list and the banked bits,
+    // or make this go through Refs::read. Found by reading; not run. (c-callsite-04)
     fn add_to(&self, refs: &mut Refs) {
         refs.refed.extend(self.refed.iter().copied());
         refs.triggering.extend(self.triggering.iter().copied());
@@ -2727,6 +2846,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Release what this site registered for an imaged tree.
+    // CR claude for claude: [risk/low] An imaged site's held reads are recorded with
+    // record_ref at decode, so until apply_deferred runs they are pending, not
+    // registered. This function unregisters them with ctx.rt.unref_var directly. On a
+    // failed decode the deletes run before drop_deferred (read_registration deletes the
+    // decoded roots; materialize deletes an instance whose kernels did not install). A
+    // nested imaged site in those trees then hits the debug_assert in Rt::unref_var
+    // ('unref_var of an unregistered') instead of starting cold. Fix: call
+    // ctx.unref_var(*id, self.top_id), which cancels a pending reference and
+    // unregisters a registered one. Found by reading; not run. (c-image-03)
     fn release_held(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(held) = self.held.take() {
             for id in held.iter() {
@@ -2778,6 +2906,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 Box::new(g)
             }
             Err(e) => {
+                // CR claude for claude: [structure/low] A failed decode returns here
+                // with `held` still registered. update_call then binds the site
+                // dynamically, and the imaged subtree's flattened reads keep marking
+                // this site's boundary until it is deleted. `held` means something only
+                // while the callee is Imaged: move it into Callee::Imaged and release
+                // it on both exits of materialize, so the field cannot outlive the
+                // state it belongs to. Found by reading; not run. (c-callsite-06)
                 ctx.fusion.forget_restored_since(mark);
                 ctx.drop_deferred();
                 return Err(e);
@@ -3115,6 +3250,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.slept.set();
         // A recursive edge deselected by a shrink is deleted, so
         // re-reaching this depth binds a fresh activation.
+        // CR claude for eric: [perf/medium] Deleting the callee here (shrink = delete)
+        // makes a recursion whose depth swings rebuild every activation between the two
+        // depths every cycle, as fresh run-time binds that cost ~15x an update.
+        // Node-walked fib(14 - i % 2) costs 860 ms per 100 cycles against 80 for
+        // fib(14). A stateful linear recursion alternating 200/100 deep costs 230
+        // against 23 even with fusion on. This is the per-cycle cost of x-fix-nodes-03
+        // and c-collection-03. Decide between a cheaper fresh activation and keeping a
+        // stateless callee's instance here, re-dispatched under View::Birth via
+        // Apply::reborn, which cannot be told from a fresh bind. probe:
+        // design/review-2026-10-26/repro/x-perf-runtime-depth-churn.sh
+        // (x-perf-runtime-03)
         if super::in_deselected_arm() && self.is_recursive_edge() {
             if let Some(mut f) = self.callee.take_apply() {
                 f.delete(ctx)
@@ -3224,6 +3370,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let mut carriers = SmallVec::new();
             self.defaults_open =
                 !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
+            // CR claude for eric: [bug/low] Only a builtin's unread Concrete quantifier
+            // settles. So a lambda that forwards publish's optional handler,
+            // `|#on_write: [fn(v: 'a) -> _, null] = null, p: string|
+            // sys::net::publish(#on_write: on_write, p, 1)`, refuses `w("/a")`, though
+            // publish itself accepts the same call. The message, 'a type-directed
+            // operation reads it: annotate it', names a read that does not happen, at a
+            // call with nothing to annotate. test_builtins::unread_quantifier_settles
+            // pins this refusal for its lambda case. Rule: should a definition whose
+            // body uses the quantifier only through a forwarded function argument get
+            // the builtin's settle (recorded in its DefTable)? If not, the message
+            // should say the quantifier is unread here and that a typed handler or a
+            // typed null settles it. probe:
+            // design/review-2026-10-26/repro/tests-lang-rest-a-wrapped-publish-unread-quantifier.gx
+            // (tests-lang-rest-a-05)
             if !self.defaults_open && static_builtin(ctx, self).is_some() {
                 self.settle_unread(&ctx.env, ftype, &carriers);
             }
@@ -3427,6 +3587,24 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // A `MarshalArg::Call(i)` indexes the source-order arg list, which
         // spans labeled and positional args; `Default(name)` is this site's
         // compiled default node.
+        // CR claude for claude: [readability/low] Every unresolved call reaches this
+        // point, so a call with no static target (a `<-`-written binding, a returned
+        // lambda, a destructured rebinding) is reported as "builtin call site .. not
+        // discovered", and the quoted spec includes the `#[native]` attribute and a
+        // line break. Report a call with no static target as such ('dispatches at run
+        // time') before the builtin lookup, and print the call without its attributes.
+        // probe:
+        // design/review-2026-10-26/repro/tests-functions-native-builtin-misnamed.gx
+        // (tests-functions-07)
+        // CR claude for claude: [readability/medium] Every site with an unbound callee
+        // ends here, so a call whose function is a run-time value (a `<-` target, a
+        // select) is reported as 'builtin call site ... not discovered'. `#[native]
+        // h(y)` with `h <- ..` shows that text to the user, and FusionStats.failed
+        // records the wrong blocker. Before the builtin lookup, give a site with no
+        // apply that is not a static builtin its own blocker, e.g. 'no static callee:
+        // the function is a run-time value'. probe:
+        // design/review-2026-10-26/repro/c-callsite-native-dynamic-call-blames-builtin.gx
+        // (c-callsite-03)
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
             None => {
@@ -3519,6 +3697,17 @@ impl Absent {
         let mut injected = super::wake::Injected::new();
         for id in self.missed.drain(..) {
             let live = ctx.event.variables.get(&id).is_some_and(|tv| tv.tag().triggers());
+            // CR claude for claude: [bug/high] An argument that went bottom while the
+            // function was bottom is caught up here as a FIRED null. A bottom is stored
+            // as Null with a bottom tag, and this injection never checks
+            // `tv.tag().is_bottom()`. With `h = select c { 1 => never(), _ => f }`, `f
+            // = |b: i64| [b]` and y bottom from event 2, `h(y)` yields `[null]` (an
+            // Array<i64>) at event 3 in both engines, where it should be bottom. Skip a
+            // bottom store entry, as TrackedFires::deliver, wake::owed and
+            // Bind::reraise_writes_while_asleep already do, or route the missed
+            // arguments through one shared catch-up helper. probe:
+            // design/review-2026-10-26/repro/c-callsite-absent-wake-injects-bottom-as-null.gx
+            // (c-callsite-01)
             if !live && let Some((tv, _)) = ctx.rt.store_get(&id) {
                 let catch_up = TagValue::tagged(tv.value_cloned(), Tag::FIRED);
                 injected.push((id, ctx.event.variables.put(id, catch_up)));

@@ -631,6 +631,17 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 if members.iter().all(composite) {
                     // one the normalizer would collapse freezes as what it
                     // collapses to
+                    // CR claude for claude: [risk/low] [risk/low] This normalizes
+                    // `resolved`, a shallow clone (deref_cloned) whose members share
+                    // the program's TVar cells. TVar::normalize_int binds a non-normal
+                    // binding back into the shared cell, so freezing a composite union
+                    // can rewrite a settled cell during fusion.
+                    // freeze_for_abi_normalized's doc forbids exactly that ("never t:
+                    // normalize writes bindings back into shared TVar cells").
+                    // Normalize a deep copy (`resolved.resolve_tvars().normalize()`),
+                    // or return NonCanonical and let the normalized retry, which
+                    // already works on a resolve_tvars() copy, decide. Found by
+                    // reading; not run. (f-kernel-02)
                     let canonical = matches!(
                         resolved.normalize(),
                         Type::Set(ref ms) if ms.len() == members.len()
@@ -702,6 +713,19 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
                     return Err(NonCanonical);
                 }
+                // CR claude for claude: [perf/medium] [perf/medium] The freeze is still
+                // exponential when a typedef DAG is two wide. The memo lives in the
+                // parent Seen node, so it only shares a ref's frozen form between
+                // siblings under the same expansion. When A_i and B_i each name both
+                // A_{i+1} and B_{i+1}, every node is reached through two parents and
+                // the work doubles with each layer. 20 layers: 5.2 s of phase=Freeze,
+                // against 0.17 s with --no-fusion and 46 ms for --check. Fix: keep the
+                // results of refs whose expansion met no recurring ref
+                // (path-independent) in one map per top-level freeze keyed by the
+                // TypeRef. Or count expansions and refuse with Unsupported past
+                // lowering::FUSION_SIZE_CAP, as the structural-sharing case does.
+                // probe: design/review-2026-10-26/repro/f-kernel-freeze-layered-dag.gx
+                // (f-kernel-01)
                 let fp = expand_key_fp(tr);
                 if let Some(parent) = seen
                     && let Some((_, _, t)) = parent

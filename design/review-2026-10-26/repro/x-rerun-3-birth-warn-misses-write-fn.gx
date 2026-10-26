@@ -1,0 +1,18 @@
+// Title: the arm-birth warning misses a call to a user function that writes an
+//   outer variable with its constant argument (c-select-seq-02 variant)
+// Command: timeout -s KILL 10 graphix --no-cache x-rerun-3-birth-warn-misses-write-fn.gx
+// Expected: a WARNING at `set(5)` ("this call reads no variable, so it acts only
+//   at this arm's first entry ..."), as `m <- 5` written inline in the arm gets.
+// Observed: no warning; count(m) stays 1 though the arm is entered at n = 0, 2, 4:
+//   (0, 1) (-1, 1) (2, 1) (-1, 1) (4, 1). acts_on_the_world reads only facts.io.
+let clock = sys::time::timer(duration:10.ms, 4);
+let n = 0;
+n <- clock ~ n + 1;
+let m = never<i64>();
+let set = |v: i64| { m <- v; v };
+let r = select n % 2 {
+  0 => { set(5); n },
+  _ => -1
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(r, count(m))

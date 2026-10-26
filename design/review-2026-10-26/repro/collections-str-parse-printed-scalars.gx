@@ -1,0 +1,19 @@
+// Title: str::parse cannot read what Graphix prints for a duration, a datetime or bytes
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache collections-str-parse-printed-scalars.gx
+// Expected (str::parse doc: "reading what Graphix prints for one ... datetime, duration or bytes"):
+//   ("1.5s", 1.5s, "2020-01-01 00:00:00 UTC", 2020-01-01..., "AQID", bytes, {d: 1.5s})
+// Observed:
+//   error:`ParseError("cannot parse \"1.5s\" as duration"),
+//   error:`ParseError("cannot parse \"2020-01-01 00:00:00 UTC\" as datetime"),
+//   error:`ParseError("cannot parse \"AQID\" as bytes"),
+//   error:`ParseError("cannot parse \"{d: 1.5s}\" as { d: duration }")
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+type E = `ParseError(string);
+let d = duration:1.5s;
+let t = datetime:"2020-01-01T00:00:00Z";
+let b = cast<bytes>([1, 2, 3])$;
+let pd: Result<duration, E> = str::parse("[d]");
+let pt: Result<datetime, E> = str::parse("[t]");
+let pb: Result<bytes, E> = str::parse("[b]");
+let ps: Result<{d: duration}, E> = str::parse("[{d: d}]");
+("[d]", pd, "[t]", pt, "[b]", pb, ps)

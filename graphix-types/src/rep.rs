@@ -139,6 +139,10 @@ pub const TUPLE_BASE: usize = 1;
 pub const STRUCT_BASE: usize = 1;
 
 /// Where a variant's tag sits in its array; its payload follows.
+// CR claude for claude: [dead/low] Nothing in this repository or ../netidx reads
+// VARIANT_TAG. Every variant read goes through rep::variant and rep::payload, which is
+// the rule. Delete it, and drop it from design/distinct_composite_forms.md. Found by
+// reading (grep); not run. (t-rep-05)
 pub const VARIANT_TAG: usize = 1;
 
 /// The tuple of `elems`.
@@ -412,6 +416,15 @@ pub fn strip_with<E>(
 /// `v`'s parts, each `f`'s rewrite of it, as `strip_with` rewrites an
 /// unmarked level: an array's elements (a marker included), a map's keys
 /// and values, an error's payload; `None` when no part changed.
+// CR claude for claude: [bug/high] map_parts recurses through its callback with no
+// stack guard, and abstract_value::rewrite (Forms::Keep, to_marked_data) recurses
+// through it once per level. strip_with, the Strip path, is guarded.
+// CachedVals::as_data runs this over every async builtin's DATA_ARGS, and a List is a
+// value as deep as it is long. So db::insert of a 300-element List overflows the tokio
+// worker and aborts the process; db::cursor's range key takes the same path. Fix: wrap
+// the body in crate::stack::ensure_sufficient as strip_with does, and pin a db round
+// trip of a 100k-element List. probe:
+// design/review-2026-10-26/repro/x-stack-db-list-value.gx (x-stack-01)
 pub fn map_parts<E>(
     v: &Value,
     f: &mut impl FnMut(&Value) -> Result<Option<Value>, E>,

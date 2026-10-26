@@ -17,6 +17,17 @@ macro_rules! witness {
 
 /// Witnesses, each a program one of whose statements must be refused.
 const WITNESSES: &[(&str, &str)] = &[
+    // CR claude for claude: [test-gap/medium] This witness no longer depends on what
+    // fusion does. The select's type is already i64 before fusion runs: the node-walk
+    // build, the fused build and the check alone all refuse with "string does not
+    // contain i64". Its header records a union for the node-walk instead. If fusion
+    // went back to normalizing the original type in place (the hazard
+    // try_freeze_for_abi_normalized documents), this text would not change and the gate
+    // would still pass. Fix: find a witness that fails with the in-place normalize
+    // reintroduced, or also compare each statement's compiled type (printed without
+    // normalizing) between Mode::Jit and Mode::Interp. probe:
+    // design/review-2026-10-26/repro/tests-fusion-traits-parity-witness-vacuous.sh
+    // (tests-fusion-traits-02)
     witness!("fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx"),
     witness!("typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx"),
     witness!("typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx"),

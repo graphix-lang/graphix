@@ -1,0 +1,12 @@
+// Title: cast of an in-language Array to a union holding that Array type
+// and a tuple of its length returns the tuple, though the value inhabits
+// the Array member (Type::Set's "a member the value already inhabits wins").
+// Command: timeout -s KILL 30 graphix --no-cache x-kind-markers-cast-array-becomes-tuple.gx
+// Expected: array [1, 2]   (the source is statically Array<i64>)
+// Observed: tuple (1, 2)
+type U = [(i64, i64), Array<i64>];
+let a: Array<i64> = [1, 2];
+let u: U = cast<U>(a)$;
+println(select u { (i64, i64) as t => "tuple [t]", Array<i64> as x => "array [x]" });
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

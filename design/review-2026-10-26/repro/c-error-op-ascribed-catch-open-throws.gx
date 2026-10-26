@@ -1,0 +1,14 @@
+// Title: an ascribed catch over an open raise: the check accepts a call the build refuses
+// Command: graphix --check design/review-2026-10-26/repro/c-error-op-ascribed-catch-open-throws.gx
+//          GRAPHIX_ELAB_AUDIT=1 graphix --no-cache design/review-2026-10-26/repro/c-error-op-ascribed-catch-open-throws.gx
+// Expected: --check refuses run(error(`B)) (the catch takes only `A), as it does when
+//   the bound is declared (`'e: `A |r: Result<i64, 'e>| ..`).
+// Observed: --check exits 0; the run refuses at elaboration and ELAB-AUDIT reports
+//   "an instance at fn(r: Result<i64, `B>) -> i64 of a definition typed
+//    fn(r: Result<i64, 'e: `A>) -> i64". A callback form
+//   (|g: fn() -> i64 throws 'e| { catch(e: Error<ErrChain<`A>>) ..; g() + 1 }) does the same.
+let run = |r: Result<i64, 'e>| {
+  catch(e: Error<ErrChain<`A>>) println("caught [e]");
+  r? + 1
+};
+run(error(`B))

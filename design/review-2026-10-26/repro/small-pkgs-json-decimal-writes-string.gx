@@ -1,0 +1,12 @@
+// small-pkgs: json::write writes a decimal as a JSON string, so a decimal in a union with string reads back as the string
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/small-pkgs-json-decimal-writes-string.gx
+// Expected: ("{\"x\":1.5}", "decimal 1.5", "[1,0.12345678901234567891]")  (a decimal is a JSON number)
+// Observed: ("{\"x\":\"1.5\"}", "string 1.5", "[1,\"0.12345678901234567891\"]")
+type E = [`JsonErr(string), `InvalidCast(string)];
+type T = {x: [decimal, string]};
+let v: T = {x: cast<decimal>("1.5")$};
+let s = json::write_str(v)$;
+let back: Result<T, E> = json::read(s);
+let n: Result<(i64, Any), E> = json::read(r"[1, 0.12345678901234567891]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(s, select back$.x { decimal as d => "decimal [d]", string as s => "string [s]" }, json::write_str(n$)$)

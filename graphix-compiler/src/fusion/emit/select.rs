@@ -350,6 +350,15 @@ pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
     let cond = emit_structure_cond(
         cx, pattern, &scrut_typ, false, scrut, &scrut_typ, &mut binds,
     )?;
+    // CR claude for claude: [bug/high] A let pattern is irrefutable, so `cond` is false
+    // only for a bottom placeholder (the empty array, a NULL|TAINT Value).
+    // mask_unmatched then ORs STALE into every bind and turns a fired bottom into a
+    // standing one, where the node-walk delivers it fresh. `count` over `let (a, b) =
+    // select n { k if (10 / d) > 0 => (k, k), k => (k, 0) }; a + b` counts at steps
+    // where the node-walk bottoms. The binds already carry the value's flags through
+    // propagate_flags, and the reads are total. Pass mask None here and in
+    // emit_composite_binds, and pin the repro. probe:
+    // design/review-2026-10-26/repro/f-select-let-destructure-stale.gx (f-select-01)
     install_arm_binds(cx, &binds, scrut, cond)
 }
 
@@ -470,6 +479,12 @@ fn emit_composite_pattern_cond_inner(
     }
     let (leaves, len_cc, n): (SmallVec<[LeafSpec; 8]>, IntCC, usize) = match pat {
         StructPatternNode::Slice { kind, all, binds: pbinds } => {
+            // CR claude for claude: [dead/low] Unreachable: emit_structure_cond and the
+            // nested-leaf loop both send list patterns to emit_list_pattern_cond before
+            // they call this function, here and for `SlicePrefix { list: true }` below.
+            // The 'yet' wrongly says lists are unsupported in composites. Drop both
+            // checks and match only the Tuple and Array kinds, so a list falls to the
+            // existing catch-all refusal. Found by reading; not run. (f-select-06)
             if matches!(kind, SliceKind::List) {
                 return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
             }
@@ -697,6 +712,16 @@ fn emit_composite_pattern_cond_inner(
             sub @ StructPatternNode::Or { .. } if !binds_any(sub) => {
                 value_leaves.push((leaf.idx, sub, leaf.typ.clone()))
             }
+            // CR claude for claude: [perf/medium] A binding or-pattern at an element
+            // position always de-fuses here, even when its alternatives bind the same
+            // kind. So `select v { (`A(x) | `B(x), n) => x + n }` node-walks and
+            // `#[native]` on it is refused, while the same or-pattern as a whole arm
+            // fuses through emit_or_chain. CLAUDE.md promises or-patterns at bracketed
+            // element positions fuse natively. Lower this leaf as emit_or_chain does:
+            // try each alternative on the element, install the first match's binds and
+            // forward them to one join block under the shared BindIds. probe:
+            // design/review-2026-10-26/repro/x-rerun-4-or-elem-bind-defuse.gx
+            // (x-rerun-4-04)
             StructPatternNode::Or { .. } => {
                 return Err(anyhow!(
                     "emit_clif: a binding or-pattern leaf not lowerable"
@@ -972,7 +997,25 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             Some(c) => cx.b.ins().band(c, reached),
             None => reached,
         };
+        // CR claude for claude: [perf/low] Every bind of a guarded arm is cloned here
+        // on every invocation, including those neither the guard nor the body reads.
+        // The chain retains only read binds; do the same here (body refs plus guard
+        // refs). A guarded or-arm is also left out of Tested::Guarded below, so the
+        // chain emits its alternative chain and owned clones a second time. Its
+        // prologue binds are already clean wherever the chain takes the arm, so record
+        // Tested::Guarded(pcond) for it too. Found by reading; not run. (f-select-04)
         install_arm_binds(cx, &binds, scrut, Some(mask))?;
+        // CR claude for eric: [bug/medium] The prologue runs this guard on every
+        // invocation, also where an earlier arm claimed the value. A `$` or
+        // handler-less `?` here whose operand ignores the binds then logs a swallowed
+        // failure the node-walk never had, because the node-walk runs only the guards
+        // the chain reaches (CLAUDE.md). The comment above the prologue says the
+        // node-walk ticks every guard every cycle, which is no longer the rule. This is
+        // the reverse of f-call-flow-02. Decide: evaluate a prologue guard only under
+        // its `mask` (branch around it, pass eff/gbot/gs as block params), or have
+        // lowering::unfollowed_guard refuse such Qops as it refuses handler-ful raises.
+        // probe: design/review-2026-10-26/repro/f-select-unreached-guard-logs.sh
+        // (f-select-02)
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm_u(gcv.disc, STALE);
         let gbot = is_tainted(cx.b, gcv.disc);
@@ -1373,6 +1416,14 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
 
 /// Whether an arm's written type test names the scrutinee's own type,
 /// holding no abstract type (whose test is nominal): every value passes.
+// CR claude for claude: [perf/low] A test is trivial here only when the predicate
+// equals the scrutinee's type. A wider predicate that every value passes still de-fuses
+// the select: over an i64 scrutinee, `Number as x` and `[i64, string] as x` are "not
+// lowerable", and `Any as x` fails to freeze before this check runs. Fix: count as
+// trivial a predicate that contains the frozen scrutinee type, checked without binding
+// and before the predicate is frozen, keeping the holds_abstract exclusion. Pin the
+// three forms under #[native]. Variant of tests-select-03. probe:
+// design/review-2026-10-26/repro/x-rerun-2-wider-type-test-defuses.sh (x-rerun-2-04)
 fn type_test_is_trivial<R: Rt, E: UserEvent>(
     cx: &BodyCx,
     pat: &PatternNode<R, E>,
@@ -1459,6 +1510,14 @@ fn emit_list_pattern_cond(
                 binds.push(SelectArmBind::ListHead { id: *id, idx: j, kind, list });
             }
             StructPatternNode::Ignore => {}
+            // CR claude for claude: [perf/medium] A literal or or-pattern in a list
+            // element position is refused here, so `#[native] select a { [<"a", ..>] =>
+            // 1, _ => 0 }` over List<string> (or `[<1, ..>]` over List<i64>)
+            // node-walks. The same leaves fuse in tuple, slice and struct element
+            // positions. Read the j-th head as ListHead does and test it with the slice
+            // path's leaf lowering, ANDed into the list-match condition. probe:
+            // design/review-2026-10-26/repro/x-rerun-5-list-literal-leaf-defuses.gx
+            // (x-rerun-5-06)
             _ => {
                 return Err(anyhow!(
                     "emit_clif: nested list element pattern not lowerable"
@@ -2036,6 +2095,15 @@ fn emit_member_cond(
 /// when `on` is `None`, else a payload of an enclosing variant, borrowed,
 /// whose words `on` also holds): its tag and arity, then each payload's
 /// own pattern against its member of `pred`, the frozen predicate.
+// CR claude for claude: [perf/medium] A struct, tuple or slice pattern in a payload (``
+// `Text({ id, .. }) ``, the admin TUI's idiom) refuses below as a 'nested variant
+// payload pattern', and emit_list_pattern_cond refuses every non-bind head (`[<(0, s),
+// t..>]`). So the whole select node-walks, while emit_composite_pattern_cond_inner
+// already handles all these leaf shapes for tuple, array and struct leaves. Factor that
+// leaf classifier out and use it here and for list heads. For a composite payload,
+// select the payload word against graphix_valarray_empty_borrowed on the tag test, as
+// emit_member_cond does. probe:
+// design/review-2026-10-26/repro/f-select-payload-struct-pattern.gx (f-select-03)
 fn emit_variant_cond(
     cx: &mut BodyCx,
     v: (ClifValue, ClifValue),

@@ -1,0 +1,21 @@
+// t-seq: under seqq a capture written only through a callee (a SeqCapture the
+// analysis makes live) skips the step's entry snapshot, so the step tracks it
+// live; the same write spelled directly (`x <- 1`) is entry-snapshotted and stalls.
+// Command:
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-seq-seqq-callee-capture-live.gx
+//   (then replace `put(1)` with `x <- 1` and run again)
+// Expected (design/seq_blocks.md §5: a step sees the world as it stood at its
+// entry; only live(e) follows a variable): no "r:" line with either spelling,
+// as under plain `seq` with either spelling.
+// Observed: "r: 10" with put(1) (the step followed x from 1 to 10); nothing
+// with `x <- 1`.
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let x = 0;
+x <- select step { 6 => 10, _ => never() };
+let put = |v| { x <- v; v };
+let t = select step { 1 => 1, _ => never() };
+let r = seqq t { put(1); select x > 2 { true => x, false => never() } };
+println("r: [r]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

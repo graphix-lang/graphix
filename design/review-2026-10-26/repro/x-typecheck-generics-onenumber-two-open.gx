@@ -1,0 +1,18 @@
+// Title: a OneNumber binding holding two open members (no numeric one yet)
+// passes the check; a call binding them to two numeric types is refused by
+// the build only, with the internal instance-typing error.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-onenumber-two-open.gx   (exit 0)
+//   graphix --no-cache x-typecheck-generics-onenumber-two-open.gx
+//   graphix-fuzz check x-typecheck-generics-onenumber-two-open.gx
+// Expected: the check and the build agree: g's definition refused (its
+//   two open members may yet be two numeric types: annotate them), as
+//   lang::types::one_number_beside_an_open_member_refused refuses one open
+//   member beside a numeric one.
+// Observed: check exit 0; the build fails with "an instance at
+//   fn(x: [i64, f64]) -> [i64, f64] of a definition typed fn<'a: [null,
+//   Number] + OneNumber>(..)"; graphix-fuzz: DIVERGENCE, "the check
+//   accepted what the build refused".
+let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x;
+let g = |b, y, z| f(select b { true => z, false => y });
+g(false, 2.5, 1)

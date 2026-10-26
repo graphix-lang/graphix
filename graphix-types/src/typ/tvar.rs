@@ -428,6 +428,11 @@ impl Drop for AtLevel {
 /// nothing deeper.
 /// `rebuild` of `t`, made once per shared composite (`memo`, by address;
 /// a cell's address is another allocation, so a cell memo shares the map).
+// CR claude for claude: [readability/low] The doc block above this function begins with
+// lower's description ("Lower every cell `t` reaches to at most `level` ..."), so
+// `once` is documented as lowering cells and `lower` below has no doc. Move that
+// paragraph onto `pub(super) fn lower` and keep only the "`rebuild` of `t`, made once
+// per shared composite" sentence here. Found by reading; not run. (t-tvar-07)
 fn once(
     t: &Type,
     memo: &mut AHashMap<usize, Option<Type>>,
@@ -442,6 +447,20 @@ fn once(
     r
 }
 
+// CR claude for claude: [bug/high] lower never claims a generic cell, on the assumption
+// that every generic cell is a scheme's. Cells born generic as scratch also become live
+// bindings' types: a let annotation's free variables (`let r: ['a, null] = null`,
+// `never<['a, null]>()`), whose cells node::lambda::body_annotation only aliases, and a
+// let pattern's predicate over a ⊥ initializer (`let (a, b) = never()`, node::bind). A
+// function that writes such a binding (`let f = |x| { r <- x; x }`) merges x's cell
+// with that generic cell and is generalized over it. So `(f(1), f("a"))` passes
+// --check, and the build either refuses it with the internal "an instance at .. of a
+// definition typed .." error (graphix-fuzz: DIVERGENCE) or runs it with r holding an
+// i64 and then a string. Fix: claim those cells for current_level() where they become a
+// binding's type (body_annotation, the ⊥-initializer predicate). Also let merge_into
+// give the merged cell the shallower level of the two (TVar::claim, which takes generic
+// cells), so a live cell never ends up generic. probe:
+// design/review-2026-10-26/repro/t-tvar-annotation-var-generic.gx (t-tvar-01)
 pub(super) fn lower(t: &Type, level: Level) {
     fn go(t: &Type, level: Level, nodes: &mut AHashSet<usize>) {
         ensure_sufficient(|| match t {
@@ -1680,6 +1699,17 @@ impl Type {
     /// An open member of a `OneNumber` cell's binding beside a numeric one:
     /// it may yet be another numeric type, which no bound can rule out, so
     /// the definition that leaves it open is refused (annotate it).
+    // CR claude for claude: [bug/medium] This needs a known numeric member. Two open
+    // members with none known each get OneNumber alone (require_one_number), yet they
+    // may bind two different numeric types. `let g = |b, y, z| f(select b { true => z,
+    // false => y })` over a `'a: [Number, null] + OneNumber` f passes the check, and
+    // `g(false, 2.5, 1)` is refused by the build with the internal 'an instance at
+    // fn(x: [i64, f64]) ..' error (graphix-fuzz: DIVERGENCE). Fix: also return true
+    // when no member is numeric and two or more distinct open cells remain, so
+    // site_bounds refuses at the definition as it does for one open member beside a
+    // numeric one. probe:
+    // design/review-2026-10-26/repro/x-typecheck-generics-onenumber-two-open.gx
+    // (x-typecheck-generics-03)
     pub fn one_number_open(&self) -> bool {
         let mut parts = UnionParts::new(Measure::Numbers);
         self.union_parts(None, &mut parts).is_ok()
@@ -1818,6 +1848,17 @@ impl Type {
     /// be one), bound
     /// cells judged by their bindings, open cells admitted (a bind hands
     /// them the conjunct).
+    // CR claude for claude: [bug/medium] concrete_holds has no Env, so a type reference
+    // is judged by its parameters alone: `type R = &i64` (or `fn(x: i64) -> i64`,
+    // `Array<&i64>`, `[i64, &i64]`) holds Concrete. `let r: Result<R,
+    // `ParseError(string)> = str::parse("42")` passes --check, and only the run-time
+    // cast refuses it ("a reference can't be read from data"); written out, the same
+    // target is refused by the check. data_holds already walks through definitions with
+    // Type::holds(env, ..). Build concrete_holds on that walk with ByRef, Fn and Bottom
+    // found (Type::is_concrete too), and delete concrete_holds_seen. In
+    // design/tvar_constraints.md, add functions to the Concrete bullet and say it is
+    // judged through type references. probe:
+    // design/review-2026-10-26/repro/t-tvar-concrete-through-typedef.gx (t-tvar-03)
     pub(crate) fn concrete_holds(&self) -> bool {
         self.concrete_holds_seen(&mut LPooled::take())
     }
@@ -1951,6 +1992,15 @@ impl Type {
 
     /// Whether the cell at `addr` ([`ForeignWrite`]) is one of this type's,
     /// or one a cell it holds is bound to reaches.
+    // CR claude for claude: [perf/low] holds_cell enters every binding and child with
+    // no seen set. node::module::decided_binds calls it, through ForeignWrite::held_by,
+    // on the type of every binding in Env::by_id. A pair DAG anywhere in scope
+    // therefore makes a module's foreign-write refusal exponential: 1.2 s at depth 26
+    // and 4.7 s at depth 28, against 41 ms for the annotated program. Add a seen set of
+    // cells and shared nodes, as open_beneath has. Name the cell by TVar::cell_addr
+    // (Arc::as_ptr), not data_ptr, so ForeignWrite uses the same address convention as
+    // every other walk. probe:
+    // design/review-2026-10-26/repro/t-tvar-held-by-dag-exponential.sh (t-tvar-05)
     fn holds_cell(&self, addr: usize) -> bool {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
@@ -2006,6 +2056,28 @@ impl Type {
     /// [`Self::collect_tvars`] over positions alone: a nested signature's
     /// cells by its own positions, never its conjuncts, so the walk is
     /// linear in the type.
+    // CR claude for claude: [perf/medium] This has no shared-node memo, so over a type
+    // DAG it visits every path, contrary to its doc. FnType::for_each_part calls it on
+    // every walk, and settle_terminal, inner_quantifiers and site_bounds' collect_tvars
+    // go through for_each_part. A generic call chain h -> g -> f, where f returns a DAG
+    // of nested pair lets, elaborates in 0.58 s at depth 20, 2.1 s at 22 and 7.5 s at
+    // 24, while --check stays at 0.08 s. The deep_nesting pins call f directly and
+    // never reach this walk. Fix: skip a node_addr already walked, as
+    // collect_tvars_seen does, and pin the chain in
+    // graphix-shell/tests/deep_nesting.rs. probe:
+    // design/review-2026-10-26/repro/x-typecheck-generics-dag-position-walk.sh
+    // (x-typecheck-generics-07)
+    // CR claude for claude: [perf/medium] This walk has no visited set, so it walks a
+    // shared type DAG as a tree. A pair DAG built through a generic constructor (`let
+    // mk = |x: 'a| -> ('a, 'a) (x, x)`, then x1 = mk(x0) .. x24 = mk(x23) inside a
+    // definition) checks in 40 ms but builds in about 10 s at depth 24, x4 per two
+    // levels. gdb samples sit here, under FnType::collect_tvars and position_cells from
+    // settle_terminal. The inline-tuple pin in deep_nesting.rs does not reach this
+    // path. Fix: skip a node whose node_addr was already seen, as collect_tvars_seen
+    // does, with the set threaded in from position_cells and collect_tvars, and pin the
+    // generic-constructor shape. probe:
+    // design/review-2026-10-26/repro/t-typ-mod-generic-pair-dag-exponential.sh
+    // (t-typ-mod-02)
     pub(crate) fn collect_position_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
@@ -2103,11 +2175,37 @@ impl Type {
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.
+    // CR claude for claude: [bug/high] A predicate cell standing over an `Any` part of
+    // self stays open here: `Any ⊇ 'a` binds nothing, and a plain bind's cell is not
+    // fresh, so bind_narrowed never checks it. The arm body's uses then decide the
+    // bind's type. `(x, 1)` over (Any, i64) with `str::len(x)` passes the check, and
+    // the JIT panics on an i64 in a String slot. The same happens through a written
+    // union (`[`A(Any), `B(Any)] as `A(x)`, `[Array<Any>, null] as [x, ..]`), which
+    // narrows here at compile. `let (x, _) = v` over the same type gives x Any and
+    // refuses the use. Fix: after the containment, bind every cell of pred that is
+    // still open and whose part of self is Any to Any: a pattern bind receives the
+    // scrutinee's value. probe:
+    // design/review-2026-10-26/repro/c-pattern-bind-over-any-open.gx (c-pattern-03)
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;
         members.retain(|m| pred.could_match(env, m).unwrap_or(true));
         match members.len() {
+            // CR claude for claude: [bug/critical] With one member this checks `self ⊇
+            // pred` through contains, which commits a union NESTED under a constructor
+            // (an array element, a tuple position, a struct field, a variant payload)
+            // to its first member that holds the pattern's shape. The arm's binds and
+            // its run-time test then carry that member alone. Over Array<[(i64, i64),
+            // (string, string)]>, `[(a, _)]` types `a` as i64 and tests (i64, i64), so
+            // ("s", "t") falls to the next arm, and without a fallback the select is
+            // refused. Under a slice with a rest, whose run-time test admits the whole
+            // element union, a string reaches an i64 bind and the JIT panics. CLAUDE.md
+            // says a bind narrows to the union of its parts over every member the arm
+            // can match. Fix: where self holds a union under a constructor that pred
+            // also has, narrow that part per member (narrow_per_member on the
+            // sub-part), as the top level does, and pin each position. probe:
+            // design/review-2026-10-26/repro/c-pattern-nested-union-first-member.gx
+            // (c-pattern-01)
             0 | 1 => self.contains(env, pred),
             _ => pred.narrow_per_member(env, &members).map(|()| true),
         }
@@ -2679,6 +2777,18 @@ impl UnionParts {
                 }
             }
             (_, Type::Any) => 2,
+            // CR claude for claude: [bug/medium] `others.contains` compares with Type's
+            // PartialEq, under which two distinct unbound cells are equal. [Array<'y>,
+            // Array<'z>] therefore counts as one member and Singleton admits it in a
+            // generic definition's check. The instance at 'y = i64, 'z = string then
+            // refuses: `let k = |b, y, z| h(select b { true => [y], false => [z] })`
+            // with `h = 'a: Singleton |x: 'a| -> 'a x` passes --check, and the build of
+            // k(false, 1, "a") fails with "an instance at .. of a definition typed .."
+            // (graphix-fuzz: DIVERGENCE). Dedup by union_identical instead, as
+            // new_conjuncts does. Either refuse members that differ only in open cells,
+            // or unify them as merge_open unifies bare open members. probe:
+            // design/review-2026-10-26/repro/t-tvar-singleton-open-members-equal.gx
+            // (t-tvar-02)
             (_, t) if self.others.contains(t) => 0,
             (measure, t) => {
                 self.others.push(t.clone());

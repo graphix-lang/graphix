@@ -1,0 +1,24 @@
+// Title: a type variable written in a let annotation stays generic, so a
+//        function that writes the binding is generalized over it
+// Command: timeout -s KILL 30 graphix --check t-tvar-annotation-var-generic.gx
+//          timeout -s KILL 30 graphix --no-cache t-tvar-annotation-var-generic.gx
+// Expected: both refuse `f("a")` (i64 does not contain string), as they do
+//   when the annotation is left off (`let r = never()`): f writes the one
+//   variable r, so f is monomorphic in x.
+// Observed: --check exits 0 and f is typed fn(x: [null, 'a]) -> [null, 'a]
+//   with 'a shared with r but generic; the run accepts too and prints
+//   null, 1, "a": r holds an i64 and then a string.
+//   Variants: `let r: 'a = never()` with `r + 1` after: --check passes, the
+//   build refuses with "an instance at fn(x: string) -> string of a
+//   definition typed fn(x: i64) -> i64"; `let r = never<['a, null]>()`
+//   passes --check too; inside a definition,
+//   `let f = |x| { let r: 'a = never(); let g = |y| { r <- y; y }; (g(1), g("a"), r) }`
+//   passes --check and the build refuses g's instance. A let's pattern
+//   predicate does the same: `let (a, b) = never(); let f = |x| { a <- x; x };
+//   let p = (f(1), f("s"));` passes --check and the run prints 1 then "s"
+//   for `a`.
+let r: ['a, null] = null;
+let f = |x| { r <- x; x };
+let p = (f(1), f("a"));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

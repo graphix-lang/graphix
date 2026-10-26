@@ -1,0 +1,18 @@
+// Title: a seq step reads a variable present at its entry when another
+// variable it reads first arrives, not at its entry.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache tests-lang-rest-b-seq-joint-snapshot.gx
+//          (--no-fusion gives the same; so does `seq { f(step, m) }`)
+// `step` is 0 at the step's entry; `m` is absent until step 6 (100).
+// CLAUDE.md: "every variable the seq's own text reads ... is read once, at
+// the step's entry (`seq`) ..., or at its first arrival if absent" reads
+// per variable: expected 0 + 100 = 100.
+// Observed: 106: the step's reads are one tuple (seq lowering
+// `(pc, step, m)`), taken whole when its last member arrives.
+// lang::printing::seq_printing_waits_for_message pins the observed form
+// (its value 6 is `step` read at `msg`'s arrival).
+let step = 0;
+step <- select step { s if s < 12 => s + 1, _ => never() };
+let m = never<i64>();
+m <- select step { 5 => 100, _ => never() };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+seq { step + m }

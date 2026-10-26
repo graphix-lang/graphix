@@ -1,0 +1,9 @@
+// Title: a null literal in a variant payload covers nothing beside a type-tested arm (null-pool-typetest-01 variant)
+// Command: timeout -s KILL 15 graphix --no-cache x-rerun-6-null-variant-typetest.gx
+// Expected: [0, 4, 9], as the struct and tuple forms print ({a: null} => 0, {a: i64} as s => s.a gives [0, 3])
+// Observed: refused, "missing match cases: no arm covers `A([i64, null])":
+//   StructPatternNode::null_narrowed handles Slice(Tuple) and Struct but returns None for Variant
+//   (and Abstract), so `A(null) covers no type and set coverage cannot distribute with the
+//   type-tested arm.
+let k = |x: [`A([i64, null]), `B]| select x { `A(null) => 0, `A(i64) as `A(n) => n, `B => 9 };
+[k(`A(null)), k(`A(4)), k(`B)]

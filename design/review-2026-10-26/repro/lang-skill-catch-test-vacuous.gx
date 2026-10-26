@@ -1,0 +1,12 @@
+// Title: errors.rs catch_repl_cross_input (and the fuzz pin
+// catch-stmt-aug2026/02_toplevel_file_catch.gx) cannot fail: their handler
+// `catch(e) tag <- "caught"` writes at its birth, so tag is "caught"
+// whether or not the `?` below it raises or is delivered.
+// Command: timeout -s KILL 10 graphix --no-cache lang-skill-catch-test-vacuous.gx
+// Expected (if the pin tested delivery): nothing, since `a[0]?` raises nothing.
+// Observed: "caught".
+let a = [1];
+let tag = "";
+catch(e) tag <- "caught";
+a[0]?;
+select tag { "" => never(""), t => t }

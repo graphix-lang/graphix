@@ -1,0 +1,19 @@
+// Title: same as c-select-seq-arm-in-birth-reads-stale.gx, through a fresh
+// callee instance bound at run time (dispatched under View::Birth).
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache c-select-seq-arm-in-birth-instance.gx
+// Expected: r=1 y=5 z=5 once the call is made.
+// Observed: r=1 y=0 z=5 (z, written outside the select, is written; y, inside its
+// arm, is not).
+let x = 5;
+let y = 0;
+let z = 0;
+let f = |t| {
+  z <- x;
+  select t { _ => { y <- x; t } }
+};
+let fs = [f];
+let go = sys::time::after_idle(duration:30.ms, 1);
+let g = array::fold(fs, never(), |acc, h| go ~ h);
+let r = g(go);
+sys::exit(sys::time::after_idle(duration:80.ms, r));
+println("r=[r] y=[y] z=[z]")

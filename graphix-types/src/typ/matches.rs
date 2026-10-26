@@ -53,6 +53,15 @@ impl SigPairs {
     /// Pair every deferred union: the first assignment of signature
     /// members to implementation members that every union, and the unions
     /// those pairings defer in turn, accept.
+    // CR claude for claude: [perf/low] Each permutation of the popped union recurses
+    // into the settle of every other deferred union and clones SigPairs every time.
+    // When the union that cannot pair is the one popped last, all the others are
+    // retried in full, for (n!)^k attempts. Four 6-member unions with one mismatch do
+    // not finish in 150 s, so --check and the LSP hang on a mistyped interface. Fix:
+    // settle each union on its own first, and backtrack only into unions that share a
+    // cell with the failing one; a failure independent of the other unions fails at
+    // once. probe: design/review-2026-10-26/repro/t-contains-sig-settle-exponential.sh
+    // (t-contains-06)
     pub(super) fn settle(
         &mut self,
         env: &Env,
@@ -446,6 +455,18 @@ impl Type {
                 tvar_map.deferred.push((self.clone(), impl_type.clone()));
                 Ok(())
             }
+            // CR claude for claude: [bug/medium] This pairs union members by position
+            // and assumes both sides are in the same order. A union is sorted once,
+            // when it is built, and TVar's Ord compares unbound cells by their absent
+            // bindings. So an implementation union built while its cells were open
+            // keeps that order after they bind, while the interface's union is sorted
+            // by the current Ord. `val f: fn(b: bool, x: 'a) -> [Array<i64>,
+            // Array<'a>]` over `|b: bool, x| select b { true => [x], false => [3] }` is
+            // refused ("expected 'a, got i64") although the types are identical. Fix:
+            // defer to settle every pair of unions where either side holds an unbound
+            // cell anywhere (has_unbound), not only a top-level open member. probe:
+            // design/review-2026-10-26/repro/t-contains-sig-union-order.sh
+            // (t-contains-03)
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
                 for (t0, t1) in s0.iter().zip(s1.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
@@ -549,6 +570,17 @@ impl Type {
             }
             // a union of open implementation cells is the variable when
             // each cell is
+            // CR claude for claude: [bug/medium] Only a signature variable may meet an
+            // implementation union of open cells. A concrete signature type falls to
+            // the final mismatch arm, although it is an instance (the cells bind to it
+            // and the union collapses). `val f: fn(b: bool, x: i64, y: i64) -> i64`
+            // over `|b: bool, x, y| select b { true => x, false => y }` is refused with
+            // "signature has i64, implementation has ['_N, '_M]". Fix: drop the TVar
+            // requirement on the signature side here and pair every open member with
+            // the signature type; strictly_identical already catches a member that an
+            // argument mapped to something else. probe:
+            // design/review-2026-10-26/repro/t-contains-sig-concrete-vs-open-union.sh
+            // (t-contains-04)
             (Self::TVar(_), Self::Set(members))
                 if members
                     .iter()

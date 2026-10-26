@@ -1,0 +1,22 @@
+// `~` drops a trigger that finds its argument bottom after a value: no bank, no ride
+// command: graphix --no-cache x-seq-sampling-sample-drops-trigger-on-bottom.gx  (--no-fusion: same)
+// timeline: v = o$ is 10 from step 2, bottom from step 6 (o <- null), 20 from step 10;
+//   t fires at 3, 4 and 7.
+// expected: either "~ at 10: 20" (the step-7 fire banked, as book/src/core/select.md
+//   contrasts with ~!: "`e ~! v` ... bottom with no bank when `v` is bottom. `~` still
+//   banks"), or "~ at 7: 10" (design/dense_delivery.md R3: `~`'s argument is a designated
+//   Held ride, "sample the latest").
+// observed (both engines): "~ at 3: 10", "~ at 4: 10" and nothing for the step-7 fire,
+//   exactly as `~!`: Sample::update answers the debt from the held value and then sets
+//   the resident bottom because the argument's tag is bottom.
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let t = select step { 3 | 4 | 7 => step, _ => never() };
+let o: [i64, null] = null;
+o <- select step { 1 => 10, 5 => null, 9 => 20, _ => never() };
+let v = o$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let out = t ~ v;
+let strict = t ~! v;
+println(out ~ "~ at [step]: [out]");
+println(strict ~ "~! at [step]: [strict]")

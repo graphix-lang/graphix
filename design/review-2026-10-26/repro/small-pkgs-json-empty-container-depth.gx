@@ -1,0 +1,15 @@
+// small-pkgs: json::write_str writes 128 nested containers when the innermost is empty; json::read refuses them
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/small-pkgs-json-empty-container-depth.gx
+// Expected: w(127) refused by json::write_str ("the value nests 128 containers deep or more"), as w(128) is.
+// Observed: write_str succeeds for w(127) and the read back fails:
+//   unhandled error ... line 11 `JsonErr("recursion limit exceeded at line 1 column 128")
+type N = Array<N>;
+type E = [`JsonErr(string), `InvalidCast(string)];
+let rec mk = |n: i64| -> N select n { 0 => [], n => [mk(n - 1)] };
+let w = |n: i64| -> Result<i64, E> {
+  let s = json::write_str(mk(n))?;
+  let back: N = json::read(s)?;
+  n
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(w(126), w(127), w(128))

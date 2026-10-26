@@ -1,0 +1,21 @@
+// Title: a constant raise, and a seq with a constant trigger, in a select arm act only at the
+// arm's first entry, and the check warns of neither
+// Command: graphix --check x-engine-seq-errors-const-raise-no-warning.gx ; then graphix --no-cache (same file)
+// Expected: the check warns of `error(`Bad)?` as it warns of `out <- 7` in that position
+//           ("... reads no variable, so it acts only at this arm's first entry ..."): a raise to a
+//           handler is an event, as a write is (CLAUDE.md, Sleep is pause); and it warns of
+//           `seq 1 { .. }` as it warns of `seq { .. }` ("this seq has no trigger ...").
+// Observed: --check prints nothing. Running it, the last value stays 1: the raise fires at k=0
+//           and never at k=3, 6, ..., where the same arm is selected again; "ran" prints once
+//           though arm 0 of `s` is entered three times (both engines agree; this is the rule,
+//           the missing warnings are the defect). Write `seq { .. }` and the check warns.
+let k = 0;
+k <- select k { s if s < 20 => s + 1, _ => never() };
+let errs = 0;
+let f = |x: i64| -> i64 select x % 3 { 0 => error(`Bad)?, 1 => x * 2, _ => x };
+let r = {
+  catch(e) errs <- e ~ errs + 1;
+  f(k)
+};
+let s = select (k / 4) % 2 { 0 => seq 1 { println("ran"); 0 }, _ => 1 };
+(k ~ errs)

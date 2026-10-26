@@ -1,0 +1,14 @@
+// x-stack: db::insert of a 300-element List value overflows the stack
+// (abstract_value::rewrite <-> rep::map_parts, the Forms::Keep path that
+// CachedVals::as_data takes for an async builtin's DATA_ARGS, has no stack guard).
+// run: rm -rf /tmp/x-stack-db; timeout -s KILL 60 graphix --no-cache x-stack-db-list-value.gx
+// expected: "ok" and exit 0 (a list of 100 elements does this)
+// observed: thread 'tokio-rt-worker' has overflowed its stack; fatal runtime error:
+//   stack overflow, aborting (exit 134) at 300 elements; gdb shows ~600 frames
+//   alternating graphix_types::rep::map_parts / graphix_types::abstract_value::rewrite
+//   under CachedVals::as_data <- CachedArgsAsync<DbInsertEv>::update.
+let db = db::open("/tmp/x-stack-db")$;
+let t: db::Tree<i64, List<i64>> = db::tree(db, null)$;
+let r = db::insert(t, 1, list::init(300, |i| i));
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select r { error as e => "[e]", _ => "ok" }

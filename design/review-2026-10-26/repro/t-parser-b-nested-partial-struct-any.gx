@@ -1,0 +1,9 @@
+// Title: a partial struct pattern nested in a composite over Any tests the exact struct
+// Command: timeout -s KILL 30 graphix --no-cache t-parser-b-nested-partial-struct-any.gx
+// Expected: `Hit (the value's second element is a struct holding field a), or a
+//   refusal like the top-level `{a, ..}` over Any gets ("has no struct type to complete it")
+// Observed: `Miss. The same program with the exhaustive `(_, {a, b})` prints `Hit.
+let x: Any = (1, {a: 1, b: 2});
+let r = select x { (_, {a, ..}) => `Hit, _ => `Miss };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

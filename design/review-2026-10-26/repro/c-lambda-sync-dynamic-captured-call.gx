@@ -1,0 +1,16 @@
+// Title: in a run-time bind, a nested literal's calls through the enclosing
+// instance's fn parameters are dropped from its ParamCalls
+// (Lambda::typecheck0_instance keeps only the captured keys
+// CompileCtx::instance_fn_params names, which only a static bind
+// registers), so the callback reads as pure and #[sync] passes.
+// Command: graphix --no-cache c-lambda-sync-dynamic-captured-call.gx
+// Expected: the run-time bind reports "#[sync]: this function is async"
+//   (as the static call `d(..)` is refused at build, and as the same
+//   run-time bind reports it when d's body calls after_idle itself).
+// Observed: no report; prints 3.
+#[sync]
+let d = |f: fn(v: i64) -> bool, v: i64| filter(v, |x| f(x));
+let e: fn(f: fn(v: i64) -> bool, v: i64) -> i64 = d;
+e <- never();
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+e(|x| sys::time::after_idle(duration:10.ms, x) > 0, 3)

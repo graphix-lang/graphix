@@ -388,6 +388,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             emit_helpers::with_deferred(|| {
                 emit_helpers::with_kernel_env(env, || {
                     super::par_loop::with_par_loan(Some(loan), || unsafe {
+                        // CR claude for claude: [risk/medium] [risk/medium] Nothing
+                        // guarantees stack for the kernel's frame here. Callers keep
+                        // only RED_ZONE (1 MB) free, and nothing bounds a frame, so a
+                        // kernel whose frame is near or above 1 MB aborts the process
+                        // with a stack overflow instead of de-fusing. The owned-array
+                        // fold chain at 800 lets has a 2.83 MB frame and dies in its
+                        // prologue's stack probe; at 400 the frame is already 771 KB.
+                        // Record each kernel's frame size at link and run the wrapper
+                        // on a grown segment (stack::grow) when the remaining stack is
+                        // short. Alternatively refuse to fuse a region whose frame
+                        // passes a bound below RED_ZONE. probe:
+                        // design/review-2026-10-26/repro/x-perf-compile-fold-chain-stack-overflow.sh
+                        // (x-perf-compile-07)
                         f(slots.as_ptr(), out.as_mut_ptr());
                     })
                 })

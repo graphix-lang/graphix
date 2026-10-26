@@ -1,0 +1,12 @@
+// Title: a block-local abstract type's payload is readable from a sibling block
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/t-env-abstract-rep-sibling-block.gx
+// Expected: refused, as `v.0` at the top level is: "the definition of this
+//           abstract type is not visible here, so its payload cannot be read"
+//           (CLAUDE.md: `x.0` only where the definition is visible).
+// Observed: prints 6. Env::abstract_rep -> under_some_instance treats the
+//           sibling block's `#do..` component as an instance of the defining
+//           block's `#do..` component.
+let v = { type T = Abstract<i64>; let x = T(5); x };
+let w = { let k = 1; v.0 + k };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+w

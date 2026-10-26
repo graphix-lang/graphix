@@ -1,0 +1,11 @@
+// small-pkgs: toml::read turns a TOML 1.1 offset datetime without seconds into a string, so a datetime target refuses it
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/small-pkgs-toml-datetime-no-seconds.gx
+// Expected: a = {t: 1979-05-27 07:32:00 UTC}, as b (the toml crate parses spec 1.1.0, where seconds are optional)
+// Observed: a = error:`InvalidCast("can't cast \"1979-05-27T07:32Z\" to datetime: no primitive conversion")
+type E = [`TomlErr(string), `InvalidCast(string)];
+let a: Result<{t: datetime}, E> = toml::read("t = 1979-05-27T07:32Z");
+let b: Result<{t: datetime}, E> = toml::read("t = 1979-05-27T07:32:00Z");
+let c: Result<{t: datetime}, E> = toml::read("t = 1979-05-27 07:32:00Z");
+let d: Result<{t: datetime}, E> = toml::read("t = 1979-05-27T07:32:00.123456789123Z");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(a, b, c, d)

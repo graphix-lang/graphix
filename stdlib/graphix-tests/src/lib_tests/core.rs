@@ -116,6 +116,14 @@ const ALL: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] Every `all` fixture in this file passes equal
+// arguments. An AllEv::eval that returns its first argument without comparing (in
+// fast_eval(fc_all) or in the ref_targets/with_hooks branch) passes ALL,
+// all_compares_references_by_what_they_name and all_with_a_reference_uses_eq. Add a
+// fixture where `all` must stay silent: all(1, 2), all(&a, &b) with a == b, and two
+// Keys whose Eq differs, all under `any(.., later_event ~ "none")`, asserting "none".
+// Found by reading; the current behaviour was checked by hand and is correct.
+// (tests-lib-a-02)
 run!(all, ALL, is(Value::I64(1)); FuseExpect::Jit);
 
 const SUM: &str = r#"

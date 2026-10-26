@@ -207,6 +207,15 @@ struct Params {
     #[arg(short = 'W')]
     warn: Vec<RawFlag>,
     /// arguments passed to the graphix program (everything after the filename)
+    // CR claude for claude: [bug/medium] trailing_var_arg only applies once
+    // program_args has a value, so a first program argument that names a graphix option
+    // or subcommand is taken by graphix. `graphix cli.gx --help` shows graphix's help,
+    // `graphix cli.gx -n 3 foo` turns on --no-netidx and the script sees ["3", "foo"],
+    // and `graphix cli.gx fmt x` runs the formatter on x in place. Fold `file` into
+    // this positional (a Vec whose first element is the script) so everything after the
+    // filename is the program's, as the help text promises. probe:
+    // design/review-2026-10-26/repro/examples-rest-program-args-intercepted.sh
+    // (examples-rest-02)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     program_args: Vec<String>,
 }
@@ -265,6 +274,16 @@ impl NetArgs {
     }
 
     async fn pub_sub(&self, bind: Option<BindCfg>) -> Result<(Publisher, Subscriber)> {
+        // CR claude for claude: [bug/high] With no netidx config file, `graphix
+        // netidx:/path` panics ("Cannot start a runtime from within a runtime"). This
+        // load runs on the async main runtime, and Config::load_default_or_local_only
+        // falls back to Config::local_only, which builds a runtime and block_on's it.
+        // That is the zero-config local setup install.md advertises. Other netidx users
+        // are unaffected because NetState loads on a thread of its own. Run this load
+        // off the runtime the same way (a std::thread or spawn_blocking), or share
+        // NetState's loader. probe:
+        // design/review-2026-10-26/repro/book-core-netidx-script-panic.sh
+        // (book-core-01)
         let (cfg, auth) = self.load()?;
         let publisher = PublisherBuilder::new(cfg.clone())
             .desired_auth(auth.clone())
@@ -481,6 +500,17 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
             .await
     });
     // a blocking task (a stdin read) must not hold the exit
+    // CR claude for eric: [bug/high] The process exits without waiting for the
+    // runtime's teardown. Teardown only aborts the runtime task, and
+    // shutdown_background abandons both GX's drop and the blocking thread where Reaped
+    // flushes the database. So a db insert followed by sys::exit is lost in most runs:
+    // sled had not flushed it, and db's interface does not say an insert needs
+    // db::flush to be durable. Await the runtime task's end after the abort (GXHandle
+    // holds its JoinHandle), then let blocking reaps finish within a bounded
+    // shutdown_timeout, or have Reaped count outstanding reaps for the exit to wait on,
+    // so a stdin read still cannot hold the exit. probe:
+    // design/review-2026-10-26/repro/x-concurrency-db-write-lost-at-exit.sh
+    // (x-concurrency-01)
     rt.shutdown_background();
     res
 }

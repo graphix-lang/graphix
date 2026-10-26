@@ -1,0 +1,22 @@
+// x-async-io: queuefn's wake releases several queued calls in one cycle and
+// their per-argument writes interleave, so f sees an argument tuple never called
+// Run: timeout -s KILL 30 graphix --no-cache x-async-io-queuefn-wake-mixes-calls.gx
+// Calls made: q(0, 100) at n=0, q(1, 100) at n=1 (only a fired), q(2, 200) at n=2.
+// Expected after the wake at n=6: r=(1, 100) then r=(2, 200).
+// Observed: r=(1, 200) then r=(2, 200): (1, 200) was never called.
+let clk = sys::time::timer(duration:20.ms, 9);
+let n = 0;
+n <- clk ~ n + 1;
+let trig: i64 = never();
+trig <- select n { 4 => n, 5 => n, _ => never() };
+let mode: [`On, `Off] = `On;
+mode <- select n { 3 => `Off, 6 => `On, _ => never() };
+let a = 0;
+let b = 100;
+a <- select n { 1 => 1, 2 => 2, _ => never() };
+b <- select n { 2 => 200, _ => never() };
+let q = queuefn(#trigger: trig, |x: i64, y: i64| -> (i64, i64) (x, y));
+let r = select mode { `On => q(a, b), `Off => never() };
+println("n=[n] r=[r]");
+sys::exit(sys::time::after_idle(duration:200.ms, clk ~ 0));
+r

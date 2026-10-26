@@ -1,0 +1,34 @@
+// c-collection: a callback change that lands while the source is bottom never redecides the slots' independence
+// Command (run 3 times each):
+//   GRAPHIX_PAR=off   timeout -s KILL 30 graphix --no-cache c-collection-pause-rebind-fork.gx
+//   GRAPHIX_PAR=force timeout -s KILL 30 graphix --no-cache c-collection-pause-rebind-fork.gx
+// `f` changes from g1 (pure) to g2 (calls the ORDERED queuefn) at n = 3, while `src` is
+// bottom (n = 3, 4). MapQ::update reads `rebound` from the event before woken_slots
+// injects the catch-up fire of the callback, so the slots rebind without
+// SlotSite::redecide and keep the independence verdict g1 earned.
+// Expected (serial, as off prints): got in slot order: (502, null, [502, 503, ..., 507, 600, 601, ...])
+// Observed under force: slot calls reach the queue out of order in every later cycle, e.g.
+//   (506, 0, [506, 502, 507, 501, 500, 505, 600, 602, 604, 603, ...]), different each run.
+// (The off run's missing 500/501 is the program's own same-cycle `got <-` writes, unrelated.)
+{
+    let clk = sys::time::timer(duration:1.ms, true);
+    let n = 0;
+    n <- clk ~ n + 1;
+    let got: Array<i64> = [];
+    let pop = clk ~! select n { k if k >= 3 => true, _ => never() };
+    let q = queuefn(#trigger: pop, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+    let g1 = |x: i64| -> i64 x;
+    let g2 = |x: i64| -> i64 q(x);
+    let f = select uniq(n < 3) { true => g1, false => g2 };
+    let src = select n { k if (k >= 3) && (k < 5) => never(), k => array::init(8, |j| j + 100 * k) };
+    let r = array::map(src, f);
+    sys::exit(select n { k if k > 30 => 0, _ => never() });
+    select n {
+        k if k > 20 => (
+            got[0]$,
+            array::find(array::init(9, |j| j), |j| got[j + 1]$ < got[j]$),
+            got
+        ),
+        _ => never()
+    }
+}

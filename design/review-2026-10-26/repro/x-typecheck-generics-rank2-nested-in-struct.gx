@@ -1,0 +1,22 @@
+// Title: a rank-2 function type nested in a struct or tuple formal is not
+// held rigid at the call: a monomorphic function passes the check, and the
+// build refuses the instance with the internal instance-typing error.
+// callsite::quantified_formal recognizes only a formal whose type IS a
+// quantified function type; for `{f: fn<'b: Any>(..)}` it returns None,
+// and pre_unify_arg then binds the nested quantifier 'b to i64.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-rank2-nested-in-struct.gx  (exit 0)
+//   graphix --no-cache x-typecheck-generics-rank2-nested-in-struct.gx
+//   graphix-fuzz check x-typecheck-generics-rank2-nested-in-struct.gx
+// Expected: the check refuses run(s) ("fn<'b: Any>(x: 'b) -> 'b does not
+//   contain fn(x: i64) -> i64"), as it refuses run({f: g}) with a let-bound
+//   g, and as it refuses the same function passed bare to a rank-2 formal.
+// Observed: check exit 0; the build fails with "an instance at fn(s: { f:
+//   fn(x: i64) -> i64 }) -> (i64, string) of a definition typed fn(s: { f:
+//   fn<'b: Any>(..) }) -> (i64, string)". The same with a struct literal
+//   holding a lambda (`run({f: |x| x + 1})`), with a tuple formal
+//   `(fn<'b: Any>(x: 'b) -> 'b, i64)`, and with 'b: Number + Singleton
+//   called at i64 and f64.
+let run = |s: {f: fn<'b: Any>(x: 'b) -> 'b}| (s.f(1), s.f("s"));
+let s = {f: |x: i64| x + 1};
+run(s)

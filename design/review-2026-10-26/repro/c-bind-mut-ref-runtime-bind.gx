@@ -1,0 +1,15 @@
+// c-bind: `&mut y` over a let whose type reached an inference cell (an
+// operator's, a call's result, an array literal's element) is refused at
+// every run-time bind (a collection slot, a dynamic call): ByRef::compile
+// asks CompileCtx::generalized_earlier, which counts BOUND cells at
+// Level::Generic, and a run-time bind compiles at the thread's default
+// level, Generic. `let y = 5` (no cell), `let y: i64 = ..`, `y <- ..` and a
+// static call of the same lambda all work.
+// run: timeout -s KILL 60 graphix --no-cache c-bind-mut-ref-runtime-bind.gx
+// expected: [2, 3] then [7, 7]
+// observed: "f(collection_element): binding the callee failed: ... &mut y:
+//   y was made generic by an earlier compile, and a writable reference to
+//   it would let a write narrow it: write it with <-" (twice), no value;
+//   `graphix --check` accepts the program.
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+array::map([1, 2], |i| { let y = i + 1; let r = &mut y; *r <- y ~ 7; y })

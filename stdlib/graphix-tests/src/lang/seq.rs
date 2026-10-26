@@ -90,6 +90,13 @@ run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, is(Value::I64(2)); FuseEx
 
 // A bare `pc ~ x` at an entry that finds `x` bottom consumes the
 // sample's debt and issues nothing.
+// CR claude for claude: [readability/low] The comment says an entry that finds x bottom
+// 'consumes the sample's debt', but banked `~` banks it. The name says the second run
+// stalls, yet `pc <- pc ~ `Idle` leaves pc `Wait for one cycle per run, so the first
+// run issues nothing either (n is 0 at every step). What the fixture pins is that a
+// bank is not paid by a value that arrives and leaves while the arm sleeps: rename it
+// and say that. probe:
+// design/review-2026-10-26/repro/tests-seq-bare-sample-both-runs.gx (tests-seq-05)
 const SEQ_BARE_SAMPLE_STALLS_SECOND_RUN: &str = r#"
 {
   let step = 0;
@@ -631,6 +638,15 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
         ),
         // a level absent at the first entry is waited for, then read as it stands
         (
+            // CR claude for claude: [test-gap/low] The comment says an outer level
+            // absent at the first entry is waited for and then read as it stands, but
+            // lvl is bound inside the seqq body: it is a step whose timer is reborn
+            // every run. Bound outside as described, the fixture gives [342, 342, 342]
+            // (every queued request runs as the last one; see the CR in
+            // desugar_queued). Move lvl outside the body and keep [142, 242, 342].
+            // probe:
+            // design/review-2026-10-26/repro/tests-seq-seqq-absent-level-outside.gx
+            // (tests-seq-03)
             "absent_level",
             "let lvl = sys::time::timer(duration:20.ms, false) ~ 42; let q = request; let y = lvl; q * 100 + y",
             vec![142, 242, 342],
@@ -731,6 +747,11 @@ run!(
 // A level `x?` in a step fires at entry as it stands and tracks after:
 // absent at entry it is waited for, and an error it takes after entry,
 // while a sibling holds the step, raises.
+// CR claude for claude: [doc-drift/low] The comment above says a level `x?` in a step
+// 'tracks after' its entry. It does not: a step reads x once at entry (or at its first
+// arrival), and only `live(x)?` sees a later error, which is why the next fixture
+// writes `live(late)?`. Reword the comment to the snapshot rule. probe:
+// design/review-2026-10-26/repro/tests-seq-qop-level-comment.gx (tests-seq-04)
 run!(seq_qop_level_waits, r#"{
     let n = 0;
     n <- select n { s if s < 10 => s + 1, _ => never() };

@@ -1138,6 +1138,16 @@ pub(crate) type QopCoverage = SmallVec<[u64; 4]>;
 /// those resolutions as CLIF calls.
 pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 
+// CR claude for claude: [bug/critical] The coverage half of the kernel cache key walks
+// only this body's own emitted nodes (for_each_emitted_node), not the callees it
+// reaches. A `?` in a callee raises to the handler of whichever call chain reached it.
+// Two instances of this lambda under different catches therefore get the same key. The
+// second region then reuses the first's kernel and body, whose callee kernel was built
+// against the first handler, so the second call's error goes to the first catch.
+// Collect the Qop handlers with fusion::for_each_reachable_node, as share::RegionPrint
+// does, and add a run! fixture for this shape. probe:
+// design/review-2026-10-26/repro/f-mod-lowering-callee-raise-wrong-handler.gx
+// (graphix-fuzz check: DIVERGENCE, (1, 2) vs (1, 0)). (f-mod-lowering-01)
 fn body_fingerprint<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ec: &CompileCtx<R, E>,
@@ -1580,6 +1590,15 @@ fn capture_slots<R: Rt, E: UserEvent>(
     external.sort_by_key(|id| id.inner());
     let mut out: LPooled<Vec<(CaptureSlot, ParamKind)>> = LPooled::take();
     for bind_id in external.drain(..) {
+        // CR claude for claude: [bug/medium] A banked `~` reports its debt BindId in
+        // refs. That is a runtime variable with no env binding, so external_reads keeps
+        // it and this line refuses the kernel with 'a capture has no binding'. The same
+        // body fuses as a region: collect_region_inputs skips the id and block emission
+        // drops an unused `let z = t ~ a`. As a callee it is refused, and #[native]
+        // names a capture the program does not have. Drop ids with no binding in
+        // ReadsMemo::captured so emission names the real blocker or fuses. probe:
+        // design/review-2026-10-26/repro/f-mod-lowering-sample-debt-capture.gx
+        // (f-mod-lowering-03)
         let b = ec.env.by_id.get(&bind_id).ok_or("a capture has no binding")?;
         let typ = expand_refs(&b.typ, &ec.env);
         let no_slot = || format_compact!("capture `{}` has no kernel encoding", b.name);
@@ -1619,6 +1638,16 @@ pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
     }
     let inv = invariant_formals(g, Some(self_bind));
     for (i, fa) in g.typ().args.iter().enumerate() {
+        // CR claude for claude: [perf/medium] A labeled formal refuses the loop, so the
+        // accumulator idiom `|#acc: i64 = 0, n: i64| ... f(#acc: acc + 1, n - 1)` keeps
+        // one live activation per depth. At depth 200000 it trips a 100000 activation
+        // budget, while the positional twin runs in constant space. attributes.rs
+        // tail_recursive_labeled pins this gap as accepted. The rebind can take a
+        // labeled argument by name (`cs.arg_named`, as `kernel_sig` already does), with
+        // an omitted label taking its default. Accept labeled formals here, and turn
+        // tail_recursive_labeled into a passing #[tail_recursive] pin. probe:
+        // design/review-2026-10-26/repro/tests-lang-rest-a-labeled-accumulator-no-tail-loop.sh
+        // (tests-lang-rest-a-03)
         if !matches!(fa.kind, FnArgKind::Positional { .. }) {
             return Some(NoLoop::Formals);
         }
@@ -1793,6 +1822,9 @@ pub(crate) fn param_kind(t: &Type) -> Option<ParamKind> {
 }
 
 /// A marshallable call argument shape: every fusable shape but `Unit`.
+// CR claude for claude: [structure/low] fusion::freeze_region_return ends with the same
+// nine-member AbiKind match. Export this predicate and call it there, so call arguments
+// and region returns cannot drift apart. Found by reading; not run. (x-dup-07)
 fn is_call_arg_supported(t: &Type) -> bool {
     match abi_kind(t) {
         Some(

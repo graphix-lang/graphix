@@ -1,0 +1,13 @@
+// Title: #[sync] passes on a definition that hands a builtin a let-bound
+// callback calling its async fn parameter (analysis::callback_facts reads
+// only the definition's own facts for a Ref argument, never its
+// ParamCalls, as it does for a literal argument).
+// Command: graphix --no-cache c-lambda-sync-through-let-callback.gx
+// Expected: refused, "#[sync]: this function is async" (as it is when the
+//   same callback is written as a literal, `filter(v, |x| f(x))`, or when
+//   `f` itself is passed, `filter(v, f)`).
+// Observed: accepted; prints 3.
+#[sync]
+let d = |f: fn(v: i64) -> bool, v: i64| { let g = |x| f(x); filter(v, g) };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+d(|x| sys::time::after_idle(duration:10.ms, x) > 0, 3)

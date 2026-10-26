@@ -1,0 +1,11 @@
+// Title: #[native] refusal over a node-walked argument names no reason
+// Command: graphix --no-cache --expand tests-functions-native-no-reason.gx
+// Expected: the refusal names its residue, e.g. "the argument `t ~ 10` is
+//   computed by the node-walk (`~` does not fuse)".
+// Observed: "#[native] expression did not fully fuse to native code" and nothing
+//   else (GXDBG_NATIVE_ALL=1 lists no failure for it either).
+{
+  let t = 1;
+  let f = |x: i64| -> i64 x + 1;
+  #[native] f(t ~ 10)
+}

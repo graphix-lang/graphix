@@ -1,0 +1,20 @@
+// Title: a performing guard (dbg) the chain reaches by an earlier guard's
+//   flip: the node-walk re-delivers the scrutinee fire it missed and prints,
+//   the kernel reads the bind stale and does not.
+// Command: timeout -s KILL 170 graphix-fuzz check design/review-2026-10-26/repro/f-select-guard-missed-io.gx
+// Expected: AGREE; both engines print "dbg(n): 5" at cycle 2 (the node-walk's
+//   LazyArmFacts::missed rule, c-select-seq-01).
+// Observed: DIVERGENCE — interp: Trace([1:0 2:5]; stdout=[0+2:... dbg(n): 5])
+//   jit: Trace([1:0 2:5]) (no stdout).
+// Cycle 1: x fires 5, `_ if flag` claims, arm 1's guard is passed by.
+// Cycle 2: flag fires false, x is stale; the chain reaches arm 1.
+{
+  let f = |x: i64, flag: bool| select x {
+    _ if flag => i64:0,
+    n if dbg(#dest: `Stdout, n) > i64:0 => n,
+    _ => i64:0 - 1
+  };
+  let x = array::iter([i64:5]);
+  let flag = array::iter([true, false]);
+  f(x, flag)
+}

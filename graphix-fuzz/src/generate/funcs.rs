@@ -635,6 +635,13 @@ pub(super) fn gen_rec_lambda(
     // memory, which no loop shares) and reads no reference (references
     // de-fuse) asserts its loop half the time: a JIT that stops building
     // it refuses (a body that cannot fuse is dropped unrecorded)
+    // CR claude for claude: [bug/low] This scan misses consume_fallible's catch form `{
+    // catch(e) h; (a op b)? }`, which the base can draw through checked arithmetic. The
+    // tail-loop gate counts a catch as stateful, so both builds refuse the assertion
+    // and the whole program is lost as a both-reject. Generate the base with
+    // ctx.no_catch set, or refuse the attribute when the base contains `catch(`. probe:
+    // design/review-2026-10-26/repro/fuzz-gen-a-tailrec-catch-base.gx (--expand
+    // refuses, --check passes) (fuzz-gen-a-04)
     let calls_or_derefs = base.contains("::")
         || base.as_bytes().windows(2).any(|w| {
             ((w[0].is_ascii_alphanumeric() || w[0] == b'_') && w[1] == b'(')
@@ -692,6 +699,15 @@ fn kind_union(ctx: &mut GenCtx, rng: &mut Rng, n: &str, s: &str) -> Vec<String> 
         format!("let {w}: {ty} = {}", value(b)),
         format!("let {r} = select {u} {{ {arms} }}"),
         format!("let {e} = {u} == {w}"),
+        // CR claude for claude: [bug/medium] A map key must be `Ordered`, which refuses
+        // a type holding two numeric types. KIND_MEMBERS has both `i64` and `f64`, so
+        // every union that picks both is refused here. That is 39 of the 40 rejects in
+        // `gen-check 2000 6` (98% compile rate). The same rule is broken by exprs.rs's
+        // annotated `<`/`>=` over a `types::random_union` int-beside-float pair. Fix:
+        // add a `GenType::ordered()` predicate and use it at both sites. Here, key the
+        // map only when the members are not both numeric; otherwise keep `==` alone.
+        // probe: design/review-2026-10-26/repro/fuzz-gen-b-kind-union-mapkey.gx
+        // (fuzz-gen-b-02)
         format!("let {m} = map::len({{{u} => i64:1, {w} => i64:2}})"),
     ];
     ctx.push(r, I64);
@@ -816,6 +832,22 @@ pub(super) fn gen_shape_template(
 pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<String> {
     let (qf, x) = (ctx.fresh(), ctx.fresh());
     let n = 2 + rng.below(3);
+    // CR claude for claude: [test-gap/medium] The template assumes `#trigger:
+    // i64:{credits}` releases calls 1..credits-1 and types them as live i64 values. A
+    // trigger fire born with the queuefn is no credit, so with a constant trigger only
+    // call 0 ever produces. The calls pushed as I64 are bottom forever, and every
+    // expression generated over them is vacuous (`graphix-fuzz gen 150 1` draws credits
+    // = 3, whose v4 and v5 feed a select and a division). Fix: push only call 0 as a
+    // value and the rest as queued (Opaque, printed), or give the trigger fires after
+    // birth that the model counts. probe:
+    // design/review-2026-10-26/repro/x-rerun-3-fuzz-queuefn-credits.gx (x-rerun-3-03)
+    // CR claude for claude: [bug/medium] A trigger fire born with the queuefn releases
+    // nothing, so the constant `#trigger: i64:{credits}` gives exactly one release
+    // whatever `credits` is. With credits >= 2, calls 1..credits-1 are pushed as live
+    // I64 vocabulary but stay bottom forever, and every later expression that reads
+    // them is blanked. Take credits = 1, or drive the trigger from a binding written
+    // credits - 1 times after birth. probe:
+    // design/review-2026-10-26/repro/fuzz-gen-a-queuefn-credits.gx (fuzz-gen-a-01)
     let credits = 1 + rng.below(n - 1);
     let body = exprs::gen_typed(ctx, rng, &I64, 1);
     let mut stmts = vec![format!(

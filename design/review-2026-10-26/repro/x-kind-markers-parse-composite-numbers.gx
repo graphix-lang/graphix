@@ -1,0 +1,29 @@
+// Title: str::parse of a composite does not read back what Graphix
+// prints: a u64 past i64 is refused, a decimal loses digits through f64.
+// Command: timeout -s KILL 30 graphix --no-cache x-kind-markers-parse-composite-numbers.gx
+// Expected: [18446744073709551615, 1] read back as Array<u64>, and
+//   {d: 12345678901234567890.123456789, n: 1} read back unchanged (a bare
+//   decimal or u64 target reads the same text exactly).
+// Observed:
+//   [18446744073709551615, 1]
+//   error:`ParseError("cannot parse \"[18446744073709551615, 1]\" as Array<u64>")
+//   {d: 12345678901234567890.123456789, n: 1}
+//   {d: 12345678901234567168., n: 1}
+//   12345678901234567168.      ([decimal, null] target)
+//   12345678901234567890.123456789   (decimal target)
+let a: Array<u64> = [u64:18446744073709551615, u64:1];
+let sa = "[a]";
+println(sa);
+let ra: Result<Array<u64>, `ParseError(string)> = str::parse(sa);
+println(ra);
+let d: {d: decimal, n: i64} = {d: decimal:12345678901234567890.123456789, n: 1};
+let sd = "[d]";
+println(sd);
+let rd: Result<{d: decimal, n: i64}, `ParseError(string)> = str::parse(sd);
+println(rd);
+let o: Result<[decimal, null], `ParseError(string)> = str::parse("12345678901234567890.123456789");
+println(o);
+let p: Result<decimal, `ParseError(string)> = str::parse("12345678901234567890.123456789");
+println(p);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

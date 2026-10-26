@@ -1,0 +1,14 @@
+// seq.rs reentry_fired_only, case "absent_level": the comment says a level
+// absent at the first entry is waited for and then read as it stands, but
+// the fixture binds lvl INSIDE the seqq body, so it is a step re-made every
+// run. Written as the comment describes (lvl outside), the three queued
+// requests all run as request 3.
+// Run: timeout -s KILL 30 graphix --no-cache tests-seq-seqq-absent-level-outside.gx
+// Expected (the fixture's pin): 142 242 342   Observed: 342 342 342
+let step = 0;
+step <- select step { n if n < 60 => n + 1, _ => never() };
+let request = select step { 1 | 2 | 3 => step, _ => never() };
+let lvl = sys::time::timer(duration:20.ms, false) ~ 42;
+let r = seqq request { let q = request; let y = lvl; q * 100 + y };
+sys::exit(sys::time::after_idle(duration:200.ms, step) ~ 0);
+r

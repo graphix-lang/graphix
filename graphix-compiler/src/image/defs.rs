@@ -75,6 +75,16 @@ fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackE
     Ok(())
 }
 
+// CR claude for claude: [bug/medium] shared_decode, and shared_encode above it, recurse
+// once per nested lambda literal with no crate::stack::ensure_sufficient. Every other
+// image walk is guarded, image::nodes' decode_tagged included. With 995 nested literals
+// (`let f = |x| |x| ... 1`, within the nesting limit), the cold run writes the image
+// fine, but the warm start aborts with "tokio-rt-worker has overflowed its stack" on
+// deep_nesting's 512K stack. The overflow starts at about 620 levels. Wrap the
+// recursive calls (`ensure_sufficient(|| shared_decode(buf))`, and the same for
+// shared_encode). probe:
+// design/review-2026-10-26/repro/tests-shell-compiler-warm-nested-lambda-overflow.sh
+// (tests-shell-compiler-01)
 fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
     let mut shared = BodyShared::default();
     for _ in 0..decode_varint(buf)? {

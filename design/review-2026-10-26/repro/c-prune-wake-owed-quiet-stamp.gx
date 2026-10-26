@@ -1,0 +1,18 @@
+// A quiet wake republish moves the store stamp, so wake::owed raises a fire
+// that never happened.
+// Run: graphix-fuzz run design/review-2026-10-26/repro/c-prune-wake-owed-quiet-stamp.gx
+// x fires only in the first two cycles (in1 never changes). Arm 1 of the
+// in2 select last runs in cycle 1, sleeps, and wakes in the last cycle, where
+// its call g(5) binds a fresh callee `|v| count(x)` (g moved while it slept).
+// Before that, the in0 select's arm 0 sleeps and wakes, and its `let x`
+// republishes x quietly at the wake (Bind::update), which stamps x's store
+// entry with that cycle. deliver_owed then finds x's stamp past the arm's
+// last run and delivers x FIRED, so count(x) counts a fire nobody made.
+// Expected (as in the control, where the in0 arm does not toggle, in0=1 twice):
+//   last cycle: count(x) does not fire (trace entry `[]`).
+// Observed (both engines):
+//   Trace([0:(1, -7)]; [0:(2, 105)]; [0:(2, -7)]; []; [0:(-1, -7)]; [0:(2, -7)]; [0:(2, 1)])
+// Control (edit the 5th event to in0=i64:1):
+//   Trace([0:(1, -7)]; [0:(2, 105)]; [0:(2, -7)]; []; [0:(-1, -7)]; [0:(-1, -7)]; [])
+// schedule-v1: cap=208 events=1664; in0=i64:0 in1=i64:0 in2=i64:1 in3=i64:0; in2=i64:0; in3=i64:1; in0=i64:1; in0=i64:0; in2=i64:1
+{let g: fn(v: i64) -> i64 = |v| v + i64:100; let a = select in0 {i64:0 => {let x = in1 + i64:0; g <- select in3 {i64:0 => never(), _ => |v| count(x)}; count(x)}, _ => i64:-1}; let b = select in2 {i64:0 => i64:-7, _ => g(i64:5)}; (a, b)}

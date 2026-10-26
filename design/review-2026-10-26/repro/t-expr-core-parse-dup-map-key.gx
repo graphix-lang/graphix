@@ -1,0 +1,11 @@
+// Title: str::parse of a map literal with a repeated key keeps the FIRST value; the
+//        same literal compiled keeps the LAST (Expr::literal_value builds the map with
+//        netidx Map::from_iter, the map literal node inserts in order).
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache \
+//            design/review-2026-10-26/repro/t-expr-core-parse-dup-map-key.gx
+// Expected: ({"a" => 2}, {"a" => 2})
+// Observed: ({"a" => 1}, {"a" => 2})
+let parsed: Result<Map<string, i64>, `ParseError(string)> = str::parse(r#"{"a" => 1, "a" => 2}"#);
+let lit = {"a" => 1, "a" => 2};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(parsed, lit)

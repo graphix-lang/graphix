@@ -1,0 +1,23 @@
+// x-dup: a step calling a builtin with a pure lambda literal turns every
+// seqq capture live
+// command: graphix --no-cache x-dup-seqq-filter-unsnapshots.gx
+// expected: (1, 3) -- `let a = x` reads x as it stood when the request was
+//   queued (x is 1 then; it becomes 2 at 50 ms, before the run passes `until`).
+// observed: (2, 3). Replace the `filter(..)` line with
+//   `let c = array::map([3], |v| v);` (an intrinsic, summarized through its
+//   callback) and it prints (1, [3]). GXDBG_SEQPLAN=1 prints
+//   "opaque builtin filter" and "capture .. live true".
+let x = 1;
+let ready = false;
+let t = sys::time::timer(duration:50.ms, false);
+x <- t ~ 2;
+ready <- t ~ true;
+let go = 0;
+let r = seqq go {
+  until live(ready);
+  let a = x;
+  let c = filter(3, |v| v > 0);
+  (a, c)
+};
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+r

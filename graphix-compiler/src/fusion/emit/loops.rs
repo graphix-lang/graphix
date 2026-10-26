@@ -127,6 +127,11 @@ fn is_unit_or_null(typ: &Type) -> bool {
 /// Whether a frozen type admits `null`, filter_map's drop marker.
 /// An unknown shape answers true, so the caller keeps interpreting.
 /// Whether a filter_map callback's result type may be `Keep(..)`.
+// CR claude for claude: [readability/low] The first two doc lines above this function
+// belong to frozen_may_be_null below it. They say an unknown shape answers true, but
+// holds_keep answers false there. Move them onto frozen_may_be_null, which now has no
+// doc. Found by reading; not run. Also reported as (x-engine-collections-04),
+// (x-kind-markers-08). (f-call-flow-04)
 fn holds_keep(t: &Type) -> bool {
     t.with_deref(|t| match t {
         Some(Type::Variant(tag, _, _)) => &**tag == "Keep",
@@ -357,6 +362,19 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     };
     // a callback that may keep with `Keep node-walks: the loop unwraps nothing
+    // CR claude for claude: [perf/medium] Every derived Collection map and filter now
+    // passes a callback returning `Keep (the trait defaults in core's mod.gxi, and
+    // Map's filter_map wrapper). So this early return sends all of them to the
+    // node-walk. A user collection's Collection::map and Collection::filter, and
+    // Collection::filter_map over a Map, never fuse. design/collection_intrinsics.md
+    // still promises the trait's map default fuses at parity with the intrinsic. The
+    // refusal the user sees is 'lambda call site .. not discovered', which does not
+    // name `Keep. Fix: fuse `Keep in emit_filter_map_loop. Per slot, null drops;
+    // `Keep(v) pushes v through the borrowed variant-payload read; any other value is
+    // pushed as today. If `Keep stays node-walked, fix the design doc and name the
+    // reason in the refusal. probe:
+    // design/review-2026-10-26/repro/f-call-flow-keep-derived-map-defuses.gx
+    // (f-call-flow-01)
     if holds_keep(&output_type) {
         return Ok(None);
     }
@@ -553,6 +571,14 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
     }
     let id = acc.id?;
     let (mut reads, mut field_reads) = (0usize, 0usize);
+    // CR claude for claude: [perf/medium] for_each_node does not enter a nested
+    // collection's inline callback body, but emission does. A whole read of the acc
+    // that sits only inside a nested callback is not counted. The acc is then unpacked
+    // anyway, the nested read finds no local, and the whole fold node-walks with
+    // 'undefined local `p`'. A #[native] on it is refused. Fix: count with
+    // fusion::for_each_emitted_node. probe:
+    // design/review-2026-10-26/repro/f-call-flow-unpacked-acc-nested-read.gx
+    // (f-call-flow-02)
     fusion::for_each_node(body, &mut |n| match n.view() {
         NodeView::Ref(r) if r.id == id => reads += 1,
         NodeView::TupleRef(f)

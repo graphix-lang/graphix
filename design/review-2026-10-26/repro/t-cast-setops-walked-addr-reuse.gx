@@ -1,0 +1,11 @@
+// Title: Type::holds skips a node whose address a freed app_filled temporary had: a cast of a reference passes
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-cast-setops-walked-addr-reuse.gx
+// Expected: error:`InvalidCast("can't cast a reference")   (as with the members swapped, or one member)
+// Observed: ([1, 1], [&ref, &ref])   -- the references are read through the cast as Any
+// The first `'c<i64>` is filled to a fresh Array(Arc<i64>) at depth 0, found to hold
+// no reference, its address recorded in Verdicts::walked, and freed; the second
+// `'c<'y>` fills to a fresh Array(Arc<&i64>) at the same address, which holds_ref skips.
+use Collection::*;
+let f = |c: Collection, y| cast<(Array<i64>, Array<Any>)>((map(c, |x| 1), map(c, |x| y)));
+let v = 5;
+f([1, 2], &v)

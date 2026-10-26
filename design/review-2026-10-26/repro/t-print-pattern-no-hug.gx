@@ -1,0 +1,18 @@
+// t-print: a lone bracketed element of a pattern does not hug its brackets, unlike the
+// same shape as an expression or a type
+// Command: /home/eric/tmp/review-2026-10-26/bin/graphix fmt --width 30 --stdout design/review-2026-10-26/repro/t-print-pattern-no-hug.gx
+// Expected (the hug rule expressions and types follow): the arm opens `` `Beta({ ``
+//     and closes `}) => 2,`, as the type `` `Beta({ `` and the value `` `Beta({ `` do
+// Observed:
+//     `Beta(
+//         {
+//             first,
+//             second: sssssssssss
+//         }
+//     ) => 2,
+type T = [`Beta({ first: i64, second: string }), `Gamma(i64)];
+let v: T = `Beta({ first: 100000000, second: "abcdefghijk" });
+select v {
+    `Beta({ first, second: sssssssssss }) => 2,
+    `Gamma(_) => 3
+}

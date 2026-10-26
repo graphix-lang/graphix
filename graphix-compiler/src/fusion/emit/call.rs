@@ -502,6 +502,14 @@ fn claim_callee_block(
     let off = cx.b.ins().imul_imm_s(i, (layout.words as i64) * 8);
     let addr = cx.b.ins().iadd(table, off);
     // a null table is a body with no memory, whose callees have none
+    // CR claude for claude: [dead/low] This null guard is dead. Every slot-table helper
+    // returns a Vec's pointer, never null. The self-call guard in emit_site_block is
+    // dead too, because emit_callee_context_word already claimed a site word through
+    // claimed_word, which traps on a null base. So is graphix_site_child_block's null
+    // check. The cleanup that removed callee_table's guard missed these sites. Return
+    // the address directly. Also delete the stale 'null table'/'no memory' phrases in
+    // this function's, callee_table's and emit_site_block's docs. Found by reading; not
+    // run. (f-call-flow-03)
     let live = cx.b.ins().icmp_imm_s(IntCC::NotEqual, table, 0);
     let zero = cx.b.ins().iconst(types::I64, 0);
     Ok(cx.b.ins().select(live, addr, zero))
@@ -941,6 +949,16 @@ pub(super) fn emit_drop_local(
     kind: LocalKind,
     vv: ValueVar,
 ) -> Result<()> {
+    // CR claude for claude: [perf/medium] [perf/medium] This use_vars a local before
+    // emit_owned_drop returns for a scalar. Scope drops call it for every local, so
+    // each scalar is looked up at the drop site, and Cranelift's SSA builder walks it
+    // back through every join since its definition, leaving a dead block-param alias at
+    // each one. A fused body with n scalar lets and n selects emits 2597 / 10197 /
+    // 40397 unused aliases at n = 50 / 100 / 200 and builds in 0.53 / 1.42 / 4.82 s at
+    // n = 800 / 1600 / 3200. Return before the use_var when `kind` is
+    // LocalKind::Scalar, as emit_pending_abort already filters scalars. probe:
+    // design/review-2026-10-26/repro/x-perf-compile-scalar-drop-use-var.sh
+    // (x-perf-compile-04)
     let cv = CompiledExpr::new(b.use_var(vv.disc), b.use_var(vv.payload));
     emit_owned_drop(b, ctx, kind, cv)
 }
@@ -1004,6 +1022,21 @@ pub(super) fn emit_pending_abort(
     for (kind, vv) in ctx.owned_input_stack.borrow().iter() {
         emit_drop_local(b, ctx, *kind, *vv)?;
     }
+    // CR claude for claude: [bug/high] [bug/high] The abort rungs of x-perf-compile-01
+    // now crash the process, not just slow it. A fused chain of `let aI =
+    // array::fold(aI-1, [], |acc, x| array::push(acc, x))` gets a kernel frame that
+    // grows with the square of the chain: 226 KB at 200 lets, 771 KB at 400, 2.83 MB at
+    // 800. From about 700 lets the prologue's stack probe runs off the 2 MB tokio
+    // worker stack and the process aborts with a stack overflow (--no-fusion runs it in
+    // 0.36 s). Struct `with` chains build the same way: 6.1 s fused vs 0.13 s
+    // node-walked at 800. Each rung use_vars the owned locals below it, so every abort
+    // exit carries all of them as block parameters, and the register allocator spills
+    // them. Fix as x-perf-compile-01 says: spill each owned local once where it is
+    // bound (and at every def_var of a tail formal) and have the rungs load the slot.
+    // probe:
+    // design/review-2026-10-26/repro/x-perf-compile-fold-chain-stack-overflow.sh,
+    // design/review-2026-10-26/repro/x-perf-compile-owned-chain-quadratic.sh (cites
+    // x-perf-compile-01) (x-perf-compile-01)
     let owned: SmallVec<[(usize, LocalKind, ValueVar); 8]> = env
         .locals_above(ctx.owned_floor)
         .enumerate()

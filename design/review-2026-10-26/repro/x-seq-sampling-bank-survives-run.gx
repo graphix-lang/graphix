@@ -1,0 +1,17 @@
+// A `~` banked in an aborted seq run is paid in the next run, completing its step on an
+// event that belonged to the dead run
+// command: graphix --no-cache x-seq-sampling-bank-survives-run.gx   (add --no-fusion: same)
+// timeline: run 1 enters ~step 2; ev fires at 3 while v is absent (banked); cancel at 5
+//   aborts run 1; go at 8 starts run 2; v arrives at 10; ev never fires again.
+// expected: no result (run 2's step is born at its entry, View::Step, and no ev fired in it)
+// observed (both engines): "result 100 at 12"
+let step = 0;
+step <- select step { n if n < 15 => n + 1, _ => never() };
+let go = select step { 1 | 8 => step, _ => never() };
+let ev = select step { 3 => step, _ => never() };
+let cancel = select step { 5 => null, _ => never() };
+let v = never();
+v <- select step { 10 => 100, _ => never() };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let r = seq go; abort(cancel) { let r = live(ev ~ v); r };
+println(r ~ "result [r] at [step]")

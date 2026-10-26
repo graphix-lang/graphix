@@ -388,6 +388,12 @@ async fn catch_repl_cross_input() -> anyhow::Result<()> {
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     // CompRes deletes its graph on Drop; hold every input's handle.
     let _i1 = ctx.rt.compile(ArcStr::from("let tag = \"\"")).await?;
+    // CR claude for claude: [test-gap/medium] This handler's right side is a constant,
+    // so it fires at the handler's birth and tag is "caught" whether or not the `a[9]?`
+    // input is ever delivered. The test cannot fail. Write `catch(e) tag <- e ~
+    // "caught"`. graphix-fuzz/findings/catch-stmt-aug2026/02_toplevel_file_catch.gx has
+    // the same handler, and its trace is the same with no raise at all. probe:
+    // design/review-2026-10-26/repro/lang-skill-catch-test-vacuous.gx (lang-skill-03)
     let _i2 = ctx.rt.compile(ArcStr::from("catch(e) tag <- \"caught\"")).await?;
     let _i3 = ctx.rt.compile(ArcStr::from("let a = [1]")).await?;
     let _i4 = ctx.rt.compile(ArcStr::from("a[9]?")).await?;

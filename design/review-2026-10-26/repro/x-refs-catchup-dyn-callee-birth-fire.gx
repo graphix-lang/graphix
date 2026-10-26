@@ -1,0 +1,18 @@
+// A dynamic callee misses the catch-up of a fire that happened before or in the
+// cycle its select's tracker was built; the same lambda called statically catches
+// it up. TrackedFires::last_run starts at the tracker's build cycle and
+// wake::owed tests `stamp > since`, so a's birth fire (stamp == build cycle) is
+// never owed.
+// command: timeout -s KILL 10 graphix --no-cache x-refs-catchup-dyn-callee-birth-fire.gx
+//   (and with gd replaced by gs on the `out` line)
+// expected (both, as gs prints): [-1, -1, 2, -1, -1]
+// observed with gd: [-1, -1, -1, -1]   (jit, --no-fusion, GRAPHIX_PAR=force alike)
+let a = 0;
+let mode = 0;
+let gs = |x| a ~ x;
+let gd = select mode { 0 => |x| a ~ x, _ => |x| x };
+let n = 0;
+n <- select n { k if k < 4 => k + 1, _ => never() };
+let out = select n { 2 => gd(n), _ => -1 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::group(out, |_, _| n == 4)

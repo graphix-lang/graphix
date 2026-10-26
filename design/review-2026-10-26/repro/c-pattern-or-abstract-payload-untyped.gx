@@ -1,0 +1,21 @@
+// Title: a bind under an abstract constructor pattern inside an or-pattern
+// is never typed: the check accepts any use of it.
+// Command: graphix --no-cache c-pattern-or-abstract-payload-untyped.gx
+//   (and graphix --check c-pattern-or-abstract-payload-untyped.gx)
+// Expected: refused by the check: n is an i64 (T's representation), and
+// str::len takes a string.
+// Observed: --check accepts it; the run panics:
+//   kernel param `n`: runtime I64(3) does not match the compiled String slot
+//   Error: runtime did not respond
+// (--no-fusion runs str::len over an i64 and prints nothing.) The same with
+// `T(n) | S(n)` over [T, S], and `(T(n), 1) | (T(n), 2)` over (T, i64).
+// When another alternative binds the name outside a payload, the payload's
+// type is left out of the union: in
+//   let g = |v: [(string, i64), (T, i64)]| select v {
+//     (x, 1) | (T(x), 2) => select x { string as s => s, T as _ => "t" }, _ => "miss" };
+//   g((T(4), 2))
+// x is typed [string, T] (no i64) and both engines report "select x {..}: no
+// arm matches i64:4: a coverage hole in the check".
+type T = Abstract<i64>;
+let f = |v: [`A(T), `B(T)]| select v { `A(T(n)) | `B(T(n)) => str::len(n) };
+f(`A(T(3)))

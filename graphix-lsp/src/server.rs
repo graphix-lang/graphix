@@ -107,6 +107,14 @@ where
         // Checking waits for a quiet moment, so a burst of edits costs
         // one check; a request the client is waiting on alone sees the
         // text as it stands.
+        // CR claude for eric: [bug/low] A request taken while more messages are queued
+        // is answered without a flush. For a document opened while the server was busy,
+        // no check exists yet, so documentSymbol has no types and hover/definition
+        // answer null. Clients that ask once after didOpen keep that answer until the
+        // next edit. Proposal: before a request, flush when the requested document's
+        // roots are dirty or unchecked, queue or not, and keep the idle rule for
+        // notifications. That is at most one check per request. probe:
+        // design/review-2026-10-26/repro/lsp-request-mid-burst-unchecked.py (lsp-04)
         let idle = connection.receiver.is_empty();
         match msg {
             Message::Request(req) => {

@@ -108,6 +108,12 @@ mod test;
 #[derive(Clone, Copy)]
 struct AlignmentV(Alignment);
 
+// CR claude for claude: [structure/low] This impl and eleven others in this crate
+// (FlexV, TitlePositionV, DirectionV, HighlightSpacingV, MarkerV, MergeStrategyV,
+// BorderTypeV, and those in scrollbar, chart and sparkline) are the same rep::bare_tag
+// match written out again. One macro_rules! taking the newtype, the ratatui type and
+// the "Tag" => value table would replace about 130 lines. Found by reading; not run.
+// (tui-core-04)
 impl FromValue for AlignmentV {
     fn from_value(v: Value) -> Result<Self> {
         match rep::bare_tag(&v)? {
@@ -1060,6 +1066,12 @@ impl Drop for GiveBack {
 /// The terminal while the display holds it: raw mode, the alternate
 /// screen, bracketed paste, its events and stderr. Dropping it gives all
 /// of that back, the event reader first.
+// CR claude for eric: [bug/medium] Live holds stderr but not stdout. println, print and
+// log's default `Stdout destination write straight into the alternate screen between
+// frames, and ratatui never erases the text. Either draw through a dup of the original
+// stdout (or /dev/tty) and hold fd 1 the way StderrHeld holds fd 2, replaying it when
+// the display ends, or document that stdout belongs to the display. probe:
+// design/review-2026-10-26/repro/tui-core-stdout-into-alt-screen.py (tui-core-02)
 struct Live {
     events: Fuse<EventStream>,
     terminal: DefaultTerminal,
@@ -1083,6 +1095,16 @@ impl Live {
                 prev(info)
             }))
         });
+        // CR claude for claude: [bug/medium] The alternate screen is entered here, but
+        // stderr is held only at the end of take, after the modes, the mouse and
+        // Terminal::new; recover has the same order. Stderr written in that window
+        // lands raw on the TUI and ratatui never erases it. A resume after tui::suspend
+        // hits it often, because the suspend result's readers print just as the display
+        // re-takes the terminal. Hold stderr first, before raw mode, here and in
+        // recover; keep _stderr as the last field so stderr is still replayed after the
+        // terminal is given back. probe:
+        // design/review-2026-10-26/repro/tui-core-stderr-leak-at-resume.py (3 of 5 runs
+        // leak) (tui-core-01)
         terminal::enable_raw_mode().context("raw mode")?;
         let give_back = GiveBack;
         TERMINAL_INTERRUPTED.store(false, Ordering::Release);

@@ -1,0 +1,27 @@
+// Title: a fork site keeps forking for thousands of updates after its children turn cheap
+// Command (debug binary; compare the two variants):
+//   GRAPHIX_PAR=auto graphix --no-cache --no-fusion c-cost-misc-fork-fade.gx
+//   sed 's/^let heavy_until = 600;/let heavy_until = 0;/' c-cost-misc-fork-fade.gx > /tmp/f0.gx
+//   GRAPHIX_PAR=auto graphix --no-cache --no-fusion /tmp/f0.gx
+// Expected: the cheap window (updates 1000..9000) costs the same whether or
+//   not the first 600 updates were heavy (both ~0.055 s, as GRAPHIX_PAR=off).
+// Observed: heavy_until=600 cheap_s=0.14-0.16, heavy_until=0 cheap_s=0.054-0.063,
+//   GRAPHIX_PAR=off 0.056-0.059; the same window moved to updates 32000..40000
+//   costs 0.058 again. The root run's ForkSite (statements `a`, `b`) learned
+//   heavy estimates, and at the sampler's 1-in-256 period its p75 needs ~30
+//   cheap samples (~7700 updates) to move, forking cheap children every update meanwhile.
+let heavy_until = 600;
+let k = 0;
+k <- select k { k if k < 9000 => k + 1, _ => never() };
+let d = select k < heavy_until { true => 9, false => 0 };
+let rec f = |d: i64, v: i64| -> i64 select d {
+    0 => v,
+    d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003
+};
+let a = f(d, k);
+let b = f(d, k + 1);
+let t0 = sys::time::now(select k { 1000 => k, _ => never() });
+let t1 = sys::time::now(select (k, a + b) { (9000, _) => k, _ => never() });
+let dt = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("fade heavy_until=[heavy_until] cheap_s=[dt]");
+sys::exit(dt ~ 0)

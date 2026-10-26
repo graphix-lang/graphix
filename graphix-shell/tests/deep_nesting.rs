@@ -83,6 +83,14 @@ const RUN: usize = 999;
 
 /// `(name, source)` — one per construct whose nesting recurses somewhere
 /// in the pipeline. Add a case here when you add a recursive construct.
+// CR claude for claude: [test-gap/low] Every nested shape here is top-level code, which
+// never fuses (only lambdachain sits inside a called lambda). Image mode runs only for
+// FLAT_SHAPES. So the fusion emission walks that recurse per level unguarded
+// (emit_variant_cond calls itself for each nested variant payload) and the nested
+// nodes' image codecs never run deep on this 512 KB stack. A new unguarded lowering or
+// emit helper would pass this gate. Fix: give each shape a fused twin (`let f = |z|
+// <shape over z>; f(1)`) in the run modes, and run the nested shapes through the image
+// mode as well. Found by reading; not run. (x-stack-07)
 fn program(shape: &str, d: usize) -> String {
     match shape {
         "parens" => format!("let x = {}1{}", "(1 + ".repeat(d), ")".repeat(d)),
@@ -280,6 +288,13 @@ const CHAIN_DEPTH: usize = 10000;
 /// bounds none of it: module resolution recurses once per file.
 const MODCHAIN_DEPTH: usize = 1000;
 
+// CR claude for claude: [test-gap/low] No shape nests these recursive kinds: live(..),
+// never<T>(..), any(..), an abstract's T(..), `.0`, `m{k}`, slices, or `?` (qop writes
+// `$`). Each has its own compile, typecheck, update and image codec. All eight pass
+// today at their admitted depths on a 512K stack (check, run, --no-fusion, warm), but
+// an unguarded recursion added to any of them would go unnoticed here. Add a case for
+// each, as program()'s rule asks. Found by running the eight shapes by hand at their
+// admitted depths on a 512K stack. (tests-shell-compiler-06)
 const SHAPES: &[&str] = &[
     "parens",
     "array",
@@ -399,6 +414,14 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
             ShellBuilder::<NoExt>::default()
                 .cache(cache)
                 .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
+                // CR claude for claude: [test-gap/medium] Mode "nofusion" removes
+                // FusionDisabled, which no default flag set holds, so this mode
+                // compiles with fusion on, exactly as "run" does. The deep node-walk
+                // update the off mode is meant to cover is never run for shapes whose
+                // top level fuses, and nested arithmetic at top level does fuse. Use
+                // enable_flags here. probe:
+                // design/review-2026-10-26/repro/shell-deep-nesting-nofusion.gx
+                // (shell-02)
                 .disable_flags(match mode {
                     "nofusion" => CFlag::FusionDisabled.into(),
                     _ => BitFlags::empty(),
@@ -557,6 +580,16 @@ fn a_call_over_a_shared_type_dag_elaborates_in_linear_time() {
 // called at two types, whose kernels' types are DAGs, builds in time
 // linear in the DAG.
 #[test]
+// CR claude for claude: [perf/medium] This pin calls f directly. The same call made
+// from inside another definition (`let g = |b| f(b); g(1)`, a monomorphic `|b: i64|
+// f(b)`, or an `array::map` callback `|b| f(b)`) still doubles per level: 0.17 s at
+// depth 18, 1.8 s at 24 and 3.4 s at 25, while --check stays at 0.04 s.
+// GRAPHIX_NO_SUBST=1 takes depth 24 to 0.1 s, and GRAPHIX_PROFILE_INSTANCES puts the
+// time in the wrapper instance's elaboration (Typecheck1). Some walk on the
+// instance-by-substitution path (InstanceTypes::instance_of, settle, Type::take_row)
+// visits the DAG per path, not per node. Give it the per-node memo the direct path got,
+// and add the wrapper and callback shapes here. Variant of t-tvar-02. probe:
+// design/review-2026-10-26/repro/x-rerun-2-dag-wrapper-exponential.sh (x-rerun-2-03)
 fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
     const DEPTH: usize = 60;
     let mut program = String::from("let f = |a| {\n  let x0 = a;\n");
@@ -606,6 +639,15 @@ fn deep_nesting_does_not_overflow() {
             MODES.map(|m| (*s, depth, m))
         })
         .chain(SHAPES.iter().map(|s| (*s, REJECTED, "check")))
+        // CR claude for claude: [test-gap/medium] Only FLAT_SHAPES run the "image"
+        // mode, so no deeply nested program is ever restored from an image on the 512K
+        // stack. Running every SHAPE cold then warm with RUST_MIN_STACK=524288 passes
+        // for 39 of them. `lambda` (995 nested literals) aborts on the warm start,
+        // overflowing in image::defs::shared_decode. Run "image" for every SHAPE. Also
+        // make the image arm fail when the second run did not restore: today a refused
+        // image write degrades it to two cold runs without a word. probe:
+        // design/review-2026-10-26/repro/tests-shell-compiler-warm-nested-lambda-overflow.sh
+        // (tests-shell-compiler-02)
         .chain(FLAT_SHAPES.iter().flat_map(|s| {
             MODES.into_iter().chain(["image"]).map(|m| (*s, FLAT_DEPTH, m))
         }))

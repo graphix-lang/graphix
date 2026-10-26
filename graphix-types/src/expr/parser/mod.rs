@@ -779,6 +779,16 @@ where
                         trail(o.last_expr(), eol, below);
                         true
                     }
+                    // CR claude for claude: [bug/medium] With no item before them,
+                    // comments fail the whole list. A .gx file (or module) of only
+                    // comments, or a REPL input that is one, is a parse error while an
+                    // empty file parses. `{ 1;\n // below\n}` is refused because
+                    // `brace` parses its first statement outside this list, though `{
+                    // 1; 2;\n// below\n}` is fine. Return the unplaced comments
+                    // instead: `statements` hangs them on the NoOp of the empty slot,
+                    // and `brace`'s `Tail::Block` trails them onto `first`. probe:
+                    // design/review-2026-10-26/repro/t-parser-a-comment-only-file.sh
+                    // (t-parser-a-03)
                     None => eol.is_none() && below.is_empty(),
                 }
             };
@@ -1449,6 +1459,15 @@ where
         position(),
         fldname(),
         position(),
+        // CR claude for claude: [bug/low] For a shorthand field this eats the newline
+        // after the name, so an own-line comment below a list's last shorthand field is
+        // read by `commented` as the comment ending that field's line. The formatter
+        // then prints `b // below` where the author wrote the comment under `b`.
+        // `applyarg`'s `.skip(spaces())` after `#name` does the same for a labeled
+        // shorthand. Only consume the space when a `:` follows:
+        // `optional(attempt(spaces().with(token(':'))).with(expr()))`. probe:
+        // design/review-2026-10-26/repro/t-parser-a-shorthand-below-comment.sh
+        // (t-parser-a-05)
         spaces().with(optional(token(':').with(expr()))),
     )
         .then(|(dec, pos, name, end, v): (Leading, _, ArcStr, _, Option<Expr>)| {
@@ -1519,6 +1538,15 @@ where
         attempt(spstring("=>"))
             .with((
                 expr(),
+                // CR claude for claude: [bug/low] Map entries are read with the plain
+                // separator, so `1 => 2, // one` and a comment below the last entry are
+                // parse errors. Every other expression list takes them through
+                // `comma_items`. The same holds for `any(..)`/`never(..)`/attribute
+                // arguments and impl bodies (traitexp's `sep_by_tok(expr(), semisep(),
+                // ..)`). Parse these with `comma_items`/`statements`, and have
+                // `comment_line`'s note mention the after-separator form. probe:
+                // design/review-2026-10-26/repro/t-parser-a-list-eol-coverage.sh
+                // (t-parser-a-06)
                 optional(csep().with(sep_by_tok(entry(), csep(), attempt(sptoken('}'))))),
             ))
             .map(|(v, rest)| Tail::Map(v, rest.unwrap_or_else(LPooled::take))),
@@ -1547,6 +1575,13 @@ where
         }
     }
     choice((
+        // CR claude for claude: [readability/low] For a block starting with a bare name
+        // (`{ a; ..`), this probe's field list meets the `;` and notes "the list is not
+        // closed before this `;`". The note survives the backtrack, so `{ a;` at end of
+        // input, `{ a;)` and `f({ a;` report it instead of the unclosed `{`. Start the
+        // probe only when the first field name is followed by `:`, `,` or `}` (a
+        // look_ahead before `structure()`). probe:
+        // design/review-2026-10-26/repro/t-parser-a-block-note.sh (t-parser-a-07)
         attempt(structure()),
         (
             position(),
@@ -1857,12 +1892,50 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 }
 
 /// Parse the items of an interface file, which may have none.
+// CR claude for eric: [bug/low] An interface takes no comment at the end of an item's
+// line and none below its last item. A comment-only file does not parse at all: a .gxi
+// holding only a license header is "Unexpected end of input", and a .gx stub holding
+// only comments fails `commented` with "a comment here has no item to describe",
+// although an empty file parses. CLAUDE.md says comments are legal below a list's last
+// item or a file's, and a .gx ending in a comment formats. Parse interface items with
+// `commented` (eol/below on `SigItem`) and let an empty list keep its comments, or
+// narrow the rule to .gx. probe:
+// design/review-2026-10-26/repro/t-format-resolver-comment-only-file.sh
+// (t-format-resolver-03)
+// CR claude for eric: [bug/medium] Interface items are parsed with `sep_by_tok`, not
+// `commented`, so an interface file ending in a comment, or a `val` followed by an
+// end-of-line comment, is a parse error: the module's interface fails to load.
+// CLAUDE.md allows a comment below a file's last item and after a list item's
+// separator. Trait methods, impl methods (statements), map entries and never/any
+// arguments refuse both forms too, and a comment-only .gx is refused where an empty one
+// loads. Decide whether the rule covers every list. If so, route these through
+// `commented` and give `SigItem`/`TraitMethod` eol/below. If not, narrow the documented
+// rule. probe: design/review-2026-10-26/repro/x-formatter-list-comments-missing.sh
+// (x-formatter-03)
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());
     let mut r: LPooled<Vec<SigItem>> = parse_all!(
         &ori.text,
         || ori.clone(),
+        // CR claude for claude: [bug/medium] Interface items here, in modexp's `sig()`
+        // and in traitexp's `trait_decl` are listed with `sep_by_tok`, not `commented`.
+        // So a `//` after an item's `;` is refused as a trailing comment. A `//` below
+        // the last item, or a .gxi holding only comments, fails as a leading comment
+        // with no item after it. CLAUDE.md makes both legal, "below a list's last item
+        // or a file's" included. Parse these lists like `commented`, give `Comments` an
+        // eol line and Sig/TraitExpr a below list, and print them as
+        // Decorations::eol/below are printed. probe:
+        // design/review-2026-10-26/repro/t-parser-b-list-comments.sh (t-parser-b-02)
+        // CR claude for claude: [bug/medium] A comment after an interface's last item
+        // is read as the leading comment of an item that never comes, so `val x:
+        // i64;\n// val y: i64\n` (a commented-out last declaration) and a .gxi of only
+        // comments fail with "Unexpected end of input". CLAUDE.md allows comments below
+        // a file's last item, and a .gx accepts them. Accept a trailing comment slot
+        // here and give `Sig` a `below` list the printer writes back, or narrow the
+        // rule if interfaces are meant to be excluded. probe:
+        // design/review-2026-10-26/repro/t-parser-a-gxi-trailing-comment.sh
+        // (t-parser-a-04)
         sep_by_tok(sig_item(), semisep(), attempt(spaces().with(eof())))
     )?;
     Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })

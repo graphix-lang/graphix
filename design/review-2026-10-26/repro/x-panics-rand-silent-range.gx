@@ -1,0 +1,13 @@
+// x-panics: rand::rand gives no value, and says nothing, for an empty range and for a
+// finite float range whose width overflows f64.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/x-panics-rand-silent-range.gx
+// Expected: a value in [-1e308, 1e308) for `wide`; for `empty`, a log line under
+// graphix::failure (or a catchable error) naming the range.
+// Observed (HEAD e6ffc6eed debug): nothing printed, nothing logged, exit 0. Making
+// `empty` or `nan` the last expression prints nothing as well; `ok` prints a value.
+let wide = rand::rand(#start: f64:-1e308, #end: f64:1e308, #clock: 1);
+let empty = rand::rand(#start: 5, #end: 5, #clock: 1);
+let nan = rand::rand(#start: f64:1.0, #end: f64:0.0 / f64:0.0, #clock: 1);
+let ok = rand::rand(#start: 0, #end: 10, #clock: 1);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+wide

@@ -1,0 +1,15 @@
+// Values of one minted abstract at two instantiations compare equal and collapse as map keys, though a select tells them apart
+// Run: timeout -s KILL 30 graphix --no-cache c-module-traits-abstract-instantiations-equal.gx
+// Expected: (["opt", "i64"], false, 2)
+// Observed: (["opt", "i64"], true, 1)
+// GxAbstract::eq/cmp/hash (graphix-types abstract_value.rs) compare id then payload and
+// never the params; coretraits::pair sends a pair of two instantiations to that
+// structural case, so no core-trait impl is needed to see it.
+type Box<'a> = Abstract<'a>;
+let p: Box<[i64, null]> = Box(1);
+let q: Box<i64> = Box(1);
+let xs: Array<[Box<i64>, Box<[i64, null]>]> = [p, q];
+let tags = array::map(xs, |x| select x { Box<i64> as _ => "i64", Box<[i64, null]> as _ => "opt" });
+let m = {p => "p", q => "q"};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(tags, xs[0]$ == xs[1]$, map::len(m))

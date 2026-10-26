@@ -1,0 +1,9 @@
+// Title: union_field_write_where_members_agree observes only the value before the write lands
+// Command: timeout -s KILL 5 graphix --no-cache tests-types-union-field-write-first-value.gx
+// The fixture of stdlib/graphix-tests/src/lang/types.rs::union_field_write_where_members_agree.
+// run! asserts its predicate on the FIRST update only, and the predicate is Ok(Value::I64(_)).
+// Observed: 8 (first update, before `*r <- 5` lands), then 12 (after the write).
+// So the test passes whatever the write through `&mut s.a` does (a no-op, a wrong member).
+{ type S = [{a: i64, b: string}, {a: i64, b: i64}];
+  let s: S = {a: 1, b: 9}; let r = &mut s.a; *r <- 5;
+  let u = {s with a: 7}; select (s, u) { ({a, ..}, {a: b, ..}) => a + b } }

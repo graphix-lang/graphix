@@ -1,0 +1,18 @@
+// Title: an open member beside a numeric one escapes the Ordered bound: a
+// generic definition sorts (or `<`s, or keys a map by) [i64, 'y], and its
+// call at f64 runs an order over two numeric types.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-ordered-open-beside-number.gx
+//   timeout -s KILL 3 graphix --no-cache x-typecheck-generics-ordered-open-beside-number.gx
+// Expected: refused at g's definition ("may yet be another numeric type:
+//   annotate it"), as max(..) is refused at the call and
+//   array::sort([1, 2.5]) is refused outright (CLAUDE.md: Ordered refuses a
+//   type holding two numeric types; an open member reads as any type it may
+//   yet bind).
+// Observed: check exit 0; the run prints
+//   ([1, 3, 2.5], false, {[1, 2.5] => "v"})
+//   an order that puts 3 below 2.5.
+let g = |y| array::sort([3, y, 1]);
+let h = |y| [3, y] < [1, y];
+let k = |y| map::insert({}, [1, y], "v");
+(g(2.5), h(2.5), k(2.5))

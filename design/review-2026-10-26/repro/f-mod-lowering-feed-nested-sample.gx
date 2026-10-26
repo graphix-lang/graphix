@@ -1,0 +1,14 @@
+// Title: an argument with a nested `~` is not fed, so the call does not fuse
+// Command: GRAPHIX_DBG_REGION=1 timeout -s KILL 20 graphix --no-cache f-mod-lowering-feed-nested-sample.gx 2>&1 | grep DBGREGION
+// Expected: both calls fuse with their sampled argument fed (an input named `arg`),
+//           as `f(a, t ~ a)` does.
+// Observed: `f(a, t ~ a)` fuses over inputs a, arg; `f(a, (t ~ a) + 1)` keeps its
+//           call in the node-walk and only `f`'s body fuses (inputs x, y).
+// try_fuse_feeding_args feeds an argument only when walk_node_for_builtin_calls
+// refuses it, and that walk rejects a Sample only at the root (root_blocker);
+// a nested one passes discovery and fails at emission, so it is never fed.
+let g = |a: i64, t: i64| {
+  let f = |x: i64, y: i64| x * y + 1;
+  (f(a, t ~ a), f(a, (t ~ a) + 1))
+};
+g(3, 4)

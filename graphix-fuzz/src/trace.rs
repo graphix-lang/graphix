@@ -185,6 +185,17 @@ pub fn same(a: &Value, b: &Value) -> bool {
                 work.push((&x.payload, &y.payload));
                 x.id == y.id && x.params == y.params
             }
+            // CR claude for claude: [bug/medium] A Rust-backed abstract
+            // (impl_abstract_arc: sys File/TcpStream/Proc, db, sqlite and http handles)
+            // reaches this arm, and its == is pointer identity. Two runs never agree on
+            // a handle, so any program whose watched value holds one is
+            // NONDETERMINISTIC against its own rerun and ends UNSURE, with nothing
+            // compared. This hits the FinalValues tier. Fix: in
+            // normalize/holds_run_ids, number such abstracts by first sight across the
+            // trace, as `refs` does for reference cells, so aliasing is compared and
+            // identity is not. probe:
+            // design/review-2026-10-26/repro/fuzz-main-aux-handle-value-unsure.gx
+            // (fuzz-main-aux-02)
             (a, b) => a == b,
         };
         if !equal {

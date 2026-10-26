@@ -1,0 +1,20 @@
+// Title: db::pop_min's popped entry is lost when its select arm sleeps while
+// the pop is in flight (the blocking op is declared cancel-safe).
+// Command: rm -rf /home/eric/tmp/review-2026-10-26/review/work/x-builtin-effects/dbpop &&
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache x-builtin-effects-db-pop-lost-on-sleep.gx 2>&1
+// Expected: the pop is not cancel-safe, so it finishes while the arm sleeps and
+//   answers at the wake (300 ms): stderr shows
+//   `dbg(db::pop_min(ins ~ t)): (1, "one")`, then `(true, 0)`.
+// Observed: no dbg line ever; `(true, 0)`: the tree is empty, the entry was
+//   removed, and its only copy (the reply) was dropped by the sleep's abort.
+//   Deleting the line `on <- ins ~ false;` prints the dbg line (control).
+let d = db::open("/home/eric/tmp/review-2026-10-26/review/work/x-builtin-effects/dbpop")$;
+let t: db::Tree<i64, string> = db::tree(d, "x")$;
+let ins = db::insert(t, 1, "one")$;
+let on = true;
+let popped = select on { true => dbg(db::pop_min(ins ~ t)), false => never() };
+on <- ins ~ false;
+on <- sys::time::timer(duration:300.ms, false) ~ true;
+let n = db::len(sys::time::timer(duration:600.ms, false) ~ t)$;
+sys::exit(sys::time::after_idle(duration:1.s, n ~ 0));
+(on, n)

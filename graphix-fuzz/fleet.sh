@@ -234,6 +234,15 @@ sync_tree() {
             wait_limit=0
         elif [[ $method == rsync ]]; then
             # graphix builds against the sibling netidx
+            # CR claude for claude: [perf/low] This pushes the whole checkout, untracked
+            # files included: today .claude/worktrees is 2.0 of the 3.3 GB synced, to
+            # every box on every deploy, and none of it is a build input. Sync the
+            # fingerprinted roots only (`--files-from` of `git ls-files --
+            # "${FP_ROOTS[@]}"`), or exclude .claude and fuzz. Every host is rsync now,
+            # so the syncthing machinery is dead: the SYNC_WAIT poll after a synchronous
+            # rsync waits up to 600 s for a mismatch that cannot heal. Drop it and the
+            # syncthing/hz0 prose, and fail the box at once. Found by measuring the
+            # tree; the deploy was not run. (fuzz-main-aux-05)
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/" "$name:proj/graphix/"
             rsync -a --delete --exclude target --exclude .git \
@@ -399,6 +408,12 @@ EOF
     # A missing sample is not a pass: the SECOND one must exist and be
     # non-zero (proof the campaign checked something), and when both
     # exist the second must exceed the first.
+    # CR claude for claude: [bug/low] The remote sample() counts only the `fuzz…`
+    # counter line. run_aggregator never launches a source with a zero share, and the
+    # mix allows one, so FLEET_MIX=0:50:50:10 fails every healthy box with NO SUBJECTS
+    # CHECKED. Sample every source's `<tag>…N run` line and sum the counts, so any
+    # source that checks something counts as progress. Found by reading; not run.
+    # (fuzz-main-aux-04)
     if [[ -z $b || ${b%% *} -eq 0 ]]; then
         warn "$(printf '%-8s NO SUBJECTS CHECKED (samples: %s then %s)' \
              "$name" "${a:-<none>}" "${b:-<none>}")"

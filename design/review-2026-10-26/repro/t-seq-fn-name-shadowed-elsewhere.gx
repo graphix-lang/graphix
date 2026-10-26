@@ -1,0 +1,16 @@
+// t-seq: a function passed to a call in a seq step goes into the issue tuple, and
+// the call through its projection, when ANY binding anywhere in the seq body has the
+// same name (fn_names' `values` is not scoped)
+// command: timeout -s KILL 100 /home/eric/tmp/review-2026-10-26/bin/graphix-fuzz run t-seq-fn-name-shadowed-elsewhere.gx
+//   and: /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --expand t-seq-fn-name-shadowed-elsewhere.gx
+// expected: `array::map(#seqissued.., inc)` with `inc` bare, as when the unrelated
+//   callback's parameter is renamed (`|v| v`): fusion attempted=28 fused=10
+// observed: the issue tuple is `(pc, [t, 2], inc)` and the call
+//   `array::map(#seqissued...1, #seqissued...2)`: fusion attempted=27 fused=8
+{
+  let step = 0;
+  step <- select step { n if n < 6 => n + 1, _ => never() };
+  let inc = |x: i64| x + 1;
+  let t = select step { 1 => 1, 3 => 3, _ => never() };
+  seq t { let a = array::map([t, 2], inc); let b = array::map([3], |inc| inc); (a, b) }
+}

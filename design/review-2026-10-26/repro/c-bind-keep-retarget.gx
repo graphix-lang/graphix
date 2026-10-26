@@ -1,0 +1,26 @@
+// c-bind: a place reference's Keep pins the binding it named when its
+// first value was published; a later retarget (here the root `*r` moves
+// from y1 to y2) never updates it, so once the slot is deleted y2's value
+// is released and writes through the surviving copy are dropped.
+// ByRef::update: `self.keep.get_or_insert_with(..)` keeps the first target.
+// run: timeout -s KILL 60 graphix --no-cache c-bind-keep-retarget.gx | grep -v '^[0-9]*$'
+// expected (design/place_references.md, "a binding deleted while a
+//   reference names it keeps its value"; as with `let r = &mut y2`):
+//   c=3 *w=20 c=4 *w=30 c=5 *w=40 c=6 *w=50
+// observed: c=4 *w=20 ... "a write through a reference ... was dropped:
+//   its root has no value" at every later write
+let c = 0;
+c <- select c { k if k < 6 => k + 1, _ => never() };
+let keep: [&mut i64, null] = null;
+let rs = array::map(select c { k if k < 3 => [0], _ => [] }, |_| {
+  let y1: Array<i64> = [5, 6];
+  let y2: Array<i64> = [7, 8];
+  let r = select c { 0 => &mut y1, _ => &mut y2 };
+  keep <- &mut (*r)[1];
+  y2
+});
+let w = keep$;
+*w <- c ~ c * 10;
+println(c ~ "c=[c] *w=[*w]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+c

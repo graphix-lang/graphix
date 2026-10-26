@@ -1,0 +1,13 @@
+// Title: a comment ending a line, or below the last item, inside a string's
+// splice parses, but the printer drops it, so graphix fmt refuses the file
+// (a comment above an item in a splice is refused by the parser instead).
+// Command: graphix fmt --stdout design/review-2026-10-26/repro/tests-expr-splice-eol-comment.gx
+// Expected: either a parse error "a comment cannot stand inside a string's
+// splice" (as for an own-line comment) or the file printed back.
+// Observed: --check and a run accept it ("a1b"); fmt says "formatter bug: the
+// formatted text lost or moved a comment or an attribute", exit 1.
+let x = "a[[
+  1, // one
+  2
+][0]$]b";
+x

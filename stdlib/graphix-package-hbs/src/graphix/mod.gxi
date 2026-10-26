@@ -1,3 +1,8 @@
+// CR claude for claude: [bug/low] #partials is an unbounded 'a, so the check accepts a
+// reference or a function, which the builtin can only refuse at run time ("a reference
+// is not data", "partial values must be strings, got abstract:"). Bound it `'a: Data`
+// here and in mod.gx, as data already is. probe:
+// design/review-2026-10-26/repro/gx-stdlib-hbs-partials-unbounded.gx (gx-stdlib-05)
 /// Render a Handlebars template with the given data context.
 /// Use #partials to register named partial templates (as a struct or map).
 /// Use #strict to error on missing variables instead of rendering empty strings.

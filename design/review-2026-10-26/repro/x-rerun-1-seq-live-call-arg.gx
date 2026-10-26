@@ -1,0 +1,35 @@
+// Title: in a seq step, `live(..)` inside a call's argument does nothing: the call is
+//   issued once over the entry snapshot and the step stalls, with no diagnostic
+//   (variant of t-seq-07, re-run of t-seq-call-over-level-stalls.gx).
+// Command: timeout -s KILL 20 graphix --no-cache x-rerun-1-seq-live-call-arg.gx
+//   (same with --no-fusion; --check prints nothing)
+// Expected (book core/seq.md: "live(e), whose variables are read live"): four lines,
+//   "inline guard: 3", "call guard: 3", "call scrutinee: 3", "live call: 3".
+// Observed: "inline guard: 3" and "live call: 3" only. `big(live(x))` and the guard
+//   `v if big(v)` over a live scrutinee are lowered by issue_call into
+//   `once((pc, x))`: the live is stripped and the call never re-issued. Wrapping the
+//   whole call, `live(big(x))` or `v if live(big(v))`, completes.
+let x = 0;
+select x { k if k < 5 => x <- x + 1, _ => never() };
+let big = |v| v > 2;
+let a = seq {
+    let v = select live(x) { v if v > 2 => v, _ => never() };
+    "inline guard: [v]"
+};
+let b = seq {
+    let v = select live(x) { v if big(v) => v, _ => never() };
+    "call guard: [v]"
+};
+let c = seq {
+    let v = select big(live(x)) { true => live(x), false => never() };
+    "call scrutinee: [v]"
+};
+let d = seq {
+    let v = select live(big(x)) { true => live(x), false => never() };
+    "live call: [v]"
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+println(a);
+println(b);
+println(c);
+println(d)

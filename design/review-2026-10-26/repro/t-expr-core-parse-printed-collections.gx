@@ -1,0 +1,22 @@
+// Title: str::parse does not read back what Graphix prints for a datetime (even
+//        alone), bytes, a string holding brackets or a non-finite float inside a
+//        collection, though the str interface promises "reading what Graphix prints
+//        for one": the printed text is no Graphix literal, so Expr::literal_value
+//        yields None and the fallback string cast refuses it.
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache \
+//            design/review-2026-10-26/repro/t-expr-core-parse-printed-collections.gx
+// Expected: the four printed strings, then five `true`s
+// Observed: ("[2020-01-01 00:00:00 UTC]", "[AQI=]", "[\"a[b]\"]", "[NaN, inf]",
+//            false, false, false, false, false)
+let dts = [datetime:"2020-01-01T00:00:00Z"];
+let bs = [cast<bytes>([u8:1, u8:2])$];
+let ss = ["a\[b\]"];
+let fs = [0.0 / 0.0, 1.0 / 0.0];
+let ok = |r| !is_err(r);
+let pd: Result<Array<datetime>, `ParseError(string)> = str::parse("[dts]");
+let pb: Result<Array<bytes>, `ParseError(string)> = str::parse("[bs]");
+let ps: Result<Array<string>, `ParseError(string)> = str::parse("[ss]");
+let pf: Result<Array<f64>, `ParseError(string)> = str::parse("[fs]");
+let one: Result<datetime, `ParseError(string)> = str::parse("[dts[0]$]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+("[dts]", "[bs]", "[ss]", "[fs]", ok(pd), ok(pb), ok(ps), ok(pf), ok(one))

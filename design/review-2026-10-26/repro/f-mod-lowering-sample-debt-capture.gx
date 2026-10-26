@@ -1,0 +1,18 @@
+// Title: a banked `~` in a callee body refuses its kernel as "a capture has no binding"
+// Command: timeout -s KILL 30 graphix --no-cache --expand f-mod-lowering-sample-debt-capture.gx
+// Expected: builds; `g`'s body is the same block `h2`'s #[native] region fuses
+//           (the unused `let z = t ~ a` is dropped by block emission).
+// Observed: #[native] refused:
+//   - lambda `g` has no kernel: a capture has no binding
+// Sample::refs reads its debt BindId (a runtime variable with no env
+// binding); lowering::capture_slots takes it for a capture and refuses.
+let h2 = |a: i64, t: i64| #[native] {
+  let z = t ~ a;
+  a * 2 + 1
+};
+let g = |a: i64, t: i64| {
+  let z = t ~ a;
+  a * 2 + 1
+};
+let h = |a: i64| #[native] g(a, a + 1);
+(h2(3, 4), h(3))

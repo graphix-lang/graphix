@@ -1,0 +1,21 @@
+// A forked sibling writes through a moving reference at its stale place.
+// `*p <- v` (ConnectDeref) resolves the reference's place this cycle
+// (ExecCtx::write_target -> rt.ref_path), but analysis::own_access counts
+// only the reference variable as read, not `refs`, so plan_runs puts the
+// `let r = &mut a[x]` that moves the place and the write in one run.
+// Command:
+//   GRAPHIX_PAR=off   graphix --no-cache --no-fusion c-analysis-branch-connectderef-path.gx
+//   GRAPHIX_PAR=force graphix --no-cache --no-fusion c-analysis-branch-connectderef-path.gx
+//   graphix-fuzz check c-analysis-branch-connectderef-path.gx
+// Expected (serial): [10, 20, 30] / [10, 101, 30] / [10, 101, 102]
+// Observed (force):  [10, 20, 30] / [101, 20, 30] / [101, 102, 30]
+// graphix-fuzz: DIVERGENCE — parallel evaluation bug; GRAPHIX_PAR_AUDIT=1 panics.
+{
+  let x = array::iter([0, 1, 2]);
+  let a = [10, 20, 30];
+  let holder: [&mut i64, null] = null;
+  let r = &mut a[x];
+  select holder { null => null, p => { *p <- x ~ 100 + x; null } };
+  holder <- r;
+  a
+}

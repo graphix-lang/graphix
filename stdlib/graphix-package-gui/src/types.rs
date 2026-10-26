@@ -443,6 +443,14 @@ impl FromValue for ContentFitV {
 /// Image source: file path, raw encoded bytes, inline SVG, or decoded RGBA pixels.
 #[derive(Clone, Debug)]
 pub enum ImageSourceV {
+    // CR claude for claude: [perf/low] Path and Svg hold Strings. from_value copies the
+    // Value's text, ImageW::handle_update clones the whole source again to compare it,
+    // and same_as compares the texts byte for byte. A source that refires unchanged (a
+    // field reference refires on every write of its struct) therefore costs three
+    // passes over a possibly large inline SVG per refire. Holding ArcStr
+    // (cast_to::<ArcStr>()) makes the read and the clone refcount bumps and lets
+    // same_as compare pointers first, as it already does for Bytes. Found by reading;
+    // not run. (gui-core-04)
     Path(String),
     Bytes(iced_core::Bytes),
     Svg(String),
@@ -450,6 +458,11 @@ pub enum ImageSourceV {
 }
 
 impl ImageSourceV {
+    // CR claude for claude: [bug/low] The extension test is case-sensitive, so
+    // "Logo.SVG" is handed to the raster loader. The image crate cannot decode SVG, so
+    // the image widget (ImageHandle::of) draws nothing and the window icon
+    // (decode_icon) fails. Compare the extension with eq_ignore_ascii_case against svg
+    // and svgz. Found by reading; not run. (gui-widgets-a-05)
     pub fn is_svg(&self) -> bool {
         match self {
             Self::Path(p) => p.ends_with(".svg") || p.ends_with(".svgz"),
@@ -580,6 +593,15 @@ impl FromValue for ImageSourceV {
     }
 }
 
+// CR claude for claude: [bug/low] `Fixed(usize)` reads the Graphix `Fixed(i64)` through
+// netidx's FromValue for usize, which converts I64 with `as`. So `Fixed(-1)` becomes
+// 18446744073709551615 columns: a single row of zero-width cells and no error.
+// LengthV's `FillPortion(u16)` has the same problem through u32:
+// `FillPortion(4294967297)` reads as weight 1, while 256 is refused. Fix: read both
+// payloads as i64 and range-check them (columns >= 1, weight 1..=MAX_PORTION) with a
+// bail!. Record netidx-value's wrapping FromValue for u32/usize in UPSTREAM.md as the
+// root cause. probe: design/review-2026-10-26/repro/gui-core-signed-fields-wrap.rs
+// (gui-core-03)
 #[derive(Clone, Copy, Debug, FromValue)]
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub enum GridColumnsV {

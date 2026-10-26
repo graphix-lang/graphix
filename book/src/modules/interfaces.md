@@ -258,6 +258,12 @@ is the same as for files: if your module implementation is at
 
 ## Interfaces and Dynamic Modules
 
+<!-- CR claude for claude: [doc-drift/low] A dynamic sig does not take `mod`. The
+compiler refuses it ("a dynamic module has no sub-modules"), and dynamic.md says so.
+List the forms it does take: `val`, `type`, `trait`, `impl` and `use`. 'Interface
+Syntax' near the top of this page also says "four types of declarations" but omits
+`trait` and `impl T for X;`. probe:
+design/review-2026-10-26/repro/book-modules-udt-dyn-sig-mod.gx (book-modules-udt-09) -->
 Interface files work with static (file-based and netidx) modules. For dynamic
 modules loaded at runtime, use the inline `sig { ... }` syntax described in the
 [Dynamic Modules](./dynamic.md) chapter. The signature syntax in dynamic modules

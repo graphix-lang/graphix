@@ -1,0 +1,10 @@
+// Title: checked arithmetic over floats follows IEEE and never fails
+// (CLAUDE.md), but no fixture pins it; this is the behavior a pin would hold.
+// Command: timeout -s KILL 180 /home/eric/tmp/review-2026-10-26/bin/graphix-fuzz run design/review-2026-10-26/repro/tests-lib-b1-checked-float-unpinned.gx
+// Expected and observed today (both engines, the kernel fused):
+//   ((inf, NaN, inf, NaN, inf), (inf, inf, NaN), inf, NaN)
+// A change that made any of these an ArithError would be well-typed (the
+// result type already holds Error<`ArithError(string)>) and fail no test.
+let f = |a: f64, b: f64| (a /? b, b /? b, (a *? f64:1e308)$ *? f64:10.0, a %? b, (a +? f64:1e308)$ +? f64:1e308);
+let g = |a: f32, b: f32| (a /? b, (a *? f32:3e38)$ *? f32:10.0, a %? b);
+(#[native] f(1.0, 0.0), #[native] g(f32:1.0, f32:0.0), f64:1.0 /? f64:0.0, f32:1.0 %? f32:0.0)

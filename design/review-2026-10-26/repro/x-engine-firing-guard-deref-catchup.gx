@@ -1,0 +1,23 @@
+// A guard woken by the chain reaching it again misses the fires of inputs it
+// learns only as it runs (a reference's target): the guard tracker is built
+// once from the guard's refs, before any Deref ran, and the guard's wake opens
+// no catch-up scope (TrackedFires::open), so `owed` never applies to it.
+// Command: graphix-fuzz run x-engine-firing-guard-deref-catchup.gx
+//   (every mode agrees)
+// b is written 50 at cycle 6, while the guard is unreached (steps 3..8).
+// Expected (wake catch-up, CLAUDE.md: "An input an arm learns as it runs (..
+// a reference's new target) .. is caught up by its write stamp"; a woken
+// guard "wakes caught up"): count(*r) is 2 at step 9, so (9, 1) onward.
+// Observed: (9, 0) (10, 0) ..: the guard's count never saw b's fire.
+// The same guard over `b` directly (count(b) == 2) gives (9, 1), and the same
+// count(*r) in an arm body (not a guard) catches up to 2 at its wake.
+let step = 0;
+step <- select step { s if s < 12 => s + 1, _ => never() };
+let b = 0;
+b <- select step { s if s == 5 => 50, _ => never() };
+let r = &b;
+select step {
+  s if s >= 3 && s <= 8 => (s, 0 - 1),
+  s if count(*r) == 2 => (s, 1),
+  s => (s, 0)
+}

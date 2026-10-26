@@ -1,0 +1,17 @@
+// A trait call whose union self type holds a named union alias is refused at elaboration, though the check accepts it
+// Run: timeout -s KILL 30 graphix --no-cache c-module-traits-union-alias-self.gx
+//      timeout -s KILL 30 graphix --no-cache --check c-module-traits-union-alias-self.gx   (exit 0)
+// Expected: ["Counter(1)", "str a", "int 3"]
+// Observed: "no implementation of Show for U, a member of the self type [Counter, U]";
+//           GRAPHIX_ELAB_AUDIT=1 reports it as an elaboration refusal of what the check accepted.
+// `Array<U>` alone works (resolve_trait_call looks the top-level ref up); a union
+// member that is a ref to a union is passed to find_impl unexpanded.
+trait Show { val show: fn(self) -> string };
+type Counter = Abstract<i64>;
+type U = [i64, string];
+impl Show for Counter { let show = |c| "Counter([c.0])" };
+impl Show for i64 { let show = |x| "int [x]" };
+impl Show for string { let show = |x| "str [x]" };
+let xs: Array<[U, Counter]> = [Counter(1), "a", 3];
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::map(xs, |x| Show::show(x))

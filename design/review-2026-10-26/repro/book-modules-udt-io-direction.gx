@@ -1,0 +1,10 @@
+// Title: book/src/stdlib/sys/io.md says a wrong-direction stream call is an
+// IOError at run time and lists sys::process::Pipe / sys::io::Stdio; both are gone.
+// Command: graphix --check book-modules-udt-io-direction.gx
+// Expected (per io.md "Which stream implements what"): compiles, the write
+//   returns an `IOError at run time.
+// Observed: refused at compile time: "Stdin does not implement Write".
+//   process.gxi / io.gxi declare ChildStdin/ChildStdout/ChildStderr and
+//   Stdin/Stdout/Stderr; no type Pipe or Stdio exists.
+use sys::io::{Write};
+Write::write_exact(sys::io::stdin(null), buffer::from_string("x"))

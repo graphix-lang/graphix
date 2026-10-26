@@ -1,0 +1,11 @@
+// Title: a nested lambda's BODY annotation does not name the enclosing
+// definition's type variable (make_init reads ctx.body at the nested
+// literal's definition check, after the enclosing compile restored it).
+// Command: graphix --check c-lambda-nested-body-annotation.gx
+// Expected: refused, "'a: unbound within Number does not contain i64"
+//   (as `'a: Number |x: 'a| -> 'a { let v: 'a = 1; x }` is, and as the
+//   same annotation is when the nested lambda's signature also writes 'a).
+// Observed: accepted (exit 0); running it prints 1.5.
+let f = 'a: Number |x: 'a| -> 'a { let g = |y| { let v: 'a = 1; y }; g(x) };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(f32:1.5)

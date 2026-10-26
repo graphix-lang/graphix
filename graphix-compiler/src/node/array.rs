@@ -54,6 +54,16 @@ pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
             }
     };
     let mut distinct: LPooled<Vec<&Type>> = LPooled::take();
+    // CR claude for claude: [perf/low] [perf/low] This dedupe is a linear scan, and
+    // `same` never equates two primitive types (each literal element carries its own
+    // Type) or two separately built structs. Every element counts as distinct and the
+    // loop is O(n^2) in the literal's length. `[0, 1, ..]` checks in 0.34 / 0.86 / 2.55
+    // s at 20k / 40k / 80k elements (Typecheck0 90 / 412 / 1822 ms), and a string-keyed
+    // map literal in 0.46 / 1.15 / 3.36 s. Compare Type::Primitive by value in `same`,
+    // and keep the distinct members in a set keyed by a cheap identity instead of
+    // scanning. probe:
+    // design/review-2026-10-26/repro/x-perf-compile-literal-element-union.sh
+    // (x-perf-compile-08)
     for t in ts {
         if !distinct.iter().any(|d| same(d, t)) {
             distinct.push(t)
@@ -100,6 +110,15 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let etyp = Type::decode(buf)?;
+        // CR claude for claude: [structure/low] This literal repeats the one in
+        // ArrayRef::compile field for field, and about forty kinds do the same between
+        // compile/init and image_decode. Examples: ArraySlice, MapRef, the error.rs and
+        // data.rs nodes, Bind, LambdaInstance, Module, CachedArgsAsync (12 fields
+        // twice), Filter/Queue/Hold/Throttle, and the net/time/watch/http builtins. A
+        // runtime field added to one literal and defaulted differently in the other is
+        // a cold-versus-warm divergence. Give each kind one constructor over its
+        // encoded parts, as Select::new does, and call it from both paths. Found by
+        // reading; not run. (x-dup-03)
         Ok(Node::new(Self {
             slept: WakeBit::default(),
             source,

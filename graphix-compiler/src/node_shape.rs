@@ -39,6 +39,12 @@ impl NodeShape {
     }
 
     /// A `Node` of any kind.
+    // CR claude for claude: [dead/low] Nothing in this repo or ../netidx calls any_node
+    // or child, or builds NodeShape::Any. Every user writes node(kind) with no
+    // children, fused or contains, so match_at's positional child matching only ever
+    // runs with zero child specs, and GXHandle::describe_shape has no caller. Delete
+    // the unused API (Node keeps only its kind), or add a test that uses child specs.
+    // Found by reading; not run. (c-cost-misc-05)
     pub fn any_node() -> Self {
         NodeShape::Node { kind: None, children: vec![] }
     }

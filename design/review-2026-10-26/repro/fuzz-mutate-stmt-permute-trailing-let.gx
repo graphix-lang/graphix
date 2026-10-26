@@ -1,0 +1,11 @@
+// stmt-permute swaps a block's value with the let before it, making a
+// block that ends in a let, which the checker refuses by rule.
+// command: design/review-2026-10-26/repro/fuzz-mutate-run-typemorph-one.sh \
+//            design/review-2026-10-26/repro/fuzz-mutate-stmt-permute-trailing-let.gx
+// expected: BASE accept and no FLIP (stmt-permute is acceptance-preserving)
+// observed: FLIP stmt-permute#1 N: a block's value is its last statement,
+//           and a let has none: end the block with an expression
+//           MUTANT { let a = 1; 42; let b = 2 }
+// The same flip came from 5 of 138 sampled regression pins
+// (e.g. findings/flip-jun2026/02_dead_bottom_stmt.gx).
+{ let a = 1; let b = 2; 42 }

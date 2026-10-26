@@ -1,0 +1,13 @@
+// Title: a Graphix wrapper of sys::net::publish refuses a call with the
+// handler omitted, which publish itself accepts.
+// Command: timeout -s KILL 30 graphix --no-cache --check tests-lang-rest-a-wrapped-publish-unread-quantifier.gx
+// Expected: accepted, as `sys::net::publish("/review/a", 1)` is
+//   (CallSite::settle_unread settles the unread 'a: Concrete to bottom).
+// Observed: "the type 'a must be fully known here, a type-directed
+//   operation reads it: annotate it" at `w("/review/a")`; nothing at that
+//   call reads 'a, and the call has nothing to annotate.
+{
+    let w = |#on_write: [fn(v: 'a) -> _, null] = null, p: string|
+        sys::net::publish(#on_write: on_write, p, 1);
+    w("/review/a")
+}

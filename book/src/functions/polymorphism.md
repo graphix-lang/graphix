@@ -24,6 +24,14 @@ In type annotations of lambda expressions,
 - After the return type, you can optionally specify a throws type, `throws
   Type`, which will set the type that is thrown by the function
 
+<!-- CR claude for claude: [doc-drift/medium] These readouts no longer match the shell.
+It prints `fn<'a: Number + Singleton>(x: 'a: unbound within Number & Singleton, ..)`. An
+inferred variable has no `fn<..>` prefix, and `apply` shows no `fn<'e: unbound: _>`, so
+the explanation of the colon-separated form and of `'e` constrained to `_` describes
+output that no longer exists. reading_types.md ("Auto Parameters") and the map
+transcripts in fundamental_types.md have the same drift. Re-run the transcripts and
+rewrite the explanation. probe: design/review-2026-10-26/repro/book-core-type-readout.sh
+(book-core-03) -->
 When a function type is printed, the stuff between the `fn<>` are the
 type constraints, the syntax in this readout is a colon separated list
 of,

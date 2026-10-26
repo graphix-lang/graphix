@@ -202,6 +202,15 @@ macro_rules! jit_helper_ret {
 /// One helper's `extern "C"` definition: each parameter crosses as its
 /// [`HelperArg::Wire`], and a pair return (`-> TagValue`, `-> ChildBlock`)
 /// through a trailing out-pointer.
+// CR claude for claude: [risk/low] A `safe fn` helper with a pair parameter or a pair
+// return becomes a safe extern "C" fn whose wire form is a raw pointer. The body
+// ptr::reads it (HelperArg::from_wire) or writes through `out`. So graphix_value_drop,
+// graphix_value_clone, graphix_map_ref and about 50 others can be called from safe Rust
+// with a null or dangling pointer, which is UB without an `unsafe` at the call. Only
+// JIT code calls them today, so this is latent. Fix: emit `unsafe extern "C"` for every
+// helper whose wire carries a pointer, or simply for every helper, and drop the
+// safe/unsafe distinction from the jit_helpers! grammar; JIT code calls them by
+// address, so nothing else changes. Found by reading; not run. (f-helpers-02)
 macro_rules! jit_helper_fn {
     ([$($attr:meta)*] [$($unsafety:ident)?] $name:ident ($($p:ident: $t:ty),*) [pair $ret:ty] $body:block) => {
         $(#[$attr])*
@@ -759,6 +768,19 @@ unsafe fn graphix_castcall(
 /// and the run goes on, releasing what it owns as it would; the kernel
 /// then discards the run's result and what it deferred, and resumes the
 /// panic.
+// CR claude for claude: [risk/medium] A recorded panic does not stop the run. Nothing
+// in the JIT code reads KERNEL_PANIC again: graphix_interrupted and graphix_stack_check
+// check only stack::interrupted(). The kernel goes on with the placeholder, and several
+// placeholders are untainted values it branches on (graphix_value_eq and
+// graphix_value_cmp give 0, graphix_string_buf_push_value appends nothing). Example: a
+// fused tail loop `select K(i) == K(13) { true => i, false => go(i + 1) }` whose Eq
+// hook panics at 13 loops forever on "not equal", and a non-tail self-call recurses
+// until memory runs out. The node-walk unwinds and the runtime dies. Fix: once a panic
+// is recorded, have graphix_interrupted and graphix_stack_check report "interrupted" so
+// the run leaves by its abort path at the next poll; then drop the !kernel_panicked()
+// check in graphix_iocall and make fast_dispatch's doc ("it aborts the kernel") true.
+// Found by reading; not run (only graphix-tests registers a panicking builtin).
+// (f-helpers-01)
 fn guard_panic<T>(placeholder: T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,

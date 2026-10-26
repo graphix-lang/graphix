@@ -1,0 +1,25 @@
+// `~` banks a trigger only while its argument has never produced: once `v`
+// had a value, a fire that finds `v` bottom is bottom and banks nothing, the
+// same as `~!`.
+// Command: graphix-fuzz run x-engine-firing-bank-after-bottom.gx
+//   (or graphix --no-cache / --no-fusion; every mode agrees)
+// v is 0, 10, 20, then bottom at steps 3..5, then 60, 70, ...
+// t fires at steps 1, 4 and 8. na counts a's fires, nb b's (a cycle late).
+// Expected (book select.md: "`~!` ... bottom with no bank when v is bottom.
+// `~` still banks"; CLAUDE.md: "banking one trigger however many find v
+// absent, paid once when v arrives"): the step-4 fire of `t ~ v` is paid when
+// v returns at step 6, so na reaches 2 at cycle 7 and 3 at cycle 9; nb stays
+// one behind (2 at cycle 9).
+// (dense_delivery.md R3 reads `~` as "sample the latest": then the step-4 fire
+// gives 20 and na is 2 at cycle 5.)
+// Observed: Trace([.. 2:(2, 1, 1) .. 8:(8, 1, 1) 9:(9, 2, 2)]): the step-4
+// fire of `t ~ v` is lost exactly as `t ~! v`'s.
+let step = 0;
+step <- select step { s if s < 9 => s + 1, _ => never() };
+let v = select step { s if s >= 3 && s <= 5 => never(), s => s * 10 };
+let t = select step { s if s == 1 || s == 4 || s == 8 => s, _ => never() };
+let a = t ~ v;
+let b = t ~! v;
+let na = 0; na <- a ~ na + 1;
+let nb = 0; nb <- b ~ nb + 1;
+(step, na, nb)

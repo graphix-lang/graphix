@@ -527,6 +527,10 @@ pub struct BodyShared {
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's.
+// CR claude for claude: [readability/low] The first two doc lines above ("The body
+// compiling now: what it shares, ...") describe BodyCompile, which has no doc of its
+// own. Here they become the start of this function's doc. Move them above `pub(crate)
+// struct BodyCompile`. Found by reading; not run. (c-lambda-06)
 pub(crate) fn body_annotation<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>, t: &Type) {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     enclosing_tvars(ctx, &mut known);
@@ -1418,6 +1422,27 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
             Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
         ctx.with_restored(def_env.clone(), |ctx| match &body {
             DefBody::Expr(body) => {
+                // CR claude for claude: [bug/medium] `enclosing` comes from ctx.body
+                // where the instance is built, not from the definitions lexically
+                // around the literal. A type variable two lambdas inside its definition
+                // is therefore a fresh variable: `let mk = 'a: Number |k: 'a| |y: i64|
+                // |x: 'a| [x, k]; mk(1)(0)("s")` is accepted and prints ["s", 1], while
+                // the one-level form is refused. Capture the declared signatures when
+                // the literal compiles (with def_env) and use those here. probe:
+                // design/review-2026-10-26/repro/x-rerun-5-nested-lambda-tvar.gx
+                // (x-rerun-5-02)
+                // CR claude for claude: [bug/medium] `ctx.body` here is whatever
+                // compile is in progress when `init` runs, not the definitions
+                // lexically around this one. A nested literal's definition check runs
+                // from Lambda::typecheck0, after the enclosing compile has put
+                // `ctx.body` back to None. So `declared` is only this signature, and a
+                // body annotation in a nested lambda never names the enclosing
+                // definition's variable. `'a: Number |x: 'a| -> 'a { let g = |y| { let
+                // v: 'a = 1; y }; g(x) }` is accepted, where the same `let` directly in
+                // the body is refused. Capture `ctx.body.declared` in Lambda::compile
+                // and pass it to make_init (def_decode passes an empty chain). probe:
+                // design/review-2026-10-26/repro/c-lambda-nested-body-annotation.gx
+                // (c-lambda-02)
                 let enclosing = match &ctx.body {
                     Some(b) => b.declared.clone(),
                     None => Arc::from_iter([]),
@@ -1722,6 +1747,18 @@ impl Lambda {
             // one does not, is theirs
             let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             enclosing_tvars(ctx, &mut known);
+            // CR claude for claude: [bug/medium] This removes only the names
+            // `l.constraints` declares. The quantifiers this lambda derives for itself,
+            // a trait-typed parameter's `#x` (trait_quantifiers) and a constructor
+            // quantifier's `'c#elem` (ctors), are not removed, so they alias the
+            // enclosing definition's same-named cells. `|x: Display| { let g = |x:
+            // Display| x; g(1) }` is refused, and the same program with the inner
+            // parameter named `y` prints 1. The same happens to a nested `'c:
+            // Collection` under an enclosing `'c: Collection`. Exclude every variable
+            // this signature introduces (each `constraints` entry's name and each ctor
+            // elem name) and pin both programs. probe:
+            // design/review-2026-10-26/repro/c-lambda-nested-quantifier-name-capture.sh
+            // (c-lambda-01)
             known.retain(|name, _| !scoped.contains_key(name));
             ft.alias_tvars(&mut known);
             Arc::new(ft.declaring(&constraints))
@@ -1970,6 +2007,18 @@ fn check_defaults<R: Rt, E: UserEvent>(
                     .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
                 // a variable inside the type is checked as any instance of
                 // it: each omitting call checks the default again
+                // CR claude for claude: [bug/medium] A default that reads an enclosing
+                // definition's open cell is tied to its parameter only when the
+                // parameter type is a bare variable (the arm above). Under a written
+                // type holding one (`#d: Array<'q> = [z]`, `{v: 'q}`, `[null, 'q]`) it
+                // lands here and is checked against a fresh copy, so z's cell is never
+                // reached and the factory settles z to bottom. The check accepts
+                // `mk(1)`, and the build refuses it with the internal 'an instance at
+                // fn(z: i64) -> ..' error (graphix-fuzz: DIVERGENCE). Fix: when
+                // holds_enclosing_cell(&typ, ..) holds, check against at.typ itself
+                // whatever its shape. probe:
+                // design/review-2026-10-26/repro/x-typecheck-generics-default-enclosing-written-param.gx
+                // (x-typecheck-generics-04)
                 t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
                 t => t.check_contains(&ctx.env, &typ),
             }
@@ -2120,6 +2169,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
+        // CR claude for claude: [bug/medium] `filter_map` drops each captured key
+        // `instance_fn_params` has no entry for. Only a static bind
+        // (CallSite::bind_instance) registers that map, so in every run-time bind
+        // (build_bound, prebind) the nested literal's calls through the enclosing
+        // instance's fn parameters vanish, and callback_facts judges the callback pure
+        // instead of unresolved. `#[sync] |f, v| filter(v, |x| f(x))` called through a
+        // `<-`-target variable with an async f passes, while the static call is
+        // refused. Register the formals in build_bound as bind_instance does, and count
+        // a key with no formal as unresolved rather than dropping it. probe:
+        // design/review-2026-10-26/repro/c-lambda-sync-dynamic-captured-call.gx
+        // (c-lambda-03)
         let captured = tables
             .table
             .calls_captured

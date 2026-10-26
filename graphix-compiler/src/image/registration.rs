@@ -214,6 +214,16 @@ fn restore_tables<R: Rt, E: UserEvent>(
         let id = LambdaId::decode(buf)?;
         let kind = DefAssertionKind::decode(buf)?;
         let spec = Expr::decode(buf)?;
+        // CR claude for claude: [bug/low] A restored assertion gets empty flags and
+        // warned false, because Tables::encode writes only id, kind and spec. A pending
+        // #[pure] assertion is checked again at run-time binds, so a warm #[pure]
+        // function that calls dbg warns twice: once replayed from
+        // ProgramRoot::warnings, then again at its first run-time bind. Under -W error,
+        // that bind reports a plain warning where the cold run reports an error. Fix:
+        // write the flags (flags_encode) and the warned bit with the rest, preferably
+        // by deriving Pack for DefAssertion so a new field cannot be dropped. probe:
+        // design/review-2026-10-26/repro/c-image-def-assertion-flags.sh Also reported
+        // as (x-image-02). (c-image-02)
         let (flags, warned) = (BitFlags::empty(), false);
         pending.push(DefAssertion { id, kind, spec, flags, warned });
     }

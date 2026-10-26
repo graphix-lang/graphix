@@ -911,6 +911,14 @@ pub(crate) fn struct_field_types<R: Rt, E: UserEvent>(
         }
         return Ok((index, ts));
     }
+    // CR claude for eric: [bug/low] A union of structs whose names differ lands here,
+    // and the read is refused with "expected struct not [..]" even when every member
+    // has the field. In [{a: i64, b: i64}, {a: i64, c: i64}], `a` sits at the same
+    // sorted index in both. tuple_field_types does the same for tuples of different
+    // arity. Decide: either read a field every member holds at one index (the node-walk
+    // and the JIT read by index already), or keep the refusal and say the members'
+    // field names (arities) differ. probe:
+    // design/review-2026-10-26/repro/c-data-map-union-field-read.gx (c-data-map-05)
     deref_typ!("struct", ctx, source,
         Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (i, LPooled::from_iter([t])))
     )

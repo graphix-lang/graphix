@@ -99,6 +99,10 @@ never itself an `Or` (the grammar cannot spell one). The printer emits
 `is_match(Or)` = any; `bind(Or)` = bind of the FIRST matching
 alternative; `ids`/`fresh_ids`/`delete` walk alternative 0 only (the
 others share its ids — walking all would double-visit);
+<!-- CR claude for claude: [doc-drift/low] covers(Or) is not always false.
+StructPatternNode::covers holds for an Or when each member of the type is covered by
+some alternative, and the Or compile's dead-alternative check under a written predicate
+uses that. Fix the sentence to say so. Found by reading; not run. (c-pattern-07) -->
 `covers(Or)` = false (refutable wherever it stands); `matches_anything(Or)` = false: an
 alternative matches anything of its own member only, which the
 select's walk judges per alternative.

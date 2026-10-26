@@ -1,0 +1,13 @@
+// Title: a sandbox blacklist naming a module and then its submodule is refused
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/t-env-blacklist-order.gx
+// Expected: "1", as `blacklist [sys::net, sys]` gives
+// Observed: compile error
+//   applying sandbox
+//   no value net in module /sys and no module sys::net
+let status = mod foo dynamic {
+    sandbox blacklist [sys, sys::net];
+    sig { val x: i64 };
+    source "let x = 1"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select status { error as e => "[e]", null as _ => "[foo::x]" }

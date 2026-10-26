@@ -265,6 +265,10 @@ impl GuiTestHarness {
     }
 
     /// Build, lay out and draw the widget tree once at 800 x 600.
+    // CR claude for claude: [readability/low] [readability/low] render always returns
+    // Ok(()). frame() has no error to report, so every `h.render()?` reads as a check
+    // that cannot fail. Return () (or the frame's messages) and drop the `?` at the
+    // call sites. Found by reading; not run. (tests-gui-a-06)
     fn render(&mut self) -> Result<()> {
         let _ = self.frame(Size::new(800.0, 600.0), &[]);
         Ok(())
@@ -467,6 +471,12 @@ impl HeadlessGpu {
 /// `GuiTestHarness` plus a headless renderer and iced `UserInterface`,
 /// for simulating clicks, typing and drags and collecting the
 /// resulting `Message`s.
+// CR claude for claude: [structure/low] [structure/low] InteractionHarness is
+// GuiTestHarness plus one Size. drain/watch/get_watched/dispatch_calls/apply only
+// forward to inner, and the tests use both spellings (h.watch vs h.inner.watch, h.drain
+// vs h.inner.drain), sometimes in the same test. Put a viewport field on
+// GuiTestHarness, move the event helpers onto it, and delete this wrapper and its
+// forwarders. Found by reading; not run. (tests-gui-a-05)
 struct InteractionHarness {
     inner: GuiTestHarness,
     viewport: Size,
@@ -637,6 +647,11 @@ impl InteractionHarness {
         out
     }
 
+    // CR claude for claude: [structure/low] [structure/low] This builds the same move,
+    // press, interpolated moves, release sequence as drag_live, differing only in
+    // whether each frame's messages are dispatched or collected. Build the events once
+    // (fn drag_events(from, to, steps) -> Vec<Event>) and have both helpers use it.
+    // Found by reading; not run. (tests-gui-a-07)
     fn drag_horizontal(&mut self, from: Point, to_x: f32, steps: u32) -> Vec<Message> {
         let mut all_msgs = Vec::new();
         all_msgs.extend(self.process_events(&[Event::Mouse(

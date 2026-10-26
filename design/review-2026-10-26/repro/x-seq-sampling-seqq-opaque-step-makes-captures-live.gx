@@ -1,0 +1,19 @@
+// A nested seq, or any builtin handed a callback (filter), in a seqq step makes every
+// capture live, so the run reads x as it stands, not as it stood at enqueue
+// command: graphix-fuzz run x-seq-sampling-seqq-opaque-step-makes-captures-live.gx
+//   GXDBG_SEQPLAN=1 graphix --no-cache --no-fusion <file>  shows "S1 reads all writes all"
+//   and "capture .. live true" for c and d
+// expected: (0, 0, 0): t fires once at step 1, when x is 0; nothing writes x in any run,
+//   so every run reads the snapshot taken at enqueue (CLAUDE.md seq/seqq rule)
+// observed (both engines): Trace([10:(0, 6, 8)])
+{
+  let step = 0;
+  step <- select step { n if n < 12 => n + 1, _ => never() };
+  let x = 0;
+  x <- step ~ step;
+  let t = select step { 1 => 1, _ => never() };
+  let b = seqq t { until live(step) > 5; x };
+  let c = seqq t { until live(step) > 5; let y = filter(t, |v| v > 0); x };
+  let d = seqq t { until live(step) > 5; let y = seq { 1 }; x };
+  (b, c, d)
+}

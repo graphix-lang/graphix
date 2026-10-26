@@ -1,0 +1,15 @@
+// seq.rs's comment over seq_qop_level_waits says a level `x?` in a step
+// "tracks after" its entry. It does not: a step reads x once at entry; only
+// live(x) tracks. Here x becomes an error after the step's entry and nothing
+// is raised.
+// Run: timeout -s KILL 30 graphix --no-cache tests-seq-qop-level-comment.gx
+// Observed: ("none", 9)   (with live(x)? instead: "raised", per seq_qop_level_raises_after_entry)
+let n = 0;
+n <- select n { s if s < 10 => s + 1, _ => never() };
+let trig = select n { 1 => n, _ => never() };
+let x: [i64, Error<`E>] = select n { 5 => error(`E), s => s };
+let caught = "none";
+catch(e) caught <- select (e.0).error { `E => "raised" };
+let r = seq let t = trig { let w = select live(n) > 6 { true => live(n), false => never() } + x?; w };
+sys::exit(sys::time::after_idle(duration:100.ms, n) ~ 0);
+(caught, r)

@@ -1,0 +1,26 @@
+// f-select: a struct, tuple or slice pattern inside a variant payload,
+// and any non-bind pattern at a list head, does not fuse:
+// emit_variant_cond and emit_list_pattern_cond refuse sub-patterns that
+// emit_composite_pattern_cond accepts at a tuple/array/struct leaf.
+// Command: graphix-fuzz run design/review-2026-10-26/repro/f-select-payload-struct-pattern.gx
+// Expected: both #[native] calls fuse; Jit trace
+//   [0:(1, "zeroa0") 1:(2, "head1") 2:(3, "empty") 3:(4, "zerod1")].
+// Observed: Jit CompileErr "#[native] expression did not fully fuse ...
+//   emit_clif: nested variant payload pattern not lowerable" (and, with
+//   the first call removed, "nested list element pattern not lowerable").
+let step = 0;
+step <- select step { s if s < 3 => s + 1, _ => never() };
+type Q = [`Text({id: i64, required: bool}), `Pair((i64, string)), `Plain(i64)];
+let id_of = |q: Q| select q {
+  `Text({ id, .. }) => id,
+  `Pair((n, _)) => n,
+  `Plain(n) => n
+};
+let heads = |x: List<(i64, string)>| select x {
+  [<(0, s), t..>] => "zero[s][list::len(t)]",
+  [<(n, _), ..>] => "head[n]",
+  [<>] => "empty"
+};
+let qs: Array<Q> = [`Text({id: 1, required: true}), `Pair((2, "x")), `Plain(3), `Text({id: 4, required: false})];
+let ls: Array<List<(i64, string)>> = [[<(0, "a")>], [<(1, "b"), (0, "c")>], [<>], [<(0, "d"), (2, "e")>]];
+(#[native] id_of(qs[step]$), #[native] heads(ls[step]$))

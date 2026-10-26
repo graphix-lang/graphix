@@ -1,0 +1,28 @@
+// A select's guards and arm bodies keep separate catch-up bits, so one fire
+// reaches two of its arms: one a selected arm body read, a woken guard reads
+// again, and one a consulted guard read, an arm body's first entry reads again.
+// The arm-body twin (`body`) delivers each fire to one arm only.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache tests-select-guard-and-arm-catch-up-the-same-fire.gx
+//   (same with --no-fusion)
+// Expected (if a guard "sleeps, as an unselected arm does", CLAUDE.md):
+//   t=3 guard: one 1   body: one 1
+//   t=5 guard: other   body: arm 1
+// Observed (both engines):
+//   t=3 guard: one 2   body: one 1
+//   t=5 guard: guard 2   body: arm 1
+{
+  let b = 0;
+  let t = 0;
+  t <- select t { n if n < 6 => n + 1, _ => never() };
+  b <- select t { 2 => 7, _ => never() };
+  let x = select t { 0 => 2, 5 => 2, _ => 1 };
+  let guard = select x { 1 => "one [count(b)]", n if count(b) > 1 => "guard 2", _ => "other" };
+  let body = select x { 1 => "one [count(b)]", n => "arm [count(b)]" };
+  select t {
+    3 | 5 => println("t=[t] guard: [guard]   body: [body]"),
+    _ => never()
+  };
+  sys::exit(sys::time::after_idle(duration:100.ms, 0));
+  t
+}

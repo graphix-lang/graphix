@@ -1,0 +1,23 @@
+// x-dup: a nested seq in a seqq body turns every capture live
+// command: graphix --no-cache x-dup-seqq-nested-seq-unsnapshots.gx
+// expected: (1, 2) -- `let a = x` reads x as it stood when the request was
+//   queued (1); the nested `seq { x }` takes its own snapshot at its entry (2).
+// observed: (2, 2). Delete the line `let b = seq { x };` (and return `a`)
+//   and the same program prints 1. GXDBG_SEQPLAN=1 shows the nested seq's
+//   step as "reads all writes all" ("opaque builtin core::filter": the
+//   lowering's own `core::filter(.., |x| x ~ idle)`), which marks the
+//   capture of x live.
+let x = 1;
+let ready = false;
+let t = sys::time::timer(duration:50.ms, false);
+x <- t ~ 2;
+ready <- t ~ true;
+let go = 0;
+let r = seqq go {
+  until live(ready);
+  let a = x;
+  let b = seq { x };
+  (a, b)
+};
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+r

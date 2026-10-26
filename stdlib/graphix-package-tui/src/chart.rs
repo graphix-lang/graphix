@@ -137,6 +137,12 @@ impl<X: GXExt> DatasetW<X> {
 
     /// The finite points: ratatui paints a NaN at the canvas edge.
     fn set_data(&mut self, v: &Value) -> Result<()> {
+        // CR claude for claude: [risk/low] An early return below (array_elems failing
+        // or a pair that does not cast) leaves `data` empty or partial while `breaks`
+        // still indexes the old data. The display loop only logs an update error and
+        // keeps drawing, so DatasetW::build's `self.data[s..e]` then panics. Clear
+        // `breaks` together with `data` here, or build both into locals and assign them
+        // only on success. Found by reading; not run. (tui-widgets-07)
         self.data.clear();
         let points = rep::array_elems(v).ok_or_else(|| {
             anyhow!("invalid dataset {}", graphix_compiler::typ::Naked(v))
@@ -257,6 +263,15 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }
+        // CR claude for eric: [bug/low] A null legend_position leaves ratatui's default
+        // (TopRight), so no Graphix value can hide the legend of a chart whose datasets
+        // are named: `#legend_position: &null` still draws the box. Decide what null
+        // means. If it should hide, pass
+        // `legend_position(p.legend_position.t.flatten().map(|lp| lp.0))` and make
+        // chart.gx's default `TopRight. Otherwise document in chart.gxi how a legend is
+        // hidden. probe:
+        // design/review-2026-10-26/repro/tui-widgets-chart-legend-null.sh
+        // (tui-widgets-06)
         if let Some(Some(lp)) = p.legend_position.t {
             chart = chart.legend_position(Some(lp.0));
         }
@@ -266,6 +281,16 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if let Some(Some(a)) = &p.x_axis.t {
             chart = chart.x_axis(a.build(rect.width));
         }
+        // CR claude for claude: [bug/low] Label counts are bounded before ratatui sees
+        // them, but text widths are not. ratatui adds widths in u16 (`w + 1` for an
+        // axis title, `inner_width + 2` for the legend, `area.x + label_size + margin`
+        // for a horizontal bar label in barchart.rs), so a 65535-wide y title, a
+        // 65534-wide dataset name or a 65535-wide bar label panics the display under
+        // overflow checks (dev, soak) and wraps in release. Cut titles, dataset names
+        // and bar labels to the rect's width when building them (AxisV::build,
+        // DatasetW::segment, BarProps::build), and add an UPSTREAM.md entry. probe:
+        // design/review-2026-10-26/repro/tui-widgets-wide-text-overflow.sh
+        // (tui-widgets-05)
         if let Some(Some(a)) = &p.y_axis.t {
             chart =
                 chart.y_axis(a.build((rect.height as u32).min(

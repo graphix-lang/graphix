@@ -1,0 +1,14 @@
+// Title: hbs::render aborts the process on deeply nested subexpressions (x-panics-03 variant)
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/x-rerun-5-hbs-subexpr-overflow.gx
+// Expected: an `HbsErr` value, as 5000 nested {{#if}} blocks now give
+//   ("blocks nest more than 64 deep").
+// Observed: "thread 'tokio-rt-worker' has overflowed its stack / fatal runtime
+//   error: stack overflow, aborting" (k = 1000; k = 600 still renders).
+//   `shallow` counts only block tags; `(lookup (lookup ...))` nests in one tag.
+let k = 1000;
+let open = str::join(#sep: "", array::init(k, |i| "(lookup "));
+let close = str::join(#sep: "", array::init(k, |i| " \"x\")"));
+let t = str::concat("{{lookup ", open, "a", close, " \"x\"}}");
+let r = hbs::render(t, {a: 1});
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+select r { error as e => "[e]", s => "len [str::len(s)]" }

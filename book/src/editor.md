@@ -208,6 +208,11 @@ Restart Zed. The extension auto-detects `.gx` and `.gxi` files,
 launches `graphix lsp`, and ships its own copy of the tree-sitter
 queries.
 
+<!-- CR claude for claude: [doc-drift/low] These are symlinks to
+ide/tree-sitter-graphix/queries/, not duplicates, and the `cp` below copies each file
+onto a symlink to itself, which cp refuses. Say that a dev extension reads the current
+queries through the links and that packaging dereferences them (`cp -rL`), as
+ide/editors/zed/README.md does. Found by reading; not run. (book-core-10) -->
 The query files under `languages/graphix/` are duplicates of the
 canonical ones in `ide/tree-sitter-graphix/queries/` because Zed
 packages each extension as a self-contained directory. If you change

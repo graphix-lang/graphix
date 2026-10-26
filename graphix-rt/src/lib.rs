@@ -890,6 +890,12 @@ impl<X: GXExt> GXHandle<X> {
     /// If `id` already emitted before this call was serviced the runtime
     /// is already idle and this returns `None`; the value is in the event
     /// stream, so drain the event subscription on `None`.
+    // CR claude for claude: [dead/low] Nothing in this repo or ../netidx calls
+    // wait_result_or_idle or GXHandle::cycle_ready. They carry ToGX::WaitResultOrIdle
+    // and ToGX::CycleReady, the GX::result_watch field, its test on every fired root in
+    // update_nodes, and a waiter kind in run's idle verdict, all untested. Delete them.
+    // Keep the private GX::cycle_ready, which run uses. Found by reading; not run.
+    // (rt-04)
     pub async fn wait_result_or_idle(&self, id: ExprId) -> Result<Option<Value>> {
         self.exec(|res| ToGX::WaitResultOrIdle { id, res }).await
     }
@@ -1178,6 +1184,11 @@ impl<X: GXExt> GXConfig<X> {
     /// Do what [`start`](Self::start) does before the first cycle, compile
     /// the root and the program and send their images, and run nothing:
     /// an error when the program did not compile.
+    // CR claude for claude: [readability/low] This doc block opens with `start`'s
+    // documentation ("Start the runtime and return a handle to it ..."), followed by
+    // compile's own, and `start` has no doc. rustdoc therefore tells embedders that
+    // compile returns a handle. Move the first paragraph onto `start`. Found by
+    // reading; not run. Also reported as (rt-05), (shell-06). (book-modules-udt-14)
     pub async fn compile(self) -> Result<()> {
         GX::new(self).await?.program_compiled()
     }

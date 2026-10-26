@@ -1,0 +1,19 @@
+// Title: under a written union type (a let, a lambda parameter, a `T as`
+// arm), a `name@` capture and a slice rest are typed from the pattern's
+// inferred shape per position, so they no longer fit their own type.
+// Command: graphix --check c-pattern-written-union-capture.gx
+// Expected: accepted; `a` holds exactly v's value (a U), `r` an A, as in an
+// unannotated select arm (`select v { a@ (_, _) => h(a) }` is accepted).
+// Observed: "type mismatch U does not contain ([i64, string], [i64, string])"
+// at h(a). Each of these refuses the same way when it is the only use:
+//   let g1 = |a@ (_, _): U| h(a);
+//   let g2 = |v: [U, null]| select v { U as a@ (_, _) => h(a), null => 0 };
+//   let g3 = |v: [A, null]| select v { A as [_, r..] => k(r), A as [] => 1, null => 0 };
+// g3's refusal names the shape's private per-element Set:
+//   "A does not contain Array<[[i64, string], [i64, string]]>".
+type U = [(i64, string), (string, i64)];
+type A = [Array<i64>, Array<string>];
+let h = |u: U| 1;
+let k = |a: A| 10;
+let f = |v: U| { let a@ (_, _) = v; h(a) };
+f(("abc", 1))

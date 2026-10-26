@@ -1,0 +1,19 @@
+// Title: a handler-ful raise in a guard the chain reaches by an earlier
+//   guard's flip: the node-walk raises over the scrutinee fire it missed,
+//   the kernel does not (same root cause as f-select-guard-missed-io.gx).
+// Command: timeout -s KILL 170 graphix-fuzz run design/review-2026-10-26/repro/f-select-guard-missed-raise.gx
+// Expected: both engines Trace([0:0 3:1]) (one error reaches the catch).
+// Observed: interp Trace([0:0 3:1]), jit Trace([0:0]).
+{
+  let errs = 0;
+  let g = |x: i64, flag: bool| select x {
+      _ if flag => i64:0,
+      n if (n /? i64:0)? > i64:0 => n,
+      _ => i64:0 - 1
+  };
+  catch(e) errs <- e ~ errs + 1;
+  let x = array::iter([i64:5]);
+  let flag = array::iter([true, false]);
+  let r = g(x, flag);
+  errs
+}

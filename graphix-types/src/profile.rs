@@ -369,6 +369,17 @@ pub fn instance(
     span.instance = Some((id, cost));
     PROFILE.with_borrow_mut(|p| {
         let c = p.census.as_mut().unwrap();
+        // CR claude for claude: [bug/low] `elaborating` is pushed only by
+        // profile::elaboration (GXLambda::typecheck1), but a row is created here by the
+        // instance's InstanceGraph/InstanceCheck span, when no elaboration guard is
+        // open. Every INSTANCE line prints parent=0 (267 of 267 for table_basic.gx
+        // under --expand, serial too). bench/instances.py's tree() then reports 'chain
+        // depth 1, widest 0 children' for every root, and its critical path and Nx
+        // figures mean nothing. Fix: read the parent from a census stack of the open
+        // spans' instance ids (pushed here, popped when the span drops), or delete
+        // tree(), parent, elaboration_ns and the Elaboration guard. probe:
+        // design/review-2026-10-26/repro/ide-tooling-instances-flat-tree.sh
+        // (ide-tooling-07)
         let parent = c.elaborating.last().copied();
         let row = c.instances.entry(id).or_default();
         if row.definition.is_none() {

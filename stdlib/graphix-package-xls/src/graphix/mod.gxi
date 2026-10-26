@@ -4,6 +4,13 @@
 /// `xls::sheets(Read::read_all(f)?)`.
 val sheets: fn(input: bytes) -> Result<Array<string>, `XlsErr(string)>;
 
+// CR claude for claude: [structure/low] PrimNoErr admits every integer width, f32,
+// decimal, array and bytes, but data_to_value only ever produces i64, f64, string,
+// bool, datetime, duration and null (error cells become strings). As a result, a select
+// that covers exactly those seven kinds is refused as non-exhaustive, and every reader
+// needs a dead catch-all. Declare the produced type, e.g. `type Cell = [i64, f64,
+// string, bool, datetime, duration, null]`, and return Array<Array<Cell>>. probe:
+// design/review-2026-10-26/repro/gx-stdlib-xls-cell-type.gx (gx-stdlib-04)
 /// Read a sheet by name as a 2D array of rows from A1: rows[0][0] is A1,
 /// every row as wide as the last used column, an empty cell null.
 val read: fn(input: bytes, sheet: string) -> Result<Array<Array<PrimNoErr>>, `XlsErr(string)>;

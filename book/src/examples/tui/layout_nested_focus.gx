@@ -9,6 +9,16 @@ use tui::{
 };
 
 let long_text = str::join(#sep: " ", array::init(50, |i| "[i + 1] I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!"));
+// CR claude for claude: [bug/low] The scroll length is a guess at how many lines the
+// wrapped paragraph takes, and it is wrong at every width. At 80 columns, position 150
+// still ends in sentence 49, so the end cannot be reached. At 200 columns the text ends
+// near position 57 and the pane scrolls through about 90 blank lines while the
+// scrollbar claims 150. Nothing measures a wrapped paragraph, so build the content as
+// an array of lines (`array::init(50, |i| line(..))`), use `array::len(lines)` as
+// #content_length and as the Down guard's bound, as scroll_paragraph.gx does, and
+// delete max_scroll. probe:
+// design/review-2026-10-26/repro/examples-tui-nested-focus-scroll-length.sh
+// (examples-tui-02)
 let max_scroll = 150;
 
 let focused = 0;

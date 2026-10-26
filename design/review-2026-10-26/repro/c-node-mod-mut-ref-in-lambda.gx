@@ -1,0 +1,19 @@
+// Title: `&mut f` inside a function body is refused as "made generic by an earlier
+// compile" in a one-file script, while the same write with `<-` is accepted.
+// Command: timeout -s KILL 30 graphix --check c-node-mod-mut-ref-in-lambda.gx
+// Expected: accepted, like its `<-` twin (f is written, so it is not
+//   generalized; written_lets finds the `&mut f` and Bind::compile marks f a `<-`
+//   target); running it prints (3, 1).
+// Observed: "f was made generic by an earlier compile, and a writable reference to
+//   it would let a write narrow it: write it with <-". There is no earlier compile.
+//   `f <- t ~ |x| x` in place of the two statements in h's body checks and runs (3, 1);
+//   so does `let r = &mut f` outside h. ByRef::compile asks generalized_earlier (the
+//   levels of the cells f's type reaches); Connect asks env.poly_binds, from which
+//   mark_connect_target removed the written f.
+let f = |x| x;
+let h = |t: i64| {
+  let r = &mut f;
+  *r <- t ~ |x| x;
+  t
+};
+(h(3), f(1))

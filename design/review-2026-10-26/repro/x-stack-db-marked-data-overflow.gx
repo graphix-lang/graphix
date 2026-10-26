@@ -1,0 +1,16 @@
+// db::insert of a 1000-element List aborts the process with a stack overflow.
+// CachedVals::as_data -> write_marked_data -> abstract_value::to_marked_data ->
+// rewrite (Forms::Keep) -> rep::map_parts -> rewrite ... recurses once per level
+// with no ensure_sufficient. Native list cells nest, so a list's length is its depth.
+// The same overflow happens with a 300-deep variant chain (a `Node(T) cons value).
+// run: rm -rf /tmp/x-stack-db; timeout -s KILL 60 graphix --no-cache x-stack-db-marked-data-overflow.gx
+// expected: "ok" (or a catchable DbErr), then exit 0
+// observed: "thread 'tokio-rt-worker' has overflowed its stack / fatal runtime error:
+//   stack overflow, aborting", exit 134. gdb: ~300 rewrite/map_parts frame pairs above
+//   graphix_package_core::CachedVals::as_data. A 200-element list stores fine.
+let l = list::init(1000, |i| i);
+let db = db::open("/tmp/x-stack-db")$;
+let t: db::Tree<i64, List<i64>> = db::tree(db, null)$;
+let r = db::insert(t, 1, l);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select r { error as e => "[e]", _ => "ok" }

@@ -37,6 +37,16 @@ pub(super) fn labeled_first(labeled: impl IntoIterator<Item = bool>) -> bool {
 
 pub(super) const LABELED_FIRST: &str = "labeled arguments come before positional ones";
 
+// CR claude for eric: [bug/low] Several lists that the formatter lays out one item per
+// line refuse comments, although CLAUDE.md allows them on any list item. Refused: a
+// comment above a labeled argument (`#width:` takes no `leading_decorations` here), an
+// above or end-of-line comment on a lambda formal, an end-of-line or below comment on a
+// map literal entry (`brace` parses the entries with `sep_by_tok`, not `comma_items`),
+// and any comment inside a `use` tree. Arrays, positional arguments and struct fields
+// accept the same placements. Either extend these parsers the way struct fields work,
+// or narrow the rule in CLAUDE.md. probe:
+// design/review-2026-10-26/repro/t-format-resolver-comment-gaps.sh
+// (t-format-resolver-02)
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

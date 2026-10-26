@@ -1,0 +1,17 @@
+// Title: a callback literal's call through an enclosing function's
+// parameter is lost when that enclosing function is itself a literal of an
+// instance body: DefTable::calls_captured keys it by the enclosing
+// definition's LambdaId, which every compile of the body mints anew, so
+// Lambda::typecheck0_instance finds no instance_fn_params entry for it.
+// Command: timeout -s KILL 20 graphix --no-cache --expand c-lambda-captured-param-reminted.gx
+// Expected: refused "#[sync]: this function is async" (as it is with the
+//   `outer` wrapper removed, pin captured_param_call_sync_refused, and as it
+//   is here under GRAPHIX_NO_SUBST=1)
+// Observed: accepted (exit 0); running it prints 1.
+let outer = |w: i64| {
+  let g = |v: i64, f: fn(x: i64) -> bool| filter(v, |x| f(x));
+  #[sync]
+  let h = |v: i64| g(v, |x| sys::time::after_idle(duration:1.ms, x) > 0);
+  h(w)
+};
+outer(1)

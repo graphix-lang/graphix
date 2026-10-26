@@ -88,6 +88,12 @@ pub(super) struct SharedCellsInner {
     pub(super) routing: IntMap<SubId, SubRoles>,
     /// Sparkline history per `(row_path, col_name)`; keyed by identity
     /// so it survives row reordering.
+    // CR claude for claude: [style/low] These histories are taken on tokio workers
+    // (deliver_to_grid in the dispatch task) and dropped on the GUI thread
+    // (update_subscriptions' retain): the asymmetric cross-thread case the pooling rule
+    // gives to GPooled. As LPooled, the workers always allocate and the GUI thread's
+    // pool fills with deques it never reuses. Use GPooled here. Found by reading; not
+    // run. (gui-datatable-07)
     pub(super) sparklines: AHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
     /// Latest `on_update` callable id, read by the dispatch task at
     /// the start of each batch.
@@ -549,6 +555,16 @@ impl<X: GXExt> DataTableW<X> {
         let mut shown: LPooled<AHashMap<ArcStr, Option<f64>>> = LPooled::take();
         match self.mode {
             DisplayMode::Table => {
+                // CR claude for eric: [perf/medium] Every netidx column of every row in
+                // the window is subscribed: `shown` holds all columns, and
+                // handle_scroll reconciles only when the row window moves. Only rows
+                // are virtualized for subscriptions. A 500-column table in a 40-row
+                // view holds about 65k subscriptions while about 300 cells are drawn,
+                // and a scrollbar jump re-subscribes all of them. Either window `shown`
+                // to display_col_range plus a column buffer (and reconcile when
+                // first_col changes in handle_scroll), or rule that whole rows stay
+                // subscribed so on_update stays complete per row, and say so in the
+                // book. Found by reading; not run. (gui-datatable-01)
                 for (name, c) in self.columns.iter().filter(|(_, c)| c.is_subscribed()) {
                     let hs = match &c.spec.typ {
                         ColumnType::Sparkline { history_seconds, .. } => {
@@ -683,6 +699,11 @@ impl<X: GXExt> DataTableW<X> {
     /// Give the sparkline cells their defaults' points: every cell of
     /// `fired`, the column whose source just gave a value, and a first
     /// point to any other cell that has none yet.
+    // CR claude for claude: [readability/low] Two doc paragraphs are stacked above this
+    // function; the first is an older wording of the second. Merge them into one: cells
+    // that never subscribe get their fallback as a point, every such cell of `fired`,
+    // and a first point for any other cell with no history. Found by reading; not run.
+    // (gui-datatable-06)
     pub(super) fn push_defaults_to_sparklines(&self, fired: Option<&ArcStr>) {
         if self.mode != DisplayMode::Table {
             return;

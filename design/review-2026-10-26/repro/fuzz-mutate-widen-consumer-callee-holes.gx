@@ -1,0 +1,19 @@
+// widen-consumer takes a call as a rigid consumer by its callee's NAME:
+// a callee bound by a destructuring let, or a subject-module function
+// imported by `use` (bare or renamed), passes as a consumer, though its
+// unannotated parameter is a cell shared with the environment that the
+// call widens instead of refusing. Each base below yields a false LEAK.
+// command: design/review-2026-10-26/repro/fuzz-mutate-run-typemorph-one.sh <this file>
+//   (one subject per run; the second and third are in the comment below)
+// expected: no FLIP (the family skips these callees, as it skips
+//           `m0::f(1)` and `let f = |y| z <- y; f(1)`)
+// observed: FLIP widen-consumer#10 LEAK: accepted at call
+//   MUTANT { let z = never(); let (f, k) = (|y| z <- y, 0);
+//            let r = f(select 1 == 1 { true => 1, false => "tm" }); (r, z, k) }
+// second subject (observed FLIP widen-consumer#3 LEAK: accepted at call):
+//   { use m0::f; let r = f(1); r }
+//   // file-v1: m0.gx
+//   let z = never();
+//   let f = |y| z <- y;
+// third subject: the same with `use m0::f as g; let r = g(1); r`.
+{ let z = never(); let (f, k) = (|y| z <- y, 0); let r = f(1); (r, z, k) }

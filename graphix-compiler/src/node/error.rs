@@ -589,6 +589,14 @@ impl Strip {
         }
         // what `?` raises is the operand's error part, which Any does not say
         let any = |t: &Type| matches!(t, Type::Any);
+        // CR claude for claude: [readability/low] with_deref does not expand a
+        // Type::Ref, so `x?` over `[A, Error<`E>]` with `type A = Any` misses this
+        // test. It is then refused by fix_echain_typ as "expected error not []" (the
+        // diff through A left no error), where `[Any, Error<`E>]` written out gets the
+        // cast-or-use-$ message. Test through refs (the Type::holds walk holds_abstract
+        // uses) so both reach this refusal. probe:
+        // design/review-2026-10-26/repro/c-error-op-any-typedef-qop-msg.gx
+        // (c-error-op-04)
         let holds_any = typ.with_deref(|t| match t {
             Some(Type::Set(ts)) => ts.iter().any(any),
             Some(t) => any(t),
@@ -1397,6 +1405,21 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     ) -> Result<()> {
         // siblings typecheck first, so the region's throws are already
         // unioned into the bind: snapshot them, then ascribe `T`
+        // CR claude for eric: [bug/medium] An open raise (r? over Result<i64, 'e>, or a
+        // callback's throws 'e) into an ascribed catch is judged only by the Contains
+        // pushed below. That push ignores def_gate_depth, unlike defer_settle, so it
+        // drains at the statement's typecheck1 and narrows the definition's 'e only
+        // after a later statement's call has been checked. `let run = |r: Result<i64,
+        // 'e>| { catch(e: Error<ErrChain<`A>>) ..; r? + 1 }; run(error(`B))` passes
+        // --check, and elaboration refuses the instance (GRAPHIX_ELAB_AUDIT reports
+        // it). Judge open raises into a sealed catch where they join (T.check_contains
+        // in join_raised, which also lets `thrown` and this Contains go), or inside the
+        // definition's own settle ahead of PendingSettle::Body. Whether a rigid
+        // declared 'e is then refused ("declare the bound") or narrowed is your call.
+        // The `thrown` doc is stale either way: Catch::compile binds T, so the snapshot
+        // is T plus open raises. probe:
+        // design/review-2026-10-26/repro/c-error-op-ascribed-catch-open-throws.gx
+        // (c-error-op-01)
         if let Some(t) = self.constraint.clone() {
             let tv = {
                 let bind = ctx

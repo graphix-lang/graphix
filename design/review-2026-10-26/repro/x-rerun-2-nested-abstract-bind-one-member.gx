@@ -1,0 +1,17 @@
+// Title: x-typecheck-patterns-02 variant: an abstract pattern nested in a tuple, struct or
+//   slice over a union of two instantiations binds its payload at ONE member's type.
+// Command: timeout -s KILL 20 graphix --no-cache x-rerun-2-nested-abstract-bind-one-member.gx
+//          (and --no-fusion; and --check of the `let q: string = b` form in the CR)
+// Expected: `b` is typed [bool, i64] (the union of its part of every member the arm can
+//   match, as `Box(b)` at top level and `A(Box(b)) inside a variant are), so `b + 1` is
+//   refused; without the `_` arm the select is exhaustive, as the top-level form is.
+// Observed: the check types `b` as i64 (`let q: string = b` reports "string does not
+//   contain i64" for the tuple, the struct field and the slice head alike), so `b + 1`
+//   is accepted. Node-walk prints 1 for h((Box(false), 1)); the JIT panics
+//   "kernel param `b`: runtime Bool(false) does not match the compiled Scalar(I64) slot"
+//   and the runtime dies ("Error: runtime did not respond"). Without `_ => 0` the check
+//   refuses "no arm covers ([Box<i64>, Box<bool>], i64)".
+type Box<'a> = Abstract<'a>;
+let h = |x: ([Box<bool>, Box<i64>], i64)| select x { (Box(b), n) => b + 1, _ => 0 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+h((Box(false), 1))

@@ -1,0 +1,24 @@
+// db keys of an abstract type with an Ord impl are kept in their Cast data's order, not the language's
+// cmd: rm -rf /home/eric/tmp/review-2026-10-26/review/work/http-sqlite-db1/rev; mkdir -p /home/eric/tmp/review-2026-10-26/review/work/http-sqlite-db1/rev;
+//      timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/http-sqlite-db1-abstract-ord-key.gx
+// expected (db/mod.gxi: "Keys are kept in the language's order (as `<` orders them), which first ... follow"):
+//   db first (Rev(2), "two")   -- the language says Rev(2) < Rev(1)
+// observed: lang: Rev(2) < Rev(1) is true; sorted [Rev(2), Rev(1)]
+//           db first (Rev(1), "one")
+type Rev = Abstract<i64>;
+impl Cast for Rev {};
+impl Ord for Rev {
+  let cmp = |a, b| select (a.0, b.0) {
+    (x, y) if x > y => `Less,
+    (x, y) if x < y => `Greater,
+    _ => `Equal
+  }
+};
+let db = db::open("/home/eric/tmp/review-2026-10-26/review/work/http-sqlite-db1/rev/db")$;
+let t: db::Tree<Rev, string> = db::tree(db, "t")$;
+let ins = db::batch(t, [`Insert(Rev(1), "one"), `Insert(Rev(2), "two")])$;
+let f = db::first(ins ~ t)$;
+println("lang: Rev(2) < Rev(1) is [Rev(2) < Rev(1)]; sorted [array::sort([Rev(1), Rev(2)])]");
+println("db first [f]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+null

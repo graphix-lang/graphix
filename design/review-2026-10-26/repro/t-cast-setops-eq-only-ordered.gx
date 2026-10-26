@@ -1,0 +1,9 @@
+// Title: an abstract implementing Eq but not Ord passes the Ordered bound; its values then sort by a representation Ordered refuses
+// Command: timeout -s KILL 20 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-cast-setops-eq-only-ordered.gx
+// Expected: refused like the same program without the Eq impl:
+//   "'a must be Ordered, but Array<B> holds B has no Eq or Ord implementation, ..."
+// Observed: accepted; prints [B(1), B(2), B(1.5)] (i64s before f64s, the mixed-numeric order Ordered exists to refuse)
+type B = Abstract<[i64, f64]>;
+impl Eq for B { let eq = |a, b| true };
+let xs = [B(2), B(1.5), B(1)];
+array::sort(xs)

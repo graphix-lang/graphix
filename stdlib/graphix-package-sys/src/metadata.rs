@@ -98,6 +98,15 @@ pub(crate) fn convert_filetype(typ: FileType) -> Value {
 }
 
 pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
+    // CR claude for claude: [bug/medium] `ts.into()` is chrono's From<SystemTime>,
+    // which unwraps `timestamp_opt` and panics for a time outside chrono's range. btrfs
+    // and tmpfs let any user set such an mtime (utimensat with 1e14 s).
+    // sys::fs::metadata and fstat then return `sys_fs_metadata panicked` instead of the
+    // metadata, and the panic message goes to stderr (under the TUI the panic hook
+    // tears the display down). Convert with `duration_since(UNIX_EPOCH)` plus
+    // `DateTime::from_timestamp(secs, nanos)` and give null for a time it cannot hold.
+    // probe: design/review-2026-10-26/repro/x-panics-metadata-far-timestamp.sh
+    // (x-panics-01)
     let accessed: Option<DateTime<Utc>> = m.accessed().ok().map(|ts| ts.into());
     let created: Option<DateTime<Utc>> = m.created().ok().map(|ts| ts.into());
     let modified: Option<DateTime<Utc>> = m.modified().ok().map(|ts| ts.into());

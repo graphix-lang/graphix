@@ -1,0 +1,16 @@
+// c-lib: #[native] inside a function body is refused unless the same compile instantiates the function statically
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/c-lib-native-uncalled-body.gx
+// Expected: the program runs (prints 11), or, if the rule is that an
+//   attribute must be checked in its statement's compile, a refusal that
+//   says the function was never instantiated; the decorated expression IS
+//   its own statement.
+// Observed: "attribute in a position the fusion pass cannot check — put the
+//   decorated expression in its own statement (or a select arm)" at `#[native]`.
+//   The same `f` with a direct call `f(5)` as the last expression runs (11).
+//   In the REPL, `let f = |x: i64| { let y = #[native] (x * 2); y + 1 }` alone
+//   is refused the same way, so such a function can never be defined there.
+let f = |x: i64| { let y = #[native] (x * 2); y + 1 };
+let h = never();
+h <- f;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+h(5)

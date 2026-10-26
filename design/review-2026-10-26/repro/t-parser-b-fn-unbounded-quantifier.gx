@@ -1,0 +1,11 @@
+// Title: a function type cannot declare an unbounded quantifier: `fn<'b>(..)`
+// is a parse error, though `impl<'a>` and `type T<'a>` take one, and
+// `fn<'b: Any>(..)` (the same quantifier, spelled with a vacuous bound)
+// checks.
+// Command: /home/eric/tmp/review-2026-10-26/bin/graphix --check design/review-2026-10-26/repro/t-parser-b-fn-unbounded-quantifier.gx
+// Expected: check passes, `f` a rank-2 formal over any type, as with
+//   `fn<'b: Any>(x: 'b) -> 'b`.
+// Observed: Parse error at line 10, column 20: "Unexpected `>`, Expected
+//   whitespaces or `:`".
+let app = |f: fn<'b>(x: 'b) -> 'b| (f(1), f("a"));
+app(|x| x)

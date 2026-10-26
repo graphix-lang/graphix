@@ -508,6 +508,17 @@ impl Callback {
         let (Self { scope, id, typ, top_id, share, arg: _ }, fty) =
             (self, Type::Fn(self.typ.clone()));
         let call = match kind {
+            // CR claude for claude: [risk/medium] The prototype call's synthetic spec
+            // gets a fresh ExprId at every build, so its definition's DefTable has no
+            // row for it. Every instance of a collection intrinsic therefore checks
+            // this call in full (CallSite::typecheck0_instance's fallback) instead of
+            // substituting, and GRAPHIX_ELAB_AUDIT prints a fallback line for
+            // `array::map([1, 2], |x| x + 1)`, so the audit can never be clean. Share
+            // one spec across compiles of the intrinsic body (BodyShared::specs, as
+            // CompileCtx::shared_spec does for source nodes) so the check records the
+            // row. probe:
+            // design/review-2026-10-26/repro/c-lambda-collection-prototype-no-row.gx
+            // (c-lambda-05)
             CallKind::Prototype => {
                 let function = genn::reference(ctx, *id, fty, *top_id);
                 genn::apply_prototype(function, scope.clone(), args, typ, *top_id)
@@ -832,6 +843,19 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
             MapOp::Filter => return source.kept(self.flavor, slots.iter().map(taken)),
             // null drops an element, `Keep(v) keeps v, null included
+            // CR claude for eric: [bug/high] The `Keep marker is in-band for 'b:
+            // nothing stops 'b from holding a `Keep variant, so a generic callback that
+            // returns its own 'b-typed `Keep(1) is unwrapped here. The result then
+            // holds values outside its static type. `let f = |a: Array<'x>| ->
+            // Array<'x> array::filter_map(a, |x| x)` called on [`Keep(1), `Keep(2)]
+            // returns [1, 2] typed Array<`Keep(i64)>, the check accepts it, and an
+            // exhaustive `select h { `Keep(n) => n }` then hits a coverage hole. Both
+            // engines agree. This is the null collision gx-stdlib-06 fixed, moved to
+            // `Keep. Fix options: the checker refuses a 'b that may hold `Keep (a bound
+            // settled at each call), or the marker becomes a form no value can take (a
+            // Rust-registered abstract like the kind markers). probe:
+            // design/review-2026-10-26/repro/c-collection-keep-unsound.gx Also reported
+            // as (x-engine-collections-01). (c-collection-01)
             MapOp::FilterMap => slots
                 .iter()
                 .map(Slot::value)
@@ -1018,6 +1042,15 @@ fn woken_slots<R: Rt, E: UserEvent, T>(
     let Some(mut missed) = paused else {
         return update(ctx, SlotViews { old_len, standing: View::Cycle });
     };
+    // CR claude for claude: [bug/medium] The resume of paused slots delivers the
+    // tracked bits but opens no node::wake::CatchUp scope. A callee a woken slot binds
+    // fresh, because the function value changed while the source was bottom, is never
+    // owed the fires its body's inputs had meanwhile. The slot's `a ~ x` stays silent,
+    // where the same code in a select arm catches up. Wrap the update in
+    // `missed.open(ctx, 0)` / `missed.ran(..)`. callsite::Absent::wake has the same gap
+    // with `captured`. probe:
+    // design/review-2026-10-26/repro/x-refs-catchup-paused-body-no-catchup.gx
+    // (x-refs-catchup-05)
     let caught_up = missed.deliver(ctx, 0);
     let r = update(ctx, SlotViews { old_len, standing: View::Wake });
     TrackedFires::restore(ctx.event, caught_up);
@@ -1129,6 +1162,18 @@ fn update_slots_in_order<R: Rt, E: UserEvent>(
         if ctx.interrupted() {
             return None;
         }
+        // CR claude for eric: [perf/medium] Every standing slot is called here whenever
+        // the collection walks, even when no element moved, the callback was not
+        // rebound, and the slot's instance body boundary is unmarked. A clean slot
+        // still pays CallSite::update_call, GXLambda formal publication, the Prune
+        // check and two TagValue clones: about 190 ns each in a debug build. A map over
+        // [&i, &z, ...] where only slot 0 ticks costs 101/371/1525 us a cycle at
+        // n=500/2000/8000. design/walk_pruning.md accepted the visit as 'one stamp
+        // check'. Decide whether to skip such a slot here: under View::Cycle, with
+        // !moved, !rebound and the slot body's boundary not dirty, keep slot.state
+        // without calling it. Wake and Step views keep the full walk. probe:
+        // design/review-2026-10-26/repro/x-perf-runtime-idle-slots.sh
+        // (x-perf-runtime-01)
         let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx));
         let tag = tv.tag();
         if gxdbg_slot() {
@@ -1216,6 +1261,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 return self.resident.set(TagValue::tagged(v, tag));
             }
         }
+        // CR claude for claude: [risk/low] This is read before woken_slots runs the
+        // paused slots' catch-up. A callback that fired while the source was bottom
+        // reaches the slots only through that missed.deliver, so they rebind to the new
+        // callee with rebound false. site.redecide() is skipped, and SlotSite keeps,
+        // permanently (Siblings is a OnceLock), the fork verdict decided for the old
+        // callee. That breaks update_slots' rule that slots run in order the cycle
+        // their callback changes and are decided again once bound. Decide rebound after
+        // the catch-up, for example have woken_slots report whether it re-raised
+        // callback.id. Found by reading; a probe that rebinds the callback during a
+        // pause under GRAPHIX_PAR=force showed no wrong value. (c-collection-03)
         let rebound = ctx.event.variables.contains_key(&self.callback.id);
         let slots = woken_slots(ctx, old_len, paused, |ctx, views| {
             update_slots(ctx, &mut self.slots, &mut self.fork, views, rebound)
@@ -1560,6 +1615,18 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
         let init = self.base.init.update(ctx).clone();
+        // CR claude for claude: [bug/medium] An init fire that lands while the source
+        // is bottom is lost. This path returns without passing the init to slot 0's
+        // acc, so the paused slots' TrackedFires never sees it. At the return, `anew`
+        // re-passes the init stale, so `array::fold(xs, i, |acc, x| acc ~ (acc + x))`
+        // stays 1 after i moved to 100 during the pause. The same fold over a source
+        // that never went bottom gives 101, and a map whose slots capture i is caught
+        // up. The JIT agrees on 1, so fix both engines. Record that the init triggered
+        // while paused and pass slot 0 a fired acc at the return, or keep slot 0's acc
+        // current while paused so the tracker observes it. Add a pin beside
+        // bottom_source_slots_wake_caught_up. probe:
+        // design/review-2026-10-26/repro/c-collection-fold-init-paused.gx
+        // (c-collection-02)
         if source.is_none() {
             return self.resident.set_bottom_as(tag);
         }

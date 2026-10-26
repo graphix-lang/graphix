@@ -1,0 +1,11 @@
+// Title: a publish handler whose return is not `_` is refused as "not data".
+// Command: timeout -s KILL 30 graphix --no-cache --check tests-lang-rest-a-handler-mismatch-says-not-data.gx
+// Expected: a refusal naming the return type, as the literal handler gets:
+//   `publish(#on_write: |v: i64| 0, ..)` says "type mismatch _ does not contain i64".
+// Observed: "fn(v: i64) -> i64 is not data: a writer writes no function and no
+//   reference" -- the handler is a function argument, never written as data;
+//   `let h: fn(v: i64) -> _ = ..` is accepted.
+{
+    let h: fn(v: i64) -> i64 = |v: i64| 0;
+    sys::net::publish(#on_write: h, "/review/a", 1)
+}

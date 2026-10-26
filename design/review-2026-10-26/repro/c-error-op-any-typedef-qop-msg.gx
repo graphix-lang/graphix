@@ -1,0 +1,15 @@
+// Title: ? over a union holding a typedef of Any is refused with "expected error not []"
+// Command: graphix --check design/review-2026-10-26/repro/c-error-op-any-typedef-qop-msg.gx
+// Expected: the refusal Strip::of gives for Any: "the operand of ? has type .., so the
+//   error it raises is not known: cast it to a type whose error is (a Result), or use $"
+//   (what `[Any, Error<`E>]` written out gets).
+// Observed: "expected error not []" (fix_echain_typ's fallback: the diff through the
+//   unexpanded `A` left no error member).
+type A = Any;
+let a: Any = error(`Other);
+let x: [A, Error<`E>] = a;
+let out = {
+  catch(e) println("caught [e]");
+  x?
+};
+out

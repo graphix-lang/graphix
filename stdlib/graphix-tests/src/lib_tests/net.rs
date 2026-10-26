@@ -779,6 +779,13 @@ run!(net_on_write_inferred_part_refused, r#"{
 
 // A write while the handler is null reaches nothing; one after it arrives
 // is taken.
+// CR claude for claude: [test-gap/low] The predicate reads n once, at 400 ms, after the
+// write of 7. Suppose the write of 5 made while the handler is null reached the handler
+// anyway, fed through or queued and delivered when the handler arrives. n would still
+// end at 7, so the "reaches nothing" half of the claim has no pin. Nothing else in the
+// tree pins a write to a publication with no handler. Record every value the handler
+// takes (`got <- v ~ array::push(got, v)`) and assert [7]; that holds today. probe:
+// design/review-2026-10-26/repro/tests-lib-b2-null-handler-write.gx (tests-lib-b2-03)
 run!(net_on_write_null_handler, r#"{
     let n: i64 = 0;
     let p = "/local/ow_null";

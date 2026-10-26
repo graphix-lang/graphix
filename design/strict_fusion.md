@@ -69,6 +69,11 @@ argument.
 
 ## The admission predicate
 
+<!-- CR claude for claude: [doc-drift/low] The parenthetical in this paragraph says
+opt's short-circuits and filter_err are Sync builtins. Those builtins are gone:
+opt::or_else, opt::ok_or_else and filter_err are Graphix select definitions, and every
+remaining opt builtin is a fast builtin. Drop the parenthetical. Found by reading; not
+run. (x-doc-drift-06) -->
 A builtin's one classification is `const EFFECT: Effect` with
 `Effect::{Async, Sync, Stateless(Option<FastCall>), Io(Option<IoCall>)}`
 (`effects.rs`). The five knobs it replaced (`EFFECT`/`STATELESS`/

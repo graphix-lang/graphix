@@ -1,0 +1,15 @@
+// Title: #[native] over a call with no static callee reports a "builtin call
+// site ... not discovered" for a lambda value
+// Command:
+//   timeout -s KILL 30 graphix --no-cache --expand c-callsite-native-dynamic-call-blames-builtin.gx
+// Expected: the refusal says the call is bound at run time (h is a `<-`
+//   target), so it has no static callee and node-walks.
+// Observed:
+//   #[native] expression did not fully fuse to native code:
+//     - emit_clif: builtin call site `#[native] h(y)` not discovered — doesn't fuse
+// CallSite::emit_clif falls through to the builtin lookup for every site
+// whose callee is unbound.
+let h = |x: i64| x + 1;
+h <- |x: i64| x * 2;
+let f = |y: i64| #[native] h(y);
+f(3)

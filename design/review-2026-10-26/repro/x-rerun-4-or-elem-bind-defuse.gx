@@ -1,0 +1,13 @@
+// Title: a binding or-pattern at an element position never fuses (f-select-03 variant)
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --expand design/review-2026-10-26/repro/x-rerun-4-or-elem-bind-defuse.gx
+//   (graphix-fuzz run on the same file lists the failure for every region holding it)
+// Expected (CLAUDE.md: or-patterns in select arms and bracketed element positions
+//   "fuse natively"): the build accepts the #[native] call; prints 5.
+// Observed: refused, "#[native] expression did not fully fuse ... emit_clif: a binding
+//   or-pattern leaf not lowerable" (fusion/emit/select.rs). The same or-pattern as a
+//   whole arm (`A(x) | `B(x) => ..) fuses.
+let g = |v: ([`A(i64), `B(i64)], i64)| select v {
+    (`A(x) | `B(x), n) => x + n
+};
+let r = #[native] g((`B(4), 1));
+r

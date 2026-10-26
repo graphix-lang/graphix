@@ -354,6 +354,14 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
             // filter_map keeps the payloads its callback does not null
+            // CR claude for claude: [test-gap/low] The callback here only ever returns
+            // `e` or null; filter_map's `` `Keep(v) `` member, which has its own
+            // node-walk rule, is never generated. Likewise no generator in generate/
+            // emits `~!` or `live(`, and none mints a reference inside a select arm or
+            // a callback where deletion releases it. All of these are semantics that
+            // have not soaked yet. Draw a `Keep` body here (pinned to `[e, null,
+            // `Keep(e)]`) and add `~!` and `live` steps to reactive.rs's ceremonies.
+            // Found by reading; not run. (fuzz-gen-a-06)
             3 if e.is_scalar() => {
                 let d_ty = map_source_elem(rng, e);
                 let nullable = GenType::Nullable(e.clone());

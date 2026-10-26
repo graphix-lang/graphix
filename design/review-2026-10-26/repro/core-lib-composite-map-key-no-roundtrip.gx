@@ -1,0 +1,26 @@
+// Title: a map with a composite key (tuple, variant, struct) written by json/toml does not read back
+// Command: timeout -s KILL 30 graphix --no-cache core-lib-composite-map-key-no-roundtrip.gx
+// Expected: r and r3 are the maps written ({(1, 2) => "q"}, {`A(3) => 1}), as map_key's doc
+// and CLAUDE.md ("what the json and toml writers emit reads back into its type") promise.
+// Observed: {"[1, 2]":"q"} / {"[\"A\", 3]":1} are written, and the reads answer
+// error:`InvalidCast("can't cast \"[1, 2]\" to (i64, i64): not a tuple") (and "not a variant").
+// The same for a null key ({"null":1} -> "can't cast \"null\" to [i64, null]") and a bytes
+// key ({"aGk=":1} -> "can't cast \"aGk=\" to bytes").
+let m: Map<(i64, i64), string> = {(1, 2) => "q"};
+let w = json::write_str(m)$;
+println(w);
+let r: Result<Map<(i64, i64), string>, [`InvalidCast(string), `JsonErr(string)]> = json::read(w);
+println("[r]");
+let m3: Map<`A(i64), i64> = {`A(3) => 1};
+let w3 = json::write_str(m3)$;
+println(w3);
+let r3: Result<Map<`A(i64), i64>, [`InvalidCast(string), `JsonErr(string)]> = json::read(w3);
+println("[r3]");
+let e: Map<[i64, null], i64> = {null => 1};
+let re: Result<Map<[i64, null], i64>, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(e)$);
+println("[re]");
+let g: Map<bytes, i64> = {buffer::from_string("hi") => 1};
+let rg: Result<Map<bytes, i64>, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(g)$);
+println("[rg]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+null

@@ -1,0 +1,10 @@
+// Title: funcs.rs kind_union keys a map by a union holding i64 and f64, which the Ordered rule refuses
+// Shape: generate/funcs.rs kind_union (KIND_MEMBERS has both `i64` and `f64`); the same rule is
+//   broken by exprs.rs's annotated `<`/`>=` operands over types::random_union's int-beside-float pair.
+// Command: graphix --check design/review-2026-10-26/repro/fuzz-gen-b-kind-union-mapkey.gx
+//   (or: graphix-fuzz gen-check 2000 6  -> 1960/2000 compiled; 39 of the 40 rejects are this bucket)
+// Expected: the generator is type-correct by construction, so the program checks.
+// Observed: "a map key type can't hold [i64, f64, string], more than one numeric type ..."
+let u: [i64, f64, string] = i64:3;
+let w: [i64, f64, string] = "a";
+map::len({u => i64:1, w => i64:2})

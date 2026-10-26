@@ -1,0 +1,21 @@
+// Title: a union value written as data reads back as a different member
+// Command: timeout -s KILL 10 graphix --no-cache tests-types-data-roundtrip-member-change.gx
+// DATA_READS_BACK_AS_WRITTEN (stdlib/graphix-tests/src/lang/types.rs) pins tuples and structs reading
+// back as written; an array member of length n beside an n-tuple, and a bare variant beside string,
+// write the same data and read back as the other member. Map keys that collide this way are refused
+// by the writer (colliding_data_keys_refused_by_a_writer); values are written silently.
+// Expected (if data reads back as written): (true, true, true, true)
+// Observed: (false, false, false, false) -- the arrays read back as (1, 2), the variant as "A"
+{
+  type U = [(i64, i64), Array<f64>];
+  let a: U = [f64:1., f64:2.];
+  let pa: Result<U, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(a)$);
+  type V = [(i64, i64), Array<i64>];
+  let b: V = [1, 2];
+  let jb: Result<V, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(b)$);
+  type W = [string, `A];
+  let v: W = `A;
+  let jv: Result<W, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(v)$);
+  let pv: Result<W, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(v)$);
+  (pa$ == a, jb$ == b, jv$ == v, pv$ == v)
+}

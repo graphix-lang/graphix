@@ -1,0 +1,16 @@
+// Title: array::group takes a stale same-cycle fire of f as the answer for the next queued element
+// Command: timeout -s KILL 180 /home/eric/tmp/review-2026-10-26/bin/graphix-fuzz run collections-str-group-stale-answer.gx
+// f answers each element one cycle late (a sanctioned shape: "an f that answers nothing
+// for an element ... holds group until something it reads fires"), so elements queue.
+// f(_, x) is true exactly for even x, so every group must end at an even element.
+// Expected (both engines): Trace([1:[0] 3:[1, 2] ... [3, 4] ... [5, 6] ... [7, 8]])
+// Observed (both engines, AGREE): Trace([1:[0] 4:[1, 2, 3, 4] 6:[5, 6] 8:[7, 8]])
+// Group::update re-updates f in the same cycle after feeding the next queued element
+// (the `set!` in the false branch); f's output fires again from the input that fired
+// this cycle (r), and that fire is taken as the new element's answer.
+{
+let c = 0;
+c <- select c < 8 { true => c + 1, false => never() };
+let pred = |n: i64, x: i64| { let r = never(); r <- x; r % 2 == 0 };
+array::group(c, pred)
+}

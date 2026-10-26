@@ -1,0 +1,17 @@
+// filter_map's documented use of `Keep, keeping a null beside plain values,
+// is refused: the callback's [i64, null, `Keep(null)] is not placed into
+// ['b, null, `Keep('b)] although 'b = [i64, null] fits it.
+// command: graphix --check x-engine-collections-keep-null-refused.gx
+// expected: accepted; running it prints [1, null, 3]
+// observed: type mismatch fn(x: 'a: [i64, null]) -> [null, 'b: null, `Keep('b: null)]
+//   does not contain fn(x: [i64, null]) -> [i64, null, `Keep(null)]
+// (the same refusal with the arms in any order; keeping `Keep(x) over the
+// whole parameter is accepted, and a let annotated ['b, null, `Keep('b)]
+// over the same select is refused the same way; annotating the callback
+// `-> [[i64, null], null, `Keep([i64, null])]` is accepted and prints [1, null, 3])
+let h = |xs: Array<[i64, null]>| array::filter_map(xs, |x| select x {
+  null as n => `Keep(n),
+  v if v > 0 => v,
+  _ => null
+});
+h([1, null, -2, 3])

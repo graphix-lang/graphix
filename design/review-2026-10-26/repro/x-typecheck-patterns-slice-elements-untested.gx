@@ -1,0 +1,15 @@
+// Title: a slice pattern types each element on its own but tests only the union at run time: a string bind holds an i64
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache x-typecheck-patterns-slice-elements-untested.gx
+// Expected: either refused (x and y are both elements of one Array<'e>, so neither may be
+//   used as only a string or only an i64), or [3 + 1 ...]-style values with each element
+//   tested at its own position at run time, so f([5, "abc"]) takes the `_` arm: [0, 4].
+// Observed: --check accepts; f's parameter is Array<[string, i64]> and x: string, y: i64.
+//   f([5, "abc"]) matches the arm and binds x = 5 as a string. With fusion the runtime
+//   aborts: "misaligned pointer dereference: address must be a multiple of 0x8 but is 0x5"
+//   (arcstr reads the i64 5 as a string pointer; memory unsafety in a release build).
+//   --no-fusion prints nothing. Over `a: Any` (or Array<Any>) the same arm panics
+//   "kernel param `x`: runtime I64(5) does not match the compiled String slot", and
+//   `[x, ..]` / `[<x, ..>]` over Any do too, since their rest cell admits anything.
+//   The tuple `(x, y)` in the same place is tested per position and prints [0, 4].
+let f = |a| select a { [x, y] => str::len(x) + y, _ => 0 };
+[f([5, "abc"]), f(["abc", 1])]

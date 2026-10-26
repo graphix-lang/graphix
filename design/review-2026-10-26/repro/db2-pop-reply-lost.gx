@@ -1,0 +1,24 @@
+// db2: a db write whose select arm sleeps while it runs is applied but its
+// answer is lost (blocking_op evals are CANCEL_SAFE by default).
+// run: rm -rf /home/eric/tmp/review-2026-10-26/review/work/db2/pop.db;
+//      timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache db2-pop-reply-lost.gx
+// expected: "popped (1, \"one\")" (at the wake, as a non-cancel-safe reply), then "len after 0"
+// observed: only "len after 0": the entry is gone and its value was never delivered
+// (delete the `sel <- ins ~ 1;` line and "popped (1, "one")" prints)
+let db = db::open("/home/eric/tmp/review-2026-10-26/review/work/db2/pop.db")$;
+let t: db::Tree<i64, string> = db::tree(db, "t")$;
+let ins = db::insert(t, 1, "one")$;
+let sel = 0;
+let popped = select sel {
+  0 => {
+    let p = db::pop_min(ins ~ t)$;
+    p
+  },
+  _ => never()
+};
+sel <- ins ~ 1;
+sel <- sel ~ select sel { 1 => 0, _ => never() };
+let after = db::len(sys::time::after_idle(duration:300.ms, t));
+println("popped [popped]");
+println("len after [after]");
+sys::exit(sys::time::after_idle(duration:600.ms, after ~ 0))

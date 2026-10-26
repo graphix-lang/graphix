@@ -250,6 +250,17 @@ impl Outcome {
             (RuntimeErr(_), RuntimeErr(_)) => true,
             // a node-walk budget beside a JIT deadline is settled by
             // `Oracle::settle`, which knows the engines
+            // CR claude for eric: [risk/medium] Two timeouts agree here whatever
+            // stopped each side, a Containment::Compile included. A construction
+            // timeout is no race between descents: on the JIT side it is fusion or the
+            // link hanging or going superlinear, on a warm run a restore that never
+            // finished, and Oracle::construction only re-runs the node-walk's. Beside a
+            // node-walk StackBudget, ActivationBudget or Deadline (any runaway
+            // recursion) it agrees, Verdict::of calls it contained, and regress trusts
+            // a contained pin, so such a hang is never seen. Proposed rule: Compile
+            // agrees only with Compile, and a Compile beside a run-time containment
+            // takes the one-sided slow retry. Found by reading; not run.
+            // (fuzz-lib-a-02)
             (Timeout(_), Timeout(_)) => true,
             _ => false,
         }
@@ -695,6 +706,29 @@ async fn drive_inner(
                     if more.events.is_empty() {
                         break;
                     }
+                    // CR claude for claude: [bug/medium] The settle rounds merge each
+                    // later segment's events but keep the first segment's end_cycle,
+                    // and the stdout capture below takes prints only through
+                    // `seg.end_cycle`. A print that follows an async reply landing
+                    // after the first idle is therefore never compared in the last
+                    // epoch, and in an earlier epoch it is filed under the next epoch
+                    // with a negative offset. A wrong print in a FinalValues program's
+                    // last epoch agrees, and the epoch a print lands in depends on
+                    // whether the reply beat the first idle. Fix: `seg.end_cycle =
+                    // more.end_cycle;` with the merge. probe:
+                    // design/review-2026-10-26/repro/fuzz-lib-a-settle-prints-dropped.sh
+                    // Also reported as (fuzz-main-aux-01). (fuzz-lib-a-01)
+                    // CR claude for claude: [bug/medium] The merged segment keeps the
+                    // first segment's end_cycle, so the stdout capture after the drive
+                    // (`sink.take_through(seg.end_cycle)`) drops every line printed
+                    // after the first idle, while the trace keeps those cycles' values.
+                    // A FinalValues program whose async reply lands late in one session
+                    // and early in another then reports a false DIVERGENCE
+                    // (book/src/examples/stdlib/sqlite_query.gx does so on every
+                    // `check` run under load), and the same loss can hide a real one.
+                    // Set `seg.end_cycle = more.end_cycle` here. probe:
+                    // design/review-2026-10-26/repro/examples-rest-fuzz-late-print.gx
+                    // (examples-rest-01)
                     seg.events.extend(more.events.iter().cloned());
                     seg.capped_cycles |= more.capped_cycles;
                     seg.capped_events |= more.capped_events;
@@ -1141,6 +1175,13 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // `iter(` is a self-clocked sequence: one element per cycle,
         // so anything async landing beside it samples whichever element
         // that cycle held.
+        // CR claude for claude: [bug/medium] `queue(` is listed but `queuefn(` is not,
+        // and mentions() does not match one with the other. queuefn hands its credit to
+        // whichever call's arguments arrive first, so with two async-read arguments the
+        // reply order picks the call that runs. Such a program stays FinalValues and
+        // flakes as a false divergence. Add "queuefn(" here. probe:
+        // design/review-2026-10-26/repro/fuzz-gen-a-queuefn-async-tier.gx (one run of
+        // seven: forked node-walk printed 103 where serial printed 101) (fuzz-gen-a-02)
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
             "any(", "queue(", "take(", "skip(", "window(", "iterq", "iter(", "group(",
@@ -1395,6 +1436,14 @@ async fn cold_warm_with(
         run_session(code, mode, route, SessionImage::Write, timeout, opts).await;
     let warm = match (&cold, image) {
         // nothing compiled, so nothing to restore
+        // CR claude for claude: [risk/medium] The runtime writes the program image at
+        // construction (GX::new), so a cold run that timed out at run time (Deadline or
+        // a budget) has already reported its write, and this Err may be "the program
+        // image write failed", a codec gap. Cloning the cold timeout as the warm
+        // outcome makes Pair::Warm (and Pair::Cold) agree, so a codec gap is never
+        // reported for any contained program. Only Timeout(Containment::Compile) has no
+        // image to restore: match that alone, and let any other Err become the warm
+        // RuntimeErr as below. Found by reading; not run. (fuzz-lib-a-03)
         (Outcome::CompileErr(_), _) | (Outcome::Timeout(_), Err(_)) => cold.clone(),
         (_, Ok(image)) => {
             let image = SessionImage::Read(image);
@@ -1534,6 +1583,12 @@ fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
         (Jit, Dispatch, Cold) => "jit/dispatch/cold",
         (Jit, Dispatch, Warm) => "jit/dispatch/warm",
         (Par, _, _) => "par",
+        // CR claude for claude: [readability/low] Every JitPar run, whatever its route
+        // and session, gets this one label. Pair::Cold(JitPar, r) and
+        // Pair::Warm(JitPar, r) findings therefore print "jit-par" vs "jit-par" and
+        // lose the route, and Pair::Par(JitPar) calls the same nocache run "jit/par".
+        // Give JitPar route/session arms as Interp and Jit have (or label from
+        // Run::token). Found by reading; not run. (fuzz-lib-a-06)
         (JitPar, _, _) => "jit-par",
         (Unpruned, _, _) => "unpruned",
     }
@@ -1546,6 +1601,13 @@ impl Divergence {
         // node-walk is >8x slower on a heavy terminating program. Verify by
         // hand.
         let engines = matches!(self.pair, Pair::Engine | Pair::EngineDispatch);
+        // CR claude for claude: [readability/low] This label (and the comment above)
+        // offers an honest >8x slowdown as an explanation, but Oracle::settle now drops
+        // that case as SLOW and drops a node-walk budget beside a JIT trace as
+        // contained. A divergence reaching here has a reference that wedged at near 0%
+        // CPU or that the probe showed starting no cycle at the slow budget. Say that,
+        // so triage does not re-time a stall the ladder already proved. Found by
+        // reading; not run. (fuzz-lib-a-05)
         if engines
             && matches!(self.reference, Outcome::Timeout(_))
             && self.tested.has_events()
@@ -2332,6 +2394,15 @@ impl<'a> Oracle<'a> {
                 && matches!(a, Outcome::Timeout(_))
                 && burned >= Duration::from_secs(5)
             {
+                // CR claude for claude: [risk/medium] Pair::Warm's reference is the
+                // cold session, so this guard sends every slow cold reference straight
+                // to the SLOW drop, never to the stall probe. A cold run that loops
+                // inside one cycle beside a warm trace (an image bug that made the warm
+                // start terminate) is never recorded: Pair::Cold agrees when nocache
+                // loops too, and the engine pair is contained. run_subject's
+                // watch_progress works with any SessionImage: probe with
+                // SessionImage::Write for a Cold reference and drop the guard. Found by
+                // reading; not run. (fuzz-lib-a-04)
                 if ra.session == Session::NoCache {
                     let opts = RunOpts { watch_progress: true, ..self.opts() };
                     let probe = run_subject(
@@ -2737,6 +2808,17 @@ async fn typemorph_work_order(
     for (i, p) in progs.iter().enumerate() {
         let flipped = match typemorph_subject(p, timeout, TM_CAP).await {
             Ok(rep) => rep.flipped(),
+            // CR claude for claude: [bug/low] A subject typemorph_subject could not run
+            // (a malformed header, a runtime that failed to start) is reported here as
+            // agreeing. typemorph_scan does the same: the child's 'HARNESS <error>'
+            // line is ignored by tm_flips, so `graphix-fuzz typemorph` on a file whose
+            // schedule header is broken prints 'no flips' and exits 0. A typemorph
+            // child whose runtime cannot start therefore silences the whole lane. Hand
+            // the subject back as a suspect (V i O plus its text) so the fresh-process
+            // path records it, and report HARNESS lines as harness failures in
+            // typemorph_scan. probe:
+            // design/review-2026-10-26/repro/fuzz-lib-b-typemorph-harness-error-passes.sh
+            // (fuzz-lib-b-03)
             Err(_) => false,
         };
         let _ = writeln!(out, "V {i} {}", if flipped { "O" } else { "A" });
@@ -3634,6 +3716,13 @@ async fn must_reject(
     for p in mustreject::probes(body, &types, modules, cap) {
         let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
             TmCheck::Unparsed(_) => continue,
+            // CR claude for claude: [bug/low] A must-reject mutant whose check hangs
+            // ends the families silently. typemorph_subject builds its slow-budget
+            // recheck candidate only from the base and the metamorphic probes, so a
+            // checker hang that a family's mutation reaches is never rechecked or
+            // reported as HUNG, against the design's rule that the typechecker must
+            // stay instant. Return the hung probe from must_reject and run it through
+            // the same slow-budget recheck. Found by reading; not run. (fuzz-lib-b-04)
             TmCheck::Hung => break,
             TmCheck::Done(Ok(_)) => Some(format!("LEAK: accepted at {}", p.reached)),
             TmCheck::Done(Err(e)) => {
@@ -3993,6 +4082,13 @@ async fn misdeclared(
     let marked = prog.lines().any(|l| l.trim() == EXPECT_REJECT);
     let pair = match (marked, verdict) {
         (false, Verdict::Rejected) => Pair::Rejected,
+        // CR claude for claude: [test-gap/low] A `// expect: reject` pin whose check
+        // now compiles but ends Unsure (or Excluded) skips this check, and
+        // outcome_mismatches compares Unsure as equal to the manifest's 'reject' row. A
+        // refusal that regressed to acceptance on a run the confirm ladder touched
+        // therefore passes regress. Check every marked pin whose verdict is not
+        // Rejected: `(true, v) if v != Verdict::Rejected`. Found by reading; not run.
+        // (fuzz-lib-b-06)
         (true, Verdict::Ran | Verdict::Contained) => Pair::Accepted,
         _ => return None,
     };
@@ -4175,6 +4271,14 @@ pub async fn selfcheck(
 
 /// What a fuzz campaign found.
 #[derive(Debug, Default, Clone)]
+// CR claude for claude: [test-gap/medium] No count of subjects both builds refused, and
+// gen-check (the only place the generator's compile rate is measured) exits 0 whatever
+// the rate and runs in no gate. A generator template that turns ill-typed silently
+// wastes every program containing it: kind_union's map-key refusal costs 1-4% of
+// programs per gen-check seed and went unnoticed. Count rejects per source here, report
+// them beside `run`, and give gen-check a compile-rate floor that fails the soak's
+// startup gate. Found by reading; gen-check 150 99 printed 144/150 and exited 0.
+// (fuzz-gen-a-03)
 pub struct FuzzStats {
     /// Mutants that were generated and run through the oracle.
     pub run: usize,
@@ -4620,6 +4724,12 @@ async fn run_child(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
+    // CR claude for claude: [risk/low] The verdict file, and `cpu-usage`, live in the
+    // child's cwd, which is also the cwd of the program under test (a sandboxed child
+    // does not chdir again). When the worker dies or is killed at its deadline, the
+    // parent reads whatever is in `verdict`, so a subject that wrote that relative path
+    // answers for itself. Run the subject in `<sandbox>/work` and keep the verdict and
+    // CPU report one level up. Found by reading; not run. (fuzz-main-aux-06)
     let verdict = sandbox.path().join("verdict");
     cmd.arg(sub)
         .arg(&verdict)
@@ -4871,6 +4981,12 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
 pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
     let tier = oracle_tier(prog);
     let mut bad = Vec::new();
+    // CR claude for claude: [dead/low] This duplicates session_routes, which
+    // selfcheck_isolated uses to size this child's deadline. Only Interp and Jit are
+    // iterated, so the Par/JitPar/Unpruned label arms below are unreachable, and
+    // SELFCHECK_MODES lists three modes no child writes. Use session_routes(prog),
+    // label each engine with a two-row table, and drop 'par', 'jit-par' and 'unpruned'
+    // from SELFCHECK_MODES. Found by reading; not run. (fuzz-lib-b-07)
     let routes: &[Route] = if callable::has_header(prog) {
         &[Route::InLanguage, Route::Dispatch]
     } else {
@@ -5277,6 +5393,11 @@ pub const CAMPAIGN_MINIMIZE_BUDGET: usize = 80;
 /// itself be a crasher and the minimizer checks candidates in-process.
 /// `None` = the child died or wedged; the caller records the
 /// unminimized mutant instead.
+// CR claude for claude: [doc-drift/low] The doc above (and design/graphix_fuzz.md §4)
+// says a dead child means the unminimized mutant is recorded. minimize-one writes each
+// verified reduction to its verdict file as it goes, so a child killed at the deadline
+// or by a crashing candidate answers its last verified reduction; None comes back only
+// when it verified none. Reword both. Found by reading; not run. (fuzz-lib-b-08)
 async fn minimize_isolated(
     prog: &str,
     key: &str,
@@ -5579,6 +5700,15 @@ async fn derive_suspect(
         PoolResult::Crash(status)
             if status.contains("HANG") && {
                 let code = code_only(prog);
+                // CR claude for claude: [bug/medium] `sys::time` here also matches the
+                // pure duration/datetime arithmetic (add_dur, sub_dur, add, sub, diff,
+                // scale) that oracle_tier rewrites away as reading no clock. The
+                // generator emits those in about 14% of its programs (43 of 300 for
+                // `gen 300 1`). An outer-deadline HANG of any such program, the
+                // wedged-JIT class, is printed as environment and never recorded or
+                // counted. Share oracle_tier's pure-time rewrite with this check, or
+                // drop only hangs of programs whose oracle_tier is Excluded, as the
+                // design states. Found by reading; not run. (fuzz-lib-b-02)
                 ["rand::", "sys::time", "sys::net", "sys::process", "http::"]
                     .iter()
                     .any(|m| mentions(&code, m))
@@ -5653,6 +5783,14 @@ async fn confirm_typeflip(
                 ),
                 Suspect::Unjudged(_) => (f, false),
             },
+            // CR claude for claude: [risk/low] Every flip the fresh process shows is
+            // recorded as confirmed, even one the batch child never flipped: the batch
+            // reports only 'V i O' and the text, not which probes flipped. A probe that
+            // flaps (or hangs under load) in this one process becomes a typeflip class,
+            // which then dedups the real flips of that kind and head. typemorph_scan
+            // requires the same id twice. Carry the batch's flipped ids on its O line
+            // and keep only fresh flips that match them; the rest are the unconfirmed
+            // class. Found by reading; not run. (fuzz-lib-b-05)
             f => (f, true),
         },
         // a confirm that measured nothing confirms nothing

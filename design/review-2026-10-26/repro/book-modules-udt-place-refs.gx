@@ -1,0 +1,16 @@
+// Title: book/src/udt/references.md never documents place references:
+// writing through `&mut a[i]` / `&s.f` patches the root, and a dynamic key is a
+// moving reference. This program shows the behaviour the chapter should teach.
+// Command: timeout -s KILL 5 graphix --no-cache book-modules-udt-place-refs.gx
+// Observed (correct per CLAUDE.md "References"):
+//   ([1, 2, 3], 2, 1)
+//   ([1, 20, 3], 2, 3)
+let a = [1, 2, 3];
+let s = {x: 1, y: 2};
+let i = 0;
+let r = &mut a[1];
+let q = &s.y;
+let m = &a[i];
+*r <- 20;
+i <- 2;
+(a, *q, *m)

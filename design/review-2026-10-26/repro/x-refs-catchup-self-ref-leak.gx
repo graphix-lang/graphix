@@ -1,0 +1,24 @@
+// A binding whose value holds a reference to itself is never released when its
+// scope is deleted: the reference pins the binding (reference::Lives), and the
+// binding's own stored value holds the reference's Keep, so neither ever drops.
+// Each round below creates 200 collection slots, each binding x to a value that
+// holds &x and a 5000-element array, then deletes them.
+// command: timeout -s KILL 60 graphix --no-cache x-refs-catchup-self-ref-leak.gx
+// expected: VmRSS roughly flat (as with `me: null` in place of `me: &x`: ~190 MB,
+//           growing ~8 MB per 100 cycles)
+// observed: VmRSS grows ~800 MB per 100 cycles (925 MB at 200, 4.1 GB at 600)
+type Node = {me: [&Node, null], data: Array<i64>};
+let c = 0;
+let clk = sys::time::timer(duration:5.ms, true);
+c <- clk ~ c + 1;
+let xs = select c % 2 { 0 => array::init(200, |i| i), _ => [] };
+let ys = array::map(xs, |i| {
+  let x: Node = {me: null, data: []};
+  x <- {me: &x, data: array::init(5000, |j| j + i)};
+  i
+});
+let go = select c % 100 { 0 => c, _ => never() };
+let s = sys::fs::read_all(go ~ "/proc/self/status")$;
+let rss = array::filter(str::split(#pat: "\n", s), |l| str::starts_with(#pfx: "VmRSS", l));
+println("[go ~ c] [rss]");
+sys::exit(select c { 600 => c ~ 0, _ => never() })

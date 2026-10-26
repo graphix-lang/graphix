@@ -1,0 +1,13 @@
+// filter_map refuses a callback that keeps a null with `Keep(null) and keeps other
+// elements bare, the shape its doc invites ("null drops one, `Keep(v) keeps v, null
+// included"): 'b binds to null from `Keep(null) and then refuses the bare i64.
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/gx-stdlib-keep-null-mixed.gx
+// Expected: [2, null, 4] ('b = [i64, null]); the all-`Keep spelling
+//   `select x { i64 as v => `Keep(v + 1), null as _ => `Keep(null) }` prints exactly that.
+// Observed: type mismatch fn(x: 'a: [i64, null]) -> [null, 'b: null, `Keep('b: null)]
+//   throws 'e: unbound does not contain fn(x: [i64, null]) -> [i64, `Keep(null)]
+//   (an explicit `-> [i64, null, `Keep(null)]` return or a let annotation on the
+//   result is refused the same way; Collection::filter_map over a Map likewise).
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let xs: Array<[i64, null]> = [1, null, 3];
+array::filter_map(xs, |x| select x { i64 as v => v + 1, null as _ => `Keep(null) })

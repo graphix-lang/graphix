@@ -125,6 +125,12 @@ pub(crate) struct TlsConnectEv {
 
 /// A client config trusting `ca_cert`'s certificates, else the webpki
 /// roots.
+// CR claude for claude: [bug/low] Bytes with no PEM certificate give an empty root
+// store here, and the config builds without error. Every connection then fails at the
+// handshake as an unknown issuer instead of naming the bad CA. http::client's #ca_cert
+// accepts the same bytes (probe prints 'client: built'). Refuse a ca_cert that yields
+// no certificate, here and in HttpClientEv. probe:
+// design/review-2026-10-26/repro/x-security-empty-ca.gx (x-security-07)
 fn client_config(ca_cert: &Option<Bytes>) -> Result<rustls::ClientConfig, Value> {
     let mut root_store = rustls::RootCertStore::empty();
     match ca_cert {

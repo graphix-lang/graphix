@@ -1,0 +1,14 @@
+// Title: a trait method named as a value is refused when one of its labels
+//        is spelled like the eta expansion's generated positional name.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache \
+//          design/review-2026-10-26/repro/c-data-map-eta-name-collision.gx
+// Expected: label/7
+// Observed: Error ... at: line: 12, column: 9, in: 'eta_self: Show |#eta1: string, eta1: ..
+//           arguments must have unique names
+trait Show {
+  val show: fn(#eta1: string, self) -> string
+};
+impl Show for i64 { let show = |#eta1, s| "[eta1]/[s]" };
+let d = Show::show;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+d(#eta1: "label", 7)

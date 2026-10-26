@@ -139,6 +139,15 @@ impl FromValue for ShapeVec {
             }
         }
         if skipped > 0 {
+            // CR claude for claude: [bug/medium] This warning uses the default log
+            // target, and the shell logs only FAILURE_TARGET by default, so a skipped
+            // shape vanishes with no message. The draw path's "canvas skipped
+            // non-finite geometry" and every other refused prop do reach stderr. The
+            // text also blames a non-finite number for every cast failure: a Text shape
+            // of size 0 or above 4096, refused by TextSizeV as canvas.gxi documents, is
+            // reported as "a field is not a finite number". Log under FAILURE_TARGET at
+            // error, and name the first cast error instead of a fixed cause. Found by
+            // reading; not run. (gui-widgets-a-02)
             log::warn!(
                 "canvas: {skipped} shape(s) skipped: a field is not a finite number"
             );
@@ -251,6 +260,16 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
     }
 }
 
+// CR claude for eric: [bug/medium] A shape is tessellated whole, with no clipping to
+// the canvas, at a fixed tolerance, so its cost grows with its size, not with what is
+// visible. A filled circle of radius 1e12 in a 300x200 canvas takes about 1 s and 1 GB
+// per draw (1e8: 10 ms, 1e10: 94 ms), and each 100x of radius costs 10x. A radius of
+// 1e14 or more (any finite value passes Finite) freezes the GUI thread or exhausts
+// memory. Arc, Ellipse, RoundedRect, the Bezier curves and Path curves behave the same.
+// Bound the cost by the canvas: either refuse a shape whose extent passes a fixed bound
+// and log it, as a non-finite shape is skipped, or clip the geometry to the frame
+// before tessellating. probe:
+// design/review-2026-10-26/repro/gui-widgets-a-canvas-huge-radius.rs (gui-widgets-a-01)
 fn draw_shape(
     frame: &mut iced_widget::canvas::Frame<Renderer>,
     shape: &CanvasShape,

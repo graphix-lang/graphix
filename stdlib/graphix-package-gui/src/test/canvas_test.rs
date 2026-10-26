@@ -25,6 +25,14 @@ fn invalid_geometry(h: &GuiTestHarness) -> bool {
 }
 
 /// Render, every shape drawn: none skipped as invalid geometry.
+// CR claude for claude: [test-gap/medium] [test-gap/medium] Every canvas rendering test
+// asserts only that no shape was flagged as invalid geometry. That flag is set only
+// when draw_shape returns None, and no test here screenshots the canvas, so a draw that
+// fills with the wrong colour, misplaces a shape, or draws nothing at all passes every
+// test here, including "the others draw" in a_non_finite_shape_is_left_out. Check
+// pixels with h.screenshot: e.g. rect_with_fill's grey at (30,35) inside its 10,20
+// 40x30 rectangle, and a red pixel on the valid line of a_non_finite_shape_is_left_out.
+// Found by reading; not run. (tests-gui-a-01)
 async fn render_all(h: &mut GuiTestHarness) -> Result<()> {
     h.render()?;
     assert!(!invalid_geometry(h), "a shape was skipped");

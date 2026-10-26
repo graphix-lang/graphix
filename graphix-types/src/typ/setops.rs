@@ -78,6 +78,16 @@ struct Identity {
 }
 
 impl Identity {
+    // CR claude for claude: [perf/medium] Two equal DAGs in different allocations are
+    // compared here path by path: only one node shared by both sides short-cuts. `type
+    // R<'a, 'b> = ('a, 'b); let mk = |x: 'a| -> R<'a, 'a> (x, x)` with 24 nested mk
+    // lets in a definition checks in 40 ms but builds in 12.5 s, x4 per two levels. gdb
+    // shows Identity::same under contains::identical_linked from
+    // CallSite::setup_static_bind. Fix: remember the (shared_identity, shared_identity)
+    // pairs this walk has already found identical and answer a repeat from that set,
+    // then pin the shape in deep_nesting.rs. probe:
+    // design/review-2026-10-26/repro/t-typ-mod-ref-dag-identity-exponential.sh
+    // (t-typ-mod-03)
     fn same(&mut self, t0: &Type, t1: &Type) -> bool {
         // one shared node is identical to itself, however large
         if t0.shared_identity().is_some_and(|a| t1.shared_identity() == Some(a)) {

@@ -1,0 +1,17 @@
+// Title: a written type application with the wrong arity or a violated
+//   parameter bound is accepted wherever no relation expands it
+// Command: graphix --no-cache t-typ-mod-written-type-arity-unchecked.gx
+// Expected: refused at the annotations: `P` takes 1 type parameter (line
+//   with `bad_arity`), `Q`'s body applies P to 3 parameters, and `B<string>`
+//   violates `'a: Number`.
+// Observed: runs and prints (null, null, null); the arity error surfaces only
+//   where a later relation expands the name (e.g. a `select x { null as _ =>
+//   0, _ => 1 }` over `bad_arity` reports "P expects 1 type parameters" at
+//   the select, not at the annotation).
+type P<'a> = ('a, 'a);
+type B<'a: Number> = ('a, 'a);
+type Q = [P<i64, string, bool>, null];
+let bad_arity: [P, null] = null;
+let bad_body: Q = null;
+let bad_bound: [B<string>, null] = null;
+(bad_arity, bad_body, bad_bound)

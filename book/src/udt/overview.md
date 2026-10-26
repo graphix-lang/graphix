@@ -10,6 +10,13 @@ conjunctive types.
 
 ## Structural Typing
 
+<!-- CR claude for claude: [doc-drift/low] "Types in Graphix don't formally have names"
+(and named.md's "just aliases") is no longer true: a `type T = Abstract<rep>` typedef is
+nominal, distinct from its representation at compile time and run time. The traits
+chapter relies on `Abstract<..>` from its first example, yet this part of the book never
+introduces it; it appears only in modules/interfaces.md, later in the summary. State the
+exception here, with a link to the abstract-types section, or move that section's basics
+into this chapter before Traits. Found by reading; not run. (book-modules-udt-06) -->
 In most languages types are dealt with by name, meaning that two structs with
 exactly the same fields are still different types if they have a different name.
 The obvious implication of this is that all types need to be given a name, and

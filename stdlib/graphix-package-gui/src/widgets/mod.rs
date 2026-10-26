@@ -155,6 +155,13 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
 
     /// True if this widget or any descendant is tracking a
     /// column-resize drag.
+    // CR claude for claude: [dead/low] Nothing calls this through the trait. Its one
+    // caller is DataTableW::on_message, on itself, and DataTableW overrides it as
+    // resize_drag.is_some(), so the recursive default is dead. It is also the only
+    // non-test user of the immutable for_each_child, which 11 containers implement
+    // beside for_each_child_mut. Make it an inline read of resize_drag in the data
+    // table. Then make for_each_child test-only, or move its three test callers to
+    // for_each_child_mut and delete it. Found by reading; not run. (gui-widgets-a-03)
     fn is_column_resizing(&self) -> bool {
         let mut resizing = false;
         self.for_each_child(&mut |c| resizing |= c.is_column_resizing());
@@ -302,6 +309,16 @@ impl<X: GXExt> Children<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        // CR claude for claude: [structure/low] This recompile-on-change block is
+        // copied by hand in MenuItems::update, MenuBarW::handle_update and twice in
+        // TableW::handle_update. The matching None-or-cast at compile time is copied in
+        // MenuItems::compile, MenuBarW::compile and TableW::compile. Children is
+        // already this pair for GuiW items, and MenuItems is the same struct for menu
+        // items. Make Children generic over its item (Children<X, T = GuiW<X>>, with
+        // compile and update taking the item's compile function) and use it for menu
+        // items, menu groups and table columns and rows. That deletes the copies, which
+        // today differ in their error context. Found by reading; not run.
+        // (gui-widgets-b-03)
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
             let vals = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
             rt.block_on(reconcile(&mut self.ws, vals, |v| compile(gx.clone(), v)))?;
@@ -422,6 +439,15 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 /// control shows its newest send, so input that comes before an echo builds
 /// on what the user did, not on the stale value; a send answered and not
 /// echoed by the time the runtime is idle was rejected.
+// CR claude for claude: [structure/low] The echo protocol is four steps, and every
+// control repeats them by hand: answered then ask_idle, and retain_handler, in
+// handle_update; idle; and call_arg then send in on_message. That happens in checkbox
+// and toggler (toggle.rs, whose two trait impls are identical outside the macro that
+// was meant to share them), text_input and text_editor. A control that leaves out a
+// step, such as ask_idle, never sees a rejection and shows the user's value forever.
+// Give Echoes an update(gx, id, handler) -> bool (answered + ask_idle + retain_handler)
+// and an on_call(msg, handler, shell, extract) -> bool, and move the shared toggle
+// methods into toggle_widget!. Found by reading; not run. (gui-widgets-b-04)
 pub(crate) struct Echoes<T>(std::collections::VecDeque<(ExprId, Option<T>, bool)>);
 
 impl<T: PartialEq> Echoes<T> {
@@ -703,6 +729,15 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 
 /// Compile a widget value into a GuiW. Returns a boxed future to
 /// avoid infinite-size futures from recursive async calls.
+// CR claude for claude: [bug/medium] This compile, and the handle_update, view and
+// on_message recursion over the widget tree, run with no stack guard. A container chain
+// 300 deep, compiled as the event loop does it (Handle::block_on on the 8 MiB main
+// thread), overflows and aborts the process; 100 deep compiles. The TUI got the fix for
+// x-stack-01 (StackGuarded around its compile future, ensure_sufficient in
+// handle_update and draw), but the GUI never did. Fix: move StackGuarded to one place
+// both UI packages share (graphix-rt, beside reconcile), wrap this Box::pin in it, and
+// run the GuiWidget recursion under ensure_sufficient. probe:
+// design/review-2026-10-26/repro/x-stack-gui-deep-widget.rs (x-stack-02)
 pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
     Box::pin(async move {
         let Some((s, [v])) = rep::variant(&source) else {

@@ -1,0 +1,11 @@
+// Title: gen_rec_lambda asserts #[tail_recursive] over a base holding a `catch`, which both builds refuse
+// Command: graphix --expand design/review-2026-10-26/repro/fuzz-gen-a-tailrec-catch-base.gx
+//   (--check passes: the assertion is a build check; graphix-fuzz check: "AGREE (reject)": the whole generated program is lost)
+// Shape: gen_rec_lambda shape 2 whose base drew exprs::consume_fallible's catch form; the
+//        `calls_or_derefs` scan sees no call and no deref, so it adds the attribute.
+// Expected: the generator emits only programs that compile
+// Observed: "#[tail_recursive]: this function's body is stateful or async ..."
+let v9 = i64:3;
+#[tail_recursive] let rec v0 = |v1: i64| -> i64 select v1 { v2 if v2 <= i64:0 => { catch(e) i64:1; (v2 +? v9)? }, v2 => v0(v2 - i64:1) };
+let v3 = v0(i64:5);
+v3

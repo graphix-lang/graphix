@@ -1,0 +1,18 @@
+// Title: a variant written with one tag reads back as another variant
+// whose payload has the same arity: the tag string becomes payload.
+// Command: timeout -s KILL 30 graphix --no-cache x-kind-markers-tagless-variant-read.gx
+// Expected: ["B",2], then an InvalidCast (the data is `B(2), not an `A),
+//   then InvalidCast for the untagged [1, 2] (no tag says which member).
+// Observed (json::read is async, so its line may print last):
+//   ["B",2]
+//   `A(1, 2)
+//   `A("B", 2)
+let b = `B(2);
+let bj = json::write_str(b)$;
+println(bj);
+let r: Result<`A(string, i64), [`JsonErr(string), `InvalidCast(string)]> = json::read(bj);
+println(r);
+let d = [1, 2];
+println(cast<[`A(i64, i64), `B(i64, i64)]>(d));
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

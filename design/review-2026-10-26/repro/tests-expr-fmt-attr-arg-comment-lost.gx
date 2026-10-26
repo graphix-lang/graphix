@@ -1,0 +1,16 @@
+// Title: graphix fmt silently deletes a comment inside an attribute's argument
+// Command: graphix fmt --stdout design/review-2026-10-26/repro/tests-expr-fmt-attr-arg-comment-lost.gx
+// Expected: the comment kept, or the file refused ("lost or moved a comment").
+// Observed: exit 0, printing `#[parallel(f(1, 2))]` with `// which` gone (the
+// header comments and the rest are kept). format::guard compares
+// Ornament::Decorations by Decorations' PartialEq, whose attrs' args are
+// Exprs, and Expr equality ignores decorations; Ornaments::expr never walks
+// an attribute's args. (--check refuses this attribute's argument, but fmt
+// and the LSP format a buffer that does not check.)
+let f = |x| x + 1;
+#[parallel(f(
+    1, // which
+    2
+))]
+let a = f(1);
+a

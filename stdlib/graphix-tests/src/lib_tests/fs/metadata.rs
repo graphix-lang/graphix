@@ -240,6 +240,13 @@ run_with_tempdir! {
     }
 }
 
+// CR claude for claude: [test-gap/low] test_metadata_timestamps asserts only that
+// accessed, created and modified exist. They are `[datetime, null]` fields, so they
+// always exist, and a metadata builtin that returned null or a constant for all three
+// would pass. Assert that `modified` is a Value::DateTime no earlier than a time taken
+// before the setup's write, and drop the sleep, which affects nothing. Found by
+// reading; the builtin's real output was checked with graphix (it returns datetimes
+// today). (tests-lib-b1-07)
 run_with_tempdir! {
     name: test_metadata_timestamps,
     code: r#"sys::fs::metadata("{}")"#,

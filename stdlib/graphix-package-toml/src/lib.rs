@@ -25,6 +25,14 @@ fn toml_to_value(v: toml::Value) -> Value {
         toml::Value::Integer(i) => Value::I64(i),
         toml::Value::Float(f) => Value::F64(f),
         toml::Value::Boolean(b) => Value::Bool(b),
+        // CR claude for claude: [bug/medium] Converting through dt.to_string() and RFC
+        // 3339 loses a TOML 1.1 offset datetime without seconds: "t =
+        // 1979-05-27T07:32Z" becomes the string "1979-05-27T07:32Z", and a datetime
+        // target refuses it with InvalidCast. Build the chrono value from the
+        // Datetime's date, time (seconds default 0) and offset fields, and keep the
+        // string only for a value with no offset. probe:
+        // design/review-2026-10-26/repro/small-pkgs-toml-datetime-no-seconds.gx
+        // (small-pkgs-07)
         toml::Value::Datetime(dt) => {
             let s = dt.to_string();
             match chrono::DateTime::parse_from_rfc3339(&s) {

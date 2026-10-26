@@ -1,0 +1,12 @@
+// Title: nontail_result_as_fold_init passes whatever the recursion produces
+// Command: graphix-fuzz run tests-functions-fold-init-vacuous.gx
+// Expected (if the fixture pinned its subject): a recursion that bottoms
+//   makes the fixture fail.
+// Observed: Trace([0:42]) in the node-walk and the JIT: the fold's callback
+//   `|acc, x| x + 1` never reads acc, so the fold yields 42 with an init that
+//   is bottom (this file, f's base arm divides by zero) or never arrives
+//   (`never<i64>()` gives 42 too), exactly the value the fixture asserts.
+{
+  let rec f = |n: i64| -> i64 select n { i64:0 => i64:1 / i64:0, _ => n + f(n - i64:1) };
+  any(array::fold([i64:41], f(i64:256), |acc, x| x + i64:1), i64:-1)
+}

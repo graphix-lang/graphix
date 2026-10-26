@@ -79,6 +79,11 @@ Example with a custom palette and button override:
 
 ## Per-Widget Style Types
 
+<!-- CR claude for claude: [doc-drift/low] The page never says the builders and style
+types live in `gui::style`. "The GUI module provides" reads as `gui::button_style`,
+which is refused as not defined. Only the custom_styles.gx include shows `use
+gui::style::{..}`. Name the module where `stylesheet` is introduced and here. probe:
+design/review-2026-10-26/repro/book-ui-a-style-builders-module.gx (book-ui-a-02) -->
 Each widget style type is a struct where every field is optional (`[T, null]`). A `null` field means "inherit from the theme palette." The GUI module provides both the types and corresponding builder functions.
 
 ### ButtonStyle

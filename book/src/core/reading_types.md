@@ -426,6 +426,12 @@ Breaking it down:
 - `-> Array<'b>` - returns array of transformed type
 - `throws 'e` - propagates errors from the transform function
 
+<!-- CR claude for claude: [doc-drift/low] The table's Error and Result examples write
+`Error<\`ParseError>` and `Result<i64, \`Err>`. A code span takes no backslash escape,
+so the built page shows `Error<\` as code followed by the plain text ParseError>`. Write
+them as `` Error<`ParseError> `` and `` Result<i64, `Err> ``, as book-ui-b-04's fix did
+elsewhere, and rebuild the book. probe:
+design/review-2026-10-26/repro/x-rerun-2-reading-types-code-span.sh (x-rerun-2-06) -->
 ## Quick Reference Table
 
 | Notation | Meaning | Example |

@@ -622,6 +622,12 @@ run!(dynamic_module_missing_import, DYNAMIC_MODULE_MISSING_IMPORT, load_refused(
 
 // Sleep is pause: a loaded body whose arm sleeps resumes at the wake
 // even though its source does not fire again.
+// CR claude for claude: [test-gap/low] This fixture catches a reload at the wake and an
+// arm that never wakes, but not an arm that never sleeps. If the loaded body kept
+// ticking while unselected, x would reach 40 sooner and `n >= 40` would still hold.
+// Gate on a self-loop counter instead of timers and pin the value delivered at the wake
+// exactly, so a tick while asleep shows. Found by reading; not run.
+// (tests-modules-image-07)
 const DYNAMIC_MODULE_SLEEP: &str = r#"
 {
     let src = "let x = 0; x <- sys::time::timer(duration:2.ms, true) ~ x + 1";
@@ -674,6 +680,12 @@ async fn module_errors_are_framed_by_the_module() -> Result<()> {
 
 // A source that fails to compile leaves nothing behind: the next one
 // compiles the same names.
+// CR claude for claude: [test-gap/low] The second source's `let f` shadows anything the
+// failed load left, so this passes without the rollback it claims to pin. Give both
+// sources a hidden abstract typedef with different representations (sig `type C; val
+// make: fn(x: i64) -> C`): a leftover C from the failed load would then be refused as
+// "representation cannot change". That variant loads correctly today (status null, then
+// 42). (tests-modules-image-08)
 const DYNAMIC_MODULE_AFTER_A_FAILURE: &str = r#"
 {
     let source = "let f = |x| x; let h = missing";
@@ -897,6 +909,13 @@ run!(reload_changes_a_representation, RELOAD_CHANGES_A_REPRESENTATION,
 
 // `use super::*` from a block-level module takes a name shadowed across
 // the block chain innermost-first, as `use super::x` does.
+// CR claude for claude: [readability/low] The comment above describes
+// glob_super_takes_the_innermost (further down, uncommented), not this fixture, which
+// pins that a value bound after its `mod` is not visible to the module. The orphaned "A
+// blacklisted package takes its submodules with it." above
+// DYNAMIC_MODULE_MISSING_IMPORT belongs to a_blacklisted_root_is_refused. In image.rs,
+// struct Session's doc opens with fn session's description. Move each comment to its
+// fixture. Found by reading; not run. (tests-modules-image-04)
 run!(
     an_import_of_a_later_binding_is_refused,
     refused("top not defined"),

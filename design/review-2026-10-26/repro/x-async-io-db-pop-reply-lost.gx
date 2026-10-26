@@ -1,0 +1,27 @@
+// x-async-io: db::pop_min whose arm sleeps before its reply lands removes an
+// entry the program never receives
+// Run: timeout -s KILL 30 graphix --no-cache x-async-io-db-pop-reply-lost.gx
+// Expected: `x=`A popped=(1, "one")` at the wake, or the entry left in the tree.
+// Observed: only `len after=1`: the entry is gone and popped never fires.
+// Control: delete the `x <- x ~ select ..` line (no sleep): popped=(1, "one").
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open(sys::join_path(sys::fs::tempdir::path(td), "db"))$;
+let t: db::Tree<i64, string> = db::tree(db, null)$;
+let i1 = db::insert(t, 1, "one")$;
+let i2 = db::insert(t, 2, "two")$;
+let ready = (i1, i2);
+let x: [`A, `B, `Idle] = `Idle;
+x <- ready ~ `A;
+x <- x ~ select x { `A => `B, _ => never() };
+let back = sys::time::timer(duration:200.ms, false);
+x <- back ~ `A;
+let popped = select x {
+  `A => db::pop_min(ready ~ t),
+  `B => never(),
+  `Idle => never()
+};
+println("x=[x] popped=[popped]");
+let n = db::len(back ~ t);
+println("len after=[n]");
+sys::exit(sys::time::after_idle(duration:400.ms, back ~ 0));
+popped

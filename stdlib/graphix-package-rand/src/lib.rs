@@ -60,6 +60,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
                 match ($start, $end) {
                     $(
                         // an empty, infinite or overflowing range is no value
+                        // CR claude for claude: [bug/low] `.ok()` drops sample_single's
+                        // error, so an empty range, a NaN or infinite bound, and a
+                        // finite float range whose width overflows f64 (`#start:
+                        // -1e308, #end: 1e308`, a valid request) produce nothing
+                        // forever, and nothing is logged. Log the refused range under
+                        // FAILURE_TARGET as other failing operators do. Sample a finite
+                        // overflowing float range as `start * (1 - u) + end * u` so it
+                        // gives a value. probe:
+                        // design/review-2026-10-26/repro/x-panics-rand-silent-range.gx
+                        // (x-panics-02)
                         (Value::$typ(start), Value::$typ(end)) => {
                             (*start..*end).sample_single(&mut rng()).ok().map(Value::$typ)
                         }

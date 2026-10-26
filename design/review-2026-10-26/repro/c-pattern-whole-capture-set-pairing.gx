@@ -1,0 +1,23 @@
+// Title: a whole capture inside a slice element is typed by the wrong member
+// of the element union: `y@ `B(_)` gets type `A(i64).
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache c-pattern-whole-capture-set-pairing.gx
+//   (also --no-fusion; and `--check` with `let q: bool = y` in the arm prints
+//   "bool does not contain `A(i64)")
+// Expected: y is `B(string): the inner select is refused ("`A(n) will never
+//   match `B(string)"), as it is when x is Array<[`A(i64), `B(string)]> with
+//   no null.
+// Observed: --check accepts. Both engines: "select y { `A(n) => n + 1 }: no
+//   arm matches [.., "B", "s"]: a coverage hole in the check". With
+//   `let `A(n) = y; n + 1` in the arm the node-walk binds n = "s" and logs an
+//   arith error parsing "s" as an i64.
+// PatternNode::wholes_by_member calls StructPatternNode::leaves with each raw
+// scrutinee member and inferred = true; for the member
+// Array<[`A(i64), `B(string)]>, child_types reads the element union as the
+// slice's per-element Set (2 members = 1 element + rest) and pairs element 0
+// with `A(i64). Needs a scrutinee of 2+ members (the null) and an element
+// union whose member count equals the elements + rest.
+let f = |x: [Array<[`A(i64), `B(string)]>, null]| select x {
+  [y@ `B(_), ..] => select y { `A(n) => n + 1 },
+  _ => 0
+};
+f([`B("s")])

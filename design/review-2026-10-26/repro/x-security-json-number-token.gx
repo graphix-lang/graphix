@@ -1,0 +1,14 @@
+// Title: json::read takes any object whose first key is serde_json's
+// arbitrary_precision token for a number.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/x-security-json-number-token.gx
+// Expected: map: {"$serde_json::private::Number" => 1, "b" => 2}
+//           i64 from an object: error:`InvalidCast(..)  (an object is no i64)
+// Observed: map: error:`JsonErr("invalid type: integer `1`, expected a string at line 1 column 34")
+//           i64 from an object: 42
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let a: Result<Map<string, i64>, [`JsonErr(string), `InvalidCast(string)]> =
+    json::read("{\"$serde_json::private::Number\": 1, \"b\": 2}");
+let b: Result<i64, [`JsonErr(string), `InvalidCast(string)]> =
+    json::read("{\"$serde_json::private::Number\": \"42\"}");
+println("map: [a]");
+println("i64 from an object: [b]")

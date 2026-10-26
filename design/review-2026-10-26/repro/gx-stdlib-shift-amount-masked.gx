@@ -1,0 +1,7 @@
+// core shl/shr take the shift amount modulo the bit width (Rust wrapping_shl), so
+// shl(1, 64) is 1 and shl(1, -1) is i64::MIN; mod.gxi says only "shift left
+// (wrapping)", which reads as bits wrapping, and does not say shr is arithmetic.
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/gx-stdlib-shift-amount-masked.gx
+// Observed: (1, 2, -9223372036854775808, -4, 1, 64)
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(shl(1, 64), shl(1, 65), shl(1, -1), shr(-8, 1), shl(u8:1, u8:8), shr(u8:128, u8:9))

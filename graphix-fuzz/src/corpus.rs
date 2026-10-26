@@ -56,6 +56,14 @@ pub const SEEDS: &[&str] = &[
     "str::to_upper(\"hello\")",
     "\"sum is [i64:2 + i64:3]\"",
     // datetime / duration (value-shape arith)
+    // CR claude for claude: [dead/low] This seed and the next are refused by the
+    // checker: arithmetic takes one Number type, and datetime and duration are not
+    // Numbers. The datetime/duration family therefore seeds only compile errors. Use
+    // the pure time functions the generator uses, `sys::time::add(datetime:...,
+    // duration:1.s)` and `sys::time::add_dur(duration:1.s, duration:500.ms)`, which
+    // oracle_tier keeps Exact. probe:
+    // design/review-2026-10-26/repro/fuzz-main-aux-dead-time-seeds.gx
+    // (fuzz-main-aux-03)
     "datetime:\"2020-01-01T00:00:00Z\" + duration:1.s",
     "duration:1.s + duration:500.ms",
     // error operators

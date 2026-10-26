@@ -1,0 +1,23 @@
+// db2: a subscription asleep when its tree is dropped re-attaches at the wake
+// to the ended watch list and never yields the DbErr mod.gxi promises.
+// run: rm -rf /home/eric/tmp/review-2026-10-26/review/work/db2/sub.db;
+//      timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache db2-sub-sleep-drop.gx
+// expected: "ev error:`DbErr(\"the tree was dropped\")" (as when the arm never sleeps)
+// observed: only "dropped true i2 null"; ev never fires. A subscription made
+// from a tree handle after the drop is silent the same way.
+let db = db::open("/home/eric/tmp/review-2026-10-26/review/work/db2/sub.db")$;
+let t: db::Tree<i64, string> = db::tree(db, "t")$;
+let sel = 0;
+let ev = select sel {
+  0 => db::subscription::on_change(db::subscription::new(t)),
+  _ => never()
+};
+println("ev [ev]");
+sel <- t ~ 1;
+let one = select sel { 1 => true, _ => never() };
+let dropped = db::drop_tree(one ~ db, "t")$;
+sel <- dropped ~ 0;
+let t2: db::Tree<i64, string> = db::tree(dropped ~ db, "t")$;
+let i2 = db::insert(t2, sys::time::after_idle(duration:200.ms, t2 ~ 5), "five");
+println("dropped [dropped] i2 [i2]");
+sys::exit(sys::time::after_idle(duration:800.ms, i2 ~ 0))

@@ -1,0 +1,21 @@
+// Title: a call whose function returns from bottom catches up an argument
+// that went bottom meanwhile as a FIRED null
+// Command:
+//   timeout -s KILL 180 graphix-fuzz run c-callsite-absent-wake-injects-bottom-as-null.gx
+// Expected (CLAUDE.md: "An input that went bottom during the sleep is bottom
+// at the wake"): event 3 has h = f again but y still bottom, so h(y) is
+// bottom:  Trace([1:[5]])
+// Observed (every mode, node-walk and JIT, cold and warm):
+//   Trace([1:[5] 3:[null]])
+// a null inside an Array<i64>. Absent::wake (node/callsite.rs) re-fires each
+// argument that fired while the function was bottom from the store with
+// Tag::FIRED and the stored payload, and a bottom is stored as Null.
+{
+let c = array::iter([0, 1, 2, 3]);
+let k = 5;
+k <- select c { 0 => 0, _ => never() };
+let y = select k { 0 => never(), k => k };
+let f = |b: i64| [b];
+let h = select c { 1 => never(), _ => f };
+h(y)
+}

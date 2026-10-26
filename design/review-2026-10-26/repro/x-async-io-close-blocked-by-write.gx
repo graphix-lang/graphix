@@ -1,0 +1,24 @@
+// x-async-io: close never answers while a write to the stream is pending
+// Run: timeout -s KILL 30 graphix --no-cache x-async-io-close-blocked-by-write.gx
+// The child never reads its stdin, so write_exact of 300000 bytes blocks.
+// Expected: `close: null` (or an error) at 200ms; the pending write fails.
+// Observed: only `2s passed`: neither the write nor the close ever answers.
+use sys::process::{spawn, options, stdio};
+use sys::io::{Write, Close};
+let child = spawn(options(
+  #args: ["30.2718"],
+  #stdio: stdio(#stdin: `Pipe),
+  #kill_on_drop: true,
+  "sleep"
+))$;
+let inp = child.stdin$;
+let big = buffer::from_array(array::init(300000, |i| u8:120));
+let w = Write::write_exact(inp, big);
+println("write: [w]");
+let t = sys::time::timer(duration:200.ms, false);
+let c = Close::close(t ~ inp);
+println("close: [c]");
+let t2 = sys::time::timer(duration:2.s, false);
+println(t2 ~ "2s passed");
+sys::exit(sys::time::after_idle(duration:100.ms, t2 ~ 0));
+c

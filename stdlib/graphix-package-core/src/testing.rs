@@ -187,6 +187,28 @@ impl Mode {
         match self {
             Mode::Unpruned => PruneMode::Off,
             _ if std::env::var_os("GRAPHIX_PRUNE").is_some() => PruneMode::from_env(),
+            // CR claude for claude: [test-gap/medium] Every run! mode audits and none
+            // prunes, so the gate never runs the production default (PruneMode::On)
+            // beyond the few lang::prune pins. The audit walks each boundary it would
+            // skip, so a fixture computes what Off computes, and a divergence that
+            // shows only in a later cycle passes every mode. Run Mode::Par and
+            // Mode::JitPar under PruneMode::On and keep Interp and Jit audited, so each
+            // predicate is also checked with real skips. probe:
+            // design/review-2026-10-26/repro/x-prune-catchup-since-last-walk.gx
+            // (GRAPHIX_PRUNE=audit prints 0 1 0 like off; only on prints 0 1 0 101)
+            // (x-prune-03)
+            // CR claude for claude: [test-gap/medium] [test-gap/medium] Every run!
+            // fixture runs under Audit. Prune::audit walks each boundary it would skip
+            // and checks only that cycle's production and publications, so the child's
+            // state evolves as unpruned and no fixture ever takes the riding path. A
+            // skip that leaves state behind, and shows cycles later, cannot fail the
+            // gate: the TrackedFires::last_run divergence runs clean under
+            // GRAPHIX_PRUNE=audit. Only Pair::Prune and the lang::prune pins prune for
+            // real. Fix: prune for real (PruneMode::On) in some modes, say Jit and
+            // JitPar, and audit in Interp and Par, so every predicate also checks
+            // pruned semantics. probe:
+            // design/review-2026-10-26/repro/c-prune-wake-last-run-pruned.gx
+            // (c-prune-wake-04)
             _ => PruneMode::Audit,
         }
     }
@@ -257,6 +279,11 @@ pub async fn check_fixture(ctx: &TestCtx) -> Result<()> {
 }
 
 /// The check refuses exactly when the build does.
+// CR claude for claude: [test-gap/low] Two refusals agree here whatever their messages,
+// and run! applies its predicate only to the build's error. A check that refuses for a
+// different or wrong reason passes every refused(..) fixture, though --check and the
+// LSP show the check's message. Return the check's error when both refuse and have
+// run_mode assert pred on it too. Found by reading; not run. (core-aux-05)
 pub fn verdicts_agree(
     checked: Result<()>,
     built: Result<(), &anyhow::Error>,

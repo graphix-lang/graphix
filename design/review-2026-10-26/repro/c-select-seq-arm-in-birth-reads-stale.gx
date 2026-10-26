@@ -1,0 +1,22 @@
+// Title: a select arm first entered inside a born subtree (a fresh collection
+// slot, a fresh callee instance) reads standing values stale, so the same write
+// fires outside the select and not inside it.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --no-fusion c-select-seq-arm-in-birth-reads-stale.gx | grep -v null
+// Expected (a fresh slot is a birth: standing values read as delivered, in the
+// slot body and in an arm it enters in that birth alike): a and b count together:
+//   n=2 a=2 b=2 ... n=4 a=3 b=3
+// Observed: b never moves past the first birth:
+//   n=2 a=2 b=1 ... n=4 a=3 b=1
+let clock = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+sys::exit(select n { 6 => 0, _ => never() });
+let k = 7;
+let a = 0;
+let b = 0;
+let xs = select n { 2 => [1, 2], 3 => [1, 2], 4 => [1, 2, 3], 5 => [1, 2, 3], _ => [1] };
+let ys = array::map(xs, |e| {
+  a <- k ~ a + 1;
+  select e { _ => { b <- k ~ b + 1; e } }
+});
+println("n=[n] a=[a] b=[b] ys=[ys]")

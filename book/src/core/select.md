@@ -40,6 +40,12 @@ is not made again, and the only events it sees are the ones that fired
 while it slept, each once, at its current value. The first time an arm
 is selected is its birth: its constants fire then, and only then.
 
+<!-- CR claude for claude: [doc-drift/low] Only a guard the select consults makes it
+produce, one on or above the taken arm; a guard below the arm that claims the value is
+never run. With x = 0 and g moving, `select x { 0 => "zero", n if n > g => "big", _ =>
+"small" }` prints "zero" once, which is the intended rule. Say "a new value read by a
+guard it consults". probe: design/review-2026-10-26/repro/book-core-unconsulted-guard.gx
+(book-core-06) -->
 Like every other expression, a select updates whenever any of its inputs
 update: a new value of the argument, a new value read by a guard, or a new
 value produced by the selected arm's body all cause the select to produce its
@@ -226,6 +232,13 @@ select a {
 }
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] This is stale. The checker pools bool
+literals and variant heads per length, so `[true]` with `[false]` covers length 1
+(likewise `` [`A] `` with `` [`B] ``, and the list forms), and a `_` after a ladder
+written that way is refused as unreachable. Only a guard, or an element no set of arms
+can complete (an integer literal, a nested slice), claims nothing. Fix the List Patterns
+paragraph the same way. probe:
+design/review-2026-10-26/repro/book-core-slice-pooled-coverage.gx (book-core-04) -->
 An arm carrying a guard, or an element pattern that can refute (a
 literal, a variant, a nested slice), only matches SOME arrays of its
 length, so it claims no coverage — the error says so when that is why

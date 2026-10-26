@@ -1,0 +1,28 @@
+// x-async-io: a read in a sleeping arm keeps running and takes the bytes the
+// selected arm's read is waiting for
+// Run: timeout -s KILL 30 graphix --no-cache x-async-io-read-diverted-to-sleeping-arm.gx
+// "one" arrives at 300ms while `B is selected (100ms..600ms).
+// Expected: ("B", "one") at ~300ms.
+// Observed: nothing until the wake of `A at 600ms, then ("A", "one").
+use sys::process::{spawn, options, stdio};
+use sys::io::Read;
+let child = spawn(options(
+  #args: ["-c", "sleep 0.3; printf one; sleep 2"],
+  #stdio: stdio(#stdout: `Pipe),
+  #kill_on_drop: true,
+  "sh"
+))$;
+let out = child.stdout$;
+let mode: [`A, `B] = `A;
+let flip = sys::time::timer(duration:100.ms, false);
+mode <- flip ~ `B;
+let back = sys::time::timer(duration:600.ms, false);
+mode <- back ~ `A;
+let r = select mode {
+  `A => ("A", buffer::to_string_lossy(Read::read(out, u64:100)$)),
+  `B => ("B", buffer::to_string_lossy(Read::read(out, u64:100)$))
+};
+println("[r]");
+let done = sys::time::timer(duration:1.s, false);
+sys::exit(sys::time::after_idle(duration:10.ms, done ~ 0));
+r

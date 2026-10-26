@@ -71,6 +71,12 @@ const TEMPDIR_WITH_IN_AND_PREFIX: &str = r#"{
   is_dir(tempdir::path(child))
 }"#;
 
+// CR claude for claude: [test-gap/low] These fixtures, and
+// test_tempdir_with_in_and_suffix and test_tempdir_with_in, check the child's name but
+// never that it is under `#in`. GxTempDirEv::eval's with_prefix_in and with_suffix_in
+// arms could drop `dir` and every test would pass; only the no-name arm is held, by
+// test_tempdir_invalid_parent. Return (parent path, child path) and assert
+// Path::parent(child) == parent. Found by reading; not run. (tests-lib-b1-06)
 run!(test_tempdir_with_in_and_prefix, TEMPDIR_WITH_IN_AND_PREFIX, |v: Result<&Value>| {
     match v {
         Ok(Value::String(path)) => {

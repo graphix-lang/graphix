@@ -1,0 +1,20 @@
+// Title: a list pattern over an option of a list, and a tuple/struct pattern
+//   inside a variant payload, de-fuse where the same pattern at a composite
+//   leaf or over a composite member fuses.
+// Command: timeout -s KILL 170 graphix-fuzz run design/review-2026-10-26/repro/f-select-defuse-list-member-payload-composite.gx | grep failed
+// Expected: both selects fuse (as `[h, t..]` over `[Array<i64>, null]` does).
+// Observed: "emit_clif: list pattern over non-list [null, List<i64>]" and
+//   "emit_clif: nested variant payload pattern not lowerable"; values agree.
+{
+  let f = |v: [List<i64>, null]| select v {
+    [<h, t..>] => h + list::len(t),
+    _ => i64:0
+  };
+  let g = |v: [`A((i64, i64)), `B]| select v {
+    `A((x, y)) => x + y,
+    `B => i64:0
+  };
+  let vs: Array<[List<i64>, null]> = [[<5, 6>], null, [<>]];
+  let ws: Array<[`A((i64, i64)), `B]> = [`A((1, 2)), `B];
+  (f(array::iter(vs)), g(array::iter(ws)))
+}

@@ -1,0 +1,25 @@
+// Title: sys::net::call drops a call in flight when its arm sleeps; the server
+// ran it, and the reply never reaches the caller, even after the arm wakes.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-net-rpc-dropped-at-sleep.gx
+// Expected (CANCEL_SAFE rule for a call that acts on the world): (1, 7) once the arm wakes at 600 ms.
+// Observed: (0, null) then (1, null): served once, never answered.
+let p = "/local/rpc_sleep";
+let served = 0;
+sys::net::rpc(
+  #path: p,
+  #doc: "slow",
+  #spec: {x: {default: 0, doc: "x"}},
+  #f: |a: {x: i64}| {
+    served <- a ~ served + 1;
+    sys::time::after_idle(duration:300.ms, a.x)
+  });
+let sel = true;
+sel <- sys::time::after_idle(duration:150.ms, p) ~ false;
+sel <- sys::time::after_idle(duration:600.ms, p) ~ true;
+let got: [i64, null] = null;
+got <- select sel {
+  true => sys::net::call(p, {x: 7})$,
+  false => never()
+};
+sys::exit(sys::time::after_idle(duration:1500.ms, 0));
+(served, got)

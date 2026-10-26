@@ -1,0 +1,18 @@
+// xls::read declares its cells PrimNoErr, which holds every numeric width, decimal,
+// array and bytes, while the builtin (data_to_value in graphix-package-xls) only ever
+// produces i64, f64, string, bool, datetime, duration and null. A select over a
+// cell that covers exactly what the builtin produces is refused as non-exhaustive.
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --check design/review-2026-10-26/repro/gx-stdlib-xls-cell-type.gx
+// Expected: the check passes (seven arms cover every cell xls::read produces).
+// Observed: missing match cases: no arm covers [u8, i8, u16, i16, u32, v32, i32, z32,
+//   u64, v64, z64, f32, decimal, array, bytes]
+let rows = xls::read(sys::fs::read_all_bin("book.xlsx")$, "Sheet1")$;
+array::map(rows, |row| array::map(row, |cell| select cell {
+    i64 as i => "int [i]",
+    f64 as f => "float [f]",
+    string as s => s,
+    bool as b => "bool [b]",
+    datetime as d => "date [d]",
+    duration as d => "dur [d]",
+    null as _ => "empty"
+}))

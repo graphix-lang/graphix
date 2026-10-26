@@ -1,0 +1,16 @@
+// queuefn's #count is not told the depth when its place reference moves
+// (`&mut arr[i]` with i changing): QueueFn::update compares only the
+// reference's cell, which a moving place keeps.
+// cmd: timeout -s KILL 20 graphix --no-cache core-aux-queuefn-count-move.gx
+// expected: [2, 2]   (the queue holds 2 calls; arr[1] is told the depth once i moves)
+// observed: [2, -1]
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let arr = [-1, -1];
+let i = 0;
+i <- select n { 3 => 1, _ => never() };
+let qf = queuefn(#count: &mut arr[i], #trigger: never(), |x: i64| -> i64 x * 10);
+let r = qf(select n { 0 => 1, 1 => 2, 2 => 3, _ => never() });
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select n { k if k >= 6 => arr, _ => never() }

@@ -1,0 +1,22 @@
+// Title: a fused kernel re-runs a fast call whose arguments did not fire, at
+// every kernel invocation: str::parse of a constant 20000-element literal
+// reruns for every tick of an unrelated argument.
+// Command: time timeout -s KILL 100 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache x-builtin-effects-fastcall-recompute.gx
+//      vs  time timeout -s KILL 100 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --no-fusion x-builtin-effects-fastcall-recompute.gx
+// Expected: both print (101, 20000); the fused run no slower than the node-walk.
+// Observed (debug build, loaded machine): both print (101, 20000), fused
+//   17065 ms, --no-fusion 731 ms (23x). `graphix-fuzz run` reports `f` fused.
+//   The node-walk's CachedArgs evaluates parse only when `s` fires;
+//   `fast_dispatch` calls the fn even when every argument is stale.
+let big = str::join(#sep: ",", array::map(array::init(20000, |i| i), |i| cast<string>(i)$));
+let src = "\[[big]\]";
+let clk = sys::time::timer(duration:1.ms, 100);
+let n = 0;
+n <- clk ~ n + 1;
+let f = |n: i64, s: string| -> (i64, i64) {
+    let a: Result<Array<i64>, `ParseError(string)> = str::parse(s);
+    (n + 1, array::len(a$))
+};
+let r = f(n, src);
+sys::exit(sys::time::after_idle(duration:50.ms, r ~ 0));
+r

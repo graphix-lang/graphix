@@ -1,0 +1,9 @@
+// Title: queuefn calls whose arguments are async codec reads land in scheduler order, yet
+//        oracle_tier keeps such a program at FinalValues: a false divergence
+// Command: for i in 1 2 3 4; do graphix-fuzz check design/review-2026-10-26/repro/fuzz-gen-a-queuefn-async-tier.gx; done
+// Shape: a codecs program (GenCfg::p_codecs) with gen_queuefn_siblings whose call arguments drew
+//        try_format_round_trip: whichever reply lands first takes the queuefn's one credit.
+// Expected: AGREE every run (the oracle must exclude what it cannot compare)
+// Observed (1 of 7 runs over two sessions): DIVERGENCE — parallel evaluation bug (forked node-walk != serial node-walk)
+//   interp: Trace([0:0]; stdout=[0+1:101\n])   interp/par: Trace([0:0]; stdout=[0+3:103\n])
+{ let qf = queuefn(#trigger: i64:1, |x: i64| -> i64 x + i64:100); let c0 = qf({ let r: i64 = json::read(json::write_str(i64:1)$)$; r }); println("[c0]"); let c1 = qf({ let r: i64 = pack::read(pack::write_bytes(i64:2)$)$; r }); println("[c1]"); let c2 = qf({ let r: i64 = json::read(json::write_str(i64:3)$)$; r }); println("[c2]"); i64:0 }

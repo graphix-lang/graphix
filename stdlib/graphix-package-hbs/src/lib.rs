@@ -81,6 +81,23 @@ thread_local! {
 /// link) nests one level more until its block closes. What the parser does
 /// not read as a tag (an escaped `{{`, a comment, a raw block's text, a
 /// string literal in a tag) opens and closes nothing.
+// CR claude for claude: [bug/medium] Only block tags are counted here, so
+// subexpressions nested inside one tag (`{{lookup (lookup (lookup ... "x") "x") "x"}}`)
+// are unbounded. At about 1000 levels hbs::render overflows the worker's stack and
+// aborts the process instead of answering HbsErr. Count parenthesis depth within a tag
+// (outside string literals) against MAX_BLOCK_DEPTH as well. probe:
+// design/review-2026-10-26/repro/x-rerun-5-hbs-subexpr-overflow.gx (x-rerun-5-05)
+// CR claude for claude: [bug/high] shallow undercounts nesting wherever handlebars
+// reads a `{{/..}}` as text. Case 1: `unescaped` skips one `{{` after a backslash, but
+// the grammar's escape takes `\{{{{` whole, so `{{#if a}}\{{{{/if}}` repeated nests.
+// Case 2: `tag_len` ends a tag at the first `}}`, but a path key `[..]` may hold `}}`,
+// so `{{#if a}}{{x [}}{{/if}}]}}` repeated nests too. 5000 repeats overflow the stack
+// and abort the process; 100 render past the 64 bound. Mirroring the grammar by hand
+// will keep missing cases. Instead, compile under `stacker::grow` sized by the text
+// length, measure the depth on the parsed `Template`, refuse past MAX_BLOCK_DEPTH
+// (dropping the refused template inside the grown stack), and register the parsed
+// templates. probe:
+// design/review-2026-10-26/repro/small-pkgs-hbs-escaped-closer-abort.sh (small-pkgs-01)
 fn shallow(text: &str) -> std::result::Result<&str, String> {
     let refused = || Err(format!("blocks nest more than {MAX_BLOCK_DEPTH} deep"));
     fn pad(s: &str) -> &str {
@@ -261,6 +278,14 @@ fn build_registry(
     Ok(registry)
 }
 
+// CR claude for claude: [bug/low] The refusal messages here and in register_partials
+// ("the data must be a struct or a map, not {data}", "partials must be ... got
+// {partials}", "partial values must be strings, got {tmpl}") print the Value with its
+// Rust Display. A tuple or variant therefore reaches the program as
+// `[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1, i64:2]`, and a function as `abstract:`.
+// Format them with graphix_types::typ::Naked, or TVal over the argument's type from ft,
+// as str::sprintf does. probe:
+// design/review-2026-10-26/repro/gx-stdlib-hbs-marker-leak.gx (gx-stdlib-02)
 fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {

@@ -1,0 +1,10 @@
+// Title: two hand seeds in graphix-fuzz/src/corpus.rs SEEDS never compile
+// Command: graphix --check design/review-2026-10-26/repro/fuzz-main-aux-dead-time-seeds.gx
+//          (and the same with the second seed, `duration:1.s + duration:500.ms`)
+// Expected: the seeds "datetime / duration (value-shape arith)" typecheck, so mutation
+//           starts from a running program.
+// Observed: cannot compute datetime + duration: arithmetic is
+//           fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a ...
+//           and for the second: cannot compute duration + duration: arithmetic takes numbers
+let result = datetime:"2020-01-01T00:00:00Z" + duration:1.s;
+result

@@ -43,6 +43,10 @@ use std::{
 /// goes quiet mid-handshake would otherwise hold its socket and task until
 /// it hung up.
 pub const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
+// CR claude for claude: [style/low] This import stands alone after
+// TLS_HANDSHAKE_TIMEOUT, splitting the import block. Move it into the grouped `use`
+// statements, and put the constant below the imports. Found by reading; not run.
+// (core-lib-06)
 use tokio::time::Instant;
 
 pub(crate) mod buffer;
@@ -204,6 +208,16 @@ pub struct TypedRead<F> {
 
 impl<F> TypedRead<F> {
     fn new(env: &Env, target: CastTarget) -> Self {
+        // CR claude for claude: [bug/medium] exact is decided once for the whole
+        // target, so one integer field turns every inexact number in the document into
+        // a decimal, including those read into Any. Read into {n: i64, xs: Array<Any>},
+        // the xs elements select as decimal. Read into {xs: Array<Any>}, the same text
+        // gives f64, which is the documented behaviour for a position holding neither
+        // an integer nor a decimal. Decide per position: have the cast turn a Decimal
+        // at an Any or float position back into the f64 the plain reader gives, or pass
+        // the target type to the visitor. probe:
+        // design/review-2026-10-26/repro/x-kind-markers-json-exact-leaks-to-any.gx
+        // (x-kind-markers-06)
         Self { exact: target.holds_exact_number(env), target, format: PhantomData }
     }
 }
@@ -291,6 +305,18 @@ impl ExitRequest {
 
     /// Ask to exit with `code`; false when the embedder no longer listens.
     /// A program already exiting keeps its first code.
+    // CR claude for claude: [bug/medium] When the receiver is gone, sys::exit falls
+    // through to std::process::exit with the program's code. The fuzz harness drops the
+    // receiver while the runtime still runs: compile_with_stats binds `let Started {
+    // ctx, .. }`, so the receiver is dropped before the first cycle, and start_session
+    // drops it when it abandons a construction that then finishes on its own task. A
+    // subject calling sys::exit therefore kills check-one with its own status (died()
+    // records a phantom CRASH), and a pin that exits at init would end the in-process
+    // regress gate, an exit 0 passing it. An embedder that seeded an ExitRequest never
+    // wants a process exit: treat a failed send as handled (`let _ = tx.send(code);
+    // true`), and drop order_result's comment that a subject's sys::exit ends the
+    // child. probe: design/review-2026-10-26/repro/fuzz-lib-b-exit-kills-harness.sh
+    // (fuzz-lib-b-01)
     pub fn request(&self, code: i32) -> bool {
         match self.0.lock().take() {
             Some(tx) => tx.send(code).is_ok(),
@@ -427,11 +453,60 @@ pub use memo::FastMemo;
 /// the text a reader's cast of the key reads back, a string bare, a
 /// datetime in RFC3339, a duration in seconds, any other value as the
 /// naked form of its data.
+// CR claude for eric: [bug/medium] The doc says a reader's cast reads this text back,
+// but it does not for a bare variant or a composite key. Map<`A, i64> writes
+// {"\"A\"":2} (the data string printed with its quotes) and Map<(i64, i64), i64> writes
+// {"[1, 2]":3`}; json::read into the same types gives InvalidCast for both, so the json
+// and toml writers' output does not read back into its type. Write a string-data key
+// bare, and decide whether composite keys parse on read (as str::parse does) or are
+// refused by the writers. probe:
+// design/review-2026-10-26/repro/x-rerun-5-json-map-keys.gx (x-rerun-5-04)
+// CR claude for eric: [bug/medium] The text this writes for a tuple, struct, variant or
+// list key, for a null key ("null") and for a bytes key (base64) does not read back.
+// The reader casts the object key string to the key type, and a cast parses a string
+// only into a scalar. So json/toml write {(1, 2) => "q"} as {"[1, 2]":"q"}, and reading
+// it back as Map<(i64, i64), string> gives InvalidCast "not a tuple". That breaks this
+// doc's promise and CLAUDE.md's "what the json and toml writers emit reads back into
+// its type". Decide between two fixes: write such a map as the array of its (key,
+// value) pairs, which the cast already reads as a map, or refuse it at the writer.
+// probe: design/review-2026-10-26/repro/core-lib-composite-map-key-no-roundtrip.gx
+// (core-lib-02)
+// CR claude for claude: [bug/high] A bare-variant or composite map key is written as
+// the quoted Naked text of its data: `A becomes the JSON key "\"A\"" (TOML '"A"', hbs
+// &quot;A&quot;), and (1, "a") becomes "[1, \"a\"]". No reader casts those back, so
+// json::read/toml::read into the same Map type fail with InvalidCast, and an enum-keyed
+// map writes unreadable JSON. The doc above says the opposite. Fix: write a bare
+// variant as its tag (refuse two keys that write alike, as to_data does), and have the
+// json/toml readers parse an object key as a Graphix literal (Expr::literal_value, as
+// str::parse does) when the key type is neither a string nor a scalar. Pin enum, tuple
+// and struct keys beside time_map_keys_read_back. probe:
+// design/review-2026-10-26/repro/x-kind-markers-composite-map-keys.gx
+// (x-kind-markers-01)
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match k {
         Value::String(s) => s.clone(),
         Value::DateTime(dt) => dt.to_rfc3339().into(),
         Value::Duration(d) => format_compact!("{}", d.as_secs_f64()).as_str().into(),
+        // CR claude for claude: [bug/medium] A bare variant key strips to its tag, the
+        // string "B", which Naked then prints quoted. So json::write_str({`B => 1})
+        // writes {"\"B\"":1}, toml writes '"B"' = 1, and json::read back into Map<`B,
+        // i64> refuses with 'variant tag mismatch'. Write a key that strips to a string
+        // bare, as the String arm above does; the writers' duplicate-key check then
+        // refuses `A beside "A". Tuple and payload-variant keys ({"[1, 2]":1}) cannot
+        // read back at all, since a cast never parses a string into a collection:
+        // refuse them in the writers too, or record that they are write-only. probe:
+        // design/review-2026-10-26/repro/x-rerun-4-variant-map-key-json.gx
+        // (x-rerun-4-03)
+        // CR claude for claude: [bug/high] A key whose data is a string is printed here
+        // by Naked, which quotes it. A map keyed by a bare variant writes {"\"A\"":1}
+        // in json ('"A"' in toml) and the read back is refused, and a map keyed by
+        // `type Id = Abstract<string>` with `impl Cast` reads back silently as
+        // Id("\"abc\""). Fix: take to_data of the key first, then dispatch on the data
+        // with the arms above, so string data is written bare. Pin both round trips.
+        // Composite keys ("[1, 2]") cannot read back either, since a cast never parses
+        // a string into a collection, so this function's doc overclaims. Whether
+        // writers should refuse such keys is a ruling. probe:
+        // design/review-2026-10-26/repro/t-rep-variant-map-key-quoted.gx (t-rep-02)
         Value::Array(_) | Value::Map(_) | Value::Abstract(_) => {
             let k = graphix_compiler::abstract_value::to_data(k)?;
             format_compact!("{}", graphix_compiler::typ::Naked(&k)).as_str().into()
@@ -471,6 +546,13 @@ const MAX_ABSTRACT_CHAIN: usize = 1024;
 /// representation's type when that is the data, else under none. A
 /// reference, a value of a type backed by Rust, or one with no `Cast`
 /// implementation is refused, as `abstract_value::to_data` refuses them.
+// CR claude for claude: [structure/low] This loop repeats abstract_value::rewrite's
+// abstract branch: the reference and Rust-backed refusals, the four CastHook outcomes
+// with the same messages, and its own copy of the 1024 bound (MAX_ABSTRACT_CHAIN for
+// abstract_value::MAX_DEPTH). Only the representation's type is extra. Expose one step
+// from abstract_value (the data of one abstract value and whether it is the
+// representation) and call it from both, so the two writer families cannot drift. Found
+// by reading; not run. (t-rep-04)
 fn written<'a>(
     env: &Env,
     mut t: Option<Type>,
@@ -999,6 +1081,11 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
         }))
     }
 
+    // CR claude for claude: [structure/low] This repeats init's six-field construction
+    // field by field, and Queue and Iter do the same. Only the RtVar's source differs.
+    // A field added to one copy and not the other makes a warm image start a builtin in
+    // a different state from a cold build. Fix: one `fn new(var: RtVar) -> Self` per
+    // struct, called from both. Found by reading; not run. (core-lib-05)
     fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
@@ -1479,6 +1566,17 @@ impl NumKey {
             Value::U32(n) | Value::V32(n) => Self::Int(*n as i128),
             Value::U64(n) | Value::V64(n) => Self::Int(*n as i128),
             Value::String(s) if let Ok(n) = s.trim().parse::<i128>() => Self::Int(n),
+            // CR claude for claude: [bug/medium] Every key that is not an integer is
+            // still compared as an f64, so a #numeric sort misorders decimals, and
+            // numeric strings with a fraction, that differ past f64's precision. They
+            // tie and the stable sort keeps the input order. `array::sort(#numeric:
+            // true, [decimal:0.10000000000000000001, decimal:0.1])` returns them
+            // descending; the plain sort orders them correctly. Add a Decimal arm:
+            // Value::Decimal, and strings that parse as a decimal, key exactly, with
+            // Int compared through Decimal::try_from. Then make this the one numeric
+            // key: the data_table's SortKey copies it, decimal-to-f64 path included.
+            // probe: design/review-2026-10-26/repro/x-rerun-1-numeric-sort-decimal.gx
+            // (x-rerun-1-02)
             v => Self::Other(v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())),
         }
     }
@@ -1696,6 +1794,19 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     /// (a read that consumed input, a partial write, a handshake holding the
     /// stream) is let finish when its site sleeps, and its reply answers at
     /// the wake. Never `false` under [`Calls::Latest`], which aborts.
+    // CR claude for eric: [bug/high] The default makes a sleep throw away the reply of
+    // evals whose work no abort stops. The db and sqlite ops run under spawn_blocking,
+    // process spawn completes on its first poll, and a tcp accept may have completed
+    // before the sleep. Their reply is the only copy of what they did: a popped or
+    // removed entry, a commit's outcome, a child's handle and pipes, an accepted
+    // connection. This breaks this constant's own contract. A db::pop_min in an arm
+    // deselected the next cycle loses the entry. A spawn there leaves an orphan process
+    // the program never sees. Fix: keep every completed reply across a sleep (route all
+    // replies through `kept`) and let a sleep abort only the cancel-safe calls still
+    // pending. Failing that, mark those evals not cancel-safe. Accept is Latest, so
+    // only the first fix covers it. probe:
+    // design/review-2026-10-26/repro/x-async-io-db-pop-reply-lost.gx,
+    // design/review-2026-10-26/repro/x-async-io-spawn-reply-lost.gx (x-async-io-01)
     const CANCEL_SAFE: bool = true;
 
     /// The arguments that leave as data (a store's keys and values):
@@ -1859,6 +1970,10 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     /// so one landing while it sleeps answers at the wake
     kept: Option<Kept>,
     /// asleep since the last update
+    // CR claude for claude: [style/low] This is WakeBit written out: set in sleep,
+    // taken with mem::take in update. Every other stdlib node was moved to
+    // graphix_compiler's WakeBit; make this one a WakeBit too. Found by reading; not
+    // run. (x-dup-06)
     slept: bool,
     /// the error tag a panicking eval answers under, from the call's
     /// declared return type; none when it declares no such error
@@ -2144,6 +2259,15 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         let cached = match T::DATA_ARGS {
             _ if !start => &self.cached,
             [] => &self.cached,
+            // CR claude for claude: [risk/low] On a conversion failure this returns
+            // early. By then a reply taken from the event this cycle (`res`, with
+            // `inflight` already decremented) is dropped, and the loop that spawns the
+            // next queued call is skipped, so a waiting Fifo call stalls until some
+            // later update. Cast::to_value returns Any, so a to_value that yields a
+            // function or a reference reaches this. Fix: answer the error without
+            // returning: skip prepare_args, run the drain loop, let `res` win the
+            // cycle, and re-send the error through the reply variable when both
+            // arrived. Found by reading; not run. (core-lib-03)
             idx => match self.cached.as_data(ctx, idx) {
                 Ok(c) => {
                     data = c;
@@ -2228,6 +2352,19 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     /// is not cancel-safe: then those in flight finish and answer at the
     /// wake.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // CR claude for eric: [bug/high] CachedArgsAsync has no `reborn`, so a seq step
+        // entered for a new run inherits the calls of the run before. A call that is
+        // not CANCEL_SAFE and was in flight when the run was aborted (by abort(e) or
+        // its arm's sleep) finishes asleep. At the new run's first update its kept
+        // reply is popped as this run's answer, and the new run's own call is spawned
+        // behind it, so every later run gets the previous run's reply. The repro's run
+        // 2 reads stream B but answers child A's "AAAA", and run 3 answers run 2's
+        // "BBBB". Fix: a `reborn` that gives in-flight calls a fresh `Kept`, remints
+        // the reply id, and resets inflight, slept and queued. Rule whether the bytes
+        // those orphaned calls consumed are dropped or whether a rebirth waits for
+        // them. probe:
+        // design/review-2026-10-26/repro/core-lib-kept-reply-crosses-rebirth.gx Also
+        // reported as (x-async-io-02). (core-lib-01)
         match self.kept {
             None => self.renew(ctx),
             Some(_) => {
@@ -2969,6 +3106,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
     }
 }
 
+// CR claude for claude: [readability/low] This is the `range` builtin, but it is named
+// `Seq` / "core_seq", which collides with seq blocks and the seq machine. Rename it to
+// `Range` / "core_range" and update the binding in graphix/mod.gx, the only other
+// reference. Found by reading; not run. Also reported as (x-dup-08). (core-lib-04)
 #[derive(Debug)]
 struct Seq {
     var: RtVar,
@@ -3407,6 +3548,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         };
         // one allocation is one value when every equality is structural:
         // a core Eq implementation need not be reflexive
+        // CR claude for claude: [perf/low] This shortcut covers only two top-level
+        // arrays of one allocation. An unchanged Map (`uniq(i ~ m)`), or a tuple
+        // rebuilt each cycle around the same array (`uniq((i ~ big, 1))`), is still
+        // compared element by element: about 1 ms and 0.33 ms per fire at 100k entries.
+        // Under the same no-hooks condition, use one recursive equality that treats
+        // arrays and maps of the same allocation as equal at every level and recurses
+        // otherwise. probe: design/review-2026-10-26/repro/x-rerun-4-uniq-same-map.sh
+        // (x-rerun-4-05)
         let same_alloc = |l: &Value| match (l, &cmp) {
             (Value::Array(a), Value::Array(b)) => {
                 a.len() == b.len() && std::ptr::eq(a[..].as_ptr(), b[..].as_ptr())

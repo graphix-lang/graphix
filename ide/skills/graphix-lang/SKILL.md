@@ -261,6 +261,11 @@ null }, ask)`. An event argument opens it (`up <- ask ~ true; sel <- ask ~
 cursor reset and a payload. When a function's body has grown sections,
 each section with its own lets is a candidate.
 
+<!-- CR claude for claude: [doc-drift/low] The example is wrong: `&T` is covariant, so
+`val selstyle: Style` passed as `&a::selstyle` to a list's `#highlight_style: &[Style,
+null]` checks. Drop the paragraph, or use an example where the declared type matters,
+such as an invariant `&mut T` parameter. probe:
+design/review-2026-10-26/repro/lang-skill-gxi-ref-covariant/main.gx (lang-skill-06) -->
 A value shared across modules through a `.gxi` has the type you declare,
 not the one each use would have inferred: `&selstyle` for a list's
 `#highlight_style: &[Style, null]` needs `val selstyle: [Style, null]`,
@@ -286,6 +291,14 @@ never()` with writers of two types, `let verify: Any = known` written
 by a key. A fold's accumulator is the type of its init, so
 `array::fold(xs, null, |acc, x| ..)` makes `acc` null: annotate the init
 (`let init: [i64, null] = null`), never the callback. A `let` over a
+<!-- CR claude for claude: [doc-drift/low] Both return-type cases are stale. A
+.gxi-declared `fn(x: i64) -> i64` takes `let f = |x| x + 1` unannotated; `-> T` is
+needed only where the declared return differs from the inferred one (the match is
+exact). `let h = |x: 'a| {v: x}; h(1).v` checks with no `-> T`, in one module or across
+two. The `let go: Any = never()` advice above also differs from the checker, which asks
+for the union (`declare go: [i64, string]`). probe:
+design/review-2026-10-26/repro/lang-skill-return-annotations-unneeded.sh (lang-skill-05)
+-->
 call, a select or a seq needs nothing. A lambda's return type is needed
 in two places only: a function declared in the `.gxi` keeps its `-> T`
 in the `.gx` (an inferred return does not cross modules), and a
@@ -300,6 +313,12 @@ first, guard second; must be exhaustive with no dead arms; a bottom
 scrutinee yields a bottom select (put `hold` on the scrutinee to persist
 across a bottom cycle).
 
+<!-- CR claude for claude: [doc-drift/low] "an async call in flight is aborted" (and the
+"loses its reply" rule above) leaves out the exception CLAUDE.md states and
+EvalCachedAsync's `kept` implements. A call of an eval that is not CANCEL_SAFE (a stream
+read or write, a cursor read, a tls handshake, a file seek) finishes and answers at the
+wake. An aborted cancel-safe call may not have happened at all, so "the op still
+happened" is not guaranteed either. Found by reading; not run. (lang-skill-07) -->
 - An unselected arm with state, an effect or a raise sleeps. Sleep is a
   pause and a wake a resume: `count`, `once`, `take`, `skip`, `uniq`,
   `hold` and queues keep their state; an async call in flight is
@@ -441,11 +460,26 @@ waits for it (two cycles over inline). `graphix --expand` shows the machine.
 
 ## Errors
 
+<!-- CR claude for claude: [doc-drift/medium] The Errors section never gives the
+binder's type. In `catch(e)` and `with(e)` it is `Error<ErrChain<E>>`, so the raised
+value is `e.0.error`, and `select e { `NotFound(s) => .. }` is refused as never
+matching. Every catch in netidx-admin writes `(e.0).error`. Add that sentence and use it
+in the example (`catch(e) msg <- "[e.0.error]"`). probe:
+design/review-2026-10-26/repro/lang-skill-catch-binder-is-errchain.gx (lang-skill-04)
+-->
 ```graphix
 error(`NotFound("missing"))?     // raise to the nearest catch
 { catch(e) handle(e); risky()?; more()? }   // catch INSTALLS a handler for the rest of its block
 ```
 
+<!-- CR claude for eric: [doc-drift/medium] A handler that does not read its binder runs
+at birth, not when an error arrives. `{ catch(e) failed <- true; x? }` sets failed with
+no error ever raised, and the check gives no warning, though it warns about the same
+shape in a select arm (warn_birth_only). Say here that a handler must read `e` (`failed
+<- e ~ true`). Decide whether the check should warn about or refuse a catch handler that
+never reads its binder. probe:
+design/review-2026-10-26/repro/lang-skill-catch-handler-fires-at-birth.gx
+(lang-skill-02) -->
 `catch` is not control flow: the handler is a reactive expression that
 runs when an error arrives; connect it to state you read. A second
 catch shadows the first below it; a handler's own `?` rethrows outward.
@@ -560,6 +594,12 @@ forward only to be dropped is unwrapped at the source, once: `let dir =
 d$`, and every reader (a later seq step included) takes `dir` (unless
 an event samples it: see the banking under `$` gates).
 
+<!-- CR claude for claude: [doc-drift/low] filter_map's callback returns `['b, null,
+`Keep('b)]`: null drops the element and `` `Keep(v) `` keeps a v that may be null. The
+skill never says so, though two idioms below use filter_map, and `|x| x` over `[1, null,
+2]` silently gives `[1, 2]`. Add that, and also that a struct read fills a field the
+data omits with null where its type admits null. probe:
+design/review-2026-10-26/repro/lang-skill-filter-map-drops-null.gx (lang-skill-08) -->
 `array`: map filter filter_map fold flatten find find_map concat push
 window(#n, arr, @v) len iter iterq sort enumerate zip (`window`'s second
 argument is the array windowed, usually `t ~ data`, and its values

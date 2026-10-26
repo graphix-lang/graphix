@@ -746,6 +746,15 @@ impl<X: GXExt> DataTableW<X> {
                     .get(row_idx)
                     .map(|row_path| (row_path.clone(), col_name.clone()));
                 let history = key.as_ref().and_then(|k| inner.sparklines.get(k));
+                // CR claude for eric: [bug/low] The sparkline's x-axis is the cell's
+                // own data span (first point to last change), not the rolling window:
+                // SparklineCanvas::path maps [min_t, max_t] onto the whole width. A
+                // value that changed 10 minutes ago is drawn as if it changed now, and
+                // in one column a row with 10 s of history and one with 900 s are both
+                // stretched full width, though the y-axis is shared so cells can be
+                // compared. Map t over [now - history_seconds, now] and draw the last
+                // value as a flat segment out to now. Found by reading; not run.
+                // (gui-datatable-03)
                 let points: Vec<(f64, f64)> = match history {
                     Some(h) if h.len() >= 2 => {
                         let first_t = h.front().unwrap().0;

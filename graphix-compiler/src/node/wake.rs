@@ -39,11 +39,36 @@ impl CatchUp {
 /// arm's last run, untracked, and is not delivered this cycle.
 pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) -> bool {
     let Some(scope) = &ctx.catch_up else { return false };
+    // CR claude for claude: [bug/medium] [bug/medium] This refuses every input any arm
+    // of an enclosing select tracks, leaving it to that select's bits, but
+    // TrackedFires::deliver injects only the bits the waking arm names itself (callees
+    // left out). So an input the waking arm reads only through a callee bound fresh at
+    // its wake, and another arm of the same select names, has its pending fire
+    // delivered to no one. Adding an arm that is never selected changes the result. The
+    // rule is that the arm evaluation reading an input consumes its bit. Fix: for an
+    // input the innermost scope's select tracks, owe it when its bit is pending and
+    // consume the bit (the scope carries that select's pending set, or deliver_owed
+    // asks the tracker). probe:
+    // design/review-2026-10-26/repro/c-prune-wake-tracked-elsewhere.gx
+    // (c-prune-wake-03)
     !scope.tracks(id)
         && !ctx.event.variables.contains_key(id)
         && ctx
             .rt
             .store_get(id)
+            // CR claude for claude: [bug/medium] [bug/medium] owed compares the store's
+            // write stamp with the arm's last run, but writes that are not fires also
+            // move that stamp: a `let` republishing quietly at its wake (Bind::update),
+            // and a formal re-seeded standing (store_insert_standing). A callee bound
+            // fresh at a wake then reads such an input FIRED although it never fired
+            // after the arm's last run. So an edge consumer in it (count, `~`, a
+            // connect) acts on a phantom event, depending on whether an unrelated arm
+            // slept and woke. The ruling for this mechanism was a stamp of each
+            // variable's last fire. Fix: keep a fire stamp that only a firing delivery
+            // moves (or have the quiet republishes keep the entry's stamp) and compare
+            // that here. probe:
+            // design/review-2026-10-26/repro/c-prune-wake-owed-quiet-stamp.gx
+            // (c-prune-wake-02)
             .is_some_and(|(tv, stamp)| *stamp > scope.since && !tv.tag().is_bottom())
 }
 
@@ -144,6 +169,18 @@ impl TrackedFires {
             pending: IntSet::default(),
             carried: IntSet::default(),
             ran: vec![false; n],
+            // CR claude for claude: [bug/medium] A never-run arm's `since` is the build
+            // cycle, and `owed` needs `stamp > since`. So a variable written in the
+            // cycle the select was first updated (a let's birth, or a write landing as
+            // the select is born) is not owed. A callee bound through a function value
+            // at the arm's first entry misses that fire, while a static callee with the
+            // same body catches it up through the bits: `select n { 1 => gs(n) }` gives
+            // 1 and the `gd(n)` twin stays bottom. Fix: have TrackedFires::ran record
+            // cycle + 1 and make owed test `stamp >= since`. Add a build-cycle twin to
+            // first_entry_*_callee_catches_up, whose fire comes well after the build
+            // cycle. probe:
+            // design/review-2026-10-26/repro/tests-select-dynamic-callee-misses-build-cycle-fire.gx
+            // Also reported as (x-refs-catchup-04). (tests-select-03)
             last_run: vec![cycle; n],
             keys: None,
         };
@@ -337,6 +374,18 @@ impl TrackedFires {
             return None;
         }
         let all = &self.all;
+        // CR claude for claude: [perf/medium] [perf/medium] In a seq machine every step
+        // completion refreshes (keys = None), so each step entry, a Step view, rebuilds
+        // here an IntSet of every input any step reads. deliver also scans the whole
+        // pending set for the step's own bits. A run of N same-cycle steps costs O(N x
+        // inputs): with 3 extra inputs a step the chain is about 4.5 times slower and
+        // grows about 3x per doubling of N, and the pc reader cost of x-perf-runtime-04
+        // does not depend on the input count. Fix: keep keys current in refresh and
+        // evaluated (Arc::make_mut as the counts in `all` reach 1 or 0) instead of
+        // dropping it, and in deliver iterate the smaller of pending and the arm's
+        // per_arm set. probe:
+        // design/review-2026-10-26/repro/c-prune-wake-seq-step-inputs.py
+        // (c-prune-wake-05)
         let tracked = self
             .keys
             .get_or_insert_with(|| Arc::new(all.keys().copied().collect()))
@@ -356,6 +405,30 @@ impl TrackedFires {
         if let Some(outer) = outer {
             ctx.catch_up = outer;
         }
+        // CR claude for claude: [bug/high] last_run records the last cycle a walk
+        // evaluated the arm, and wake::owed treats anything written after it as a fire
+        // missed in sleep. Walk pruning moves that cycle: a select nothing marks is not
+        // walked while its arm stays selected, so at the arm's wake a write that landed
+        // while the arm was awake is re-raised FIRED to a freshly bound callee (or a
+        // Deref's new target), and pruned and unpruned runs disagree. Record the cycle
+        // before the arm goes to sleep instead (deselect in select.rs and
+        // seq_machine.rs, and the selected arm in Select::sleep and the machine's
+        // reset), not on every walk, and pin the probe in lang::prune. probe:
+        // design/review-2026-10-26/repro/x-prune-catchup-since-last-walk.gx
+        // (GRAPHIX_PRUNE=on prints 0 1 0 101, off prints 0 1 0; graphix-fuzz check
+        // reports a walk pruning divergence) (x-prune-01)
+        // CR claude for claude: [bug/high] [bug/high] last_run is set at every
+        // evaluation of the arm, so it is the last cycle a walk reached the arm, and
+        // walk pruning changes it: a skipped statement leaves it behind where the
+        // unpruned walk advances it. wake::owed compares input write stamps against it.
+        // So a callee bound fresh at the arm's wake is caught up on an input written
+        // while the arm was awake but skipped, only when pruning is on, and
+        // graphix-fuzz check reports a walk pruning divergence. Fix: record the cycle
+        // the arm stops running (its deselect, and the select's or machine's own sleep
+        // while it is selected) instead of every evaluation, so `since` means 'fell
+        // asleep' in both walks, as the ruling ('fired while it slept') asks. probe:
+        // design/review-2026-10-26/repro/c-prune-wake-last-run-pruned.gx
+        // (c-prune-wake-01)
         self.last_run[i] = ctx.rt.cycle();
     }
 

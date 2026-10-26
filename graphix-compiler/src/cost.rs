@@ -95,6 +95,18 @@ pub fn start_calibration() {
         return fix_calibration(t);
     }
     if !STARTED.load(Ordering::Relaxed) && !STARTED.swap(true, Ordering::Relaxed) {
+        // CR claude for claude: [bug/medium] [bug/medium] A spawn failure here or in
+        // calibrate's pool panics, although the calibration only tunes a heuristic.
+        // calibrate also builds a second pool of eval_threads() workers (32 here)
+        // beside the tokio workers and the evaluation pool, at runtime construction,
+        // for --check too. Under a task limit the process fails: `--check` of a
+        // one-line file in a scope with TasksMax=40 panics in the calibration pool,
+        // then the evaluation pool's halving runs down to one worker and panics too,
+        // rc=1 (TasksMax=70: the calibration panic, rc=0). On a spawn or build failure,
+        // fall back to fix_calibration with a default. Measure with a small pool, and
+        // skip calibration for a check-only run. probe:
+        // design/review-2026-10-26/repro/x-perf-compile-thread-limit-panic.sh
+        // (x-perf-compile-06)
         std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
             .spawn(|| {
@@ -394,6 +406,15 @@ impl ForkSite {
         }
     }
 
+    // CR claude for claude: [test-gap/low] No test covers ForkSite's state machine:
+    // Probe to Measured at 2T, Probe to Serial after PROBES, settling with an untimed
+    // child (h.n == 0), settled-and-not-paying to Serial, an n change resetting to
+    // Probe, re-probing after RECHECK. Because plan_auto reads the global
+    // calibration(), it cannot be driven with a test Calibration. A regression here
+    // would lose every node-walk fork under Auto while every gate stays green, and
+    // par_attrs.rs's comment says cost::tests pins these decisions. Split it into
+    // plan_with(cal, n), as SlotSite does, and test those transitions. Found by
+    // reading; not run. (c-cost-misc-02)
     fn plan_auto(&mut self, n: usize) -> Plan<'_> {
         let Some(cal) = calibration() else { return Plan::Serial };
         match &mut self.0 {
@@ -485,6 +506,19 @@ impl<'a> Meter<'a> {
                     m.prefix[i + 1] = m.prefix[i] + est;
                 }
                 m.settled |= m.hist.iter().all(|h| h.n == 0 || h.n >= SETTLE);
+                // CR claude for eric: [perf/medium] A settled site resets its sampling
+                // period only when a p75 bucket moves. After its children turn cheap,
+                // each sample (1 in 256 updates) lands far below the p75 without moving
+                // it until cheap samples are about 3x the heavy ones, so the site forks
+                // cheap children on every update for roughly 7700 updates. Treat this
+                // update's own times disagreeing with the estimates as a change: a
+                // child's sample two or more buckets from its p75, or a total under 2T
+                // at a site that says it pays. That resets the period to 0, so the
+                // histogram turns over in tens of updates. SlotSite::measured_with has
+                // the same `e != *est` trigger. probe:
+                // design/review-2026-10-26/repro/c-cost-misc-fork-fade.gx (cheap window
+                // 0.15 s after a heavy phase against 0.055 s without one or under Off;
+                // 0.048 s with forking disabled). (c-cost-misc-01)
                 m.sampler.sampled(m.settled, changed);
                 let pays = Splits::Weighted { prefix: &m.prefix, t: cal.t }
                     .split(0, n)
@@ -708,6 +742,18 @@ impl SlotSite {
                 } else if saturated() {
                     SlotPlan::Serial
                 } else {
+                    // CR claude for eric: [perf/medium] This fork is taken for any loop
+                    // whose slots cost over T, and T counts only a worker's wake
+                    // latency. It leaves out each branch's fork and merge, the slower
+                    // slot updates inside a branch, and the CPU the woken workers spin
+                    // away. 2000 idle node-walked slots with one 1 ms timer finish
+                    // fewer cycles under Auto than serially (1327 vs 1445 in 3 s) on
+                    // 12.7 CPU-s instead of 1.8. Decide the policy: verify that a
+                    // forked run beats its serial estimate and back off to Serial when
+                    // it does not, and/or include the branch overhead in the minimum
+                    // range cost. probe:
+                    // design/review-2026-10-26/repro/x-perf-runtime-auto-cpu.sh
+                    // (x-perf-runtime-02)
                     SlotPlan::Fork { grain: grain(cal, *est, n, RANGES_PER_WORKER) }
                 }
             }
@@ -931,6 +977,13 @@ impl LoopSite {
         match p.grain(cal, n, CHUNKS_PER_WORKER) {
             None if p.hist.n >= SETTLE => {
                 let est = cal.floor(p.hist.p75()).max(1);
+                // CR claude for claude: [structure/low] This re-derives serial_below
+                // with floor division, so a loop of exactly floor(2T/est) slots cannot
+                // pay for a fork yet is probed (16 serial timed slots, two locks) every
+                // run instead of running untimed. Use serial_below(cal, est). Probes is
+                // also a SmallVec that par_loop::run fills with at most one (ticks per
+                // slot, slots) pair: take that pair (or an Option of it) and delete the
+                // type. Found by reading; not run. (c-cost-misc-04)
                 let below = ((2 * cal.t) / est).min(u32::MAX as u64) as u32;
                 self.below.store(below, Ordering::Relaxed);
                 let until = ticks().saturating_add(RECHECK as u64 * cal.t);

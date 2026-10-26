@@ -1,0 +1,12 @@
+// Title: a write through a reference made before the reference first
+// arrives lands at its first target (ConnectDeref::pending) -- no pin.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --no-fusion tests-lang-rest-b-write-before-ref-arrives.gx
+// Expected (design/place_references.md, CLAUDE.md References) and observed:
+//   1 then 42: the constant RHS fired at birth, the write waited for `w`.
+// Contrast: `let k: [&mut i64, null] = null; k <- &mut x; let w = k$;`
+// (w BOTTOM at birth, not absent) prints only 1, the write dropped.
+let x = 1;
+let w = sys::time::after_idle(duration:50.ms, &mut x);
+*w <- 42;
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+x

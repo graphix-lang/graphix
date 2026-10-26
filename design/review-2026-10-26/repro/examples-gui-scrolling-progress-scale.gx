@@ -1,0 +1,22 @@
+// Title: data_table_scrolling's progress columns get 0..100 values; the
+// Progress column clamps to [0, 1], so every bar draws full.
+// Command:
+//   timeout -s KILL 30 graphix --no-cache examples-gui-scrolling-progress-scale.gx
+// Expected (for a progress column to show anything but full): values in [0, 1].
+// Observed: values like 57.3 (any value >= 1 draws a full bar:
+//   stdlib/graphix-package-gui/src/widgets/data_table/render.rs, ColumnType::Progress,
+//   ProgressBar::new(0.0..=1.0, val.clamp(0.0, 1.0))).
+// The publishing below is book/src/examples/gui/data_table_scrolling.gx's, minus the GUI.
+use sys::{time, net};
+let base = "/local/graphix/data_table_scrolling";
+let tick = time::timer(duration:200.ms, true);
+let rand100 = || rand::rand(#start: 0., #end: 100., #clock: tick);
+let publish_host = |name: string| {
+    net::publish("[base]/host-[name]/cpu_pct", rand100());
+    net::publish("[base]/host-[name]/mem_pct", rand100())
+};
+array::map(["1", "2"], publish_host);
+let cpu: f64 = net::subscribe("[base]/host-1/cpu_pct")$;
+let full = cpu >= 1.0;
+sys::exit(sys::time::after_idle(duration:300.ms, select count(cpu) { 5 => 0, _ => never() }));
+(cpu, full)

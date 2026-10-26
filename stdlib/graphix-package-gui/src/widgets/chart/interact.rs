@@ -156,6 +156,18 @@ impl ChartState {
                     d.position = local;
                     let (dx, dy) = (local.x - d.origin.x, local.y - d.origin.y);
                     let before = self.view_for(chart);
+                    // CR claude for claude: [bug/medium] A press released within
+                    // CLICK_SLOP counts as a click for the double-click test, but by
+                    // then the first CursorMoved of the press has already run
+                    // handle_drag. That sets x_view and y_view to the starting view
+                    // shifted by the jitter. So a click on a live chart with one pixel
+                    // of cursor movement pins its ranges, and it stops following new
+                    // data until a double-click. Fix: skip handle_drag until the cursor
+                    // has moved more than CLICK_SLOP from d.origin (or keep the
+                    // pre-press x_view/y_view Options in Drag and restore them on a
+                    // click release), and add a click-with-jitter case to
+                    // double_clicks_are_clicks_in_one_place. Found by reading; not run.
+                    // (gui-chart-02)
                     self.handle_drag(mode, chart.plot_info.get(), dx, dy);
                     return Some(if self.view_for(chart) != before {
                         chart.cache.clear();

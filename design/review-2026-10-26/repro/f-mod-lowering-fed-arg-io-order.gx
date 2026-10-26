@@ -1,0 +1,17 @@
+// Title: a fed argument's effect performs before an earlier fused argument's Io
+// Command: timeout -s KILL 30 graphix --no-cache f-mod-lowering-fed-arg-io-order.gx
+//          timeout -s KILL 30 graphix --no-cache --no-fusion f-mod-lowering-fed-arg-io-order.gx
+// Expected (both, the node-walk's argument order):
+//   ... dbg(a): 1
+//   ... dbg(once(b)): 2
+//   3
+// Observed default (fused): dbg(once(b)): 2 printed BEFORE dbg(a): 1.
+// try_fuse_feeding_args feeds `dbg(once(b))` (once has no fast call); the
+// feeder performs during its update, while the fused `dbg(a)` is queued and
+// performed after the kernel's run, so the two prints swap.
+let a = 1;
+let b = 2;
+let f = |x: i64, y: i64| x + y;
+let r = f(dbg(#dest: `Stdout, a), dbg(#dest: `Stdout, once(b)));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

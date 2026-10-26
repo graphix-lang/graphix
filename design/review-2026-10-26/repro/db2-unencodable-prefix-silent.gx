@@ -1,0 +1,19 @@
+// db2: an unencodable prefix (a Rust-backed handle in an Array<Any> key) is
+// silence in subscription::new and cursor::new, where db::insert of the same
+// key is a DbErr (lib_tests/db.rs db_unstorable_value: "a DbErr, not silence").
+// run: rm -rf /home/eric/tmp/review-2026-10-26/review/work/db2/pfx.db;
+//      timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache db2-unencodable-prefix-silent.gx
+// expected: "ev error:`DbErr(..)" and "r error:`DbErr(..)" (or the reads answering at all)
+// observed: only "i null": the subscription never fires and the cursor is
+// bottom, so cursor::read never answers.
+let db = db::open("/home/eric/tmp/review-2026-10-26/review/work/db2/pfx.db")$;
+let t: db::Tree<Array<Any>, i64> = db::tree(db, "t")$;
+let sub = db::subscription::new(#prefix: [db], t);
+let ev = db::subscription::on_change(sub);
+println("ev [ev]");
+let c = db::cursor::new(#prefix: [db], t);
+let r = db::cursor::read(c, c);
+println("r [r]");
+let i = db::insert(t, sub ~ [1], 5);
+println("i [i]");
+sys::exit(sys::time::after_idle(duration:500.ms, i ~ 0))

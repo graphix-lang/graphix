@@ -796,6 +796,22 @@ fn ceremony(
             }
             StepKind::Until => {
                 let cond = match (&burst_counter, bool_inputs.is_empty()) {
+                    // CR claude for claude: [test-gap/medium] A seq step reads every
+                    // outer variable at its entry, so `until (b >= i64:3)` on the burst
+                    // counter waits on the counter as it stood when the step began. A
+                    // run that reaches the step at b = 1 or 2 stalls for good, and a
+                    // `seqq` then queues every later trigger. The ceremony still counts
+                    // this `until` as reliable, so its run counter goes into
+                    // `fires_per_injection` and can become the program's tail, which
+                    // then never moves: program 1 of `gen 60 1 --reactive` completes 0
+                    // runs, and 5 with `live`. The other `until` shapes here (a bool
+                    // input, the abort clock's `until (k >= ..)`) stall the same way.
+                    // Nothing in the generator writes `live(..)`, so the step-snapshot
+                    // rule and `live` get no fuzz coverage. Fix: write the waits as
+                    // `until live(..)`, and draw `live(e)` in step reads as well as
+                    // plain reads. probe:
+                    // design/review-2026-10-26/repro/x-rerun-3-fuzz-until-snapshot.sh
+                    // (x-rerun-3-02)
                     (Some(b), _) if chance(rng, 0.6) => format!("({b} >= i64:3)"),
                     (_, false) if chance(rng, 0.7) => {
                         reliable = false;
@@ -806,6 +822,22 @@ fn ceremony(
                         exprs::gen_typed(ctx, rng, &GenType::Bool, 1)
                     }
                 };
+                // CR claude for claude: [bug/high] A step reads the world once, at its
+                // entry, and waits for a change only through `live(..)`. This generator
+                // never emits `live`, so every `until` here stalls whenever its
+                // condition is false at entry. The same holds for the clock wait in
+                // `run_event` and for `until b` in `gen_callable_ceremony`. A stalled
+                // seq then drops every later trigger. Measured: 39 of 43 generated
+                // ceremonies with an until never complete a run. The burst-clock until
+                // also leaves `reliable` true, so a counter that never fires joins
+                // `fires_per_injection`. The result is that the reactive lane barely
+                // soaks the new seq rules. Fix: emit `until live(..)` for the waits
+                // that are meant to end, add `live` reads to the other steps, fix the
+                // StepKind::Until doc, and make reactive-check count ceremonies that
+                // never complete. probe:
+                // design/review-2026-10-26/repro/fuzz-gen-b-until-stall.gx,
+                // design/review-2026-10-26/repro/fuzz-gen-b-until-stall-count.py
+                // (fuzz-gen-b-01)
                 body.push(format!("until {cond}"));
             }
             StepKind::Try => {

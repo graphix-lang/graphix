@@ -1,0 +1,16 @@
+// Title: graphix fmt refuses a statement list whose last statement ends in `;`
+// and has a comment line below it (file level, a block, a seq body alike).
+// Command: graphix fmt --stdout design/review-2026-10-26/repro/tests-expr-fmt-trailing-semi-below.gx
+// Expected: the file printed back unchanged (it parses and checks).
+// Observed: "formatter bug: the formatted text lost or moved a comment or an
+// attribute", exit 1. The parser hangs the `// end` lines on `let b`'s
+// Decorations::below (commented: Slot::End), and pretty_items /
+// pretty_file_items print `below` only for the LAST item, which is the
+// trailing `;`'s NoOp.
+let f = |x| {
+    println(x);
+    println(x);
+    // done
+};
+let b = f(2);
+// end

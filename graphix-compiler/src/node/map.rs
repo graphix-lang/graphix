@@ -249,6 +249,12 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
         let mt =
             Type::Map { key: Arc::new(kt.clone()), value: Arc::new(self.vtyp.clone()) };
         wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
+        // CR claude for claude: [readability/low] typecheck0_with ignores `_check`, so
+        // this key judgment runs again in every instance, though the comment on
+        // typed_by_row!(source) below says the index needs no judging. ArrayRef does
+        // skip check_index there. Run the key judgment only when `check`, as ArrayRef
+        // does, and keep the source binding that fills vtyp unconditional. Found by
+        // reading; not run. (c-data-map-04)
         wrap!(self.key, kt.check_contains(&ctx.env, self.key.typ()))
     }
 

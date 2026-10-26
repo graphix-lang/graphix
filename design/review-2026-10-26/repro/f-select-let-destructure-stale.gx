@@ -1,0 +1,21 @@
+// f-select: a fused `let (a, b) = v` over a bottom placeholder makes the
+// binds STALE: emit_let_binds masks the binds by the pattern's structure
+// test, which the empty placeholder fails, so mask_unmatched ORs
+// TAINT|STALE into a fresh bottom.
+// Command: graphix-fuzz check design/review-2026-10-26/repro/f-select-let-destructure-stale.gx
+//   (or graphix --no-cache [--no-fusion] on it)
+// Expected (node-walk, both engines): count(r) bottoms with the fresh
+//   bottom at even steps: Trace([1:(1, 1) 3:(3, 2) 5:(5, 3)])
+// Observed: DIVERGENCE; the JIT's bottom is stale, so the tuple prints at
+//   every step: Trace([1:(1, 1) 2:(2, 1) 3:(3, 2) 4:(4, 2) 5:(5, 3) 6:(6, 3)])
+// Control: `let p = select ..; p.0 + p.1`, or a let over a real tainted
+//   tuple `(n, 10 / d)`, agrees.
+let step = 0;
+step <- select step { s if s < 6 => s + 1, _ => never() };
+let f = |n: i64, d: i64| {
+  let (a, b) = select n { k if (10 / d) > 0 => (k, k), k => (k, 0) };
+  a + b
+};
+let r = f(step, step % 2);
+let c = count(r);
+(step, c)

@@ -1,0 +1,10 @@
+// Title: float comparison as a total order (NaN == NaN, below every number) has no pin
+// Command: timeout -s KILL 20 graphix --no-cache tests-types-nan-order-unpinned.gx   (and with --no-fusion)
+// Expected (CLAUDE.md "float comparison is a total order"):
+//   ([true, false, false, true, false, true], [false, true, true, true, false, false], [false, true, false, false, true, true])
+// Observed: the same in both engines today; #[native] shows the comparisons are fused
+// (fusion/emit/scalar.rs inline fcmp lowering), yet no test feeds a NaN to a comparison.
+let f = |a: f64, b: f64| #[native] [a == b, a != b, a < b, a <= b, a > b, a >= b];
+let n = f64:0. / f64:0.;
+let ninf = f64:-1. / f64:0.;
+(f(n, n), f(n, ninf), f(ninf, n))

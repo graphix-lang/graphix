@@ -1,0 +1,26 @@
+// A fire in the cycle a select's tracker is built is caught up at an arm's
+// first entry through a static callee, but not through a dynamic one.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache tests-select-dynamic-callee-misses-build-cycle-fire.gx
+//   (same with --no-fusion)
+// Expected (static and dynamic callees agree, CLAUDE.md wake catch-up:
+// "whether the call resolves statically or through a function value"):
+//   static 1
+//   dynamic 1
+// Observed (both engines):
+//   static 1
+//   (no "dynamic" line: the dynamic arm stays bottom)
+{
+  let a = 0;
+  let mode = 0;
+  let gs = |x| a ~ x;
+  let gd = select mode { 0 => |x| a ~ x, _ => |x| x };
+  let n = 0;
+  n <- select n { k if k < 3 => k + 1, _ => never() };
+  let s = select n { 1 => gs(n), _ => never() };
+  let d = select n { 1 => gd(n), _ => never() };
+  println("static [s]");
+  println("dynamic [d]");
+  sys::exit(sys::time::after_idle(duration:100.ms, 0));
+  n
+}

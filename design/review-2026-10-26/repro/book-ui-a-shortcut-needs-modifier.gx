@@ -1,0 +1,13 @@
+// Title: book/src/ui/gui/menu.md says menu::shortcut errors only when the key is
+// not one character; it also refuses a key without Ctrl, Alt or Super.
+// Command: timeout -s KILL 30 graphix --no-cache book-ui-a-shortcut-needs-modifier.gx
+// Expected (per menu.md's prose): the first two calls succeed.
+// Observed: error:`InvalidKey("a shortcut needs Ctrl, Alt or Super: N alone is typed text")
+//   for both, and Shortcut({..}) only for the Ctrl one.
+use gui::menu;
+let a = menu::shortcut(#shift: true, "N");
+let b = menu::shortcut("N");
+let c = menu::shortcut(#ctrl: true, "é");
+println("[a] [b] [c]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

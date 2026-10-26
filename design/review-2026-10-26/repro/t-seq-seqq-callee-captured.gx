@@ -1,0 +1,23 @@
+// t-seq: seqq captures a let-bound function value used as a callee; the call goes
+// dynamic, the step summary becomes "reads all writes all", and every capture turns live
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-seq-seqq-callee-captured.gx
+// expected: (1, 10) (2, 20) (3, 30)  -- k as it stood when each request was queued,
+//           which is what `let g = |x: i64| x + 1;` prints
+// observed: (1, 30) (2, 30) (3, 30)
+// GXDBG_SEQPLAN=1 shows: opaque call #seqqcap.._0(..) static=false; S0 reads all writes all;
+// capture .. live true
+// plain seq: `seq t { let a = g(1); a }` snapshots g at the step's entry, `(pc, g)`, and calls
+// the projection: GXDBG_SEQPLAN=1 prints `opaque call #seqs.._0(..) static=false`,
+// `S0 reads all writes all`, `S0 -> S1 next`; with `let g = |x: i64| x + 1` it is `S0 -> S1 same`
+let id = |f| f;
+let g = id(|x: i64| x + 1);
+let k = 0;
+let t = never();
+let clock = sys::time::timer(duration:10.ms, 3);
+let n = 0;
+n <- clock ~ n + 1;
+t <- clock ~ n;
+k <- clock ~ k + 10;
+let r = seqq t { let a = sys::time::after_idle(duration:50.ms, g(t)); (a, k) };
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+r

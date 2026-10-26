@@ -1,0 +1,18 @@
+// Title: the literal pool gives up on an arm when a second same-shape member has a non-head type at the literal's position
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --check x-typecheck-patterns-pool-member-ambiguous.gx
+// Expected: accepted. `(true, _)` and `(false, _)` can match only (bool, i64) and together
+//   cover it; `Box(true)`/`Box(false)` can match only Box<bool>; `{a: true}`/`{a: false}`
+//   only {a: bool}. Running prints ["a", "b", "c"] then [1, 2, 3] then ["t", "f", "ab"].
+// Observed: each of f, g and h is refused alone: "missing match cases: no arm covers
+//   (bool, i64)" / "... Box<bool>" / "... { a: bool }". Leaf::reachable calls a bool head at
+//   an i64 position reachable (its domain is None), so LiteralPool::claim finds two members
+//   and returns Unpooled; for h, pooled_leaves fails on the wider member (width) and claim
+//   returns Unpooled instead of skipping that member.
+type Box<'a> = Abstract<'a>;
+let f = |x: [(bool, i64), (i64, bool)]| select x {
+  (true, _) => "a", (false, _) => "b", (i64, bool) as t => "c"
+};
+let g = |x: [Box<bool>, Box<i64>]| select x { Box(true) => 1, Box(false) => 2, Box<i64> as b => 3 };
+let h = |x: [{a: bool}, {a: bool, b: i64}]| select x { {a: true} => "t", {a: false} => "f", {a, b} => "ab" };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+([f((true, 1)), f((false, 1)), f((1, true))], [g(Box(true)), g(Box(false)), g(Box(5))], [h({a: true}), h({a: false}), h({a: true, b: 1})])

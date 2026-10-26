@@ -218,6 +218,14 @@ impl DbSubscribe {
             Some(Ok(Value::Null)) => Ok(GPooled::orphan(vec![])),
             Some(Ok(v)) => encode_prefix(tree.key_typ, &v),
         };
+        // CR claude for claude: [bug/low] A prefix that cannot be written as data (a
+        // Rust handle in an Array<Any> key) makes the subscription silent forever. In
+        // DbCursorNewEv::eval the same failure (`.ok()?`) leaves cursor::new bottom, so
+        // cursor::read never answers, while db::insert of that key is a DbErr
+        // (db_unstorable_value: 'a DbErr, not silence'). Deliver the encoding error as
+        // one DbErr batch under bind_id here, and keep it in CursorInner for `next` to
+        // return. probe:
+        // design/review-2026-10-26/repro/db2-unencodable-prefix-silent.gx (db2-03)
         let Ok(prefix) = prefix else { return };
         let (tx, rx) = mpsc::channel(1);
         ctx.rt.watch(rx);

@@ -1,0 +1,20 @@
+// An rpc handler's raise is logged with its raw kind markers: RpcReply::raised
+// (graphix-package-sys/src/net.rs) formats the error value with its Rust Display,
+// while the http handler's twin (build_hyper_response) strips them first.
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/gx-stdlib-rpc-raise-log-markers.gx
+// Expected: a log line naming the error as Graphix prints it, e.g.
+//   an rpc handler raised: error:{cause: null, error: `Boom("bad"), ori: .., pos: ..}
+// Observed: an rpc handler raised: error:[abstract:EnwukQtE2EoTn2Uo4FoXw40B, ["cause", null],
+//   ["error", [abstract:EnwukQtE2EoTn2Uo4FoXw40C, "Boom", "bad"]], ...]
+let p = "/local/review/gxstdlib/rpc";
+let caught: [string, null] = null;
+let pb = {
+    catch(e) caught <- "caught";
+    sys::net::rpc(#path: p, #doc: "d", #spec: null, #f: |a: null| -> i64 {
+        let x: i64 = error(`Boom("bad"))?;
+        x
+    })
+};
+let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call(sys::time::after_idle(duration:200.ms, p), null);
+sys::exit(sys::time::after_idle(duration:1.s, 0));
+(dbg(caught), dbg(r))

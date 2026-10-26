@@ -1,0 +1,22 @@
+// A seq statement `*r <- v` writes through r as it stands when v fires, not as it stood
+// at the step's entry; seqq writes through the queued handle
+// command: graphix-fuzz run x-seq-sampling-deref-connect-target-not-snapshotted.gx
+// The run enters at step 2, when target is &mut a; the value fires at step 5, when target
+// is &mut b.
+// expected: both writes land in a: under seq the step reads
+//   `target` at its entry (CLAUDE.md: every variable the seq's own text reads is read once,
+//   at the step's entry), so 42 goes to a, as seqq's 43 does.
+// observed (both engines): Trace([9:(43, 42)]): seq wrote b, seqq wrote a.
+// The same statement wrapped in a block, `seq t { { *target <- live(..); 1 } }`, writes a
+// (Trace([9:(42, 0)]) alone): lower_block reads the target through the entry snapshot.
+{
+  let step = 0;
+  step <- select step { n if n < 10 => n + 1, _ => never() };
+  let a = 0;
+  let b = 0;
+  let target = select step { n if n < 4 => &mut a, _ => &mut b };
+  let t = select step { 1 => 1, _ => never() };
+  let d1 = seq t { *target <- live(select step { 5 => 42, _ => never() }); 1 };
+  let d2 = seqq t { *target <- live(select step { 5 => 43, _ => never() }); 1 };
+  select step { 9 => (a, b), _ => never() }
+}

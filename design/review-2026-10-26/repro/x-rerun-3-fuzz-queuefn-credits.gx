@@ -1,0 +1,19 @@
+// Title: gen_queuefn_siblings treats `#trigger: i64:{credits}` as releasing calls, but
+//   a trigger fire born with the queuefn is no credit: calls 1..credits-1 are typed as
+//   values and never produce (fuzz-gen-a-01 regressed differently)
+// Command: timeout -s KILL 10 graphix --no-cache x-rerun-3-fuzz-queuefn-credits.gx
+//   (the generator's shape for n = 3, credits = 2; `graphix-fuzz gen 150 1` draws it
+//   with credits = 3: `let v1 = queuefn(#trigger: i64:3, ..)`, v4 and v5 then feed
+//   `select v4 {..}` and `v34 / v4`)
+// Expected (the generator's model): "c0 8", "c1 9", and the value 17.
+// Observed: only "c0 8": c1 never fires, so c0 + c1, typed i64 by the generator, is
+//   bottom forever, and everything generated over c1 is vacuous.
+let qf = queuefn(#trigger: i64:2, |x: i64| -> i64 x + i64:7);
+let c0 = qf(i64:1);
+let c1 = qf(i64:2);
+let c2 = qf(i64:3);
+println("[c2]");
+println("c0 [c0]");
+println("c1 [c1]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+c0 + c1

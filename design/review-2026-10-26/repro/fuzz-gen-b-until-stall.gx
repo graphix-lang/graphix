@@ -1,0 +1,11 @@
+// schedule-v1: cap=80 events=640; in0=i64:1; in0=i64:2
+// Title: the reactive generator's ceremony `until` waits read the step's entry snapshot and stall forever
+// Shape: generate/reactive.rs ceremony(), StepKind::Until on the burst clock (kept `reliable`).
+// Command: graphix-fuzz run design/review-2026-10-26/repro/fuzz-gen-b-until-stall.gx
+// Expected (what the generator assumes: the run counter fires per injection):
+//   Interp/InLanguage: Trace([0:0 ..]; [..:1 ..]; [..:2 ..])
+// Observed: a warning ("this until reads only the step's entry snapshot ... wrap what it
+//   waits for in live(..)") and the counter never moves: Trace([0:0]; []; [])
+// With `until live(v3 >= i64:3)` the same program gives Trace([0:0 5:1 9:2]; [5:3 9:4]; [5:5 9:6]).
+// Over 80 generated ceremonies (gen 600 21 --reactive), 39 of the 43 with an until never completed a run.
+{ let v3 = in0 ~ i64:0; v3 <- select v3 { s if s < i64:3 => s + i64:1, _ => never() }; let v4 = select v3 { i64:1 | i64:2 => v3, _ => never() }; let v14 = seqq v4 { until (v3 >= i64:3); i64:7 }; let v15 = i64:0; v15 <- v14 ~ (v15 + i64:1); v15 }

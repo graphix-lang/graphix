@@ -112,6 +112,19 @@
 ;; ("""...""") may hold bare quotes, so the syntax table alone mis-pairs
 ;; them: their delimiters are string fences and a backslash inside is
 ;; punctuation.
+;; CR claude for claude: [bug/medium] The closing delimiter is searched with no bound,
+;; so when a raw or template string closes after END, point passes END and the loop's
+;; next `re-search-forward` with bound END signals "Invalid search bound (wrong side of
+;; point)". Calling syntax-ppss anywhere inside a multi-line template (jit-lock chunks,
+;; show-paren, electric-pair, indentation) errors in both graphix-mode and
+;; graphix-ts-mode. Bounding the search is not enough: a pass that starts inside the
+;; string strips the closing fence and then skips the closer as in-string, so the string
+;; runs to the end of the buffer. Fix: loop only while point < END, and when START is
+;; inside a fenced string (`(nth 3 (syntax-ppss start))` is t), find the closer of the
+;; string opened at `(nth 8 ppss)` and fence it, marking opener and closer separately as
+;; python.el's python-syntax-stringify does. probe:
+;; design/review-2026-10-26/repro/ide-tooling-emacs-multiline-template.sh
+;; (ide-tooling-01)
 (defun graphix--syntax-propertize (start end)
   "Mark the raw and triple-quoted strings between START and END."
   (goto-char start)
@@ -316,6 +329,15 @@ Falls back to this mode when tree-sitter is not available.
        (no-node parent-bol 0)))
     "Tree-sitter indentation rules for Graphix.")
 
+  ;; CR claude for claude: [risk/low] This recipe builds GitHub's default branch, but
+  ;; the font-lock queries below come from the checkout this file was loaded from. A
+  ;; checkout that is not main can get a grammar its queries do not match, and treesit
+  ;; then refuses a whole feature's query: those colors vanish silently. nvim got the
+  ;; same fix already (its init.lua builds the grammar from its own checkout); Zed pins
+  ;; a checked rev and Helix uses a path source. Fix: find the checkout from
+  ;; load-file-name (../../tree-sitter-graphix/grammar.js) and use its root as the
+  ;; recipe URL, falling back to GitHub outside a checkout. Found by reading; not run.
+  ;; (ide-tooling-02)
   (defvar graphix--treesit-grammar-recipe
     '(graphix "https://github.com/graphix-lang/graphix"
               nil                        ; tag

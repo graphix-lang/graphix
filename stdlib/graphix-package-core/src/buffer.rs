@@ -333,6 +333,16 @@ fn decode<R: Rt, E: UserEvent>(
         for (r, target, v) in d.written.drain(..) {
             // a place reference fires with its root, so a place already
             // holding the value is left alone, or decode would feed itself
+            // CR claude for claude: [bug/medium] This skips a place write whose value
+            // is already stored, but a binding target is always written. Decoding the
+            // same value three times fires `x` three times but `s.a` once, and `*r <-`
+            // through the same place fires every time. The premise in the comment is
+            // stale: a place reference does not fire when its root is written, and
+            // decode's arguments do not change when a target is written, so there is no
+            // self-feed to guard. Remove the test and write every target through
+            // write_through. probe:
+            // design/review-2026-10-26/repro/core-aux-decode-place-drops-repeat.gx
+            // (core-aux-03)
             let unchanged = match &target {
                 WriteTarget::Place(root, path) => ctx
                     .rt

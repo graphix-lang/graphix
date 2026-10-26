@@ -35,6 +35,16 @@ parser! {
             choice((
                 typedef().map(SigKind::TypeDef),
                 trait_decl(true).map(|t| SigKind::Trait(Arc::new(t))),
+                // CR claude for claude: [risk/low] An interface `impl` parses with a
+                // body, which the check always refuses (node/module.rs "without a
+                // body"), so `SigKind::Impl` represents a state no valid program has.
+                // The formatter's guard also never looks at those bodies:
+                // `Ornaments::sig` (format.rs) walks item comments and trait defaults
+                // only, and `Expr` equality ignores `dec` and `str_form`. A comment,
+                // attribute or delimiter lost there would be written without a refusal.
+                // Parse only the head and `;` here, and drop `methods` from the
+                // interface form. Found by reading; a .gxi impl body formats unchanged
+                // and the check refuses it. (t-format-resolver-04)
                 impl_decl().map(|i| SigKind::Impl(Arc::new(i))),
                 string("val")
                     .with(space())
@@ -233,6 +243,15 @@ parser! {
                     spaces1()
                         .with(string("as"))
                         .with(spaces1())
+                        // CR claude for claude: [bug/low] A rename may change the
+                        // imported name's case. `use m::T as t` binds a type no type
+                        // position can write, since typath needs a capitalized name.
+                        // `use m::v as V` binds a value that parses as a type or
+                        // constructor. Both pass the check with only an "unused import"
+                        // warning. Refuse a rename whose initial case differs from the
+                        // renamed segment's (the module's for `self`). probe:
+                        // design/review-2026-10-26/repro/t-parser-b-rename-case.sh
+                        // (t-parser-b-05)
                         .with((position(), choice((fname(), typname())))),
                 )),
                 position(),

@@ -1,0 +1,30 @@
+// A guard the chain did not reach catches up a fire of a variable it reads
+// directly, but not one it reads through a reference or a dynamic callee.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache tests-select-sleeping-guard-misses-learned-inputs.gx
+//   (same with --no-fusion)
+// Expected (CLAUDE.md: an unreached guard "sleeps, as an unselected arm
+// does, and wakes caught up"; an arm body catches all three up):
+//   direct guard 2
+//   ref guard 2
+//   dynamic guard 2
+// Observed (both engines):
+//   direct guard 2
+//   ref other
+//   dynamic other
+{
+  let b = 0;
+  let r = &b;
+  let mode = 0;
+  let gd = select mode { 0 => |x| count(b) > 1, _ => |x| x > 0 };
+  let t = 0;
+  t <- select t { n if n < 6 => n + 1, _ => never() };
+  b <- select t { 2 => 7, _ => never() };
+  let x = select t { 0 => 2, 5 => 2, _ => 1 };
+  let direct = select x { 1 => "one", n if count(b) > 1 => "guard [n]", _ => "other" };
+  let byref = select x { 1 => "one", n if count(*r) > 1 => "guard [n]", _ => "other" };
+  let dynamic = select x { 1 => "one", n if gd(n) => "guard [n]", _ => "other" };
+  select t { 5 => { println("direct [direct]"); println("ref [byref]"); println("dynamic [dynamic]") }, _ => never() };
+  sys::exit(sys::time::after_idle(duration:100.ms, 0));
+  t
+}

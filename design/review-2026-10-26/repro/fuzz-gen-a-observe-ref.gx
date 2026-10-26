@@ -1,0 +1,13 @@
+// Title: generate::observe prints a reference as the constant `&ref`, so a wrong referent is invisible
+// Command: graphix-fuzz run design/review-2026-10-26/repro/fuzz-gen-a-observe-ref.gx
+// Shape: gen_ref_stmts' moving reference, observed the way observe() prints it (`[r]`) and the
+//        way it could (`[*r]`).
+// Observed: stdout=[0+0:&ref | 0+0:1 | 0+1:&ref | 0+1:2]: `[r]` prints `&ref` both cycles; only
+//           `[*r]` shows the retarget from a[0] to a[-1].
+let a = [i64:1, i64:2];
+let k = i64:0;
+k <- i64:-1;
+let r = &mut a[k];
+println("[r]");
+println("[*r]");
+r

@@ -1422,6 +1422,12 @@ pub(crate) fn defer_written_map_keys<R: Rt, E: UserEvent>(
     }
 }
 
+// CR claude for claude: [readability/low] This function has no doc. Its doc is the
+// first paragraph of defer_written_map_keys's above ("Defer a judgment that only reads
+// types ... a definition's body included"). That paragraph holds the rule that
+// separates it from defer_settle, which defers nothing in a definition's body. Move the
+// paragraph here, and leave only the map-key paragraph on defer_written_map_keys. Found
+// by reading; not run. (c-node-mod-04)
 pub(crate) fn defer_judgment<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     judgment: PendingSettle,
@@ -1516,6 +1522,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         if self.children.len() > 1 && ctx.fork_mode() != ParMode::Off {
             return self.update_forking(ctx);
         }
+        // CR claude for claude: [structure/low] The three serial paths here and
+        // update_forking (through Runs::update) each repeat the block's tail: the last
+        // child's production, the catches in reverse order, take_back_reraised, phantom
+        // for a module. The catch path's `self.catches.last() != Some(&last)` test and
+        // its `_ => self.resident.ride()` arm handle a block that ends in a catch,
+        // which compile_statement refuses. value_is_caught tests the same impossible
+        // case, so it is `!self.catches.is_empty()`. Delete the dead branches and let
+        // the catch path and update_forking share one ending; keep the fast path. Found
+        // by reading; not run. (c-node-mod-03)
         if self.catches.is_empty() && self.lets.is_empty() {
             let res = self
                 .children
@@ -1990,6 +2005,15 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     }
 }
 
+// CR claude for claude: [perf/medium] ConnectDeref has no `fuse`, and neither do Deref
+// and ByRef, so the right side of `*r <- e`, the child of `*e` and a place key never
+// get a region pass: a pure call there stays in the node-walk, where `v <- e`
+// (Connect::fuse) fuses it. A `#[native]` in those positions is refused as "a position
+// the fusion pass cannot check". Give each a fuse over its children through
+// fusion::fuse_parts (self.rhs here, self.child in Deref, the referent's nodes in
+// ByRef), as Connect does. probe:
+// design/review-2026-10-26/repro/x-node-contract-connectderef-no-fuse.gx
+// (x-node-contract-02)
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         f(&self.rhs)
@@ -2040,6 +2064,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 addressless = self.cell.is_none();
             }
         }
+        // CR claude for claude: [bug/medium] A write made before the reference first
+        // arrives is kept only as a flag. It is then landed with the RHS's value in the
+        // arrival cycle, if that value is not bottom. An event RHS is bottom by then,
+        // so the write never lands, though CLAUDE.md and design/place_references.md say
+        // it lands at the first target. Fix: hold the written value (`pending:
+        // Option<Value>`), drop it on a bottom address, and land it at the first cell
+        // whatever the RHS is then. Pin the event-RHS case in lang::byref. probe:
+        // design/review-2026-10-26/repro/x-engine-firing-prearrival-write-dropped.gx
+        // (x-engine-firing-04)
         self.pending = !addressless && (self.pending || rhs_fired);
         if self.pending
             && let Some(v) = rhs_val
@@ -2490,6 +2523,15 @@ enum Banking {
     Strict,
     /// `~`: a trigger that finds the RHS absent is banked, and what is
     /// owed is paid through the private `id` at the RHS's value.
+    // CR claude for claude: [dead/low] Under Owed::One the payment variable is dead:
+    // `owed` is at most 1 and is answered from the held argument in the cycle the
+    // argument arrives, so set_var(id) never runs and `var` is never Some. Yet every
+    // `~` mints this BindId, records and registers a read of it (record_ref,
+    // Refs::read, release_var) and images it. Give One a `pending: bool` with no id and
+    // keep the id for Owed::Each alone. lang::fusion::deleted_sample_releases_store
+    // still says "one is answered, the other is paid", but nothing is paid through the
+    // variable now, so its store check covers only `v` and `t`: move it to a seqq body
+    // or drop the Sample claim. Found by reading; not run. (x-seq-sampling-07)
     Debt { owed: u64, each: Owed, id: BindId },
 }
 
@@ -2663,6 +2705,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // a banked trigger is answered from the held arg this cycle; the
         // rest of the debt is paid through `id`
         let answered = match &self.arg.value {
+            // CR claude for claude: [bug/medium] A trigger that finds the argument
+            // bottom after it once had a value is answered here from the stale held
+            // value: the debt is decremented, the next match turns it into a bottom,
+            // and nothing is paid when the argument returns. A trigger that finds the
+            // argument never produced is banked and paid. CLAUDE.md ("banking one
+            // trigger however many find v absent") and book/src/core/select.md ("`~!`
+            // ... bottom with no bank when v is bottom. `~` still banks") both say `~`
+            // banks a bottom. Under Owed::Each only the first owed trigger is lost this
+            // way; the payment loop keeps the rest. Fix: add
+            // `!self.arg.tag.is_bottom()` to this guard, so the payment loop pays the
+            // debt when the argument returns, and delete the `(Some(_), _) if
+            // self.arg.tag.is_bottom()` arm. Pin both shapes. probe:
+            // design/review-2026-10-26/repro/c-node-mod-bank-after-bottom.gx Also
+            // reported as (tests-lang-rest-b-01). (c-node-mod-01)
             Some(v) if *triggered > 0 && var.is_none() => {
                 *triggered -= 1;
                 Some(v)
@@ -2677,6 +2733,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             }
         }
         match (answered, var) {
+            // CR claude for eric: [bug/medium] Once the argument has had a value, a
+            // trigger that finds it bottom is answered here into a fresh bottom: the
+            // debt is consumed, nothing is banked and the held value is not ridden, so
+            // `~` behaves exactly like `~!` (the step-7 fire in the probe is lost).
+            // book/src/core/select.md contrasts `~!` (bottom, no bank when v is bottom)
+            // with `~` that "still banks", and dense_delivery.md R3 names `~`'s
+            // argument a designated Held ride ("sample the latest"); CLAUDE.md's
+            // "absent" fits either. Rule which is intended: bank (skip answering while
+            // arg.tag is bottom and pay at the next value), ride, or keep the code and
+            // say in CLAUDE.md, the book and R3 that `~` banks only before its
+            // argument's first value. probe:
+            // design/review-2026-10-26/repro/x-seq-sampling-sample-drops-trigger-on-bottom.gx
+            // (x-seq-sampling-05)
+            // CR claude for eric: [bug/medium] Once the argument has had a value, a
+            // trigger that finds it bottom takes this branch: the output is bottom and
+            // the debt is spent. So `~` behaves like `~!` and differs from it only
+            // before the argument's first value. The docs say otherwise: the book
+            // (core/select.md) says `~!` is bottom with no bank when v is bottom while
+            // `~` still banks, CLAUDE.md says a fire that finds v absent is banked, and
+            // dense_delivery R3 calls `~`'s argument a ride ("sample the latest"). Pick
+            // one rule: bank (leave the debt and pay when the argument returns), ride
+            // (answer from the held value), or document that "absent" means "never
+            // produced". Then pin it; no fixture covers an argument that goes bottom
+            // after a value. probe:
+            // design/review-2026-10-26/repro/x-engine-firing-bank-after-bottom.gx
+            // (x-engine-firing-01)
             (Some(_), _) if self.arg.tag.is_bottom() => self.resident.set_bottom(true),
             // paid in a cycle the trigger did not fire: the argument's
             // arrival is the event
@@ -2694,6 +2776,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.delete(ctx);
     }
 
+    // CR claude for eric: [bug/medium] A `~`'s debt survives its step's sleep and the
+    // step's next entry, which is a birth for the run (View::Step). A trigger banked in
+    // an aborted seq run is paid in the next run when the argument arrives, completing
+    // that run's step on an event of the dead run ("result 100 at 12" with no ev in run
+    // 2). Builtins are reborn there (CallSite calls Apply::reborn when its update after
+    // a sleep is born); Sample has no counterpart. Either clear `owed` on the first
+    // update after a sleep under a born view (a slept bit as CallSite keeps), or rule
+    // that a banked trigger outlives its run and document it. probe:
+    // design/review-2026-10-26/repro/x-seq-sampling-bank-survives-run.gx
+    // (x-seq-sampling-04)
+    // CR claude for claude: [bug/medium] A banked sample under Owed::Each (seqq's
+    // request queue) sends all but one payment of a backlog through `id` with set_var,
+    // one per cycle. This sleep takes none of them back: payments that land while the
+    // arm sleeps are missed, and the wake's catch-up re-raises the variable once. A
+    // seqq in a select arm whose capture arrived late runs 2 of its 4 queued requests.
+    // Count payments sent but not yet received; on sleep, re-mint `id` (release it, ref
+    // a fresh one) and add the count back to `owed`, as Queue/IterQ do with
+    // InFlight::take_back. probe:
+    // design/review-2026-10-26/repro/x-node-contract-banked-sample-sleep.gx
+    // (x-node-contract-01)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.arg.sleep(ctx);
         self.trigger.sleep(ctx);

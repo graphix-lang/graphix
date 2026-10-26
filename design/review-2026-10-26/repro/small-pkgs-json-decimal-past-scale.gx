@@ -1,0 +1,12 @@
+// small-pkgs: json::read into a decimal target goes through f64 when the text has more digits than a decimal holds
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/small-pkgs-json-decimal-past-scale.gx
+// Expected: each the decimal nearest the text (rounded at decimal's 28-29 significant
+//   digits): a = 0.12345678901234567890123456789..., c = 12345678901234567890.12345678...
+// Observed (the f64 nearest the text, then cast to decimal):
+//   (0.1234567890123457, 0.123456789012345678901234567, 12345678901234567168.)
+type E = [`JsonErr(string), `InvalidCast(string)];
+let a: Result<decimal, E> = json::read("0.1234567890123456789012345678912");
+let b: Result<decimal, E> = json::read("0.123456789012345678901234567");
+let c: Result<decimal, E> = json::read("12345678901234567890.123456789123");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(a, b, c)

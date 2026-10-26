@@ -1,0 +1,20 @@
+// Title: a publish's write refusal (the value does not cast to #on_write's argument)
+// answers a receipt-carrying writer with a marked graphix variant, which netidx cannot
+// carry: the connection to the publishing process is torn down. Here the writer is
+// sys::net::call (write_with_recipt of an empty map to a plain publication).
+// Command: RUST_LOG=warn timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-net-write-refusal-kills-connection.gx
+// Expected: sub: 0..9 uninterrupted; call: an error naming the cast failure.
+// Observed: sub: 4 / sub: error:`SubscribeError("unsubscribed") /
+//           call: error:`RpcError("call cancelled before a reply was received") / sub: 4 ...
+let x = 0;
+sys::net::publish(#on_write: |v: i64| x <- v, "/local/pw", x);
+let n = 0;
+n <- sys::time::timer(duration:100.ms, true) ~ n + 1;
+sys::net::publish("/local/counter2", n);
+let s: [i64, Error<[`SubscribeError(string), `InvalidCast(string)]>] = sys::net::subscribe("/local/counter2");
+println("sub: [s]");
+let r: [i64, Error<[`RpcError(string), `InvalidCast(string)]>] =
+  sys::net::call(sys::time::timer(duration:450.ms, false) ~ "/local/pw", null);
+println("call: [r]");
+sys::exit(sys::time::timer(duration:1000.ms, false) ~ 0);
+0

@@ -158,6 +158,14 @@ impl FnArgType {
 #[derive(Debug, Clone)]
 struct Link(Weak<RwLock<LambdaIdsInner>>);
 
+// CR claude for claude: [perf/low] This hashes a raw pointer into a nohash set, the
+// shape x-perf-runtime-02 fixed only for image_id! ids. A user-space pointer is below
+// 2^47, so hashbrown's 7-bit control tag is 0 for every key and alignment zeroes the
+// index bits. A bench over real heap pointers shows 2.6-5.7 ns per lookup against
+// 0.8-1.1 ns mixed. The same holds for the address-keyed IntMap<usize> memos
+// (shape_hash_memo, RefHist.ref_ids). Hash pointer keys with the one multiplicative
+// write image_id! uses. probe:
+// design/review-2026-10-26/repro/x-rerun-5-ptr-idhash-bench.rs (x-rerun-5-11)
 impl Hash for Link {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (Weak::as_ptr(&self.0) as usize).hash(state)
@@ -933,6 +941,17 @@ impl FnType {
     /// A call's copy of a signature whose cells it shares (a parameter
     /// called in its definition's body): only the quantifiers are fresh.
     #[doc(hidden)]
+    // CR claude for claude: [bug/medium] A call through a parameter copies only the
+    // signature's own quantifiers, never the quantifier of a rank-2 function type the
+    // parameter takes. instantiate skips it too while its owner's gate is open
+    // (generic_inner_quantifiers keeps only copied_by cells). `|k: fn(f: fn<'c: Any>(x:
+    // 'c) -> 'c) -> (i64, string)| k(|z| z)` is therefore refused ("not polymorphic in
+    // 'c ... a variable of its environment"), because the argument aliases k's own
+    // Def-level 'c. The same call through a top-level let works. Fix: call
+    // generic_inner_quantifiers here as well, and copy FormalQuantifier cells whatever
+    // gate owns them, as fresh_quantifiers does for own quantifiers. probe:
+    // design/review-2026-10-26/repro/t-fntyp-rank3-param-call.gx Also reported as
+    // (x-typecheck-generics-06). (t-fntyp-04)
     pub fn shared_call(&self) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.fresh_quantifiers(&mut known, |c, known| c.swap_cells(known));
@@ -1267,6 +1286,14 @@ impl FnType {
                              implementation {i} default"
                         )
                     }
+                    // CR claude for claude: [dead/low] This arm cannot run. Once align
+                    // succeeds, every pair is two Labeled args with the same name or
+                    // two Positional args, and two Positional kinds always compare
+                    // equal, so only the default-mismatch arm above is reachable.
+                    // ArgKindText is used only here. Fix: delete the arm, and use
+                    // ArgKindText in the `in argument {i}` context below, which
+                    // currently names a label by its pair index ("in argument 0" for
+                    // #a). Found by reading; not run. (t-fntyp-07)
                     (k0, k1) => bail!(
                         "argument {i}: the signature has {}, the implementation {}",
                         ArgKindText(k0),
@@ -1381,6 +1408,15 @@ impl FnType {
         // variable it stands for.
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
         // or a bound of the typedef parameter it fills, implies it
+        // CR claude for claude: [bug/medium] `'a: Any`, the usual way to declare a
+        // variable on a lambda, gives the cell the conjunct Any. A signature that
+        // writes the plain variable has no conjunct to imply it, so `let id = 'a: Any
+        // |x: 'a| -> 'a x` under `val id: fn(x: 'a) -> 'a` is refused ("the
+        // implementation requires 'a: Any, which the signature does not declare"). The
+        // loop above skips a signature-side Any; the implementation side needs the
+        // same: return Ok here for impl_tc == Type::Any. Alternatively, make
+        // Type::implies hold for c == Any. probe:
+        // design/review-2026-10-26/repro/t-contains-sig-any-bound.sh (t-contains-05)
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
             let mut sig_tcs = sig_tv.cell_constraints();
             if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
@@ -1419,6 +1455,21 @@ impl FnType {
             }
             match tvar_map.cells.get(&tv.cell_addr()) {
                 None => (),
+                // CR claude for claude: [bug/medium] A rank-2 parameter's own
+                // quantifier is checked in the wrong direction here. Interface `g:
+                // fn<'b: Number + Singleton>` paired with implementation `g: fn<'c:
+                // Any>` that calls g("s") passes the check, and the build then refuses
+                // the instance. The sound reverse (interface `fn<'b: Any>`,
+                // implementation `fn<'c: Number + Singleton>`) is refused with
+                // "requires 'b: Number". For a fn-type pair in an argument position the
+                // implementation picks the quantifier, so its conjuncts must imply the
+                // signature's. Fix: record each pair's polarity when sig_matches_int
+                // pushes it onto SigPairs::fns, and swap the roles of `declared` for a
+                // contravariant pair's quantifiers. The CLAUDE.md rule that the
+                // implementation may leave off a declared bound needs that exception.
+                // probe:
+                // design/review-2026-10-26/repro/t-fntyp-rank2-sig-bound-polarity.sh
+                // (t-fntyp-01)
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
                         declared(sig_tv, &impl_tc)?
@@ -1444,6 +1495,16 @@ impl FnType {
                         }
                     }
                     for impl_tc in tv.cell_constraints() {
+                        // CR claude for claude: [bug/medium] This probe runs with the
+                        // signature's open variables free to bind, so `[Number, null]`
+                        // admits `['b, null]` even though the signature leaves 'b to
+                        // every caller. `val f: fn(x: ['b, null]) -> string` over `'a:
+                        // [Number, null] |x: 'a|` passes the check, and the build
+                        // refuses `m::f("hello")`'s instance. Fix: hold every open cell
+                        // of sig_type rigid (open_rigid) for the duration of the probe,
+                        // so 'b fits only through its own conjuncts. probe:
+                        // design/review-2026-10-26/repro/t-fntyp-sig-open-var-probe.sh
+                        // (t-fntyp-03)
                         let ok = impl_tc
                             .contains_with_flags(probe, env, sig_type)
                             .unwrap_or(false);
@@ -1546,6 +1607,12 @@ pub(crate) struct Ret<'a> {
 }
 
 impl<'a> Ret<'a> {
+    // CR claude for claude: [bug/low] An inferred return type is a TVar bound to the
+    // function, not a Type::Fn, so it gets no parentheses here. The outer function's
+    // throws then prints as the inner one's: "fn(x: i64) -> fn(y: i64) -> i64 throws
+    // Error<ErrChain<`E>>", where the outer function is the one that throws. Fix:
+    // decide on the dereferenced type (through a bound TVar's binding). probe:
+    // design/review-2026-10-26/repro/t-fntyp-ret-throws-ambiguous.gx (t-fntyp-05)
     pub(crate) fn of(t: &'a Type, throws_follows: bool) -> Self {
         let (open, typ, close): (_, &dyn PrettyDisplay, _) = match t {
             Type::Fn(ft) if throws_follows => ("(", &**ft, ")"),

@@ -1,0 +1,8 @@
+// Title: every collection intrinsic instance checks its prototype slot call
+// in full (its synthetic spec has a fresh id, so no DefTable row), and
+// GRAPHIX_ELAB_AUDIT reports it on any program that maps an array.
+// Command: GRAPHIX_ELAB_AUDIT=1 graphix --no-cache c-lambda-collection-prototype-no-row.gx
+// Expected: no ELAB-AUDIT line (no id is shared; the instance substitutes).
+// Observed: "ELAB-AUDIT fallback at Unspecified:line: 1, column: 1
+//   `("nop")(collection_element)`: no check-table row: checked in full", then [2, 3].
+array::map([1, 2], |x| x + 1)

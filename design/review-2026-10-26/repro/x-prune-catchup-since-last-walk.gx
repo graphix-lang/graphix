@@ -1,0 +1,24 @@
+// x-prune: a wake's catch-up owes a fire by the arm's last WALK, so pruning changes it
+// Command: GRAPHIX_PRUNE=on  graphix --no-cache --no-fusion x-prune-catchup-since-last-walk.gx
+//          GRAPHIX_PRUNE=off graphix --no-cache --no-fusion x-prune-catchup-since-last-walk.gx
+//          graphix-fuzz check x-prune-catchup-since-last-walk.gx
+// Expected (unpruned, and by CLAUDE.md: v was written while arm 1 was awake, so no
+// fire was missed during its sleep): 0 1 0
+// Observed pruned: 0 1 0 101  (the fuzzer: "DIVERGENCE — walk pruning bug",
+//   interp/unpruned Trace([0:0 6:1 13:0]) vs interp Trace([0:0 6:1 13:0 21:101]))
+// Arm 1 is selected from n=5 to n=12 but its select is not walked in that window under
+// pruning (nothing it reads fires), so TrackedFires::last_run[1] stays at its entry.
+// v is written at n=10. At the wake (n=20) the call rebinds to g, and deliver_owed
+// injects v FIRED because v's stamp is later than that stale last_run.
+{
+  let n = 0;
+  n <- select n < 30 { true => n + 1, false => never() };
+  let v = 0;
+  v <- select n == 10 { true => 7, false => never() };
+  let g = |x: i64| count(v) * 100 + x;
+  let k = |x: i64| x;
+  let f = select uniq(n >= 15) { true => g, false => k };
+  let sc = 0;
+  sc <- select n { 5 => 1, 12 => 2, 20 => 1, _ => never() };
+  select sc { 1 => f(1), _ => 0 }
+}

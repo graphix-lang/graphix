@@ -206,6 +206,15 @@ impl<'a> Query<'a> {
         };
         // a segment before the last names the module of its prefix: the
         // item's scope less the segments after it
+        // CR claude for claude: [bug/low] This assumes every segment after the one
+        // under the cursor descends one level, but `super` ascends. In a::b,
+        // `super::super::top`'s first `super` comes out as the root instead of `a`:
+        // hover shows `mod ` (the root, empty), there is no definition, and its
+        // references are every `super` naming the root. `references` makes the same
+        // computation. Record the reference site's module with
+        // ReferenceSite/TypeRefSite and resolve each written prefix with
+        // `Env::canonical_modpath` instead of truncating the item's scope. probe:
+        // design/review-2026-10-26/repro/x-lsp-probe-super-segments.py (x-lsp-probe-07)
         let module =
             |scope: &ModPath, after: usize| Target::Module(truncated(scope, after - 1));
         for r in ide.references.iter() {

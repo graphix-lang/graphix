@@ -1,0 +1,17 @@
+// t-print: an error frame's `in:` snippet of a decorated expression starts with an
+// empty line and spans several lines
+// Command: /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --check design/review-2026-10-26/repro/t-print-decorated-error-snippet.gx
+// Expected: each frame on one line, e.g. `1: at: line: 16, column: 5 in file ..., in: #[serial] s + 1`
+// Observed:
+//     0: at: line: 14, column: 1 in file ..., in: let x = 
+//        #[serial]
+//        s + 1
+//     1: at: line: 16, column: 5 in file ..., in: 
+//        #[serial]
+//        s + 1
+//     2: at: line: 16, column: 5 in file ..., in: s + 1
+let s = "abc";
+let x =
+    #[serial]
+    s + 1;
+x

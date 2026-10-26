@@ -1,0 +1,17 @@
+// Title: #numeric sort still compares every non-integer key as an f64: decimals and
+//   fractional numeric strings past f64's precision misorder (variant of
+//   collections-str-03, whose fix made only integers exact).
+// Command: timeout -s KILL 30 graphix --no-cache x-rerun-1-numeric-sort-decimal.gx
+// Expected: ([0.1, 0.10000000000000000001], ["0.1", "0.10000000000000000001"],
+//   ["9007199254740993.25", "9007199254740993.5"], [0.1, 0.10000000000000000001])
+// Observed: ([0.10000000000000000001, 0.1], ["0.10000000000000000001", "0.1"],
+//   ["9007199254740993.5", "9007199254740993.25"], [0.1, 0.10000000000000000001])
+//   NumKey::of casts every key that is not an integer to f64, so the pairs tie and the
+//   stable sort keeps the input order; the plain (non-numeric) sort of the decimals is right.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(
+  array::sort(#numeric: true, [decimal:0.10000000000000000001, decimal:0.1]),
+  array::sort(#numeric: true, ["0.10000000000000000001", "0.1"]),
+  array::sort(#numeric: true, ["9007199254740993.5", "9007199254740993.25"]),
+  array::sort([decimal:0.10000000000000000001, decimal:0.1])
+)

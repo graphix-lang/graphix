@@ -1,0 +1,22 @@
+// A forked sibling compares a moving reference by its stale place.
+// `==` over references compares what each names (ExecCtx::ref_targets ->
+// rt.ref_path), a this-cycle read of the place the `let r = &a[x]` sibling
+// moves, but analysis::own_access records no `refs` read for Eq/Ne, so
+// plan_runs runs the two statements as one forkable run.
+// Command:
+//   GRAPHIX_PAR=off   graphix --no-cache --no-fusion c-analysis-branch-refeq-path.gx
+//   GRAPHIX_PAR=force graphix --no-cache --no-fusion c-analysis-branch-refeq-path.gx
+//   graphix-fuzz check c-analysis-branch-refeq-path.gx
+// Expected (serial): [] / [true] / [true, false]
+// Observed (force):  [] / [false] / [false, true]
+// graphix-fuzz: DIVERGENCE — parallel evaluation bug.
+{
+  let x = array::iter([0, 1, 2]);
+  let a = [10, 20, 30];
+  let holder: [&i64, null] = null;
+  let out: Array<bool> = [];
+  let r = &a[x];
+  out <- select holder { null => never(), p => x ~ array::push(out, p == &a[1]) };
+  holder <- r;
+  out
+}

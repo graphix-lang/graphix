@@ -44,6 +44,12 @@ every later run. This removes build scripts, host/target registries,
 cross-compilation, sidecars, and any way for a producer and consumer to
 disagree.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph's record of what decided
+resolution (interfaces beside modules, m.gx vs m/mod.gx, root_module_site) describes the
+mechanism expr::Probes replaced. The entry now holds every file resolution read and
+every place it found absent, as resolution reported them, and a netidx probe means no
+entry. Rewrite the two sentences to say so. Found by reading; not run. (x-doc-drift-05)
+-->
 **Key.** Entries are filed under the executable's build id: the ELF
 linker's `.note.gnu.build-id`, a Mach-O `LC_UUID`, or a PE link stamp
 and size, never a hash of the whole executable, which is too slow to
@@ -151,6 +157,13 @@ bench mode, realtime: the image grows from 7.5 to 8.4 MB (fusion on:
 65.4 to 62.8), its run-time binds substituting instead of checking.
 Decoding every table at the restore instead cost 4 to 7 ms.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says the session cannot pin
+expressions and function types. image::expr_key now keys each expression by the
+session's own clone (ImageEncoder::exprs_by_id), fntype_owned pins LambdaIds, and
+type_keys pins shared type nodes. The whole-session borrow rule still holds, but because
+the deferred heap bodies are written from borrowed nodes (CallSite::image_encode's
+transmuted &'static dyn Apply). Rewrite the reason. Found by reading; not run.
+(t-image-04) -->
 Expressions and function types are objects too, keyed by content
 (`Type::content_key`, `image::expr_key`): a node's spec and a definition's
 body are value clones of subtrees of one tree, and a binding's type
@@ -230,6 +243,13 @@ compile is reported through the same call, so the shell's error text
 is unchanged. The shell keeps two cache entries per build id, the
 registration and the program, and the runtime restores the most
 complete one that reads; it writes whichever it compiled, a missing
+<!-- CR claude for claude: [doc-drift/low] This says compile-time diagnostics print on
+the cold run only. The entry records its warnings (ProgramRoot::warnings) and
+restore_registration replays them, so a warm start warns as a cold one does, as this doc
+says further up. Fix the sentence. Also, `root_module_site`, named further up, exists
+nowhere in the code: the shadowing record comes from each FilesResolver in the chain
+pushing its absent probes. probe: a program with an uncaught ? warns on both of two runs
+under one cache. Also reported as (tests-modules-image-05), (x-image-03). (shell-05) -->
 entry or one that failed to restore. A warm run compiles nothing, so
 compile-time diagnostics (an uncaught `?`, unused bindings) print on
 the cold run only.

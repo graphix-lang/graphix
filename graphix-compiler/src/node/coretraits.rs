@@ -578,6 +578,16 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
                 (true, true) => true,
                 (true, false) | (false, true) => false,
                 (false, false) => {
+                    // CR claude for eric: [bug/low] This logs "answering Equal" and
+                    // then returns false: an inconsistent Eq pair compares unequal on
+                    // both engines. design/traits.md says such a pair is answered Equal
+                    // and that eq follows the same shape. Decide which answer an
+                    // inconsistent Eq pair gets, make the code and the design agree,
+                    // have warn_pair_bottom name the answer each trait gives, and pin
+                    // it next to core_bottom_key_rule (no fixture covers this branch).
+                    // probe:
+                    // design/review-2026-10-26/repro/tests-fusion-traits-eq-inconsistent-pair.gx
+                    // (tests-fusion-traits-06)
                     warn_pair_bottom(CoreTrait::Eq, a);
                     false
                 }

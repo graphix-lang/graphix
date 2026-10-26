@@ -633,6 +633,17 @@ impl Type {
     /// Whether the declared bound `self` implies the bound `c`: it is `c`,
     /// or holds it of every type it admits (a predicate only where none of
     /// those has an unknown part), and `Ordered` implies `Discernible`.
+    // CR claude for claude: [bug/medium] implies leaves the declaring side's own
+    // variables open. `self == c` uses Type's PartialEq, which treats two unbound cells
+    // as equal. The empty-flag probe `c ⊇ self` admits an open cell as anything. So an
+    // interface bound `'a: Array<'b>` (the caller picks 'b) implies the
+    // implementation's `'a: Array<i64>`, and also `'a: Array<'q>` with 'q tied to
+    // another parameter. --check and the LSP accept the interface, and the build then
+    // refuses the call's instance with the internal "an instance at .. of a definition
+    // typed .." error. Fix: compare with strict cell identity (strictly_identical), and
+    // run the probe with RigidCheck while rigid gates are open on self's open cells, so
+    // the bound must hold for every instance of the signature's variables. probe:
+    // design/review-2026-10-26/repro/t-contains-implies-open-cell.sh (t-contains-01)
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
         Ok(self == c
             || matches!((self, c), (Type::Ordered, Type::Discernible))
@@ -873,6 +884,16 @@ impl std::fmt::Display for TypeMismatch {
                     s(passed)
                 )?;
             }
+            // CR claude for claude: [bug/medium] This renders both types in full. A
+            // type that shares its parts prints 2^depth long, so a 32-line program
+            // (`let x_i = `A(x_{i-1}, x_{i-1})` 30 times, then `let y: i64 = x30`)
+            // makes --check run out of memory past 6 GB. At 28 levels the error is 2.4
+            // GB. Fusion's refusals already cap a type at 512 bytes (fusion::Brief,
+            // x-rerun-2-01). Move that capped writer here and render both sides through
+            // it, comparing the capped texts for the `apart` check. Do the same for the
+            // `val .. is declared .. but implemented ..` messages in node/module.rs.
+            // probe: design/review-2026-10-26/repro/x-rerun-4-dag-type-mismatch-oom.gx
+            // (x-rerun-4-02)
             let (expected, actual) = (
                 format_compact!("{}", self.expected),
                 format_compact!("{}", self.actual),
@@ -1094,7 +1115,41 @@ impl Type {
         }
         let data = |t: &Type| data_cell(t, &mut SmallVec::new());
         let code = |t: &Type| t.holds_fn(env) || t.holds_ref(env);
+        // CR claude for claude: [bug/medium] This blames Data whenever either side
+        // holds an unbound Data cell anywhere and either side holds a function or
+        // reference. It never checks that the cell sits where the code is. So a
+        // function refused for its return type is reported as data. `publish(#on_write:
+        // h, ..)` with `h = |v: i64| { x <- v; null }` is refused with "fn(v: i64) ->
+        // null is not data: a writer writes no function and no reference". The Data
+        // cell is the handler's argument, and the real mismatch is `-> _`. Fire this
+        // explanation only where an unbound Data cell on one side meets a function or
+        // reference on the other, walking the two types together as contains does.
+        // Otherwise fall through to the TypeMismatch. probe:
+        // design/review-2026-10-26/repro/tests-lib-b2-not-data-misattributed.gx
+        // (tests-lib-b2-01)
+        // CR claude for claude: [bug/medium] This explains any failed contains as a
+        // Data refusal when a Data cell sits anywhere in either side, including inside
+        // a function's parameter list. So a publish handler `h: fn(v: i64) -> i64`
+        // (wrong return: the formal wants `-> _`) is told 'fn(v: i64) -> i64 is not
+        // data: a writer writes no function and no reference', though nothing writes
+        // it. The literal `|v: i64| 0` gets the true 'type mismatch _ does not contain
+        // i64'. Make `data_cell` stop at a `Type::Fn`'s arguments and return, as it
+        // already does for the function's own quantifiers: a Data cell there judges
+        // what the function is called with, never the function. probe:
+        // design/review-2026-10-26/repro/tests-lang-rest-a-handler-mismatch-says-not-data.gx
+        // (tests-lang-rest-a-04)
         if (data(self) || data(t)) && (code(self) || code(t)) {
+            // CR claude for claude: [readability/low] When the refused pair is a whole
+            // function type (an `#on_write` or rpc `#f` handler against `fn(v: 'a) ->
+            // _`), `code(t)` is true of the handler itself, so the message names the
+            // handler: "fn(v: &i64) -> '_7759: unbound is not data: a writer writes no
+            // function and no reference". The user wrote `v: &i64`. The message calls
+            // the callback not data, prints an inference variable, and speaks of a
+            // writer where the value is read. Fix: report the part the Data cell meets
+            // (walk the pair to the cell bounded Data and print what it is matched
+            // with, `&i64`), and word it for both directions. probe:
+            // design/review-2026-10-26/repro/x-rerun-3-not-data-names-handler.gx
+            // (x-rerun-3-08)
             let t = if code(t) { t } else { self };
             return Some(anyhow::anyhow!(
                 "{}",
@@ -1758,6 +1813,18 @@ impl Type {
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
+            // CR claude for eric: [bug/medium] filter_map's ['b, null, `Keep('b)]
+            // refuses a callback returning [i64, `Keep(null)]. Both placement orders
+            // here bind the bare 'b from one member and then refuse the other:
+            // `Keep(null) fixes 'b to null and i64 no longer fits, or the reverse.
+            // Nothing widens 'b to [i64, null], although 'b sits only in covariant
+            // positions. So `select x { i64 as v => v + 1, null as _ => `Keep(null) }`
+            // is refused, even with an explicit return annotation, while the all-`Keep
+            // spelling of the same callback runs. Either let a bare cell that shares a
+            // constructor sibling take the union of what both need, or document that
+            // keeping a null forces `Keep on every kept value. probe:
+            // design/review-2026-10-26/repro/gx-stdlib-keep-null-mixed.gx Also reported
+            // as (x-engine-collections-03). (gx-stdlib-01)
             (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
                 if !commit || !shares_bare_cell(s0) {
                     return Self::place_members(flags, env, hist, t0, s0, s1);
@@ -2415,6 +2482,17 @@ impl Type {
             Type::Set(Arc::from_iter(residue.drain(..)))
         };
         let target = target.normalize();
+        // CR claude for claude: [bug/medium] The residue goes to the first unbound
+        // member, and is_unbound_tvar counts a rigid declared variable as unbound. With
+        // ['r, 'q] ⊇ [i64, Array<string>] inside 'r's definition, the residue goes to
+        // the rigid 'r, the committing walk refuses it, and the containment fails
+        // although 'q could take the residue. Written ['q, 'r], it checks. The
+        // Primitive arm of `Set ⊇ t` picks its bare member the same way
+        // (`s.iter().find(|m| is_unbound_tvar(m))`). Fix both: take the first unbound
+        // member that a guide(flags) probe admits the residue into, and fail only when
+        // none does. probe:
+        // design/review-2026-10-26/repro/t-contains-rigid-bare-member.gx
+        // (t-contains-02)
         let bare = s0.iter().zip(&free).find(|(_, free)| **free);
         match bare {
             Some((tv_m, _)) => tv_m.contains_int(flags, env, hist, &target),
@@ -2746,6 +2824,19 @@ pub(super) fn find_impl_with(
         return Ok(None);
     }
     for im in list.iter().filter(|im| !env.impl_hidden(im)) {
+        // CR claude for claude: [perf/medium] [perf/medium] This skip never fires. An
+        // impl's target is stored as the typedef reference it was written as (`impl
+        // Show for C` gives a Type::Ref), and an abstract type can only be named that
+        // way. So every lookup contains-checks the query against every impl of the
+        // trait, expanding the head's ref both ways. N abstract types with N impls and
+        // one call each check in 0.42 / 1.27 / 4.41 s at N = 800 / 1600 / 3200, against
+        // 0.24 s for 3200 calls to one impl. lower_trait_union also passes union
+        // members unexpanded, against Env::find_impl's documented precondition. Record
+        // each impl's head abstract id once at register_impl (which already uses
+        // head_abstract for its overlap check) and compare it with head_abstract of the
+        // dereferenced `t` here. probe:
+        // design/review-2026-10-26/repro/x-perf-compile-find-impl-scan.sh
+        // (x-perf-compile-03)
         if let (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) =
             (&im.target, t)
             && a != b

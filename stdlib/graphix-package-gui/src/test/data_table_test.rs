@@ -588,6 +588,12 @@ let result = data_table(
     .await?;
     let snap = h.dt_snapshot();
     assert_eq!(snap.row_basenames[0], "r119", "top row after desc sort");
+    // CR claude for claude: [test-gap/low] [test-gap/low] The doc says mem is
+    // subscribed only inside the 80-row window (subscription_row_range), but nothing
+    // here checks it: subscribing every row's mem, or keeping the mem subscriptions of
+    // the rows the resort moved out of the window, still passes. Count the subscribed
+    // (row, "mem") cells through a test accessor and assert 80 after the resort. Found
+    // by reading; not run. (tests-gui-a-04)
     assert!(mem_ok(&snap), "the visible rows' mem cells: {:?}", &snap.grid[..30]);
     Ok(())
 }
@@ -1427,6 +1433,11 @@ let result = data_table(#sort_by: &sort, #table: &tbl)
     h.drain().await?;
     let resort = h.compile_named_callable("test::resort").await?;
     h.call_callback(resort, ValArray::from_iter([Value::Null])).await?;
+    // CR claude for claude: [test-gap/low] [test-gap/low] Nothing checks that the
+    // resort happened. If the callback's write to `sort` never reaches the table, the
+    // history is still [7.5] and the "a sort change adds none" claim goes unchecked.
+    // Before this line, assert dt_sort_indicator("other") is Some(" ▼"). Found by
+    // reading; not run. (tests-gui-a-03)
     assert_eq!(h.dt().dt_sparkline_values("r0", "spark").as_deref(), Some(&[7.5][..]));
     Ok(())
 }
@@ -1990,6 +2001,12 @@ let result = data_table(#table: &tbl)
     let handle = Point::new(b.x + b.width - 7.5, 14.0);
     h.drag_live(handle, Point::new(-50.0, 14.0), 4).await?;
     assert!(!h.inner.dt().dt_is_resizing());
+    // CR claude for claude: [test-gap/low] [test-gap/low] If the press misses the
+    // resize handle, resize_drag stays None and w is None, so both the
+    // !dt_is_resizing() assert and the hover assert hold without any drag having
+    // happened. A drag that started leaves c0's user width at MIN_COL_WIDTH (80):
+    // assert w == Some(80.0) here so the test fails when the handle is missed. Found by
+    // reading; not run. (tests-gui-a-02)
     let w = h.inner.dt().dt_user_width("c0");
     h.live(&[
         Event::Mouse(mouse::Event::CursorMoved { position: Point::new(100.0, 100.0) }),

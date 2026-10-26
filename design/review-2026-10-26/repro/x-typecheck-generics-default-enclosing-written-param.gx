@@ -1,0 +1,19 @@
+// Title: a returned closure's labeled default that reads the factory's
+// parameter, under a WRITTEN parameter type holding a variable
+// (Array<'q>, {v: 'q}, [null, 'q]): the check accepts, the build refuses.
+// The bare-variable form (`|#d = z, x|`, pinned by
+// lang::types::default_reads_the_factorys_parameter) is fixed; this one
+// takes check_defaults' `t.has_unbound()` branch, which checks a fresh copy
+// (reset_tvars) and never reaches z's cell, so mk settles z to bottom.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-default-enclosing-written-param.gx  (exit 0)
+//   graphix --no-cache x-typecheck-generics-default-enclosing-written-param.gx
+//   graphix-fuzz check x-typecheck-generics-default-enclosing-written-param.gx
+// Expected: runs and prints [[[1], [2]], [[5], [3]]].
+// Observed: the build refuses mk(1): "an instance at fn(z: i64) ->
+//   fn(?#d: Array<_>, x: i64) -> .. of a definition typed fn(z: _) -> ..";
+//   graphix-fuzz: DIVERGENCE (check accepted what the build refused).
+//   The same with `#d: {v: 'q} = {v: z}` and `#d: [null, 'q] = z`.
+let mk = |z| { let g = |#d: Array<'q> = [z], x| [d, [x]]; g };
+let f = mk(1);
+[f(2), f(#d: [5], 3)]

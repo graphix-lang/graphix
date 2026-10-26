@@ -1,0 +1,16 @@
+// Title: a catch handler that does not read its binder runs at birth,
+// though nothing was raised; SKILL.md (and book/src/core/error.md) say the
+// handler "runs when an error arrives", and the check gives no warning.
+// Command: timeout -s KILL 10 graphix --no-cache lang-skill-catch-handler-fires-at-birth.gx
+// Expected (per SKILL.md): "r 1 failed false", then 0; failed stays false.
+// Observed (default and --no-fusion alike): "r 1 failed false",
+// "r 1 failed true", 0; no warning.
+let x: Result<i64, `E> = 1;
+let failed = false;
+let r = {
+  catch(e) failed <- true;
+  x?
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("r [r] failed [failed]");
+0

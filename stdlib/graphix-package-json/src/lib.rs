@@ -83,6 +83,14 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 /// the f64 does not read back as the text and a decimal holds it, so an
 /// integer target refuses what does not fit and a decimal target reads it
 /// whole. `None` past f64's range.
+// CR claude for eric: [bug/medium] Text with more digits than a decimal holds fails
+// from_str_exact and from_scientific and goes through the f64, so a decimal target
+// keeps about 16 digits where 28 fit: "12345678901234567890.123456789123" reads as
+// 12345678901234567168. cast.rs `parse` (Typ::Decimal) does the same for cast<decimal>
+// and str::parse. Decide between rounding to the nearest decimal (fall back to
+// Decimal::from_str, which rounds) and refusing with InvalidCast, and apply the rule in
+// both places. probe:
+// design/review-2026-10-26/repro/small-pkgs-json-decimal-past-scale.gx (small-pkgs-06)
 fn number(n: &serde_json::Number, exact: bool) -> Option<Value> {
     let f = n.as_f64()?;
     let text = n.as_str();
@@ -152,6 +160,16 @@ impl<'de> Visitor<'de> for JsonValue {
             // arbitrary_precision hands a number over as a one-entry map
             // under NUMBER_TOKEN, so an object whose first key is it reads as
             // a number
+            // CR claude for eric: [bug/low] The visitor cannot tell serde_json's number
+            // map from a real object whose first key is the token, whether written
+            // plainly or as $. So json::read of {"$serde_json::private::Number": "42"}
+            // into i64 gives 42, and a Map<string, i64> holding that key fails to
+            // parse. With user-controlled keys this lets input change a document's
+            // shape or make it fail. Decide whether the key is reserved (refuse and
+            // document it), or read exact numbers without arbitrary_precision so no
+            // object can read as a number. probe:
+            // design/review-2026-10-26/repro/x-security-json-number-token.gx
+            // (x-security-06)
             if pairs.is_empty() && &*k == NUMBER_TOKEN {
                 let n: CompactString = a.next_value()?;
                 let n = n.parse::<serde_json::Number>().map_err(de::Error::custom)?;
@@ -207,6 +225,14 @@ impl Serialize for JsonView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         // a value at depth n sits under n containers: MAX_DEPTH of them is
         // where json::read stops
+        // CR claude for claude: [bug/low] This bounds the depth of leaves, but
+        // json::read bounds containers. 127 arrays around an empty array (128
+        // containers, no leaf) are written and then refused on read with "recursion
+        // limit exceeded". The bytes arm patched one instance of this. Check
+        // `self.depth + 1 >= MAX_DEPTH` for every container (Object, Seq, Bytes)
+        // instead of this entry check, and pin the empty-innermost case. probe:
+        // design/review-2026-10-26/repro/small-pkgs-json-empty-container-depth.gx
+        // (small-pkgs-09)
         if self.depth >= MAX_DEPTH {
             return Err(S::Error::custom(format_args!(
                 "the value nests {MAX_DEPTH} containers deep or more"
@@ -265,6 +291,15 @@ fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error>
         Value::F64(n) => {
             Err(S::Error::custom(format_args!("cannot represent {n} as JSON")))
         }
+        // CR claude for eric: [bug/low] A decimal is written as a JSON string. Other
+        // consumers get "1.5" where a number belongs, and a [decimal, string] value
+        // reads back as the string member, so the round trip changes the value.
+        // arbitrary_precision is already on, so a decimal can be written as an exact
+        // number through serde_json::Number. Decide whether that is the rule; a
+        // [decimal, f64] target would then read a short decimal as the f64 member.
+        // probe:
+        // design/review-2026-10-26/repro/small-pkgs-json-decimal-writes-string.gx
+        // (small-pkgs-08)
         Value::Decimal(d) => s.collect_str(d),
         Value::String(st) => s.serialize_str(st),
         Value::Bytes(b) => s.collect_seq(b.iter()),

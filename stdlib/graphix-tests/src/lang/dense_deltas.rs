@@ -45,6 +45,12 @@ pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, Str
 
 /// [`run_delta`] with `setup` run over the state before the runtime
 /// starts, until the runtime settles or no event arrives for `quiet`.
+// CR claude for claude: [test-gap/low] This driver backs 128 modes! tests and never
+// runs the check alone. run! holds check_fixture to the build in interp mode
+// (verdicts_agree), and these do not, so a --check/LSP refusal of a seq, wake or
+// reference program that builds goes unnoticed. For Mode::Interp, call
+// testing::check_fixture before compile_result and testing::verdicts_agree after it.
+// Found by reading; not run. (tests-lang-rest-b-06)
 pub(super) async fn run_delta_with(
     code: &str,
     mode: Mode,

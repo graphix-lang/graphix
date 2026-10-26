@@ -183,6 +183,21 @@ impl<X: GXExt> TrackedWindow<X> {
             self.window.set_title(t);
             changed = true;
         }
+        // CR claude for claude: [bug/medium] These TRefs fire whenever their
+        // reference's cell is written, not only when the value changes. A place
+        // reference such as `#size: &mut app.size` refires on every write of `app`.
+        // Each size refire calls request_inner_size with the program's size unless
+        // last_set_size matches, and last_set_size is only set at ResizeSettled. So any
+        // unrelated write of `app` before a user resize settles (RESIZE_END_DEBOUNCE)
+        // snaps the window back to the old size, and the resize is lost. Each icon
+        // refire also re-reads and re-decodes the image on the main thread and re-sends
+        // it to the window system, and each theme refire rebuilds a custom theme. Fix:
+        // keep the previous value and act only when it changed, as ImageW does with
+        // ImageSourceV::same_as. Request the size only when it differs from the
+        // previous `p.size.t` and from last_set_size, and decode the icon only when
+        // `!old.same_as(new)`. probe:
+        // design/review-2026-10-26/repro/gui-core-size-ref-refires.gx (shows the
+        // refire; the window side was found by reading). (gui-core-01)
         if let Some(sz) = p.size.update(id, v).context("window update size")? {
             if self.last_set_size.take() != Some(*sz) {
                 let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(

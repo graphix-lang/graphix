@@ -307,6 +307,13 @@ impl<X: GXExt> DataTableW<X> {
         }
         let mut user_widths = self.user_widths.lock();
         for (name, w) in fits.drain(..) {
+            // CR claude for claude: [bug/low] Auto-fit calls on_resize only for a
+            // column with a width value; a column with an on_resize but a null width
+            // just gets user_widths. A drag calls on_resize for any column that has one
+            // (handle_mouse_move_resize), so a program persisting widths through
+            // on_resize sees drags but never an auto-fit. Call on_resize here for every
+            // column that has one, and also record user_widths when ref_width is None.
+            // Found by reading; not run. (gui-datatable-04)
             match self.columns.get(&name) {
                 Some(c) if c.ref_width.is_some() => {
                     if let Some(f) = &c.on_resize {

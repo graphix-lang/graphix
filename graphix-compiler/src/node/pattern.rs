@@ -339,6 +339,21 @@ impl StructPatternNode {
                         .collect(),
                 )
             }
+            // CR claude for claude: [bug/high] An abstract pattern nested in a tuple,
+            // struct field or slice, over a position typed by a union of instantiations
+            // ([Box<bool>, Box<i64>]), binds its payload at one member's type. This arm
+            // reads the payload only for a lone Type::Abstract and otherwise falls back
+            // to the pattern's own rep, which narrow_payloads then narrows against
+            // ts.first(). `(Box(b), n) => b + 1` over ([Box<bool>, Box<i64>], i64)
+            // checks with b: i64. The node-walk gives 1 for Box(false), and the JIT
+            // panics "kernel param `b`: runtime Bool(false) does not match the compiled
+            // Scalar(I64) slot". Without a `_` arm the select is refused as
+            // non-exhaustive, though the top-level `Box(b)` form is exhaustive. Fix:
+            // type the payload over every member of the union that instantiates this
+            // id, as the top-level select does, and pin the tuple, struct and slice
+            // forms. This is a variant of x-typecheck-patterns-02. probe:
+            // design/review-2026-10-26/repro/x-rerun-2-nested-abstract-bind-one-member.gx
+            // (x-rerun-2-01)
             Self::Abstract { id, rep, .. } => {
                 let rep = match typ.deref_cloned() {
                     Some(Type::Abstract { id: t, ref params }) if t == *id => env
@@ -380,6 +395,16 @@ impl StructPatternNode {
     /// and captures are typed by, against the representation of the
     /// scrutinee's part `typ`: an inferred abstract predicate takes its
     /// parameters from the scrutinee, never from its payload.
+    // CR claude for claude: [bug/high] Over an Any scrutinee child_types gives nothing,
+    // so an inferred `Box(p)` keeps its own fresh parameters, and the arm body's uses
+    // decide them. shape_matches then passes any Box (IsAFlags::MatchAbstract), so `let
+    // f = |a: Any| select a { Box(p) => str::len(p), _ => 0 }; f(Box(5))` delivers 5 as
+    // a string, and the runtime panics in the kernel param check. Refuse an inferred
+    // abstract pattern where no representation reaches it, with the `Box<T> as Box(p)`
+    // hint the partial-struct refusal gives, or bind its parameters to Any. Pin the
+    // top-level and nested forms. probe:
+    // design/review-2026-10-26/repro/x-typecheck-patterns-abstract-payload-over-any.gx
+    // (x-typecheck-patterns-03)
     fn narrow_payloads(&self, env: &Env, typ: &Type) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
@@ -434,6 +459,19 @@ impl StructPatternNode {
         }
         // an abstract's payload took its types from its own rep
         // (`narrow_payloads`)
+        // CR claude for claude: [bug/high] Returning here drops an abstract payload's
+        // binds from the leaves. But fresh_ids, through `ids`, gives every name an
+        // or-pattern binds a fresh cell, payload binds included, which erases the
+        // rep-typed cell the compile gave them. A name bound only under `T(..)` in
+        // every alternative is never typed: `` `A(T(n)) | `B(T(n)) => str::len(n) ``
+        // passes and the JIT panics on an i64 in a String slot. A name another
+        // alternative binds outside a payload loses the payload's part of its union:
+        // `(x, 1) | (T(x), 2)` types x as [string, T], and a select on x hits a
+        // coverage hole on 4. Fix: descend into the payload here using child_types'
+        // representation (narrowed by narrow_payloads), with inferred = false, so the
+        // or-union sees it. probe:
+        // design/review-2026-10-26/repro/c-pattern-or-abstract-payload-untyped.gx
+        // (c-pattern-04)
         if let Self::Abstract { .. } = self {
             return Ok(());
         }
@@ -452,6 +490,20 @@ impl StructPatternNode {
             for (i, a) in alts.iter().enumerate() {
                 let fp = a.footprint(env, &ts[i], sub);
                 for (j, b) in ts.iter().enumerate() {
+                    // CR claude for claude: [bug/high] This judges alternatives with
+                    // Open::Benign, so open cells collide with nothing, and `(x, _) |
+                    // (_, x)` over an unannotated parameter or Any is accepted. At run
+                    // time the arm passes on one alternative's types (shape_matches
+                    // tests the Set of alternative types) and binds by the first
+                    // alternative whose structure matches (StructPatternNode::bind),
+                    // which may be the other one. `let f = |a| select a { (x, _) | (_,
+                    // x) => x + 1 }; f(("s", 5))` binds "s" as an i64 and the runtime
+                    // panics in the kernel param check. Take an alternative only when
+                    // its own types and structure both pass, and bind from that one, or
+                    // judge here with open cells read as any type, as the arms' Told
+                    // deferral does. Pin both forms. probe:
+                    // design/review-2026-10-26/repro/x-typecheck-patterns-or-alt-type-unpaired.gx
+                    // (x-typecheck-patterns-02)
                     if i != j && fp.rep_collision(env, b).is_some() {
                         let (a, b) = (ts[i].resolve_tvars(), b.resolve_tvars());
                         return format_with_flags(PrintFlag::DerefTVars, || {
@@ -701,6 +753,20 @@ impl StructPatternNode {
         // contractive, so the chain ends. The chase fills no cell: a name
         // the body names may yet be declared by a later statement
         let mut type_predicate = type_predicate.clone();
+        // CR claude for claude: [bug/critical] This loop expands a let annotation at
+        // compile time with lookup_ref_peek, and the leaf binding takes the expanded
+        // type. A `type Foo` declared later in the same block is not registered yet, so
+        // with an outer `Foo` in scope the binding gets the outer type.
+        // Bind::check_value checks the initializer against the unexpanded Ref after the
+        // block's Foo is registered, so the check uses the inner type. Result: `type
+        // Foo = string; let r = { let a: Foo = 42; type Foo = i64; a }; str::len(r)`
+        // passes the check, and the JIT reads 42 as a string pointer and aborts
+        // (misaligned pointer 0x2a). Fix: give a statement list's type names one
+        // meaning throughout. Either pre-register a block's typedef names before
+        // compiling its statements, as compile_block_children does for `mod` names, or
+        // bind the leaf with the unexpanded Ref and use the expansion only for the
+        // structural decisions here. probe:
+        // design/review-2026-10-26/repro/t-env-forward-typedef-confusion.gx (t-env-01)
         while let Type::Ref(_) = type_predicate {
             type_predicate = type_predicate.lookup_ref_peek(&ctx.env)?;
         }
@@ -731,6 +797,19 @@ impl StructPatternNode {
             if !type_predicate.narrow_pattern(env, &shape)? {
                 type_predicate.check_contains(env, &shape)?;
             }
+            // CR claude for claude: [bug/medium] Compiled against the inferred `shape`,
+            // a `name@` capture and a slice rest are bound at the shape: a per-position
+            // union such as ([i64, string], [i64, string]), or the shape's private
+            // per-element Set. They should be bound at the written member(s) the
+            // pattern matches. Because cx.inferred is false here, compile_slice also
+            // pairs every element with that whole Set. `let a@ (_, _) = v` over [(i64,
+            // string), (string, i64)] cannot pass `a` on as that type, and `A as [_,
+            // r..]` names Array<[[i64, string], [i64, string]]>, while an unannotated
+            // arm types the same captures by member (wholes_by_member). Fix: bind each
+            // whole capture and rest at the union of its part of each written member
+            // the shape can match, and pair the children with the shape's Set members.
+            // probe: design/review-2026-10-26/repro/c-pattern-written-union-capture.gx
+            // (c-pattern-05)
             let node = Self::compile_int_inner(ctx, cx, &shape, spec, mode)?;
             let env = &ctx.env;
             if let Ok(rest) = type_predicate.diff(env, &shape)
@@ -1299,6 +1378,16 @@ impl StructPatternNode {
                     .collect::<Option<SmallVec<[_; 8]>>>()?;
                 Some(Type::Struct(Arc::from_iter(fields)))
             }
+            // CR claude for claude: [bug/low] null_narrowed has no Variant arm, so a
+            // null literal in a variant payload covers nothing beside a type-tested
+            // arm. `A(null) => 0, `A(i64) as `A(n) => n, `B => 9 over [`A([i64, null]),
+            // `B] is refused with "missing match cases: no arm covers `A([i64, null])",
+            // while the struct and tuple forms of the same select pass. Add a Variant
+            // arm that matches the tag and arity of the expanded type and narrows each
+            // payload part, as the tuple arm does. Pin it beside
+            // lang::select::null_literal_covers_beside_a_type_test. probe:
+            // design/review-2026-10-26/repro/x-rerun-6-null-variant-typetest.gx
+            // (x-rerun-6-02)
             _ => None,
         })
     }
@@ -1418,6 +1507,16 @@ impl StructPatternNode {
         };
         let typed = match explicit {
             None => true,
+            // CR claude for claude: [bug/medium] When `t` is a written union of array
+            // or list types, child_types finds no element type in the Set, so `typed`
+            // is false and the ladder claims nothing. `A as [] => .., A as [_, ..] =>
+            // ..` with A = [Array<i64>, Array<string>] is refused as non-exhaustive,
+            // and the hint blames refutable element patterns the arms do not have. The
+            // same ladder under `Array<i64> as`, or with no type test, is accepted.
+            // Fix: take t's array/list members (union_members) and require the children
+            // to cover each member's element type. probe:
+            // design/review-2026-10-26/repro/c-pattern-written-union-slice-ladder.gx
+            // (c-pattern-06)
             Some(t) => self.child_types(env, t, false).is_some_and(|ts| {
                 self.children()
                     .into_iter()
@@ -1448,6 +1547,15 @@ impl StructPatternNode {
         }
     }
 
+    // CR claude for eric: [bug/high] Deleting a collection slot unbinds its parameters
+    // here even when a closure the slot made escaped and still captures them. A call
+    // site that binds that closure after the deletion fails with 'binding the callee
+    // failed: k not defined', and no value is produced; a site bound earlier keeps
+    // working. References have a rule to outlive their site (reference::Lives);
+    // function values need one. Proposed rule: a function value keeps its captures
+    // alive, enforced by pinning a closure's captured ids as Lives pins referenced
+    // ones. probe: design/review-2026-10-26/repro/core-aux-closure-outlives-slot.gx
+    // (core-aux-02)
     pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
         self.ids(&mut |id| {
             // a reference that names it keeps its value
@@ -1547,6 +1655,16 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
 
     /// The type this arm's binds are typed from: an `error` test's is the
     /// `Error<..>` members of `reaching`, else the predicate.
+    // CR claude for eric: [bug/medium] Only an error test's bind is narrowed to what
+    // reaches the arm. Every other written test binds the full written type, contrary
+    // to CLAUDE.md's rule that an arm's binds narrow to what reaches it. So `|x: [i64,
+    // string]| select x { Number as n => n + 1, string as s => 0 }` is refused (n is
+    // [Int, Real]), and an inner select over `[i64, string, f64] as n` with x: [i64,
+    // string, bool] must cover f64. Needs a ruling: whether the bind should be the
+    // written type intersected with the reaching members it can match (the error
+    // filter, generalized), or stay the written type with CLAUDE.md saying so. probe:
+    // design/review-2026-10-26/repro/x-typecheck-patterns-typetest-bind-not-narrowed.gx
+    // (x-typecheck-patterns-06)
     pub(super) fn capture_type(&self, env: &Env, reaching: &Type) -> Result<Type> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());
@@ -1622,6 +1740,18 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
                 continue;
             }
             let mut ls: SmallVec<[Leaf; 4]> = SmallVec::new();
+            // CR claude for claude: [bug/high] `m` is a raw scrutinee member, but
+            // `inferred = true` makes child_types read its element union as the slice's
+            // per-element Set whenever the member counts line up (elements plus the
+            // rest), so element 0 is paired with the union's first member. child_types'
+            // Variant case also ignores the tag. Over [Array<[`A(i64), `B(string)]>,
+            // null], `[y@ `B(_), ..]` types y as `A(i64): a select on y passes the
+            // check and hits a coverage hole at run time. Fix: walk raw members with
+            // `inferred = false` (each element stands over the whole element type), and
+            // make child_types give no parts for a Variant pattern over another tag.
+            // probe:
+            // design/review-2026-10-26/repro/c-pattern-whole-capture-set-pairing.gx
+            // (c-pattern-02)
             self.structure_predicate.leaves(env, m, true, false, &mut ls)?;
             for l in ls.into_iter().filter(|l| l.fresh) {
                 parts.entry(l.id).or_default().push(l.typ)

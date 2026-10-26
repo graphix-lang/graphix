@@ -1,0 +1,10 @@
+// shared-var replaces the second of two arguments sharing a variable
+// with a literal disjoint from the FIRST argument only; a third argument
+// of the same variable whose type contains both makes the call legal
+// (widest argument), so the mutant is accepted: a false LEAK.
+// command: design/review-2026-10-26/repro/fuzz-mutate-run-typemorph-one.sh <this file>
+// expected: no shared-var mutant, or one refused
+// observed: FLIP shared-var#7 LEAK: accepted at call
+//   MUTANT { let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let u: [i64, string] = 1;
+//            let r = g(1, "tm", u); r }
+{ let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let u: [i64, string] = 1; let r = g(1, 2, u); r }

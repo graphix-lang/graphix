@@ -1,0 +1,11 @@
+// Title: book/src/core/select.md says a refutable slice element (a literal,
+//   a variant) claims no coverage; the checker pools bool literals and
+//   variant heads per length, so `[true]` with `[false]` covers length 1.
+// Command: graphix --check design/review-2026-10-26/repro/book-core-slice-pooled-coverage.gx
+// Expected per the book: accepted (the trailing `_` is needed, since `[true]`
+//   and `[false]` claim no coverage)
+// Observed: refused, "unreachable arm: the earlier arms already cover the
+//   whole scrutinee, unused match cases" at the `_` arm. Dropping the `_` arm
+//   is accepted and prints 1 (also with [`A] / [`B] over Array<[`A, `B]>).
+let a: Array<bool> = [true];
+select a { [] => 0, [true] => 1, [false] => 2, [_, _, ..] => 3, _ => 4 }

@@ -765,6 +765,18 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
+    // CR claude for eric: [bug/medium] Only core traits get prototype call sites, so a
+    // user trait's declared #[pure]/#[sync] is checked of an impl only when some
+    // build-time call reaches it. An uncalled violating impl compiles. A dynamic
+    // module's impure impl of a sig-declared `#[pure]` method loads with status null:
+    // the violation is only logged at the consumer's runtime bind, and the stateful
+    // body runs. CLAUDE.md says the requirement is asserted of every impl body, and an
+    // impure core-trait impl in the same position is refused as a DynamicLoadError.
+    // Decide whether the requirement is a contract on every impl. If it is, build
+    // prototypes here for every method whose TraitMethodDef carries a requirement, and
+    // pin both the static and the dynamic case. probe:
+    // design/review-2026-10-26/repro/tests-fusion-traits-trait-requirement-unchecked.gx
+    // (tests-fusion-traits-01)
     fn build_prototypes(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());
@@ -796,6 +808,15 @@ fn narrow_to_representation<R: Rt, E: UserEvent>(
     declared: Arc<ImplDef>,
     implementation: &ImplDef,
 ) -> Result<Arc<ImplDef>> {
+    // CR claude for claude: [bug/medium] This narrows the registered declaration, which
+    // may already be a narrowed copy, and Impl::delete never puts the full declaration
+    // back. After a dynamic module reload whose Cast impl gains a method, the new
+    // method can never return: check_sig_items proxies only the narrowed methods, and
+    // writers keep using the representation. Narrow from the interface's own
+    // declaration: keep the bind_sig ImplDef in the Impl node, and have Impl::delete
+    // re-register it when it removes a narrowed copy. probe:
+    // design/review-2026-10-26/repro/c-module-traits-dyn-cast-reload.gx
+    // (c-module-traits-01)
     let mut methods = declared.methods.clone();
     for (name, _) in declared.methods.into_iter() {
         if !implementation.methods.contains_key(name) {
@@ -884,6 +905,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
             let expected =
                 Type::Fn(Arc::new(method_sig_at(&d.typ.reset_tvars(), &self.def.target)));
+            // CR claude for claude: [readability/low] This context prints bind.typ and
+            // expected without dereferencing type variables. When the method's
+            // annotation bound the head's 'a, both print as fn(self: Box<'a>) ->
+            // string, so the refusal names two identical types and only the next line
+            // of the chain shows the difference. The `does not implement the declared`
+            // context below has the same problem. Format all three with
+            // format_with_flags(PrintFlag::DerefTVars, ..) or resolve_tvars(). probe:
+            // design/review-2026-10-26/repro/x-rerun-6-impl-method-type-message.gx
+            // (x-rerun-6-03)
             expected.check_contains(&ctx.env, &bind.typ).with_context(|| {
                 format!(
                     "method {} of impl {} for {} has type {}, the trait declares {expected}",
@@ -1009,6 +1039,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // a union self dispatches per member, a union of primitives (one
         // multi-flag Primitive) per primitive
+        // CR claude for claude: [bug/medium] A union member that is a ref to a union
+        // (`type U = [i64, string]` inside `[U, Counter]`) reaches find_impl
+        // unexpanded, which finds no impl. Elaboration refuses ("no implementation of
+        // Show for U") what the check accepted, and GRAPHIX_ELAB_AUDIT reports it.
+        // Expand each non-trait Type::Ref member and flatten nested sets recursively,
+        // not only multi-flag primitives, before lower_trait_union. probe:
+        // design/review-2026-10-26/repro/c-module-traits-union-alias-self.gx
+        // (c-module-traits-02)
         let union = match &self_t {
             Type::Set(members) => Some(&members[..]),
             Type::Primitive(p) if p.len() > 1 => Some(std::slice::from_ref(&self_t)),

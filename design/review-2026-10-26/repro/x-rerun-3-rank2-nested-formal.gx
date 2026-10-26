@@ -1,0 +1,16 @@
+// Title: a quantified function type inside a struct, array or union formal is not held
+//   to its quantifier: the check accepts an argument the callee cannot call
+//   (x-typecheck-generics-02, still-open half: FnType::contains_int's gates)
+// Command: timeout -s KILL 10 graphix --check x-rerun-3-rank2-nested-formal.gx   (exit 0)
+//          timeout -s KILL 5 graphix --no-cache x-rerun-3-rank2-nested-formal.gx
+// Expected: refused at `app({f: |x| x * x})`, as `|g: F| g("a")` called with
+//   `|x| x * x` is ("the argument requires 'b: [u8, .., decimal], which the
+//   parameter's quantifier does not declare").
+// Observed: --check passes; the run logs `s.f("a"): binding the callee failed: a
+//   run-time bind at s.f("a") did not type: an instance at fn(x: string) -> string of
+//   a definition typed fn(x: '_: .. & [u8, .., decimal] & Singleton) ..` and the value
+//   is bottom forever. The same with `gs: Array<F>` (array::map(gs, |g| g("a"))) and
+//   `g: [F, null]`.
+type S = {f: fn<'b: [i64, string]>(x: 'b) -> 'b};
+let app = |s: S| s.f("a");
+app({f: |x| x * x})

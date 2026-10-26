@@ -1,0 +1,17 @@
+// Title: json/toml write a variant or tuple map key as text the reader cannot cast back
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/x-rerun-5-json-map-keys.gx
+// Expected (CLAUDE.md: what the json and toml writers emit reads back into its type;
+//   map_key's doc: "the text a reader's cast of the key reads back"):
+//   ({`A => 2}, {(1, 2) => 3})
+// Observed: j2 {"\"A\"":2} and j3 {"[1, 2]":3}, read back as
+//   error:`InvalidCast("can't cast \"\\\"A\\\"\" to `A: variant tag mismatch") and
+//   error:`InvalidCast("can't cast \"[1, 2]\" to (i64, i64): not a tuple").
+let m2: Map<`A, i64> = {`A => 2};
+let j2 = json::write_str(m2)$;
+let back2: Result<Map<`A, i64>, [`InvalidCast(string), `JsonErr(string)]> = json::read(j2);
+let m3: Map<(i64, i64), i64> = {(1, 2) => 3};
+let j3 = json::write_str(m3)$;
+let back3: Result<Map<(i64, i64), i64>, [`InvalidCast(string), `JsonErr(string)]> = json::read(j3);
+println("[j2] [j3]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(back2, back3)

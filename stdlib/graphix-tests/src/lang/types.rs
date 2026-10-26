@@ -649,6 +649,16 @@ run!(
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.
+// CR claude for eric: [bug/medium] Only the members that win the tie-break round-trip.
+// An Array<i64> of length 2 in [(i64, i64), Array<i64>] reads back from json or pack as
+// the tuple (1, 2). A bare `A in [string, `A] reads back as the string "A". Both are
+// silent member changes after a save and reload. The writer refuses keys that collide
+// this way (colliding_data_keys_refused_by_a_writer) but writes such values. Decide:
+// refuse at the writer (or through the 'a: Data check), or accept and say so in this
+// comment and in CLAUDE.md's 'reads back into its type'. Then pin the colliding case
+// here. probe:
+// design/review-2026-10-26/repro/tests-types-data-roundtrip-member-change.gx
+// (tests-types-01)
 const DATA_READS_BACK_AS_WRITTEN: &str = r#"
 {
   type U = [(i64, i64), Array<f64>];
@@ -1203,6 +1213,13 @@ run!(
     refused("the members' fields differ");
     FuseExpect::None
 );
+// CR claude for claude: [test-gap/medium] union_field_write_where_members_agree cannot
+// fail on the write it is about. run! reads only the first update, which is 8, computed
+// before `*r <- 5` lands, and the predicate accepts any i64. A no-op write through
+// `&mut s.a`, or a patch into the wrong member, still passes. Gate the result on the
+// write (e.g. skip(#n: 1, ..)) and pin it exactly: s is {a: 5, b: 9} and the sum is 12.
+// probe: design/review-2026-10-26/repro/tests-types-union-field-write-first-value.gx
+// (tests-types-03)
 run!(
     union_field_write_where_members_agree,
     "{ type S = [{a: i64, b: string}, {a: i64, b: i64}]; \
@@ -1937,6 +1954,11 @@ async fn not_concrete_names_a_minted_cell_short() -> Result<()> {
         Err(msg) => msg,
         Ok(v) => panic!("must be refused: {v:?}"),
     };
+    // CR claude for claude: [test-gap/low] "'_46116" is the decimal prefix of
+    // ids::MINT_BASE. If MINT_BASE moves, a regression to full-width cell names passes
+    // this assertion. Count the digits after "'_" as an_open_cell_prints_short does,
+    // through one helper shared by both tests. Found by reading; not run.
+    // (tests-types-07)
     assert!(msg.contains("must be fully known") && !msg.contains("'_46116"), "{msg}");
     Ok(())
 }
@@ -2013,6 +2035,12 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
 // A variable a nested lambda's signature writes, which a definition around
 // it declares, is that definition's, unless the nested lambda declares it
 // itself (c-lambda-02).
+// CR claude for claude: [style/low] The comment above cites a finding id,
+// '(c-lambda-02)', which is history. So do '(http-sqlite-db1-08)' above
+// an_invariant_argument_decides_first, '(tests-types-04)' above
+// ordering_refuses_two_numeric_types, and '(u2)/(u5)/(s1)' in inference.rs's
+// rigid-alias comment. Delete the ids and keep the rule text; the ids belong in commit
+// messages. Found by reading; not run. (tests-types-08)
 run!(a_nested_signature_names_the_enclosing_variable, r#"{
   let mk = 'a: Number + Singleton |k: 'a| |x: 'a| x + k;
   let own = 'a: Number |k: 'a| 'a: Any |x: 'a| [x];
@@ -2041,6 +2069,13 @@ run!(an_invariant_argument_decides_first, r#"{
 
 // Mixed sets compare by == like any union, numeric ones included: values
 // of two numeric types are never equal.
+// CR claude for claude: [test-gap/medium] No test feeds a NaN to a comparison. The
+// JIT's NaN handling, the fcmp Unordered fix-ups in fusion/emit/scalar.rs, could be
+// replaced by a plain fcmp and every test would still pass, with the kernel and the
+// node-walk then disagreeing on NaN == NaN and NaN < -inf. Add a fixture here that runs
+// the six comparisons over (NaN, NaN), (NaN, -inf) and (-inf, NaN) in a `#[native]`
+// function body, plus sort and min over a NaN, and pin the exact results. probe:
+// design/review-2026-10-26/repro/tests-types-nan-order-unpinned.gx (tests-types-02)
 const COMPARISON_MIXED: &str = r#"{
   let x: [i64, f64] = 3;
   let y: [i64, f64] = 2.5;
@@ -2898,6 +2933,12 @@ run!(
 );
 
 /// A write of the binding's one type is fine.
+// CR claude for claude: [risk/low] This fixture orders its sample with two independent
+// timers (50 ms write, 200 ms sample). A runtime stalled 150 ms on a loaded test run
+// delivers both fires in one cycle and samples r at 41, so the test flakes. Derive the
+// second event from the first: end with `skip(#n: 1, r)` in place of the 200 ms timer;
+// that shows 42 whatever the timing. probe:
+// design/review-2026-10-26/repro/tests-types-two-timer-race.sh (tests-types-04)
 const WRITTEN_BINDING_TAKES_ITS_TYPE: &str = r#"
 {
     let f = |x| x;
@@ -3607,6 +3648,14 @@ run!(ref_test_over_any_in_a_second_pair, r#"{
 // A string casts to a decimal or a float exactly: digits past f64 stay,
 // a float reads anything Rust's float parse reads, and a pre-epoch
 // datetime truncates toward zero as a float does.
+// CR claude for eric: [bug/low] This pins "12345678901234567890." as the plain print of
+// a scale-0 decimal. A float prints plainly with no trailing dot (f64 5.0 -> "5"), but
+// Value::fmt_naked routes a decimal through DecimalFmt (netidx-value print.rs), which
+// appends the literal syntax's '.'. That holds for cast<string> and interpolation
+// alike. Decide whether plain means unadorned: if so, fmt_naked needs a plain decimal
+// arm (an upstream change in netidx-value) and this expectation changes; if not, say so
+// in CLAUDE.md's cast rule. probe:
+// design/review-2026-10-26/repro/tests-types-decimal-plain-print.gx (tests-types-06)
 run!(string_casts_to_decimal_and_float_exactly, r#"{
   let d1 = cast<decimal>("1.23456789012345678901234567")$;
   let d2 = cast<decimal>("12345678901234567890")$;

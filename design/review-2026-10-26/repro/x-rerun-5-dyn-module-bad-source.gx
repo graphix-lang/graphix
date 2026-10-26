@@ -1,0 +1,18 @@
+// Title: a dynamic module's source string that does not compile tears down the running body (c-module-traits-06 variant)
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/x-rerun-5-dyn-module-bad-source.gx
+// Expected (Module::update: "a source that is no program reports, and the last good
+//   load runs on"): the status reports the parse error and the last line is "5 50".
+// Observed: the status reports it, and the last line is "5 0": clear_compiled ran
+//   before compile_source, so no body follows foo::x any more.
+let one = "let x = 0; let y = x * 10";
+let src0: string = one;
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val x: i64; val y: i64 };
+    source src0
+};
+src0 <- sys::time::timer(duration:0.1s, false) ~ "let x = ;";
+foo::x <- sys::time::timer(duration:0.2s, false) ~ 5;
+println("[status]");
+sys::exit(sys::time::timer(duration:0.4s, false) ~ 0);
+"[foo::x] [foo::y]"

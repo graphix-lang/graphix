@@ -1,0 +1,11 @@
+// open_init does not see that a call's result is an open cell when the
+// callee's body reads a captured let over never(): `mk(1)` returns z's
+// cell, which the first use decides. retype then inserts `v <- "tm"`
+// before that use; the writer decides the cell and the checker refuses
+// the later `v + 1`, outside the expected sites: a false MISPLACED.
+// command: design/review-2026-10-26/repro/fuzz-mutate-run-typemorph-one.sh <this file>
+// expected: no retype mutant at `let v` (its type is decided by its uses)
+// observed: FLIP retype#6 MISPLACED: N: cannot compute string + iN: ...
+//   MUTANT { let z = never(); let mk = |u: i64| z; let v = mk(1); v <- "tm";
+//            let w = v + 1; w }
+{ let z = never(); let mk = |u: i64| z; let v = mk(1); let w = v + 1; w }

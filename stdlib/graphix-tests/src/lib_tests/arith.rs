@@ -105,6 +105,15 @@ run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {
 
 // Checked-arithmetic overflow detection.
 
+// CR claude for claude: [test-gap/low] The checked fixtures pin integers only. The
+// CLAUDE.md rule that checked arithmetic over floats follows IEEE and never fails (inf,
+// NaN) has no pin anywhere in graphix-tests. A change that made `f64:1.0 /? f64:0.0` an
+// ArithError would be well-typed (the result type already holds the error) and break
+// nothing. Add a fixture with a fused lambda over runtime f64/f32 arguments plus a
+// top-level literal: today both engines give ((inf, NaN, inf, NaN, inf), (inf, inf,
+// NaN), inf, NaN). probe:
+// design/review-2026-10-26/repro/tests-lib-b1-checked-float-unpinned.gx
+// (tests-lib-b1-03)
 const CHECKED_ADD_OVERFLOW: &str = "is_err(i64:9223372036854775807 +? i64:1)";
 run!(checked_add_overflow_errs, CHECKED_ADD_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))

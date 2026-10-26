@@ -72,6 +72,17 @@ async fn run_code(
     Ok((v, n))
 }
 
+// CR claude for claude: [test-gap/medium] This returns only the value, so the tests
+// built on it, and on impure_map, pure_map and region_map, about forty of them, pass
+// with fusion entirely lost: closure_*, nested_hof_*, every impure_*,
+// fused_variant_payload_shadow, shadow_arm_binding_outer_ref and the proptest
+// impure_matches_pure. Their comments describe kernel mechanics (cross-kernel calls,
+// slots sharing the prototype's kernels), and a de-fusion never changes a value, so
+// nothing here would catch, for example, fusion/share.rs no longer sharing kernels with
+// slot instances. Fix: return the build's `fusion_stats().fused` from run_code, assert
+// it is above zero here in debug builds (and zero in load_node_walked), and have the
+// proptest's pure side use the counting path. Found by reading; graphix-fuzz run
+// confirms these programs fuse today. (tests-fusion-traits-03)
 async fn load_and_await(code: &str) -> Result<Value> {
     Ok(run_code(BitFlags::empty(), &[], code, true).await?.0)
 }

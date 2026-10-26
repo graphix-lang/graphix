@@ -1,0 +1,15 @@
+// x-node-contract: the right side of `*r <- e` never gets a region pass
+// (ConnectDeref, like Deref and ByRef, has no `fuse`), so a pure call there
+// stays in the node-walk and a `#[native]` on it is refused by position.
+// Run: graphix --no-cache --expand x-node-contract-connectderef-no-fuse.gx
+// Expected: builds, as it does with `v <- #[native] f(t)` (Connect::fuse
+// fuses its right side), and `graphix-fuzz run` counts the call as fused.
+// Observed: "attribute in a position the fusion pass cannot check — put the
+// decorated expression in its own statement (or a select arm)"; without the
+// attribute graphix-fuzz run reports fused=1 here and fused=2 for `v <- f(t)`.
+let f = |x| array::map(x, |e| e * 2 + 1);
+let v = [0];
+let t = array::iter([[1, 2], [3, 4], [5, 6]]);
+let r = &mut v;
+*r <- #[native] f(t);
+v

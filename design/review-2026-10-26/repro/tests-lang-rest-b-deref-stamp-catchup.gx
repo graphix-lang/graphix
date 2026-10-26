@@ -1,0 +1,27 @@
+// Title: a woken arm's Deref catches up a new target written while it
+// slept (wake::owed in Deref::update) -- behaviour with no pin.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache --no-fusion tests-lang-rest-b-deref-stamp-catchup.gx
+// The false arm reads `r` (consuming the move's fire bit) without
+// dereferencing it, so `y` is tracked by no arm. `y` is written at step 4,
+// after the true arm last ran (step 1); the true arm wakes at step 6 and
+// learns `y` as its Deref's new target.
+// Expected and observed (both engines, graphix-fuzz check AGREE):
+//   (6, 2) (7, 2) (8, 2): count ticks at the wake.
+// Control: change the `y <-` arm to `300 => 20` (y never written):
+//   (6, 1) (7, 1) (8, 1). Deleting the `owed` read in Deref::update gives
+//   the control's output for this program, and no test in the tree fails
+//   (lang::byref::woken_deref_reads_a_seen_move_stale only asserts no tick).
+let n = 0;
+n <- select n { k if k < 8 => k + 1, _ => never() };
+let x = 1;
+let y = 2;
+y <- select n { 3 => 20, _ => never() };
+let which = 0;
+which <- select n { 4 => 1, _ => never() };
+let r = select which { 0 => &x, _ => &y };
+let c = (n < 2) || (n >= 6);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(n, select c {
+  true => count(*r),
+  false => r ~ -1
+})

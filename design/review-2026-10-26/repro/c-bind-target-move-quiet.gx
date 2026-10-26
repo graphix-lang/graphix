@@ -1,0 +1,23 @@
+// c-bind: a held copy of a place reference whose ROOT moves to another
+// binding (`&(*r)[0]` with r switching between &a and &b) reads the old
+// element for a cycle, while the same move of its PATH (a key) is read at
+// once. Deref::update fires a Moved::Path read (`.fresh()`) but leaves a
+// Moved::Target read quiet, so `let rd = *w` does not republish it.
+// run: timeout -s KILL 60 graphix --no-cache c-bind-target-move-quiet.gx | grep -v '^[0-9]*$'
+// expected: via holder == direct every cycle (c=2: 30/30, c=4: 10/10), as
+//   with a key move (replace r by &a and the index by a key: both agree)
+// observed: c=2 via holder=10 direct=30; c=4 via holder=30 direct=10
+let c = 0;
+c <- select c { k if k < 5 => k + 1, _ => never() };
+let a = [10, 20];
+let b = [30, 40];
+let r = select c { 2 => &b, 3 => &b, _ => &a };
+let p = &(*r)[0];
+let holder: [&i64, null] = null;
+holder <- p;
+let w = holder$;
+let rd = *w;
+let rp = *p;
+println(c ~ "c=[c] via holder=[rd] direct=[rp]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+c

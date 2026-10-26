@@ -1,0 +1,9 @@
+// Title: calling a parameter whose own parameter is rank-2 refuses every polymorphic argument
+// Command: graphix --no-cache t-fntyp-rank3-param-call.gx
+// Expected: ((1, "s")) printed as (1, "s"): `|z| z` is polymorphic in 'c.
+// Observed: refused at k(|z| z): "the argument is not polymorphic in 'c: its type holds
+//   '_N, a variable of its environment, which would carry 'c out". The same happens when
+//   the call sits in a nested lambda (the instantiate path), and with a let-bound `id`.
+let use_it = |k: fn(f: fn<'c: Any>(x: 'c) -> 'c) -> (i64, string)| k(|z| z);
+let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+use_it(apply)

@@ -1,0 +1,14 @@
+// Title: an inconsistent core Eq pair answers `false` while its warning says "answering Equal"
+// Command: RUST_LOG=warn graphix --no-cache --log-dir <dir> tests-fusion-traits-eq-inconsistent-pair.gx
+//   (and the same with --no-fusion); then read <dir>/*
+// Expected (design/traits.md §6 THE BOTTOM-KEY RULE: "a pair that bottoms while
+//   neither key self-bottoms is an inconsistent implementation — warn and answer
+//   `Equal`. `eq` follows the same shape"): (true, false, true), or at least a
+//   warning that names the answer actually given.
+// Observed: (false, true, true) on both engines, and the log says
+//   "core Eq implementation for T bottoms on a pair whose keys are both real
+//    (neither self-comparison bottoms) — an inconsistent implementation; answering Equal"
+type T = Abstract<i64>;
+impl Eq for T { let eq = |a, b| select a.0 == b.0 { true => true, false => never() } };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(T(1) == T(2), T(1) != T(2), T(1) == T(1))

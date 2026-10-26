@@ -1,0 +1,11 @@
+// Title: == over Any-typed references compares cells, not what they name
+// Command: graphix-fuzz run design/review-2026-10-26/repro/c-error-op-any-ref-eq.gx
+// Expected (CLAUDE.md: `==` compares references by what they name): (true, true)
+// Observed (both engines agree): (false, true): the same two references
+// compare unequal once their static type is Any.
+let x = 1;
+let a: Any = &x;
+let b: Any = &x;
+let ra = &x;
+let rb = &x;
+(a == b, ra == rb)

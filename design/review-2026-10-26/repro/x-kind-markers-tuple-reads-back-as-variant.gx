@@ -1,0 +1,28 @@
+// Title: values of a legal union read back from pack/json/db as another
+// member: a tuple whose first element is a member variant's tag reads as
+// that variant, a list as a tuple, a map as an array of pairs.
+// Command: timeout -s KILL 30 graphix --no-cache x-kind-markers-tuple-reads-back-as-variant.gx
+// Expected: ("B", 7), ("B", 7), [<1, 2>], {"a" => 1}
+//   (CLAUDE.md "Types": unmarked array data reads as a tuple of its length,
+//   then a struct, before an array, so what a writer emits reads back as it)
+// Observed (lines may print in any order; the reads are async):
+//   `B(7)
+//   `B(7)
+//   (1, 2)
+//   [("a", 1)]
+type U = [(string, i64), `B(i64)];
+let t: U = ("B", 7);
+let p: Result<U, [`PackErr(string), `InvalidCast(string)]> = pack::read(pack::write_bytes(t)$);
+println(p);
+let j: Result<U, [`JsonErr(string), `InvalidCast(string)]> = json::read(json::write_str(t)$);
+println(j);
+type L = [List<i64>, (i64, i64)];
+let l: L = [<1, 2>];
+let pl: Result<L, [`PackErr(string), `InvalidCast(string)]> = pack::read(pack::write_bytes(l)$);
+println(pl);
+type M = [Map<string, i64>, Array<(string, i64)>];
+let m: M = {"a" => 1};
+let jm: Result<M, [`JsonErr(string), `InvalidCast(string)]> = json::read(json::write_str(m)$);
+println(jm);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

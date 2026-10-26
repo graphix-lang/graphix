@@ -1,0 +1,19 @@
+// Title: a spawn aborted by its arm's sleep still starts the child, and its handle is lost
+// Command: rm -f /home/eric/tmp/review-2026-10-26/review/work/sys-io/spawned_marker;
+//   timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-io-spawn-aborted-by-sleep-orphans-child.gx;
+//   ls /home/eric/tmp/review-2026-10-26/review/work/sys-io/spawned_marker; pgrep -a sleep | grep 41.25
+// Expected: either no child (the call was aborted before it acted) or the Child handle
+//   delivered at the wake; never a running child the program cannot reach.
+// Observed: prints "deselected"; the marker exists and `sleep 41.25` is still running,
+//   untracked (3 of 3 runs). Clean up: pkill -f '^sleep 41.25'
+let sel = 0;
+sel <- 1;
+let r = select sel {
+  0 => {
+    let c = sys::process::spawn(sys::process::options(#args: ["-c", "touch /home/eric/tmp/review-2026-10-26/review/work/sys-io/spawned_marker; exec sleep 41.25"], "/bin/sh"));
+    select c { error as e => "err", c => "pid [c.pid]" }
+  },
+  _ => "deselected"
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

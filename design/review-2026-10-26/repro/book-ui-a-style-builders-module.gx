@@ -1,0 +1,7 @@
+// Title: book/src/ui/gui/theming.md never names the module the style builders live in
+// (gui::style); the natural reading, gui::button_style, is refused.
+// Command: timeout -s KILL 30 graphix --check book-ui-a-style-builders-module.gx
+// Expected: a reader of theming.md can tell the path is gui::style::button_style.
+// Observed: "gui::button_style not defined" (the page never says `style`).
+let s = gui::button_style(#border_radius: 4.0);
+s

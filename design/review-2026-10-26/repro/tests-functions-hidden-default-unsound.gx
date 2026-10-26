@@ -1,0 +1,21 @@
+// Title: a fn type that hides a label lets the default's parameter take any type (UB in the JIT)
+// Command: graphix --no-cache tests-functions-hidden-default-unsound.gx
+//   (graphix --check accepts it; graphix-fuzz run shows the node-walk producing nothing)
+// Expected: refused by the check: `h`'s view `fn(x: i64) -> (i64, string)` runs
+//   f's instance with the default `#n = 1`, so its `.1` is an i64, not a string.
+// Observed: accepted; the JIT reads the i64 1 as an ArcStr pointer:
+//   "panicked at arcstr-1.2.0/src/arc_str.rs: misaligned pointer dereference:
+//   address must be a multiple of 0x8 but is 0x1", abort (debug build; in a
+//   release build an unchecked dereference of address 1). With
+//   `let r: Array<(i64, string)> = array::map([1, 2, 3], |#n = count(1), x: i64| (x, n))`
+//   the JIT trips "kernel param `n`: runtime I64(1) does not match the
+//   compiled String slot" instead; and the smallest shape,
+//   `let f = |#n = 1, x: i64| n; let g = |h: fn(x: i64) -> string| str::len(h(1)); g(f)`,
+//   crashes the same way.
+let v = {
+  let f = |#n = 1, x: i64| (x, n);
+  let h: fn(x: i64) -> (i64, string) = f;
+  let s = h(1).1;
+  (str::len(s), "[s]!")
+};
+v

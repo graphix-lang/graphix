@@ -41,6 +41,15 @@ let publish_host = |name: string| {
 array::map(host_ids, publish_host);
 
 let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
+    // CR claude for claude: [bug/low] The three progress columns get rand100() values
+    // (0..100), but a Progress column draws ProgressBar(0.0..=1.0, val.clamp(0.0, 1.0))
+    // (data_table render.rs, ColumnType::Progress; data_table.gxi says values clamp to
+    // [0, 1]). So every bar is full on almost every tick and the columns show nothing.
+    // Publish the percentages as fractions (rand01(), or rand100() / 100.0). While
+    // here, give error_count and request_count integer ranges so a count does not show
+    // as 57.12345. probe:
+    // design/review-2026-10-26/repro/examples-gui-scrolling-progress-scale.gx
+    // (examples-gui-01)
     "cpu_pct"       => progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &90.),
     "mem_pct"       => progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &90.),
     "disk_pct"      => progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &90.),

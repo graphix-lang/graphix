@@ -1,0 +1,57 @@
+// f-kernel: the kernel-ABI freeze (fusion::kernel_abi::freeze_for_abi) is
+// exponential on a two-wide layered typedef DAG: A_i and B_i each name both
+// A_{i+1} and B_{i+1}, so A_{i+1} is reached through two parents and the
+// sibling memo (Seen::frozen) never sees the second occurrence.
+// Command: time graphix --no-cache f-kernel-freeze-layered-dag.gx
+//   (also: GRAPHIX_PROFILE=1 ... | grep phase=Freeze)
+// Expected: about the --no-fusion time (0.17 s); --check takes 0.05 s.
+// Observed (debug build): 5.2 s, of which phase=Freeze is 5.0 s; 20 layers.
+//   18 layers: 1.4 s, 16 layers: 0.45 s (x1.9 per layer).
+type A20 = i64;
+type B20 = f64;
+type A19 = (A20, B20);
+type B19 = {x: A20, y: B20};
+type A18 = (A19, B19);
+type B18 = {x: A19, y: B19};
+type A17 = (A18, B18);
+type B17 = {x: A18, y: B18};
+type A16 = (A17, B17);
+type B16 = {x: A17, y: B17};
+type A15 = (A16, B16);
+type B15 = {x: A16, y: B16};
+type A14 = (A15, B15);
+type B14 = {x: A15, y: B15};
+type A13 = (A14, B14);
+type B13 = {x: A14, y: B14};
+type A12 = (A13, B13);
+type B12 = {x: A13, y: B13};
+type A11 = (A12, B12);
+type B11 = {x: A12, y: B12};
+type A10 = (A11, B11);
+type B10 = {x: A11, y: B11};
+type A9 = (A10, B10);
+type B9 = {x: A10, y: B10};
+type A8 = (A9, B9);
+type B8 = {x: A9, y: B9};
+type A7 = (A8, B8);
+type B7 = {x: A8, y: B8};
+type A6 = (A7, B7);
+type B6 = {x: A7, y: B7};
+type A5 = (A6, B6);
+type B5 = {x: A6, y: B6};
+type A4 = (A5, B5);
+type B4 = {x: A5, y: B5};
+type A3 = (A4, B4);
+type B3 = {x: A4, y: B4};
+type A2 = (A3, B3);
+type B2 = {x: A3, y: B3};
+type A1 = (A2, B2);
+type B1 = {x: A2, y: B2};
+type A0 = (A1, B1);
+type B0 = {x: A1, y: B1};
+let f = |v: A0, k: i64| (v, k + 1);
+let g = |k: i64| f(never<A0>(), k);
+let n = 0;
+n <- select n < 2 { true => n + 1, false => never() };
+sys::exit(sys::time::after_idle(duration:50.ms, 0));
+(g(n), n)

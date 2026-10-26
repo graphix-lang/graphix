@@ -1,0 +1,11 @@
+// Title: stream handles (sys::fs::File, sys::tcp::TcpStream, sys::io::Stdout, ...) order
+// by heap address (Stream<K>'s Ord compares Arc::as_ptr), so a sort, min/max or map
+// keyed by them gives a different answer from run to run.
+// Command: for i in 1 2 3 4 5 6; do timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-net-stream-order-by-address.gx; done | sort | uniq -c
+// Expected: one answer every run (or the sort refused, as for references).
+// Observed: 2 x (false, false), 4 x (true, false).
+let a = sys::io::stdout(null);
+let b = sys::io::stdout(1);
+let s = array::sort([a, b]);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(s[0]$ == a, a == b)

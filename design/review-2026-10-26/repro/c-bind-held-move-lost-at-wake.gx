@@ -1,0 +1,21 @@
+// c-bind: a held moving reference's key move, made while the reading arm
+// sleeps, is not caught up at the wake.
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache c-bind-held-move-lost-at-wake.gx
+// expected last line: (7, (2, 20)) -- the move of r to a[1] at n = 3 was seen by no
+//   reader, so the woken counter catches it up once, as it does with `let r = &a[i]`
+//   (which prints (7, (2, 20))) and as the awake arm does (`let c = true`: (7, (2, 20))).
+// observed last line: (7, (1, 20)) -- the woken Deref reads the new element stale.
+let clk = sys::time::timer(duration:10.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let a = [10, 20];
+let i = 0;
+i <- select n { 3 => 1, _ => never() };
+let r = once(&a[i]);
+let c = (n < 2) || (n >= 5);
+let v = select c {
+  true => { let cnt = 0; cnt <- (*r) ~ cnt + 1; (cnt, *r) },
+  false => (-1, -1)
+};
+sys::exit(select n { 7 => n, _ => never() });
+(n, v)

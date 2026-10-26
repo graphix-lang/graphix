@@ -1,0 +1,24 @@
+// Title: the fixed-`until` warning is wrong for a dereference and printed twice for `seqq let`
+// Command: graphix --no-cache x-engine-seq-errors-until-deref-warning.gx   (or --check)
+// Expected: no warning for `until *r > 3` (`*r` reads the referent live, so the until passes
+//           when k reaches 4), output 4; and one warning, not two, for `until flag` below.
+// Observed: WARNING "this until reads only the step's entry snapshot and calls nothing, so it
+//           cannot change after the step is entered: wrap what it waits for in live(..)" at the
+//           `until *r > 3`, then the program prints 4: the until did change. The (correct)
+//           warning at `until flag` is printed twice: `seqq let c = go` lowers to an inner
+//           `seqq`, and compiling each Seq runs fixed_untils again. `seqq go` prints it once.
+let k = 0;
+k <- select k { s if s < 6 => s + 1, _ => never() };
+let go = select k { 1 => 1, _ => never() };
+let r = &k;
+let out = seq go {
+  until *r > 3;
+  let v = *r;
+  v
+};
+let flag = false;
+let stalled = seqq let c = go {
+  until flag;
+  c
+};
+out

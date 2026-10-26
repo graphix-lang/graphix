@@ -1,0 +1,13 @@
+// Title: a union cast backtracks without memo: each extra nesting level of failing data multiplies the work ~3x (json::read hangs)
+// Command: timeout -s KILL 100 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-cast-setops-union-cast-exponential.gx
+// Expected: an InvalidCast in time linear in the 41-byte input
+// Observed (debug build): 6.6 s; depth 6 / 8 / 10 take 0.07 / 0.63 / 6.6 s (x3.2 per level), on the runtime thread
+// Each level retries the tuple member (cast_member's rank pass, then the own-class pass) and
+// Array<J>, and the inexact round of every enclosing union re-runs the whole subtree.
+type J = [i64, (J, i64), Array<J>];
+let s = r#"[[[[[[[[[["x",1],1],1],1],1],1],1],1],1],1]"#;
+let t0 = sys::time::now(s);
+let r: [J, Error<`JsonErr(string)>, Error<`InvalidCast(string)>] = json::read(s);
+let t1 = sys::time::now(r);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("[sys::time::diff(t1, t0)] [is_err(r)]")

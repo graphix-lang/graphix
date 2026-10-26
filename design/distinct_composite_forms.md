@@ -81,6 +81,11 @@ their own kind; `read_tuple`/`read_struct`/`read_variant` also take data
 and report `Parts::Data`, which a cast rebuilds; `GraphixShape` (the
 derives) builds marked and reads leniently.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says to_data strips, then
+converts abstracts. abstract_value::rewrite does both in one walk, refuses a map whose
+keys write alike, and has a to_marked_data twin that keeps forms for store keys. The
+'FLAT_LISTS and cast_data are gone' sentence is history. Rewrite it to say what the code
+does. Found by reading; not run. (x-kind-markers-09) -->
 **Data.** `rep::strip` writes a value as data: a tuple as an array, a
 struct as its pairs, a bare variant as its tag string, a payload variant
 as `[tag, payload..]`, a list as a flat array. `abstract_value::to_data`

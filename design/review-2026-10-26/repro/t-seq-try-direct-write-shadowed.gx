@@ -1,0 +1,15 @@
+// t-seq: a try whose value only writes a variable has each body write it
+// (lower_try's `direct` sink), and the write's target name is resolved inside
+// the body, so a name the body binds captures it
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-seq-try-direct-write-shadowed.gx
+// expected: 0 then 5 (the outer x takes the try's value)
+// observed: 0 only (the write lands on the body's own `let x`); renaming the
+//   body's `let x` to `let y` prints 0, 5
+// variant (with body): `let e = 0; seq t { e <- try { error(`Boom)?; 5 } with(e) { 7 }; null }`
+//   is refused: "type mismatch Error<ErrChain<`Boom>> does not contain i64" (the with
+//   body's write goes to the try's error cell); spelled `with(err)` it runs and e becomes 7
+let x = 0;
+let t = sys::time::timer(duration:20.ms, 1);
+let r = seq t { x <- try { let x = 1; x + 4 } with(e) { 0 }; null };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+x

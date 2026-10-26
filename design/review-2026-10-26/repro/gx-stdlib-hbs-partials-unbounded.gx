@@ -1,0 +1,10 @@
+// hbs::render's #partials is an unbounded 'a, so the check accepts a reference or a
+// function there, which the builtin can only refuse at run time; 'a: Data (as the
+// data argument has) would refuse both at the check.
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/gx-stdlib-hbs-partials-unbounded.gx
+// Expected: the check refuses both calls (a reference / a function is not Data).
+// Observed: (error:`HbsErr("a reference is not data"),
+//   error:`HbsErr("partial values must be strings, got abstract:"))
+let p = "P";
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(hbs::render(#partials: &p, "hi {{a}}", {a: 1}), hbs::render(#partials: {p: |x| x}, "hi {{a}}", {a: 1}))

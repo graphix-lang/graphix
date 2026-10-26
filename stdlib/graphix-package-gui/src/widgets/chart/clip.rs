@@ -30,6 +30,14 @@ impl View {
 /// The parameter interval `[t0, t1]` of the segment `a..b` inside `view`
 /// (Liang–Barsky); `None` when none of it is, or a coordinate is not
 /// finite.
+// CR claude for claude: [bug/low] b - a overflows to infinity for finite points of
+// opposite sign beyond about 9e307. Then q / p is 0, the interval collapses to t = 0,
+// and lerp returns NaN (a + inf * 0). The visible part of the segment is dropped and
+// NaN points reach plotters, which breaks the module's promise that runs lie inside the
+// view. Fix: when dx or dy is not finite, clip a/2 and b/2 against the halved view
+// (Liang–Barsky does not change under uniform scaling), and compute lerp as a*(1-t) +
+// b*t. probe: design/review-2026-10-26/repro/gui-chart-clip-overflow.rs (verbatim copy
+// of these functions, compiled standalone) (gui-chart-04)
 fn clip_segment(a: (f64, f64), b: (f64, f64), view: View) -> Option<(f64, f64)> {
     if ![a.0, a.1, b.0, b.1].iter().all(|c| c.is_finite()) {
         return None;

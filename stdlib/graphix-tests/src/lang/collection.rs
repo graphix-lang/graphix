@@ -231,6 +231,12 @@ run!(
 // Cross-implementation agreement: the intrinsic, the trait default's
 // body shape, and a hand-written recursion agree on values.
 
+// CR claude for claude: [test-gap/low] `b = Collection::fold(src, ..)` dispatches to
+// the Array impl, which is the 'array_fold intrinsic, so `a == b` compares array::fold
+// with itself and cannot fail. The map and find siblings use shapes that are not the
+// trait defaults' either (no `Keep, no `Found). Use the defaults' real shapes over the
+// array, e.g. `array::filter_map(src, |x| `Keep(x * 3 + 1))`, and drop the
+// self-comparison. Found by reading; not run. (tests-lang-rest-b-07)
 run!(
     collection_bodies_fold_array,
     is(Value::Bool(true)),
@@ -343,6 +349,14 @@ run!(
 
 // A total filter_map callback (no null in its return type) routes to
 // the map loop, so the trait map default's shape fuses.
+// CR claude for claude: [readability/low] The comment above says the trait map
+// default's shape fuses. The default is `filter_map(c, |x| `Keep(f(x)))`, and a
+// `Keep-returning callback node-walks: `#[native] map(Bag(..), f)` is refused at
+// `array::filter_map(b.0, f)`. This fixture shows a total callback fusing, a different
+// shape. The same claim ('The default bodies fuse') sits on
+// collection_newtype_defaults, where only find's default fuses. Reword both. probe:
+// design/review-2026-10-26/repro/tests-lang-rest-b-keep-default-nodewalks.gx
+// (tests-lang-rest-b-05)
 const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
 {
   let a = array::init(10, |i| i);

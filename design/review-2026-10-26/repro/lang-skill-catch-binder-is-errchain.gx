@@ -1,0 +1,12 @@
+// Title: a catch's binder is Error<ErrChain<E>>, not E; SKILL.md's Errors
+// section never says so, and the obvious match on the raised tag is refused.
+// Command: timeout -s KILL 10 graphix --check lang-skill-catch-binder-is-errchain.gx
+// Expected (an author following SKILL.md): accepted.
+// Observed: refused: "pattern `NotFound('_: unbound) will never match
+// Error<ErrChain<`NotFound(string)>>, unused match cases". Writing
+// `select e.0.error { .. }` is accepted and prints k.
+let x: Result<i64, `NotFound(string)> = error(`NotFound("k"));
+{
+  catch(e) println(select e { `NotFound(s) => s });
+  x?
+}

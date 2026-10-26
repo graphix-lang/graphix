@@ -1,0 +1,17 @@
+// Title: sys::net::rpc republishes (unpublish + publish) at every fire of #path,
+// #doc or #spec, even when the value is unchanged.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-net-rpc-republish-same-path.gx
+// Expected: (1, "d"): the path re-fires with the same value, the rpc stays published.
+// Observed: (21, "d"): the doc subscriber sees an unsubscribe and a re-publication per fire
+// (GXDBG_RPC=1 prints 12 "(re)publish" lines).
+let t = sys::time::timer(duration:50.ms, true);
+sys::net::rpc(
+  #path: t ~ "/local/r",
+  #doc: "d",
+  #spec: null,
+  #f: |a: null| 1);
+let n = 0;
+let v: [string, Error<[`SubscribeError(string), `InvalidCast(string)]>] = sys::net::subscribe("/local/r/doc");
+n <- v ~ n + 1;
+sys::exit(sys::time::timer(duration:600.ms, false) ~ 0);
+(n, v)

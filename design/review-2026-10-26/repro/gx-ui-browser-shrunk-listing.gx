@@ -1,0 +1,30 @@
+// Title: tui::browser shows one row of a listing that shrank while scrolled
+// Command: timeout -s KILL 30 graphix --no-cache gx-ui-browser-shrunk-listing.gx | uniq
+// A 12-row listing in a 5-row window, scrolled to its end (viewport.y = 7),
+// then shrunk to 3 rows under the same path. first_row clamps to len - 1,
+// so the window starts at the last row and shows 1 of the 3 rows; two Up
+// presses later it still shows 1 (viewport.y stays past the listing).
+// Expected: (5, ..) while 12 rows, then (3, ..) once the listing has 3 rows.
+// Observed:
+//   (5, "/local/gxui-shrunk/r0")
+//   (5, "/local/gxui-shrunk/r2")
+//   (5, "/local/gxui-shrunk/r9")
+//   (1, "/local/gxui-shrunk/r2")
+use tui::{Tui, browser::{MoveCursor, browser}};
+let n = 12;
+let pubs = array::init(n, |k| sys::net::publish("/local/gxui-shrunk/r[k]", k));
+let path = sys::time::after_idle(duration:200.ms, "/local/gxui-shrunk");
+let sel: [string, null] = never();
+let cur: MoveCursor = never();
+let b: Tui = browser(#size: {width: 40, height: 6}, #cursor: cur, #selected_row: &mut sel, path);
+let shown = select b {
+  `Table(t) => array::len(*t.rows),
+  _ => never()
+};
+let clock = sys::time::timer(duration:300.ms, true);
+let i = 0;
+i <- clock ~ i + 1;
+cur <- select i { 3 => i ~ `Down(20), 4 => i ~ `Down(20), 12 => i ~ `Up(1), 13 => i ~ `Up(1), _ => never() };
+n <- select i { 6 => i ~ 3, _ => never() };
+sys::exit(select i { 16 => i ~ 0, _ => never() });
+(i ~ (shown, sel))

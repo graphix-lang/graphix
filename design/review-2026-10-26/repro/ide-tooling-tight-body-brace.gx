@@ -1,0 +1,14 @@
+// Title: tree-sitter refuses a select/seq body brace written tight against
+//        the scrutinee or trigger (`select x{`, `seq t{`); graphix takes it
+// Command: graphix fmt --stdout design/review-2026-10-26/repro/ide-tooling-tight-body-brace.gx
+//          tree-sitter parse --scope source.graphix design/review-2026-10-26/repro/ide-tooling-tight-body-brace.gx
+// Expected: both parse (graphix prints `select x {` and `seq t {` back)
+// Observed: graphix fmt: ok; tree-sitter: ERROR on each body. The lexer reads the
+//   tight `{` as map_ref's token.immediate('{'), which select and seq_block do not
+//   accept. Letting select take choice('{', token.immediate('{')) with a
+//   [_expression, map_ref] conflict parses it and leaves the repo corpus unchanged.
+let x = 1;
+let t = never();
+let a = select x{ _ => 1 };
+let b = seq t{ 1; 2 };
+(a, b)

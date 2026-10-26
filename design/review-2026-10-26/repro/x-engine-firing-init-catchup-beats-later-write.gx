@@ -1,0 +1,28 @@
+// At a wake, a let's initializer input that fired during the sleep is
+// re-raised AFTER a write to the let that landed later in the same sleep, so
+// the older event wins and the let ends on a value the awake program never
+// ends on.
+// Command: graphix-fuzz run x-engine-firing-init-catchup-beats-later-write.gx
+//   (every mode agrees)
+// x becomes 200 at cycle 11; z's two queued writes land at 11 (1) and 12 (2).
+// The arm sleeps for cycles 11..13 and wakes at 14.
+// Awake (replace `on` with `step > 0`): z is 200 at 11, then 2 from 12 on.
+// Expected at the wake (a resume reads the world as it stands: z's last write,
+// 2, landed after x's fire): (14, 2).
+// Observed: Trace([.. 10:(10, 100) 11:(-1, -1) 14:(14, 200) 15:(15, 200) ..]):
+// the catch-up re-raise of x re-runs the initializer over the later write.
+let step = 0;
+step <- select step { s if s < 16 => s + 1, _ => never() };
+let x = 100;
+x <- select step { s if s == 10 => 200, _ => never() };
+let on = uniq(step < 11 || step > 13);
+let no = 0 - 1;
+select on {
+  true => {
+    let z = x;
+    z <- select step { 10 => 1, _ => never() };
+    z <- select step { 10 => 2, _ => never() };
+    (step, z)
+  },
+  false => (no, no)
+}

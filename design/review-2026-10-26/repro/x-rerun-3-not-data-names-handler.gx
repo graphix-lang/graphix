@@ -1,0 +1,12 @@
+// Title: a callback argument that cannot be read from data is refused naming the whole
+//   handler type with an internal type variable (tests-lib-b2-02 / x-panics-02 variant)
+// Command: timeout -s KILL 10 graphix --check x-rerun-3-not-data-names-handler.gx
+// Expected: the refusal names the parameter's type, e.g. "&i64 is not data: a value
+//   read from data holds no function and no reference" at `v: &i64`.
+// Observed: "fn(v: &i64) -> '_7759: unbound is not data: a writer writes no function
+//   and no reference": it calls the handler itself not data, prints an inference
+//   variable, and speaks of a writer though on_write's argument is read.
+let seen = 0;
+sys::net::publish(#on_write: |v: &i64| seen <- v ~ seen + 1, "/local/r15/w", 0);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+seen

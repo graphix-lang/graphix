@@ -1,0 +1,14 @@
+// Title: gen_queuefn_siblings counts a constant #trigger as `credits` releases, but a trigger
+//        fire born with the queuefn releases nothing: only the first call ever runs
+// Command: graphix-fuzz run design/review-2026-10-26/repro/fuzz-gen-a-queuefn-credits.gx
+//   (or: timeout -s KILL 10 graphix --no-cache <this file>)
+// Shape: exactly what gen_queuefn_siblings emits for n = 3, credits = 2: v2 and v3 enter the
+//        I64 vocabulary as values that run; v4 is printed as the queued one.
+// Expected (the generator's model): v2 = 101 and v3 = 102 fire, the tail (v2, v3) fires.
+// Observed: Trace([]) in both engines: v3 never fires, so every reader of it is bottom.
+let v0 = queuefn(#trigger: i64:2, |v1: i64| -> i64 v1 + i64:100);
+let v2 = v0(i64:1);
+let v3 = v0(i64:2);
+let v4 = v0(i64:3);
+println("[v4]");
+(v2, v3)

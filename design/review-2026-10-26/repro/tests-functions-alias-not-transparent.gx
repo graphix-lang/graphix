@@ -1,0 +1,14 @@
+// Title: a transparent typedef alias in a formal changes whether a call typechecks
+// Command: graphix --no-cache --check tests-functions-alias-not-transparent.gx
+// Expected: accepted, as it is with the formal written `y: ['a, null]`
+//   ('a only in data positions settles to the widest argument, [u64, null]).
+// Observed: "type mismatch 'a: u64 does not contain [u64, null]" at `n`:
+//   `M<'a>` (a Type::Ref) counts as an invariant position in
+//   callsite.rs holds_invariantly / data_positions, so `y` is checked first
+//   and fixes 'a to u64.
+{
+  type M<'a> = ['a, null];
+  let n: [u64, null] = null;
+  let f = |x: 'a, y: M<'a>| -> ['a, null] y;
+  f(n, u64:0)
+}

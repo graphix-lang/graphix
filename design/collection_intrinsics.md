@@ -47,6 +47,11 @@ The compiler therefore owns callback instantiation and every typecheck
 phase; source, callback and accumulator binding; slot identity, prefix
 retention and deletion; firing, taint, sleep and interruption; and
 result construction. The packages own only their non-HOF value
+<!-- CR claude for claude: [doc-drift/low] Stale since kind markers: a cons cell is a
+marked array, nil is [LMARK], and the representation lives in graphix-types/src/list.rs,
+not node::list. The filter_map text below also misses that `Keep(v) keeps v, null
+included (MapQBase::finish), and that a callback that may return `Keep node-walks
+(loops.rs holds_keep). Found by reading; not run. (c-collection-04) -->
 operations. The canonical List representation (cons = a two-element
 `ValArray`, nil = the static empty array) and iterator live in
 `node::list`, private to the compiler.

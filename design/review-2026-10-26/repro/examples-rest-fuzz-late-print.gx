@@ -1,0 +1,23 @@
+// Title: graphix-fuzz drops a FinalValues program's prints made after the
+// first idle: wait_settled! merges the later segments' events but keeps the
+// first segment's end_cycle, and the stdout capture stops there.
+// Command: timeout -s KILL 180 /home/eric/tmp/review-2026-10-26/bin/graphix-fuzz check design/review-2026-10-26/repro/examples-rest-fuzz-late-print.gx
+// (book/src/examples/stdlib/sqlite_query.gx shows the same)
+// Expected: AGREE; the shell prints the line in every mode, cold and warm
+// image and GRAPHIX_PAR=force included.
+// Observed (8 of 8 runs, under machine load): DIVERGENCE, e.g.
+//   interp/nocache: Trace([7:[{id: 1, name: "Alice"}]]; stdout=[0+7:[{id: 1, name: \"Alice\"}]\n])
+//   interp/cold:    Trace([9:[{id: 1, name: "Alice"}]])
+// The session whose sqlite reply lands after a first idle keeps the value
+// (its events are merged) but loses its stdout line.
+let users = seq {
+    try {
+        let conn = sqlite::open(":memory:")?;
+        sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")?;
+        sqlite::exec(conn, "INSERT INTO users VALUES (?, ?)", [1, "Alice"])?;
+        let users: Array<{id: i64, name: string}> = sqlite::query(conn, "SELECT * FROM users", [])?;
+        users
+    } with(e) { [] }
+};
+println("[users]");
+users

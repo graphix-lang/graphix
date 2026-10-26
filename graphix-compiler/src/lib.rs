@@ -854,6 +854,18 @@ pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 /// `eval` should delegate to the same fn (`graphix_package_core::
 /// fast_eval`). `Typed` also receives the site's resolved function type.
 #[derive(Debug, Clone, Copy)]
+// CR claude for eric: [perf/high] fast_dispatch calls the fn even when every argument
+// is stale, so a fused fast call reruns at each kernel invocation, whichever input
+// fired. The node-walk's CachedArgs evaluates it only when one of its own arguments
+// fires. The stdlib registers fast fns whose cost scales with their data (str::parse
+// runs the Graphix parser, hbs::render, the json/toml/pack writers, sort/dedup, re::*),
+// against the 'keep it cheap' contract above. A lambda that parses a constant
+// 20000-element literal and takes a ticking i64 runs 23x slower fused (17 s vs 0.7 s).
+// Decide between standing a stale call's last production (per-site memory, which strict
+// fusion forbids), taking the FastCall off the builtins whose cost scales with their
+// data, or documenting the cliff in the #[native] chapter. probe:
+// design/review-2026-10-26/repro/x-builtin-effects-fastcall-recompute.gx
+// (x-builtin-effects-02)
 pub enum FastCall {
     Plain(FastFn),
     Typed(TypedFastFn),
@@ -1040,6 +1052,14 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
             use std::fmt::Write;
             let _ = write!(reasons, "\n  - {}", failure.reason);
         }
+        // CR claude for claude: [readability/low] This message names no reason. It is
+        // reached whenever a kernel's feeder is node-walk residue with no recorded
+        // failure, e.g. a `~` argument: `#[native] f(t ~ 10)` is refused with nothing
+        // to act on, and GXDBG_NATIVE_ALL lists nothing either. Have `native_residue`
+        // collect the spec of each such feeder, and report 'the node-walk computes
+        // `<spec>` for the kernel'. probe:
+        // design/review-2026-10-26/repro/tests-functions-native-no-reason.gx
+        // (tests-functions-06)
         if reasons.is_empty() {
             crate::bailat!(
                 node.spec(),
@@ -1797,6 +1817,17 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     }
 
     /// Record that the call `spec` binds `id`'s definition statically.
+    // CR claude for claude: [bug/medium] A record here is never removed when the call
+    // that made it is deleted; Bind::delete removes only the callee's entry. After a
+    // dynamic module reloads a body that called `super::f(1)` statically with one that
+    // does not, a REPL `f <- |x: i64| x + 100` is still refused: "an earlier compile
+    // calls it as a fixed function ... super::f(1)". The same happens for any deleted
+    // calling site, and the stale entry is also written into the image. Fix: key the
+    // record by the recording sites (BindId -> site ExprIds), drop a site's entry when
+    // its CallSite or alias Bind is deleted, and refuse only while a live site remains.
+    // Pin it beside written_after_a_static_call_is_refused. probe:
+    // design/review-2026-10-26/repro/tests-modules-image-stale-static-callee.sh
+    // (tests-modules-image-01)
     pub(crate) fn record_static_callee(&mut self, id: BindId, spec: &Arc<expr::Expr>) {
         if !self.static_callees.contains_key(&id) {
             self.static_callees.insert(id, StaticCall(spec.clone()));
@@ -1812,6 +1843,17 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             let mut generic = cells
                 .iter()
                 .filter(|(_, tv)| {
+                    // CR claude for claude: [bug/high] This counts bound cells as
+                    // generic: Type::reached_cells inserts every cell it walks, bound
+                    // ones included. At a run-time bind (a collection slot, a call
+                    // through a function value), `let y = i + 1` holds the operator's
+                    // result cell, which the definition's check bound to i64 at GENERIC
+                    // level. So `&mut y` there is refused with "y was made generic by
+                    // an earlier compile", while --check and a static call accept it.
+                    // Skip cells whose binding is set, and pin `&mut` over an
+                    // operator-initialized local inside an array::map callback. probe:
+                    // design/review-2026-10-26/repro/x-refs-catchup-runtime-bind-mut-ref-refused.gx
+                    // (x-refs-catchup-01)
                     tv.level() == typ::tvar::Level::GENERIC && !tv.is_quantifier_rigid()
                 })
                 .peekable();
@@ -2167,6 +2209,17 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 
     /// Deliver `tv` to the binding `id` this cycle: into the event, and
     /// into the store, where a bottom stands as a stale one.
+    // CR claude for claude: [risk/medium] Six other sites deliver to a binding by hand:
+    // Bind::update's publish, ByRef::publish, module::store_production with its
+    // inserts, PatternNode::bind_event, the seq machine's pc entry, and GX::deliver.
+    // They store a bottom three ways: STALE_BOTTOM here, FRESH_BOTTOM in
+    // Bind/ByRef/module, the raw tag in bind_event. A quiet production is stored with
+    // its tag here and as fired, with a fresh stamp, in Bind. node::read_var hands a
+    // this-cycle store entry to readers as Delivered with that tag, and the wake
+    // catch-up reads any later stamp as a write, so the conventions are observable.
+    // Route every site through this function with one stored form and a notify flag; a
+    // quiet republication takes store_insert_standing. Found by reading; not run.
+    // (x-dup-02)
     pub fn deliver(&mut self, id: BindId, tv: TagValue) {
         let standing = if tv.tag().is_bottom() {
             TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
@@ -2298,6 +2351,16 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Open the compile frame of a top-level node, a statement's or one
     /// built at runtime outside any statement, before [`check_and_fuse`]:
     /// the previous compile's scratch is dropped.
+    // CR claude for claude: [risk/medium] [risk/medium] GX::check recovers from a
+    // checker panic with drop_deferred and Saved::restore only. The resolution scratch
+    // a panic unwinds past survives into every later compile: def_gate_depth, rec_defs,
+    // def_gate_params, instance_fn_params, fn_param_args, written_lets,
+    // resolving_lambdas, defaults_in_check and body. A def_gate_depth left at 1 makes
+    // node::defer_settle drop every deferred settle and judgment, so the LSP session
+    // quietly accepts what a fresh check refuses. This frame only ever opens a
+    // top-level compile, so debug_assert here that that scratch is balanced, and reset
+    // it. GX::check's panic arm should also delete the nodes it already compiled. Found
+    // by reading; not run. (c-lib-03)
     pub fn open_compile_frame(&mut self, top_id: ExprId) {
         self.attr_census.lock().clear();
         self.attr_dispatched.lock().clear();
@@ -2523,6 +2586,17 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
         })
     }
     let mut own: LPooled<AHashSet<usize>> = LPooled::take();
+    // CR claude for eric: [bug/high] This exemption waives every cell the test merely
+    // mentions, not only a slice pattern's element cells. So `|y: 'b, x: ['b,
+    // `Keep('b)]| select x { `Keep(r) => r, r => r }` passes, although an instance may
+    // bind 'b to a `Keep variant. `g(`Keep(6), `Keep(5))` then returns 5 typed
+    // `Keep(i64), and a later select over it matches no arm. With `Keep(i64) as the
+    // test, the same select is refused ("may share `Keep(i64)'s runtime form"). Fix:
+    // exempt only cells the pattern itself introduces, never a cell that `rest` also
+    // holds, such as the definition's quantifier. The core Map Collection impl's
+    // filter_map select is the same shape and will need the keep-marker fix. probe:
+    // design/review-2026-10-26/repro/x-engine-collections-own-cell-told.gx
+    // (x-engine-collections-02)
     cells(test, &mut own);
     let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
     if let Indiscernible::Pair(a, b) = &why
@@ -2815,6 +2889,17 @@ impl ErrorHandler {
 
     /// The handler of the innermost seq machine covering this one,
     /// itself included.
+    // CR claude for claude: [perf/medium] machine() walks the handler chain to the root
+    // when there is no seq machine, and it runs at every catch install and delete
+    // (polled_by / unpolled_by). raise and handled likewise walk every ancestor,
+    // locking each pollers mutex. With a catch in each activation of a recursion, every
+    // install and every raise is O(depth): depth 8k/16k/32k takes 872/2361/7875 ms
+    // against 360/550/1035 ms without the catch, and 2619/8921 ms at 8k/16k with a
+    // raise per level. Cache the nearest machine in DynNode at with_catch (O(1)
+    // machine()), and link each node to its nearest machine or try ancestor (the only
+    // handlers whose nested count anyone reads) so raise/handled walk only those.
+    // probe: design/review-2026-10-26/repro/c-error-op-catch-depth-quadratic.sh Also
+    // reported as (x-stack-04). (c-error-op-03)
     pub(crate) fn machine(&self) -> Option<ErrorHandler> {
         let mut cur = Some(self);
         while let Some(h) = cur {
@@ -3370,6 +3455,20 @@ fn compile_top<R: Rt, E: UserEvent>(
             let dispatched = ctx.attr_dispatched.lock();
             let absorbed = ctx.attr_absorbed.lock();
             for spec in census.iter() {
+                // CR claude for eric: [bug/medium] [bug/medium] An attribute inside a
+                // function body is censused when the definition compiles, but only a
+                // static instance fused in this same compile dispatches it. A function
+                // that is never called, is called only dynamically, or is called in a
+                // later REPL input is therefore refused here. The refusal tells the
+                // user to put the decorated expression in its own statement, which it
+                // already is. `--check` accepts the program, and the REPL can never
+                // define such a function. Decide the rule. One option: treat a registry
+                // attribute in a definition body like a DefAssertion, pending until an
+                // instance's fusion dispatches it. The other: keep the refusal, but say
+                // the enclosing function was not instantiated in this compile, and add
+                // the message to analysis::BUILD_ONLY_REFUSALS. probe:
+                // design/review-2026-10-26/repro/c-lib-native-uncalled-body.gx
+                // (c-lib-01)
                 if !dispatched.contains(&spec.id) && !absorbed.contains(&spec.id) {
                     let e = ::anyhow::anyhow!(
                         "attribute in a position the fusion pass cannot check — \

@@ -1,0 +1,28 @@
+// Title: a trait method's declared #[pure] is not checked of an impl no build-time call reaches
+// Command: graphix --no-cache tests-fusion-traits-trait-requirement-unchecked.gx
+// Expected (CLAUDE.md Traits: "A method's #[pure]/#[sync] (above its val) is
+//   asserted of every body, each impl's and the default"): the load of `foo` fails
+//   (status is an error, as it is for a core-trait impl: an impure `impl Display`
+//   in the same position is a DynamicLoadError), and statically
+//   `trait Score {#[pure] val score: fn(self) -> i64}; impl Score for i64 { let
+//   score = |x| count(x) + x }; 0` is refused.
+// Observed (HEAD e6ffc6eed): the load succeeds, the violation is only logged to
+//   stderr when the consumer's call binds at run time, and the impure impl runs:
+//   the program prints "4". The static program above (no call) compiles and runs.
+let source = "impl Score for i64 { let score = |x| count(x) + x }";
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig {
+        trait Score {
+            #[pure]
+            val score: fn(self) -> i64
+        };
+        impl Score for i64
+    };
+    source source
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select status {
+    error as e => "load refused: [e]",
+    null as _ => "[foo::Score::score(3)]"
+}

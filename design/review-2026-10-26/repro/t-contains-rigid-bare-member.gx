@@ -1,0 +1,13 @@
+// Title: a union holding a declared (rigid) variable before an open one gives
+//        the residue to the rigid member, so the containment fails; written
+//        the other way round, ['q, 'r], it checks.
+// Command: /home/eric/tmp/review-2026-10-26/bin/graphix --check design/review-2026-10-26/repro/t-contains-rigid-bare-member.gx
+// Expected: exit 0 ('q takes [i64, string]; with ['q, 'r] it does)
+// Observed: "type mismatch ['r: unbound within Any, 'q: unbound] does not contain [i64, string]"
+//   (the Primitive arm of `Set ⊇ t`); the same with `false => ["s"]` gives
+//   "... does not contain [i64, Array<string>]" (place_members).
+let f = 'r: Any |x: 'r, b: bool| -> i64 {
+  let v: ['r, 'q] = select b { true => 1, false => "s" };
+  0
+};
+f(true, false)

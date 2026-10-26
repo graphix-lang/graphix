@@ -1,5 +1,13 @@
 # Design documents
 
+<!-- CR claude for claude: [doc-drift/low] Nine docs name code that is gone.
+abstract_cast: require_data. dense_delivery: read_prod!. distinct_composite_forms:
+arr_overlaps. distributed_jit: init_flag and claim_state_word (now born_flag and
+claim_word). place_references: push_var_event!. program_image: EncodeTable. seq_blocks
+7.3: seq_abort and seq_capture (now CatchRole::Try's action and capture).
+tail_calls_are_calls: NullableValue and ElemValue (now SelectArmBind::Value and Elem).
+traits: impls_version (now coretraits::Version). Rename each, or drop it. Found by
+reading; not run. (x-doc-drift-09) -->
 Design as built. Every document here describes a rule the tree
 implements today and why; when a design changes, its document is
 rewritten in place. Proposals that were withdrawn and records of past

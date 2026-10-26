@@ -1,0 +1,18 @@
+// Title: a select over a parameter typed by a quantifier with a structural bound is
+//   refused (x-rerun-4-01 / x-kind-markers-05 variant: reads look through the bound,
+//   selects do not)
+// Command: timeout -s KILL 10 graphix --check x-rerun-3-bounded-quantifier-select.gx
+//   (the whole file reports sl's refusal; keep one function at a time for the others)
+// Expected: accepted, printing (1, 4, 3, 3): every type each bound admits is a
+//   tuple, a struct, a variant of those tags, an array.
+// Observed, each alone: tp: "this pattern tests for (i64, Any) among 'a: unbound, but a
+//   type variable there isn't known here and may share (i64, Any)'s runtime form:
+//   annotate it"; st and vb: the same for { x: i64 } and `A(i64); sl: "missing match
+//   cases: no arm covers 'a: unbound within Array<i64>". The reads `t.0`, `s.x`, `x[0]`
+//   of the same parameters are accepted (deref_typ! reads through the bound).
+let tp = 'a: (i64, string) |t: 'a| -> i64 select t { (n, _) => n };
+let st = 'a: {x: i64} |s: 'a| -> i64 select s { {x} => x };
+let vb = 'a: [`A(i64), `B] |v: 'a| -> i64 select v { `A(n) => n, `B => 0 };
+let sl = 'a: Array<i64> |x: 'a| -> i64 select x { [h, ..] => h, [] => 0 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(tp((1, "z")), st({x: 4}), vb(`A(3)), sl([3]))

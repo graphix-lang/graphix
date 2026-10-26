@@ -1,6 +1,12 @@
 /// filter returns a new array containing only elements where f returned true
 val filter: fn(a: Array<'a>, f: fn(x: 'a) -> bool throws 'e) -> Array<'a> throws 'e;
 
+// CR claude for claude: [doc-drift/low] This doc, and the filter_map docs in the list
+// and map gxi, still say only "the outputs of f that were not null". They never mention
+// that `Keep(v) keeps v, null included, which is the reason the variant exists. Reword
+// all three: null drops the element, `Keep(v) keeps v (null included), any other value
+// is kept. Found by reading; not run. Also reported as (gx-stdlib-07).
+// (collections-str-03)
 /// filter_map returns a new array containing the outputs of f
 /// that were not null
 val filter_map: fn(a: Array<'a>, f: fn(x: 'a) -> ['b, null, `Keep('b)] throws 'e) -> Array<'b> throws 'e;

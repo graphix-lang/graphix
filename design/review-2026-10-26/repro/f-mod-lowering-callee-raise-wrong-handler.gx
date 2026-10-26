@@ -1,0 +1,29 @@
+// Title: a cached lambda kernel delivers its callee's raise to another call's handler
+// Command: timeout -s KILL 180 graphix-fuzz check f-mod-lowering-callee-raise-wrong-handler.gx
+//          (or compare `graphix --no-cache` with `graphix --no-cache --no-fusion`)
+// Expected (node-walk): (0, 0) then (1, 2): each block's catch sees its own call's error.
+// Observed (JIT): (1, 0): `two`'s raise (E(501)) is delivered to `one`'s handler.
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+//     interp: Trace([0:(0, 0) 1:(1, 2)])
+//     jit: Trace([0:(0, 0) 1:(1, 0) 2:(1, 0)])
+// The kernel cache key's QopCoverage (lowering::body_fingerprint) covers only
+// `g`'s own `?` sites, not those of the callees it reaches (`h`'s), whose
+// handler follows the call chain. The second region hits the first region's
+// `g` kernel, whose body calls the `h` kernel built against `one`'s handler.
+let mk = |v: i64| -> Result<i64, `E(i64)> select v > 100 { true => error(`E(v)), false => v };
+let h = |v: i64| mk(v)? + 1;
+let g = |v: i64| h(v) * 2;
+let x = 500;
+let one = {
+  let n = 0;
+  catch(e) n <- e ~ 1;
+  let r = g(x);
+  n
+};
+let two = {
+  let n = 0;
+  catch(e) n <- e ~ 2;
+  let r = g(x + 1);
+  n
+};
+(one, two)

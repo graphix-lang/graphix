@@ -1,0 +1,9 @@
+// Title: a function type whose return type is a variable bound to a function prints its throws ambiguously
+// Command: graphix --check t-fntyp-ret-throws-ambiguous.gx
+// Expected: the outer function's throws is told apart from the returned function's:
+//   fn(x: i64) -> (fn(y: i64) -> i64) throws Error<ErrChain<`E>>
+// Observed: "type mismatch i64 does not contain fn(x: i64) -> fn(y: i64) -> i64 throws
+//   Error<ErrChain<`E>>", which reads (and reparses) as the inner function throwing.
+let f = |x: i64| { let g = |y: i64| y + 1; let e = select x { 0 => error(`E)?, n => n }; g };
+let h: i64 = f;
+h

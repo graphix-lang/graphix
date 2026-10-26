@@ -1,0 +1,22 @@
+// A write through a reference made before the reference first arrives is
+// held as a bare flag (ConnectDeref::pending) and landed with the RHS's value
+// at the arrival, so an event RHS (bottom again by then) drops it: the write
+// never lands, contrary to the rule.
+// Command: graphix-fuzz run x-engine-firing-prearrival-write-dropped.gx
+//   (every mode agrees)
+// rr is not delivered until cycle 4 (`never()` initial, written at step 3).
+// The write `*rr <- e` fires at step 1 with 10.
+// Expected (CLAUDE.md References: "one made before the reference first arrives
+// lands at its first target"; design/place_references.md): z is 10 from
+// cycle 5.
+// Observed: Trace([0:(0, 0) .. 8:(8, 0)]): z stays 0.
+// With a level RHS that still stands at the arrival (`let w = never<i64>(); w <-
+// select step { s if s == 1 => 11, _ => never() }; *rr <- w`) it lands (z is 11
+// from cycle 5).
+let step = 0;
+step <- select step { s if s < 8 => s + 1, _ => never() };
+let z = 0;
+let rr = never<&mut i64>();
+rr <- select step { s if s == 3 => s ~ &mut z, _ => never() };
+*rr <- select step { s if s == 1 => s * 10, _ => never() };
+(step, z)

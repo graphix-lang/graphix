@@ -10,6 +10,13 @@ use crate::{
 use arcstr::literal;
 use netidx_value::Typ;
 
+// CR claude for claude: [structure/low] [structure/low] Seven tests build single-name
+// refs by hand instead of calling this helper (interpolated0, interpolated2,
+// nested_apply, select0, select1, connect, doexpr). The literal ASTs also repeat
+// `Constant(Value::I64(n)).to_expr_nopos()`, the one-argument `Apply { .. }` and
+// `Type::Ref(TypeRef::synthetic(ModPath::root(), ..))` many times. Use `refx` at those
+// sites and add `int`, `call` and `tref` helpers beside it, so each test reads as what
+// it pins. Found by reading; not run. (tests-parser-06)
 fn refx(name: &str) -> Expr {
     ExprKind::Ref { name: [name].into() }.to_expr_nopos()
 }
@@ -152,6 +159,12 @@ fn no_space_before_a_body_or_operand() {
 // where it is captured into that expression's `dec`.
 
 #[test]
+// CR claude for claude: [readability/low] [readability/low] The section comment above
+// says a comment is legal only on its own line directly above an expression. The eol
+// and below tests later in this file contradict it. Delete it or name all three
+// placements. Also, the "reserved word in a name position" comment sits above
+// `a_slash_banner_is_a_comment`; move it onto `reserved_word_as_a_name_is_named`. Found
+// by reading; not run. (tests-parser-05)
 fn comment_above_expr_captured() {
     let e = parse_one("// hello\n42").unwrap();
     let dec = e.dec.as_ref().expect("comment should attach to the expr below");
@@ -284,6 +297,16 @@ fn comment_above_impl_method() {
 }
 
 #[test]
+// CR claude for eric: [bug/medium] [bug/medium] This pins a refusal that the documented
+// comment rule does not make. A comment at the end of a list item's line, or below a
+// list's last item or a file's, is legal everywhere `commented` parses. `impl_decl`,
+// `trait_decl` and interface items use `sep_by_tok` instead, so impl and trait method
+// lists and .gxi files refuse both forms. Most of these refusals are a bare "Unexpected
+// `/`", or "Unexpected `}`" after a trailing `;`, with no reason note. Either parse
+// these lists through `commented` (impl methods are `Expr`s already;
+// `TraitMethod`/`SigItem` need eol/below) and flip this test, or narrow the rule in
+// CLAUDE.md and give the refusals the "a comment stands on a line of its own" note.
+// probe: design/review-2026-10-26/repro/tests-parser-comment-lists.sh (tests-parser-01)
 fn trailing_impl_comment_is_error() {
     assert!(
         parse_one("impl Show for Counter { let show = |c| \"c\"\n// nope\n}").is_err()
@@ -2023,6 +2046,12 @@ fn or_patterns_parse() {
     // Top-level or-patterns are select-arm-only.
     assert!(parse_one("let a | b = x").is_err());
     assert!(parse_one("let rec a | b = x").is_err());
+    // CR claude for claude: [test-gap/low] [test-gap/low] This assertion cannot fail.
+    // The parameter list ends at the first `|`, so `|a |` is a lambda with body `b`,
+    // and the refusal is the trailing `| e` at column 7, not an or-pattern in a
+    // parameter. Delete it, or test an or-pattern that reaches the parameter-pattern
+    // parser and assert the refusal's message. Probe: `graphix fmt --stdout` on this
+    // text reports "Unexpected `|`" at column 7. (tests-parser-04)
     assert!(parse_one("|a | b| e").is_err());
     // A nested or in an irrefutable position parses; refutability is
     // checked at compile time.
@@ -2256,6 +2285,13 @@ fn try_with_parses() {
         let e = parse_one(s).unwrap();
         let printed = e.to_string();
         let again = parse_one(&printed).unwrap();
+        // CR claude for claude: [test-gap/low] [test-gap/low] This only checks that
+        // printing is idempotent. A printer that dropped `with(e: T)`'s type, or
+        // anything else in the construct, would print the same text twice and pass.
+        // Compare ASTs as `seq_parses` does: `assert_eq!(again, e)`, and the same for
+        // `to_string_pretty(0)`. The formatter already round-trips these cases, so the
+        // stronger check passes today. Found by reading; fmt run on the cases.
+        // (tests-parser-03)
         assert_eq!(again.to_string(), printed, "{s}");
         let tries = e.fold(0usize, &mut |n, x| {
             n + usize::from(matches!(x.kind, ExprKind::TryWith(_)))
@@ -2708,6 +2744,13 @@ fn editor_keyword_lists_name_every_keyword() {
         ),
         ("graphix.tmLanguage.json", vscode_words),
     ];
+    // CR claude for claude: [test-gap/low] [test-gap/low] This hand-written list misses
+    // the contextual keywords of the dynamic-module grammar (modexp.rs): dynamic,
+    // sandbox, whitelist, blacklist, unrestricted, sig, source. None of the three
+    // editor lists names them either, so the test passes while breaking the contract
+    // its doc comment states. Add them here and to the editors. Better, keep the
+    // contextual words in one table beside `KEYWORDS` that both the grammar and this
+    // test read. Found by grepping the editor files and modexp.rs. (tests-parser-02)
     let contextual = ["val", "with", "as", "throws", "for", "abort", "flush"];
     let construct = KEYWORDS
         .iter()

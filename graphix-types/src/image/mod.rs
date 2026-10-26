@@ -11,6 +11,11 @@
 //! resolves into what was decoded earlier, so the runtime owns an
 //! [`ImageDecoder`] and opens a [`DecodeImage`] over it per read.
 
+// CR claude for claude: [doc-drift/low] The module doc above says ids relocate "dense
+// on encode". Encode writes each id as its region bit and offset (ids::to_wire) and
+// records the span per region; dense renumbering was the replaced scheme. Reword it:
+// written as region and offset, relocated into a reserved block on decode. Found by
+// reading; not run. (t-image-03)
 mod env;
 
 pub use env::{lexical_decode, lexical_encode};
@@ -1163,6 +1168,14 @@ where
     Q: std::hash::Hash + Eq + ?Sized,
 {
     let seen = encoding(|e| match table(e).get_mut(key) {
+        // CR claude for claude: [risk/low] A key that object_len measured before
+        // ImageEncoder::finish passes here after finish: `defined` flips, the contents
+        // go into `e.defs`, which finish has already appended and cleared, and the
+        // trailer already says u64::MAX for this ordinal. The write succeeds, but every
+        // read of the REF fails, so the entry never restores. Nothing writes an object
+        // after finish today, so this is latent. Refuse when `e.finished &&
+        // !s.defined`, as new_ordinal does for a first sight. Found by reading; not
+        // run. (t-image-01)
         Some(s) => Some((s.ord, !std::mem::replace(&mut s.defined, true))),
         None => {
             let ord = new_ordinal(e)?;
@@ -1249,6 +1262,13 @@ pub(crate) fn object_decode<T: Object>(
         built::<T>,
         |sub| {
             let v = contents(sub)?;
+            // CR claude for claude: [perf/low] When the slot was empty (every
+            // definition on a valid image except a cycle re-entry), the lookup below
+            // returns a second clone of `v`, and `v` is then dropped: an extra clone
+            // and drop of an Expr or FnType per decoded definition, on the warm-start
+            // path. Have ImageDecoder::enter return whether it filled the slot, return
+            // `v` when it did, and read the stored object only when it did not. Found
+            // by reading; not run. (t-image-02)
             enter(v.clone().into_obj())?;
             // a cycle through the object built it first: every occurrence
             // is that one

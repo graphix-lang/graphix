@@ -58,6 +58,12 @@ pub enum StructurePattern {
     /// Or-alternatives `p1 | p2 | …`. Flat: ≥ 2 alternatives, none itself
     /// an `Or`. Every alternative binds the same names at the same types,
     /// so name-set walks read alternative 0.
+    // CR claude for claude: [doc-drift/low] The doc above says the alternatives bind
+    // the same names "at the same types". But a shared name is the union of the
+    // alternatives' types, per CLAUDE.md and the checker: `` `A(n) | `B(n) `` over ``
+    // [`A(i64), `B(string)] `` gives `n: [i64, string]`. Only the name set is shared,
+    // which is all alternative 0 can be read for. Reword it to say that. Found by
+    // running a two-type or-arm (it yields both an i64 and a string). (t-parser-b-06)
     Or(Arc<[StructurePattern]>),
 }
 
@@ -231,6 +237,19 @@ impl StructurePattern {
     /// cell last for the elements the rest stands over, so each element
     /// narrows against the scrutinee's element type on its own and the
     /// rest takes it whole.
+    // CR claude for claude: [bug/critical] Each element of a slice pattern is typed
+    // apart here (one Set member per element), but PatternNode::shape_matches tests the
+    // value against the whole Array<Set{..}>, that is, each element against the union
+    // of the element types. Over an open or Any element type the uses bind the members
+    // apart: `let f = |a| select a { [x, y] => str::len(x) + y, _ => 0 }; f([5,
+    // "abc"])` passes the check, binds 5 as a string, and the fused run aborts on a
+    // misaligned pointer dereference (UB in release). `[x, ..]` and `[<x, ..>]` over
+    // Any admit anything through the open rest cell. Test each element against its own
+    // position's type at run time, in both engines, as a tuple is, or type every
+    // element bind as the whole element type. Pin the generic, Any and List forms.
+    // probe:
+    // design/review-2026-10-26/repro/x-typecheck-patterns-slice-elements-untested.gx
+    // (x-typecheck-patterns-01)
     fn infer_slice(
         env: &Env,
         scope: &ModPath,

@@ -172,6 +172,14 @@ fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
                 return Err(anyhow!("a reference is not data"));
             }
             let Some(g) = get(v) else {
+                // CR claude for claude: [readability/low] A function value is also an
+                // abstract that is neither a reference nor a GxAbstract, so a writer
+                // handed `let v: Any = {a: |x: i64| x + 1}` reports "a value of a type
+                // backed by Rust is not data" (json, pack and toml alike), which names
+                // the wrong cause. Word it to cover both, e.g. "a function or a value
+                // of a type backed by Rust is not data", here and in
+                // graphix-package-core's `written`. Probe run from a scratch program;
+                // not saved. (t-rep-03)
                 return Err(anyhow!("a value of a type backed by Rust is not data"));
             };
             if depth >= MAX_DEPTH {
@@ -197,6 +205,19 @@ fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
             let mut part = |c: &Value| rewrite(c, depth, forms);
             let data = match forms {
                 Forms::Strip => crate::rep::strip_with(v, &mut part)?,
+                // CR claude for claude: [bug/high] The Keep walk recurses into a list's
+                // tail through rewrite and map_parts, two frames per element, with no
+                // ensure_sufficient anywhere on this path. write_marked_data runs it
+                // over every db key and value, so storing a List of a few hundred
+                // elements aborts the runtime with a stack overflow (100 pass, 300
+                // abort in the debug build; json and pack writes of a 300000-element
+                // list, which strip_with walks iteratively, pass). Fix: walk a list's
+                // spine iteratively here as strip_with does (list::Iter, rewrite each
+                // head, list::cons_all only if one changed), run rewrite under
+                // crate::stack::ensure_sufficient, and pin it with a db test storing a
+                // List of several thousand elements. probe:
+                // design/review-2026-10-26/repro/t-rep-db-list-value-overflow.gx
+                // (t-rep-01)
                 Forms::Keep => crate::rep::map_parts(v, &mut part)?,
             };
             // keys that differ as values may write as the same data
@@ -312,6 +333,14 @@ impl PartialEq for GxAbstract {
         if let Some(b) = hooked(|h| (h.eq)(h.state, self, other)) {
             return b;
         }
+        // CR claude for eric: [bug/medium] The structural case ignores params, but a
+        // type test does not. Box<i64>(1) and Box<[i64, null]>(1) are told apart by a
+        // select, yet compare == and merge into one map key (coretraits::pair also
+        // sends two instantiations here). Either compare params after the id in eq, cmp
+        // and hash, or rule that a union of two instantiations of one minted abstract
+        // is not Discernible. probe:
+        // design/review-2026-10-26/repro/c-module-traits-abstract-instantiations-equal.gx
+        // (c-module-traits-04)
         crate::stack::ensure_sufficient(|| self.payload == other.payload)
     }
 }

@@ -489,6 +489,13 @@ impl<X: GXExt> Shell<X> {
                 pending_registration = Some(rx);
                 image.save = Some(tx);
             }
+            // CR claude for claude: [bug/low] Under CacheMode::Warm a netidx: script
+            // has no program key (RegistrationCache::new returns None for
+            // Load::Netidx), so nothing is sent or stored, and `--warm netidx:/p.gx`
+            // exits 0 with only the registration written. The first real run then
+            // compiles the program cold. A file script that reads a netidx module fails
+            // --warm instead. Warm should fail here too, saying a netidx script's
+            // program cannot be cached. Found by reading; not run. (shell-04)
             if c.has_program() {
                 let (tx, rx) = oneshot::channel();
                 program_image = Some(tx);

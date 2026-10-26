@@ -1,0 +1,25 @@
+// A paused body (a collection whose source is bottom, SourceSeen::Paused) wakes
+// with no node::wake::CatchUp scope open, so a callee its slot binds fresh at the
+// resume is not owed the fires its body's inputs had while paused. The same
+// program with the map replaced by a select arm that sleeps over n = 3..6
+// (`select n { k if (k > 2) && (k < 7) => [-5], _ => [gd(1)] }`) prints
+// (7, [1]) and (8, [1]).
+// command: timeout -s KILL 10 graphix --no-cache x-refs-catchup-paused-body-no-catchup.gx
+// expected: ... (6 lines through n = 2), then (7, [1]) and (8, [1])
+// observed: (0, [-99]) (1, [-99]) (2, [-99]) and nothing after: the slot's
+//           `a ~ x` never fires (jit and --no-fusion alike)
+// The same gap in callsite::Absent::wake: replace the map with
+//   let h = |x| gd(x); let f = select n { k if (k > 2) && (k < 7) => never(), _ => h };
+//   let out = f(1);
+// which prints nothing after n = 2 either.
+let a = 0;
+let mode = 0;
+let gd = select mode { 0 => |x| x - 100, _ => |x| a ~ x };
+let n = 0;
+n <- select n { k if k < 8 => k + 1, _ => never() };
+a <- select n { 4 => 7, _ => never() };
+mode <- select n { 4 => 1, _ => never() };
+let src = select n { k if (k > 2) && (k < 7) => never(), _ => [1] };
+let out = array::map(src, |v| gd(v));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(n, out)

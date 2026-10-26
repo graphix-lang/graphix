@@ -8,6 +8,13 @@ use std::{
 
 /// The values `program` logs through `dbg`, in order, with fusion on and
 /// off.
+// CR claude for claude: [structure/low] This helper, exit_code.rs::exit_code and
+// seqq_nested_credit.rs each spawn graphix by hand and wait with .output()/.status()
+// with no deadline. cargo test has no per-test timeout, so a hang here wedges the gate
+// silently. common::graphix already gives the 120 s HANG abort, a private cache and a
+// tempdir, and returns the status, stdout and stderr these read. Use it in all three
+// and delete the hand-rolled Command and temp-file code. Found by reading; not run.
+// (tests-shell-compiler-05)
 fn dbg_order(case: &str, program: &str) -> [Vec<String>; 2] {
     let path = std::env::temp_dir()
         .join(format!("gx-effect-order-{case}-{}.gx", std::process::id()));

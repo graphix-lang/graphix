@@ -11,6 +11,16 @@ macro_rules! born_builtin {
         }
 
         impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent> ::graphix_compiler::BuiltIn<R, E> for $name {
+            // CR claude for claude: [bug/medium] A born builtin answers in the update
+            // where it is born and never later, which is Sync in effects.rs's terms
+            // (same cycle, a once-flag of state), not Async. The Async label makes
+            // `#[sync]` refuse any function that reads sys::dirs::config_dir() or
+            // sys::args(). It also makes select.rs::acts_on_the_world treat home_dir()
+            // in an arm as an effect, which draws a spurious warn_birth_only warning.
+            // args::Parse has the same mislabel. Declare Effect::Sync here and in
+            // args::Parse. probe:
+            // design/review-2026-10-26/repro/x-builtin-effects-born-builtin-async.gx
+            // (x-builtin-effects-03)
             const EFFECT: ::graphix_compiler::effects::Effect =
                 ::graphix_compiler::effects::Effect::Async;
             const NAME: &str = $builtin;

@@ -1,0 +1,24 @@
+// A guard the chain does not reach at birth is first run under View::Wake,
+// not View::Step: its constants stand, so a stateful builtin over a constant
+// in it never produces and the guard stays undecidable for good. The arm-body
+// twin is first entered as a Step and fires its constant.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache tests-select-guard-first-reach-is-a-wake.gx
+//   (same with --no-fusion)
+// Expected (CLAUDE.md: an arm's first entry is a Step; an unreached guard
+// "sleeps, as an unselected arm does"):
+//   guard t=3 guard
+//   body t=3 arm 1
+// Observed (both engines): no "guard t=3" line (the select is bottom at t=3,
+// and at every later reach of arm 1):
+//   body t=3 arm 1
+{
+  let t = 0;
+  t <- select t { n if n < 5 => n + 1, _ => never() };
+  let x = select t { 3 => 2, _ => 1 };
+  let guard = select x { 1 => "one", n if count(5) == 1 => "guard", _ => "other" };
+  let body = select x { 1 => "one", n => "arm [count(5)]" };
+  select t { 3 => { println("guard t=[t] [guard]"); println("body t=[t] [body]") }, _ => never() };
+  sys::exit(sys::time::after_idle(duration:100.ms, 0));
+  t
+}

@@ -86,6 +86,14 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     fn audit(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let mut expected = self.resident.clone();
         expected.ride();
+        // CR claude for claude: [test-gap/medium] The audit checks only the skipped
+        // walk's production and this cycle's publications. A connect returns phantom
+        // and its effect is a set_var for the next cycle, so a missed mark on a `<-`
+        // statement passes the audit and every run! fixture while PruneMode::On
+        // silently drops the write; timers, spawns and patch writes are invisible the
+        // same way. Count the effect ops the audited walk queues through RtView (or the
+        // root's queued writes) and panic when there are any, as for a publication.
+        // Found by reading; not run. (x-prune-04)
         let before: IntSet<BindId> = ctx.event.variables.own_ids().collect();
         let tv =
             ctx.in_boundary(Some(&self.boundary), |ctx| self.child.update(ctx).clone());

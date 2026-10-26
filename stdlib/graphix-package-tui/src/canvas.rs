@@ -114,6 +114,20 @@ enum ShapeV {
 
 impl ShapeV {
     /// Whether the shape's coordinates are numbers ratatui can place.
+    // CR claude for eric: [bug/medium] This check, and DatasetW's breaks in chart.rs,
+    // guards only x2 - x1 and y2 - y1. ratatui's clipper (line-clipping
+    // cohen_sutherland) still computes (x_min - x1) * dy / dx, which overflows. Its
+    // inf/inf NaN counts as inside and lands at column 0, so `Line{x1: -1e300, y1:
+    // 1e300, x2: 5, y2: 5}` over 0..10 bounds is drawn from the bottom-left corner
+    // instead of the top-left. A segment whose difference overflows is dropped even
+    // when it crosses the window: the row y = 5 from x = -1e308 to 1e308 draws nothing.
+    // The pins overflowing_canvas_geometry_is_empty and overflowing_chart_line_is_empty
+    // assert that empty screen for a diagonal through the window. Decide: clip in
+    // Graphix with a parametric clip whose intermediates stay inside the segment and
+    // give ratatui only the inside part (draws these lines, flips both pins), or keep
+    // 'draws nothing' and extend this test and the breaks to the clipper's products.
+    // Either way, add an UPSTREAM.md entry. probe:
+    // design/review-2026-10-26/repro/tui-widgets-canvas-line-clip.sh (tui-widgets-02)
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {

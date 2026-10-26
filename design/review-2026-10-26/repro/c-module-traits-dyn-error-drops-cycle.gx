@@ -1,0 +1,19 @@
+// A dynamic module's source that is no program skips the body's update that cycle, losing a write to its val
+// Run: timeout -s KILL 30 graphix --no-cache c-module-traits-dyn-error-drops-cycle.gx
+// Expected (the last good load runs on, and a write to its val reaches it):
+//   (null, 0, 0) then (error:`DynamicLoadError(..), 5, 50)
+// Observed: (null, 0, 0) then (error:`DynamicLoadError("unexpected error:`E"), 5, 0)
+//   foo::x reads 5 but the body never saw it: Module::update returns early on the
+//   non-string source before forwarding outer writes and updating the body.
+// Control: write foo::x one cycle later (a second timer) and foo::y becomes 50.
+let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val x: i64; val y: i64 };
+    source src
+};
+let t = sys::time::timer(duration:30.ms, 1);
+src <- t ~ error(`E);
+foo::x <- t ~ 5;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(status, foo::x, foo::y)

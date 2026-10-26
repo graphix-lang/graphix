@@ -1,0 +1,25 @@
+// c-bind: across a sleep, a `<-` target's initializer input that fired
+// BEFORE a write landed on the target overwrites that later write at the
+// wake: the catch-up replays inp's fire (c=4) after x's write (c=5).
+// Bind::update: reraise_writes_while_asleep publishes 555, then the
+// initializer's caught-up fire publishes 100 over it.
+// run: timeout -s KILL 60 graphix --no-cache c-bind-wake-order.gx | grep -v '^[0-9]*$'
+// expected (sleep is pause: inp=100 at c=4, then x <- 555 at c=5, so x
+//   stands at 555 when the arm resumes): c=6 inner=555 *h=555
+// observed: c=5 *h=555, then c=6 inner=100 *h=100 (both engines, --no-fusion too)
+let c = 0;
+c <- select c { k if k < 8 => k + 1, _ => never() };
+let sel = select c { 3 => false, 4 => false, 5 => false, _ => true };
+let inp = 0;
+inp <- select c { 3 => c ~ 100, _ => never() };
+let holder: [&mut i64, null] = null;
+let inner = select sel {
+  true => { let x = inp; holder <- &mut x; x },
+  false => -1
+};
+let h = holder$;
+*h <- select c { 4 => c ~ 555, _ => never() };
+let hv = *h;
+println(c ~ "c=[c] inner=[inner] *h=[hv]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+c

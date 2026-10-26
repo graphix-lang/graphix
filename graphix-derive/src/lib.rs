@@ -284,6 +284,12 @@ fn graphix_files() -> Vec<TokenStream> {
     }]
 }
 
+// CR claude for claude: [risk/low] The existence check uses the manifest path,
+// src/graphix/main.gx, but the emitted include_str!("graphix/main.gx") resolves
+// relative to the file that invokes defpackage!. Invoked from anywhere but a file
+// directly under src/, it reads a different path and fails the build. Emit the absolute
+// path the check used (c.graphix_src().join("main.gx")) into include_str!. Found by
+// reading; not run. (shell-07)
 fn main_program_impl(c: &Crate) -> TokenStream {
     if c.graphix_src().join("main.gx").exists() {
         quote! {

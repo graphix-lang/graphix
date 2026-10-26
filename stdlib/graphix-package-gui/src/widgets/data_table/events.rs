@@ -188,6 +188,15 @@ impl<X: GXExt> DataTableW<X> {
         let pos_changed = row_changed || self.first_col != new_first_col;
         self.first_row = new_first_row;
         self.first_col = new_first_col;
+        // CR claude for claude: [test-gap/medium] No test drives this path with
+        // absolute rows: the data_table tests scroll only virtual rows or horizontally,
+        // so nothing checks that rows scrolled into the window get subscribed and rows
+        // leaving it get dropped. Dropping `prev.needs_subscription_reconcile` above,
+        // reversing the `difference` in update_subscriptions' non-full branch, or
+        // deleting this call would all pass. Add a test: about 300 published absolute
+        // rows, handle_scroll to row 200, wait for the visible cells' values, and
+        // assert dt_subscription_count() stays at window x columns; then scroll back
+        // and check again. Found by reading; not run. (gui-datatable-02)
         if row_changed {
             self.update_subscriptions();
         }
@@ -197,6 +206,14 @@ impl<X: GXExt> DataTableW<X> {
     /// The header cell at `col_meta_idx` (the row-name column first when
     /// shown) was pressed on its resize handle; a second press within
     /// 400 ms auto-fits every column.
+    // CR claude for claude: [structure/low] The press carries a header slot index, and
+    // this function rebuilds render's col_meta mapping from show_row_name, mode and a
+    // fresh display_col_range. last_resize_click is also keyed by slot, so pressing
+    // slot 2's handle, scrolling one column, and pressing slot 2 again within 400 ms
+    // auto-fits every column instead of starting a drag. Carry the column name in
+    // ColumnResizeStart (render has it in col_meta), key the double-click by name, and
+    // delete this mapping and the test accessor dt_meta_col_idx. Found by reading; not
+    // run. (gui-datatable-05)
     pub(crate) fn handle_column_resize_start(&mut self, col_meta_idx: usize) -> bool {
         let now = Instant::now();
         let is_double = self.last_resize_click.is_some_and(|(idx, t)| {

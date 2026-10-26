@@ -1,0 +1,24 @@
+// A guard the chain does not reach sleeps and should wake caught up, but its
+// tracker (select.rs GuardSleep::fires) holds only the guard's compile-time refs,
+// is never refreshed with what the guard learns as it runs (a Deref's target, a
+// dynamic callee's body), and no node::wake::CatchUp scope is open for it. So a
+// write to y while the guard sleeps (n = 3..6) is caught up when the guard reads
+// `y` but lost when it reads `*r`, r = &y.
+// command: timeout -s KILL 10 graphix --no-cache x-refs-catchup-guard-learned-inputs.gx
+// expected (as with `count(y)` in the guard): ... (6, -5) (7, 7) (8, 8)
+// observed: ... (6, -5) (7, -1) (8, -1)   (jit and --no-fusion alike)
+// The same with a dynamic callee: `k if gd(k) => k` where
+//   let gd = select mode { 0 => |x| (a ~ x) > 0, _ => |x| false }
+// prints (7, -1) where the static `gs = |x| (a ~ x) > 0` prints (7, 7).
+let y = 0;
+let r = &y;
+let n = 0;
+n <- select n { k if k < 8 => k + 1, _ => never() };
+y <- select n { 4 => 7, _ => never() };
+let out = select n {
+  k if (k > 2) && (k < 7) => -5,
+  k if count(*r) > 1 => k,
+  _ => -1
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(n, out)

@@ -391,6 +391,17 @@ run!(checked_int_arith_inline, r#"
 const CHECKED_INT_ARITH: &str = r#"[[i8:127, i8:73, error:["ArithError", "attempt to multiply with overflow"], i8:3, i8:19], [error:["ArithError", "attempt to add with overflow"], i8:-127, error:["ArithError", "attempt to multiply with overflow"], error:["ArithError", "attempt to divide with overflow"], i8:0], [error:["ArithError", "attempt to add with overflow"], u16:65533, error:["ArithError", "attempt to multiply with overflow"], u16:32767, u16:1], [error:["ArithError", "attempt to add with overflow"], i64:9223372036854775806, i64:9223372036854775807, i64:9223372036854775807, i64:0], [i64:6074001000, i64:0, error:["ArithError", "attempt to multiply with overflow"], i64:1, i64:0], [u64:3, error:["ArithError", "attempt to subtract with overflow"], u64:2, u64:0, u64:1], [u64:9, u64:9, u64:0, error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"]]]"#;
 
 // A typedef naming the next twice freezes once per level, not 2^depth.
+// CR claude for claude: [perf/medium] This fixture freezes T0 only as a region's return
+// type, which is linear. The same chain as a lambda formal (`let f = |x: T0| -> T0 x;
+// f(v)`) freezes exponentially: 0.25 s at 6 levels, 2.8 s at 8, 12.1 s at 9 (11.2 s in
+// phase=Freeze, while --check takes 0.1 s). From 10 levels the call de-fuses with
+// 'formal `x` has no kernel encoding'. The formal path in `lowering::tail_loop_blocker`
+// and the kernel signature freezes `expand_refs`' unfolded tree. `freeze_for_abi_d`
+// reuses a Ref's result only among siblings under one parent Ref, so that tree gets no
+// reuse. Freeze formals on the Ref form, or memoize per Ref across the whole freeze.
+// Then make this fixture reach a formal (`#[native] f(v)` at 40 levels). probe:
+// design/review-2026-10-26/repro/tests-lang-rest-a-typedef-dag-formal-freeze.gx
+// (tests-lang-rest-a-01)
 run!(typedef_dag_freezes_in_linear_time, {
     use std::fmt::Write;
     let mut src = poolshark::local::LPooled::<String>::take();

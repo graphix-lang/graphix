@@ -1,0 +1,25 @@
+// Title: an rpc call whose arguments fail the cast is answered with the cast error
+// as a marked graphix variant, which netidx cannot carry: the reply tears down the
+// caller's connection to the server process. The caller gets "call cancelled" instead
+// of the InvalidCast error, and every other subscription on that connection blips
+// to `SubscribeError("unsubscribed")`.
+// Command: RUST_LOG=warn timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-net-rpc-cast-error-kills-connection.gx
+// Expected: sub: 0..9 without interruption; bad: error:`RpcError(..InvalidCast..) (or the InvalidCast error).
+// Observed: ... sub: 4 / sub: error:`SubscribeError("unsubscribed") /
+//           bad: error:`RpcError("call cancelled before a reply was received") / sub: 4 / sub: 5 ...
+let p = "/local/rpc_cast4";
+sys::net::rpc(
+  #path: p,
+  #doc: "add",
+  #spec: {a: {default: 1, doc: "a"}, b: {default: 2, doc: "b"}},
+  #f: |args: {a: i64, b: i64}| args.a + args.b);
+let n = 0;
+n <- sys::time::timer(duration:100.ms, true) ~ n + 1;
+sys::net::publish("/local/counter", n);
+let s: [i64, Error<[`SubscribeError(string), `InvalidCast(string)]>] = sys::net::subscribe("/local/counter");
+println("sub: [s]");
+let bad: [i64, Error<[`RpcError(string), `InvalidCast(string)]>] =
+  sys::net::call(p, sys::time::timer(duration:450.ms, false) ~ {a: "x", b: 1});
+println("bad: [bad]");
+sys::exit(sys::time::timer(duration:1000.ms, false) ~ 0);
+0

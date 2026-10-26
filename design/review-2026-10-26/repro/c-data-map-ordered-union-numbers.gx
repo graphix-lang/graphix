@@ -1,0 +1,12 @@
+// Title: Ordered accepts a union whose members hold two numeric types at one
+// position unless the union normalizer merged them, so 1 orders below 0.5.
+// Command: graphix --no-cache design/review-2026-10-26/repro/c-data-map-ordered-union-numbers.gx
+// Expected: refused at the check like `[`A(i64), `A(f64)]` is ("more than one
+//   numeric type: values of two numeric types have no order between them").
+// Observed: runs and prints (true, false, [[1], [0.5]], {[1] => 1, [0.5] => 2}):
+//   [1] < [0.5] by the type discriminant. The same for
+//   [{x: i64, y: string}, {x: f64, y: bool}] ({x: 1, ..} < {x: 0.5, ..} is true).
+let a: [Array<i64>, Array<f64>] = [1];
+let b: [Array<i64>, Array<f64>] = [0.5];
+sys::exit(sys::time::after_idle(duration:50.ms, 0));
+(a < b, b < a, array::sort([b, a]), {a => 1, b => 2})

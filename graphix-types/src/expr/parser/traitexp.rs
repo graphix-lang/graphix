@@ -137,6 +137,15 @@ where
         spaces().with(optional(between(
             token('{'),
             sptoken('}'),
+            // CR claude for claude: [bug/medium] Impl methods are `let` statements, but
+            // this list is `sep_by_tok`, not the block's `statements`. So `let show =
+            // ..; // eol` and a `// below` line under the last method are parse errors,
+            // while the same lines in a `{ .. }` block parse. CLAUDE.md makes both
+            // legal. Parse with `statements(|| token('}'))`, drop the NoOp a trailing
+            // `;` leaves before the `let name = ..` check, and have the ImplExpr
+            // printer write eol/below as the block printer does. probe:
+            // design/review-2026-10-26/repro/t-parser-b-list-comments.sh
+            // (t-parser-b-03)
             spaces().with(sep_by_tok(expr(), semisep(), token('}'))),
         ))),
         position(),

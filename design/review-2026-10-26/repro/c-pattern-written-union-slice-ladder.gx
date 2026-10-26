@@ -1,0 +1,15 @@
+// Title: a slice length ladder under a written union of array types covers
+// nothing: an exhaustive select is refused.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --check c-pattern-written-union-slice-ladder.gx
+// Expected: accepted (CLAUDE.md: "slice-pattern length ladders count as
+//   coverage, one ladder per array or list member"); running prints [0, 1, 2].
+//   The same ladder under `Array<i64> as`, or with no type test, is accepted.
+// Observed: "missing match cases: no arm covers [Array<i64>, Array<string>]
+//   (a slice arm with refutable element patterns covers its length only with
+//   exact-length siblings ...)", though no element pattern is refutable.
+//   StructPatternNode::array_len_coverage asks child_types for the element
+//   type of the written predicate itself, a Set, which has none.
+// The same with `A as [<>]` / `A as [<_, ..>]` over [List<i64>, List<string>].
+type A = [Array<i64>, Array<string>];
+let f = |x: [A, null]| select x { A as [] => 0, A as [_, ..] => 1, null => 2 };
+[f([]), f(["a"]), f(null)]

@@ -1,0 +1,7 @@
+// Title: a source ts_accepts_what_the_parser_does lists as accepted is refused by the parser
+// Command: graphix fmt --stdout design/review-2026-10-26/repro/tests-expr-gxi-eol-comment.gxi
+// Expected (per the test): it parses.
+// Observed: exit 1, "a comment stands on a line of its own, above what it describes" at `// c`.
+val x: i64; // c
+/// d
+val y: i64

@@ -129,6 +129,12 @@ Controls how an image or SVG is scaled within its bounds:
 {{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:content_fit}}
 ```
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph talks about `Widget` variants,
+but the page never shows the Widget type, and overview.md's Further Reading says this
+page documents it. mod.gxi keeps an `ANCHOR: widget` around the union that no page
+includes (the only unused anchor in the GUI and TUI .gxi files). Include it under a `###
+Widget` heading here. Found by checking every .gxi anchor against the book's includes.
+(book-ui-a-03) -->
 You do not normally construct `Widget` variants directly. Each widget module exports a constructor function (e.g., `gui::text::text(...)`, `gui::button::button(...)`) that returns `Widget`. This means a column's children array has type `Array<Widget>` and can contain any mix of widgets:
 
 ```graphix

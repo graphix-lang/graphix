@@ -144,6 +144,13 @@ fn parses(text: &str) -> Result<()> {
 /// the file lives, and a REPL transcript's inputs (lines after `〉`)
 /// each parse. A fence tagged `refused` must also be refused by the
 /// check.
+// CR claude for claude: [test-gap/low] This gate only parses untagged fences and REPL
+// inputs. A `refused` fence passes on any refusal, and transcript output is never
+// compared, so stale type readouts and stale coverage rules in the book pass it. 45 of
+// the 114 untagged fences in core/, functions/ and the top-level pages fail --check
+// (schematic names, .gxi signatures). Tag those `ignore` (or a `sig` tag that runs
+// parse_sig) and check the rest, and consider comparing each transcript's `-:` line.
+// probe: ran --check over every fence in those pages. (book-core-11)
 #[tokio::test(flavor = "multi_thread")]
 async fn book_fences_parse() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src");

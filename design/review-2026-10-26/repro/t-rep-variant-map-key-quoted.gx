@@ -1,0 +1,20 @@
+// Title: a map key whose data is a string but whose value is not (a bare variant, an
+// abstract string newtype with `impl Cast`) is written by json/toml with literal quotes
+// inside the key; a read refuses the variant map and silently corrupts the newtype keys.
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache t-rep-variant-map-key-quoted.gx
+// Expected (map_key's doc: a string key is written bare, and what the writer emits reads back):
+//   {"A":1,"B":2} {`A => 1, `B => 2} | {"abc":1} {Id("abc") => 1} | m.A = 1 ...
+// Observed:
+//   "{\"\\\"A\\\"\":1,\"\\\"B\\\"\":2} error:`InvalidCast(\"can't cast \\\"\\\\\\\"A\\\\\\\"\\\" to [`A, `B]: no member admits it\")
+//    | {\"\\\"abc\\\"\":1} {Id(\"\\\"abc\\\"\") => 1} | [m]\n'\"A\"' = 1\n'\"B\"' = 2\n"
+type Id = Abstract<string>;
+impl Cast for Id {};
+let m: Map<[`A, `B], i64> = {`A => 1, `B => 2};
+let s = json::write_str(m)$;
+let r: Result<Map<[`A, `B], i64>, [`JsonErr(string), `InvalidCast(string)]> = json::read(s);
+let im: Map<Id, i64> = {Id("abc") => 1};
+let is = json::write_str(im)$;
+let ir: Result<Map<Id, i64>, [`JsonErr(string), `InvalidCast(string)]> = json::read(is);
+let t = toml::write_str({m: m})$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+"[s] [r] | [is] [ir] | [t]"

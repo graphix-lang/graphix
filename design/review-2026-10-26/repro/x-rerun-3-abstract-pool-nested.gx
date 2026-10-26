@@ -1,0 +1,12 @@
+// Title: coverage pooling stops at an abstract constructor pattern nested in a
+//   tuple or struct, so exhaustive selects are refused (x-typecheck-patterns-01 variant)
+// Command: timeout -s KILL 10 graphix --check x-rerun-3-abstract-pool-nested.gx
+// Expected: accepted (each select covers every value), printing (1, 5, 1, 5).
+// Observed: "missing match cases: no arm covers (Box<bool>, i64)"; the struct form
+//   alone gives "no arm covers { b: Box<[`A, `B]>, n: i64 }". The same arms at top
+//   level (`Box(true) => .., Box(false) => ..`) and `Box((`A, _))` are accepted.
+type Box<'a> = Abstract<'a>;
+let g = |x: (Box<bool>, i64)| select x { (Box(true), _) => 1, (Box(false), n) => n };
+let h = |x: {b: Box<[`A, `B]>, n: i64}| select x { {b: Box(`A), n: _} => 1, {b: Box(`B), n} => n };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(g((Box(true), 5)), g((Box(false), 5)), h({b: Box(`A), n: 5}), h({b: Box(`B), n: 5}))

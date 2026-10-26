@@ -1,0 +1,16 @@
+// Title: a map keyed by bare variants writes its keys quoted, so json/toml cannot read the map back (t-rep-02 variant)
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --no-cache design/review-2026-10-26/repro/x-rerun-4-variant-map-key-json.gx
+// Expected (CLAUDE.md: a bare variant's data is its tag; what the json and toml
+//   writers emit reads back into its type): j {"B":1}, r {`B => 1}, t m.B = 1
+// Observed: j {"\"B\"":1}, r error:`InvalidCast("can't cast \"\\\"B\\\"\" to `B: variant tag mismatch"),
+//   t [m] '"B"' = 1. graphix_package_core::map_key writes the stripped key
+//   (to_data gives the string "B") through Naked, which quotes a string;
+//   cast<Map<`B, i64>>({"B" => 1}) reads fine. Tuple and variant-with-payload keys
+//   ({"[1, 2]":1}) do not read back either: a cast never parses a string into a collection.
+let m: Map<`B, i64> = {`B => 1};
+let j = json::write_str(m)$;
+let r: Result<Map<`B, i64>, [`InvalidCast(string), `JsonErr(string)]> = json::read(j);
+println("j [j] r [r]");
+println("t [toml::write_str({m: m})]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

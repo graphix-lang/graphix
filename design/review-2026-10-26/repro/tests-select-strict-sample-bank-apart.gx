@@ -1,0 +1,25 @@
+// strict_sample_no_bank (stdlib/graphix-tests/src/lang/select.rs) lands `v`
+// in the same cycle as a live trigger, so `~` and `~!` both write once and
+// the fixture's [1, 1] holds whether either operator banks or not. This twin
+// lands `v` one step earlier, alone, and tells them apart.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache tests-select-strict-sample-bank-apart.gx
+//   (same with --no-fusion)
+// Expected and observed (both engines): (2, 1)
+//   banked: the banked trigger is paid at step 5, the live one at step 6;
+//   strict: only the live one at step 6.
+// The fixture as written (v <- at step 5) prints (1, 1) and would print
+// (1, 1) too if `~!` banked or `~` did not.
+{
+  let step = 0;
+  step <- select step { s if s < 12 => s + 1, _ => never() };
+  let t = select step { 1 | 2 | 3 | 6 => step, _ => never() };
+  let v = never<string>();
+  v <- select step { 4 => "v", _ => never() };
+  let banked = 0;
+  banked <- (t ~ v) ~ (banked + 1);
+  let strict = 0;
+  strict <- (t ~! v) ~ (strict + 1);
+  sys::exit(sys::time::after_idle(duration:100.ms, 0));
+  select step { 12 => (banked, strict), _ => never() }
+}

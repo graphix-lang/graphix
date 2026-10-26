@@ -1,0 +1,19 @@
+// Title: Singleton counts two union members that differ only in distinct
+//        open cells as one (Type's PartialEq), so --check accepts what the
+//        build refuses
+// Command: timeout -s KILL 30 graphix --check t-tvar-singleton-open-members-equal.gx   (exit 0)
+//          timeout -s KILL 30 graphix --no-cache t-tvar-singleton-open-members-equal.gx
+// Expected: the check and the build agree. The concrete form
+//   `h(select true { true => [y], false => [z] })` with y: i64, z: string is
+//   refused ("'a: unbound within Singleton does not contain [Array<i64>,
+//   Array<string>]"), so k(false, 1, "a") should be refused by the check.
+// Observed: --check exits 0; the build refuses: "an instance at
+//   fn(x: [Array<i64>, Array<string>]) -> .. of a definition typed
+//   fn<'a: Singleton>(x: 'a: unbound within Singleton) -> ..".
+//   UnionParts::member dedups `others` with Type::eq, under which two
+//   distinct unbound cells are equal, so [Array<'y>, Array<'z>] counts one
+//   member.
+let h = 'a: Singleton |x: 'a| -> 'a x;
+let k = |b, y, z| h(select b { true => [y], false => [z] });
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+k(false, 1, "a")

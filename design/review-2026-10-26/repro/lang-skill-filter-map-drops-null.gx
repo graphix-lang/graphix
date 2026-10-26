@@ -1,0 +1,7 @@
+// Title: array::filter_map drops an element whose callback returns null,
+// so `|x| x` over nullable elements silently loses the nulls; SKILL.md
+// lists filter_map and uses it in two idioms without `Keep(v).
+// Command: timeout -s KILL 10 graphix --no-cache lang-skill-filter-map-drops-null.gx
+// Observed: ([1, 2], [1, null, 2]).
+let xs: Array<[i64, null]> = [1, null, 2];
+(array::filter_map(xs, |x| x), array::filter_map(xs, |x| `Keep(x)))

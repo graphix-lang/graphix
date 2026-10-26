@@ -783,6 +783,12 @@ run!(
 
 // An implementation that raises what its `val` does not declare is
 // refused.
+// CR claude for claude: [structure/low] This fixture and
+// a_raise_of_another_error_is_refused below are the programs of
+// throws_mismatch_names_nothing and throws_mismatch_names_the_written_types, with the
+// module renamed and weaker phrases. abstract_type_two_modules_combined likewise
+// repeats abstract_type_different_modules with other constants. Delete the three
+// copies; the twins pin more. Found by reading; not run. (tests-modules-image-03)
 run!(
     an_undeclared_raise_is_refused,
     refused("in throws clause"),

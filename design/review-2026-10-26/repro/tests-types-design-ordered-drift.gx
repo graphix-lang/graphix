@@ -1,0 +1,10 @@
+// Title: design/tvar_constraints.md says `apply(|x| x < x)` checks under fn<'b: Number>; it is refused
+// Command: timeout -s KILL 10 graphix --check tests-types-design-ordered-drift.gx
+// Expected per design/tvar_constraints.md (Quantified function formals): accepted.
+// Observed (and pinned by types.rs NESTED_QUANTIFIER_COMPARE_UNORDERED, as CLAUDE.md's Ordered rule says):
+//   the argument requires 'b: Ordered, which the parameter's quantifier does not declare
+{
+  type F = fn<'b: Number>(x: 'b) -> bool;
+  let apply = |f: F| f(1);
+  apply(|x| x < x)
+}

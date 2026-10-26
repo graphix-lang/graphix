@@ -1,0 +1,14 @@
+// Title: a sys::net::write issued in a select arm is lost when the arm sleeps
+// before the write target's subscription has connected (the Dval holding the
+// queued write is dropped by Write::sleep -> release).
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/sys-net-write-lost-at-sleep.gx
+// Expected: 42 (the write fired while the arm was selected; on_write receives it).
+// Observed: nothing printed, exit 0 (5 of 5 runs, with and without --no-fusion).
+// Removing the `ev <- once(..)` line (the arm stays selected) prints 42.
+let got = never();
+sys::net::publish(#on_write: |x: i64| got <- x, "/p", 0);
+let ev: [`Go(i64), `Stop] = `Go(42);
+ev <- once(ev ~ `Stop);
+select ev { `Go(v) => sys::net::write("/p", v), `Stop => never() };
+sys::exit(sys::time::after_idle(duration:1000.ms, 0));
+got

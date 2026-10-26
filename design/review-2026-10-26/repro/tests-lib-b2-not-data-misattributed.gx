@@ -1,0 +1,18 @@
+// Title: a handler with the wrong return type is refused as "is not data"
+//
+// `f` takes a function whose ARGUMENT is a Data cell. Passing a function that
+// returns i64 where `-> _` is declared fails on the return type, but the
+// refusal says the function is not data, as if it were being written. This is
+// the shape of sys::net::publish's #on_write ([fn(v: 'a) -> _, null] with
+// 'a: Concrete + Data): `let h = |v: i64| { x <- v; v }; publish(#on_write: h,
+// ..)` gets the same message.
+//
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-26/bin/graphix --check design/review-2026-10-26/repro/tests-lib-b2-not-data-misattributed.gx
+// Expected: a type mismatch naming the return type, as with `'a: Concrete` in
+//   place of `'a: Data`: "type mismatch [null, fn(v: 'a: ..) -> _] does not
+//   contain fn(v: i64) -> i64"
+// Observed: "fn(v: i64) -> i64 is not data: a writer writes no function and no
+//   reference"
+let apply = 'a: Data |f: [fn(v: 'a) -> _, null], v: 'a| v;
+let h = |v: i64| v;
+apply(h, 1)

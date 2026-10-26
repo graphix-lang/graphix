@@ -1,0 +1,30 @@
+// x-prune: a dynamic module inside a `let` is forked beside the statements that read its
+// exports, so they read its proxies before it publishes them; under pruning they never
+// read them again
+// Command: GRAPHIX_PAR=force GRAPHIX_PRUNE=on  graphix --no-cache --no-fusion x-prune-par-dynamic-module-proxies.gx
+//          GRAPHIX_PAR=force GRAPHIX_PRUNE=off graphix --no-cache --no-fusion x-prune-par-dynamic-module-proxies.gx
+//          GRAPHIX_PAR=force GRAPHIX_PAR_AUDIT=1 graphix --no-cache --no-fusion x-prune-par-dynamic-module-proxies.gx
+// Expected (serial, either prune mode): (null, 5, 0) (null, 5, 1) .. (null, 5, 4) (null, 7, 6) (null, 7, 7) ..
+// Observed par=force prune=on:  nothing at all (`a` read foo::v before the module published
+//   it, and no later delivery marks `a`'s statement)
+// Observed par=force prune=off: (null, 5, 1) (null, 5, 2) .. (null, 5, 4) (null, 5, 6) ..
+//   (the first update is lost and `a` keeps the old module's v after the reload)
+// Observed with GRAPHIX_PAR_AUDIT=1: "a forked branch read BindId(..), which its left
+//   sibling published in the same cycle"
+{
+  let n = 0;
+  n <- select n < 30 { true => n + 1, false => never() };
+  let src = "let v = 5; let f = |x: i64| -> i64 x";
+  src <- select n {
+    4 => "let v = 7; let f = |x: i64| -> i64 x + 1",
+    _ => never()
+  };
+  let status = mod foo dynamic {
+    sandbox unrestricted;
+    sig { val v: i64; val f: fn(x: i64) -> i64 };
+    source src
+  };
+  let a = foo::v;
+  let b = foo::f(n);
+  (status, a, b)
+}

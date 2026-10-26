@@ -1,0 +1,18 @@
+// sqlite::exec's reply is dropped when its select arm sleeps; the INSERT still happened
+// cmd: timeout -s KILL 30 graphix --no-cache design/review-2026-10-26/repro/http-sqlite-db1-exec-reply-lost.gx
+// expected: "exec 1" at the wake (CANCEL_SAFE=false keeps the reply), then "rows [{x: 1}]"
+// observed: "rows [{x: 1}]" only; the exec's result never arrives
+let c = sqlite::open(":memory:")$;
+let made = sqlite::exec_batch(c, "CREATE TABLE t (x INTEGER)")$;
+let mode = 0;
+let n = select mode {
+  0 => sqlite::exec(c, made ~ "INSERT INTO t VALUES (?)", [1]),
+  _ => never()
+};
+mode <- made ~ 1;
+mode <- sys::time::timer(duration:200.ms, false) ~ 0;
+let rows: Array<{x: i64}> = sqlite::query(c, sys::time::timer(duration:400.ms, false) ~ "SELECT x FROM t", [])$;
+sys::exit(sys::time::after_idle(duration:600.ms, 0));
+println("exec [n]");
+println("rows [rows]");
+null

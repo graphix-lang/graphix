@@ -852,6 +852,11 @@ impl TypeRef {
     /// their cells prove? Filled cells by the definition's identity, two
     /// open ones agree, and a filled cell beside an open one does not; a
     /// disagreement only sends the pair to the expansion arm.
+    // CR claude for claude: [structure/low] This is same_definition except when both
+    // cells are open, and every caller (contains_dispatch's Ref fast path and the two
+    // in matches.rs) first requires equal scope and name, so under that guard the two
+    // agree on every input. Delete cells_agree and call same_definition at those sites,
+    // keeping their guard. Found by reading; not run. (t-typ-mod-05)
     pub(crate) fn cells_agree(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
@@ -2426,6 +2431,17 @@ impl Type {
     /// parameters and a variable's bounds included, a variable's binding
     /// (inferred, not written) not.
     #[doc(hidden)]
+    // CR claude for claude: [bug/medium] A written type is checked here only for names
+    // that resolve. Arity and parameter bounds are checked only inside lookup_ref_by,
+    // that is, only when some relation expands the ref. So `let bad: [P, null] = null`
+    // (P takes one parameter), `type Q = [P<i64, string, bool>, null]` and `[B<string>,
+    // null]` with `type B<'a: Number>` are all accepted. The arity error then surfaces
+    // at whatever later expression first expands the name, e.g. a select over `bad`
+    // reports "P expects 1 type parameters" there. Fix: in this same written-name walk,
+    // compare a resolved name's params.len() with its definition's arity, and probe
+    // each bound where the argument holds no open cell, refusing at the annotation.
+    // probe: design/review-2026-10-26/repro/t-typ-mod-written-type-arity-unchecked.gx
+    // (t-typ-mod-01)
     pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) {
         self.for_each_written_name(&mut |tr| {
             if !tr.names_something(env) {

@@ -1,0 +1,25 @@
+// Title: x-builtin-effects-07 variant: str::parse still cannot read back what Graphix prints
+//   for a datetime, a duration, bytes, or a string holding a bracket inside a composite.
+// Command: timeout -s KILL 10 graphix --no-cache x-rerun-2-parse-printed-forms.gx
+// Expected (str's gxi: "parse `s` as a value of the annotated type, reading what Graphix
+//   prints for one"): every line reads its value back.
+// Observed:
+//   2020-01-01 00:00:00 UTC -> error:`ParseError("cannot parse ... as datetime")
+//   1.5s -> error:`ParseError("cannot parse \"1.5s\" as duration")
+//   AQI= -> error:`ParseError("cannot parse \"AQI=\" as bytes")
+//   ["a]b"] -> error:`ParseError("cannot parse ... as Array<string>")
+//   (a string inside a composite prints with its brackets unescaped, which no literal parses)
+let dt = datetime:"2020-01-01T00:00:00Z";
+let d = duration:1500.ms;
+let b = cast<bytes>([u8:1, u8:2])$;
+let arr = ["a\]b"];
+let pdt: Result<datetime, `ParseError(string)> = str::parse("[dt]");
+let pd: Result<duration, `ParseError(string)> = str::parse("[d]");
+let pb: Result<bytes, `ParseError(string)> = str::parse("[b]");
+let pa: Result<Array<string>, `ParseError(string)> = str::parse("[arr]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+println("[dt] -> [pdt]");
+println("[d] -> [pd]");
+println("[b] -> [pb]");
+println("[arr] -> [pa]");
+null

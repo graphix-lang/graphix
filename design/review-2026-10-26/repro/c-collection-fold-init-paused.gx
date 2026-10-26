@@ -1,0 +1,16 @@
+// A fold's init that fires while its source is bottom is never caught up
+// Command: timeout -s KILL 180 /home/eric/tmp/review-2026-10-26/bin/graphix-fuzz run c-collection-fold-init-paused.gx
+// i becomes 100 at n=3, the cycle xs is bottom; xs returns at n=4.
+// Expected (wake catch-up: a fire no paused slot saw is raised at the return):
+//   from n=4 on, f(xs, i) = 101, as f(ys, i) over a source that never went bottom,
+//   and as m(xs), whose slots read i as a capture.
+// Observed (node-walk and JIT agree): 4:(4, 100, 1, 101, [101]) ... f(xs, i) stays 1.
+let n = 0;
+n <- select n { k if k < 6 => k + 1, _ => never() };
+let i = 0;
+i <- select n { 2 => 100, _ => never() };
+let xs = select n { 3 => never(), _ => [1] };
+let ys = [1];
+let f = |xs: Array<i64>, i: i64| array::fold(xs, i, |acc, x| acc ~ (acc + x));
+let m = |xs: Array<i64>| array::map(xs, |x| i ~ (i + x));
+(n, i, f(xs, i), f(ys, i), m(xs))

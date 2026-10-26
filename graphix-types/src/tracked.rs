@@ -199,6 +199,14 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             }
             return;
         }
+        // CR claude for claude: [perf/low] Only the fast path above moves the fork's
+        // touched keys with `absorb`. This path goes through merged_keys, which clones
+        // every key into the parent's list (`mine.extend(keys.iter().cloned())`) before
+        // draining them here, so nested slow-path joins still copy each key once per
+        // level (the cost x-perf-compile-03 named). Iterate the keys by reference for
+        // the merge, then `absorb(mine, &mut touched)` when the parent records, and
+        // leave merged_keys to dedup and bump the generation. Found by reading; not
+        // run. (t-misc-03)
         let Some(mut touched) =
             merged_keys(&mut self.generation, &mut self.touched, touched)
         else {

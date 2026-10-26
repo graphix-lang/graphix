@@ -385,6 +385,16 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
         graph.instances.values().map(|g| g.id()).collect();
     let mut i = 0;
     while i < pending.len() {
+        // CR claude for claude: [risk/low] Under parallel evaluation, None here does
+        // not mean the definition is gone. Branch compile forks share one
+        // def_assertions list (CxView::deref_mut clones the parent's Arc), but each
+        // fork's lambda_defs cannot see the definitions a sibling branch compiled this
+        // cycle. A runtime bind's analysis in one branch therefore deletes the
+        // assertions another branch's runtime compile just registered, and they are
+        // never checked. Keep an assertion whose definition this view cannot see, and
+        // remove ones whose definition is gone only at the root view; or give branch
+        // forks their own list, as compile tasks have, and merge it at the join. Found
+        // by reading; not run. (c-analysis-branch-04)
         let Some(d) = lambda_def(ctx, pending[i].id) else {
             pending.remove(i);
             continue;
@@ -950,6 +960,16 @@ fn callback_facts<R: Rt, E: UserEvent>(
                 return calls.captured.iter().map(captured).fold(base, |a, f| a.join(f));
             }
             NodeView::Ref(r) if (unresolved.params)(r.id) => return LambdaFacts::PURE,
+            // CR claude for claude: [bug/medium] A Ref callback takes its definition's
+            // own facts and never its ParamCalls, which the literal branch above joins
+            // (`own` is ASYNC, and each captured parameter takes its callee's facts). A
+            // let-bound callback that calls the enclosing function's parameter
+            // therefore reads as pure. `#[sync] |f, v| { let g = |x| f(x); filter(v, g)
+            // }` with an async f passes, while `filter(v, |x| f(x))` and `filter(v, f)`
+            // are refused. Resolve the Ref to its LambdaDef and share the literal
+            // branch's computation for it (one closure over `&LambdaDef`). probe:
+            // design/review-2026-10-26/repro/c-lambda-sync-through-let-callback.gx
+            // (c-lambda-04)
             NodeView::Ref(r) => ctx
                 .bind_to_lambda
                 .get(&r.id)
@@ -1144,6 +1164,16 @@ fn lambda_def<'a, R: Rt, E: UserEvent>(
     ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
 }
 
+// CR claude for claude: [structure/low] This walks the same ladder as callee_def
+// (static target, resolved lambda, bind_to_lambda), and its one caller,
+// calls_recursive, then applies lambda_def, which is callee_def's result. Delete it and
+// have calls_recursive use callee_def, so a rung added to one ladder cannot be missed
+// in the other. Found by reading; not run. (x-dup-05)
+// CR claude for claude: [structure/low] This is callee_def without its final
+// lambda_def: the same static target -> resolved lambda -> bind_to_lambda chain. Its
+// one caller, calls_recursive, applies lambda_def itself, which makes it callee_def(cs,
+// ctx). Delete this fn and call callee_def there, so the chain exists once. Found by
+// reading; not run. (c-analysis-branch-06)
 fn callee_lambda<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     ctx: &CompileCtx<R, E>,
@@ -1467,12 +1497,32 @@ fn own_access<R: Rt, E: UserEvent>(
             }
         }
         // the write reads the reference to find its target
+        // CR claude for claude: [bug/high] A write through a reference resolves its
+        // place in this cycle: ConnectDeref::update calls ExecCtx::write_target, which
+        // reads rt.ref_path. This arm records only the reference variable as read, not
+        // `refs`. So plan_runs forks a `*p <- v` beside the `let r = &mut a[x]` that
+        // moves the place, and the forked write patches the old element. Set
+        // `s.reads.refs = true` here as the Deref arm does. Seq plans do not change,
+        // because writes.refs already meets any pending write. Pin the program in a par
+        // fixture, and fix the rule in design/dependency_summaries.md §2. probe:
+        // design/review-2026-10-26/repro/c-analysis-branch-connectderef-path.gx
+        // (c-analysis-branch-01)
         NodeView::ConnectDeref(c) => {
             s.writes.refs = true;
             if ids {
                 s.reads.ids.insert(c.src_id);
             }
         }
+        // CR claude for claude: [bug/high] A Deref is not the only node that reads a
+        // reference's place. `==`/`!=` over references compare what each names
+        // (compare_op's Equality::Targets -> ExecCtx::ref_targets -> rt.ref_path), but
+        // no arm here records a `refs` read for them. A comparison is therefore forked
+        // beside a `let r = &a[x]` that moves the place, and it compares the old place.
+        // Add an Eq/Ne arm that sets `s.reads.refs = true` when the operand type
+        // holds_ref, the same test Equality::of makes, and pin the program as a par
+        // fixture. probe:
+        // design/review-2026-10-26/repro/c-analysis-branch-refeq-path.gx
+        // (c-analysis-branch-02)
         NodeView::Deref(_) => s.reads.refs = true,
         NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
         // a comparison or a print of an abstract value runs its core-trait
@@ -1497,6 +1547,20 @@ fn own_access<R: Rt, E: UserEvent>(
                 }
                 Some(ApplyView::BuiltIn(name)) if current || cs.bound_statically() => {
                     s.ordered |= ctx.builtin_ordered(name);
+                    // CR claude for eric: [bug/medium] A builtin handed any function
+                    // makes the step opaque, and an opaque step marks every seqq
+                    // capture live. So `let a = x; let c = filter(3, |v| v > 0)` in a
+                    // seqq body reads x live, not as it stood at enqueue: the probe
+                    // gives (2, 3) where the rule gives (1, 3); array::map gives (1,
+                    // ..). The seq lowering's own `core::filter(.., |x| x ~ idle)` does
+                    // the same to any nested `seq` in a step. callback_facts already
+                    // resolves a lambda literal argument to its definition. The summary
+                    // could walk that definition as a callee and stay opaque only for
+                    // unresolved function values, and the seq go-gate could be lowered
+                    // without a lambda. This changes the conservative rule written in
+                    // design/dependency_summaries.md §2, so it needs your call. probe:
+                    // design/review-2026-10-26/repro/x-dup-seqq-filter-unsnapshots.gx
+                    // (and x-dup-seqq-nested-seq-unsnapshots.gx) (x-dup-01)
                     if builtin_reaches_out(cs, ctx) {
                         if gxdbg_seqplan() {
                             eprintln!("SEQPLAN   opaque builtin {}", cs.fnode().spec());
@@ -1526,6 +1590,19 @@ fn own_access<R: Rt, E: UserEvent>(
                     }
                 );
             }
+            // CR claude for claude: [perf/medium] `unbound` is set for every call with
+            // no target, including a dynamic call, whose bound state is just as opaque
+            // (it falls through to s.opaque() once bound too). A verdict that rests on
+            // one stays None forever while the call never binds, for example a null
+            // optional callback. Siblings::decide then re-asks at every
+            // Control::rebuilds change, and each ask runs analysis::independent, which
+            // walks the children and every reachable instance twice. Measured at about
+            // 3.4 ms a cycle on a 12k-node program whose collection grows every cycle.
+            // Set unbound only when binding can make the call resolvable, i.e.
+            // `cs.static_target().is_some() || current`, and build independent()'s
+            // graph once for both details. probe:
+            // design/review-2026-10-26/repro/c-analysis-branch-open-verdict-rewalk.py
+            // (c-analysis-branch-03)
             s.unbound |= cs.resolved_apply().is_none();
             s.opaque()
         }
@@ -2082,6 +2159,18 @@ fn plan_runs<R: Rt, E: UserEvent>(
         }
         let mut access = Summary::default();
         access.union(&accesses[i]);
+        // CR claude for claude: [bug/high] A dynamic module is an expression, so `let
+        // status = mod foo dynamic {..}` is a Bind here and starts no run, and
+        // publishes() does not count the proxy outer ids the module writes at each
+        // load. A later `let a = foo::v` is forked beside it and reads foo::v before
+        // the module publishes it. Under GRAPHIX_PAR=force the first update is lost and
+        // a reload's values are missed; with pruning on as well, `a` is never walked
+        // again and the program prints nothing. Make publishes() add each Module node's
+        // proxy outer ids (or treat a statement holding a dynamic Module as
+        // RunBreak::Module). probe:
+        // design/review-2026-10-26/repro/x-prune-par-dynamic-module-proxies.gx
+        // (GRAPHIX_PAR_AUDIT=1 panics: a forked branch read what its left sibling
+        // published) (x-prune-02)
         let module = matches!(
             n.spec().kind,
             ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_)
@@ -2187,6 +2276,20 @@ fn plan_machines<R: Rt, E: UserEvent>(
                 written.union(&s.writes);
             });
             for (id, c) in caps.iter() {
+                // CR claude for claude: [bug/high] A step that calls a builtin handed a
+                // function gets `all` reads and writes from builtin_reaches_out, and
+                // `all` names every capture here, so every seqq capture goes live and
+                // the run reads the variables as they stand, not as they were queued.
+                // The lowering puts such a call in every nested seq (its busy gate is
+                // `core::filter(trigger, |x| x ~ idle)`), so any nested seq, or a
+                // `filter(e, |v| ..)` with a pure literal, silently turns off the
+                // enqueue snapshot: (0, 6, 8) where (0, 0, 0) is right. Join the
+                // instance summaries of the callbacks a builtin is handed (a sampled
+                // literal or a static definition), as callback_facts already does for
+                // effects, and keep `all` for an unresolved function value; update
+                // dependency_summaries.md §2 with it. probe:
+                // design/review-2026-10-26/repro/x-seq-sampling-seqq-opaque-step-makes-captures-live.gx
+                // (x-seq-sampling-01)
                 let live = written.names(&c.live_id);
                 c.is_live.store(live, Ordering::Relaxed);
                 if live {
@@ -2344,7 +2447,27 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
     fusion::for_each_node(target, &mut |n| {
         forks = forks
             || match n.view() {
+                // CR claude for claude: [bug/low] #[parallel] passes on any collection,
+                // even one whose slots can never fork. `#[parallel] array::map(xs, |x|
+                // q(x))` with q a queuefn wrapper builds, though update_slots runs
+                // ordered slots in order, while the same calls as tuple fields are
+                // refused because forks_two checks independence. Judge a MapQ, and a
+                // call into one, by the slots' verdict (analysis::independent over two
+                // slot calls with Sites::Slots, as SlotSite::decide_siblings does) and
+                // name the ordered call in the error. The Block arm here also counts
+                // inert statements (`z - a >= 2`) where the top-level block arm counts
+                // only is_work ones. probe:
+                // design/review-2026-10-26/repro/x-parallel-parallel-assert-ordered-slots.gx
+                // (x-parallel-04)
                 NodeView::MapQ(_) => true,
+                // CR claude for claude: [bug/low] This arm accepts any run of two
+                // statements, constants included, while the top-level Block path above
+                // counts only is_work statements. So `#[parallel] (t, { let a = 1; let
+                // b = 2; a + b })` builds, but the block decorated directly is refused.
+                // Judge each run here with the same is_work count: hoist the `two`
+                // closure into a fn used by both arms. probe:
+                // design/review-2026-10-26/repro/c-analysis-branch-parallel-const-block.gx
+                // (c-analysis-branch-05)
                 NodeView::Block(b) => {
                     let forks =
                         |runs: &[(u32, u32)]| runs.iter().any(|(a, z)| z - a >= 2);

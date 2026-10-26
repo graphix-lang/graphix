@@ -1,0 +1,14 @@
+// Title: a fold acc read whole only inside a nested callback is unpacked anyway,
+// and the fold then fails to fuse ("undefined local `p`").
+// Command: timeout -s KILL 180 /home/eric/tmp/review-2026-10-26/bin/graphix-fuzz run f-call-flow-unpacked-acc-nested-read.gx
+// Expected: Jit/InLanguage: Trace([0:(3, 3) 1:(4, 4) 2:(5, 4)]) (the fold fuses, as it does
+//   when the same whole read of `p` sits in the fold body itself).
+// Observed: Jit/InLanguage: CompileErr(.. #[native] expression did not fully fuse to native
+//   code: - emit_clif: undefined local `p` (BindId(..)))
+//   Without #[native] both engines answer the same; the fold node-walks.
+let f = |xs: Array<i64>, ys: Array<i64>| -> (i64, i64)
+  #[native]
+  array::fold(xs, (0, 0), |p, x| (p.0 + x, p.1 + array::len(array::filter(ys, |y| { let (u, v) = p; y > u + v }))));
+let n = 0;
+n <- select n < 2 { true => n + 1, false => never() };
+f([1, 2, n], [10, n])
