@@ -8,7 +8,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent, View, bailat,
     env::Env,
-    expr::{At, Expr, ExprId, ExprKind, Pattern, StructurePattern, union_members},
+    expr::{At, Expr, ExprId, ExprKind, Pattern, union_members},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     image::{
@@ -92,8 +92,49 @@ struct LazyArmFacts {
 struct GuardSleep {
     /// The guards' inputs' fires, one slot per arm.
     fires: TrackedFires,
-    /// Per arm: its guard sleeps, unreached.
-    asleep: Vec<bool>,
+    /// Per arm: its guard's run so far.
+    runs: Vec<GuardRun>,
+}
+
+/// A guard's run so far, as the chain reached it.
+#[derive(Debug, Clone, Copy)]
+enum GuardRun {
+    /// Neither run nor slept: the select's first update has not come.
+    Unborn,
+    /// Slept before its first run: its first reach is its birth.
+    Unreached,
+    /// Ran when the chain last came by.
+    Awake,
+    /// Ran, then went unreached: its next reach is a resume.
+    Asleep,
+}
+
+impl GuardRun {
+    /// The chain passes the guard by: whether it falls asleep now.
+    fn unreached(&mut self) -> bool {
+        let (next, falls) = match *self {
+            GuardRun::Unborn => (GuardRun::Unreached, true),
+            GuardRun::Awake => (GuardRun::Asleep, true),
+            run => (run, false),
+        };
+        *self = next;
+        falls
+    }
+
+    /// The chain reaches the guard: the view it runs under.
+    fn reached(&mut self) -> View {
+        match std::mem::replace(self, GuardRun::Awake) {
+            GuardRun::Unborn | GuardRun::Awake => View::Cycle,
+            GuardRun::Unreached => View::Step,
+            GuardRun::Asleep => View::Wake,
+        }
+    }
+}
+
+fn guard_refs<R: Rt, E: UserEvent>(pat: &PatternNode<R, E>, r: &mut Refs) {
+    if let Some(g) = &pat.guard {
+        g.node.refs(r)
+    }
 }
 
 impl LazyArmFacts {
@@ -151,11 +192,9 @@ impl LazyArmFacts {
             guards: arms.iter().any(|(pat, _)| pat.guard.is_some()).then(|| {
                 let fires =
                     TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
-                        if let Some(g) = &arms[i].0.guard {
-                            g.node.refs(r)
-                        }
+                        guard_refs(&arms[i].0, r)
                     });
-                Box::new(GuardSleep { fires, asleep: vec![false; arms.len()] })
+                Box::new(GuardSleep { fires, runs: vec![GuardRun::Unborn; arms.len()] })
             }),
         }
     }
@@ -993,6 +1032,13 @@ impl Leaf {
     }
 }
 
+/// `t` is `Any` or a union holding it.
+fn may_be_any(env: &Env, t: &Type) -> Result<bool> {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, t, &mut members)?;
+    Ok(members.iter().any(|m| matches!(m, Type::Any)))
+}
+
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null` and variants.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
@@ -1508,16 +1554,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 Some(_) => missed[i] = false,
                 None => missed[i] |= arg_prod.triggers(),
             }
-            let GuardSleep { fires, asleep } =
+            let GuardSleep { fires, runs } =
                 &mut **guards.as_mut().expect("a guarded arm builds the guard sleep");
             let Some(v) = reach else {
-                if !std::mem::replace(&mut asleep[i], true) {
+                if runs[i].unreached() {
                     pat.sleep_guard(ctx);
+                    fires.refresh(&ctx.env, i, |r| guard_refs(pat, r));
                 }
                 continue;
             };
             let saved = pat.bind_tentative(ctx, v, tag);
-            // CR claude for claude: [bug/medium] A reached guard gets only the
+            // XCR claude for claude: [bug/medium] A reached guard gets only the
             // tracker's bits. That tracker was built from the guard's refs before any
             // Deref in it ran, and is never refreshed, and the guard opens no
             // write-stamp catch-up scope (TrackedFires::open/ran) here. So a woken
@@ -1529,7 +1576,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // Then pin it. probe:
             // design/review-2026-10-26/repro/x-engine-firing-guard-deref-catchup.gx
             // Also reported as (x-refs-catchup-06). (x-engine-firing-03)
-            // CR claude for claude: [bug/medium] A woken guard catches up only the refs
+            // 2026-10-26 claude: Fixed: a reached guard runs inside its tracker's
+            // catch-up scope (TrackedFires::open/ran), takes what its first run learns
+            // (TrackedFires::evaluated), and a guard falling asleep refreshes its refs
+            // as a deselected arm does (callees included). The probe now gives (9, 1).
+            // Pins: lang::select::guard_catches_up_through_a_reference,
+            // guard_catches_up_a_target_fired_as_it_sleeps (fails without evaluated),
+            // guard_wake_binds_a_callee_caught_up (fails without the scope).
+            // XCR claude for claude: [bug/medium] A woken guard catches up only the refs
             // its tracker named when the select was first updated. The guard never
             // opens the write-stamp catch-up scope (TrackedFires::open/ran) and never
             // refreshes its refs (TrackedFires::evaluated), as evaluate_arm does for an
@@ -1541,22 +1595,39 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // engines agree, so the fuzzer cannot see it. probe:
             // design/review-2026-10-26/repro/tests-select-sleeping-guard-misses-learned-inputs.gx
             // (tests-select-01)
+            // 2026-10-26 claude: Fixed with x-engine-firing-03: open/ran around the guard's
+            // update, evaluated after it, and a refresh of the guard's refs when it falls asleep
+            // (the dynamic case needed the refresh: the bound callee's reads are learned only by
+            // a full refs walk). The probe prints guard 2 on all three lines in both engines.
+            // Pins: lang::select::guard_catches_up_through_a_reference,
+            // guard_catches_up_through_a_dynamic_callee.
+            // XCR claude for claude: [bug/medium] A guard the chain did not reach at
+            // birth is first run here under View::Wake, but an arm's first entry is
+            // a Step (`entered`). The guard's constants stand, so a stateful
+            // builtin over a constant never produces. `n if count(5) == 1` then
+            // stays never-produced and leaves the select bottom at every reach of
+            // its arm, while the arm-body twin `n => count(5)` gives 1. Fix: record
+            // whether each guard ever ran (an enum instead of the `asleep` bool)
+            // and run its first reach as a Step. probe:
+            // design/review-2026-10-26/repro/tests-select-guard-first-reach-is-a-wake.gx
+            // Also reported as (x-engine-firing-02). (tests-select-02)
+            // 2026-10-26 claude: Fixed: GuardSleep's asleep bools are a GuardRun per arm
+            // (Unborn, Unreached, Awake, Asleep); a guard first reached after it was
+            // passed by runs under View::Step, a resumed one under View::Wake, one
+            // reached at the select's first update under the ambient view. The probe
+            // prints guard t=3 guard. Pins: lang::select::guard_first_reach_is_a_birth,
+            // guard_first_reach_after_a_bottom_birth (the
+            // x-engine-firing-guard-first-reach-wake.gx shape).
+            let view = runs[i].reached();
             let caught_up = fires.deliver(ctx, i);
-            let t = match std::mem::replace(&mut asleep[i], false) {
-                // CR claude for claude: [bug/medium] A guard the chain did not reach at
-                // birth is first run here under View::Wake, but an arm's first entry is
-                // a Step (`entered`). The guard's constants stand, so a stateful
-                // builtin over a constant never produces. `n if count(5) == 1` then
-                // stays never-produced and leaves the select bottom at every reach of
-                // its arm, while the arm-body twin `n => count(5)` gives 1. Fix: record
-                // whether each guard ever ran (an enum instead of the `asleep` bool)
-                // and run its first reach as a Step. probe:
-                // design/review-2026-10-26/repro/tests-select-guard-first-reach-is-a-wake.gx
-                // Also reported as (x-engine-firing-02). (tests-select-02)
-                true => ctx.under(View::Wake, |ctx| pat.update(ctx)),
-                false => pat.update(ctx),
-            };
+            let t = ctx.under(view, |ctx| {
+                let scope = fires.open(ctx, i);
+                let t = pat.update(ctx);
+                fires.ran(ctx, i, scope);
+                t
+            });
             TrackedFires::restore(ctx.event, caught_up);
+            fires.evaluated(&ctx.env, i, |r| guard_refs(pat, r));
             if let Some(t) = t {
                 guard_tags.push((i, t));
             }
@@ -2007,10 +2078,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         &scrut,
                     ) {
                         Err(_) => *d = true,
-                        // a partial struct over Any has no struct type to
-                        // complete it, so its test would be the exact struct
-                        // of the fields it names
-                        // CR claude for claude: [bug/high] This refusal looks only at a
+                        // a partial struct, here or nested, over a scrutinee
+                        // that may be Any has no struct type to complete it,
+                        // so its test would be the exact struct of the fields
+                        // it names
+                        // XCR claude for claude: [bug/high] This refusal looks only at a
                         // top-level `StructurePattern::Struct { exhaustive: false, ..
                         // }`. A partial struct nested in a tuple, variant or slice over
                         // an `Any` scrutinee is not completed either:
@@ -2023,12 +2095,17 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         // nested case gets this same refusal. probe:
                         // design/review-2026-10-26/repro/t-parser-b-nested-partial-struct-any.gx
                         // (t-parser-b-01)
+                        // 2026-10-26 claude: Fixed: the refusal tests has_partial_struct() over
+                        // a scrutinee that is Any or holds it (may_be_any), so a partial struct
+                        // nested in a tuple, variant or slice over Any is refused as the
+                        // top-level one is; under a typed position ((i64, Any)) it still matches
+                        // by shape. Pins: lang::select::nested_partial_struct_over_any_refused,
+                        // partial_struct_in_a_variant_over_any_refused,
+                        // partial_struct_in_a_slice_over_any_refused,
+                        // nested_partial_struct_under_a_typed_tuple.
                         Ok(None)
-                            if matches!(
-                                spec_pat.structure_predicate,
-                                StructurePattern::Struct { exhaustive: false, .. }
-                            ) && scrut
-                                .with_deref(|t| matches!(t, Some(Type::Any))) =>
+                            if spec_pat.structure_predicate.has_partial_struct()
+                                && may_be_any(&ctx.env, &scrut)? =>
                         {
                             bailat!(
                                 self.spec,

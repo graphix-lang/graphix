@@ -4267,6 +4267,91 @@ run!(guard_below_the_claim_sleeps, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "counted once 2")
 }; FuseExpect::Jit);
 
+// A guard asleep while its input fires through a reference catches the
+// fire up at its next reach.
+run!(guard_catches_up_through_a_reference, r#"{
+  let b = 0;
+  let r = &b;
+  let t = 0;
+  t <- select t { n if n < 6 => n + 1, _ => never() };
+  b <- select t { 2 => 7, _ => never() };
+  let x = select t { 0 => 2, 5 => 2, _ => 1 };
+  let g = select x { 1 => "one", n if count(*r) > 1 => "guard [n]", _ => "other" };
+  select t { 5 => g, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
+}; FuseExpect::Jit);
+
+// The same through a callee a function value binds.
+run!(guard_catches_up_through_a_dynamic_callee, r#"{
+  let b = 0;
+  let mode = 0;
+  let gd = select mode { 0 => |x| count(b) > 1, _ => |x| x > 0 };
+  let t = 0;
+  t <- select t { n if n < 6 => n + 1, _ => never() };
+  b <- select t { 2 => 7, _ => never() };
+  let x = select t { 0 => 2, 5 => 2, _ => 1 };
+  let g = select x { 1 => "one", n if gd(n) => "guard [n]", _ => "other" };
+  select t { 5 => g, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
+}; FuseExpect::Jit);
+
+// A guard learns a reference's target at its first run, so a fire of
+// the target in the cycle the guard falls asleep is caught up too.
+run!(guard_catches_up_a_target_fired_as_it_sleeps, r#"{
+  let b = 0;
+  let r = &b;
+  let t = 0;
+  t <- select t { n if n < 6 => n + 1, _ => never() };
+  b <- select t { 0 => 7, _ => never() };
+  let x = select t { 0 => 2, 5 => 2, _ => 1 };
+  let g = select x { 1 => "one", n if count(*r) > 1 => "guard [n]", _ => "other" };
+  select t { 5 => g, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
+}; FuseExpect::Jit);
+
+// A callee bound fresh at a guard's wake is owed the fires its inputs had
+// while the guard slept.
+run!(guard_wake_binds_a_callee_caught_up, r#"{
+  let b = 0;
+  let mode = 0;
+  let t = 0;
+  t <- select t { n if n < 6 => n + 1, _ => never() };
+  b <- select t { 2 => 7, _ => never() };
+  mode <- select t { 3 => 1, _ => never() };
+  let gd = select mode { 0 => |x| false, _ => |x| count(b) == 1 };
+  let x = select t { 0 => 2, 5 => 2, _ => 1 };
+  let g = select x { 1 => "one", n if gd(n) => "guard [n]", _ => "other" };
+  select t { 5 => g, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
+}; FuseExpect::Jit);
+
+// A guard first reached after the select's birth is born there: its
+// constants fire, as an arm body's do at its first entry.
+run!(guard_first_reach_is_a_birth, r#"{
+  let t = 0;
+  t <- select t { n if n < 5 => n + 1, _ => never() };
+  let x = select t { 3 => 2, _ => 1 };
+  let g = select x { 1 => "one", n if count(5) == 1 => "guard [n]", _ => "other" };
+  select t { 3 => g, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
+}; FuseExpect::Jit);
+
+// The same where the scrutinee is bottom at the select's birth.
+run!(guard_first_reach_after_a_bottom_birth, r#"{
+  let step = 0;
+  step <- select step { s if s < 3 => s + 1, _ => never() };
+  let data = select step { 0 => never(), s => s };
+  let r = select data { s if once(true) => "once [s]", s => "other [s]" };
+  select step { 3 => r, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "once 3")
+}; FuseExpect::Jit);
+
 // The kernel's guard prologue reaches an impure guard past an unguarded
 // arm, an or-arm and a pure guard, each of which may claim the value.
 run!(native_guard_prologue_follows_the_chain, r#"{
@@ -4496,6 +4581,45 @@ run!(
         let f = |x: Any| select x { {a, ..} => "st [a]", _ => "o" };
         let result = f({a: 1, b: 2})
     "#
+);
+
+// The same for a partial struct nested in a tuple, a variant or a slice.
+run!(
+    nested_partial_struct_over_any_refused,
+    refused("has no struct type to complete it"),
+    "/test.gx" => r#"
+        let f = |x: Any| select x { (_, {a, ..}) => "st [a]", _ => "o" };
+        let result = f((1, {a: 1, b: 2}))
+    "#
+);
+
+run!(
+    partial_struct_in_a_variant_over_any_refused,
+    refused("has no struct type to complete it"),
+    "/test.gx" => r#"
+        let f = |x: Any| select x { `V({a, ..}) => "st [a]", _ => "o" };
+        let result = f(`V({a: 1, b: 2}))
+    "#
+);
+
+run!(
+    partial_struct_in_a_slice_over_any_refused,
+    refused("has no struct type to complete it"),
+    "/test.gx" => r#"
+        let f = |x: Any| select x { [{a, ..}] => "st [a]", _ => "o" };
+        let result = f([{a: 1, b: 2}])
+    "#
+);
+
+// Under a typed tuple the nested partial struct is an untyped position's
+// shape test: it matches a wider struct there.
+run!(
+    nested_partial_struct_under_a_typed_tuple,
+    r#"{
+  let x: (i64, Any) = (1, {a: 1, b: 2});
+  select x { (_, {a, ..}) => "hit", _ => "miss" }
+}"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hit") }
 );
 
 // The birth-only warning is for an act over constants that a later entry
