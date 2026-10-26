@@ -219,8 +219,10 @@ async fn seq_network(mode: Mode) -> Result<()> {
                     #spec: {{n: {{default: 0, doc: "value"}}}},
                     #f: |args: {{n: i64}}| args.n
                 );
-                let go = count(sys::time::timer(duration:250.ms, 2)?);
-                seq go {{ let reply: i64 = {expr}; reply }}
+                let go = 1;
+                let out = seq go {{ let reply: i64 = {expr}; reply }};
+                go <- select out {{ 1 => out ~ 2, _ => never() }};
+                out
             }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
