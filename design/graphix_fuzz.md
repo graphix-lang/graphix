@@ -333,8 +333,10 @@ address-space cap stopped is containment only when the node-walk alone
 a crash. `check-isolated <file>` shows how a campaign reads a program.
 Minimization is also isolated (`minimize-one`): a
 reduction of a benign divergence can itself be a crasher (dropping a
-recursive function's base case), and minimizer child death records
-the unminimized mutant instead. A crash is minimized too, under its
+recursive function's base case). The child writes each verified
+reduction to its verdict file as it goes, so one killed at its deadline
+or by a crashing candidate answers its last verified reduction; only a
+child that verified none leaves the unminimized mutant recorded. A crash is minimized too, under its
 class (`crash_class`: the child's status and last words, numbers
 collapsed) and with each candidate checked in a `check-one` child of
 the minimizer (`Judge::Isolated`); it is claimed and dedup'd by its
@@ -482,7 +484,10 @@ adjudication; the directory IS the regression gate. `regress` runs the
 whole corpus through `check` in-process; the corpus is embedded in the
 binary, so a campaign's gate (`soak.sh` runs `regress` once before it
 launches the soak, which then skips its own: `GRAPHIX_FUZZ_GATED`)
-carries the count of pins it verified.
+carries the count of pins it verified. The gate then runs `gen-check 200
+1`, which fails below a 95% compile rate (`GEN_CHECK_FLOOR`): a generator
+template that turned ill-typed wastes subjects no finding reports, and a
+campaign's progress lines count the subjects both builds refused.
 `regress` also compiles every pin once more in JIT mode, compile only,
 and compares its fused-region count with `graphix-fuzz/fusecheck.manifest`
 (one `count<TAB>name` row per pin; `abort` for a pin whose first cycle

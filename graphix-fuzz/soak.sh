@@ -269,8 +269,10 @@ start() {
         binary="$build/soak/graphix-fuzz"
     fi
     # The campaign's one gate: the corpus, the outcome and fusion manifests;
-    # the launched soak skips its own (GRAPHIX_FUZZ_GATED).
+    # the launched soak skips its own (GRAPHIX_FUZZ_GATED). Then the
+    # generator's compile rate, which no finding would reveal.
     "$binary" regress
+    "$binary" gen-check 200 1
 
     mkdir -p "$dir/state" "$dir/corpus"
     cp "$binary" "$dir/graphix-fuzz"

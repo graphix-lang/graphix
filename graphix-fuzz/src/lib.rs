@@ -1101,15 +1101,30 @@ fn without_strings(code: &str) -> String {
     String::from_utf8(out).expect("ASCII replaced ASCII and whole UTF-8 runs")
 }
 
+/// A program's code lines with the pure time arithmetic, which reads no
+/// clock, renamed out of `sys::time`.
+fn clock_free(code: &str) -> String {
+    let mut code = code_only(code);
+    for f in ["add_dur", "sub_dur", "add", "sub", "diff", "scale"] {
+        code = code.replace(&format!("sys::time::{f}("), "pure_time(");
+    }
+    code
+}
+
+/// Whether a hang of `prog` may be the environment's: it reads the
+/// clock, the network, a process or randomness.
+fn environmental_hang(prog: &str) -> bool {
+    let code = clock_free(prog);
+    ["rand::", "sys::time", "sys::net", "sys::process", "http::"]
+        .iter()
+        .any(|m| mentions(&code, m))
+}
+
 /// Classify a program. Markers are matched on code lines only. The
 /// Excluded list is empirical; selfcheck polices it — a marker missing
 /// from it shows up as a final-strength flake.
 pub fn oracle_tier(code: &str) -> OracleTier {
-    let mut code = code_only(code);
-    // the pure time arithmetic reads no clock
-    for f in ["add_dur", "sub_dur", "add", "sub", "diff", "scale"] {
-        code = code.replace(&format!("sys::time::{f}("), "pure_time(");
-    }
+    let code = clock_free(code);
     let code = code.as_str();
     // Value-nondeterministic sources: random values, wall-clock time
     // (`throttle` reads it outside sys::), a create-new open racing the
@@ -1297,8 +1312,8 @@ struct SubjectRun {
     /// fusion off (or is restored), so nothing else contributes. `None`
     /// when the runtime did not answer.
     stats: Option<FusionStats>,
-    /// It timed out inside one cycle: none started over the second half of
-    /// its budget ([`RunOpts::watch_progress`]).
+    /// It timed out inside one cycle: none started from the middle of its
+    /// budget to its last twentieth ([`RunOpts::watch_progress`]).
     stalled: bool,
 }
 
@@ -1358,19 +1373,27 @@ async fn run_subject(
         Err(o) => return SubjectRun::failed(o),
     };
     let drive = drive(&ctx, &mut rx, &mut exit, &subj, route, timeout, &sink);
-    let (outcome, halfway) = match watch_progress {
-        false => (drive.await, None),
+    let (outcome, still) = match watch_progress {
+        false => (drive.await, false),
         true => {
-            let halfway = async {
+            // sampled before the deadline: its interrupt lets the runtime
+            // start cycles again
+            let mut still = false;
+            let watch = async {
                 tokio::time::sleep(timeout / 2).await;
-                ctx.rt.control().cycles()
+                let half = ctx.rt.control().cycles();
+                tokio::time::sleep(timeout / 2 - timeout / 20).await;
+                still = half == ctx.rt.control().cycles();
+                future::pending::<()>().await
             };
-            let (o, h) = tokio::join!(drive, halfway);
-            (o, Some(h))
+            let o = tokio::select! {
+                o = drive => o,
+                _ = watch => unreachable!(),
+            };
+            (o, still)
         }
     };
-    let stalled = matches!(outcome, Outcome::Timeout(Containment::Deadline))
-        && halfway == Some(ctx.rt.control().cycles());
+    let stalled = still && matches!(outcome, Outcome::Timeout(Containment::Deadline));
     // A wedged runtime never answers another request: abort first, then
     // never await it without a deadline.
     if matches!(outcome, Outcome::Timeout(_)) {
@@ -1406,7 +1429,7 @@ struct RunOpts {
     /// the process's budget.
     activations: Option<u64>,
     /// Note whether a run that timed out started no cycle over the second
-    /// half of its budget ([`SubjectRun::stalled`]).
+    /// half of its budget, its last twentieth aside ([`SubjectRun::stalled`]).
     watch_progress: bool,
 }
 
@@ -2189,6 +2212,32 @@ impl<'a> Oracle<'a> {
         }
     }
 
+    /// `run` again at `budget`, watching its progress: its outcome when it
+    /// timed out inside one cycle, else `None`.
+    async fn stalled(&self, run: Run, budget: Duration) -> Option<Outcome> {
+        let image = match run.session {
+            Session::NoCache => SessionImage::None,
+            Session::Cold => SessionImage::Write,
+            Session::Warm => {
+                let opts = self.opts();
+                let (cold, image) = run_session(
+                    self.code,
+                    run.mode,
+                    run.route,
+                    SessionImage::Write,
+                    budget,
+                    opts,
+                )
+                .await;
+                SessionImage::Read(restorable(&cold, image).ok()?)
+            }
+        };
+        let opts = RunOpts { watch_progress: true, ..self.opts() };
+        let probe =
+            run_subject(self.code, run.mode, run.route, image, budget, opts).await;
+        probe.stalled.then_some(probe.outcome)
+    }
+
     /// Make every run of `pairs` not made yet, concurrently.
     async fn make(&mut self, pairs: &[Pair]) {
         let mut jobs: Vec<Job> = Vec::new();
@@ -2421,7 +2470,7 @@ impl<'a> Oracle<'a> {
                 && matches!(a, Outcome::Timeout(_))
                 && burned >= Duration::from_secs(5)
             {
-                // CR claude for claude: [risk/medium] Pair::Warm's reference is the
+                // XCR claude for claude: [risk/medium] Pair::Warm's reference is the
                 // cold session, so this guard sends every slow cold reference straight
                 // to the SLOW drop, never to the stall probe. A cold run that loops
                 // inside one cycle beside a warm trace (an image bug that made the warm
@@ -2430,20 +2479,16 @@ impl<'a> Oracle<'a> {
                 // watch_progress works with any SessionImage: probe with
                 // SessionImage::Write for a Cold reference and drop the guard. Found by
                 // reading; not run. (fuzz-lib-a-04)
-                if ra.session == Session::NoCache {
-                    let opts = RunOpts { watch_progress: true, ..self.opts() };
-                    let probe = run_subject(
-                        self.code,
-                        ra.mode,
-                        ra.route,
-                        SessionImage::None,
-                        budget,
-                        opts,
-                    )
-                    .await;
-                    if probe.stalled {
-                        return Settled::Diverge(pair, probe.outcome, b);
-                    }
+                // 2026-10-26 claude: Oracle::stalled probes a run whatever its session
+                // (nocache plain, cold writing its image, warm restoring a fresh cold
+                // run's), and the guard is gone. Running the pin found the probe itself
+                // unreliable: drive's deadline interrupts and then waits 750ms, so
+                // cycles restarted before the old end-of-run sample; run_subject now
+                // samples at the middle and at 95% of the budget. Pin:
+                // a_cold_reference_that_loops_in_a_cycle_stalls (fails with the guard
+                // back, and with the old end-of-run sample).
+                if let Some(stalled) = self.stalled(ra, budget).await {
+                    return Settled::Diverge(pair, stalled, b);
                 }
                 eprintln!(
                     "SLOW — the reference burned {:.1}s CPU over a {:.0}s budget \
@@ -2541,10 +2586,12 @@ fn check_deadline(code: &str, timeout: Duration) -> Duration {
 /// every finding still derives from a fresh single-subject process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchVerdict {
-    Agree {
-        /// Both outcomes were runtime traces — the ring-admission bar.
-        ran: bool,
-    },
+    /// Both outcomes were runtime traces: the ring-admission bar.
+    Ran,
+    /// Both builds refused it.
+    Refused,
+    /// Any other agreement.
+    Agree,
     /// Not a clean agreement (divergence-shaped, timeout, ineligible
     /// subject) — the parent re-runs individually.
     Other,
@@ -2596,12 +2643,16 @@ async fn first_pass(
         return BatchVerdict::Other;
     }
     let (a, b) = Pair::Engine.runs().expect("a comparison");
-    // the ring-admission bar, as the individual path's
-    let ran = tier != OracleTier::Excluded
-        && !callable::has_header(code)
-        && matches!(o.get(a), Outcome::Trace(_))
-        && matches!(o.get(b), Outcome::Trace(_));
-    BatchVerdict::Agree { ran }
+    match (o.get(a), o.get(b)) {
+        // the ring-admission bar, as the individual path's
+        (Outcome::Trace(_), Outcome::Trace(_))
+            if tier != OracleTier::Excluded && !callable::has_header(code) =>
+        {
+            BatchVerdict::Ran
+        }
+        (Outcome::CompileErr(_), Outcome::CompileErr(_)) => BatchVerdict::Refused,
+        _ => BatchVerdict::Agree,
+    }
 }
 
 /// Batch size for the campaign pool's batch children. 1 disables
@@ -2797,25 +2848,20 @@ pub async fn run_work_order(
     };
     run_batch(&progs, timeout, |i, v| {
         let tag = match v {
-            BatchVerdict::Agree { ran: true } => "R",
-            BatchVerdict::Agree { ran: false } => "A",
+            BatchVerdict::Ran => "R",
+            BatchVerdict::Refused => "J",
+            BatchVerdict::Agree => "A",
             BatchVerdict::Other => "O",
         };
         let _ = writeln!(out, "V {i} {tag}");
-        if matches!(v, BatchVerdict::Other) {
-            let p = &progs[i];
-            let _ = writeln!(out, "P {i} {}", p.len());
-            let _ = out.write_all(p.as_bytes());
-            let _ = writeln!(out);
-        } else if matches!(v, BatchVerdict::Agree { ran: true })
+        if v == BatchVerdict::Other {
+            write_program(out, "P", i, &progs[i]);
+        } else if v == BatchVerdict::Ran
             && let Some((sig, nodes, ok)) = novel[i]
             && ok
             && (8..=600).contains(&nodes)
         {
-            let p = &progs[i];
-            let _ = writeln!(out, "N {sig} {}", p.len());
-            let _ = out.write_all(p.as_bytes());
-            let _ = writeln!(out);
+            write_program(out, "N", sig, &progs[i]);
         }
         let _ = out.flush();
     })
@@ -2833,9 +2879,12 @@ async fn typemorph_work_order(
     out: &mut impl std::io::Write,
 ) {
     for (i, p) in progs.iter().enumerate() {
-        let flipped = match typemorph_subject(p, timeout, TM_CAP).await {
-            Ok(rep) => rep.flipped(),
-            // CR claude for claude: [bug/low] A subject typemorph_subject could not run
+        let suspect = match typemorph_subject(p, timeout, TM_CAP).await {
+            Ok(rep) => match rep.flipped().collect::<Vec<_>>().join(" ") {
+                ids if ids.is_empty() => None,
+                ids => Some(format!("O {ids}")),
+            },
+            // XCR claude for claude: [bug/low] A subject typemorph_subject could not run
             // (a malformed header, a runtime that failed to start) is reported here as
             // agreeing. typemorph_scan does the same: the child's 'HARNESS <error>'
             // line is ignored by tm_flips, so `graphix-fuzz typemorph` on a file whose
@@ -2846,13 +2895,23 @@ async fn typemorph_work_order(
             // typemorph_scan. probe:
             // design/review-2026-10-26/repro/fuzz-lib-b-typemorph-harness-error-passes.sh
             // (fuzz-lib-b-03)
-            Err(_) => false,
+            // 2026-10-26 claude: typemorph_work_order writes 'V i U' plus the text for a
+            // subject it could not run; order_result hands it back as Suspect::Unjudged,
+            // so confirm_typeflip runs it fresh and records the failure. typemorph_child
+            // maps a 'HARNESS <e>' verdict to Err (tm_report), so typemorph_scan reports
+            // it and 'graphix-fuzz typemorph' exits 1 (the repro now prints 'harness: bad
+            // cap'). Pins: a_typemorph_subject_that_cannot_run_is_handed_back,
+            // an_order_line_says_how_a_subject_comes_back.
+            Err(_) => Some("U".to_string()),
         };
-        let _ = writeln!(out, "V {i} {}", if flipped { "O" } else { "A" });
-        if flipped {
-            let _ = writeln!(out, "P {i} {}", p.len());
-            let _ = out.write_all(p.as_bytes());
-            let _ = writeln!(out);
+        match suspect {
+            None => {
+                let _ = writeln!(out, "V {i} A");
+            }
+            Some(v) => {
+                let _ = writeln!(out, "V {i} {v}");
+                write_program(out, "P", i, p);
+            }
         }
         let _ = out.flush();
     }
@@ -2860,19 +2919,33 @@ async fn typemorph_work_order(
     let _ = out.flush();
 }
 
+/// A program text after its `<tag> <n> <length>` line.
+fn write_program(
+    out: &mut impl std::io::Write,
+    tag: &str,
+    n: impl fmt::Display,
+    p: &str,
+) {
+    let _ = writeln!(out, "{tag} {n} {}", p.len());
+    let _ = out.write_all(p.as_bytes());
+    let _ = writeln!(out);
+}
+
 /// A program a work order hands back for the individual path.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Suspect {
-    /// The child could not resolve it (a `P` line).
-    Flagged(String),
-    /// The child died before its verdict.
+    /// The child could not resolve it (a `P` line after `V i O`), and for
+    /// a typemorph child the probes that flipped there.
+    Flagged(String, Vec<String>),
+    /// The child died before its verdict, or could not judge it (a `P`
+    /// line after `V i U`).
     Unjudged(String),
 }
 
 impl Suspect {
     fn prog(&self) -> &str {
         match self {
-            Suspect::Flagged(p) | Suspect::Unjudged(p) => p,
+            Suspect::Flagged(p, _) | Suspect::Unjudged(p) => p,
         }
     }
 }
@@ -2882,6 +2955,8 @@ impl Suspect {
 pub(crate) struct OrderResult {
     /// Subjects the child agreed on.
     pub agreed: usize,
+    /// Of those, the subjects both builds refused.
+    pub refused: usize,
     /// Programs the child could not resolve, and on a child that died
     /// every subject it left without a verdict; the parent re-derives
     /// them through the individual path, which records the one that
@@ -2915,6 +2990,7 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
 fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult {
     let mut res = OrderResult {
         agreed: 0,
+        refused: 0,
         suspect: Vec::new(),
         novel: Vec::new(),
         cpu: Duration::ZERO,
@@ -2922,6 +2998,8 @@ fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult
     };
     // a subject's verdict: agreed, or its program came back as a suspect
     let mut resolved = vec![false; order.count];
+    // the last `V i O|U` line: the subject its `P` line hands back
+    let mut handed: Option<(Option<usize>, &str, Vec<String>)> = None;
     let mut finished = false;
     let mut rest = text;
     while let Some((line, tail)) = rest.split_once('\n') {
@@ -2930,10 +3008,16 @@ fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult
         match it.next() {
             Some("V") => {
                 let i: Option<usize> = it.next().and_then(|v| v.parse().ok());
-                if it.next() != Some("O") {
-                    res.agreed += 1;
-                    if let Some(r) = i.and_then(|i| resolved.get_mut(i)) {
-                        *r = true;
+                match it.next() {
+                    Some(v @ ("O" | "U")) => {
+                        handed = Some((i, v, it.map(String::from).collect()));
+                    }
+                    v => {
+                        res.agreed += 1;
+                        res.refused += (v == Some("J")) as usize;
+                        if let Some(r) = i.and_then(|i| resolved.get_mut(i)) {
+                            *r = true;
+                        }
                     }
                 }
             }
@@ -2951,10 +3035,17 @@ fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult
                 if kind == "N" {
                     res.novel.push((id, prog));
                 } else {
-                    if let Some(r) = resolved.get_mut(id as usize) {
+                    let i = id as usize;
+                    if let Some(r) = resolved.get_mut(i) {
                         *r = true;
                     }
-                    res.suspect.push(Suspect::Flagged(prog));
+                    res.suspect.push(match handed.take() {
+                        Some((Some(j), "U", _)) if j == i => Suspect::Unjudged(prog),
+                        Some((Some(j), _, flips)) if j == i => {
+                            Suspect::Flagged(prog, flips)
+                        }
+                        _ => Suspect::Flagged(prog, Vec::new()),
+                    });
                 }
             }
             Some("CPU") => {
@@ -3555,11 +3646,15 @@ impl TmReport {
         s
     }
 
-    /// Whether any probe, either way, came back a finding.
-    pub fn flipped(&self) -> bool {
-        self.probes.iter().any(|p| matches!(p.verdict, TmVerdict::Reject(_)))
-            || self.rejects.iter().any(|p| p.verdict.is_some())
-            || self.hang.is_some()
+    /// The probes that, either way, came back a finding.
+    pub fn flipped(&self) -> impl Iterator<Item = &str> {
+        let probes =
+            self.probes.iter().filter(|p| matches!(p.verdict, TmVerdict::Reject(_)));
+        let rejects = self.rejects.iter().filter(|p| p.verdict.is_some());
+        probes
+            .map(|p| p.id.as_str())
+            .chain(rejects.map(|p| p.id.as_str()))
+            .chain(self.hang.iter().map(|p| p.id.as_str()))
     }
 }
 
@@ -3668,30 +3763,30 @@ pub async fn typemorph_subject(
     let base = accept(tm_check(&ctx, &compose(body), false, per_check).await);
     let mut results = Vec::new();
     let mut rejects = Vec::new();
+    let mut hung = match base {
+        TmVerdict::Hung => Some(("base".to_string(), body.to_string())),
+        _ => None,
+    };
     if base == TmVerdict::Accept {
         for p in &probes {
             let verdict =
                 accept(tm_check(&ctx, &compose(&p.body), false, per_check).await);
-            let hung = verdict == TmVerdict::Hung;
+            if verdict == TmVerdict::Hung {
+                hung = Some((p.id(), p.body.clone()));
+            }
             results.push(Probed { id: p.id(), mutant: p.body.clone(), verdict });
-            if hung {
+            if hung.is_some() {
                 break;
             }
         }
-        if results.iter().all(|r| r.verdict != TmVerdict::Hung) {
+        if hung.is_none() {
             let modules: Vec<&str> =
                 files.iter().filter_map(|(n, _)| n.strip_suffix(".gx")).collect();
-            rejects = must_reject(&ctx, body, &modules, &compose, per_check, cap).await;
+            (rejects, hung) =
+                must_reject(&ctx, body, &modules, &compose, per_check, cap).await;
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
-    let hung = match base {
-        TmVerdict::Hung => Some(("base".to_string(), body.to_string())),
-        _ => results
-            .iter()
-            .find(|p| p.verdict == TmVerdict::Hung)
-            .map(|p| (p.id.clone(), p.mutant.clone())),
-    };
     let hang = match hung {
         None => None,
         Some((id, mutant)) => {
@@ -3724,7 +3819,8 @@ async fn tm_runtime() -> Result<TestCtx, String> {
 /// The must-reject half of a subject (`mustreject`): the base checked
 /// again with its types, and each mutant its families build. A mutant
 /// accepted is a `LEAK`; one refused away from the mutation and its rigid
-/// consumer is `MISPLACED`.
+/// consumer is `MISPLACED`. A mutant whose check hangs ends the families,
+/// and comes back (its id and text) beside what they found before it.
 async fn must_reject(
     ctx: &TestCtx,
     body: &str,
@@ -3732,25 +3828,32 @@ async fn must_reject(
     compose: &impl Fn(&str) -> String,
     per_check: Duration,
     cap: usize,
-) -> Vec<Probed<Option<String>>> {
+) -> (Vec<Probed<Option<String>>>, Option<(String, String)>) {
     use graphix_compiler::expr::ErrorSite;
     let mut out = Vec::new();
     let TmCheck::Done(Ok(checked)) = tm_check(ctx, &compose(body), true, per_check).await
     else {
-        return out;
+        return (out, None);
     };
     let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test");
     for p in mustreject::probes(body, &types, modules, cap) {
         let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
             TmCheck::Unparsed(_) => continue,
-            // CR claude for claude: [bug/low] A must-reject mutant whose check hangs
+            // XCR claude for claude: [bug/low] A must-reject mutant whose check hangs
             // ends the families silently. typemorph_subject builds its slow-budget
             // recheck candidate only from the base and the metamorphic probes, so a
             // checker hang that a family's mutation reaches is never rechecked or
             // reported as HUNG, against the design's rule that the typechecker must
             // stay instant. Return the hung probe from must_reject and run it through
             // the same slow-budget recheck. Found by reading; not run. (fuzz-lib-b-04)
-            TmCheck::Hung => break,
+            // 2026-10-26 claude: must_reject returns the mutant whose check hung
+            // beside the findings before it, and typemorph_subject runs it through the
+            // same slow-budget recheck as a base or metamorphic hang. A typed-base
+            // check that hangs still ends the families silently (its recheck would
+            // check the base untyped, which already passed). No pin: no subject makes
+            // one family mutant's check outlive the budget deterministically while its
+            // base passes.
+            TmCheck::Hung => return (out, Some((p.id(), p.body))),
             TmCheck::Done(Ok(_)) => Some(format!("LEAK: accepted at {}", p.reached)),
             TmCheck::Done(Err(e)) => {
                 let site = e.downcast_ref::<ErrorSite>().map(|s| s.expr());
@@ -3768,7 +3871,7 @@ async fn must_reject(
         };
         out.push(Probed { id: p.id(), mutant: p.body, verdict });
     }
-    out
+    (out, None)
 }
 
 /// Run the `typemorph-one` child on one subject: its verdict-file text,
@@ -3787,10 +3890,19 @@ pub async fn typemorph_child(
             .await;
     let r = match (c.status, c.verdict) {
         (None, _) => Err("child deadline".to_string()),
-        (_, Some(v)) => Ok(v),
+        (_, Some(v)) => tm_report(v),
         (Some(s), None) => Err(format!("no verdict ({s})")),
     };
     (r, c.cpu)
+}
+
+/// A `typemorph-one` verdict file: its report, or the `HARNESS` error of a
+/// subject the child could not run.
+fn tm_report(v: String) -> Result<String, String> {
+    match v.strip_prefix("HARNESS ") {
+        Some(e) => Err(e.trim_end().to_string()),
+        None => Ok(v),
+    }
 }
 
 /// A flip a verdict file reports: the probe, the normalized rejection
@@ -4099,7 +4211,7 @@ pub fn outcome_mismatches(manifest: &str, r: &Regression) -> Vec<String> {
 pub const EXPECT_REJECT: &str = "// expect: reject";
 
 /// A pin whose verdict contradicts its `// expect: reject` marker: both
-/// engines reject a pin without it, or run one with it. A rejection
+/// engines reject a pin without it, or do not both reject one with it. A rejection
 /// agrees with itself, so the marker is what tells the two apart.
 async fn misdeclared(
     prog: &str,
@@ -4109,14 +4221,7 @@ async fn misdeclared(
     let marked = prog.lines().any(|l| l.trim() == EXPECT_REJECT);
     let pair = match (marked, verdict) {
         (false, Verdict::Rejected) => Pair::Rejected,
-        // CR claude for claude: [test-gap/low] A `// expect: reject` pin whose check
-        // now compiles but ends Unsure (or Excluded) skips this check, and
-        // outcome_mismatches compares Unsure as equal to the manifest's 'reject' row. A
-        // refusal that regressed to acceptance on a run the confirm ladder touched
-        // therefore passes regress. Check every marked pin whose verdict is not
-        // Rejected: `(true, v) if v != Verdict::Rejected`. Found by reading; not run.
-        // (fuzz-lib-b-06)
-        (true, Verdict::Ran | Verdict::Contained) => Pair::Accepted,
+        (true, v) if v != Verdict::Rejected => Pair::Accepted,
         _ => return None,
     };
     let outcome = run_program(prog, Mode::Interp, timeout).await;
@@ -4298,7 +4403,7 @@ pub async fn selfcheck(
 
 /// What a fuzz campaign found.
 #[derive(Debug, Default, Clone)]
-// CR claude for claude: [test-gap/medium] No count of subjects both builds refused, and
+// XCR claude for claude: [test-gap/medium] No count of subjects both builds refused, and
 // gen-check (the only place the generator's compile rate is measured) exits 0 whatever
 // the rate and runs in no gate. A generator template that turns ill-typed silently
 // wastes every program containing it: kind_union's map-key refusal costs 1-4% of
@@ -4306,9 +4411,22 @@ pub async fn selfcheck(
 // them beside `run`, and give gen-check a compile-rate floor that fails the soak's
 // startup gate. Found by reading; gen-check 150 99 printed 144/150 and exited 0.
 // (fuzz-gen-a-03)
+// 2026-10-26 claude: BatchVerdict splits Agree into Ran/Refused/Agree; a batch child
+// writes 'V i J' for a subject both builds refused, OrderResult and FuzzStats count it,
+// and the progress lines (at the end, so soak-dash's awk fields hold) and done lines
+// report it. gen-check fails below GEN_CHECK_FLOOR (95%; seeds 1-3 at 200 give
+// 100/97.5/96.5) and soak.sh runs 'gen-check 200 1' after regress. The floor is a guess
+// at taste: raise it if Eric wants 1-4% template losses to stop a launch. The split
+// exposed batch_verdict_matches_individual's callable case as a parse error both builds
+// refused since it was written; it is a real callable now. Pins:
+// a_subject_both_builds_refuse_is_counted, an_order_line_says_how_a_subject_comes_back,
+// batch_verdict_matches_individual.
 pub struct FuzzStats {
     /// Mutants that were generated and run through the oracle.
     pub run: usize,
+    /// Of those, the ones both builds refused: what a generator template
+    /// that turned ill-typed wastes.
+    pub refused: usize,
     /// Confirmed divergences (including duplicates of already-saved bugs).
     pub divergences: usize,
     /// Mutants that KILLED their (isolated) evaluator process — signal
@@ -4750,13 +4868,17 @@ async fn run_child(
     use std::process::Stdio;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    // CR claude for claude: [risk/low] The verdict file, and `cpu-usage`, live in the
+    let sandbox = sandbox(&mut cmd);
+    // XCR claude for claude: [risk/low] The verdict file, and `cpu-usage`, live in the
     // child's cwd, which is also the cwd of the program under test (a sandboxed child
     // does not chdir again). When the worker dies or is killed at its deadline, the
     // parent reads whatever is in `verdict`, so a subject that wrote that relative path
     // answers for itself. Run the subject in `<sandbox>/work` and keep the verdict and
     // CPU report one level up. Found by reading; not run. (fuzz-main-aux-06)
+    // 2026-10-26 claude: sandbox (was sandbox_cwd) runs the child in <sandbox>/work;
+    // the verdict stays at <sandbox>/verdict and report_self_cpu writes cpu-usage
+    // beside the verdict file it is given, so no relative path a subject writes reaches
+    // either. Pin: a_subject_cannot_write_its_own_verdict.
     let verdict = sandbox.path().join("verdict");
     cmd.arg(sub)
         .arg(&verdict)
@@ -4861,14 +4983,16 @@ pub fn self_cpu() -> Duration {
     tv(ru.ru_utime) + tv(ru.ru_stime)
 }
 
-/// The file a worker child drops its own [`self_cpu`] in, relative to
-/// the parent-owned sandbox cwd. Tokio reaps asynchronously and
-/// `RUSAGE_CHILDREN` is process-wide, so neither attributes CPU to a source.
+/// The file a worker child drops its own [`self_cpu`] in, beside its
+/// verdict file. Tokio reaps asynchronously and `RUSAGE_CHILDREN` is
+/// process-wide, so neither attributes CPU to a source.
 const CPU_REPORT: &str = "cpu-usage";
 
-/// Called by every worker child arm on its way out.
-pub fn report_self_cpu() {
-    let _ = std::fs::write(CPU_REPORT, self_cpu().as_micros().to_string());
+/// Called by every worker child arm on its way out, with the verdict
+/// file the parent named.
+pub fn report_self_cpu(verdict: &std::path::Path) {
+    let report = verdict.with_file_name(CPU_REPORT);
+    let _ = std::fs::write(report, self_cpu().as_micros().to_string());
 }
 
 /// Read back what a child reported. Absent reads as zero, which the
@@ -4981,16 +5105,23 @@ fn child_resource_env(cmd: &mut tokio::process::Command) {
 /// containment follows the program, never the thread or the fork.
 pub const ACTIVATION_BUDGET: u64 = 50_000;
 
-/// Give a worker child a parent-owned sandbox cwd (generated programs
-/// write files at arbitrary relative paths, and the worker arms exit via
-/// `process::exit`, so a child-owned tempdir would leak). The guard
-/// removes the dir on drop; declare it before the child handle so
-/// `kill_on_drop` reaps the child first. A tempdir failure is a broken
-/// harness and exits the process.
-fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
-    match tempfile::tempdir() {
+/// Give a worker child a parent-owned sandbox (generated programs write
+/// files at arbitrary relative paths, and the worker arms exit via
+/// `process::exit`, so a child-owned tempdir would leak). The child runs
+/// in its `work` directory, so the files the parent reads back (the
+/// verdict, the CPU report) sit one level up, where no relative path a
+/// subject writes lands. The guard removes the dir on drop; declare it
+/// before the child handle so `kill_on_drop` reaps the child first. A
+/// tempdir failure is a broken harness and exits the process.
+fn sandbox(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
+    let made = tempfile::tempdir().and_then(|d| {
+        let work = d.path().join("work");
+        std::fs::create_dir(&work)?;
+        cmd.current_dir(work);
+        Ok(d)
+    });
+    match made {
         Ok(d) => {
-            cmd.current_dir(d.path());
             child_resource_env(cmd);
             d
         }
@@ -5008,25 +5139,15 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
 pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
     let tier = oracle_tier(prog);
     let mut bad = Vec::new();
-    // CR claude for claude: [dead/low] This duplicates session_routes, which
-    // selfcheck_isolated uses to size this child's deadline. Only Interp and Jit are
-    // iterated, so the Par/JitPar/Unpruned label arms below are unreachable, and
-    // SELFCHECK_MODES lists three modes no child writes. Use session_routes(prog),
-    // label each engine with a two-row table, and drop 'par', 'jit-par' and 'unpruned'
-    // from SELFCHECK_MODES. Found by reading; not run. (fuzz-lib-b-07)
-    let routes: &[Route] = if callable::has_header(prog) {
-        &[Route::InLanguage, Route::Dispatch]
-    } else {
-        &[Route::InLanguage]
-    };
-    for (mode, &route) in [Mode::Interp, Mode::Jit]
-        .into_iter()
-        .flat_map(|m| routes.iter().map(move |r| (m, r)))
+    for (&(mode, labels), &route) in SELFCHECK_ENGINES
+        .iter()
+        .flat_map(|e| session_routes(prog).iter().map(move |r| (e, r)))
     {
-        // the strength an engine pair on this route compares at
-        let pair = match route {
-            Route::InLanguage => Pair::Engine,
-            Route::Dispatch => Pair::EngineDispatch,
+        // the strength an engine pair on this route compares at, and the
+        // engine's label there
+        let (pair, label) = match route {
+            Route::InLanguage => (Pair::Engine, labels[0]),
+            Route::Dispatch => (Pair::EngineDispatch, labels[1]),
         };
         let strength = Strength::of(pair, tier);
         let (a, b) = tokio::join!(
@@ -5053,17 +5174,24 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
                 continue;
             }
         }
-        bad.push(match (mode, route) {
-            (Mode::Interp, Route::InLanguage) => "interp",
-            (Mode::Jit, Route::InLanguage) => "jit",
-            (Mode::Interp, Route::Dispatch) => "interp-dispatch",
-            (Mode::Jit, Route::Dispatch) => "jit-dispatch",
-            (Mode::Par, _) => "par",
-            (Mode::JitPar, _) => "jit-par",
-            (Mode::Unpruned, _) => "unpruned",
-        });
+        bad.push(label);
     }
     bad
+}
+
+/// The engines a selfcheck child runs, each with its label on the
+/// in-language route and on the dispatch route.
+const SELFCHECK_ENGINES: [(Mode, [&str; 2]); 2] =
+    [(Mode::Interp, ["interp", "interp-dispatch"]), (Mode::Jit, ["jit", "jit-dispatch"])];
+
+/// What a selfcheck child reports, one per line of its verdict file.
+fn selfcheck_label(line: &str) -> Option<&'static str> {
+    SELFCHECK_ENGINES
+        .iter()
+        .flat_map(|(_, labels)| labels)
+        .chain(&["inconclusive"])
+        .find(|l| **l == line)
+        .copied()
 }
 
 /// Run one selfcheck subject in a child process. Isolation is for
@@ -5076,27 +5204,10 @@ async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> 
     let deadline = Deadline::Fixed(timeout * 9 * combos + Duration::from_secs(30));
     // a dead or wedged child left no verdict: nondeterminism by definition
     match run_child("selfcheck-one", &[], &[], prog, false, deadline).await.verdict {
-        Some(v) => v
-            .lines()
-            .map(|l| {
-                SELFCHECK_MODES.iter().find(|m| **m == l).copied().unwrap_or("crash")
-            })
-            .collect(),
+        Some(v) => v.lines().map(|l| selfcheck_label(l).unwrap_or("crash")).collect(),
         None => vec!["crash"],
     }
 }
-
-/// What a selfcheck child reports, one per line of its verdict file.
-pub const SELFCHECK_MODES: [&str; 8] = [
-    "interp",
-    "jit",
-    "interp-dispatch",
-    "jit-dispatch",
-    "par",
-    "jit-par",
-    "unpruned",
-    "inconclusive",
-];
 
 /// Normalize a CLIF dump for structural comparison across processes:
 /// drop log lines, blind pointer-magnitude constants (ASLR), and
@@ -5418,13 +5529,9 @@ pub const CAMPAIGN_MINIMIZE_BUDGET: usize = 80;
 
 /// Minimize a diverging program in a child process. A reduction may
 /// itself be a crasher and the minimizer checks candidates in-process.
-/// `None` = the child died or wedged; the caller records the
-/// unminimized mutant instead.
-// CR claude for claude: [doc-drift/low] The doc above (and design/graphix_fuzz.md §4)
-// says a dead child means the unminimized mutant is recorded. minimize-one writes each
-// verified reduction to its verdict file as it goes, so a child killed at the deadline
-// or by a crashing candidate answers its last verified reduction; None comes back only
-// when it verified none. Reword both. Found by reading; not run. (fuzz-lib-b-08)
+/// The child writes each verified reduction as it goes, so one that died
+/// or wedged answers its last; `None` = it verified none, and the caller
+/// records the unminimized mutant instead.
 async fn minimize_isolated(
     prog: &str,
     key: &str,
@@ -5613,6 +5720,7 @@ pub async fn run_aggregator(
                 inflight[si] -= count;
                 done[si] += count;
                 stats[si].run += count;
+                stats[si].refused += r.refused;
                 for (sig, prog) in r.novel {
                     if ring_sigs.insert(sig) {
                         ring.push_back(prog);
@@ -5642,10 +5750,11 @@ pub async fn run_aggregator(
                     };
                     eprintln!(
                         "  {}…{} run, {} {} ({} known), {} crashes, {} in corpus, \
-                         {} novel shapes, {}% cpu, {}% individual",
+                         {} novel shapes, {}% cpu, {}% individual, {} refused",
                         KINDS[si].tag(), stats[si].run, stats[si].divergences,
                         KINDS[si].findings(), found[si].known.load(Relaxed),
-                        stats[si].crashes, corpus.len(), stats[si].novel, pct, ipct
+                        stats[si].crashes, corpus.len(), stats[si].novel, pct, ipct,
+                        stats[si].refused
                     );
                 }
                 suspect[si] += r.suspect.len();
@@ -5726,8 +5835,7 @@ async fn derive_suspect(
         // the environment's
         PoolResult::Crash(status)
             if status.contains("HANG") && {
-                let code = code_only(prog);
-                // CR claude for claude: [bug/medium] `sys::time` here also matches the
+                // XCR claude for claude: [bug/medium] `sys::time` here also matches the
                 // pure duration/datetime arithmetic (add_dur, sub_dur, add, sub, diff,
                 // scale) that oracle_tier rewrites away as reading no clock. The
                 // generator emits those in about 14% of its programs (43 of 300 for
@@ -5736,9 +5844,12 @@ async fn derive_suspect(
                 // counted. Share oracle_tier's pure-time rewrite with this check, or
                 // drop only hangs of programs whose oracle_tier is Excluded, as the
                 // design states. Found by reading; not run. (fuzz-lib-b-02)
-                ["rand::", "sys::time", "sys::net", "sys::process", "http::"]
-                    .iter()
-                    .any(|m| mentions(&code, m))
+                // 2026-10-26 claude: The hang check is environmental_hang, over
+                // clock_free (code_only plus oracle_tier's pure-time rewrite, now
+                // shared), so a HANG of a program whose only sys::time use is
+                // add_dur/sub_dur/add/sub/diff/scale is recorded. Pin:
+                // pure_time_arithmetic_hangs_are_findings.
+                environmental_hang(prog)
             } =>
         {
             println!("HANG (environment) — not recorded");
@@ -5790,7 +5901,7 @@ async fn derive_suspect(
 
 /// Re-probe a subject a batch child flipped, or died before judging, in
 /// a fresh process and record each flip class it shows there; a flip
-/// the fresh process does not reproduce is an acceptance flap, its own
+/// only one of the two processes shows is an acceptance flap, its own
 /// class. A fresh process that died or wedged is a crash, recorded per
 /// program. True when the fresh process flipped.
 async fn confirm_typeflip(
@@ -5801,27 +5912,29 @@ async fn confirm_typeflip(
 ) -> (bool, Duration) {
     let prog = suspect.prog();
     let (r, cpu) = typemorph_child(prog, timeout).await;
-    let (flips, confirmed) = match r {
-        Ok(rep) => match tm_flips(&rep) {
-            f if f.is_empty() => match suspect {
-                Suspect::Flagged(_) => (
-                    vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
-                    false,
-                ),
-                Suspect::Unjudged(_) => (f, false),
-            },
-            // CR claude for claude: [risk/low] Every flip the fresh process shows is
-            // recorded as confirmed, even one the batch child never flipped: the batch
-            // reports only 'V i O' and the text, not which probes flipped. A probe that
-            // flaps (or hangs under load) in this one process becomes a typeflip class,
-            // which then dedups the real flips of that kind and head. typemorph_scan
-            // requires the same id twice. Carry the batch's flipped ids on its O line
-            // and keep only fresh flips that match them; the rest are the unconfirmed
-            // class. Found by reading; not run. (fuzz-lib-b-05)
-            f => (f, true),
-        },
+    let (flips, confirmed) = match (r, suspect) {
+        (Ok(rep), Suspect::Unjudged(_)) => {
+            let f = tm_flips(&rep);
+            let confirmed = !f.is_empty();
+            (f, confirmed)
+        }
+        // XCR claude for claude: [risk/low] Every flip the fresh process shows is
+        // recorded as confirmed, even one the batch child never flipped: the batch
+        // reports only 'V i O' and the text, not which probes flipped. A probe that
+        // flaps (or hangs under load) in this one process becomes a typeflip class,
+        // which then dedups the real flips of that kind and head. typemorph_scan
+        // requires the same id twice. Carry the batch's flipped ids on its O line
+        // and keep only fresh flips that match them; the rest are the unconfirmed
+        // class. Found by reading; not run. (fuzz-lib-b-05)
+        // 2026-10-26 claude: A typemorph batch child writes its flipped probe ids
+        // on the O line ('V i O id..'); Suspect::Flagged carries them, and
+        // confirm_typeflip keeps only the fresh flips the batch showed
+        // (confirmed_flips), adding the unconfirmed class when either process
+        // showed one the other did not. Pin:
+        // a_typeflip_is_confirmed_only_by_the_probe_the_batch_flipped.
+        (Ok(rep), Suspect::Flagged(_, batch)) => confirmed_flips(tm_flips(&rep), batch),
         // a confirm that measured nothing confirms nothing
-        Err(e) => {
+        (Err(e), _) => {
             tally.crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if corpus.record_crash(prog, &e, &crash_claim(&e, prog), None) {
                 println!("CRASH — typemorph child {e}");
@@ -5837,6 +5950,20 @@ async fn confirm_typeflip(
         }
     }
     (confirmed, cpu)
+}
+
+/// The flips a fresh process shows that the batch child showed too, and
+/// whether there are any; a flip only one of them showed is the
+/// unconfirmed class.
+fn confirmed_flips(fresh: Vec<Flip>, batch: &[String]) -> (Vec<Flip>, bool) {
+    let shown = fresh.len();
+    let mut kept: Vec<Flip> =
+        fresh.into_iter().filter(|f| batch.contains(&f.id)).collect();
+    let confirmed = !kept.is_empty();
+    if kept.len() != shown || kept.len() != batch.len() {
+        kept.push(Flip::harness("unconfirmed", "fresh-process flap".to_string()));
+    }
+    (kept, confirmed)
 }
 
 #[cfg(test)]
@@ -7513,6 +7640,114 @@ mod trace_probes {
         assert!(jseg.capped_cycles, "jit spinner must cap too: {jseg:?}");
     }
 
+    /// A reference that loops inside one cycle is probed for the stall
+    /// whatever its session: a cold run's too, the warm pair's reference.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cold_reference_that_loops_in_a_cycle_stalls() {
+        let code = "{ let rec lp = |n: i64| -> i64 \
+                    select n { i64:0 => i64:0, _ => lp(n - i64:1) }; \
+                    lp(i64:9000000000000000000) }";
+        let budget = Duration::from_secs(10);
+        let o = Oracle::new(code, OracleTier::Exact, budget, None);
+        let cold =
+            Run { mode: Mode::Jit, route: Route::InLanguage, session: Session::Cold };
+        let stalled = o.stalled(cold, budget).await;
+        assert!(
+            matches!(stalled, Some(Outcome::Timeout(Containment::Deadline))),
+            "{stalled:?}"
+        );
+    }
+
+    /// A subject typemorph cannot run comes back unjudged, for the
+    /// fresh-process path to record, never as an agreement.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typemorph_subject_that_cannot_run_is_handed_back() {
+        let bad = "// schedule-v1: cap=x events=64; in0=i64:1\n{ let a = in0; a + 1 }";
+        let mut out = Vec::new();
+        typemorph_work_order(&[bad.to_string()], Duration::from_secs(10), &mut out).await;
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with(&format!("V 0 U\nP 0 {}\n{bad}\n", bad.len())),
+            "{text}"
+        );
+        assert_eq!(tm_report("HARNESS no runtime\n".into()), Err("no runtime".into()));
+        assert_eq!(tm_report("BASE accept\n".into()), Ok("BASE accept\n".into()));
+    }
+
+    /// Only a flip both the batch child and the fresh process showed is
+    /// confirmed; one only either showed is the unconfirmed class.
+    #[test]
+    fn a_typeflip_is_confirmed_only_by_the_probe_the_batch_flipped() {
+        let flip = |id: &str| Flip { id: id.into(), head: "h".into(), mutant: None };
+        let ids = |f: &[Flip]| f.iter().map(|f| f.id.clone()).collect::<Vec<_>>();
+        let batch = ["a#1".to_string()];
+        let (f, ok) = confirmed_flips(vec![flip("a#1"), flip("b#2")], &batch);
+        assert_eq!((ids(&f), ok), (vec!["a#1".into(), "unconfirmed".into()], true));
+        let (f, ok) = confirmed_flips(vec![flip("b#2")], &batch);
+        assert_eq!((ids(&f), ok), (vec!["unconfirmed".into()], false));
+        let (f, ok) = confirmed_flips(vec![flip("a#1")], &batch);
+        assert_eq!((ids(&f), ok), (vec!["a#1".into()], true));
+        let (f, ok) = confirmed_flips(vec![], &batch);
+        assert_eq!((ids(&f), ok), (vec!["unconfirmed".into()], false));
+    }
+
+    /// A marked pin that compiles is misdeclared whatever its verdict
+    /// says, an unsure or excluded one included.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_marked_pin_that_compiles_is_misdeclared() {
+        let prog = format!("{EXPECT_REJECT}\ni64:1");
+        for v in [Verdict::Ran, Verdict::Contained, Verdict::Unsure, Verdict::Excluded] {
+            let d = misdeclared(&prog, v, Duration::from_secs(10)).await;
+            assert!(d.is_some_and(|d| d.pair == Pair::Accepted), "{v}");
+        }
+        assert!(
+            misdeclared(&prog, Verdict::Rejected, Duration::from_secs(10))
+                .await
+                .is_none()
+        );
+    }
+
+    /// Both builds refusing a subject is its own batch verdict, which a
+    /// campaign counts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_subject_both_builds_refuse_is_counted() {
+        let mut got = None;
+        let prog = ["i64:1 + \"x\"".to_string()];
+        run_batch(&prog, Duration::from_secs(10), |_, v| got = Some(v)).await;
+        assert_eq!(got, Some(BatchVerdict::Refused));
+    }
+
+    /// A worker child runs below the directory of the files its parent
+    /// reads back, so no relative path a subject writes reaches them.
+    #[test]
+    fn a_subject_cannot_write_its_own_verdict() {
+        let mut cmd = child_command();
+        let sb = sandbox(&mut cmd);
+        let cwd = cmd.as_std().get_current_dir().expect("a cwd").to_path_buf();
+        assert!(cwd.is_dir() && cwd.starts_with(sb.path()) && cwd != sb.path());
+        report_self_cpu(&sb.path().join("verdict"));
+        assert!(child_cpu(sb.path()) > Duration::ZERO);
+        assert!(!cwd.join(CPU_REPORT).exists());
+    }
+
+    #[test]
+    fn selfcheck_labels_are_what_its_children_write() {
+        for l in ["interp", "jit", "interp-dispatch", "jit-dispatch", "inconclusive"] {
+            assert_eq!(selfcheck_label(l), Some(l));
+        }
+        assert_eq!(selfcheck_label("par"), None);
+    }
+
+    /// The pure time arithmetic reads no clock, so its hang is no
+    /// environment's.
+    #[test]
+    fn pure_time_arithmetic_hangs_are_findings() {
+        assert!(!environmental_hang("sys::time::add_dur(d, duration:1.s)"));
+        assert!(!environmental_hang("sys::time::diff(a, b)"));
+        assert!(environmental_hang("sys::time::timer(duration:1.s, false)"));
+        assert!(environmental_hang("rand::rand(#clock: x)"));
+    }
+
     /// `trace_wait_idle` without `trace_start` is an error, not a hang.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trace_wait_without_start_errors() {
@@ -7549,7 +7784,7 @@ mod batch_files_test {
         {
             let mut verdicts: Vec<(usize, bool)> = Vec::new();
             run_batch(&progs, Duration::from_secs(10), |i, v| {
-                verdicts.push((i, matches!(v, BatchVerdict::Agree { .. })));
+                verdicts.push((i, v != BatchVerdict::Other));
             })
             .await;
             assert_eq!(verdicts.len(), 2, "both subjects must report");
@@ -7584,7 +7819,13 @@ mod batch_files_test {
             ),
             (
                 "callable dispatch",
-                "// callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9\n                 { m0::observe }\n                 // file-v1: m0.gx\n                 let state = { v: 0 };\n                 let handler = |x: i64| -> null { *(&state) <- (x ~ { v: x }); null };\n                 let observe = state",
+                "// callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9\n\
+                 { let o = m0::observe; o }\n\
+                 // file-v1: m0.gx\n\
+                 let state = { v: 0 };\n\
+                 let put = |st: &mut { v: i64 }, x: i64| -> null { *st <- x ~ { v: x }; null };\n\
+                 let handler = |x: i64| -> null put(&mut state, x);\n\
+                 let observe = state",
                 false,
             ),
         ];
@@ -7594,7 +7835,7 @@ mod batch_files_test {
             assert!(diverged.is_none(), "{name}: individual path diverged");
             // absolute, not just pairwise: both paths share one derivation
             assert_eq!(want_ran, ran, "{name}: individual path `ran`");
-            let want = BatchVerdict::Agree { ran: want_ran };
+            let want = if want_ran { BatchVerdict::Ran } else { BatchVerdict::Agree };
             let mut got = None;
             run_batch(&[prog.to_string()], timeout, |_, v| got = Some(v)).await;
             assert_eq!(
@@ -7631,7 +7872,7 @@ mod order_test {
         let unjudged = |i: usize| Suspect::Unjudged(progs[i].clone());
         assert_eq!(
             r.suspect,
-            [Suspect::Flagged(p1.clone()), unjudged(3), unjudged(4), unjudged(5)]
+            [Suspect::Flagged(p1.clone(), vec![]), unjudged(3), unjudged(4), unjudged(5)]
         );
         // a subject's `sys::exit(0)` is not a clean order
         assert!(!order_result(&order, &head, true).clean);
@@ -7639,7 +7880,35 @@ mod order_test {
         let r = order_result(&order, &format!("{head}{tail}CPU 7\n"), true);
         assert!(r.clean);
         assert_eq!(r.agreed, 5);
-        assert_eq!(r.suspect, [Suspect::Flagged(p1.clone())]);
+        assert_eq!(r.suspect, [Suspect::Flagged(p1.clone(), vec![])]);
+    }
+
+    /// A `V` line says how its `P` line hands the subject back: flagged
+    /// with the probes that flipped, or unjudged; `J` is an agreement both
+    /// builds refused.
+    #[test]
+    fn an_order_line_says_how_a_subject_comes_back() {
+        let order = WorkOrder {
+            kind: SourceKind::Typemorph,
+            seed: 5,
+            count: 4,
+            ring: vec![],
+            pins: 0..0,
+        };
+        let (p1, p2) = ("one", "two");
+        let text = format!(
+            "V 0 J\nV 1 O a#1 b#2\nP 1 3\n{p1}\nV 2 U\nP 2 3\n{p2}\nV 3 A\nCPU 1\n"
+        );
+        let r = order_result(&order, &text, true);
+        assert!(r.clean);
+        assert_eq!((r.agreed, r.refused), (2, 1));
+        assert_eq!(
+            r.suspect,
+            [
+                Suspect::Flagged(p1.into(), vec!["a#1".into(), "b#2".into()]),
+                Suspect::Unjudged(p2.into())
+            ]
+        );
     }
 
     #[test]

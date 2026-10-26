@@ -21,6 +21,11 @@ use std::{
 /// the first three weighted by measured findings per CPU-second.
 const DEFAULT_MIX: &str = "50:25:25:10";
 
+/// The compile rate, in percent, below which `gen-check` fails: the
+/// generator is type-correct by construction, so a template that turned
+/// ill-typed shows here before it wastes a soak's subjects.
+const GEN_CHECK_FLOOR: f64 = 95.0;
+
 /// Parse a `fuzz:generate:reactive:typemorph` CPU-share mix. Shares are
 /// relative; the pool normalizes them.
 fn parse_mix(spec: &str) -> Result<[f64; graphix_fuzz::SOURCES]> {
@@ -246,7 +251,7 @@ fn finish_child(args: &[String], verdict: &str) -> Result<()> {
     let path = args
         .get(2)
         .ok_or_else(|| anyhow::anyhow!("{} requires a verdict path", args[1]))?;
-    graphix_fuzz::report_self_cpu();
+    graphix_fuzz::report_self_cpu(std::path::Path::new(path));
     std::fs::write(path, verdict)?;
     std::process::exit(0)
 }
@@ -420,10 +425,8 @@ async fn main() -> Result<ExitCode> {
                 }
             })
             .await;
-            println!(
-                "gen-check: seed={seed}: {compiled}/{n} compiled ({:.1}%)",
-                compiled as f64 * 100.0 / n as f64
-            );
+            let rate = compiled as f64 * 100.0 / n as f64;
+            println!("gen-check: seed={seed}: {compiled}/{n} compiled ({rate:.1}%)");
             feature_report(&progs, &ok, false);
             let mut buckets: Vec<(usize, String, String)> =
                 rejects.into_iter().map(|(k, (c, ex))| (c, k, ex)).collect();
@@ -434,6 +437,10 @@ async fn main() -> Result<ExitCode> {
             }
             if buckets.len() > 15 {
                 println!("  … {} more reject buckets", buckets.len() - 15);
+            }
+            if rate < GEN_CHECK_FLOOR {
+                println!("gen-check: below the {GEN_CHECK_FLOOR}% floor");
+                return Ok(ExitCode::FAILURE);
             }
         }
         Some("regress") if args.iter().any(|a| a == "--bless") => {
@@ -902,9 +909,10 @@ async fn main() -> Result<ExitCode> {
             };
             let new = corpus.len() - before;
             println!(
-                "done: {} programs, {} divergences, {} crashes \
+                "done: {} programs ({} refused), {} divergences, {} crashes \
                  ({new} new, {} total in corpus), {} novel shapes",
                 stats.run,
+                stats.refused,
                 stats.divergences,
                 stats.crashes,
                 corpus.len(),
@@ -952,9 +960,14 @@ async fn main() -> Result<ExitCode> {
                 let findings = graphix_fuzz::SourceKind::parse(name)
                     .map_or("divergences", |k| k.findings());
                 println!(
-                    "done {name}: {} programs, {} {findings}, {} crashes, \
+                    "done {name}: {} programs ({} refused), {} {findings}, {} crashes, \
                      {} novel shapes, {:.0}% cpu",
-                    stats.run, stats.divergences, stats.crashes, stats.novel, pct
+                    stats.run,
+                    stats.refused,
+                    stats.divergences,
+                    stats.crashes,
+                    stats.novel,
+                    pct
                 );
             }
             println!("{new} new, {} total in corpus", corpus.len());
