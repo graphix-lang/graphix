@@ -52,6 +52,29 @@ const DYNAMIC_MODULE_SOURCE_ERROR: &str = r#"
 
 run!(dynamic_module_source_error_keeps_the_load, DYNAMIC_MODULE_SOURCE_ERROR, is(Value::String("kept".into())); FuseExpect::Jit);
 
+// A statement reading a dynamic module's val runs after the statement
+// holding the module, which publishes it at each load.
+run!(
+    a_dynamic_module_publishes_before_its_readers,
+    r#"{
+  let n = 0;
+  n <- select n < 12 { true => n + 1, false => never() };
+  let src = "let v = 5";
+  src <- select n { 2 => "let v = 7", _ => never() };
+  let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val v: i64 };
+    source src
+  };
+  let a = foo::v;
+  let seen: Array<i64> = [];
+  seen <- a ~ array::push(seen, a);
+  select n { 12 => (status, seen), _ => never() }
+}"#,
+    prints("[null, [i64:5, i64:7]]");
+    FuseExpect::Jit
+);
+
 // A trait is declared once: in a function body it is refused, as an
 // `impl` is.
 run!(

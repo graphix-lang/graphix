@@ -375,7 +375,7 @@ impl Equality {
     // number, too. probe: design/review-2026-10-26/repro/c-error-op-any-ref-eq.gx
     // (c-error-op-02)
     fn of(env: &Env, lhs: &Type, rhs: &Type) -> Self {
-        match [lhs, rhs].into_iter().find(|t| t.compares_refs(env)) {
+        match compared_refs(env, lhs, rhs) {
             Some(t) => Self::Targets(t.clone()),
             None => Self::Values {
                 hooks: [lhs, rhs]
@@ -384,6 +384,16 @@ impl Equality {
             },
         }
     }
+}
+
+/// The operand type whose references an `==` or `!=` over `lhs` and
+/// `rhs` replaces by what they name, if either holds one.
+pub(crate) fn compared_refs<'a>(
+    env: &Env,
+    lhs: &'a Type,
+    rhs: &'a Type,
+) -> Option<&'a Type> {
+    [lhs, rhs].into_iter().find(|t| t.compares_refs(env))
 }
 
 macro_rules! bool_op {

@@ -19,9 +19,11 @@ use crate::{
     node::{
         Runs,
         callsite::{ArgKey, CallSite},
+        collection::MapQBase,
         fork_control::{ForkControl, ForkKind},
         lambda::{GXLambda, LambdaDef, ParamCalls, SelfCall},
         module::Module,
+        op::compared_refs,
         seq_machine::{SeqCapture, SeqMachine},
     },
     profile::{self, Phase},
@@ -1293,7 +1295,8 @@ struct Summary {
     reads: Vars,
     writes: Vars,
     ordered: bool,
-    /// It calls a site not bound yet (opaque until it is).
+    /// It calls a site not bound yet whose bind may resolve it, a static
+    /// target or a slot site's own call (opaque until it is).
     unbound: bool,
     /// It makes a reference, which publishes its cell in the cycle it
     /// fires, a callee's included.
@@ -1339,6 +1342,16 @@ fn runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
         NodeView::Gte(o) => holds(&o.lhs) || holds(&o.rhs),
         NodeView::StringInterpolate(si) => si.args.iter().any(holds),
         NodeView::FusedKernel(k) => k.facts().hooks,
+        _ => false,
+    }
+}
+
+/// Whether `n` is an `==` or `!=` over references, which compares what
+/// each names where it stands this cycle.
+fn compares_places<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
+    match n.view() {
+        NodeView::Eq(o) => compared_refs(env, o.lhs.typ(), o.rhs.typ()).is_some(),
+        NodeView::Ne(o) => compared_refs(env, o.lhs.typ(), o.rhs.typ()).is_some(),
         _ => false,
     }
 }
@@ -1476,8 +1489,7 @@ fn own_access<R: Rt, E: UserEvent>(
                 s.writes.ids.insert(c.id);
             }
         }
-        // the write reads the reference to find its target
-        // CR claude for claude: [bug/high] A write through a reference resolves its
+        // XCR claude for claude: [bug/high] A write through a reference resolves its
         // place in this cycle: ConnectDeref::update calls ExecCtx::write_target, which
         // reads rt.ref_path. This arm records only the reference variable as read, not
         // `refs`. So plan_runs forks a `*p <- v` beside the `let r = &mut a[x]` that
@@ -1487,13 +1499,25 @@ fn own_access<R: Rt, E: UserEvent>(
         // fixture, and fix the rule in design/dependency_summaries.md §2. probe:
         // design/review-2026-10-26/repro/c-analysis-branch-connectderef-path.gx
         // (c-analysis-branch-01)
+        // 2026-10-26 claude: own_access's ConnectDeref arm now reads refs as well as
+        // writing them, so plan_runs and ids_verdict break a write through a reference
+        // from an earlier statement that makes a reference; dependency_summaries.md §2
+        // and parallel_eval.md say so. Pin:
+        // lang::byref::a_write_through_a_moving_reference_follows_its_move (par and
+        // jit_par fail with the read removed).
         NodeView::ConnectDeref(c) => {
+            s.reads.refs = true;
             s.writes.refs = true;
             if ids {
                 s.reads.ids.insert(c.src_id);
             }
         }
-        // CR claude for claude: [bug/high] A Deref is not the only node that reads a
+        NodeView::Deref(_) => s.reads.refs = true,
+        NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
+        // a comparison or a print of an abstract value runs its core-trait
+        // impl, whose reads no summary holds
+        _ if runs_hooks(x, &ctx.env) => s.opaque(),
+        // XCR claude for claude: [bug/high] A Deref is not the only node that reads a
         // reference's place. `==`/`!=` over references compare what each names
         // (compare_op's Equality::Targets -> ExecCtx::ref_targets -> rt.ref_path), but
         // no arm here records a `refs` read for them. A comparison is therefore forked
@@ -1503,11 +1527,11 @@ fn own_access<R: Rt, E: UserEvent>(
         // fixture. probe:
         // design/review-2026-10-26/repro/c-analysis-branch-refeq-path.gx
         // (c-analysis-branch-02)
-        NodeView::Deref(_) => s.reads.refs = true,
-        NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
-        // a comparison or a print of an abstract value runs its core-trait
-        // impl, whose reads no summary holds
-        _ if runs_hooks(x, &ctx.env) => s.opaque(),
+        // 2026-10-26 claude: own_access reads refs at an == or != over references
+        // (compares_places, by op::compared_refs, the test Equality::of now shares).
+        // Pin: lang::byref::a_comparison_of_a_moving_reference_follows_its_move (par
+        // and jit_par fail without the arm).
+        _ if compares_places(x, &ctx.env) => s.reads.refs = true,
         NodeView::CallSite(cs) => {
             if let Some(t) = cs.static_target()
                 && graph.instances.contains_key(&t.instance)
@@ -1570,7 +1594,7 @@ fn own_access<R: Rt, E: UserEvent>(
                     }
                 );
             }
-            // CR claude for claude: [perf/medium] `unbound` is set for every call with
+            // XCR claude for claude: [perf/medium] `unbound` is set for every call with
             // no target, including a dynamic call, whose bound state is just as opaque
             // (it falls through to s.opaque() once bound too). A verdict that rests on
             // one stays None forever while the call never binds, for example a null
@@ -1583,7 +1607,13 @@ fn own_access<R: Rt, E: UserEvent>(
             // graph once for both details. probe:
             // design/review-2026-10-26/repro/c-analysis-branch-open-verdict-rewalk.py
             // (c-analysis-branch-03)
-            s.unbound |= cs.resolved_apply().is_none();
+            // 2026-10-26 claude: unbound is set only for a call whose bind can resolve
+            // it (a static target or a slot site's own call); independent() builds its
+            // static graph once for both details (accesses takes the graph). Pin:
+            // lang::par_attrs::an_unbound_dynamic_call_leaves_no_verdict_open (43
+            // verdicts in 40 cycles with the old rule, <= 4 now).
+            s.unbound |= cs.resolved_apply().is_none()
+                && (cs.static_target().is_some() || current);
             s.opaque()
         }
         _ => (),
@@ -1661,17 +1691,17 @@ pub(crate) fn plan_block<R: Rt, E: UserEvent>(
 }
 
 /// What each of `children` reads, writes and calls, its callees
-/// included.
+/// included, over `graph`, theirs.
 fn accesses<'a, R: Rt, E: UserEvent>(
-    children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+    children: impl Iterator<Item = &'a Node<R, E>>,
+    graph: &StaticCallGraph<'a, R, E>,
     ctx: &CompileCtx<R, E>,
     detail: Detail,
     sites: Sites,
 ) -> LPooled<Vec<Summary>> {
-    let graph = collect_static_graph_of(children.clone());
-    let locals = local_summaries(children, &graph, ctx, detail, sites);
+    let locals = local_summaries(children, graph, ctx, detail, sites);
     let sums = instance_summaries(
-        &graph,
+        graph,
         ctx,
         detail,
         locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
@@ -1911,19 +1941,23 @@ pub(crate) fn fires_with<R: Rt, E: UserEvent>(
 }
 
 /// What a statement or sibling publishes for later ones to read: the
-/// ids it binds, and each reference's cell, which a reference (and a
-/// moving place its path) publishes in the cycle it fires for a later
-/// `*r` to read.
+/// ids it binds, each module's signature bindings, and each reference's
+/// cell, which a reference (and a moving place its path) publishes in
+/// the cycle it fires for a later `*r` to read.
 fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
     let mut refs = Refs::without_callees();
     n.refs(&mut refs);
     refs.with_bound(|id| {
         published.ids.insert(id);
     });
-    fusion::for_each_node(n, &mut |x| {
-        if let NodeView::ByRef(b) = x.view() {
+    fusion::for_each_node(n, &mut |x| match x.view() {
+        NodeView::ByRef(b) => {
             published.ids.insert(b.id);
         }
+        NodeView::Module(m) => m.exports(&mut |id| {
+            published.ids.insert(id);
+        }),
+        _ => (),
     });
 }
 
@@ -1945,7 +1979,8 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     if !two_work(children.clone()) {
         return Some(true);
     }
-    let flags = accesses(children.clone(), ctx, Detail::Flags, sites);
+    let graph = collect_static_graph_of(children.clone());
+    let flags = accesses(children.clone(), &graph, ctx, Detail::Flags, sites);
     let shallow: SmallVec<[Shallow; 8]> = children
         .clone()
         .zip(flags.iter())
@@ -1958,7 +1993,10 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
         })
         .collect();
     shallow_verdict(&shallow).unwrap_or_else(|| {
-        ids_verdict(children.clone(), &accesses(children, ctx, Detail::Ids, sites))
+        ids_verdict(
+            children.clone(),
+            &accesses(children, &graph, ctx, Detail::Ids, sites),
+        )
     })
 }
 
@@ -2112,7 +2150,8 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     explain: &mut dyn FnMut(usize, RunBreak),
 ) -> Box<[(u32, u32)]> {
-    let accesses = accesses(children.iter(), ctx, Detail::Ids, Sites::Statements);
+    let graph = collect_static_graph_of(children.iter());
+    let accesses = accesses(children.iter(), &graph, ctx, Detail::Ids, Sites::Statements);
     plan_runs(children, catches, &accesses, explain)
 }
 
@@ -2139,7 +2178,7 @@ fn plan_runs<R: Rt, E: UserEvent>(
         }
         let mut access = Summary::default();
         access.union(&accesses[i]);
-        // CR claude for claude: [bug/high] A dynamic module is an expression, so `let
+        // XCR claude for claude: [bug/high] A dynamic module is an expression, so `let
         // status = mod foo dynamic {..}` is a Bind here and starts no run, and
         // publishes() does not count the proxy outer ids the module writes at each
         // load. A later `let a = foo::v` is forked beside it and reads foo::v before
@@ -2151,6 +2190,13 @@ fn plan_runs<R: Rt, E: UserEvent>(
         // design/review-2026-10-26/repro/x-prune-par-dynamic-module-proxies.gx
         // (GRAPHIX_PAR_AUDIT=1 panics: a forked branch read what its left sibling
         // published) (x-prune-02)
+        // 2026-10-26 claude: publishes() adds each module's signature bindings
+        // (Module::exports: a static body's proxies, a dynamic body's sig binds from
+        // sig_env, impl method binds included), so a statement reading one starts a run
+        // after the statement holding the module. Repro now prints (null, 5, 0)..
+        // (null, 7, 6) under force with pruning on or off. Pin:
+        // lang::modules::a_dynamic_module_publishes_before_its_readers (par and jit_par
+        // fail without it).
         let module = matches!(
             n.spec().kind,
             ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_)
@@ -2364,6 +2410,35 @@ fn forks_two<'a, R: Rt, E: UserEvent>(
         }
 }
 
+/// Whether a run of `runs` over `children` holds two statements that
+/// are work.
+fn runs_fork<R: Rt, E: UserEvent>(children: &[Node<R, E>], runs: &[(u32, u32)]) -> bool {
+    runs.iter()
+        .any(|&(a, z)| (a..z).filter(|i| is_work(&children[*i as usize])).count() >= 2)
+}
+
+/// The collection loop `n` is, or the one its call runs.
+fn collection_of<R: Rt, E: UserEvent>(n: &Node<R, E>) -> Option<&MapQBase<R, E>> {
+    match n.view() {
+        NodeView::MapQ(m) => Some(m),
+        NodeView::CallSite(cs) => match cs.resolved_apply() {
+            Some(ApplyView::Lambda(g)) => match g.body().view() {
+                NodeView::MapQ(m) => Some(m),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a collection's slots may fork: two of them, which call one
+/// callback, are not known dependent.
+fn slots_fork<R: Rt, E: UserEvent>(m: &MapQBase<R, E>, ctx: &CompileCtx<R, E>) -> bool {
+    let slot = &m.prototype;
+    independent([slot, slot].into_iter(), ctx, Sites::Slots) != Some(false)
+}
+
 /// `#[parallel]`'s assertion: something within `node`, callees excluded,
 /// can run beside something else. A block (the decorated expression, or
 /// a `let`'s value) needs a run of two statements, and the error names
@@ -2383,17 +2458,14 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
         }
     }
     if let NodeView::Block(b) = target.view() {
-        let two = |&(a, z): &(u32, u32)| {
-            (a..z).filter(|i| is_work(&b.children[*i as usize])).count() >= 2
-        };
-        if b.runs.planned.get().is_some_and(|runs| runs.iter().any(two)) {
+        if b.runs.planned.get().is_some_and(|runs| runs_fork(&b.children, runs)) {
             return Ok(());
         }
         let mut first: Option<(usize, RunBreak)> = None;
         let runs = plan_block_explained(&b.children, &b.catches, ctx, &mut |i, why| {
             first.get_or_insert((i, why));
         });
-        if runs.iter().any(two) {
+        if runs_fork(&b.children, &runs) {
             return Ok(());
         }
         let Some((i, why)) = first else {
@@ -2425,22 +2497,28 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
     }
     let mut forks = false;
     fusion::for_each_node(target, &mut |n| {
+        // XCR claude for claude: [bug/low] #[parallel] passes on any collection,
+        // even one whose slots can never fork. `#[parallel] array::map(xs, |x|
+        // q(x))` with q a queuefn wrapper builds, though update_slots runs
+        // ordered slots in order, while the same calls as tuple fields are
+        // refused because forks_two checks independence. Judge a MapQ, and a
+        // call into one, by the slots' verdict (analysis::independent over two
+        // slot calls with Sites::Slots, as SlotSite::decide_siblings does) and
+        // name the ordered call in the error. The Block arm here also counts
+        // inert statements (`z - a >= 2`) where the top-level block arm counts
+        // only is_work ones. probe:
+        // design/review-2026-10-26/repro/x-parallel-parallel-assert-ordered-slots.gx
+        // (x-parallel-04)
+        // 2026-10-26 claude: check_parallel judges a MapQ, or a call into one
+        // (collection_of), by slots_fork: analysis::independent over the prototype
+        // call taken as two slots with Sites::Slots, refused only when known
+        // dependent. The error stays the generic one, as the tuple case's is; naming
+        // the ordered call is not done. Pin:
+        // lang::par_attrs::parallel_refuses_ordered_siblings (its array::map case).
         forks = forks
+            || collection_of(n).is_some_and(|m| slots_fork(m, ctx))
             || match n.view() {
-                // CR claude for claude: [bug/low] #[parallel] passes on any collection,
-                // even one whose slots can never fork. `#[parallel] array::map(xs, |x|
-                // q(x))` with q a queuefn wrapper builds, though update_slots runs
-                // ordered slots in order, while the same calls as tuple fields are
-                // refused because forks_two checks independence. Judge a MapQ, and a
-                // call into one, by the slots' verdict (analysis::independent over two
-                // slot calls with Sites::Slots, as SlotSite::decide_siblings does) and
-                // name the ordered call in the error. The Block arm here also counts
-                // inert statements (`z - a >= 2`) where the top-level block arm counts
-                // only is_work ones. probe:
-                // design/review-2026-10-26/repro/x-parallel-parallel-assert-ordered-slots.gx
-                // (x-parallel-04)
-                NodeView::MapQ(_) => true,
-                // CR claude for claude: [bug/low] This arm accepts any run of two
+                // XCR claude for claude: [bug/low] This arm accepts any run of two
                 // statements, constants included, while the top-level Block path above
                 // counts only is_work statements. So `#[parallel] (t, { let a = 1; let
                 // b = 2; a + b })` builds, but the block decorated directly is refused.
@@ -2448,22 +2526,15 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
                 // closure into a fn used by both arms. probe:
                 // design/review-2026-10-26/repro/c-analysis-branch-parallel-const-block.gx
                 // (c-analysis-branch-05)
-                NodeView::Block(b) => {
-                    let forks =
-                        |runs: &[(u32, u32)]| runs.iter().any(|(a, z)| z - a >= 2);
-                    match b.runs.planned.get() {
-                        Some(runs) => forks(runs),
-                        None => forks(&plan_block(&b.children, &b.catches, ctx)),
+                // 2026-10-26 claude: Both block arms use runs_fork (a run with two is_work
+                // statements). Pin: lang::par_attrs::parallel_refuses_a_block_of_constants
+                // (the tuple case builds with the old count).
+                NodeView::Block(b) => match b.runs.planned.get() {
+                    Some(runs) => runs_fork(&b.children, runs),
+                    None => {
+                        runs_fork(&b.children, &plan_block(&b.children, &b.catches, ctx))
                     }
-                }
-                NodeView::CallSite(cs)
-                    if matches!(
-                        cs.resolved_apply(),
-                        Some(ApplyView::Lambda(g)) if matches!(g.body().view(), NodeView::MapQ(_))
-                    ) =>
-                {
-                    true
-                }
+                },
                 _ => fork_point(n)
                     .is_some_and(|(siblings, of)| forks_two(siblings, of, ctx)),
             }

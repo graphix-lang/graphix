@@ -103,7 +103,8 @@ order (§4.2).
 
 `reads` is the dependency summary's read set
 (`dependency_summaries.md` §2), following statically resolved calls
-into their instances. It has one gap: a `Deref` reads `refs`, and a
+into their instances. It has one gap: a `Deref`, a write through a
+reference and an `==` or `!=` over references read `refs`, and a
 call with no static target reads `all`. Both meet any non-empty
 publication set. A call with no static target also counts as an
 `Ordered` call: a fork site decides once, and a rebind may hand the call

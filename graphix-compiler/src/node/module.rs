@@ -1218,6 +1218,31 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         matches!(self.body, Body::Static).then_some(self.task)
     }
 
+    /// Each signature binding outside the module, which a load
+    /// publishes: a static body's are linked at its compile, a dynamic
+    /// body's at each load.
+    pub(crate) fn exports(&self, f: &mut dyn FnMut(BindId)) {
+        let sig_env = match &self.body {
+            Body::Static => return self.proxy.iter().for_each(|p| f(p.outer)),
+            Body::Dynamic { sig_env, .. } => sig_env,
+        };
+        let binds = |scope: &Scope| sig_env.binds.get(&scope.lexical);
+        for (i, si) in self.sig.items.iter().enumerate() {
+            match &si.kind {
+                SigKind::Bind(BindSig { name, .. }) => {
+                    binds(&self.scope)
+                        .and_then(|m| m.get(name.name.as_str()))
+                        .map(|id| f(*id));
+                }
+                SigKind::Impl(_) => binds(&self.scope.append_block("impl", i as u64))
+                    .into_iter()
+                    .flat_map(|m| m.iter())
+                    .for_each(|(_, id)| f(*id)),
+                _ => (),
+            }
+        }
+    }
+
     /// Map each signature `BindId` to its impl binding's `LambdaDef` so
     /// cross-module calls resolve statically.
     pub(crate) fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R, E>) {

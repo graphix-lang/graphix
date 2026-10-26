@@ -339,15 +339,56 @@ async fn an_open_verdict_waits_for_a_bind() -> Result<()> {
     Ok(())
 }
 
+// A verdict that rests on a dynamic call is decided whether or not the
+// call is bound, since bound it is as opaque: a null callback leaves
+// nothing open for each cycle's rebuild to ask again.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unbound_dynamic_call_leaves_no_verdict_open() -> Result<()> {
+    let code = r#"{
+        let f = |x: i64| x + 1;
+        let cb: [fn(x: i64) -> i64, null] = null;
+        let n = 0;
+        n <- select sys::time::timer(duration:1.ms, 40) ~ n {
+            k if k < 40 => k + 1,
+            _ => never()
+        };
+        let grow = array::init(n, |i| i * 2);
+        ({ let y = n * 2; f(y) }, select cb { null => 0, g => g(n) }, array::len(grow))
+    }"#;
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(
+        ran.values.last(),
+        Some(&Value::Array([81i64, 0, 40].map(Value::I64).into()))
+    );
+    assert!(ran.verdicts <= 4, "{} verdicts in 40 cycles", ran.verdicts);
+    Ok(())
+}
+
 // Fields, arguments and operands that reach one ordered queuefn wrapper
 // do not fork, so #[parallel] over them has nothing to run in parallel.
 #[tokio::test(flavor = "current_thread")]
 async fn parallel_refuses_ordered_siblings() {
-    for e in ["(qf(1), qf(2), qf(3))", "g(qf(1), qf(2))", "qf(1) + qf(2)"] {
+    for e in [
+        "(qf(1), qf(2), qf(3))",
+        "g(qf(1), qf(2))",
+        "qf(1) + qf(2)",
+        "array::map([1, 2, 3], |x| qf(x))",
+    ] {
         let code = format!(
             "{{ let qf = queuefn(#trigger: 1, |x: i64| -> i64 x); \
              let g = |a: i64, b: i64| a + b; #[parallel] {e} }}"
         );
+        let err = refusal(&code).await;
+        assert!(err.contains("#[parallel] has nothing to run in parallel"), "{e}: {err}");
+    }
+}
+
+// A block forks only a run of two statements that are work, decorated
+// or nested in what is.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_refuses_a_block_of_constants() {
+    for e in ["{ let a = 1; let b = 2; a + b }", "(t, { let a = 1; let b = 2; a + b })"] {
+        let code = format!("{{ let t = 3; #[parallel] {e} }}");
         let err = refusal(&code).await;
         assert!(err.contains("#[parallel] has nothing to run in parallel"), "{e}: {err}");
     }

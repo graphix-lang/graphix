@@ -64,8 +64,10 @@ For a node (a seq step, an instance body), `analysis::local_summary`
 walks it (`fusion::for_each_node`):
 
 - a `Ref` reads its id, a `Connect` writes its target;
-- a `Deref` reads `refs` and a `ConnectDeref` writes `refs`: whatever
-  some reference points to, which may be any variable;
+- a `Deref`, and an `==` or `!=` over references, reads `refs`, and a
+  `ConnectDeref` reads and writes `refs`: whatever some reference
+  points to, which may be any variable, at the place it names this
+  cycle;
 - a call reaches its instance (a static target, a resolved lambda, a
   self-bind of the call graph); a builtin handed a reference, a
   function or an `Any` reads and writes `all`, and one handed neither

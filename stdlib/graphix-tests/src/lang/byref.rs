@@ -1002,3 +1002,43 @@ run!(
     prints("[i64:5, i64:10, i64:20, i64:30, i64:40, i64:50]");
     FuseExpect::Jit
 );
+
+// A write through a moving reference, and a comparison of one, reach the
+// place the reference names this cycle, so neither runs beside the
+// statement that moves it.
+run!(
+    a_write_through_a_moving_reference_follows_its_move,
+    r#"{
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
+  let x = array::iter([0, 1, 2]);
+  let a = [10, 20, 30];
+  let holder: [&mut i64, null] = null;
+  let r = &mut a[x];
+  select holder { null => null, p => { *p <- x ~ 100 + x; null } };
+  holder <- r;
+  let t = select step { 8 => null, _ => never() };
+  t ~ a
+}"#,
+    prints("[i64:10, i64:101, i64:102]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_comparison_of_a_moving_reference_follows_its_move,
+    r#"{
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
+  let x = array::iter([0, 1, 2]);
+  let a = [10, 20, 30];
+  let holder: [&i64, null] = null;
+  let out: Array<bool> = [];
+  let r = &a[x];
+  out <- select holder { null => never(), p => x ~ array::push(out, p == &a[1]) };
+  holder <- r;
+  let t = select step { 8 => null, _ => never() };
+  t ~ out
+}"#,
+    prints("[true, false]");
+    FuseExpect::Jit
+);
