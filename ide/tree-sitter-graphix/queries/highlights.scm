@@ -35,6 +35,7 @@
   "fn"
   "cast"
   "never"
+  "live"
   "any"
   "with"
   "throws"

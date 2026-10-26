@@ -8,12 +8,7 @@ The `text` widget renders styled text in the terminal. It's a fundamental buildi
 {{#include ../../../../stdlib/graphix-package-tui/src/graphix/text.gxi}}
 ```
 
-<!-- CR claude for claude: [doc-drift/low] There is no `style` module. Style, Line,
-Span, Color, Modifier and Alignment are declared at the tui root (mod.gxi), and
-`tui::style` is a function, so `use tui::style::Style` is refused ('no module
-`tui::style` in scope'). Say they are `tui`'s own types (`use tui::{Line, Style}`),
-described on the style page. Checked with graphix --check. (book-ui-b-02) -->
-The `text` widget uses types from the [style](style.md) module including `Style`, `Line`, `Span`, `Color`, `Modifier`, and `Alignment`.
+The `text` widget uses `Style`, `Line`, `Span`, `Color`, `Modifier` and `Alignment`. They are the `tui` package's own types, declared at its root, so they are imported from `tui` (`use tui::{Line, Style, line, span}`); `tui::style` is the function that builds a `Style`, not a module. The [style](style.md) page describes them.
 
 ## Text Hierarchy
 

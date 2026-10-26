@@ -73,6 +73,9 @@ module.exports = grammar({
     // ambiguous until the next token; let the GLR parser keep both.
     [$._expression, $.or_never],
     [$._expression, $.qop],
+    // `select x{`: a `{` tight against the scrutinee or trigger opens the
+    // body or a map_ref; the map_ref reading dies when no body follows.
+    [$._expression, $.map_ref],
     [$.type_path, $.pattern_bind],
     [$.construct_path, $.module_path],
     [$.type_path, $.construct_path],
@@ -838,7 +841,7 @@ module.exports = grammar({
     labeled_arg_shorthand: $ => seq('#', $._binding_name),
 
     // Select (pattern matching)
-    // CR claude for claude: [bug/low] graphix accepts a body brace written tight
+    // XCR claude for claude: [bug/low] graphix accepts a body brace written tight
     // against the scrutinee or trigger (`select x{ _ => 1 }`, `seq t{ 1; 2 }`): the map
     // access it tries there is backtracked. Here the lexer takes a tight `{` as
     // map_ref's token.immediate('{'), which select and seq_block do not accept, so the
@@ -846,10 +849,16 @@ module.exports = grammar({
     // and add the conflict `[$._expression, $.map_ref]`. In a scratch copy this fixed
     // select and left the repo corpus's refusals unchanged. probe:
     // design/review-2026-10-26/repro/ide-tooling-tight-body-brace.gx (ide-tooling-03)
+    // 2026-10-26 claude: select and seq_block open their body with bodyOpen(),
+    // choice('{', token.immediate('{')), with the conflict [_expression, map_ref];
+    // check.sh over the repo and ../netidx: 0 files graphix parses and tree-sitter
+    // refuses. Pins: graphix-types expr::test ts_tight_body_brace_parses (select x{,
+    // seq t{, seqq t{) and the ts_tree_shapes row select m{k} { .. } (a tight map
+    // access before the body stays a map_ref).
     select: $ => seq(
       'select',
       field('value', $._expression),
-      '{',
+      bodyOpen(),
       commaSep1($.match_arm),
       '}',
     ),
@@ -872,7 +881,7 @@ module.exports = grammar({
       optional(seq(optional(';'), 'abort', '(', field('abort', $._expression), ')')),
       // `flush(` is one token: a trigger may be a variable named flush
       optional(seq(optional(';'), alias(token(seq('flush', /\s*/, '(')), 'flush('), field('flush', $._expression), ')')),
-      '{',
+      bodyOpen(),
       $._seq_items,
       '}',
     ),
@@ -931,16 +940,8 @@ module.exports = grammar({
     ),
 
     // The value that never arrives, typed where given
-    // CR claude for claude: [doc-drift/low] `live(e)` is a construct keyword in the
-    // parser (live_expr), like never/cast/any, but this grammar has no node for it. It
-    // parses as a call of a reference named live, so highlights.scm and the emacs ts
-    // queries color it as a function, and `let live = 1`, which graphix refuses, is
-    // accepted here. book/theme/graphix-highlight.js has the same drift: its KEYWORDS
-    // lack live and its TYPES lack Data and NoError. Fix: add `live: $ => seq('live',
-    // '(', $._expression, ')')` to _primary_expression, and "live" to the keyword lists
-    // of highlights.scm, graphix-mode.el and graphix-highlight.js. probe: tree-sitter
-    // parse of `until live(x > 1)` gives (until (apply (reference ...))).
-    // (ide-tooling-06)
+    live: $ => seq('live', '(', $._expression, ')'),
+
     never: $ => seq(
       'never',
       optional(seq('<', $._type, '>')),
@@ -1001,6 +1002,7 @@ module.exports = grammar({
       $.try_with,
       $.any,
       $.cast,
+      $.live,
       $.never,
       $.block,
       $.qop,
@@ -1259,7 +1261,7 @@ module.exports = grammar({
     // The CJK ideograph and Hangul syllable blocks are spelled out:
     // tree-sitter-cli keeps only the endpoints of UnicodeData's range
     // entries in \p{Lo}.
-    // CR claude for claude: [bug/low] The continuation class [\p{L}\p{N}_..] leaves out
+    // XCR claude for claude: [bug/low] The continuation class [\p{L}\p{N}_..] leaves out
     // combining marks. graphix's ident() continues with char::is_alphanumeric, whose
     // Alphabetic includes the Other_Alphabetic vowel signs of Devanagari, Bengali,
     // Tamil and other scripts. So `let कि = 1` parses in graphix and is an ERROR here,
@@ -1267,8 +1269,13 @@ module.exports = grammar({
     // class. Fix: continue both with [\p{Alphabetic}\p{N}_..]; tree-sitter-cli accepts
     // it, and in a regenerated copy the probe parses. probe:
     // design/review-2026-10-26/repro/ide-tooling-indic-identifier.sh (ide-tooling-04)
+    // 2026-10-26 claude: identifier and type_identifier continue with \p{Alphabetic},
+    // so a combining vowel sign (Mc/Mn that is Other_Alphabetic) continues a name as
+    // char::is_alphanumeric does; a Thai tone mark (not alphabetic) is still refused by
+    // both. Pins: ts_tree_shapes rows let कि = कि and type Aि = i64, and
+    // ts_tight_body_brace_parses' let कि line.
     identifier: $ =>
-      /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3][\p{L}\p{N}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3]*/,
+      /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3][\p{Alphabetic}\p{N}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3]*/,
 
     // Type-name keywords are legal BINDING names: let,
     // params, labeled args, pattern binds, tvar names, module path
@@ -1296,7 +1303,7 @@ module.exports = grammar({
         'true', 'false', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'until',
         'trait', 'impl', 'pub', 'self', 'super', 'package',
         'type',
-        'fn', 'cast', 'never', 'if', 'use', 'rec', 'catch', 'try', 'any',
+        'fn', 'cast', 'never', 'live', 'if', 'use', 'rec', 'catch', 'try', 'any',
         'bool', 'string', 'bytes',
         'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'v32', 'z32',
         'i64', 'u64', 'v64', 'z64', 'f32', 'f64',
@@ -1304,7 +1311,7 @@ module.exports = grammar({
       ), $.identifier),
     ),
 
-    type_identifier: $ => /\p{Lu}[\p{L}\p{N}_]*/,
+    type_identifier: $ => /\p{Lu}[\p{Alphabetic}\p{N}_]*/,
   },
 });
 
@@ -1313,6 +1320,12 @@ module.exports = grammar({
  * @param {RuleOrLiteral} rule
  * @returns {SeqRule}
  */
+// A body's `{` may sit tight against the expression before it, where the
+// lexer reads it as map_ref's immediate `{`.
+function bodyOpen() {
+  return choice('{', token.immediate('{'));
+}
+
 function commaSep(rule) {
   return optional(commaSep1(rule));
 }

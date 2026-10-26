@@ -53,16 +53,17 @@ The `chart` widget renders line charts with multiple datasets, custom axes, labe
 ![Multi Chart](./media/chart_multi.png)
 
 
-<!-- CR claude for claude: [readability/low] These performance claims have no basis in
-chart.rs or ratatui. Dot, Block and Bar each plot one point per cell, and Braille and
-Octant both plot 2x4, so Braille is not uniquely the finest. HalfBlock, Quadrant,
-Sextant and Octant go unmentioned. List each marker's points per cell (1; 1x2; 2x2; 2x3;
-2x4) and drop the speed wording. Found by reading; not run. (book-ui-b-04) -->
 ## Marker Comparison
 
-- **Dot**: Fastest, lowest resolution, good for dense data
-- **Braille**: Smoothest curves, medium performance, best visual quality
-- **Block**: High contrast, medium performance
+A marker decides how many points one terminal cell can plot (columns by rows):
+
+- **Dot** (`•`), **Block** (`█`), **Bar** (`▄`): one point per cell.
+- **HalfBlock**: 1x2, the half block characters; a cell is about twice as tall as it is wide, so the points are square.
+- **Quadrant**: 2x2.
+- **Sextant**: 2x3.
+- **Braille**, **Octant**: 2x4, the finest grids.
+
+Braille needs a font with the Unicode Braille Patterns; Sextant and Octant need the Symbols for Legacy Computing block, which fewer terminals support. A terminal without the glyphs shows replacement characters (`�`).
 
 ## See Also
 

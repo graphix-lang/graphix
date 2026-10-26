@@ -63,7 +63,7 @@ Every widget style field is optional (union with `null`). When `null`, the widge
 
 ### The `stylesheet` Builder
 
-Use the `stylesheet` function to construct a `StyleSheet` without filling in every field manually. Only `#palette` is required; all widget style parameters default to `null`:
+The palette, the stylesheet and every per-widget style type and builder live in the `gui::style` module (`use gui::style::{Palette, stylesheet, button_style}`). Use the `stylesheet` function to construct a `StyleSheet` without filling in every field manually. Only `#palette` is required; all widget style parameters default to `null`:
 
 ```graphix
 {{#include ../../../../stdlib/graphix-package-gui/src/graphix/style.gxi:stylesheet}}
@@ -79,12 +79,7 @@ Example with a custom palette and button override:
 
 ## Per-Widget Style Types
 
-<!-- CR claude for claude: [doc-drift/low] The page never says the builders and style
-types live in `gui::style`. "The GUI module provides" reads as `gui::button_style`,
-which is refused as not defined. Only the custom_styles.gx include shows `use
-gui::style::{..}`. Name the module where `stylesheet` is introduced and here. probe:
-design/review-2026-10-26/repro/book-ui-a-style-builders-module.gx (book-ui-a-02) -->
-Each widget style type is a struct where every field is optional (`[T, null]`). A `null` field means "inherit from the theme palette." The GUI module provides both the types and corresponding builder functions.
+Each widget style type is a struct where every field is optional (`[T, null]`). A `null` field means "inherit from the theme palette." The `gui::style` module provides both the types and corresponding builder functions: `gui::style::button_style`, not `gui::button_style`.
 
 ### ButtonStyle
 

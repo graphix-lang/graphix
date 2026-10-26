@@ -5094,8 +5094,20 @@
           }
         },
         {
-          "type": "STRING",
-          "value": "{"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "{"
+            },
+            {
+              "type": "IMMEDIATE_TOKEN",
+              "content": {
+                "type": "STRING",
+                "value": "{"
+              }
+            }
+          ]
         },
         {
           "type": "SEQ",
@@ -5339,8 +5351,20 @@
           ]
         },
         {
-          "type": "STRING",
-          "value": "{"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "{"
+            },
+            {
+              "type": "IMMEDIATE_TOKEN",
+              "content": {
+                "type": "STRING",
+                "value": "{"
+              }
+            }
+          ]
         },
         {
           "type": "SYMBOL",
@@ -5603,6 +5627,27 @@
         {
           "type": "STRING",
           "value": ">"
+        },
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_expression"
+        },
+        {
+          "type": "STRING",
+          "value": ")"
+        }
+      ]
+    },
+    "live": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "live"
         },
         {
           "type": "STRING",
@@ -5931,6 +5976,10 @@
         {
           "type": "SYMBOL",
           "name": "cast"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "live"
         },
         {
           "type": "SYMBOL",
@@ -7115,7 +7164,7 @@
     },
     "identifier": {
       "type": "PATTERN",
-      "value": "[\\p{Ll}\\p{Lt}\\p{Lm}\\p{Lo}_\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7A3][\\p{L}\\p{N}_\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7A3]*"
+      "value": "[\\p{Ll}\\p{Lt}\\p{Lm}\\p{Lo}_\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7A3][\\p{Alphabetic}\\p{N}_\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7A3]*"
     },
     "_binding_name": {
       "type": "CHOICE",
@@ -7302,6 +7351,10 @@
               },
               {
                 "type": "STRING",
+                "value": "live"
+              },
+              {
+                "type": "STRING",
                 "value": "if"
               },
               {
@@ -7413,7 +7466,7 @@
     },
     "type_identifier": {
       "type": "PATTERN",
-      "value": "\\p{Lu}[\\p{L}\\p{N}_]*"
+      "value": "\\p{Lu}[\\p{Alphabetic}\\p{N}_]*"
     }
   },
   "extras": [
@@ -7516,6 +7569,10 @@
     [
       "_expression",
       "qop"
+    ],
+    [
+      "_expression",
+      "map_ref"
     ],
     [
       "type_path",

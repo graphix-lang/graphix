@@ -2821,10 +2821,34 @@ mod tree_sitter_compat {
             ("any(a, b).f", "(struct_ref (any"),
             ("-0XFF", "(number)"),
             ("let 名前 = 한글", "(pattern_bind name: (identifier))) value: (reference"),
+            // a combining vowel sign continues a name, as char::is_alphanumeric
+            ("let कि = कि", "(pattern_bind name: (identifier))) value: (reference"),
+            (
+                "type Aि = i64",
+                "(type_def name: (type_identifier) type: (primitive_type))",
+            ),
+            ("seq t { until live(x > 1) }", "(until (live (binary_expression"),
+            // a tight `{` after a body's map access still opens the body
+            ("select m{k} { _ => 1 }", "(select value: (map_ref"),
         ] {
             let tree = parser.parse(src, None).unwrap();
             let sexp = tree.root_node().to_sexp();
             assert!(sexp.contains(shape), "{src}: expected {shape} in {sexp}");
+        }
+    }
+
+    /// A body's `{` written tight against the scrutinee or trigger opens
+    /// the body, as the parser reads it.
+    #[test]
+    fn ts_tight_body_brace_parses() {
+        for src in [
+            "select x{ _ => 1 }",
+            "seq t{ 1; 2 }",
+            "seqq t{ 1; 2 }",
+            "select m{k} { _ => 1 }",
+            "let कि = 1;\nकि",
+        ] {
+            assert_ts_parses(src);
         }
     }
 

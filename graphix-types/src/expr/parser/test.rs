@@ -2759,7 +2759,8 @@ fn a_suffix_reports_its_own_failure() {
 }
 
 /// The regex highlighters keep their own keyword lists: each names every
-/// construct keyword and the contextual ones the grammar reads as keywords.
+/// construct keyword and the contextual ones the grammar reads as keywords,
+/// and the book's names every reserved type name.
 #[test]
 fn editor_keyword_lists_name_every_keyword() {
     fn between<'a>(src: &'a str, open: &str, close: &str) -> &'a str {
@@ -2775,7 +2776,15 @@ fn editor_keyword_lists_name_every_keyword() {
         .skip(1)
         .flat_map(|g| g[..g.find(")\\\\b").unwrap()].split('|'))
         .collect();
-    let lists: [(&str, Vec<&str>); 3] = [
+    let book = include_str!("../../../../book/theme/graphix-highlight.js");
+    let book_words = |list: &str| -> Vec<&str> {
+        between(book, &format!("const {list} ="), ";")
+            .split(|c: char| c.is_whitespace() || c == '"' || c == '+')
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let book_types = book_words("TYPES");
+    let lists: [(&str, Vec<&str>); 4] = [
         (
             "graphix-mode.el",
             between(emacs, "(let ((keywords '(", ")")
@@ -2790,6 +2799,7 @@ fn editor_keyword_lists_name_every_keyword() {
                 .collect(),
         ),
         ("graphix.tmLanguage.json", vscode_words),
+        ("graphix-highlight.js", book_words("KEYWORDS")),
     ];
     // CR claude for claude: [test-gap/low] [test-gap/low] This hand-written list misses
     // the contextual keywords of the dynamic-module grammar (modexp.rs): dynamic,
@@ -2809,5 +2819,15 @@ fn editor_keyword_lists_name_every_keyword() {
                 "{file} does not name the keyword {w}: {words:?}"
             );
         }
+    }
+    let type_names = KEYWORDS.iter().filter_map(|(w, k)| {
+        (matches!(k, Keyword::Reserved) && w.starts_with(char::is_uppercase))
+            .then_some(*w)
+    });
+    for w in type_names {
+        assert!(
+            book_types.contains(&w),
+            "graphix-highlight.js does not name the type {w}: {book_types:?}"
+        );
     }
 }

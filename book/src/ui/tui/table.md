@@ -8,22 +8,22 @@ The `table` widget displays structured data in rows and columns with support for
 {{#include ../../../../stdlib/graphix-package-tui/src/graphix/table.gxi}}
 ```
 
-<!-- CR claude for claude: [doc-drift/low] This list misses six parameters the interface
-has: `footer`, `flex`, `cell_highlight_style`, `column_highlight_style`,
-`selected_cell`, `selected_column`. It also misses the positional rows, typed
-`&Array<&Row>`: every row is a reference. A reader passing `&[row(..)]` gets an
-`Array<&Row>` type mismatch the page gives no clue to. Document all of them. Found by
-comparing with table.gxi and checking `table(&[row([cell(line("a"))])])`, which is
-refused. (book-ui-a-04) -->
 ## Parameters
 
-- **header** - Row object for the table header
-- **selected** - Index of the currently selected row
-- **row_highlight_style** - Style for the selected row
-- **highlight_symbol** - String before selected row
-- **highlight_spacing** - When to show highlight symbol: `Always`, `WhenSelected`, `Never`
+- **rows** (positional) - The body rows, `&Array<&Row>`: a reference to an array of row references, so one row can change without rebuilding the others. Write `&[&row1, &row2]`, never `&[row1, row2]`. Build a row with `row(cells)` and a cell with `cell(line(..))`.
+- **header** - Row shown above the body
+- **footer** - Row shown below the body
 - **widths** - Array of column width constraints
 - **column_spacing** - Number of spaces between columns
+- **flex** - How the columns share space the widths leave over: `` `Legacy ``, `` `Start ``, `` `End ``, `` `Center ``, `` `SpaceBetween ``, `` `SpaceEvenly ``, `` `SpaceAround ``
+- **selected** - Index of the selected row
+- **selected_column** - Index of the selected column
+- **selected_cell** - The selected cell as `{x: column, y: row}`; it sets both the row and the column
+- **row_highlight_style** - Style for the selected row
+- **column_highlight_style** - Style for the selected column
+- **cell_highlight_style** - Style for the selected cell
+- **highlight_symbol** - String before the selected row
+- **highlight_spacing** - When to show the highlight symbol: `` `Always ``, `` `WhenSelected ``, `` `Never ``
 - **style** - Base style for the table
 
 ## Examples
