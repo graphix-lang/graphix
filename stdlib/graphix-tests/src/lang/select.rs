@@ -3963,7 +3963,7 @@ run!(
     };
     f([1])
 }"#,
-    refused("string does not contain [Any")
+    refused("string does not contain Any")
 );
 
 run!(
