@@ -204,23 +204,17 @@ The Zed extension lives in `ide/editors/zed/`. For development:
 ln -s "$PWD/ide/editors/zed" ~/.config/zed/extensions/installed/graphix
 ```
 
-Restart Zed. The extension auto-detects `.gx` and `.gxi` files,
-launches `graphix lsp`, and ships its own copy of the tree-sitter
-queries.
+Restart Zed. The extension auto-detects `.gx` and `.gxi` files and
+launches `graphix lsp`.
 
-<!-- CR claude for claude: [doc-drift/low] These are symlinks to
-ide/tree-sitter-graphix/queries/, not duplicates, and the `cp` below copies each file
-onto a symlink to itself, which cp refuses. Say that a dev extension reads the current
-queries through the links and that packaging dereferences them (`cp -rL`), as
-ide/editors/zed/README.md does. Found by reading; not run. (book-core-10) -->
-The query files under `languages/graphix/` are duplicates of the
-canonical ones in `ide/tree-sitter-graphix/queries/` because Zed
-packages each extension as a self-contained directory. If you change
-the upstream queries, copy them across:
+The query files under `languages/graphix/` are symlinks to the
+canonical ones in `ide/tree-sitter-graphix/queries/`, so a development
+extension always reads the current queries. Zed packages a published
+extension as a self-contained directory, where a symlink pointing
+outside it does not survive, so dereference them when packaging:
 
 ```bash
-cp ide/tree-sitter-graphix/queries/{highlights,indents,locals}.scm \
-   ide/editors/zed/languages/graphix/
+cp -rL ide/editors/zed /path/to/package/graphix
 ```
 
 ## Formatting

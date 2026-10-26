@@ -59,7 +59,19 @@ let browser = |
     // in the Up/Down arms' updates. Fix it together with the column offset in the
     // candidates slice, which has the same flaw. probe:
     // design/review-2026-10-26/repro/gx-ui-browser-shrunk-listing.gx (gx-ui-02)
-    let first_row = max(0, min(array::len(structure.rows) - 1, viewport.y));
+    // 2026-10-26 claude: Rows done: first_row clamps to len(rows) - row_slots, so a
+    // shrunk listing or a grown window shows a full window, and every cursor arm writes
+    // the viewport from first_row/first_col, so a stale viewport.y no longer swallows
+    // presses. Pin: input_test::a_browser_window_fills_from_a_shrunk_listing (12 rows
+    // scrolled to the end, shrunk to 3: shows 3 and two Ups reach r0; the old code
+    // showed 1 row and stayed on r2). Remains: the column start clamps only to the last
+    // column (gx-ui-01), so after the columns shrink under a scrolled window it shows
+    // from that column on although earlier ones might fit; the window's extent is known
+    // only after the width fold over first_col.., so a full-window column clamp needs a
+    // second (reverse) fold over the widths, and its content widths are indexed by
+    // visible slot, not column.
+    let first_row = max(0, min(array::len(structure.rows) - row_slots, viewport.y));
+    let first_col = max(0, min(array::len(structure.columns) - 1, viewport.x));
     let visible_rows = {
         let end = min(array::len(structure.rows), first_row + row_slots);
         (structure.rows)[first_row .. end]$
@@ -83,7 +95,7 @@ let browser = |
             cols: [],
             widths: [`Min(name_width)]
         };
-        // CR claude for claude: [bug/medium] viewport.x is never clamped to the
+        // XCR claude for claude: [bug/medium] viewport.x is never clamped to the
         // listing. When a refresh under the same path has fewer columns than
         // viewport.x, this slice is an index error and `$` makes it bottom. Then
         // widths, visible_columns, the header, every Table-mode cell (the
@@ -95,7 +107,13 @@ let browser = |
         // a_browser_selection_stays_in_a_shrunk_window. The row offset has the same
         // flaw (see the CR on first_row). probe:
         // design/review-2026-10-26/repro/gx-ui-browser-shrunk-columns.gx (gx-ui-01)
-        let candidates = array::enumerate((structure.columns)[viewport.x ..]$);
+        // 2026-10-26 claude: browser derives first_col = max(0, min(len(columns) - 1,
+        // viewport.x)) and reads it for the candidates slice, the row cells' ring
+        // (slot_item, in_order) and the Left/Right arms' writes, which now write the
+        // whole clamped viewport {x: first_col.., y: first_row}. Pin:
+        // input_test::a_browser_selection_survives_shrunk_columns (8 columns scrolled
+        // right, shrunk to 2: selects row0/col1; the old code kept row0/col7).
+        let candidates = array::enumerate((structure.columns)[first_col ..]$);
         array::fold(candidates, init, |{total, cols, widths}, (i, col)| {
             let len = min(max_width, max(str::char_len(col), get_width(i + 1)));
             select total {
@@ -153,13 +171,13 @@ let browser = |
                     `Table => {
                         let col_slots = array::len(visible_columns);
                         let a = array::map(array::init(col_slots, |c| c), |c| {
-                            let col = (structure.columns)[slot_item(viewport.x, col_slots, c)]$;
+                            let col = (structure.columns)[slot_item(first_col, col_slots, c)]$;
                             let path = "[row]/[col]";
                             let v: Result<PrimNoErr, [`InvalidCast(string), `SubscribeError(string)]> =
                                 throttle(#rate, net::subscribe(path));
                             "[any(uniq(path) ~ "#SUB", v)]"
                         });
-                        array::push_front(in_order(viewport.x, col_slots, a), name)
+                        array::push_front(in_order(first_col, col_slots, a), name)
                     }
                 }
             }
@@ -182,14 +200,14 @@ let browser = |
         })));
     select cursor {
         `Left(n) => select n ~ sel.x {
-            e if e <= 1 => viewport <- e ~ { viewport with x: max(0, viewport.x - n) },
+            e if e <= 1 => viewport <- e ~ { x: max(0, first_col - n), y: first_row },
             e => selected <- e ~ { sel with x: max(1, sel.x - n) }
         },
         `Right(n) => {
             let clim = array::len(structure.columns) - array::len(visible_columns);
             select n ~ (sel.x, array::len(visible_columns)) {
                 (x, limit) if x >= limit =>
-                    viewport <- x ~ { viewport with x: min(clim, viewport.x + n) },
+                    viewport <- x ~ { x: min(clim, first_col + n), y: first_row },
                 (x, limit) => selected <- x ~ { sel with x: min(limit, sel.x + n) }
             }
         },
@@ -197,12 +215,12 @@ let browser = |
             let rlim = array::len(structure.rows) - array::len(visible_rows);
             select n ~ (sel.y, array::len(visible_rows) - 1) {
                 (y, limit) if y >= limit =>
-                    viewport <- y ~ { viewport with y: min(rlim, viewport.y + n) },
+                    viewport <- y ~ { x: first_col, y: min(rlim, first_row + n) },
                 (y, limit) => selected <- y ~ { sel with y: min(limit, sel.y + n) }
             }
         },
         `Up(n) => select n ~ sel.y {
-            y if y <= 0 => viewport <- y ~ { viewport with y: max(0, viewport.y - n) },
+            y if y <= 0 => viewport <- y ~ { x: first_col, y: max(0, first_row - n) },
             y => selected <- y ~ { sel with y: max(0, sel.y - n) }
         }
     };

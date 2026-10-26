@@ -559,6 +559,85 @@ let result = b
     Ok(())
 }
 
+/// The string a browser fixture's `done` ends with.
+async fn done_string(h: &mut TuiTestHarness) -> Result<Value> {
+    h.watch("test::done").await?;
+    h.wait_for(Duration::from_secs(15), |h| {
+        Ok(matches!(h.get_watched("test::done"), Some(Value::String(_))))
+    })
+    .await?;
+    Ok(h.get_watched("test::done").cloned().unwrap_or(Value::Null))
+}
+
+/// A listing that shrinks under a window scrolled to its end shows every
+/// row that fits, and Up moves from the window that shows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_window_fills_from_a_shrunk_listing() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r##"
+use tui::{Tui, browser::{MoveCursor, browser}};
+let n = 12;
+let pubs = array::init(n, |k| sys::net::publish("/local/refill/r[k]", k));
+let path = sys::time::after_idle(duration:200.ms, "/local/refill");
+let cur: MoveCursor = never();
+let sel: [string, null] = never();
+let b: Tui = browser(#size: {width: 40, height: 6}, #cursor: cur, #selected_row: &mut sel, path);
+let shown = select b {
+  `Table(t) => array::len(*t.rows),
+  _ => never()
+};
+let loaded = false;
+loaded <- select (loaded, sel) { (false, "/local/refill/r0") => true, _ => never() };
+let i = 0;
+let tick = select loaded { true => sys::time::timer(duration:300.ms, 14), false => never() };
+i <- tick ~ i + 1;
+cur <- select i { 1 => i ~ `Down(20), 2 => i ~ `Down(20), 10 => i ~ `Up(1), 11 => i ~ `Up(1), _ => never() };
+n <- select i { 4 => i ~ 3, _ => never() };
+let done = select i { 14 => i ~ "[shown] [sel]", _ => never() };
+let result = b
+"##,
+        40,
+        6,
+    )
+    .await?;
+    assert_eq!(done_string(&mut h).await?, Value::from("3 /local/refill/r0"));
+    Ok(())
+}
+
+/// A listing whose columns shrink under a window scrolled past them keeps
+/// drawing and selects a column it still has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_selection_survives_shrunk_columns() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r##"
+use tui::{Tui, browser::{MoveCursor, browser}};
+let n = 8;
+let pubs = array::init(n, |k| [
+  sys::net::publish("/local/fewer/row0/col[k]", k),
+  sys::net::publish("/local/fewer/row1/col[k]", k)
+]);
+let path = sys::time::after_idle(duration:200.ms, "/local/fewer");
+let cur: MoveCursor = never();
+let sel: [string, null] = never();
+let b: Tui = browser(#size: {width: 24, height: 6}, #cursor: cur, #selected_path: &mut sel, path);
+let loaded = false;
+loaded <- select (loaded, sel) { (false, "/local/fewer/row0/col0") => true, _ => never() };
+let i = 0;
+let tick = select loaded { true => sys::time::timer(duration:300.ms, 14), false => never() };
+i <- tick ~ i + 1;
+cur <- select i { x if x >= 1 && x < 8 => i ~ `Right(1), _ => never() };
+n <- select i { 8 => i ~ 2, _ => never() };
+let done = select i { 14 => i ~ sel, _ => never() };
+let result = b
+"##,
+        24,
+        6,
+    )
+    .await?;
+    assert_eq!(done_string(&mut h).await?, Value::from("/local/fewer/row0/col1"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_form_without_cancel_continues_escape() -> Result<()> {
     let mut h = TuiTestHarness::new(

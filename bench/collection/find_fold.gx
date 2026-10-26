@@ -6,11 +6,11 @@ let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let target = seed % n;
 let init: [`Found(i64), null] = null;
-let found = array::fold(src, init, |acc, x| select acc {
+let found = #[native] array::fold(src, init, |acc, x| select acc {
     null as _ => select x == target { true => `Found(x), false => null },
     found => found
 });
-let result = select found { `Found(x) => x, null as _ => null };
+let result = #[native] select found { `Found(x) => x, null as _ => null };
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("find_fold n=[n] result=[result] elapsed_s=[elapsed]");

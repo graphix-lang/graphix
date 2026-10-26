@@ -57,6 +57,28 @@ let result = table(#highlight_symbol: &">>", #selected: &sel, &[&r1, &r2])
     h.assert_lines(&["a", "b"])
 }
 
+/// A row that has not arrived holds its slot, so the selection, an index
+/// into the program's rows, names the same row before and after.
+#[tokio::test]
+async fn a_table_keeps_the_slot_of_a_row_that_arrives_late() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::*;
+use tui::table::{self, *};
+let r0 = never();
+let fill = |x: Any| { r0 <- x ~ row([cell(line("zero"))]); null };
+let r1 = row([cell(line("one"))]);
+let r2 = row([cell(line("two"))]);
+let result = table(#highlight_symbol: &">>", #selected: &1, &[&r0, &r1, &r2])
+"#,
+    )
+    .await?;
+    h.assert_lines(&["", ">>one", "  two"])?;
+    let fill = h.compile_named_callable("test::fill").await?;
+    h.call_callback(fill, null()).await?;
+    h.assert_lines(&["  zero", ">>one", "  two"])
+}
+
 /// Values below one draw, and are scaled against each other.
 #[tokio::test]
 async fn a_sparkline_draws_fractions() -> Result<()> {

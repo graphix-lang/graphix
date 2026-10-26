@@ -10,8 +10,8 @@ let rec map_go = |a: Array<i64>, f: fn(x: i64) -> i64, i: i64, out: Array<i64>| 
     };
 let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
-let mapped = map_go(src, |x| x * 3 + seed, 0, []);
-let result = array::fold(mapped, 0, |a, x| a + x);
+let mapped = #[native] map_go(src, |x| x * 3 + seed, 0, []);
+let result = #[native] array::fold(mapped, 0, |a, x| a + x);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("map_push n=[n] result=[result] elapsed_s=[elapsed]");

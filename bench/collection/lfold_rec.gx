@@ -10,7 +10,7 @@ let rec lfold_go = |l: List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i
     };
 let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
-let result = lfold_go(src, |a, x| a + x, seed);
+let result = #[native] lfold_go(src, |a, x| a + x, seed);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("lfold_rec n=[n] result=[result] elapsed_s=[elapsed]");

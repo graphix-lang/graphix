@@ -4,7 +4,7 @@ let empty: Map<i64, i64> = {};
 let src = array::fold(array::init(n, |i| i), empty, |m, i| map::insert(m, i, i));
 let t0 = sys::time::now((empty, src));
 let seed = cast<i64>(t0)$;
-let result = map::fold(src, seed, |acc, (_, v)| acc + v);
+let result = #[native] map::fold(src, seed, |acc, (_, v)| acc + v);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("mfold_intr n=[n] result=[result] elapsed_s=[elapsed]");

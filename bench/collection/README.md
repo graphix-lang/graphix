@@ -32,12 +32,10 @@ rows, 10k for the rows quadratic by representation (`map_push`,
 `flatmap_*`: each step copies the array), 4k for `lfold_intr_4k` and
 `lfold_rec`.
 
-<!-- CR claude for claude: [test-gap/low] None of these benches asserts `#[native]`,
-unlike the main bench/ corpus, so the build in examples_compile.rs pins nothing about
-the fusion claims this README makes (flatmap_cons/flatmap_list 'fuses', the tail loops).
-Add `#[native]` to each bench's timed expression. flatmap_cons, flatmap_list, find_rec,
-fold_rec, lfold_rec and map_init all build with it under --expand. Found by running
---expand on annotated copies. (examples-rest-04) -->
+Every bench but the two `*_fmshape`, whose `` `Keep `` callback node-walks,
+asserts `#[native]` on its timed expressions, so the corpus build in
+`graphix-shell/tests/examples_compile.rs` fails when one stops fusing.
+
 `collection_bodies_*` in `stdlib/graphix-tests/src/lang/collection.rs`
 pins VALUE agreement across all the implementation routes of each
 family at small n, and `run!` adds the engine axis.

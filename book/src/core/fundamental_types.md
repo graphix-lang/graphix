@@ -14,12 +14,6 @@ literal value.
 `decimal` is an exact decimal representation for performing financial
 calculations without rounding or floating point approximation errors.
 
-<!-- CR claude for claude: [doc-drift/low] The book never states operator precedence or
-associativity. Add a table under this one: `* / %` and their checked forms, then `+ -`,
-comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is left-associative (`8
-/ 2 * 2` is 8); `~` binds loosest, so `x <- t ~ x + 1` needs no parentheses; a lambda
-may be an operator's last operand. Found by reading; precedence confirmed in the REPL.
-(book-core-05) -->
 The basic arithmetic operations are implemented on every number type. Both
 operands of an operation are one type: an `f64` and an `i64` do not mix
 without a cast.
@@ -148,6 +142,30 @@ Caused by:
     0: at: line: 1, column: 2, in: i64:1
     1: type mismatch bool does not contain i64
 ```
+
+## Operator Precedence
+
+Binary operators bind in this order, tightest first; the operators on one
+row bind equally.
+
+| Binds     | Operators                             |
+|-----------|---------------------------------------|
+| tightest  | `*` `/` `%` `*?` `/?` `%?`            |
+|           | `+` `-` `+?` `-?`                     |
+|           | `<` `>` `<=` `>=`                     |
+|           | `==` `!=`                             |
+|           | `&&`                                  |
+|           | `\|\|`                                |
+| loosest   | `~` `~!` (see [Connect](connect.md))  |
+
+Every binary operator is left associative: `8 / 2 * 2` is `8` and
+`10 - 3 - 2` is `5`. The prefix operators `-` and `!`, and the postfix `?`, `$`,
+indexing and field access, bind tighter than any binary operator, so
+`!true || true` is `true`. Since `~` binds loosest, `x <- t ~ x + 1` needs
+no parentheses: `<-` is not an operator, and its right side is the whole
+`t ~ x + 1`. A lambda may be an operator's last operand, and its body
+takes the rest of the expression: `t ~ |x| x + 1` is the function
+`|x| x + 1` at each update of `t`.
 
 ## Duration
 
@@ -459,13 +477,11 @@ Maps can be constructed using the `{key => value}` syntax:
 {"a" => 1, "b" => 2, "c" => 3}
 ```
 
-<!-- CR claude for claude: [doc-drift/low] Not any type: a key type must be Ordered, so
-no reference, no function and no type holding two numeric types. `{k => "a"}` with `k:
-[i64, f64]` and `{&x => 1}` are both refused. Say so and point at the Ordered paragraph
-in polymorphism.md. probe: design/review-2026-10-26/repro/book-core-map-key-any-type.gx
-(book-core-07) -->
-Keys and values can be any Graphix type, for example here is a map where the key
-is a `Map<string, i64>`.
+Values can be any Graphix type. Keys are kept in order, so a key type must be
+`Ordered` (see [Polymorphism](../functions/polymorphism.md)): no reference, no
+function and no type holding two numeric types, so `{&x => 1}`, and `{k => "a"}`
+with `k: [i64, f64]`, are refused. Any other type will do, for example here is
+a map where the key is a `Map<string, i64>`.
 
 ```graphix,ignore
 {{"foo" => 42} => "foo", {"bar" => 42} => "bar"}
