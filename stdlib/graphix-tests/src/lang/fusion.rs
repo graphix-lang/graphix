@@ -42,16 +42,43 @@ run!(neg_widened_i32, r#"
 }
 "#, is(Value::I32(-21)); FuseExpect::Jit);
 
+/// What a run of [`run_code`] made.
+struct Run {
+    /// The program's first value.
+    value: Value,
+    /// The regions its build fused.
+    regions: usize,
+    /// The (fused kernel runs, JIT wrapper entries) the runtime made
+    /// from just before the build.
+    invocations: (u64, u64),
+}
+
+impl Run {
+    /// `self`, once its build fused as `expect` says (debug builds).
+    fn fused_as(self, expect: FuseExpect) -> Self {
+        #[cfg(debug_assertions)]
+        {
+            use graphix_package_core::testing::{FuseObserved, check_fuse_expectation};
+            check_fuse_expectation(
+                FuseObserved { regions: Some(self.regions), runs: self.invocations },
+                expect,
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = (expect, self.regions);
+        self
+    }
+}
+
 /// Run `code` in a fresh runtime compiled with `flags`, after compiling
 /// each of `pre` (kept alive): loaded as a file when `as_file`, else
-/// compiled. Its first value and the (fused kernel runs, JIT wrapper
-/// entries) the runtime made from just before it.
+/// compiled.
 async fn run_code(
     flags: BitFlags<CFlag>,
     pre: &[&str],
     code: &str,
     as_file: bool,
-) -> Result<(Value, (u64, u64))> {
+) -> Result<Run> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx =
         TestCtx::start(config(tx, crate::TEST_REGISTER, vec![], |_| {})?.flags(flags))
@@ -61,18 +88,21 @@ async fn run_code(
         held.push(ctx.rt.compile(ArcStr::from(*p)).await?);
     }
     ctx.rt.control().reset_invocations();
+    let fused_before = ctx.fusion_stats().await?.fused;
     let res = match as_file {
         true => ctx.rt.load(Load::Text(ArcStr::from(code))).await?,
         false => ctx.rt.compile(ArcStr::from(code)).await?,
     };
+    let regions = ctx.fusion_stats().await?.fused - fused_before;
     let eid = res.exprs.first().context("no top-level expr")?.id;
-    let v = next_update(&mut rx, eid, Instant::now() + Duration::from_secs(5)).await?;
-    let n = ctx.rt.control().invocations();
+    let value =
+        next_update(&mut rx, eid, Instant::now() + Duration::from_secs(5)).await?;
+    let invocations = ctx.rt.control().invocations();
     ctx.shutdown().await;
-    Ok((v, n))
+    Ok(Run { value, regions, invocations })
 }
 
-// CR claude for claude: [test-gap/medium] This returns only the value, so the tests
+// XCR claude for claude: [test-gap/medium] This returns only the value, so the tests
 // built on it, and on impure_map, pure_map and region_map, about forty of them, pass
 // with fusion entirely lost: closure_*, nested_hof_*, every impure_*,
 // fused_variant_payload_shadow, shadow_arm_binding_outer_ref and the proptest
@@ -83,19 +113,32 @@ async fn run_code(
 // it is above zero here in debug builds (and zero in load_node_walked), and have the
 // proptest's pure side use the counting path. Found by reading; graphix-fuzz run
 // confirms these programs fuse today. (tests-fusion-traits-03)
-async fn load_and_await(code: &str) -> Result<Value> {
-    Ok(run_code(BitFlags::empty(), &[], code, true).await?.0)
+// 2026-10-26 claude: run_code returns a Run (value, regions fused by this build,
+// invocations) and Run::fused_as holds it to a FuseExpect through
+// testing::check_fuse_expectation (debug builds): load_and_count, load_and_await,
+// pure_map, region_map, native_map and impure_map require a fused region,
+// load_node_walked requires none, and the three node-walked impure fixtures (catch,
+// sample, reference) say FuseExpect::None through impure_run; the proptest's pure side
+// counts, its impure side (body x fuses nothing) does not. Checked by building the
+// counting path with fusion disabled: 17 closure/nested_hof fixtures fail, and
+// impure_run with fusion disabled fails 15 impure_* fixtures.
+/// Load `code` as a file and return its first value and the runtime's
+/// (fused kernel runs, JIT wrapper entries); its build must fuse.
+async fn load_and_count(code: &str) -> Result<(Value, (u64, u64))> {
+    let run =
+        run_code(BitFlags::empty(), &[], code, true).await?.fused_as(FuseExpect::Jit);
+    Ok((run.value, run.invocations))
 }
 
-/// [`load_and_await`] with the runtime's (fused kernel runs, JIT wrapper
-/// entries).
-async fn load_and_count(code: &str) -> Result<(Value, (u64, u64))> {
-    run_code(BitFlags::empty(), &[], code, true).await
+/// [`load_and_count`]'s value.
+async fn load_and_await(code: &str) -> Result<Value> {
+    Ok(load_and_count(code).await?.0)
 }
 
 /// [`load_and_await`] under the node-walk.
 async fn load_node_walked(code: &str) -> Result<Value> {
-    Ok(run_code(CFlag::FusionDisabled.into(), &[], code, true).await?.0)
+    let run = run_code(CFlag::FusionDisabled.into(), &[], code, true).await?;
+    Ok(run.fused_as(FuseExpect::None).value)
 }
 
 #[cfg(debug_assertions)]
@@ -181,8 +224,8 @@ async fn load_bind_then_expr() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn compile_then_compile_external_scalar() -> Result<()> {
     // A compile registers a binding a subsequent compile sees.
-    let (v, _) = run_code(BitFlags::empty(), &["let foo = 7;"], "foo * 6", false).await?;
-    assert_eq!(v, Value::I64(42));
+    let run = run_code(BitFlags::empty(), &["let foo = 7;"], "foo * 6", false).await?;
+    assert_eq!(run.value, Value::I64(42));
     Ok(())
 }
 
@@ -191,11 +234,10 @@ async fn compile_then_compile_external_scalar() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn external_string_region_param() -> Result<()> {
-    let (v, (_, inv)) =
-        run_code(BitFlags::empty(), &["let s = \"hello\";"], "str::len(s)", false)
-            .await?;
-    assert_eq!(v, Value::I64(5));
-    assert!(inv > 0, "string region-param kernel should JIT-dispatch");
+    let run = run_code(BitFlags::empty(), &["let s = \"hello\";"], "str::len(s)", false)
+        .await?;
+    assert_eq!(run.value, Value::I64(5));
+    assert!(run.invocations.1 > 0, "string region-param kernel should JIT-dispatch");
     Ok(())
 }
 
@@ -204,7 +246,7 @@ async fn external_string_region_param() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn external_datetime_region_param() -> Result<()> {
-    let (v, (_, inv)) = run_code(
+    let run = run_code(
         BitFlags::empty(),
         &["let d = datetime:\"2024-01-01T00:00:00Z\";"],
         "sys::time::add(d, duration:1.s)",
@@ -213,10 +255,14 @@ async fn external_datetime_region_param() -> Result<()> {
     .await?;
     let expected: chrono::DateTime<chrono::Utc> = "2024-01-01T00:00:01Z".parse().unwrap();
     assert!(
-        matches!(&v, Value::DateTime(dt) if **dt == expected),
-        "expected 2024-01-01T00:00:01Z, got {v:?}"
+        matches!(&run.value, Value::DateTime(dt) if **dt == expected),
+        "expected 2024-01-01T00:00:01Z, got {:?}",
+        run.value
     );
-    assert!(inv > 0, "a datetime fastcall site fuses across a region param");
+    assert!(
+        run.invocations.1 > 0,
+        "a datetime fastcall site fuses across a region param"
+    );
     Ok(())
 }
 
@@ -224,8 +270,9 @@ async fn external_datetime_region_param() -> Result<()> {
 async fn load_uses_external_scalar() -> Result<()> {
     // `foo` is bound at root scope by an earlier compile, so it is a
     // free-var Ref inside the loaded file: a scalar kernel input.
-    let (v, _) = run_code(BitFlags::empty(), &["let foo = 7;"], "foo * 6", true).await?;
-    assert_eq!(v, Value::I64(42));
+    let run = run_code(BitFlags::empty(), &["let foo = 7;"], "foo * 6", true).await?;
+    assert_eq!(run.value, Value::I64(42));
+    run.fused_as(FuseExpect::Jit);
     Ok(())
 }
 
@@ -349,13 +396,19 @@ async fn impure_hof_builtin_in_residue() -> Result<()> {
 
 /// Map `body` (an expr over element `x: i64` and captured `k: i64 = 3`)
 /// over `[1,2,3,4]` as an impure callback.
+/// Its build must fuse.
 async fn impure_map(body: &str) -> Result<Value> {
+    Ok(impure_run(body).await?.fused_as(FuseExpect::Jit).value)
+}
+
+/// [`impure_map`]'s run, whatever its build fused.
+async fn impure_run(body: &str) -> Result<Run> {
     // `counter <- x` makes the callback async; `body` may be `let …; expr`.
     let prog = format!(
         "let counter = 0; let k = 3; \
          array::map([1, 2, 3, 4], |x: i64| {{ counter <- x; {body} }})"
     );
-    load_and_await(&prog).await
+    run_code(BitFlags::empty(), &[], &prog, true).await
 }
 
 /// The same `body` over the same inputs as a pure callback, the native
@@ -885,13 +938,15 @@ async fn deleted_sample_releases_store() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn impure_trycatch_catch_capture() -> Result<()> {
     assert_i64s(
-        &impure_map(
+        &impure_run(
             "let res = never(); \
              catch(e) res <- e ~ (x + k); \
              res <- (k /? (x % 2))? ~ x; \
              res",
         )
-        .await?,
+        .await?
+        .fused_as(FuseExpect::None)
+        .value,
         &[1, 5, 3, 7],
     )
 }
@@ -905,13 +960,19 @@ async fn impure_trycatch_try_capture() -> Result<()> {
 /// `x ~ k` emits `k` when the element fires: `[3,3,3,3]`.
 #[tokio::test(flavor = "current_thread")]
 async fn impure_sample_capture() -> Result<()> {
-    assert_i64s(&impure_map("x ~ k").await?, &[3, 3, 3, 3])
+    assert_i64s(
+        &impure_run("x ~ k").await?.fused_as(FuseExpect::None).value,
+        &[3, 3, 3, 3],
+    )
 }
 
 /// ByRef + Deref capturing `k`: `*r + x` is `[4,5,6,7]`.
 #[tokio::test(flavor = "current_thread")]
 async fn impure_byref_deref_capture() -> Result<()> {
-    assert_i64s(&impure_map("let r = &k; *r + x").await?, &[4, 5, 6, 7])
+    assert_i64s(
+        &impure_run("let r = &k; *r + x").await?.fused_as(FuseExpect::None).value,
+        &[4, 5, 6, 7],
+    )
 }
 
 // Proptest swarm: random total i64 callback bodies over `x` and `k`;
@@ -967,7 +1028,7 @@ proptest::proptest! {
             .block_on(async {
                 let w = load_node_walked(&pure_map_program(&body)).await?;
                 let r = pure_map(&body).await?;
-                let c = impure_map(&body).await?;
+                let c = impure_run(&body).await?.value;
                 anyhow::Ok((w, r, c))
             })
             .map_err(|e| {

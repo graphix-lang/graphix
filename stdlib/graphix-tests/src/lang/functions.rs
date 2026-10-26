@@ -1,5 +1,6 @@
 // Tests for lambdas, first-class functions, labeled arguments, recursive functions
 
+use super::dense_deltas::{run_delta, run_delta_fused};
 use anyhow::Result;
 use graphix_package_core::{
     run,
@@ -346,7 +347,7 @@ const TAIL_LOOP_DEEP: &str = r#"
             0 => acc,
             _ => count(n - 1, acc + 1)
         };
-    count(500000, 0)
+    #[native] count(500000, 0)
 }
 "#;
 
@@ -835,14 +836,8 @@ run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
 /// `code`'s `raised` over a source of four slots: one raise per new
 /// slot, none from a slot already there.
 async fn raises_once_per_slot(code: &str, mode: Mode) -> Result<()> {
-    let (values, _) =
-        super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit).await?;
-    // CR claude for claude: [style/low] `as_i64s` is already imported at the top; here
-    // and in default_fires_at_first_dispatch and rebind_reads_quiet_args it is still
-    // written with its full path. `super::dense_deltas::run_delta`/`run_delta_fused`
-    // also appear at five call sites: import them once in the top-level use group.
-    // Found by reading; not run. (tests-functions-10)
-    assert_eq!(graphix_package_core::testing::as_i64s(&values), [0, 1, 2, 3, 4]);
+    let (values, _) = run_delta_fused(code, mode, FuseExpect::Jit).await?;
+    assert_eq!(as_i64s(&values), [0, 1, 2, 3, 4]);
     Ok(())
 }
 
@@ -958,26 +953,15 @@ run!(
     FuseExpect::Jit
 );
 
-// A non-tail recursion's result as a fold's init: the fold fires.
-// CR claude for claude: [test-gap/medium] This fixture cannot fail on its subject: the
-// callback never reads acc, so the fold yields 42 with any init. A recursion whose base
-// arm bottoms gives 42 too, in both engines, and so does `never<i64>()` as the init.
-// Read the accumulator and pin the exact value: `|acc, x| acc + x` gives 32937. probe:
-// design/review-2026-10-26/repro/tests-functions-fold-init-vacuous.gx
-// (tests-functions-04)
+// A non-tail recursion's result as a fold's init: the fold reads it.
 const NONTAIL_RESULT_AS_FOLD_INIT: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
-  any(array::fold([i64:41], f(i64:256), |acc, x| x + i64:1), i64:-1)
+  any(array::fold([i64:41], f(i64:256), |acc, x| acc + x), i64:-1)
 }
 "#;
 
-run!(
-    nontail_result_as_fold_init,
-    NONTAIL_RESULT_AS_FOLD_INIT,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) };
-    FuseExpect::Jit
-);
+run!(nontail_result_as_fold_init, NONTAIL_RESULT_AS_FOLD_INIT, is(Value::I64(32937)); FuseExpect::Jit);
 
 // A tail-recursive `let rec` nested in another lambda's body.
 const NESTED_TAIL_LOOP: &str = r#"
@@ -1188,12 +1172,6 @@ run!(rec_transient_capture_wake, REC_TRANSIENT_CAPTURE_WAKE, prints("[i64:100, i
 
 // State inside a recursive function persists across fires: three
 // levels of count step across three fires, sums [3, 6, 9].
-// CR claude for claude: [test-gap/low] No fixture pins 'shrink = delete': a depth left
-// unreached for a cycle starts fresh when it is reached again, while a depth still
-// reached keeps its state. `t = array::iter([3, 1, 3, 0, 3]); let rec f = |n: i64| ->
-// i64 select n { 0 => 0, _ => count(n) + f(n - 1) }; f(t)` traces 3, 2, 6, 0, 6 in both
-// engines today. Pin it with run_delta here. Probe: graphix-fuzz run of that program,
-// AGREE. (tests-functions-08)
 const REC_TRANSIENT_STATEFUL_RETAINED: &str = r#"
 {
   let go = 0;
@@ -1204,6 +1182,22 @@ const REC_TRANSIENT_STATEFUL_RETAINED: &str = r#"
 "#;
 
 run!(rec_transient_stateful_retained, REC_TRANSIENT_STATEFUL_RETAINED, prints("[i64:3, i64:6, i64:9]"); FuseExpect::Jit);
+
+// Shrink is delete: a depth no fire reaches is deleted and starts fresh
+// when reached again, while a depth still reached, its arm asleep
+// included, keeps its count. Retained depths would give 3, 2, 7, 0, 10.
+async fn rec_shrink_deletes_unreached_depths(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let t = array::iter([3, 1, 3, 0, 3]);
+        let rec f = |n: i64| -> i64 select n { 0 => 0, _ => count(n) + f(n - 1) };
+        f(t)
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [3, 2, 6, 0, 6]);
+    Ok(())
+}
+
+modes!(rec_shrink_deletes_unreached_depths);
 
 // Pure non-tail recursion re-fired with changing args recomputes:
 // [fib(8), fib(9), fib(10)] = [21, 34, 55].
@@ -1783,7 +1777,7 @@ const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
   step <- select step { s if s < 6 => s + 1, _ => never() };
   let k = 2;
   k <- select step { 3 => 9, _ => never() };
-  let r = f(3, 7, k);
+  let r = #[native] f(3, 7, k);
   let obs: [i64, null] = null;
   obs <- r;
   let first: [i64, null] = never();
@@ -1792,13 +1786,6 @@ const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap/low] This fixture's subject is the native loop, but
-// FuseExpect::Jit passes when any region fuses. With f made stateful (no loop built), 5
-// other regions still fuse and the fixture passes. Write `let r = #[native] f(3, 7,
-// k);`, which builds today. TAIL_LOOP_DEEP needs the same: `#[native] count(500000,
-// 0)`, since the node-walk also finishes it under the timeout. probe:
-// design/review-2026-10-26/repro/tests-functions-tail-rebind-unguarded.gx
-// (tests-functions-05)
 run!(tail_rebind_carries_bottom, TAIL_REBIND_CARRIES_BOTTOM, prints("[null, i64:7]"); FuseExpect::Jit);
 
 // An omitted default is checked against its own parameter, found by
@@ -1888,7 +1875,7 @@ const TAIL_QUIET_BOTTOM_INLINE: &str = r#"{
 }"#;
 
 async fn tail_quiet_bottom(code: &str, mode: Mode) -> Result<()> {
-    let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), vec![6, 6]);
     Ok(())
 }
@@ -2435,8 +2422,8 @@ async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
         let f = |#k = d, x: i64| k ~ x;
         select array::iter([0, 1]) { 0 => 0, _ => f(10) }
     }"#;
-    let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(graphix_package_core::testing::as_i64s(&values), [0, 10]);
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [0, 10]);
     let code = r#"{
         let t = array::iter([0, 1]);
         let d = 5;
@@ -2444,8 +2431,8 @@ async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
         g <- select t { 1 => |#k = d, x: i64| k ~ (x + 1), _ => never() };
         g(10)
     }"#;
-    let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(graphix_package_core::testing::as_i64s(&values), [10, 11]);
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [10, 11]);
     Ok(())
 }
 
@@ -2898,7 +2885,7 @@ run!(destructuring_rebinds_a_builtin, DESTRUCTURING_REBINDS_A_BUILTIN, |v: Resul
 // A site whose function changes binds the new definition over its quiet
 // arguments as they stand: `x` fired once, at init.
 async fn rebind_reads_quiet_args(mode: Mode) -> Result<()> {
-    let (values, _) = super::dense_deltas::run_delta(
+    let (values, _) = run_delta(
         r#"{
             let t = array::iter([0, 1]);
             let x = 5;
@@ -2908,7 +2895,7 @@ async fn rebind_reads_quiet_args(mode: Mode) -> Result<()> {
         mode,
     )
     .await?;
-    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![6, 50]);
+    assert_eq!(as_i64s(&values), vec![6, 50]);
     Ok(())
 }
 
@@ -3128,75 +3115,23 @@ run!(quantified_lambda_through_a_builtin_callback, r#"{
 // A compile job stolen while a statement waits in a join runs under its
 // own context: the defaults in check are the compile's, not the
 // thread's, so every `f(i)` omitting `#k` resolves statically and fuses.
-// CR claude for claude: [structure/low] These 60 statements and the 60-name array
-// differ only in their index. Generate the source in a small helper (format_compact!
-// per index, joined), so the count is one number and the fixture shows what it varies.
-// Found by reading; not run. (tests-functions-09)
-run!(omitted_defaults_resolve_under_stolen_jobs, r#"{
-  let f = |#k = 1, x: i64| -> i64 { let a = x + k; let c = a * 3; let b = c * 2; b };
-  let r0 = #[native] f(0);
-  let r1 = #[native] f(1);
-  let r2 = #[native] f(2);
-  let r3 = #[native] f(3);
-  let r4 = #[native] f(4);
-  let r5 = #[native] f(5);
-  let r6 = #[native] f(6);
-  let r7 = #[native] f(7);
-  let r8 = #[native] f(8);
-  let r9 = #[native] f(9);
-  let r10 = #[native] f(10);
-  let r11 = #[native] f(11);
-  let r12 = #[native] f(12);
-  let r13 = #[native] f(13);
-  let r14 = #[native] f(14);
-  let r15 = #[native] f(15);
-  let r16 = #[native] f(16);
-  let r17 = #[native] f(17);
-  let r18 = #[native] f(18);
-  let r19 = #[native] f(19);
-  let r20 = #[native] f(20);
-  let r21 = #[native] f(21);
-  let r22 = #[native] f(22);
-  let r23 = #[native] f(23);
-  let r24 = #[native] f(24);
-  let r25 = #[native] f(25);
-  let r26 = #[native] f(26);
-  let r27 = #[native] f(27);
-  let r28 = #[native] f(28);
-  let r29 = #[native] f(29);
-  let r30 = #[native] f(30);
-  let r31 = #[native] f(31);
-  let r32 = #[native] f(32);
-  let r33 = #[native] f(33);
-  let r34 = #[native] f(34);
-  let r35 = #[native] f(35);
-  let r36 = #[native] f(36);
-  let r37 = #[native] f(37);
-  let r38 = #[native] f(38);
-  let r39 = #[native] f(39);
-  let r40 = #[native] f(40);
-  let r41 = #[native] f(41);
-  let r42 = #[native] f(42);
-  let r43 = #[native] f(43);
-  let r44 = #[native] f(44);
-  let r45 = #[native] f(45);
-  let r46 = #[native] f(46);
-  let r47 = #[native] f(47);
-  let r48 = #[native] f(48);
-  let r49 = #[native] f(49);
-  let r50 = #[native] f(50);
-  let r51 = #[native] f(51);
-  let r52 = #[native] f(52);
-  let r53 = #[native] f(53);
-  let r54 = #[native] f(54);
-  let r55 = #[native] f(55);
-  let r56 = #[native] f(56);
-  let r57 = #[native] f(57);
-  let r58 = #[native] f(58);
-  let r59 = #[native] f(59);
-  [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52, r53, r54, r55, r56, r57, r58, r59]
-}"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == (1..=60).map(|i| i * 6).collect::<Vec<i64>>())
+const STOLEN_JOB_CALLS: i64 = 60;
+
+run!(omitted_defaults_resolve_under_stolen_jobs, {
+    use std::fmt::Write;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    src.push_str("{\n  let f = |#k = 1, x: i64| -> i64 { let a = x + k; let c = a * 3; let b = c * 2; b };\n");
+    for i in 0..STOLEN_JOB_CALLS {
+        writeln!(src, "  let r{i} = #[native] f({i});").unwrap();
+    }
+    src.push_str("  [");
+    for i in 0..STOLEN_JOB_CALLS {
+        write!(src, "r{i}, ").unwrap();
+    }
+    src.push_str("]\n}");
+    arcstr::ArcStr::from(src.as_str())
+}, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == (1..=STOLEN_JOB_CALLS).map(|i| i * 6).collect::<Vec<i64>>())
 }; FuseExpect::Jit);
 
 // A recursive call omitting a labeled default is a self-call, not a site
