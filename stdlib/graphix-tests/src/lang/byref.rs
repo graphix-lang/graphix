@@ -860,3 +860,45 @@ run!(
     prints("[i64:100, i64:2]");
     FuseExpect::Jit
 );
+
+// A reference outlives the `&` that minted it, here a collection slot
+// deleted at c = 3: reads and writes through it keep reaching `x`.
+run!(
+    reference_outlives_its_site,
+    r#"{
+  let c = 0;
+  c <- select c { k if k < 6 => k + 1, _ => never() };
+  let x = 7;
+  let keep: [&mut i64, null] = null;
+  let rs = array::map(select c { k if k < 3 => [0], _ => [] }, |_| &mut x);
+  keep <- select rs { [r] => r, _ => never() };
+  let w = keep$;
+  *w <- c ~ c * 1000;
+  let seen = array::group(c ~ (x, *w), |n, _| n == 6);
+  seen
+}"#,
+    prints("[[i64:7, i64:7], [i64:1000, i64:1000], [i64:2000, i64:2000], [i64:3000, i64:3000], [i64:4000, i64:4000], [i64:5000, i64:5000]]");
+    FuseExpect::Jit
+);
+
+// A reference keeps the binding it names alive past the binding's own
+// deletion: the slot's `y` goes at c = 3, the writes through `w` land on.
+run!(
+    reference_keeps_its_binding,
+    r#"{
+  let c = 0;
+  c <- select c { k if k < 6 => k + 1, _ => never() };
+  let keep: [&mut i64, null] = null;
+  let rs = array::map(select c { k if k < 3 => [0], _ => [] }, |_| {
+    let y = 5;
+    keep <- &mut y;
+    y
+  });
+  let w = keep$;
+  *w <- c ~ c * 10;
+  let seen = array::group(c ~ *w, |n, _| n == 6);
+  seen
+}"#,
+    prints("[i64:5, i64:10, i64:20, i64:30, i64:40, i64:50]");
+    FuseExpect::Jit
+);

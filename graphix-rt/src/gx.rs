@@ -506,6 +506,7 @@ impl<X: GXExt> GX<X> {
         // no kernel runs between cycles
         self.ctx.fusion.relocate_kernels();
         self.ctx.view().apply_deferred();
+        self.ctx.view().release_references();
         // A variable takes one delivery a cycle: what waited lands first,
         // each variable's oldest write, then this cycle's input, which waits
         // behind anything its variable has waiting or was given.

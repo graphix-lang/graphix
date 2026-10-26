@@ -329,6 +329,8 @@ pub struct Control {
     pool: OnceLock<rayon::ThreadPool>,
     /// Parts forked onto the pool and not yet finished.
     live_parts: AtomicUsize,
+    /// The references alive in its cycles' values.
+    lives: triomphe::Arc<crate::reference::Lives>,
 }
 
 /// How a runtime forks the independent subtrees of a cycle
@@ -424,7 +426,13 @@ impl Control {
             skipped: AtomicU64::new(0),
             pool: OnceLock::new(),
             live_parts: AtomicUsize::new(0),
+            lives: triomphe::Arc::default(),
         }
+    }
+
+    /// The references alive in this runtime's values.
+    pub fn lives(&self) -> &triomphe::Arc<crate::reference::Lives> {
+        &self.lives
     }
 
     /// This runtime's evaluation pool, built at the first call.

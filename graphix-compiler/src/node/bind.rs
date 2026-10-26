@@ -1426,6 +1426,9 @@ pub struct ByRef<R: Rt, E: UserEvent> {
     pub id: BindId,
     resident: TagValue,
     registered: Option<(BindId, Path)>,
+    /// Shared by every reference value this site published: the last to
+    /// drop releases the cell, its place and what it names.
+    keep: Option<triomphe::Arc<crate::reference::Keep>>,
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
@@ -1447,6 +1450,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             id,
             resident: TagValue::phantom(),
             registered: None,
+            keep: None,
         }))
     }
 
@@ -1527,6 +1531,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             id,
             resident: TagValue::phantom(),
             registered: None,
+            keep: None,
         }))
     }
 
@@ -1661,51 +1666,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             }
         };
         if ctx.event.born() || retargeted {
-            self.resident.set(TagValue::fired(crate::reference::reference(self.id)))
+            let keep = self.keep.get_or_insert_with(|| {
+                let target = ctx.env.byref_chain.get(&self.id).copied();
+                let target = target.or_else(|| self.registered.as_ref().map(|(r, _)| *r));
+                crate::reference::Lives::keep(ctx.control.lives(), self.id, target)
+            });
+            let r = crate::reference::reference(self.id, Some(keep.clone()));
+            self.resident.set(TagValue::fired(r))
         } else {
             self.resident.ride()
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug/medium] c-bind-11 variant: a reference outliving
-        // its `&` reads bottom but still writes its referent. ByRef::delete now removes
-        // the cell's store entry and its byref_chain link (bind.rs), which fixes the
-        // leak. But a reference value that escaped the deleted site (kept in an outer
-        // variable) now behaves two ways at once. Deref resolves through ref_target on
-        // every read, finds no chain and no store entry, and reads bottom, although the
-        // referent `x` is alive. A ConnectDeref that had already resolved its target
-        // (`target: Option<WriteTarget>`, node/mod.rs) keeps writing `x`. A reference
-        // minted after the deletion would resolve to the dead cell and lose its writes
-        // silently. CLAUDE.md says a reference names the place or the byref chain's
-        // binding; nothing documents a reference dying with the expression that minted
-        // it. Failure: In the repro_sketch, after the slot is deleted (c = 3), the
-        // tuple goes bottom for good: `c ~ *keep` never produces again. Meanwhile
-        // `*keep <- c ~ c * 1000` keeps writing x (x reaches 7000). Reading through the
-        // reference says nothing while writing through it works. Fix: Decide the
-        // lifetime rule and apply it to both paths. Either a reference to a binding
-        // stays valid while the binding lives: keep the chain link (or encode the
-        // target in the value) and let Deref read the referent. Or the reference dies
-        // with its minting site: then ConnectDeref must drop its cached target too.
-        // Document the rule in design/place_references.md and pin it. Unverified: the
-        // reviewer's report, not checked by a verifier. (x-rerun-1-06)
-        // 2026-10-15 claude: Since ConnectDeref resolves its target at each write, the
-        // two paths agree: a reference kept past its minting site's deletion reads and
-        // writes its own dead cell, so x stops changing and *keep reads back what was
-        // written to the cell (probe: design/review-2026-10-12/repro/x-rerun-1-06.gx,
-        // both engines). The cell's store entry is recreated by those writes, one per
-        // dead reference written. What remains is the rule: a reference to a binding
-        // valid while the binding lives (needs the chain link kept, or the target in
-        // the value), or a reference that dies with its site (reads bottom, writes
-        // dropped, which needs a liveness test a same-cycle birth cannot fail). That is
-        // a semantics choice, so it goes to Eric.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): a reference is valid while the
-        // reference lives: it keeps the place it names alive, past the deletion of the
-        // & that minted it.
-        ctx.env.byref_chain.remove(&self.id);
-        ctx.env.by_id.remove(&self.id);
-        ctx.rt.store_release(&self.id);
-        self.unregister(ctx);
+        match self.keep.take() {
+            // the references it published keep the cell, its place and what
+            // it names until the last one drops (ExecCtx::release_references)
+            Some(_) => {
+                self.registered = None;
+                self.resident = TagValue::phantom();
+            }
+            None => {
+                ctx.env.byref_chain.remove(&self.id);
+                ctx.env.by_id.remove(&self.id);
+                ctx.rt.store_release(&self.id);
+                self.unregister(ctx);
+            }
+        }
         self.referent.each(&mut |n| n.delete(ctx));
     }
 

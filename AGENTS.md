@@ -1230,7 +1230,11 @@ cycle, across workers; the compiler never pins threads.
   key is a moving reference, and a write while its address is bottom (a
   bottom key, a dereference of a bottom reference) does not happen,
   silently; one made before the reference first arrives lands at its
-  first target. References de-fuse. A reference's value is
+  first target. A reference keeps its cell, its place and the binding it
+  names alive while any copy of it lives, past the deletion of the `&`
+  that minted it or of the binding; the last copy to drop releases them,
+  at the next cycle's start (`reference::Lives`,
+  `ExecCtx::release_references`). References de-fuse. A reference's value is
   its own cell, so `==`/`!=` compare references by what they name
   (`bind::ref_target`: the place, else the byref chain's binding, else
   the cell), rewriting each one the operand type holds

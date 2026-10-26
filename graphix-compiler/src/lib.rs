@@ -2090,7 +2090,8 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                 });
                 // the root as a reference, which no data carries: the form
                 // equals no array of numbers
-                let target = std::iter::once(reference::reference(root)).chain(steps);
+                let target =
+                    std::iter::once(reference::reference(root, None)).chain(steps);
                 Value::Array(ValArray::from_iter(target))
             }
             None => r.clone(),
@@ -2122,6 +2123,19 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         let r = f(self);
         self.fork = saved;
         r
+    }
+
+    /// Let go of what the references released since the last cycle kept:
+    /// a cell's place, chain link and value, and a binding deleted while a
+    /// reference named it.
+    pub fn release_references(&mut self) {
+        let lives = self.control.lives().clone();
+        lives.released(|id| {
+            self.cx.env.byref_chain.remove(&id);
+            self.cx.env.by_id.remove(&id);
+            self.rt.clear_ref_path(&id);
+            self.rt.store_release(&id);
+        });
     }
 
     /// The same view, borrowed for a shorter time, over `event`.

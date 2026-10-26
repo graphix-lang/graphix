@@ -1,15 +1,141 @@
 //! A reference's runtime form: an abstract value holding its cell, which
-//! no number and no other type's value can pass for.
+//! no number and no other type's value can pass for, and what keeps the
+//! cell and the place it names alive while the reference does.
 
 use crate::BindId;
 use anyhow::anyhow;
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Abstract, FromValue, Value, abstract_type::AbstractWrapper};
-use std::{fmt, sync::LazyLock};
+use nohash::{IntMap, IntSet};
+use parking_lot::Mutex;
+use std::{
+    cmp::Ordering,
+    fmt,
+    hash::{Hash, Hasher},
+    mem,
+    sync::LazyLock,
+};
+use triomphe::Arc;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct Reference(BindId);
+/// The references alive in a runtime: a reference keeps its cell, and the
+/// binding it names, until its last copy drops ([`Keep`]).
+#[derive(Debug, Default)]
+pub struct Lives(Mutex<LivesState>);
+
+#[derive(Debug, Default)]
+struct LivesState {
+    /// Per binding a reference names, how many keeps name it.
+    pins: IntMap<BindId, u32>,
+    /// Bindings deleted while pinned: their values go with the last pin.
+    orphaned: IntSet<BindId>,
+    /// Cells, and orphans unpinned, whose values may go.
+    released: Vec<BindId>,
+}
+
+impl Lives {
+    /// What every reference value of the cell `cell`, naming `target`,
+    /// shares: the last one to drop releases them.
+    pub fn keep(lives: &Arc<Self>, cell: BindId, target: Option<BindId>) -> Arc<Keep> {
+        if let Some(t) = target {
+            *lives.0.lock().pins.entry(t).or_default() += 1;
+        }
+        Arc::new(Keep { cell, target, lives: lives.clone() })
+    }
+
+    /// The binding `id` is deleted: true when a reference still names it,
+    /// whose value then goes with the last such reference.
+    pub fn orphan_if_pinned(&self, id: BindId) -> bool {
+        let mut st = self.0.lock();
+        let pinned = st.pins.contains_key(&id);
+        if pinned {
+            st.orphaned.insert(id);
+        }
+        pinned
+    }
+
+    /// The cells and orphaned bindings released since the last call, whose
+    /// stored values may go; the lock is not held while `f` runs.
+    pub fn released(&self, mut f: impl FnMut(BindId)) {
+        loop {
+            let released = mem::take(&mut self.0.lock().released);
+            if released.is_empty() {
+                break;
+            }
+            for id in released {
+                f(id)
+            }
+        }
+    }
+}
+
+/// Shared by every reference value of one cell.
+pub struct Keep {
+    cell: BindId,
+    target: Option<BindId>,
+    lives: Arc<Lives>,
+}
+
+impl fmt::Debug for Keep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Keep")
+            .field("cell", &self.cell)
+            .field("target", &self.target)
+            .finish()
+    }
+}
+
+impl Drop for Keep {
+    fn drop(&mut self) {
+        let mut st = self.lives.0.lock();
+        st.released.push(self.cell);
+        if let Some(t) = self.target
+            && let Some(n) = st.pins.get_mut(&t)
+        {
+            *n -= 1;
+            if *n == 0 {
+                st.pins.remove(&t);
+                if st.orphaned.remove(&t) {
+                    st.released.push(t);
+                }
+            }
+        }
+    }
+}
+
+/// A reference, known by its cell; one minted by a `&` keeps the cell and
+/// what it names alive.
+#[derive(Clone)]
+struct Reference {
+    cell: BindId,
+    keep: Option<Arc<Keep>>,
+}
+
+impl PartialEq for Reference {
+    fn eq(&self, other: &Self) -> bool {
+        self.cell == other.cell
+    }
+}
+
+impl Eq for Reference {}
+
+impl PartialOrd for Reference {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Reference {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cell.cmp(&other.cell)
+    }
+}
+
+impl Hash for Reference {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.cell.hash(state)
+    }
+}
 
 impl fmt::Debug for Reference {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -19,11 +145,11 @@ impl fmt::Debug for Reference {
 
 impl Pack for Reference {
     fn encoded_len(&self) -> usize {
-        self.0.encoded_len()
+        self.cell.encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        self.0.encode(buf)
+        self.cell.encode(buf)
     }
 
     /// Data never carries a reference, so bytes holding one are forged or
@@ -32,7 +158,7 @@ impl Pack for Reference {
         if !crate::ids::in_session() {
             return Err(PackError::InvalidFormat);
         }
-        Ok(Reference(BindId::decode(buf)?))
+        Ok(Reference { cell: BindId::decode(buf)?, keep: None })
     }
 }
 
@@ -51,15 +177,15 @@ pub fn register() {
     LazyLock::force(&WRAPPER);
 }
 
-/// The reference whose cell is `cell`.
-pub fn reference(cell: BindId) -> Value {
-    WRAPPER.wrap(Reference(cell))
+/// The reference whose cell is `cell`, kept alive by `keep`.
+pub fn reference(cell: BindId, keep: Option<Arc<Keep>>) -> Value {
+    WRAPPER.wrap(Reference { cell, keep })
 }
 
 /// The cell of `v`, if `v` is a reference.
 pub fn cell(v: &Value) -> Option<BindId> {
     match v {
-        Value::Abstract(a) => a.downcast_ref::<Reference>().map(|r| r.0),
+        Value::Abstract(a) => a.downcast_ref::<Reference>().map(|r| r.cell),
         _ => None,
     }
 }
@@ -71,7 +197,7 @@ mod test {
     #[test]
     fn reference_decodes_only_under_an_image() {
         let mut buf = Vec::new();
-        Reference(BindId::new()).encode(&mut buf).unwrap();
+        Reference { cell: BindId::new(), keep: None }.encode(&mut buf).unwrap();
         assert!(matches!(
             Reference::decode(&mut &buf[..]),
             Err(PackError::InvalidFormat)

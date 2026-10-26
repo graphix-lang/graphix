@@ -20,6 +20,17 @@ re-fires its readers when the key moves, never at a write of its root
 that leaves it where it was. A bare dereference is a place with an empty
 path: `&mut *r` names what `r` names, so a write through it lands there.
 
+A reference lives as long as any copy of it does. The `&` that mints it
+shares one keep (`reference::Keep`) among every value it publishes; the
+keep pins the binding the reference names (`reference::Lives`), so a
+deleted `&` (a slot shrunk away) leaves a reference held elsewhere
+reading and writing its place, and a binding deleted while a reference
+names it keeps its value. When the last copy drops, the cell's chain
+link, place and value, and an orphaned binding's value, are released at
+the next cycle's start (`ExecCtx::release_references`). A reference
+decoded from an image keeps nothing: the `&` publishes a new one at its
+first update.
+
 Failures are runtime facts, as for indexing: a read of a place that
 does not exist bottoms (warned). A write to a key a map lacks inserts
 it, as `map::insert` would; any other write into a place that does not

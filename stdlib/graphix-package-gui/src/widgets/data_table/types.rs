@@ -622,11 +622,17 @@ mod tests {
             (literal!("name"), Value::from("k")),
             (literal!("typ"), Value::Null),
             (literal!("display_name"), Value::Null),
-            (literal!("source"), graphix_compiler::reference::reference(BindId::new())),
-            (literal!("width"), graphix_compiler::reference::reference(BindId::new())),
+            (
+                literal!("source"),
+                graphix_compiler::reference::reference(BindId::new(), None),
+            ),
+            (
+                literal!("width"),
+                graphix_compiler::reference::reference(BindId::new(), None),
+            ),
             (
                 literal!("on_resize"),
-                graphix_compiler::reference::reference(BindId::new()),
+                graphix_compiler::reference::reference(BindId::new(), None),
             ),
         ]))
         .unwrap();
