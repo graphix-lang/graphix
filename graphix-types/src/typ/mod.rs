@@ -2258,34 +2258,52 @@ impl Type {
     /// unifies its parameter positions only; anything else whole.
     #[doc(hidden)]
     pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
+        Self::pre_unify_seen(env, declared, actual, &mut LPooled::take())
+    }
+
+    /// [`Self::pre_unify_arg`], each pair of shared nodes (`seen`)
+    /// pre-unified once.
+    fn pre_unify_seen(
+        env: &Env,
+        declared: &Type,
+        actual: &Type,
+        seen: &mut AHashSet<(usize, usize)>,
+    ) -> Result<()> {
         ensure_sufficient(|| {
             let d = match declared.deref_cloned() {
                 Some(t @ Type::Ref(_)) => Some(t.lookup_ref(env)?),
                 d => d,
             };
             let a = actual.deref_cloned();
-            let each = |ds: &[Type], as_: &[Type]| {
-                ds.iter()
-                    .zip(as_.iter())
-                    .try_for_each(|(d, a)| Self::pre_unify_arg(env, d, a))
-            };
+            if let (Some(dn), Some(an)) =
+                (d.as_ref().and_then(node_addr), a.as_ref().and_then(node_addr))
+                && !seen.insert((dn, an))
+            {
+                return Ok(());
+            }
+            let each =
+                |ds: &[Type], as_: &[Type], seen: &mut AHashSet<(usize, usize)>| {
+                    ds.iter()
+                        .zip(as_.iter())
+                        .try_for_each(|(d, a)| Self::pre_unify_seen(env, d, a, seen))
+                };
             match (&d, &a) {
                 (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
                 // a part pre-unifies as the whole would
                 (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a)))
                 | (Some(Type::Array(d)), Some(Type::Array(a)))
                 | (Some(Type::List(d)), Some(Type::List(a))) => {
-                    Self::pre_unify_arg(env, d, a)
+                    Self::pre_unify_seen(env, d, a, seen)
                 }
                 (Some(Type::Tuple(ds)), Some(Type::Tuple(as_)))
                     if ds.len() == as_.len() =>
                 {
-                    each(ds, as_)
+                    each(ds, as_, seen)
                 }
                 (Some(Type::Variant(t0, ds, _)), Some(Type::Variant(t1, as_, _)))
                     if t0 == t1 && ds.len() == as_.len() =>
                 {
-                    each(ds, as_)
+                    each(ds, as_, seen)
                 }
                 (Some(Type::Struct(ds)), Some(Type::Struct(as_)))
                     if ds.len() == as_.len()
@@ -2295,7 +2313,7 @@ impl Type {
                             .all(|((n0, ..), (n1, ..))| n0 == n1) =>
                 {
                     ds.iter().zip(as_.iter()).try_for_each(|((_, d, _), (_, a, _))| {
-                        Self::pre_unify_arg(env, d, a)
+                        Self::pre_unify_seen(env, d, a, seen)
                     })
                 }
                 // a union two of whose members admit the argument leaves
@@ -2329,7 +2347,7 @@ impl Type {
                     };
                     match admit {
                         Some(m) if structural(m) && structural(actual) => {
-                            Self::pre_unify_arg(env, m, actual)
+                            Self::pre_unify_seen(env, m, actual, seen)
                         }
                         _ => declared.contains(env, actual).map(|_| ()),
                     }
@@ -2548,7 +2566,7 @@ impl Type {
                     }
                     Type::TVar(tv) => {
                         let cell = tv.cell();
-                        if !seen.insert(Arc::as_ptr(&cell).addr()) {
+                        if !seen.insert(cell.data_ptr().addr()) {
                             return true;
                         }
                         let (binding, cons) = {

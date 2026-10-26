@@ -55,7 +55,7 @@ fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bo
         Type::Ref(r) => r.params.iter().any(|p| would_cycle_seen(addr, p, seen)),
         Type::TVar(t) => {
             let cell = t.cell();
-            let cell_addr = Arc::as_ptr(&cell).addr();
+            let cell_addr = cell.data_ptr().addr();
             cell_addr == addr || {
                 if !seen.insert(cell_addr) {
                     return false;
@@ -421,18 +421,8 @@ impl Drop for AtLevel {
     }
 }
 
-/// Lower every cell `t` reaches to at most `level`: what a cell at
-/// `level` is bound to, or constrained by, belongs where the cell does.
-/// A generic cell stays generic (a scheme bound into a cell is still a
-/// scheme), and a cell already at or above `level`'s depth reaches
-/// nothing deeper.
 /// `rebuild` of `t`, made once per shared composite (`memo`, by address;
 /// a cell's address is another allocation, so a cell memo shares the map).
-// CR claude for claude: [readability/low] The doc block above this function begins with
-// lower's description ("Lower every cell `t` reaches to at most `level` ..."), so
-// `once` is documented as lowering cells and `lower` below has no doc. Move that
-// paragraph onto `pub(super) fn lower` and keep only the "`rebuild` of `t`, made once
-// per shared composite" sentence here. Found by reading; not run. (t-tvar-07)
 fn once(
     t: &Type,
     memo: &mut AHashMap<usize, Option<Type>>,
@@ -461,6 +451,11 @@ fn once(
 // give the merged cell the shallower level of the two (TVar::claim, which takes generic
 // cells), so a live cell never ends up generic. probe:
 // design/review-2026-10-26/repro/t-tvar-annotation-var-generic.gx (t-tvar-01)
+/// Lower every cell `t` reaches to at most `level`: what a cell at
+/// `level` is bound to, or constrained by, belongs where the cell does.
+/// A generic cell stays generic (a scheme bound into a cell is still a
+/// scheme), and a cell already at or above `level`'s depth reaches
+/// nothing deeper.
 pub(super) fn lower(t: &Type, level: Level) {
     fn go(t: &Type, level: Level, nodes: &mut AHashSet<usize>) {
         ensure_sufficient(|| match t {
@@ -1094,7 +1089,7 @@ impl TVar {
                     written_of(
                         s_cell.read().task,
                         "cell",
-                        Some(s_cell.data_ptr() as usize),
+                        Some(s_cell.data_ptr().addr()),
                     );
                 }
                 return;
@@ -1116,8 +1111,7 @@ impl TVar {
             // Occurs check: a merged cell reachable from its own contents
             // is an infinite type every later walk loops on. Skipping the
             // merge only keeps inference looser.
-            let (s_addr, o_addr) =
-                (Arc::as_ptr(&s_cell).addr(), Arc::as_ptr(&o_cell).addr());
+            let (s_addr, o_addr) = (s_cell.data_ptr().addr(), o_cell.data_ptr().addr());
             let scons = s_cell.read().constraints.clone();
             if would_cycle_inner(s_addr, &Type::TVar(other.clone()))
                 || scons.iter().any(|c| would_cycle_inner(o_addr, c))
@@ -1155,9 +1149,9 @@ impl TVar {
             let s_task = s_cell.read().task;
             let o_task = o_cell.read().task;
             let var_task = self.read().task;
-            if !decided_of(s_task, "cell", Some(s_cell.data_ptr() as usize))
+            if !decided_of(s_task, "cell", Some(s_cell.data_ptr().addr()))
                 || (!to_add.is_empty()
-                    && !decided_of(o_task, "cell", Some(o_cell.data_ptr() as usize)))
+                    && !decided_of(o_task, "cell", Some(o_cell.data_ptr().addr())))
                 || !decided_of(var_task, "var", None)
             {
                 return;
@@ -1178,9 +1172,9 @@ impl TVar {
             eprintln!(
                 "CELL-MERGE '{}({:x}) <=> '{}({:x})",
                 self.name,
-                Arc::as_ptr(&s_cell).addr(),
+                s_cell.data_ptr().addr(),
                 other.name,
-                Arc::as_ptr(&o_cell).addr()
+                o_cell.data_ptr().addr()
             );
         }
         let level = s_cell.read().level;
@@ -1265,7 +1259,7 @@ impl TVar {
     pub(super) fn copy(&self, other: &Self, binding: Type) {
         let s_cell = self.cell();
         // Occurs check as in [`Self::alias`].
-        if would_cycle_inner(Arc::as_ptr(&s_cell).addr(), &Type::TVar(other.clone())) {
+        if would_cycle_inner(s_cell.data_ptr().addr(), &Type::TVar(other.clone())) {
             self.mark_cycle_refused();
             return;
         }
@@ -1278,7 +1272,7 @@ impl TVar {
             eprintln!(
                 "COPY '{}({:x}) <= '{}: {binding:?}",
                 self.name,
-                Arc::as_ptr(&s_cell).addr(),
+                s_cell.data_ptr().addr(),
                 other.name
             );
         }
@@ -1460,7 +1454,7 @@ impl TVar {
     /// Identity of the shared binding cell, for set membership tests.
     #[doc(hidden)]
     pub fn cell_addr(&self) -> usize {
-        Arc::as_ptr(&self.read().cell).addr()
+        self.read().cell.data_ptr().addr()
     }
 
     /// A fresh cell standing for this one in a copy: the name, and the
@@ -1992,7 +1986,7 @@ impl Type {
 
     /// Whether the cell at `addr` ([`ForeignWrite`]) is one of this type's,
     /// or one a cell it holds is bound to reaches.
-    // CR claude for claude: [perf/low] holds_cell enters every binding and child with
+    // XCR claude for claude: [perf/low] holds_cell enters every binding and child with
     // no seen set. node::module::decided_binds calls it, through ForeignWrite::held_by,
     // on the type of every binding in Env::by_id. A pair DAG anywhere in scope
     // therefore makes a module's foreign-write refusal exponential: 1.2 s at depth 26
@@ -2001,20 +1995,32 @@ impl Type {
     // (Arc::as_ptr), not data_ptr, so ForeignWrite uses the same address convention as
     // every other walk. probe:
     // design/review-2026-10-26/repro/t-tvar-held-by-dag-exponential.sh (t-tvar-05)
+    // 2026-10-26 claude: holds_cell walks through a seen set of cells and shared nodes
+    // (as open_beneath does), and every cell address in tvar.rs (TVar::cell_addr, the
+    // occurs check, ForeignWrite, holds_cell) is now the TCell's (data_ptr), one
+    // convention. The repro at D=28 refuses in 0.12 s (was 4.7 s). Pin:
+    // graphix-shell/tests/deep_nesting.rs
+    // a_foreign_write_refusal_beside_a_shared_type_dag_is_linear (depth 60; runs past
+    // its 15 s budget with the memo undone).
     fn holds_cell(&self, addr: usize) -> bool {
-        ensure_sufficient(|| match self {
-            Type::TVar(tv) => {
-                let cell = tv.cell();
-                cell.data_ptr() as usize == addr
-                    || tv.binding().is_some_and(|b| b.holds_cell(addr))
-            }
-            t => t
-                .try_for_each_child(&mut |c| match c.holds_cell(addr) {
-                    true => ControlFlow::Break(()),
-                    false => ControlFlow::Continue(()),
-                })
-                .is_break(),
-        })
+        fn go(t: &Type, addr: usize, seen: &mut AHashSet<usize>) -> bool {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => {
+                    let cell = tv.cell_addr();
+                    cell == addr
+                        || (seen.insert(cell)
+                            && tv.binding().is_some_and(|b| go(&b, addr, seen)))
+                }
+                t if node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
+                t => t
+                    .try_for_each_child(&mut |c| match go(c, addr, seen) {
+                        true => ControlFlow::Break(()),
+                        false => ControlFlow::Continue(()),
+                    })
+                    .is_break(),
+            })
+        }
+        go(self, addr, &mut LPooled::take())
     }
 
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
@@ -2054,9 +2060,9 @@ impl Type {
     }
 
     /// [`Self::collect_tvars`] over positions alone: a nested signature's
-    /// cells by its own positions, never its conjuncts, so the walk is
-    /// linear in the type.
-    // CR claude for claude: [perf/medium] This has no shared-node memo, so over a type
+    /// cells by its own positions, never its conjuncts, each shared node
+    /// (`seen`) walked once, so the walk is linear in the type.
+    // XCR claude for claude: [perf/medium] This has no shared-node memo, so over a type
     // DAG it visits every path, contrary to its doc. FnType::for_each_part calls it on
     // every walk, and settle_terminal, inner_quantifiers and site_bounds' collect_tvars
     // go through for_each_part. A generic call chain h -> g -> f, where f returns a DAG
@@ -2067,7 +2073,12 @@ impl Type {
     // graphix-shell/tests/deep_nesting.rs. probe:
     // design/review-2026-10-26/repro/x-typecheck-generics-dag-position-walk.sh
     // (x-typecheck-generics-07)
-    // CR claude for claude: [perf/medium] This walk has no visited set, so it walks a
+    // 2026-10-26 claude: collect_position_tvars takes a seen set of shared nodes,
+    // threaded from position_cells and for_each_part. The repro is flat (depth
+    // 20/22/24: 91/85/82 ms; depth 60 under 0.1 s). Pin: deep_nesting.rs
+    // shared_type_dags_through_generic_calls_build_in_linear_time, its h -> g -> f
+    // program (fails its 15 s budget with the memo undone).
+    // XCR claude for claude: [perf/medium] This walk has no visited set, so it walks a
     // shared type DAG as a tree. A pair DAG built through a generic constructor (`let
     // mk = |x: 'a| -> ('a, 'a) (x, x)`, then x1 = mk(x0) .. x24 = mk(x23) inside a
     // definition) checks in 40 ms but builds in about 10 s at depth 24, x4 per two
@@ -2078,7 +2089,23 @@ impl Type {
     // generic-constructor shape. probe:
     // design/review-2026-10-26/repro/t-typ-mod-generic-pair-dag-exponential.sh
     // (t-typ-mod-02)
-    pub(crate) fn collect_position_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
+    // 2026-10-26 claude: collect_position_tvars memoized (see x-typecheck-generics-07);
+    // the generic-constructor shape then still doubled per level in Type::pre_unify_arg
+    // (gdb), which now pre-unifies each pair of shared nodes once (pre_unify_seen): a
+    // repeat of a pair that already pre-unified adds nothing the argument's own check
+    // does not decide. n=24 106 ms (was 12.5 s), n=60 116 ms. Pin: deep_nesting.rs
+    // shared_type_dags_through_generic_calls_build_in_linear_time, its mk program
+    // (fails its budget with either memo undone).
+    pub(crate) fn collect_position_tvars(
+        &self,
+        known: &mut AHashMap<ArcStr, TVar>,
+        seen: &mut AHashSet<usize>,
+    ) {
+        if let Some(n) = node_addr(self)
+            && !seen.insert(n)
+        {
+            return;
+        }
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
@@ -2092,7 +2119,7 @@ impl Type {
                     }
                 }
             }
-            t => t.for_each_child(&mut |c| c.collect_position_tvars(known)),
+            t => t.for_each_child(&mut |c| c.collect_position_tvars(known, seen)),
         })
     }
 
@@ -2617,7 +2644,7 @@ fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> R
         }
     }
     let cell = tv.read().cell.clone();
-    let key = Arc::as_ptr(&cell) as usize;
+    let key = cell.data_ptr().addr();
     if WRITING.with_borrow(|w| w.contains(&key)) {
         return f(None, &[]);
     }

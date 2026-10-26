@@ -464,30 +464,42 @@ fn checks_within(program: &str, budget: std::time::Duration) {
 }
 
 fn completes_within(args: &[&str], program: &str, budget: std::time::Duration) {
+    let out = exits_within(args, &[("program.gx", program)], budget);
+    assert!(out.status.success(), "{args:?} failed: {}", out.status);
+}
+
+/// `graphix` with `args` over `files` (the first is the program, the
+/// others its modules) exits within `budget`, with its stderr; one still
+/// running then is killed.
+fn exits_within(
+    args: &[&str],
+    files: &[(&str, &str)],
+    budget: std::time::Duration,
+) -> std::process::Output {
     let dir = tempfile::tempdir().expect("a dir for the program");
-    let file = dir.path().join("program.gx");
-    fs::write(&file, program).expect("write the program");
+    for (name, text) in files {
+        fs::write(dir.path().join(name), text).expect("write the program");
+    }
     let start = std::time::Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_graphix"))
         .args(args)
-        .arg(&file)
+        .arg(dir.path().join(files[0].0))
         .env("XDG_CACHE_HOME", dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("run the check");
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait for the check") {
-            break status;
+    loop {
+        if child.try_wait().expect("wait for the check").is_some() {
+            break child.wait_with_output().expect("the check's output");
         }
         if start.elapsed() > budget {
             let _ = child.kill();
             panic!("{args:?} ran past {budget:?}");
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
-    };
-    assert!(status.success(), "{args:?} failed: {status}");
+    }
 }
 
 /// A type as deep as the program is long checks in time linear in the
@@ -600,6 +612,61 @@ fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
         "  x{DEPTH}\n}};\nlet r = f(1);\nlet q = f(\"s\");\nsys::exit(0)\n"
     ));
     completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+}
+
+/// A pair DAG built through a generic constructor, and one reached
+/// through generic callers, builds in time linear in its depth: the
+/// position and pre-unification walks of a signature take a shared node
+/// once.
+#[test]
+fn shared_type_dags_through_generic_calls_build_in_linear_time() {
+    const DEPTH: usize = 60;
+    let body = |pair: &dyn Fn(usize) -> String| {
+        let mut s = String::from("let f = |a| {\n  let x0 = a;\n");
+        for i in 1..=DEPTH {
+            s.push_str(&format!("  let x{i} = {};\n", pair(i - 1)));
+        }
+        s.push_str(&format!("  x{DEPTH}\n}};\n"));
+        s
+    };
+    let constructor = format!(
+        "let mk = |x: 'a| -> ('a, 'a) (x, x);\n{}let r = f(1);\nsys::exit(0)\n",
+        body(&|i| format!("mk(x{i})"))
+    );
+    let callers = format!(
+        "{}let g = |b| f(b);\nlet h = |c| g(c);\nlet r = h(1);\nlet q = h(\"s\");\nsys::exit(0)\n",
+        body(&|i| format!("(x{i}, x{i})"))
+    );
+    for program in [constructor, callers] {
+        completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+    }
+}
+
+/// A module's refusal for deciding a cell the code around it left open
+/// names the binding in time linear in the types in scope, a pair DAG's
+/// included.
+#[test]
+fn a_foreign_write_refusal_beside_a_shared_type_dag_is_linear() {
+    const DEPTH: usize = 60;
+    let mut main = String::from("let a = never();\nlet x0 = 1;\n");
+    for i in 1..=DEPTH {
+        main.push_str(&format!("let x{i} = (x{}, x{});\n", i - 1, i - 1));
+    }
+    main.push_str(&format!("mod m;\n(m::y, x{DEPTH})\n"));
+    let out = exits_within(
+        &["--check", "--no-cache"],
+        &[
+            ("main.gx", &main),
+            ("m.gxi", "val y: i64;\n"),
+            ("m.gx", "let y = { super::a <- 1; 1 };\n"),
+        ],
+        std::time::Duration::from_secs(15),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("annotate `a`"),
+        "the module's write to `a` is refused: {stderr}"
+    );
 }
 
 #[test]

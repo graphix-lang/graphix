@@ -350,7 +350,8 @@ pub(super) fn position_cells(ft: &Arc<FnType>, out: &mut AHashMap<ArcStr, TVar>)
         return;
     }
     let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.for_each_type(&mut |t| t.collect_position_tvars(&mut inner));
+    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+    ft.for_each_type(&mut |t| t.collect_position_tvars(&mut inner, &mut seen));
     if PARTS_DEPTH.with(|d| d.get()) > 0 {
         let cells = inner.iter().map(|(n, tv)| (n.clone(), tv.clone())).collect();
         POSITIONS.with_borrow_mut(|m| m.insert(key, (ft.clone(), cells)));
@@ -690,7 +691,8 @@ impl FnType {
             // the cells the positions name, each nested signature's own
             // conjunct pass left to that signature's walk
             let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells));
+            let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+            self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells, &mut seen));
             for (_, tv) in sorted_tvars(cells.drain()).drain(..) {
                 if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr()) {
                     for tc in tv.cell_constraints() {
