@@ -553,6 +553,22 @@ fn a_call_over_a_shared_type_dag_elaborates_in_linear_time() {
     completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
 }
 
+// A search over a shared type walks each shared node once: the definition
+// called at two types, whose kernels' types are DAGs, builds in time
+// linear in the DAG.
+#[test]
+fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
+    const DEPTH: usize = 60;
+    let mut program = String::from("let f = |a| {\n  let x0 = a;\n");
+    for i in 1..=DEPTH {
+        program.push_str(&format!("  let x{i} = (x{}, x{});\n", i - 1, i - 1));
+    }
+    program.push_str(&format!(
+        "  x{DEPTH}\n}};\nlet r = f(1);\nlet q = f(\"s\");\nsys::exit(0)\n"
+    ));
+    completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+}
+
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn deep_nesting_does_not_overflow() {

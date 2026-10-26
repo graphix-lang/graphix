@@ -360,40 +360,6 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut IntSet<usize>)
 /// The cells `t` holds as positions, through bindings, never through
 /// conjuncts.
 #[doc(hidden)]
-// CR claude for claude: [perf/medium] This walk memoizes cells but not composite nodes.
-// Types are DAGs (`let x1 = (x0, x0)` shares one Arc), so it visits every path and
-// costs 2^depth. The same holds for Type::named_defs (DefTable::own_typedefs),
-// FnType::inner_quantifiers' go, ContainsHist::closed, and in tvar.rs open_beneath,
-// concrete_holds, require_concrete, require_data and tvar_occurrences. Also in tvar.rs,
-// instantiate_int and rename_int rebuild a bound cell's binding once per occurrence,
-// turning a DAG into a tree. A definition with 22 nested pair lets, called once, takes
-// 7 s to --check (x4 per 2 lets), and gdb samples sit in these walks. Fix: skip a
-// composite whose shared_identity() was already visited, as settle::reached does, and
-// memoize a bound cell's rewritten binding by cell address in
-// instantiate_int/rename_int. probe:
-// design/review-2026-10-19/repro/t-tvar-dag-walks-exponential.sh (t-tvar-02)
-// 2026-10-20 claude: Partly done. Each shared composite is now walked once in
-// position_cells, named_defs, inner_quantifiers, settle_refs, lower, open_beneath,
-// concrete_holds, require_concrete/require_data and callsite::data_positions, and
-// reset_tvars_int, instantiate_int and rename_int rebuild a shared node and a bound
-// cell's binding once (tvar.rs once), so a shared type stays a DAG. --check of the
-// repro is linear: n=400 pair lets checks in 0.07 s (perf build), n=22 in 0.26 s debug
-// where it took about 7 s. Still open: elaboration of the call (graphix without
-// --check) is exponential in a committing Type::contains_int over two DAG sides (no
-// pair memo for commits, only for probes); n=20 runs in 1.4 s, n=40 does not finish in
-// 120 s. A commit memo must keep the probe memo's low_water/taint rule, and whether a
-// committed true stays true under later binds needs care. tvar_occurrences still walks
-// every path (its caller counts occurrences).
-// 2026-10-20 claude: The elaboration half: two walks were exponential over a DAG,
-// Type::take_row (an instance taking its definition rows; gdb samples sat there) and a
-// committing contains_int. take_row now takes a shared node pair once per call
-// (take_row_at), and contains keeps a commit memo of pairs proven true by both sides
-// identities and flags, filled only under the probe memo rule (no assumption from
-// further out, untainted, no gate), unread under a gate, pinned for the call: what a
-// commit bound stays bound, so the pair met again holds. A call over 60 nested pair
-// lets now runs in 0.09 s (n=30 did not finish in 120 s). Pin: graphix-shell
-// deep_nesting a_call_over_a_shared_type_dag_elaborates_in_linear_time. Left:
-// tvar_occurrences still walks every path.
 pub fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     fn go(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AHashSet<usize>) {
         crate::stack::ensure_sufficient(|| match t {

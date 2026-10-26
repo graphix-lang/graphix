@@ -497,6 +497,31 @@ pub struct TCell {
     pub(crate) task: TaskId,
 }
 
+/// What [`Type::tvar_occurrences`] found: each variable met, once, and
+/// how often each cell occurs, a shared node's counted per sight.
+#[derive(Default)]
+pub(crate) struct Occurrences {
+    pub(crate) vars: Vec<TVar>,
+    count: AHashMap<usize, u32>,
+    /// The cells met, in order, a shared node's sights included.
+    trail: Vec<usize>,
+    /// Per shared node walked, the cells beneath it.
+    nodes: AHashMap<usize, Arc<[usize]>>,
+}
+
+impl Occurrences {
+    fn met(&mut self, cell: usize) {
+        self.trail.push(cell);
+        let n = self.count.entry(cell).or_default();
+        *n = n.saturating_add(1);
+    }
+
+    /// Whether `cell` occurs more than once.
+    pub(crate) fn many(&self, cell: usize) -> bool {
+        self.count.get(&cell).is_some_and(|n| *n > 1)
+    }
+}
+
 /// A fact about a cell, beside its binding and constraints.
 #[bitflags]
 #[repr(u8)]
@@ -1860,12 +1885,36 @@ impl Type {
         })
     }
 
-    /// Every type variable the structure holds, bindings not entered.
-    pub(crate) fn tvar_occurrences(&self, out: &mut Vec<TVar>) {
+    /// Every type variable the structure holds, bindings not entered,
+    /// with how often each cell occurs; a shared node is walked once.
+    pub(crate) fn tvar_occurrences(&self, out: &mut Occurrences) {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => out.push(tv.clone()),
-            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.tvar_occurrences(out)),
-            t => t.for_each_child(&mut |c| c.tvar_occurrences(out)),
+            Type::TVar(tv) => {
+                out.vars.push(tv.clone());
+                out.met(tv.cell_addr());
+            }
+            t => {
+                if let Some(n) = super::node_addr(t) {
+                    if let Some(cells) = out.nodes.get(&n).cloned() {
+                        for c in cells.iter() {
+                            out.met(*c)
+                        }
+                        return;
+                    }
+                    let start = out.trail.len();
+                    match t {
+                        Type::Fn(ft) => {
+                            ft.for_each_part(&mut |t, _| t.tvar_occurrences(out))
+                        }
+                        t => t.for_each_child(&mut |c| c.tvar_occurrences(out)),
+                    }
+                    let cells: Arc<[usize]> =
+                        Arc::from_iter(out.trail[start..].iter().copied());
+                    out.nodes.insert(n, cells);
+                    return;
+                }
+                t.for_each_child(&mut |c| c.tvar_occurrences(out))
+            }
         })
     }
 

@@ -957,15 +957,11 @@ impl FnType {
         let fresh = self.reset_tvars_int(&mut known, how);
         let copies: LPooled<AHashSet<usize>> =
             known.values().map(|tv| tv.cell_addr()).collect();
-        let mut occurrences: LPooled<Vec<TVar>> = LPooled::take();
+        let mut occurrences = super::tvar::Occurrences::default();
         fresh.for_each_part(&mut |t, _| t.tvar_occurrences(&mut occurrences));
-        let mut count: LPooled<AHashMap<usize, usize>> = LPooled::take();
-        for tv in occurrences.iter() {
-            *count.entry(tv.cell_addr()).or_default() += 1;
-        }
-        for tv in occurrences.iter() {
+        for tv in occurrences.vars.iter() {
             let addr = tv.cell_addr();
-            if count[&addr] > 1 && copies.contains(&addr) {
+            if occurrences.many(addr) && copies.contains(&addr) {
                 tv.freeze()
             }
         }
@@ -1430,9 +1426,10 @@ impl FnType {
                                 | Type::Concrete
                                 | Type::Data
                         ) {
-                            let mut vars: LPooled<Vec<TVar>> = LPooled::take();
-                            sig_type.tvar_occurrences(&mut vars);
-                            for v in vars.iter().filter(|v| v.open_cell().is_some()) {
+                            let mut occurrences = super::tvar::Occurrences::default();
+                            sig_type.tvar_occurrences(&mut occurrences);
+                            let vars = occurrences.vars.iter();
+                            for v in vars.filter(|v| v.open_cell().is_some()) {
                                 declared(v, &impl_tc)?
                             }
                         }

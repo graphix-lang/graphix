@@ -173,6 +173,11 @@ struct Verdicts<T> {
     /// The shallowest application being decided that the decision in
     /// progress read.
     read: usize,
+    /// The shared nodes a search walked and found nothing under, so a
+    /// type that shares them (a DAG) is searched once; only outside any
+    /// application being decided, whose provisional verdicts a node's may
+    /// rest on.
+    walked: LPooled<AHashSet<usize>>,
 }
 
 impl<T> Verdicts<T> {
@@ -182,6 +187,7 @@ impl<T> Verdicts<T> {
             pending: LPooled::take(),
             depth: 0,
             read: usize::MAX,
+            walked: LPooled::take(),
         }
     }
 
@@ -554,8 +560,15 @@ impl Type {
                     }
                 }
                 t => {
+                    let node = super::node_addr(t).filter(|_| seen.depth == 0);
+                    if node.is_some_and(|n| seen.walked.contains(&n)) {
+                        return false;
+                    }
                     let mut r = false;
                     t.for_each_child(&mut |c| r = r || c.holds(env, seen, leaf));
+                    if !r && let Some(n) = node {
+                        seen.walked.insert(n);
+                    }
                     r
                 }
             }
