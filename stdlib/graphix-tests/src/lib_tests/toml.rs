@@ -1,6 +1,9 @@
 use anyhow::Result;
 use arcstr::literal;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, prints},
+};
 use netidx::subscriber::Value;
 
 run!(toml_i64, r#"{
@@ -187,3 +190,11 @@ async fn the_deepest_written_table_reads_back() -> Result<()> {
     }
     Ok(())
 }
+
+// A bare variant key is written as its tag, which a read casts back.
+run!(toml_variant_map_key_reads_back, r#"{
+    let m: Map<[`A, `B], i64> = {`A => 1, `B => 2};
+    let s = toml::write_str({m})$;
+    let r: {m: Map<[`A, `B], i64>} = toml::read(s)?;
+    (s, r.m == m)
+}"#, prints(r#"["[m]\nA = 1\nB = 2\n", true]"#); FuseExpect::Jit);

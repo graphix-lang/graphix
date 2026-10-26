@@ -471,10 +471,11 @@ pub mod testing;
 pub use handler::{Handler, Inbox, Reply};
 pub use memo::FastMemo;
 
-/// A map key as a text format (JSON, TOML, a template's data) writes it:
-/// the text a reader's cast of the key reads back, a string bare, a
-/// datetime in RFC3339, a duration in seconds, any other value as the
-/// naked form of its data.
+/// A map key as a text format (JSON, TOML, a template's data) writes it,
+/// by its data (`abstract_value::to_data`): a string bare, a datetime in
+/// RFC3339, a duration in seconds, any other value in its naked form. A
+/// reader's cast reads back a key whose data is a string, a number, a
+/// bool, a datetime or a duration; the text of any other key's does not.
 // CR claude for eric: [bug/medium] The doc says a reader's cast reads this text back,
 // but it does not for a bare variant or a composite key. Map<`A, i64> writes
 // {"\"A\"":2} (the data string printed with its quotes) and Map<(i64, i64), i64> writes
@@ -483,6 +484,10 @@ pub use memo::FastMemo;
 // bare, and decide whether composite keys parse on read (as str::parse does) or are
 // refused by the writers. probe:
 // design/review-2026-10-26/repro/x-rerun-5-json-map-keys.gx (x-rerun-5-04)
+// 2026-10-26 claude: The string-data half is done (t-rep-02, x-kind-markers-01): a
+// bare-variant key is written as its tag and reads back, pinned by
+// lib_tests::json::string_data_map_keys_read_back. The composite-key decision still
+// stands.
 // CR claude for eric: [bug/medium] The text this writes for a tuple, struct, variant or
 // list key, for a null key ("null") and for a bytes key (base64) does not read back.
 // The reader casts the object key string to the key type, and a cast parses a string
@@ -493,7 +498,7 @@ pub use memo::FastMemo;
 // value) pairs, which the cast already reads as a map, or refuse it at the writer.
 // probe: design/review-2026-10-26/repro/core-lib-composite-map-key-no-roundtrip.gx
 // (core-lib-02)
-// CR claude for claude: [bug/high] A bare-variant or composite map key is written as
+// CR claude for eric: [bug/high] A bare-variant or composite map key is written as
 // the quoted Naked text of its data: `A becomes the JSON key "\"A\"" (TOML '"A"', hbs
 // &quot;A&quot;), and (1, "a") becomes "[1, \"a\"]". No reader casts those back, so
 // json::read/toml::read into the same Map type fail with InvalidCast, and an enum-keyed
@@ -504,9 +509,18 @@ pub use memo::FastMemo;
 // and struct keys beside time_map_keys_read_back. probe:
 // design/review-2026-10-26/repro/x-kind-markers-composite-map-keys.gx
 // (x-kind-markers-01)
+// 2026-10-26 claude: The bare-variant half is fixed with t-rep-02: map_key writes a
+// key's data, so `A is the JSON key "A" (TOML A) and reads back; a bare variant beside
+// the string it writes as is refused by the writers' duplicate-key checks. Pins:
+// lib_tests::json::string_data_map_keys_read_back,
+// lib_tests::toml::toml_variant_map_key_reads_back. What remains is the composite keys,
+// (1, "a") written as "[1, \"a\"]": parse an object key as a Graphix literal on read
+// (this CR's suggestion), write such a map as its (key, value) pairs, or refuse it at
+// the writer. That is the choice core-lib-02 and x-rerun-5-04 already ask Eric to make,
+// so this is readdressed rather than decided here.
 pub fn map_key(k: &Value) -> Result<ArcStr> {
-    Ok(match k {
-        Value::String(s) => s.clone(),
+    Ok(match graphix_compiler::abstract_value::to_data(k)? {
+        Value::String(s) => s,
         Value::DateTime(dt) => dt.to_rfc3339().into(),
         Value::Duration(d) => format_compact!("{}", d.as_secs_f64()).as_str().into(),
         // CR claude for claude: [bug/medium] A bare variant key strips to its tag, the
@@ -519,7 +533,12 @@ pub fn map_key(k: &Value) -> Result<ArcStr> {
         // refuse them in the writers too, or record that they are write-only. probe:
         // design/review-2026-10-26/repro/x-rerun-4-variant-map-key-json.gx
         // (x-rerun-4-03)
-        // CR claude for claude: [bug/high] A key whose data is a string is printed here
+        // 2026-10-26 claude: Addressed by the t-rep-02 fix: map_key dispatches on the
+        // key's data, so a bare-variant key is written bare and reads back (pins
+        // lib_tests::json::string_data_map_keys_read_back,
+        // lib_tests::toml::toml_variant_map_key_reads_back). The tuple and
+        // payload-variant keys wait on Eric's core-lib-02 / x-kind-markers-01.
+        // XCR claude for claude: [bug/high] A key whose data is a string is printed here
         // by Naked, which quotes it. A map keyed by a bare variant writes {"\"A\"":1}
         // in json ('"A"' in toml) and the read back is refused, and a map keyed by
         // `type Id = Abstract<string>` with `impl Cast` reads back silently as
@@ -529,11 +548,16 @@ pub fn map_key(k: &Value) -> Result<ArcStr> {
         // a string into a collection, so this function's doc overclaims. Whether
         // writers should refuse such keys is a ruling. probe:
         // design/review-2026-10-26/repro/t-rep-variant-map-key-quoted.gx (t-rep-02)
-        Value::Array(_) | Value::Map(_) | Value::Abstract(_) => {
-            let k = graphix_compiler::abstract_value::to_data(k)?;
-            format_compact!("{}", graphix_compiler::typ::Naked(&k)).as_str().into()
-        }
-        k => format_compact!("{}", graphix_compiler::typ::Naked(k)).as_str().into(),
+        // 2026-10-26 claude: map_key now takes abstract_value::to_data of every key and
+        // dispatches on the data, so a key whose data is a string (a bare variant, an
+        // abstract string type with impl Cast) is written bare and reads back; the
+        // writers' existing duplicate-key checks refuse `A beside "A". The doc now says
+        // only string, number, bool, datetime and duration keys read back; the
+        // composite-key ruling is Eric's core-lib-02. Pins:
+        // lib_tests::json::string_data_map_keys_read_back,
+        // lib_tests::toml::toml_variant_map_key_reads_back (both fail with the fix
+        // undone).
+        k => format_compact!("{}", graphix_compiler::typ::Naked(&k)).as_str().into(),
     })
 }
 

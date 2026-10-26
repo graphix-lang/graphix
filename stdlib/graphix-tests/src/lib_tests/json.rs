@@ -372,6 +372,21 @@ run!(time_map_keys_read_back, r#"{
         == r#"["{\"2020-01-01T00:00:00+00:00\":1}", true, "{\"1.5\":2}", true]"#)
 }; FuseExpect::Jit);
 
+// A key whose data is a string is written bare: a map keyed by a bare
+// variant or by an abstract string type reads back into its type, and a
+// bare variant beside the string it writes as is refused.
+run!(string_data_map_keys_read_back, r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    type Id = Abstract<string>;
+    impl Cast for Id {};
+    let m: Map<[`A, `B], i64> = {`A => 1, `B => 2};
+    let i: Map<Id, i64> = {Id("abc") => 3};
+    let both: Map<[`A, string], i64> = {`A => 1, "A" => 2};
+    let m2: Result<Map<[`A, `B], i64>, E> = json::read(json::write_str(m)$);
+    let i2: Result<Map<Id, i64>, E> = json::read(json::write_str(i)$);
+    (json::write_str(m)$, m2$ == m, json::write_str(i)$, i2$ == i, json::write_str(both))
+}"#, prints(r#"["{\"A\":1,\"B\":2}", true, "{\"abc\":3}", true, error:["JsonErr", "two keys write as the same JSON key A"]]"#); FuseExpect::Jit);
+
 // An integer or decimal target reads a number's text exactly, refusing
 // what does not fit, a float target the float nearest it, and a read with
 // neither an f64 (small-pkgs-02).
