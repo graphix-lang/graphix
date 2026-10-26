@@ -563,7 +563,7 @@ type Quantified = SmallVec<[(ArcStr, TVar); 2]>;
 fn quantified_formal(
     env: &Env,
     typ: &Type,
-) -> Result<Option<(Type, LPooled<Vec<RigidGate>>, Quantified)>> {
+) -> Option<(Type, LPooled<Vec<RigidGate>>, Quantified)> {
     // XCR claude for claude: [bug/high] A quantified function type that sits inside a
     // formal (a struct field `{f: fn<'b: [i64, string]>(x: 'b) -> 'b}`, an `Array<F>`
     // element, a `[F, null]` member) is not held here. Only a formal that is itself
@@ -584,25 +584,26 @@ fn quantified_formal(
     // lang::types::rank2_typedef_field_keeps_its_bound (the repro),
     // rank2_element_keeps_its_bound, rank2_member_keeps_its_bound.
     let mut quantified = Quantified::new();
-    let formal = rank2_parts(env, typ, &mut SmallVec::new(), &mut quantified)?;
+    let formal = rank2_parts(env, typ, &mut SmallVec::new(), &mut quantified);
     if quantified.is_empty() {
-        return Ok(None);
+        return None;
     }
     let gates = quantified.iter().map(|(_, tv)| tv.open_quantifier_rigid()).collect();
-    Ok(Some((formal.unwrap_or_else(|| typ.clone()), gates, quantified)))
+    Some((formal.unwrap_or_else(|| typ.clone()), gates, quantified))
 }
 
 /// `t`, a typedef reference, expanded, with its definition's key; `None`
-/// where it does not resolve or `expanding` holds its definition already
-/// (a recursive typedef met inside its own expansion).
-fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Result<Option<(usize, Type)>> {
-    let Type::Ref(tr) = t else { return Ok(None) };
+/// where it does not resolve (its check reports that) or `expanding`
+/// holds its definition already (a recursive typedef met inside its own
+/// expansion).
+fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> {
+    let Type::Ref(tr) = t else { return None };
     let unexpanded = |key: usize| !expanding.contains(&key);
     if !tr.def_key().is_none_or(unexpanded) {
-        return Ok(None);
+        return None;
     }
-    let Some(whole) = t.lookup_ref_with(env, false)? else { return Ok(None) };
-    Ok(tr.def_key().filter(|k| unexpanded(*k)).map(|key| (key, whole)))
+    let whole = t.lookup_ref_with(env, false).ok()??;
+    tr.def_key().filter(|k| unexpanded(*k)).map(|key| (key, whole))
 }
 
 /// Push to `out` the quantifiers of each function type at a data position
@@ -614,7 +615,7 @@ fn rank2_parts(
     t: &Type,
     expanding: &mut SmallVec<[usize; 4]>,
     out: &mut Quantified,
-) -> Result<Option<Type>> {
+) -> Option<Type> {
     ensure_sufficient(|| {
         let before = out.len();
         let expanded = |r: Option<Type>, whole: Type, out: &Quantified| {
@@ -623,40 +624,22 @@ fn rank2_parts(
         match t {
             Type::Fn(ft) => {
                 ft.each_quantifier(|name, tv| out.push((name.clone(), tv.clone())));
-                Ok(None)
+                None
             }
-            Type::TVar(tv) => match tv.binding() {
-                None => Ok(None),
-                Some(b) => {
-                    let r = rank2_parts(env, &b, expanding, out)?;
-                    Ok(expanded(r, b, out))
-                }
-            },
+            Type::TVar(tv) => {
+                let b = tv.binding()?;
+                let r = rank2_parts(env, &b, expanding, out);
+                expanded(r, b, out)
+            }
             Type::Ref(_) => {
-                let Some((key, whole)) = expansion(env, t, expanding)? else {
-                    return Ok(None);
-                };
+                let (key, whole) = expansion(env, t, expanding)?;
                 expanding.push(key);
                 let r = rank2_parts(env, &whole, expanding, out);
                 expanding.pop();
-                Ok(expanded(r?, whole, out))
+                expanded(r, whole, out)
             }
-            Type::Abstract { .. } => Ok(None),
-            t => {
-                let mut err = None;
-                let r =
-                    t.cow_children(&mut |c| match rank2_parts(env, c, expanding, out) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            err.get_or_insert(e);
-                            None
-                        }
-                    });
-                match err {
-                    Some(e) => Err(e),
-                    None => Ok(r),
-                }
-            }
+            Type::Abstract { .. } => None,
+            t => t.cow_children(&mut |c| rank2_parts(env, c, expanding, out)),
         }
     })
 }
@@ -760,7 +743,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
     if matches!(n.view(), NodeView::Ref(_)) {
         wrap!(n, n.typecheck0(ctx))?;
     }
-    match quantified_formal(&ctx.env, typ)? {
+    match quantified_formal(&ctx.env, typ) {
         None => {
             Type::pre_unify_arg(&ctx.env, hint.unwrap_or(typ), n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
@@ -1048,7 +1031,7 @@ fn data_positions(
         }
         // a shared node is walked once in each kind of position
         t if t.shared_identity().is_some_and(|n| !seen.insert((n, data))) => (),
-        Type::Ref(_) if let Ok(Some((key, whole))) = expansion(env, t, expanding) => {
+        Type::Ref(_) if let Some((key, whole)) = expansion(env, t, expanding) => {
             expanding.push(key);
             data_positions(env, &whole, data, expanding, seen, out);
             expanding.pop();
@@ -1095,7 +1078,7 @@ fn holds_invariantly(env: &Env, t: &Type, expanding: &mut SmallVec<[usize; 4]>) 
         // the env for it, and the call's formals are keyed once before the sort. Pin:
         // lang::types::an_alias_is_its_expansion (the repro, plus a recursive alias
         // that still checks); it fails with the expansion disabled.
-        Type::Ref(_) if let Ok(Some((key, whole))) = expansion(env, t, expanding) => {
+        Type::Ref(_) if let Some((key, whole)) = expansion(env, t, expanding) => {
             expanding.push(key);
             let r = holds_invariantly(env, &whole, expanding);
             expanding.pop();
