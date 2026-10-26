@@ -411,6 +411,32 @@ impl GenType {
         }
     }
 
+    /// Values of this type have an order (`<`, a sort, a map key): no
+    /// function, no reference, and no union holding two numeric types.
+    pub(super) fn ordered(&self) -> bool {
+        match self {
+            GenType::Num(_)
+            | GenType::Bool
+            | GenType::Str
+            | GenType::Dur
+            | GenType::Time
+            | GenType::Bytes
+            | GenType::Abstract { .. } => true,
+            GenType::Fn { .. } | GenType::Ref { .. } => false,
+            GenType::Union(ms) => {
+                ms.iter().all(|m| m.ordered())
+                    && ms.iter().filter(|m| m.is_numeric()).count() < 2
+            }
+            GenType::Tuple(es) => es.iter().all(|e| e.ordered()),
+            GenType::Struct(fs) => fs.iter().all(|(_, t)| t.ordered()),
+            GenType::Variant(ts) => {
+                ts.iter().all(|(_, args)| args.iter().all(|t| t.ordered()))
+            }
+            GenType::Array(e) | GenType::List(e) | GenType::Nullable(e) => e.ordered(),
+            GenType::Map { key, val } => key.ordered() && val.ordered(),
+        }
+    }
+
     pub(super) fn is_scalar(&self) -> bool {
         matches!(self, GenType::Num(_) | GenType::Bool | GenType::Str)
     }

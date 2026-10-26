@@ -576,6 +576,10 @@ pub(super) fn gen_typed(
                     4 => types::random_variant(rng, 0),
                     _ => types::numeric_type(rng),
                 };
+                let op = match nt.ordered() {
+                    true => op,
+                    false => *rng.pick(&["==", "!="]),
+                };
                 if nt.is_numeric() {
                     let (a, b) =
                         (gen_typed(ctx, rng, &nt, d), gen_typed(ctx, rng, &nt, d));

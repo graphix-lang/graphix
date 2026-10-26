@@ -635,13 +635,6 @@ pub(super) fn gen_rec_lambda(
     // memory, which no loop shares) and reads no reference (references
     // de-fuse) asserts its loop half the time: a JIT that stops building
     // it refuses (a body that cannot fuse is dropped unrecorded)
-    // CR claude for claude: [bug/low] This scan misses consume_fallible's catch form `{
-    // catch(e) h; (a op b)? }`, which the base can draw through checked arithmetic. The
-    // tail-loop gate counts a catch as stateful, so both builds refuse the assertion
-    // and the whole program is lost as a both-reject. Generate the base with
-    // ctx.no_catch set, or refuse the attribute when the base contains `catch(`. probe:
-    // design/review-2026-10-26/repro/fuzz-gen-a-tailrec-catch-base.gx (--expand
-    // refuses, --check passes) (fuzz-gen-a-04)
     let calls_or_derefs = base.contains("::")
         || base.as_bytes().windows(2).any(|w| {
             ((w[0].is_ascii_alphanumeric() || w[0] == b'_') && w[1] == b'(')
@@ -679,7 +672,7 @@ const KIND_MEMBERS: [(&str, &str, &str); 9] = [
 /// A union of members of different runtime forms (composite kinds, a
 /// string beside a bare variant, two numeric types), annotated at its
 /// let and read by one type-test arm per member, compared with `==`, and
-/// a map's key.
+/// a map's key unless it holds both numeric types, which have no order.
 fn kind_union(ctx: &mut GenCtx, rng: &mut Rng, n: &str, s: &str) -> Vec<String> {
     let mut picked: Vec<usize> = (0..KIND_MEMBERS.len()).collect();
     rng.shuffle(&mut picked);
@@ -694,12 +687,17 @@ fn kind_union(ctx: &mut GenCtx, rng: &mut Rng, n: &str, s: &str) -> Vec<String> 
     let (u, w, r, e, m) =
         (ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh());
     let (a, b) = (picked[rng.below(picked.len())], picked[rng.below(picked.len())]);
-    let stmts = vec![
+    let mut stmts = vec![
         format!("let {u}: {ty} = {}", value(a)),
         format!("let {w}: {ty} = {}", value(b)),
         format!("let {r} = select {u} {{ {arms} }}"),
         format!("let {e} = {u} == {w}"),
-        // CR claude for claude: [bug/medium] A map key must be `Ordered`, which refuses
+    ];
+    ctx.push(r, I64);
+    ctx.push(e, GenType::Bool);
+    let numeric = picked.iter().filter(|&&i| matches!(member(i).0, "i64" | "f64"));
+    if numeric.count() < 2 {
+        // XCR claude for claude: [bug/medium] A map key must be `Ordered`, which refuses
         // a type holding two numeric types. KIND_MEMBERS has both `i64` and `f64`, so
         // every union that picks both is refused here. That is 39 of the 40 rejects in
         // `gen-check 2000 6` (98% compile rate). The same rule is broken by exprs.rs's
@@ -708,11 +706,15 @@ fn kind_union(ctx: &mut GenCtx, rng: &mut Rng, n: &str, s: &str) -> Vec<String> 
         // map only when the members are not both numeric; otherwise keep `==` alone.
         // probe: design/review-2026-10-26/repro/fuzz-gen-b-kind-union-mapkey.gx
         // (fuzz-gen-b-02)
-        format!("let {m} = map::len({{{u} => i64:1, {w} => i64:2}})"),
-    ];
-    ctx.push(r, I64);
-    ctx.push(e, GenType::Bool);
-    ctx.push(m, I64);
+        // 2026-10-26 claude: GenType::ordered (types.rs) says whether a type has an
+        // order; the generated comparison draws an ordering only over an ordered type,
+        // else == or !=, and kind_union keys its map only when it did not pick both i64
+        // and f64. gen-check 2000 6 now compiles 2000/2000 (was 1960). Pin:
+        // generate::funcs::test::generated_orderings_check checks 40 kind unions and
+        // ~1000 comparisons over annotated unions; it fails with either site undone.
+        stmts.push(format!("let {m} = map::len({{{u} => i64:1, {w} => i64:2}})"));
+        ctx.push(m, I64);
+    }
     stmts
 }
 
@@ -824,15 +826,16 @@ pub(super) fn gen_shape_template(
     stmts
 }
 
-/// Sibling calls of one `queuefn` wrapper, each its own `let`, the
-/// trigger a credit for fewer than all of them: the calls reach one ORDERED
-/// builtin, so the first in program order run and the rest stay queued
-/// whatever forks around them. The queued ones print, so a reordered call
-/// shows as another left queued.
+/// Sibling calls of one `queuefn` wrapper, each its own `let`, fewer
+/// released than made: the first runs at once and a counter trigger fires
+/// once after birth for each of the next `credits - 1` (its birth fire
+/// releases nothing). The calls reach one ORDERED builtin, so the first in
+/// program order run and the rest stay queued whatever forks around them.
+/// The queued ones print, so a reordered call shows as another left queued.
 pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<String> {
-    let (qf, x) = (ctx.fresh(), ctx.fresh());
+    let (qf, x, t) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
     let n = 2 + rng.below(3);
-    // CR claude for claude: [test-gap/medium] The template assumes `#trigger:
+    // XCR claude for claude: [test-gap/medium] The template assumes `#trigger:
     // i64:{credits}` releases calls 1..credits-1 and types them as live i64 values. A
     // trigger fire born with the queuefn is no credit, so with a constant trigger only
     // call 0 ever produces. The calls pushed as I64 are bottom forever, and every
@@ -841,18 +844,32 @@ pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<Strin
     // value and the rest as queued (Opaque, printed), or give the trigger fires after
     // birth that the model counts. probe:
     // design/review-2026-10-26/repro/x-rerun-3-fuzz-queuefn-credits.gx (x-rerun-3-03)
-    // CR claude for claude: [bug/medium] A trigger fire born with the queuefn releases
+    // 2026-10-26 claude: Fixed with fuzz-gen-a-01 below: a counter trigger fires once
+    // after birth per released call, so every call pushed as i64 produces. Pin:
+    // generate::funcs::test::queuefn_typed_calls_are_released.
+    // XCR claude for claude: [bug/medium] A trigger fire born with the queuefn releases
     // nothing, so the constant `#trigger: i64:{credits}` gives exactly one release
     // whatever `credits` is. With credits >= 2, calls 1..credits-1 are pushed as live
     // I64 vocabulary but stay bottom forever, and every later expression that reads
     // them is blanked. Take credits = 1, or drive the trigger from a binding written
     // credits - 1 times after birth. probe:
     // design/review-2026-10-26/repro/fuzz-gen-a-queuefn-credits.gx (fuzz-gen-a-01)
+    // 2026-10-26 claude: The trigger is a counter born at 0 that fires credits - 1
+    // times after birth (its birth fire releases nothing), so calls 0..credits-1 are
+    // released and typed i64, the rest queued and printed. Pin:
+    // generate::funcs::test::queuefn_typed_calls_are_released runs 12 templates with
+    // two or more typed calls and requires a tail over all of them to fire (0 of 12
+    // with the constant trigger).
     let credits = 1 + rng.below(n - 1);
     let body = exprs::gen_typed(ctx, rng, &I64, 1);
-    let mut stmts = vec![format!(
-        "let {qf} = queuefn(#trigger: i64:{credits}, |{x}: i64| -> i64 {x} + {body})"
-    )];
+    let mut stmts = vec![
+        format!("let {t} = i64:0"),
+        format!(
+            "{t} <- select {t} {{ s if s < i64:{} => s + i64:1, _ => never() }}",
+            credits - 1
+        ),
+        format!("let {qf} = queuefn(#trigger: {t}, |{x}: i64| -> i64 {x} + {body})"),
+    ];
     let calls: Vec<(String, String)> = (0..n)
         .map(|_| (ctx.fresh(), format!("{qf}({})", exprs::gen_typed(ctx, rng, &I64, 1))))
         .collect();
@@ -868,4 +885,78 @@ pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<Strin
         }
     }
     stmts
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{Outcome, check_only, run_program};
+    use graphix_package_core::testing::Mode;
+    use std::time::Duration;
+
+    /// Every call the queuefn template types as a value is released, so a
+    /// tail reading all of them fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queuefn_typed_calls_are_released() {
+        let mut rng = Rng::new(0x9fe);
+        let (mut progs, mut fired) = (0, 0);
+        while progs < 12 {
+            let mut ctx = GenCtx::new();
+            let stmts = gen_queuefn_siblings(&mut ctx, &mut rng);
+            let released = ctx.vars_of(&I64);
+            if released.len() < 2 {
+                continue;
+            }
+            progs += 1;
+            let prog = format!("{{ {}; [{}] }}", stmts.join("; "), released.join(", "));
+            if let Outcome::Trace(t) =
+                run_program(&prog, Mode::Interp, Duration::from_secs(60)).await
+                && t.epochs.iter().any(|e| !e.events.is_empty())
+            {
+                fired += 1;
+            }
+        }
+        assert!(
+            fired * 4 >= progs * 3,
+            "{fired} of {progs} programs fired every typed call"
+        );
+    }
+
+    /// Kind unions and generated comparisons check: nothing orders a type
+    /// holding two numeric types.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_orderings_check() {
+        let mut rng = Rng::new(0x0bd);
+        let mut ctx = GenCtx::new();
+        let mut stmts = Vec::new();
+        for _ in 0..40 {
+            stmts.extend(kind_union(&mut ctx, &mut rng, "i64:3", "\"a\""));
+        }
+        for i in 0..40000 {
+            let b = exprs::gen_typed(&ctx, &mut rng, &GenType::Bool, 1);
+            if b.contains("let l: [") {
+                stmts.push(format!("let b{i} = {b}"));
+            }
+        }
+        let prog = format!("{{ {}; i64:0 }}", stmts.join("; "));
+        if let Err(e) = check_only(&prog, Duration::from_secs(120)).await {
+            panic!("{e}\n{prog}")
+        }
+    }
+
+    /// A tail shape whose base holds a catch, which the loop gate counts
+    /// as state, never asserts its loop.
+    #[test]
+    fn tail_assertion_skips_catch_bases() {
+        let (cfg, mut rng) = (GenCfg::default(), Rng::new(0xca7));
+        let mut caught = 0;
+        while caught < 10 {
+            let mut ctx = GenCtx::new();
+            let rec = gen_rec_lambda(&mut ctx, &mut rng, &cfg, &mut GenStats::default());
+            if rec[0].contains("catch(") {
+                caught += 1;
+                assert!(!rec[0].starts_with("#[tail_recursive]"), "{}", rec[0]);
+            }
+        }
+    }
 }

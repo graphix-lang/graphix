@@ -204,17 +204,21 @@ run!(place_through_param, PLACE_THROUGH_PARAM, prints(r#"[[["cursor", i64:1], ["
 // old target: the late read finds nothing and the deadline wins.
 const DEREF_NULL_REF_IS_BOTTOM: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 10 => s + 1, _ => never() };
   let x = 10;
   let r: [&i64, null] = &x;
   r <- null;
-  let late = sys::time::timer(duration:0.02s, false) ~ *(r$);
-  any(late, sys::time::timer(duration:0.1s, false) ~ -1)
+  let t1 = select step { 3 => null, _ => never() };
+  let late = t1 ~ *(r$);
+  let t2 = select step { 6 => null, _ => never() };
+  any(late, t2 ~ -1)
 }
 "#;
 
 run!(deref_null_ref_is_bottom, DEREF_NULL_REF_IS_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A fired address fires the dereference even when the new target is
 // standing: switching from &x to &y delivers y.
@@ -233,7 +237,7 @@ run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, prints("[i64:10, i64:20]");
 
 // A key move a selected reader saw is read stale by an arm woken after it:
 // the woken arm's counter does not tick.
-// CR claude for claude: [test-gap/medium] This test only asserts that the woken arm
+// XCR claude for claude: [test-gap/medium] This test only asserts that the woken arm
 // does not tick. It also passes if a woken Deref never fires, and nothing pins the
 // positive half: Deref::update's `wake::owed` read of a new target written while the
 // arm slept. Deleting that read fails no test. Add a twin. The other arm reads `r`
@@ -242,6 +246,11 @@ run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, prints("[i64:10, i64:20]");
 // at 1 when `y` is never written. probe:
 // design/review-2026-10-26/repro/tests-lang-rest-b-deref-stamp-catchup.gx
 // (tests-lang-rest-b-02)
+// 2026-10-26 claude: Twin added:
+// lang::byref::woken_deref_catches_up_a_target_written_asleep runs the probe's program
+// in every mode and asserts the woken count is 2 when y is written during the sleep and
+// 1 when it never is; it fails in all four modes with Deref::update's wake::owed read
+// removed.
 async fn woken_deref_reads_a_seen_move_stale(mode: Mode) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(
         r#"{
@@ -266,21 +275,63 @@ async fn woken_deref_reads_a_seen_move_stale(mode: Mode) -> Result<()> {
 
 modes!(woken_deref_reads_a_seen_move_stale);
 
+// A woken arm's dereference catches up a target that moved and was written
+// while it slept, which no selected arm tracked (the other arm reads `r`
+// without dereferencing it): the woken count ticks for the write, and does
+// not when the target was never written.
+async fn woken_deref_catches_up_a_target_written_asleep(mode: Mode) -> Result<()> {
+    const PROG: &str = r#"{
+    let n = 0;
+    n <- select n { k if k < 8 => k + 1, _ => never() };
+    let x = 1;
+    let y = 2;
+    y <- select n { WRITE => 20, _ => never() };
+    let which = 0;
+    which <- select n { 4 => 1, _ => never() };
+    let r = select which { 0 => &x, _ => &y };
+    let c = (n < 2) || (n >= 6);
+    select c {
+      true => count(*r),
+      false => r ~ -1
+    }
+}"#;
+    for (write, ticks) in [("3", 2), ("300", 1)] {
+        let (values, _) =
+            super::dense_deltas::run_delta(&PROG.replace("WRITE", write), mode).await?;
+        assert_eq!(
+            values.last(),
+            Some(&Value::I64(ticks)),
+            "write at {write}: {values:?}"
+        );
+    }
+    Ok(())
+}
+
+modes!(woken_deref_catches_up_a_target_written_asleep);
+
 // A place's address is evaluated once: a key with an effect runs it
 // once per fire (`n` fires at its binding and once more, not twice
 // more), and the read sees that one evaluation.
-// CR claude for claude: [risk/low] This fixture, deref_null_ref_is_bottom and
+// XCR claude for claude: [risk/low] This fixture, deref_null_ref_is_bottom and
 // place_root_bottom_mirror race a 20 ms timer against the runtime's next cycle (or a
 // 200 ms window). Under load the timer can win, and the test fails with the code right:
 // count 1, or the old target read. Sample on a step counter as the other place fixtures
 // do (`select step { 5 => null, _ => never() }`), so the read derives from the write.
 // Found by reading; not run. (tests-lang-rest-b-08)
+// 2026-10-26 claude: The three now derive their reads from the writes:
+// deref_null_ref_is_bottom and place_key_evaluated_once sample on a step counter, and
+// place_root_bottom_mirror writes b at a step and waits for GXHandle::wait_settled,
+// then drains the events, in place of a 200 ms window. deref_null_ref_is_bottom now
+// fuses (step counter), so its FuseExpect is Jit. No pin beyond the fixtures: nothing
+// was wrong in the code under test.
 const PLACE_KEY_EVALUATED_ONCE: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 5 => s + 1, _ => never() };
   let a = [10, 20];
   let n = 0;
   let r = &a[{ n <- a ~ n + 1; 0 }];
-  let t = sys::time::timer(duration:0.02s, false);
+  let t = select step { 3 => null, _ => never() };
   (t ~ count(n), t ~ *r)
 }
 "#;
@@ -291,7 +342,7 @@ run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, prints("[i64:2, i64:10]
 // happen, as no operation with a bottom input does; when the key returns
 // the reference retargets, and nothing written meanwhile lands there
 // (tests-lang-rest-b-03).
-// CR claude for claude: [test-gap/medium] This and the other byref fixtures pin only
+// XCR claude for claude: [test-gap/medium] This and the other byref fixtures pin only
 // one side of the rule: a write whose reference is BOTTOM is dropped. The other side,
 // 'a write made before the reference first arrives waits for it and lands at its first
 // target' (ConnectDeref::pending), has no pin, and removing `pending` fails nothing.
@@ -300,6 +351,11 @@ run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, prints("[i64:2, i64:10]
 // beside the `k$`-over-null form, which must leave x alone. probe:
 // design/review-2026-10-26/repro/tests-lang-rest-b-write-before-ref-arrives.gx
 // (tests-lang-rest-b-03)
+// 2026-10-26 claude: Pin: lang::byref::write_before_reference_arrives writes 42
+// through an after_idle reference (absent at the write: lands at x) and through k$
+// over a null k (bottom at the write: y stays 1), and reads both once x is 42. It
+// fails in all four modes with ConnectDeref's pending memory removed. The event-RHS
+// case is x-engine-firing-04, still open.
 const PLACE_BOTTOM_KEY: &str = r#"
 {
   let step = 0;
@@ -321,6 +377,26 @@ const PLACE_BOTTOM_KEY: &str = r#"
 "#;
 
 run!(place_bottom_key, PLACE_BOTTOM_KEY, prints("[[i64:10, i64:20], [i64:10, i64:20], [i64:10, i64:20]]"); FuseExpect::Jit);
+
+// A write made before its reference first arrives waits for it and lands
+// at its first target (`x`); one made while its reference is bottom does
+// not happen, and the reference arriving later writes nothing (`y`).
+const WRITE_BEFORE_REFERENCE_ARRIVES: &str = r#"
+{
+  let x = 1;
+  let y = 1;
+  let w = sys::time::after_idle(duration:50.ms, &mut x);
+  *w <- 42;
+  let k: [&mut i64, null] = null;
+  k <- &mut y;
+  let wk = k$;
+  *wk <- 42;
+  let landed = select x { 42 => null, _ => never() };
+  (landed ~ x, landed ~ y)
+}
+"#;
+
+run!(write_before_reference_arrives, WRITE_BEFORE_REFERENCE_ARRIVES, prints("[i64:42, i64:1]"); FuseExpect::Jit);
 
 // A place the root no longer has is bottom, not its last value: a
 // connect sampling it then writes nothing.
@@ -544,24 +620,21 @@ async fn place_root_bottom_mirror() -> Result<()> {
     let compiled = ctx
         .rt
         .compile(arcstr::literal!(
-            "{ let b = 1; b <- sys::time::timer(duration:0.02s, false) ~ 0; \
+            "{ let step = 0; \
+             step <- select step { s if s < 3 => s + 1, _ => never() }; \
+             let b = 1; b <- select step { 2 => 0, _ => never() }; \
              let a = [10 / b]; &a[0] }"
         ))
         .await?;
     let eid = compiled.exprs[0].id;
+    ctx.rt.wait_settled().await?;
     let mut cell = None;
-    let deadline = tokio::time::sleep(std::time::Duration::from_millis(200));
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => anyhow::bail!("runtime died"),
-                Some(mut batch) => for e in batch.drain(..) {
-                    if let GXEvent::Updated(id, v) = e && id == eid {
-                        cell = graphix_compiler::reference::cell(&v);
-                    }
-                }
+    while let Ok(mut batch) = rx.try_recv() {
+        for e in batch.drain(..) {
+            if let GXEvent::Updated(id, v) = e
+                && id == eid
+            {
+                cell = graphix_compiler::reference::cell(&v);
             }
         }
     }
@@ -828,19 +901,16 @@ async fn place_reference_fires_on_a_move(mode: Mode) -> Result<()> {
 modes!(place_reference_fires_on_a_move);
 
 // A typedef naming a reference is that reference as a union member too.
-// CR claude for claude: [test-gap/low] run! judges the first update only, which is `a`
-// at birth (1), so the `1 | 10` predicate never sees the write and the fixture only
-// proves the program compiles. A write through `[Cell, &mut i64]` that is dropped or
-// misrouted would pass. Observe after the write (run_delta asserting [1, 10], or sample
-// `a` a cycle later) and pin 10. Found by reading; the program prints 1 then 10 today.
-// (tests-lang-rest-b-09)
 run!(write_through_aliased_reference_union, r#"{
+  let step = 0;
+  step <- select step { s if s < 5 => s + 1, _ => never() };
   type Cell = &mut i64;
   let a = 1;
   let r: [Cell, &mut i64] = &mut a;
   *r <- 10;
-  a
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1 | 10))); FuseExpect::None);
+  let t = select step { 3 => null, _ => never() };
+  t ~ a
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(10))); FuseExpect::Jit);
 
 // A rank-2 parameter's quantifier is generic, not a binding an earlier
 // compile generalized: a writable reference to it is allowed.
