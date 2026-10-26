@@ -72,8 +72,10 @@ select n {
 
 A comment may also end the line of an item in a list, after the item's
 `;` or `,`: a statement, a `select` arm, a struct field, an array or tuple
-element, or a call's argument. And comments may stand below the last
-item, above the bracket that closes the list, or at the end of a file.
+element, a call's argument, a trait or impl method, or an interface item.
+And comments may stand below the last item, above the bracket that closes
+the list, or at the end of a file, a file of nothing but comments
+included.
 
 ```graphix
 let point = {
@@ -88,6 +90,7 @@ select point.x {
 ```
 
 Anywhere else is a parse error: between an operator and its operand
-(`x + // no`), or after an opening bracket on its line. The rule is what
+(`x + // no`), after an opening bracket on its line, or inside a string's
+`[..]` splice or an attribute's arguments, which print on one line. The rule is what
 lets the parser keep every comment in the syntax tree, so tools that
 rewrite a program (the formatter, the REPL echo) never lose one.

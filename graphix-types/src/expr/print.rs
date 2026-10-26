@@ -244,61 +244,83 @@ fn pretty_print_exprs(
 /// Each of `exprs` on its own line, `sep` after all but the last. The
 /// empty statement a trailing `;` leaves is that `;` and nothing more.
 fn pretty_items(buf: &mut PrettyBuf, exprs: &[Expr], sep: &str) -> fmt::Result {
-    for (i, e) in exprs.iter().enumerate() {
-        if i > 0 {
-            item_sep(buf, &exprs[i - 1], sep)?
-        }
-        if !matches!(e.kind, ExprKind::NoOp) {
-            e.fmt_pretty(buf)?
-        }
-    }
-    match exprs.last() {
-        // CR claude for claude: [bug/medium] When a `;` list ends in its separator, its
-        // last element is the NoOp `statements` makes for the empty slot. The parser
-        // (`commented`'s `place`) puts the comments below that separator on the
-        // statement before it. Here, and in `pretty_file_items`, only the last
-        // element's trailing comments are printed, so they are dropped and the
-        // formatter refuses its own output. A file `let a = 1;\nlet b = 2;\n// the
-        // end\n` cannot be formatted, nor can a block or seq ending `2;\n// below\n}`.
-        // Print the trailing comments of the last item that is not the trailing NoOp,
-        // after the NoOp's `;`. probe:
-        // design/review-2026-10-26/repro/t-parser-a-below-after-trailing-semi.sh
-        // (t-parser-a-01)
-        Some(last) => item_end(buf, last),
-        None => Ok(()),
+    // XCR claude for claude: [bug/medium] When a `;` list ends in its separator, its
+    // last element is the NoOp `statements` makes for the empty slot. The parser
+    // (`commented`'s `place`) puts the comments below that separator on the
+    // statement before it. Here, and in `pretty_file_items`, only the last
+    // element's trailing comments are printed, so they are dropped and the
+    // formatter refuses its own output. A file `let a = 1;\nlet b = 2;\n// the
+    // end\n` cannot be formatted, nor can a block or seq ending `2;\n// below\n}`.
+    // Print the trailing comments of the last item that is not the trailing NoOp,
+    // after the NoOp's `;`. probe:
+    // design/review-2026-10-26/repro/t-parser-a-below-after-trailing-semi.sh
+    // (t-parser-a-01)
+    // 2026-10-26 claude: The comments below a trailing `;` now ride its empty
+    // statement: `commented` returns the lines below the last item
+    // (`Listed::below`) and `statements` hangs them on the list's last element, the
+    // trailing NoOp included, so `item_end` prints them after the `;`;
+    // `pretty_items`, `pretty_file_items` and the trait/sig/impl printers share
+    // `pretty_separated`. Pins: format.rs an_empty_statement_is_its_semicolon and
+    // comments_after_list_items_stay, and expr::test expr_pp_round_trip, which now
+    // generates below lines on a trailing NoOp.
+    let below = exprs.last().map(below_of).unwrap_or(&[]);
+    pretty_separated(buf, exprs, sep, pretty_item, eol_of, below)
+}
+
+/// A list item: the empty statement a trailing `;` leaves prints nothing.
+pub(crate) fn pretty_item(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
+    match e.kind {
+        ExprKind::NoOp => Ok(()),
+        _ => e.fmt_pretty(buf),
     }
 }
 
-/// The `;`-separated items of a file: a blank line stands on both sides
-/// of every item that spans lines, and runs of one-line items stay tight.
-/// An item that prints nothing (a trailing `;`'s empty statement) is its
-/// separator alone.
+/// Each of `items` on its own line, `sep` after all but the last: each
+/// line ends with its item's `eol` comment, and `below` follows the last.
+fn pretty_separated<T>(
+    buf: &mut PrettyBuf,
+    items: &[T],
+    sep: &str,
+    mut item: impl FnMut(&mut PrettyBuf, &T) -> fmt::Result,
+    eol: impl Fn(&T) -> Option<&ArcStr>,
+    below: &[ArcStr],
+) -> fmt::Result {
+    for (i, it) in items.iter().enumerate() {
+        item(buf, it)?;
+        match i < items.len() - 1 {
+            true => item_sep(buf, sep, eol(it))?,
+            false => item_end(buf, eol(it), below)?,
+        }
+    }
+    if items.is_empty() {
+        item_end(buf, None, below)?
+    }
+    Ok(())
+}
+
+/// The `;`-separated items of a file, as [`pretty_separated`]: a blank
+/// line stands on both sides of every item that spans lines, and runs of
+/// one-line items stay tight. An item that prints nothing (a trailing
+/// `;`'s empty statement) is its separator alone.
 pub(crate) fn pretty_file_items<T>(
     buf: &mut PrettyBuf,
     items: &[T],
     item: impl Fn(&mut PrettyBuf, &T) -> fmt::Result,
-    expr: impl Fn(&T) -> Option<&Expr>,
+    eol: impl Fn(&T) -> Option<&ArcStr>,
+    below: &[ArcStr],
 ) -> fmt::Result {
-    let mut prev_spans_lines = false;
-    for (i, it) in items.iter().enumerate() {
+    let mut prev_spans_lines = None;
+    let spaced = |buf: &mut PrettyBuf, it: &T| {
         let start = buf.mark();
         item(buf, it)?;
         let spans_lines = buf.since(start).trim_end_matches('\n').contains('\n');
-        if i > 0 && (spans_lines || prev_spans_lines) {
+        if prev_spans_lines.is_some_and(|prev| prev || spans_lines) {
             buf.insert_newline(start)
         }
-        prev_spans_lines = spans_lines;
-        match (i < items.len() - 1, expr(it)) {
-            (true, Some(e)) => item_sep(buf, e, ";")?,
-            (true, None) => {
-                buf.kill_newline();
-                writeln!(buf, ";")?
-            }
-            (false, Some(e)) => item_end(buf, e)?,
-            (false, None) => (),
-        }
-    }
-    Ok(())
+        prev_spans_lines = Some(spans_lines);
+        Ok(())
+    };
+    pretty_separated(buf, items, ";", spaced, eol, below)
 }
 
 /// Whether the multi-line layout of `e` opens with a short head and a
@@ -608,8 +630,7 @@ fn shows(dec: &Option<Arc<Decorations>>) -> bool {
 /// Whether `dec` prints comments after a list item: one ending its line,
 /// or lines below the last.
 fn trails(dec: &Option<Arc<Decorations>>) -> bool {
-    print_as_written()
-        && dec.as_ref().is_some_and(|d| d.eol.is_some() || !d.below.is_empty())
+    dec.as_ref().is_some_and(|d| shows_trailing(d.eol.as_ref(), &d.below))
 }
 
 /// Whether anything in `e`, `e` included, prints on lines of its own or
@@ -619,16 +640,24 @@ pub(crate) fn decorated(e: &Expr) -> bool {
     shows(&e.dec) || trails(&e.dec) || kind_decorated(&e.kind)
 }
 
-/// The comment ending `e`'s line, as written.
-fn write_eol(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
-    match e.dec.as_ref().and_then(|d| d.eol.as_ref()) {
-        Some(c) if print_as_written() => write!(buf, " //{c}"),
-        _ => Ok(()),
-    }
+/// The comment ending the list item `e`'s line.
+pub(crate) fn eol_of(e: &Expr) -> Option<&ArcStr> {
+    e.dec.as_ref().and_then(|d| d.eol.as_ref())
 }
 
-/// `sep` after the list item `prev`, then the comment ending its line.
-// CR claude for claude: [bug/medium] A statement list ending in `;` and then an
+/// The lines below `e`, the last item of a list.
+pub(crate) fn below_of(e: &Expr) -> &[ArcStr] {
+    e.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[])
+}
+
+/// Whether a list item's comments after it print: `eol`, the one ending
+/// its line, and `below`, the lines below the last.
+fn shows_trailing(eol: Option<&ArcStr>, below: &[ArcStr]) -> bool {
+    print_as_written() && (eol.is_some() || !below.is_empty())
+}
+
+/// `sep` after a list item, then `eol`, the comment ending its line.
+// XCR claude for claude: [bug/medium] A statement list ending in `;` and then an
 // own-line comment (`{ a; b;\n// c\n}`, or a file `x;\n// c`) cannot be formatted. The
 // parser's `commented` hangs the comment on `b` as `below`, but only `item_end` prints
 // `below`, and it runs on the empty statement after the `;`. The comment is lost and
@@ -636,23 +665,34 @@ fn write_eol(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
 // eol comment. Add both shapes to format.rs's `an_empty_statement_is_its_semicolon`.
 // probe: design/review-2026-10-26/repro/t-format-resolver-trailing-semi-comment.sh Also
 // reported as (tests-expr-01), (x-formatter-01). (t-format-resolver-01)
-fn item_sep(buf: &mut PrettyBuf, prev: &Expr, sep: &str) -> fmt::Result {
+// 2026-10-26 claude: Fixed at the parser rather than here: a `below` now only ever
+// rides a list's last element, the trailing `;`'s empty statement when there is one
+// (`statements`), so `item_sep` has nothing to write and `item_end` prints the lines
+// after the `;`. Both shapes are in format.rs an_empty_statement_is_its_semicolon;
+// expr_pp_round_trip generates them.
+fn item_sep(buf: &mut PrettyBuf, sep: &str, eol: Option<&ArcStr>) -> fmt::Result {
     buf.kill_newline();
     write!(buf, "{sep}")?;
-    write_eol(buf, prev)?;
+    if let Some(c) = eol.filter(|_| print_as_written()) {
+        write!(buf, " //{c}")?
+    }
     writeln!(buf)
 }
 
-/// After a list's last item `last`: the comment ending its line and the
-/// lines below it.
-fn item_end(buf: &mut PrettyBuf, last: &Expr) -> fmt::Result {
-    if !trails(&last.dec) {
+/// After a list's last item: the comment ending its line, then the lines
+/// below it.
+fn item_end(buf: &mut PrettyBuf, eol: Option<&ArcStr>, below: &[ArcStr]) -> fmt::Result {
+    if !shows_trailing(eol, below) {
         return Ok(());
     }
     buf.kill_newline();
-    write_eol(buf, last)?;
-    writeln!(buf)?;
-    write_comments(buf, last.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[]))
+    if let Some(c) = eol {
+        write!(buf, " //{c}")?
+    }
+    if !buf.at_line_start() {
+        writeln!(buf)?
+    }
+    write_comments(buf, below)
 }
 
 fn kind_decorated(k: &ExprKind) -> bool {
@@ -674,6 +714,7 @@ fn kind_decorated(k: &ExprKind) -> bool {
 fn sig_item_decorated(si: &SigItem) -> bool {
     si.doc.0.is_some()
         || shows_comments(si.comments.lines())
+        || shows_trailing(si.eol.text(), &[])
         || matches!(&si.kind, SigKind::Trait(t) if t.decorated())
 }
 
@@ -1041,25 +1082,27 @@ impl fmt::Display for TraitExpr {
 
 impl PrettyDisplay for TraitExpr {
     fn decorated(&self) -> bool {
-        self.methods.iter().any(|m| {
-            m.doc.0.is_some()
-                || !m.attrs.is_empty()
-                || shows_comments(m.comments.lines())
-                || m.default.as_ref().is_some_and(decorated)
-        })
+        shows_comments(self.below.lines())
+            || self.methods.iter().any(|m| {
+                m.doc.0.is_some()
+                    || !m.attrs.is_empty()
+                    || shows_comments(m.comments.lines())
+                    || shows_trailing(m.eol.text(), &[])
+                    || m.default.as_ref().is_some_and(decorated)
+            })
     }
 
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         writeln!(buf, "trait {} {{", self.name)?;
         buf.nested(|buf| {
-            for (i, m) in self.methods.iter().enumerate() {
-                m.fmt_pretty_inner(buf)?;
-                if i < self.methods.len() - 1 {
-                    buf.kill_newline();
-                    writeln!(buf, ";")?;
-                }
-            }
-            Ok(())
+            pretty_separated(
+                buf,
+                &self.methods,
+                ";",
+                |buf, m| m.fmt_pretty_inner(buf),
+                |m| m.eol.text(),
+                self.below.lines(),
+            )
         })?;
         writeln!(buf, "}}")
     }
@@ -1117,16 +1160,7 @@ impl PrettyDisplay for ImplExpr {
             return writeln!(buf);
         }
         writeln!(buf, " {{")?;
-        buf.nested(|buf| {
-            for (i, m) in self.methods.iter().enumerate() {
-                m.fmt_pretty(buf)?;
-                if i < self.methods.len() - 1 {
-                    buf.kill_newline();
-                    writeln!(buf, ";")?;
-                }
-            }
-            Ok(())
-        })?;
+        buf.nested(|buf| pretty_items(buf, &self.methods, ";"))?;
         writeln!(buf, "}}")
     }
 }
@@ -1243,31 +1277,22 @@ impl fmt::Display for Sig {
 
 impl PrettyDisplay for Sig {
     fn decorated(&self) -> bool {
-        self.items.iter().any(sig_item_decorated)
+        shows_comments(self.below.lines()) || self.items.iter().any(sig_item_decorated)
     }
 
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         if !self.toplevel {
             writeln!(buf, "sig {{")?;
         }
-        if self.toplevel {
-            pretty_file_items(
-                buf,
-                &self.items,
-                |buf, si| si.fmt_pretty_inner(buf),
-                |_| None,
-            )?
-        } else {
-            buf.nested(|buf| {
-                for (i, si) in self.iter().enumerate() {
-                    si.fmt_pretty_inner(buf)?;
-                    if i < self.len() - 1 {
-                        buf.kill_newline();
-                        writeln!(buf, ";")?
-                    }
-                }
-                Ok(())
-            })?
+        let item = |buf: &mut PrettyBuf, si: &SigItem| si.fmt_pretty_inner(buf);
+        fn eol(si: &SigItem) -> Option<&ArcStr> {
+            si.eol.text()
+        }
+        match self.toplevel {
+            true => pretty_file_items(buf, &self.items, item, eol, self.below.lines())?,
+            false => buf.nested(|buf| {
+                pretty_separated(buf, &self.items, ";", item, eol, self.below.lines())
+            })?,
         }
         if !self.toplevel {
             writeln!(buf, "}}")?
@@ -1473,7 +1498,7 @@ fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result 
         let fields = as_written(fields);
         for (i, (name, e)) in fields.iter().enumerate() {
             if i > 0 {
-                item_sep(buf, &fields[i - 1].1, ",")?
+                item_sep(buf, ",", eol_of(&fields[i - 1].1))?
             }
             write_leading(buf, &e.dec)?;
             match puns(name, e) {
@@ -1485,7 +1510,7 @@ fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result 
             }
         }
         match fields.last() {
-            Some((_, last)) => item_end(buf, last),
+            Some((_, last)) => item_end(buf, eol_of(last), below_of(last)),
             None => Ok(()),
         }
     })
@@ -1646,7 +1671,7 @@ impl PrettyDisplay for ApplyExpr {
         buf.nested(|buf| {
             for (i, (name, e)) in args.iter().enumerate() {
                 if i > 0 {
-                    item_sep(buf, &args[i - 1].1, ",")?
+                    item_sep(buf, ",", eol_of(&args[i - 1].1))?
                 }
                 match name {
                     None => e.fmt_pretty(buf)?,
@@ -1658,7 +1683,7 @@ impl PrettyDisplay for ApplyExpr {
                 }
             }
             match args.last() {
-                Some((_, last)) => item_end(buf, last),
+                Some((_, last)) => item_end(buf, eol_of(last), below_of(last)),
                 None => Ok(()),
             }
         })?;
@@ -1921,8 +1946,8 @@ impl PrettyDisplay for SelectExpr {
                 write!(buf, "=>")?;
                 pretty_tail_bare(buf, expr)?;
                 match i < arms.len() - 1 {
-                    true => item_sep(buf, expr, ",")?,
-                    false => item_end(buf, expr)?,
+                    true => item_sep(buf, ",", eol_of(expr))?,
+                    false => item_end(buf, eol_of(expr), below_of(expr))?,
                 }
             }
             Ok(())

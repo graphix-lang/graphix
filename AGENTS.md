@@ -470,8 +470,8 @@ position that is always equal, hashes to nothing, packs to nothing) on
 struct pattern binds, struct type fields, variant types, every declared
 name (`Name`) and every expression's end, `Expr::pos`
 for struct literal fields, `Expr::str_form` for a string's delimiters,
-`Comments` (always equal) for the `//` lines above an interface item or
-a trait method.
+`Comments` and `Eol` (`Aside`: always equal) for the `//` lines above,
+after and below an interface item or a trait method.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error), so comments print
@@ -1308,9 +1308,12 @@ cycle, across workers; the compiler never pins threads.
 - **Comments** are legal above an expression, a select arm, an impl or
   trait method, a struct-literal field or an interface item, at the end
   of a list item's line after its separator (a statement, an arm, a
-  field, an element, an argument: `Decorations::eol`) and below a list's
-  last item or a file's (`Decorations::below`); `///` docs only in an
-  interface. Parse errors report the furthest point
+  field, an element, an argument: `Decorations::eol`; an interface item
+  or a trait method: `Eol`) and below a list's last item or a file's
+  (`Decorations::below`, on a trailing `;`'s empty statement when there
+  is one; `Sig::below`, `TraitExpr::below`); none inside a string's
+  splice or an attribute's arguments, which print on one line; `///`
+  docs only in an interface. Parse errors report the furthest point
   reached with the source line and a caret, and a refusal its reason.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is

@@ -1,7 +1,7 @@
 use super::{
     GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr,
     grow::{grow, note_reason, refuse},
-    sptoken,
+    holds_comment, sptoken,
 };
 use crate::expr::{Expr, ExprKind, StrForm};
 use arcstr::ArcStr;
@@ -68,8 +68,8 @@ parser! {
             }
         }
         // a splice prints on its string's line, where no comment can stand
-        let spliced = |e: Expr| {
-            // CR claude for claude: [bug/medium] This checks only comments above a
+        let spliced = |(e, end): (Expr, SourcePosition)| {
+            // XCR claude for claude: [bug/medium] This checks only comments above a
             // node. A comment ending a line (`Decorations::eol`) or below a list's last
             // item (`below`) inside a splice parses and runs, but the printer writes a
             // splice flat and drops it, so `graphix fmt` refuses the file as a
@@ -81,7 +81,13 @@ parser! {
             // design/review-2026-10-26/repro/tests-expr-splice-eol-comment.gx,
             // design/review-2026-10-26/repro/tests-expr-splice-comment-reason.gx
             // (tests-expr-02)
-            // CR claude for claude: [bug/medium] This checks only `dec.comments`, so a
+            // 2026-10-26 claude: `holds_comment` (parser/mod.rs) refuses every comment
+            // in a splice: above, at the end of a line, below a list, a trait's or a
+            // sig's, and one in an attribute's arguments; the refusal is noted at the
+            // splice's end, where a multi-line splice's failure is reported, so the
+            // reason reaches the user. Pin: parser/test.rs
+            // no_comment_stands_inside_a_splice_or_an_attribute.
+            // CR claude for eric: [bug/medium] This checks only `dec.comments`, so a
             // comment ending a line inside a splice (`"[{ let x = 1; // hi\n x }]"`) or
             // standing below a list in one parses. The formatter then refuses the file
             // as its own bug. An attribute in a splice also gets through, and the
@@ -90,17 +96,24 @@ parser! {
             // whether attributes stay legal in splices. probe:
             // design/review-2026-10-26/repro/t-parser-a-splice-eol-comment.sh
             // (t-parser-a-02)
-            let commented = e.fold(false, &mut |c, e| {
-                c || e.dec.as_ref().is_some_and(|d| !d.comments.is_empty())
-            });
-            match commented {
-                true => refuse(e.pos, "a comment cannot stand inside a string's splice")
+            // 2026-10-26 claude: Comments of every kind are now refused in a splice
+            // (`holds_comment`, pin parser/test.rs
+            // no_comment_stands_inside_a_splice_or_an_attribute). Attributes are still
+            // accepted there, and the printer still breaks the splice across lines for
+            // one (`"a [{ #[pure] let y = x; y }] b"`, which reads back the same).
+            // Question for Eric: refuse attributes in a splice (a syntax rule: a
+            // program that parses today would be refused), or keep them and have the
+            // splice printer write attributes on the expression's line (`#[pure] let y
+            // = x` parses on one line), departing from 'a tree holding an attribute has
+            // no single-line form' for splices only?
+            match holds_comment(&e) {
+                true => refuse(end, "a comment cannot stand inside a string's splice")
                     .right(),
                 false => value(Intp::Expr(e)).left(),
             }
         };
         let interp_part = || attempt(
-            between(token('['), sptoken(']'), expr()).then(spliced)
+            between(token('['), sptoken(']'), (expr(), position())).then(spliced)
         );
         // A `[` that opens no well-formed `[expr]` ends the string parse;
         // the note names the escape.
@@ -132,7 +145,7 @@ parser! {
         // `\[expr]`; `\]` is an error; content ends at the first unescaped
         // `"""`; one newline right after the opener is stripped.
         let splice_part = || attempt(string("\\["))
-            .with(expr())
+            .with((expr(), position()))
             .skip(sptoken(']'))
             .then(spliced);
         let triple_run = || (

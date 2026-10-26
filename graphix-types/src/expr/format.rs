@@ -6,8 +6,8 @@ use crate::{
         UseItem,
         parser::{parse, parse_sig},
         print::{
-            PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items, use_seg,
-            use_seg_key,
+            PrettyBuf, PrettyDisplay, below_of, cmp_use_items, eol_of, pretty_file_items,
+            pretty_item, use_seg, use_seg_key,
         },
     },
     format_with_flags,
@@ -218,7 +218,9 @@ fn merge_sig_uses(sig: &Sig) -> Sig {
         &sig.items,
         |si| match &si.kind {
             SigKind::Use { reexport, names }
-                if si.doc.0.is_none() && si.comments.lines().is_empty() =>
+                if si.doc.0.is_none()
+                    && si.comments.lines().is_empty()
+                    && si.eol.text().is_none() =>
             {
                 Some((*reexport, names))
             }
@@ -235,7 +237,7 @@ fn merge_sig_uses(sig: &Sig) -> Sig {
         }
         _ => si.clone(),
     }));
-    Sig { items, toplevel: sig.toplevel }
+    Sig { items, toplevel: sig.toplevel, below: sig.below.clone() }
 }
 
 fn merge_trait_uses(t: &TraitExpr) -> Arc<TraitExpr> {
@@ -245,6 +247,7 @@ fn merge_trait_uses(t: &TraitExpr) -> Arc<TraitExpr> {
             default: m.default.as_ref().map(merge_uses_within),
             ..m.clone()
         })),
+        below: t.below.clone(),
     })
 }
 
@@ -321,11 +324,9 @@ impl Parsed {
             Self::Program(exprs) => pretty_file_items(
                 buf,
                 exprs,
-                |buf, e| match e.kind {
-                    ExprKind::NoOp => Ok(()),
-                    _ => e.fmt_pretty(buf),
-                },
-                |e: &Expr| Some(e),
+                pretty_item,
+                eol_of,
+                exprs.last().map(below_of).unwrap_or(&[]),
             )?,
             Self::Interface(sig) => sig.fmt_pretty_inner(buf)?,
         }
@@ -395,6 +396,7 @@ impl Parsed {
 enum Ornament<'a> {
     Decorations(&'a Decorations),
     Comments(&'a [ArcStr]),
+    Eol(Option<&'a ArcStr>),
     Delimiters(StrForm),
 }
 
@@ -419,7 +421,7 @@ impl<'a> Ornaments<'a> {
         })
     }
 
-    // CR claude for claude: [bug/medium] An attribute's arguments are not children, so
+    // XCR claude for claude: [bug/medium] An attribute's arguments are not children, so
     // this walk never visits them. `Ornament::Decorations` compares their `Decorations`
     // with an equality that ignores an argument's own decorations. A comment inside an
     // attribute argument that the printer drops (an end-of-line one: `Attr` prints its
@@ -428,11 +430,19 @@ impl<'a> Ornaments<'a> {
     // refuse comments inside attribute arguments as `spliced` does for a splice. probe:
     // design/review-2026-10-26/repro/tests-expr-fmt-attr-arg-comment-lost.gx
     // (tests-expr-03)
+    // 2026-10-26 claude: `Ornaments::expr` walks each attribute's arguments as
+    // children, so the guard sees their decorations; `attribute()` refuses an argument
+    // holding a comment (`holds_comment`), as a splice does. Pins: format.rs
+    // the_guard_reads_attribute_arguments (fails without the walk), parser/test.rs
+    // no_comment_stands_inside_a_splice_or_an_attribute (the attribute case).
     fn expr(&mut self, e: &'a Expr) {
         ensure_sufficient(|| {
             self.node += 1;
             if let Some(d) = &e.dec {
-                self.push(Ornament::Decorations(d))
+                self.push(Ornament::Decorations(d));
+                for a in d.attrs.iter() {
+                    a.args.iter().for_each(|a| self.expr(a))
+                }
             }
             match &e.kind {
                 ExprKind::Constant(Value::String(_))
@@ -447,11 +457,7 @@ impl<'a> Ornaments<'a> {
                     .arms
                     .iter()
                     .for_each(|(p, _)| self.pattern(&p.structure_predicate)),
-                ExprKind::Trait(t) => {
-                    for m in t.methods.iter() {
-                        self.push(Ornament::Comments(m.comments.lines()))
-                    }
-                }
+                ExprKind::Trait(t) => self.methods(t, |_, _| ()),
                 ExprKind::Module { value, .. }
                     if let ModuleKind::Dynamic { sig, .. } = &**value =>
                 {
@@ -466,19 +472,33 @@ impl<'a> Ornaments<'a> {
         })
     }
 
+    /// A trait's comments; `default` walks a method's default body, which
+    /// an expression's walk reaches as a child.
+    fn methods(
+        &mut self,
+        t: &'a TraitExpr,
+        mut default: impl FnMut(&mut Self, &'a Expr),
+    ) {
+        for m in t.methods.iter() {
+            self.push(Ornament::Comments(m.comments.lines()));
+            self.push(Ornament::Eol(m.eol.text()));
+            if let Some(d) = &m.default {
+                default(self, d)
+            }
+        }
+        self.push(Ornament::Comments(t.below.lines()))
+    }
+
     fn sig(&mut self, sig: &'a Sig) {
         for si in sig.items.iter() {
             self.node += 1;
             self.push(Ornament::Comments(si.comments.lines()));
+            self.push(Ornament::Eol(si.eol.text()));
             if let SigKind::Trait(t) = &si.kind {
-                for m in t.methods.iter() {
-                    self.push(Ornament::Comments(m.comments.lines()));
-                    if let Some(d) = &m.default {
-                        self.expr(d)
-                    }
-                }
+                self.methods(t, |w, d| w.expr(d))
             }
         }
+        self.push(Ornament::Comments(sig.below.lines()))
     }
 }
 
@@ -1242,6 +1262,86 @@ mod tests {
         );
     }
 
+    // the comment ending an item's line, after its separator, and those
+    // below a list's last item stay, in every list, with and without a
+    // trailing separator
+    #[test]
+    fn comments_after_list_items_stay() {
+        use SourceKind::*;
+        for (kind, src) in [
+            (Program, "// only a comment\n"),
+            (Program, "let a = 1;\nlet b = 2;\n// the end\n"),
+            (Program, "let z = {\n    a; // e\n    b // f\n    // c\n};\n\nz\n"),
+            (Program, "seq t {\n    a;\n    b;\n    // below\n}\n"),
+            (Program, "[\n    1, // one\n    2\n    // below\n]\n"),
+            (Program, "f(\n    1, // one\n    2 // two\n    // below\n)\n"),
+            (Program, "select x {\n    1 => 2, // a\n    _ => 3\n    // below\n}\n"),
+            (Program, "{\n    a: 1, // a\n    b: 2\n    // below\n}\n"),
+            (
+                Program,
+                "trait T {\n    val f: fn(self) -> i64; // f\n    val g: fn(self) -> i64 // g\n    // below\n};\n\n1\n",
+            ),
+            (Program, "trait T {\n    // nothing yet\n};\n\n1\n"),
+            (
+                Program,
+                "impl T for i64 {\n    let f = |x| x; // f\n    let g = |x| x // g\n    // below\n};\n\n1\n",
+            ),
+            (
+                Program,
+                "mod m dynamic {\n    sandbox unrestricted;\n    sig {\n        val x: i64; // x\n        val y: i64\n        // below\n    };\n    source \"let x = 1\";\n};\n\nm::x\n",
+            ),
+            (Interface, "// only a comment\n"),
+            (Interface, "val x: i64; // x\nval y: i64 // y\n// below\n"),
+            (
+                Interface,
+                "trait T {\n    /// d\n    val f: fn(self) -> i64; // f\n    val g: fn(self) -> i64\n    // below\n}\n",
+            ),
+        ] {
+            formats_to(kind, src, src)
+        }
+        // a trailing separator after the last item is not kept
+        formats_to(
+            Program,
+            "[\n    1,\n    2,\n    // below\n]\n",
+            "[\n    1,\n    2\n    // below\n]\n",
+        );
+        formats_to(
+            Program,
+            "impl T for i64 {\n    let f = |x| x;\n    // below\n};\n1\n",
+            "impl T for i64 {\n    let f = |x| x\n    // below\n};\n\n1\n",
+        );
+        formats_to(
+            Interface,
+            "val x: i64;\n// val y: i64\n",
+            "val x: i64\n// val y: i64\n",
+        );
+    }
+
+    // the guard sees a comment inside an attribute's argument, which the
+    // parser refuses
+    #[test]
+    fn the_guard_reads_attribute_arguments() {
+        use crate::expr::Attr;
+        use SourceKind::Program;
+        use arcstr::literal;
+        let src = "#[a(b)]\nlet x = 1";
+        let Parsed::Program(exprs) = Parsed::new(Program, src).unwrap() else {
+            unreachable!()
+        };
+        let mut e = exprs[0].clone();
+        let mut d = (**e.dec.as_ref().unwrap()).clone();
+        let mut arg = d.attrs[0].args[0].clone();
+        arg.dec = Some(Arc::new(Decorations {
+            comments: Arc::from_iter([literal!(" lost")]),
+            ..Decorations::default()
+        }));
+        d.attrs =
+            Arc::from_iter([Attr { args: Arc::from_iter([arg]), ..d.attrs[0].clone() }]);
+        e.dec = Some(Arc::new(d));
+        let e = guard(Program, &Parsed::Program(Arc::from_iter([e])), src).unwrap_err();
+        assert!(e.to_string().contains("lost or moved a comment"), "{e}");
+    }
+
     #[test]
     fn comments_above_interface_items_and_trait_methods_stay() {
         use SourceKind::*;
@@ -1339,6 +1439,9 @@ mod tests {
         use SourceKind::Program;
         formats_to(Program, "{ a; b; }", "{ a; b; }\n");
         formats_to(Program, "x;", "x;\n");
+        formats_to(Program, "x;\n// c\n", "x;\n// c\n");
+        formats_to(Program, "{ a; b;\n// c\n}", "{\n    a;\n    b;\n    // c\n}\n");
+        formats_to(Program, "{ a;\n// c\n}", "{\n    a;\n    // c\n}\n");
         let cfg = FormatConfig { width: 12, ..FormatConfig::default() };
         let out = format_source(Program, "let f = { alpha; beta; }", &cfg).unwrap();
         assert_eq!(&*out, "let f = {\n    alpha;\n    beta;\n}\n");

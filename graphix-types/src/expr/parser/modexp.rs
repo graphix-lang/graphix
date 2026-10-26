@@ -1,14 +1,13 @@
 use super::{
-    csep, doc_comment, expr, fname,
+    csep, decl_items, doc_comment, expr, fname,
     grow::{grow, refusal},
     leading_comments, modpath, sep_by1_tok, spaces, spname, spstring, sptoken,
     traitexp::{impl_decl, trait_decl},
     typ, typedef, typname,
 };
 use crate::expr::{
-    BindSig, Comments, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox, Sig, SigItem,
-    SigKind, UseItem, WrittenPath, get_origin,
-    parser::{semisep, spaces1},
+    BindSig, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox, Sig,
+    SigItem, SigKind, UseItem, WrittenPath, get_origin, parser::spaces1,
 };
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, optional,
@@ -57,6 +56,7 @@ parser! {
         )
             .map(|(mut comments, doc, pos, kind)| SigItem {
                 comments: Comments::of(comments.drain(..)),
+                eol: Eol::default(),
                 doc,
                 kind,
                 pos,
@@ -74,10 +74,12 @@ where
     spstring("sig").with(spaces()).with(between(
         token('{'),
         sptoken('}'),
-        sep_by1_tok(sig_item(), semisep(), token('}')).map(
-            |mut i: LPooled<Vec<SigItem>>| Sig {
-                toplevel: false,
-                items: Arc::from_iter(i.drain(..)),
+        (position(), decl_items(sig_item, || token('}'), true)).and_then(
+            |(pos, (mut i, below)): (_, (LPooled<Vec<SigItem>>, _))| match i.is_empty() {
+                true => Err(refusal::<I>(pos, "a `sig` declares at least one item")),
+                false => {
+                    Ok(Sig { toplevel: false, items: Arc::from_iter(i.drain(..)), below })
+                }
             },
         ),
     ))

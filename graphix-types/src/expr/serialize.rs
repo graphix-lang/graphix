@@ -140,6 +140,7 @@ impl Pack for SigItem {
             true => image::origin_len(&self.ori),
         };
         self.comments.encoded_len()
+            + self.eol.encoded_len()
             + self.doc.encoded_len()
             + self.kind.encoded_len()
             + <i32 as Pack>::encoded_len(&self.pos.line)
@@ -149,6 +150,7 @@ impl Pack for SigItem {
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         self.comments.encode(buf)?;
+        self.eol.encode(buf)?;
         self.doc.encode(buf)?;
         self.kind.encode(buf)?;
         <i32 as Pack>::encode(&self.pos.line, buf)?;
@@ -161,6 +163,7 @@ impl Pack for SigItem {
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let comments = Pack::decode(buf)?;
+        let eol = Pack::decode(buf)?;
         let doc = Pack::decode(buf)?;
         let kind = Pack::decode(buf)?;
         let line = <i32 as Pack>::decode(buf)?;
@@ -169,7 +172,14 @@ impl Pack for SigItem {
             false => get_origin(),
             true => image::origin_decode(buf)?,
         };
-        Ok(SigItem { comments, doc, kind, pos: SourcePosition { line, column }, ori })
+        Ok(SigItem {
+            comments,
+            eol,
+            doc,
+            kind,
+            pos: SourcePosition { line, column },
+            ori,
+        })
     }
 }
 

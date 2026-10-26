@@ -1,20 +1,20 @@
 use super::{
-    attribute, csep, doc_comment, expr,
+    attribute, csep, decl_items, doc_comment, expr,
     grow::refuse,
-    leading_comments, name, semisep, sep_by_tok, sep_by1_tok, spaces, spaces1, sptoken,
+    leading_comments, name, sep_by1_tok, spaces, spaces1, sptoken, statements, trail,
     typexp::{flatten_bounds, tvar_opt_bound, typ, typath},
     typname,
 };
 use crate::{
     expr::{
-        Attr, Comments, Doc, Expr, ExprKind, ImplExpr, Name, StructurePattern, TraitExpr,
-        TraitMethod,
+        Attr, Comments, Doc, Eol, Expr, ExprKind, ImplExpr, Name, StructurePattern,
+        TraitExpr, TraitMethod,
     },
     typ::{FnArgKind, TVar, Type},
 };
 use arcstr::ArcStr;
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, many, optional,
+    ParseError, Parser, RangeStream, attempt, between, look_ahead, many, optional,
     parser::char::string,
     position,
     stream::{Range, position::SourcePosition},
@@ -72,8 +72,17 @@ where
                 }
                 let comments = Comments::of(comments.drain(..));
                 let attrs = Arc::from_iter(attrs.drain(..));
-                value(TraitMethod { comments, doc, attrs, name, typ: ft, self_index, default })
-                    .left()
+                value(TraitMethod {
+                    comments,
+                    eol: Eol::default(),
+                    doc,
+                    attrs,
+                    name,
+                    typ: ft,
+                    self_index,
+                    default,
+                })
+                .left()
             }
             _ => refuse(end, "a trait method must have a function type").right(),
         })
@@ -91,14 +100,14 @@ where
         spaces().with(between(
             token('{'),
             sptoken('}'),
-            spaces().with(sep_by_tok(trait_method(sig), semisep(), token('}'))),
+            spaces().with(decl_items(move || trait_method(sig), || token('}'), sig)),
         )),
         position(),
     )
         .then(
-            |((at, name), mut methods, end): (
+            |((at, name), (mut methods, below), end): (
                 (_, ArcStr),
-                LPooled<Vec<TraitMethod>>,
+                (LPooled<Vec<TraitMethod>>, Comments),
                 _,
             )| {
                 let name = Name::written(name, at);
@@ -109,7 +118,7 @@ where
                     return refuse(end, "duplicate trait method").right();
                 }
                 let methods = Arc::from_iter(methods.drain(..));
-                value(TraitExpr { name, methods }).left()
+                value(TraitExpr { name, methods, below }).left()
             },
         )
 }
@@ -134,10 +143,10 @@ where
         spaces().with(position()),
         typath(),
         spaces1().with(string("for")).with(spaces1()).with(typ()),
-        spaces().with(optional(between(
+        optional(attempt(spaces().skip(look_ahead(token('{')))).with(between(
             token('{'),
             sptoken('}'),
-            // CR claude for claude: [bug/medium] Impl methods are `let` statements, but
+            // XCR claude for claude: [bug/medium] Impl methods are `let` statements, but
             // this list is `sep_by_tok`, not the block's `statements`. So `let show =
             // ..; // eol` and a `// below` line under the last method are parse errors,
             // while the same lines in a `{ .. }` block parse. CLAUDE.md makes both
@@ -146,7 +155,18 @@ where
             // printer write eol/below as the block printer does. probe:
             // design/review-2026-10-26/repro/t-parser-b-list-comments.sh
             // (t-parser-b-03)
-            spaces().with(sep_by_tok(expr(), semisep(), token('}'))),
+            // 2026-10-26 claude: Impl bodies parse with `statements(|| token('}'))`; a
+            // trailing `;`'s empty statement is dropped and the lines below it move to
+            // the last method (an empty body holding only comments is refused), and the
+            // impl printer is `pretty_items`. The body's `{` is looked for before any
+            // space is consumed, so a bodiless impl ending a list leaves the next
+            // line's comment below it. Pins: parser/test.rs
+            // a_comment_below_the_last_impl_method_rides_it (was
+            // trailing_impl_comment_is_error) and
+            // a_comment_starting_a_line_stands_below, format.rs
+            // comments_after_list_items_stay (impl cases), expr_pp_round_trip
+            // (generated impl method eol/below).
+            spaces().with(statements(|| token('}'))),
         ))),
         position(),
     )
@@ -173,6 +193,21 @@ where
                     params.drain(..).filter_map(|(tv, b)| b.map(|b| (tv, b))),
                 );
                 let mut ms: LPooled<Vec<Expr>> = methods.unwrap_or_else(LPooled::take);
+                // a trailing `;` leaves an empty statement holding the lines below it
+                if let Some(empty) = ms.pop_if(|e| matches!(e.kind, ExprKind::NoOp)) {
+                    let below = empty.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[]);
+                    match ms.last_mut() {
+                        Some(m) => trail(m, None, below),
+                        None if below.is_empty() => (),
+                        None => {
+                            return refuse(
+                                end,
+                                "a comment here has no method to describe",
+                            )
+                            .right();
+                        }
+                    }
+                }
                 let simple = |m: &Expr| {
                     matches!(&m.kind, ExprKind::Bind(b)
                         if matches!(b.pattern, StructurePattern::Bind(_)))

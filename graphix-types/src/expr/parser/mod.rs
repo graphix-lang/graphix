@@ -1,9 +1,9 @@
 use crate::{
     expr::{
-        Attr, BindExpr, CatchExpr, CatchRole, Decorations, Doc, Expr, ExprKind, ModPath,
-        Name, Origin, OriginScope, ParserContext, Pattern, SelectExpr, SeqExpr, SeqKind,
-        SeqTrigger, Sig, SigItem, StrForm, StructExpr, StructWithExpr, TryWithExpr,
-        WrittenAt,
+        Attr, BindExpr, CatchExpr, CatchRole, Comments, Decorations, Doc, Eol, Expr,
+        ExprKind, ModPath, ModuleKind, Name, Origin, OriginScope, ParserContext, Pattern,
+        SelectExpr, SeqExpr, SeqKind, SeqTrigger, Sig, SigItem, StrForm, StructExpr,
+        StructWithExpr, TraitMethod, TryWithExpr, WrittenAt,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -305,8 +305,33 @@ where
     spaces().with(many(comment_line(docs)))
 }
 
-// `#[name]` or `#[name(arg, ...)]`; the args are full expressions. The
-// `attempt` on `#[` keeps a labeled call arg `#name` from colliding.
+/// Whether a `//` comment stands anywhere in `e`, an attribute's
+/// arguments included: none can in what prints on one line.
+pub(super) fn holds_comment(e: &Expr) -> bool {
+    e.fold(false, &mut |c, e| {
+        c || e.dec.as_ref().is_some_and(|d| {
+            !d.comments.is_empty()
+                || d.eol.is_some()
+                || !d.below.is_empty()
+                || d.attrs.iter().any(|a| a.args.iter().any(holds_comment))
+        }) || match &e.kind {
+            ExprKind::Trait(t) => {
+                t.methods.iter().any(|m| !m.comments.lines().is_empty())
+            }
+            ExprKind::Module { value, .. } => match &**value {
+                ModuleKind::Dynamic { sig, .. } => {
+                    sig.items.iter().any(|si| !si.comments.lines().is_empty())
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    })
+}
+
+// `#[name]` or `#[name(arg, ...)]`; the args are full expressions, which
+// print on the attribute's line. The `attempt` on `#[` keeps a labeled
+// call arg `#name` from colliding.
 fn attribute<I>() -> impl Parser<I, Output = Attr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -320,11 +345,18 @@ where
             sptoken(')'),
             sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
         ))),
+        position(),
     )
         .skip(sptoken(']'))
-        .map(|(name, args): (ArcStr, Option<LPooled<Vec<Expr>>>)| {
+        .then(|(name, args, end): (ArcStr, Option<LPooled<Vec<Expr>>>, _)| {
             let mut args = args.unwrap_or_else(LPooled::take);
-            Attr { name, args: Arc::from_iter(args.drain(..)) }
+            match args.iter().any(holds_comment) {
+                true => grow::refuse(end, "a comment cannot stand inside an attribute")
+                    .right(),
+                false => {
+                    value(Attr { name, args: Arc::from_iter(args.drain(..)) }).left()
+                }
+            }
         })
 }
 
@@ -667,7 +699,8 @@ where
 const COMMA_WHY: &str = "a `,` separates this item from the one before";
 const SEMI_WHY: &str = "a `;` separates this statement from the one before";
 
-/// A `//` comment ending a line after code, its text kept verbatim.
+/// A `//` comment ending a line after code, its text kept verbatim. One
+/// that starts its line stands below, and a `///` is a doc.
 fn eol_comment<I>() -> impl Parser<I, Output = Option<ArcStr>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -676,42 +709,73 @@ where
 {
     optional(attempt(
         skip_many(satisfy(|c| c == ' ' || c == '\t'))
-            .with(string("//"))
-            .with(line_text()),
+            .with((
+                position(),
+                string("//"),
+                optional(attempt(token('/').skip(not_followed_by(token('/'))))),
+            ))
+            .then(|(pos, _, doc)| match doc.is_none() && !grow::starts_line(pos) {
+                true => line_text().left(),
+                false => unexpected_any("comment").right(),
+            }),
     ))
     .map(|t: Option<CompactString>| t.map(|t| ArcStr::from(t.as_str())))
 }
 
-/// The own-line comments after a list's last item, above what closes it.
-fn below_comments<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+/// The own-line comments after a list's last item, above what closes it;
+/// `docs` where a `///` line is an item's doc, which none follows.
+fn below_comments<I>(docs: bool) -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    many(attempt(spaces().with(comment_line(false))))
+    many(attempt(spaces().with(comment_line(docs))))
 }
 
-/// A list item that carries the comments after it: on its last
-/// expression.
+/// A list item that takes the comment ending its line, after its
+/// separator.
 pub(super) trait Commentable {
+    fn take_eol(&mut self, eol: ArcStr);
+}
+
+/// A list item whose comments its last expression carries.
+pub(super) trait ExprItem {
     fn last_expr(&mut self) -> &mut Expr;
 }
 
-impl Commentable for Expr {
+impl ExprItem for Expr {
     fn last_expr(&mut self) -> &mut Expr {
         self
     }
 }
 
-impl<K> Commentable for (K, Expr) {
+impl<K> ExprItem for (K, Expr) {
     fn last_expr(&mut self) -> &mut Expr {
         &mut self.1
     }
 }
 
+impl<T: ExprItem> Commentable for T {
+    fn take_eol(&mut self, eol: ArcStr) {
+        trail(self.last_expr(), Some(eol), &[])
+    }
+}
+
+impl Commentable for SigItem {
+    fn take_eol(&mut self, eol: ArcStr) {
+        self.eol = Eol::new(Some(eol))
+    }
+}
+
+impl Commentable for TraitMethod {
+    fn take_eol(&mut self, eol: ArcStr) {
+        self.eol = Eol::new(Some(eol))
+    }
+}
+
 /// Give `e` the comment ending its line and the lines below it.
-fn trail(e: &mut Expr, eol: Option<ArcStr>, below: &[ArcStr]) {
+pub(super) fn trail(e: &mut Expr, eol: Option<ArcStr>, below: &[ArcStr]) {
     if eol.is_none() && below.is_empty() {
         return;
     }
@@ -732,17 +796,25 @@ enum Slot<O> {
     End(LPooled<Vec<ArcStr>>),
 }
 
+/// A list [`commented`] read: each slot with where it starts, `None` for
+/// the empty one a trailing separator or an empty list leaves, and the
+/// own-line comments below the last item, which the list's kind places.
+struct Listed<O> {
+    slots: LPooled<Vec<(SourcePosition, Option<O>)>>,
+    below: LPooled<Vec<ArcStr>>,
+}
+
 /// `p` separated by `sep` (a `;` or `,`, see [`separator`]) up to `term`,
 /// which is not consumed; a trailing separator leaves an empty slot, as
 /// does a list with nothing in it. Each item takes the comment ending
-/// its line, after its separator, and the last the own-line comments
-/// below it.
+/// its line, after its separator; `docs` as for [`below_comments`].
 fn commented<I, O, EP, TP, PF, TF>(
     p: PF,
     sep: char,
     why: &'static str,
     term: TF,
-) -> impl Parser<I, Output = LPooled<Vec<(SourcePosition, Option<O>)>>>
+    docs: bool,
+) -> impl Parser<I, Output = Listed<O>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -757,7 +829,7 @@ where
         (
             position(),
             choice((
-                attempt(below_comments().skip(ahead(term()))).map(Slot::End),
+                attempt(below_comments(docs).skip(ahead(term()))).map(Slot::End),
                 p().map(Slot::Item),
             )),
         )
@@ -766,56 +838,39 @@ where
         slot(),
         many::<LPooled<Vec<_>>, _, _>((separator_eol(sep, why), slot())),
         eol_comment(),
-        below_comments(),
+        below_comments(docs),
     )
-        .and_then(|(first, mut rest, eol, below)| {
-            let mut items: LPooled<Vec<(SourcePosition, Option<O>)>> = LPooled::take();
-            let place = |items: &mut LPooled<Vec<(SourcePosition, Option<O>)>>,
-                         eol: Option<ArcStr>,
-                         below: &[ArcStr]|
-             -> bool {
-                match items.iter_mut().rev().find_map(|(_, o)| o.as_mut()) {
-                    Some(o) => {
-                        trail(o.last_expr(), eol, below);
-                        true
-                    }
-                    // CR claude for claude: [bug/medium] With no item before them,
-                    // comments fail the whole list. A .gx file (or module) of only
-                    // comments, or a REPL input that is one, is a parse error while an
-                    // empty file parses. `{ 1;\n // below\n}` is refused because
-                    // `brace` parses its first statement outside this list, though `{
-                    // 1; 2;\n// below\n}` is fine. Return the unplaced comments
-                    // instead: `statements` hangs them on the NoOp of the empty slot,
-                    // and `brace`'s `Tail::Block` trails them onto `first`. probe:
-                    // design/review-2026-10-26/repro/t-parser-a-comment-only-file.sh
-                    // (t-parser-a-03)
-                    None => eol.is_none() && below.is_empty(),
+        .map(|(first, mut rest, eol, mut below)| {
+            let mut listed = Listed { slots: LPooled::take(), below: LPooled::take() };
+            // only an item stands before a separator: the empty slot ends the list
+            let take_eol = |slots: &mut LPooled<Vec<(SourcePosition, Option<O>)>>,
+                            eol: Option<ArcStr>| {
+                if let (Some(eol), Some((_, Some(o)))) = (eol, slots.last_mut()) {
+                    o.take_eol(eol)
                 }
             };
-            let mut ok = true;
             for (eol, (pos, slot)) in std::iter::once((None, first)).chain(rest.drain(..))
             {
-                ok &= place(&mut items, eol, &[]);
+                take_eol(&mut listed.slots, eol);
                 match slot {
-                    Slot::Item(o) => items.push((pos, Some(o))),
-                    Slot::End(below) => {
-                        ok &= place(&mut items, None, &below);
-                        items.push((pos, None))
+                    Slot::Item(o) => listed.slots.push((pos, Some(o))),
+                    Slot::End(mut lines) => {
+                        listed.below.extend(lines.drain(..));
+                        listed.slots.push((pos, None))
                     }
                 }
             }
-            ok &= place(&mut items, eol, &below);
-            match ok {
-                true => Ok(items),
-                false => Err(<StreamErrorFor<I>>::message_static_message(
-                    "a comment here has no item to describe",
-                )),
-            }
+            take_eol(&mut listed.slots, eol);
+            listed.below.extend(below.drain(..));
+            listed
         })
 }
 
-/// [`commented`] statements: an empty slot is an empty statement.
-fn statements<I, TP, TF>(term: TF) -> impl Parser<I, Output = LPooled<Vec<Expr>>>
+/// [`commented`] statements: an empty slot is an empty statement, and
+/// the last statement keeps the comments below it.
+pub(super) fn statements<I, TP, TF>(
+    term: TF,
+) -> impl Parser<I, Output = LPooled<Vec<Expr>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -823,22 +878,82 @@ where
     TP: Parser<I>,
     TF: Fn() -> TP,
 {
-    commented(expr, ';', SEMI_WHY, term).map(|mut items: LPooled<Vec<_>>| {
+    commented(expr, ';', SEMI_WHY, term, false).map(|mut l: Listed<Expr>| {
         let mut res: LPooled<Vec<Expr>> = LPooled::take();
-        res.extend(items.drain(..).map(|(pos, e)| {
+        res.extend(l.slots.drain(..).map(|(pos, e)| {
             e.unwrap_or_else(|| ExprKind::NoOp.to_expr(pos).ending(pos))
         }));
+        // XCR claude for claude: [bug/medium] With no item before them,
+        // comments fail the whole list. A .gx file (or module) of only
+        // comments, or a REPL input that is one, is a parse error while an
+        // empty file parses. `{ 1;\n // below\n}` is refused because
+        // `brace` parses its first statement outside this list, though `{
+        // 1; 2;\n// below\n}` is fine. Return the unplaced comments
+        // instead: `statements` hangs them on the NoOp of the empty slot,
+        // and `brace`'s `Tail::Block` trails them onto `first`. probe:
+        // design/review-2026-10-26/repro/t-parser-a-comment-only-file.sh
+        // (t-parser-a-03)
+        // 2026-10-26 claude: `commented` no longer fails: it returns the lines
+        // below the last item and each list kind places them: statements on the
+        // last statement (a trailing `;`'s empty one included, which covers
+        // `brace`'s `{ 1;\n// below\n}`), comma lists on the last item (an
+        // empty one with comments is still refused), interfaces and traits on
+        // `Sig::below`/`TraitExpr::below`. A comment-only .gx, module or .gxi
+        // parses and formats. Pins: format.rs comments_after_list_items_stay
+        // ("// only a comment" for both kinds),
+        // an_empty_statement_is_its_semicolon ("{ a;\n// c\n}").
+        if let Some(last) = res.last_mut() {
+            trail(last, None, &l.below)
+        }
         res
     })
 }
 
 /// [`commented`] `,` items, and whether the list ended in its separator;
-/// at least one unless `empty`.
+/// at least one unless `empty`. The last item keeps the comments below
+/// it.
 pub(super) fn comma_items<I, O, EP, TP, PF, TF>(
     p: PF,
     term: TF,
     empty: bool,
 ) -> impl Parser<I, Output = (LPooled<Vec<O>>, bool)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    O: ExprItem,
+    EP: Parser<I, Output = O>,
+    TP: Parser<I>,
+    PF: Fn() -> EP,
+    TF: Fn() -> TP,
+{
+    commented(p, ',', COMMA_WHY, term, false).and_then(move |mut l: Listed<O>| {
+        let trailing = l.slots.len() > 1 && matches!(l.slots.last(), Some((_, None)));
+        if !empty && !matches!(l.slots.first(), Some((_, Some(_)))) {
+            return Err(<StreamErrorFor<I>>::message_static_message("expected an item"));
+        }
+        let mut res: LPooled<Vec<O>> = LPooled::take();
+        res.extend(l.slots.drain(..).filter_map(|(_, o)| o));
+        match res.last_mut() {
+            Some(o) => trail(o.last_expr(), None, &l.below),
+            None if l.below.is_empty() => (),
+            None => {
+                return Err(<StreamErrorFor<I>>::message_static_message(
+                    "a comment here has no item to describe",
+                ));
+            }
+        }
+        Ok((res, trailing))
+    })
+}
+
+/// [`commented`] `;` items of an interface or a trait, which has no empty
+/// item, and the comments below the last.
+pub(super) fn decl_items<I, O, EP, TP, PF, TF>(
+    p: PF,
+    term: TF,
+    docs: bool,
+) -> impl Parser<I, Output = (LPooled<Vec<O>>, Comments)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -849,14 +964,10 @@ where
     PF: Fn() -> EP,
     TF: Fn() -> TP,
 {
-    commented(p, ',', COMMA_WHY, term).and_then(move |mut items: LPooled<Vec<_>>| {
-        let trailing = items.len() > 1 && matches!(items.last(), Some((_, None)));
-        if !empty && !matches!(items.first(), Some((_, Some(_)))) {
-            return Err(<StreamErrorFor<I>>::message_static_message("expected an item"));
-        }
+    commented(p, ';', SEMI_WHY, term, docs).map(|mut l: Listed<O>| {
         let mut res: LPooled<Vec<O>> = LPooled::take();
-        res.extend(items.drain(..).filter_map(|(_, o)| o));
-        Ok((res, trailing))
+        res.extend(l.slots.drain(..).filter_map(|(_, o)| o));
+        (res, Comments::of(l.below.drain(..)))
     })
 }
 
@@ -1547,6 +1658,10 @@ where
                 // `comment_line`'s note mention the after-separator form. probe:
                 // design/review-2026-10-26/repro/t-parser-a-list-eol-coverage.sh
                 // (t-parser-a-06)
+                // 2026-10-26 claude: Impl bodies now parse as `statements`
+                // (t-parser-b-03), and an attribute's arguments refuse every comment
+                // (tests-expr-03: they print on the attribute's line), so what remains
+                // here is map entries and `any(..)`/`never(..)` arguments.
                 optional(csep().with(sep_by_tok(entry(), csep(), attempt(sptoken('}'))))),
             ))
             .map(|(v, rest)| Tail::Map(v, rest.unwrap_or_else(LPooled::take))),
@@ -1902,6 +2017,13 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 // narrow the rule to .gx. probe:
 // design/review-2026-10-26/repro/t-format-resolver-comment-only-file.sh
 // (t-format-resolver-03)
+// 2026-10-26 claude: The for-claude twins (t-parser-b-02, t-parser-a-04,
+// t-parser-b-03, t-parser-a-03) were fixed by taking 'the rule covers every list':
+// interface items and trait methods take an eol comment (`Eol`) and the lines below
+// the last (`Sig::below`, `TraitExpr::below`), impl bodies parse as statements, and a
+// comment-only .gx or .gxi parses; CLAUDE.md and the book's comment section say so. If
+// you rule the rule narrower, those XCRs come back to CR. tests-parser-01's test is
+// now a_comment_below_the_last_impl_method_rides_it.
 // CR claude for eric: [bug/medium] Interface items are parsed with `sep_by_tok`, not
 // `commented`, so an interface file ending in a comment, or a `val` followed by an
 // end-of-line comment, is a parse error: the module's interface fails to load.
@@ -1912,13 +2034,20 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 // `commented` and give `SigItem`/`TraitMethod` eol/below. If not, narrow the documented
 // rule. probe: design/review-2026-10-26/repro/x-formatter-list-comments-missing.sh
 // (x-formatter-03)
+// 2026-10-26 claude: The for-claude twins (t-parser-b-02, t-parser-a-04, t-parser-b-03,
+// t-parser-a-03) were fixed by taking 'the rule covers every list': interface items and
+// trait methods take an eol comment (`Eol`) and the lines below the last (`Sig::below`,
+// `TraitExpr::below`), impl bodies parse as statements, and a comment-only .gx or .gxi
+// parses; CLAUDE.md and the book's comment section say so. If you rule the rule
+// narrower, those XCRs come back to CR. tests-parser-01's test is now
+// a_comment_below_the_last_impl_method_rides_it.
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());
-    let mut r: LPooled<Vec<SigItem>> = parse_all!(
+    let (mut r, below): (LPooled<Vec<SigItem>>, Comments) = parse_all!(
         &ori.text,
         || ori.clone(),
-        // CR claude for claude: [bug/medium] Interface items here, in modexp's `sig()`
+        // XCR claude for claude: [bug/medium] Interface items here, in modexp's `sig()`
         // and in traitexp's `trait_decl` are listed with `sep_by_tok`, not `commented`.
         // So a `//` after an item's `;` is refused as a trailing comment. A `//` below
         // the last item, or a .gxi holding only comments, fails as a leading comment
@@ -1927,7 +2056,19 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
         // eol line and Sig/TraitExpr a below list, and print them as
         // Decorations::eol/below are printed. probe:
         // design/review-2026-10-26/repro/t-parser-b-list-comments.sh (t-parser-b-02)
-        // CR claude for claude: [bug/medium] A comment after an interface's last item
+        // 2026-10-26 claude: Interface items (`parse_sig`, modexp's `sig()`) and trait
+        // methods (`trait_decl`) are now `decl_items` lists read by `commented`: the
+        // comment ending an item's line rides `SigItem::eol`/`TraitMethod::eol` (`Eol`,
+        // an always-equal `Aside` like `Comments`), the lines below the last ride
+        // `Sig::below`/`TraitExpr::below`; `pretty_separated` prints both, the guard's
+        // `Ornaments` walks both, and a `//` that starts its line is never an eol
+        // comment. This takes 'the rule covers every list', as CLAUDE.md is written
+        // (now naming `Eol` and the `below` fields); the for-eric twins
+        // t-format-resolver-03, x-formatter-03 and tests-parser-01 ask Eric the same
+        // question. Pins: format.rs comments_after_list_items_stay (trait, sig and
+        // Interface cases), expr::test expr_pp_round_trip and sig_pack_round_trip,
+        // which generate eol and below on trait methods and sig items.
+        // XCR claude for claude: [bug/medium] A comment after an interface's last item
         // is read as the leading comment of an item that never comes, so `val x:
         // i64;\n// val y: i64\n` (a commented-out last declaration) and a .gxi of only
         // comments fail with "Unexpected end of input". CLAUDE.md allows comments below
@@ -1936,9 +2077,14 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
         // rule if interfaces are meant to be excluded. probe:
         // design/review-2026-10-26/repro/t-parser-a-gxi-trailing-comment.sh
         // (t-parser-a-04)
-        sep_by_tok(sig_item(), semisep(), attempt(spaces().with(eof())))
+        // 2026-10-26 claude: A .gxi's comments below its last item, and a .gxi of only
+        // comments, parse into `Sig::below` and print back (see the note on
+        // t-parser-b-02 for the shape and the open question the for-eric twins ask).
+        // Pins: format.rs comments_after_list_items_stay ("val x: i64;\n// val y:
+        // i64\n" and "// only a comment\n" as Interface).
+        decl_items(sig_item, || attempt(spaces().with(eof())), true)
     )?;
-    Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })
+    Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)), below })
 }
 
 fn text_origin(s: &str) -> impl FnOnce() -> Arc<Origin> + '_ {

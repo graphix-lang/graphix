@@ -43,15 +43,114 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
 
 /// `e` with no comment anywhere, as a string's splice holds it.
 fn uncommented(e: &Expr) -> Expr {
-    let mut e = e.map_children(&mut |c| uncommented(c));
-    if let Some(d) = e.dec.clone()
-        && (!d.comments.is_empty() || d.eol.is_some() || !d.below.is_empty())
-    {
-        e.dec = (!d.attrs.is_empty()).then(|| {
-            Arc::new(Decorations { attrs: d.attrs.clone(), ..Decorations::default() })
-        });
+    stripped(e, true)
+}
+
+/// `e` without the comments after list items, which a flat print, all
+/// on one line, leaves out.
+fn untrailed(e: &Expr) -> Expr {
+    stripped(e, false)
+}
+
+/// `e` with no comment after a list item, nor, when `above`, above one.
+fn stripped(e: &Expr, above: bool) -> Expr {
+    let lines = |c: &Comments| if above { Comments::default() } else { c.clone() };
+    let mut e = e.map_children(&mut |c| stripped(c, above));
+    if let Some(d) = e.dec.clone() {
+        let d = Decorations {
+            comments: if above { Arc::from_iter([]) } else { d.comments.clone() },
+            attrs: d.attrs.clone(),
+            eol: None,
+            below: Arc::from_iter([]),
+        };
+        e.dec = (!d.attrs.is_empty() || !d.comments.is_empty()).then(|| Arc::new(d));
+    }
+    let methods = |t: &TraitExpr| {
+        Arc::new(TraitExpr {
+            methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
+                comments: lines(&m.comments),
+                eol: Eol::default(),
+                ..m.clone()
+            })),
+            below: Comments::default(),
+            ..t.clone()
+        })
+    };
+    let kind = match &e.kind {
+        ExprKind::Trait(t) => Some(ExprKind::Trait(methods(t))),
+        ExprKind::Module { name, value } => match &**value {
+            ModuleKind::Dynamic { sandbox, sig, source } => {
+                let items = sig.items.iter().map(|si| SigItem {
+                    comments: lines(&si.comments),
+                    eol: Eol::default(),
+                    kind: match &si.kind {
+                        SigKind::Trait(t) => SigKind::Trait(methods(t)),
+                        k => k.clone(),
+                    },
+                    ..si.clone()
+                });
+                let sig = Sig {
+                    items: Arc::from_iter(items),
+                    toplevel: sig.toplevel,
+                    below: Comments::default(),
+                };
+                let (sandbox, source) = (sandbox.clone(), source.clone());
+                let value = Arc::new(ModuleKind::Dynamic { sandbox, sig, source });
+                Some(ExprKind::Module { name: name.clone(), value })
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        e.kind = kind
     }
     e
+}
+
+/// The comments after a list's items: the one ending each item's line,
+/// most having none, and the lines below the last.
+#[derive(Debug, Clone)]
+struct Trailers {
+    eols: Vec<Option<ArcStr>>,
+    below: Vec<ArcStr>,
+}
+
+fn trailers() -> impl Strategy<Value = Trailers> {
+    (
+        collection::vec(
+            prop_oneof![4 => Just(None), 1 => comment().prop_map(Some)],
+            1..10,
+        ),
+        prop_oneof![4 => Just(vec![]), 1 => collection::vec(comment(), 1..3)],
+    )
+        .prop_map(|(eols, below)| Trailers { eols, below })
+}
+
+impl Trailers {
+    fn eol(&self, i: usize) -> Option<ArcStr> {
+        self.eols[i % self.eols.len()].clone()
+    }
+
+    /// Hang the comments on `items`: no comment ends the line of the
+    /// empty statement a trailing `;` leaves, which a separator precedes.
+    fn on<'a>(&self, items: impl Iterator<Item = &'a mut Expr>) {
+        let mut items: Vec<&mut Expr> = items.collect();
+        let n = items.len();
+        for (i, e) in items.iter_mut().enumerate() {
+            let eol = self.eol(i).filter(|_| !matches!(e.kind, ExprKind::NoOp));
+            parser::trail(e, eol, if i + 1 == n { &self.below } else { &[] })
+        }
+    }
+
+    /// Hang the comments on a trait's or an interface's items, the lines
+    /// below on the list.
+    fn on_decls<T>(&self, items: &mut [T], eol: impl Fn(&mut T) -> &mut Eol) -> Comments {
+        for (i, it) in items.iter_mut().enumerate() {
+            *eol(it) = Eol::new(self.eol(i))
+        }
+        Comments::of(self.below.iter().cloned())
+    }
 }
 
 /// `"..[e].."` or `"""..\[e].."""`: text runs as the parser leaves them
@@ -161,13 +260,24 @@ fn comments() -> impl Strategy<Value = Comments> {
 /// The `//` comment lines and `#[..]` attributes an expression can carry.
 /// Comment text must not open with `/` (that reads back as `///`). `None`
 /// when there are none of either.
-// CR claude for claude: [test-gap/medium] This never sets `eol` or `below`, and
+// XCR claude for claude: [test-gap/medium] This never sets `eol` or `below`, and
 // format.rs has no end-of-line or below case, so no test checks how the printer writes
 // them (`write_eol`, `item_sep`, `item_end`, `trails`). Removing either write from
 // `item_sep`/`item_end` passes the suite; a comment below a trailing `;` is already
 // refused in the field (see the CR at `item_sep`). Generate `eol` on list items and
 // `below` on a list's last item, and add fixed format cases per list kind, with and
 // without a trailing separator. Found by reading; not run. (x-formatter-02)
+// 2026-10-26 claude: test.rs `Trailers` hangs an eol comment on items (most get none)
+// and below lines on the last of every list the generator makes: statements (a
+// trailing NoOp included, never with an eol), select arms, struct and with fields,
+// call args, array/list/tuple/variant elements, seq steps, impl and trait methods, sig
+// items (`module_sig`); `check_dec`, `check_trait` and `check_module_sig` compare
+// them; the flat round trips strip them (`untrailed`: a flat print has no line to
+// end), and pack_round_trip prints pretty so they are packed. Fixed cases per list
+// kind, with and without a trailing separator: format.rs
+// comments_after_list_items_stay. Removing the eol write from `item_sep` fails
+// expr_pp_round_trip and comments_after_list_items_stay; removing the below write from
+// `item_end` fails those and an_empty_statement_is_its_semicolon.
 // CR claude for claude: [test-gap/medium] No strategy makes `Decorations::eol` or
 // `below`, and `check_dec` ignores both. So the round-trip, pack and tree-sitter
 // proptests never print or parse an end-of-line comment or one below a list's last
@@ -181,6 +291,9 @@ fn comments() -> impl Strategy<Value = Comments> {
 // never run in `expr_pp_round_trip`. Weight `None` up (e.g. 4 to 1). Found by reading;
 // the bug it misses was run:
 // design/review-2026-10-26/repro/tests-expr-fmt-trailing-semi-below.gx (tests-expr-04)
+// 2026-10-26 claude: x-formatter-02's fix covers the eol/below generation (`Trailers`,
+// before a trailing NoOp too) and their comparison in `check_dec`; what remains here is
+// weighting `None` up in `decorations()` so flat layouts run.
 fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
     (collection::vec(comment(), 0..3), collection::vec(attr(), 0..2)).prop_map(
         |(comments, attrs)| {
@@ -845,14 +958,16 @@ macro_rules! trait_decl {
                 ),
                 0..4,
             ),
+            trailers(),
         )
-            .prop_map(|(name, methods)| {
+            .prop_map(|(name, methods, trailers)| {
                 let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
-                let methods = methods
+                let mut methods: Vec<TraitMethod> = methods
                     .into_iter()
                     .filter(|(n, _, _, _, _, _)| seen.insert(n.clone()))
                     .map(|(name, typ, default, doc, comments, pure)| TraitMethod {
                         comments,
+                        eol: Eol::default(),
                         doc: Doc(doc),
                         attrs: match pure {
                             true => Arc::from_iter([Attr {
@@ -865,10 +980,13 @@ macro_rules! trait_decl {
                         typ,
                         self_index: Some(0),
                         default,
-                    });
+                    })
+                    .collect();
+                let below = trailers.on_decls(&mut methods, |m| &mut m.eol);
                 ExprKind::Trait(Arc::new(TraitExpr {
                     name: name.into(),
                     methods: Arc::from_iter(methods),
+                    below,
                 }))
                 .to_expr_nopos()
             })
@@ -895,8 +1013,9 @@ macro_rules! impl_decl {
                 (random_fname(), option::of(typexp()), $inner, decorations()),
                 0..3,
             ),
+            trailers(),
         )
-            .prop_map(|(params, trait_name, target, methods)| {
+            .prop_map(|(params, trait_name, target, methods, trailers)| {
                 let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
                 let params: Vec<(TVar, Vec<Type>)> = params
                     .into_iter()
@@ -906,7 +1025,7 @@ macro_rules! impl_decl {
                     .iter()
                     .flat_map(|(tv, bs)| bs.iter().map(move |b| (tv.clone(), b.clone())));
                 let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
-                let methods = methods
+                let mut methods: Vec<Expr> = methods
                     .into_iter()
                     .filter(|(n, _, _, _)| seen.insert(n.clone()))
                     .map(|(name, typ, value, dec)| {
@@ -919,7 +1038,9 @@ macro_rules! impl_decl {
                         .to_expr_nopos();
                         m.dec = dec;
                         m
-                    });
+                    })
+                    .collect();
+                trailers.on(methods.iter_mut());
                 ExprKind::Impl(Arc::new(ImplExpr {
                     trait_name,
                     trait_at: WrittenPath::default(),
@@ -1022,16 +1143,20 @@ macro_rules! arrayslice {
 
 macro_rules! apply {
     ($inner:expr) => {
-        ($inner, collection::vec((option::of(random_fname()), $inner), (0, 10))).prop_map(
-            |(f, mut args)| {
+        (
+            $inner,
+            collection::vec((option::of(random_fname()), $inner), (0, 10)),
+            trailers(),
+        )
+            .prop_map(|(f, mut args, trailers)| {
                 args.sort_unstable_by(|(n0, _), (n1, _)| n1.cmp(n0));
+                trailers.on(args.iter_mut().map(|(_, e)| e));
                 ExprKind::Apply(ApplyExpr {
                     function: Arc::new(f),
                     args: Arc::from(args),
                 })
                 .to_expr_nopos()
-            },
-        )
+            })
     };
 }
 
@@ -1101,19 +1226,14 @@ macro_rules! do_block {
                 (2, 10),
             ),
             any::<bool>(),
+            trailers(),
         )
-            .prop_map(|(e, nop)| {
+            .prop_map(|(mut e, nop, trailers)| {
                 if nop {
-                    ExprKind::Block {
-                        exprs: Arc::from_iter(
-                            e.into_iter()
-                                .chain(iter::once(ExprKind::NoOp.to_expr_nopos())),
-                        ),
-                    }
-                    .to_expr_nopos()
-                } else {
-                    ExprKind::Block { exprs: Arc::from(e) }.to_expr_nopos()
+                    e.push(ExprKind::NoOp.to_expr_nopos())
                 }
+                trailers.on(e.iter_mut());
+                ExprKind::Block { exprs: Arc::from(e) }.to_expr_nopos()
             })
     };
 }
@@ -1190,26 +1310,35 @@ macro_rules! select {
                 (option::of(decorated($inner)), pattern(), decorated($inner)),
                 (1, 10),
             ),
+            trailers(),
         )
-            .prop_map(|(arg, arms)| build_pattern(arg, arms))
+            .prop_map(|(arg, mut arms, trailers)| {
+                trailers.on(arms.iter_mut().map(|(_, _, e)| e));
+                build_pattern(arg, arms)
+            })
     };
 }
 
 macro_rules! structure {
     ($inner:expr) => {
-        collection::vec((field_name(), decorated($inner)), (1, 10)).prop_map(|mut a| {
-            a.sort_by_key(|(n, _)| n.clone());
-            a.dedup_by_key(|(n, _)| n.clone());
-            ExprKind::Struct(StructExpr { args: Arc::from_iter(a) }).to_expr_nopos()
-        })
+        (collection::vec((field_name(), decorated($inner)), (1, 10)), trailers())
+            .prop_map(|(mut a, trailers)| {
+                a.sort_by_key(|(n, _)| n.clone());
+                a.dedup_by_key(|(n, _)| n.clone());
+                trailers.on(a.iter_mut().map(|(_, e)| e));
+                ExprKind::Struct(StructExpr { args: Arc::from_iter(a) }).to_expr_nopos()
+            })
     };
 }
 
 macro_rules! variant {
     ($inner:expr) => {
-        (typart(), collection::vec($inner, (0, 10))).prop_map(|(tag, a)| {
-            ExprKind::Variant { tag, args: Arc::from_iter(a) }.to_expr_nopos()
-        })
+        (typart(), collection::vec($inner, (0, 10)), trailers()).prop_map(
+            |(tag, mut a, trailers)| {
+                trailers.on(a.iter_mut());
+                ExprKind::Variant { tag, args: Arc::from_iter(a) }.to_expr_nopos()
+            },
+        )
     };
 }
 
@@ -1274,15 +1403,19 @@ macro_rules! never {
 
 macro_rules! array {
     ($inner:expr) => {
-        collection::vec($inner, (0, 10))
-            .prop_map(|a| { ExprKind::Array { args: Arc::from_iter(a) } }.to_expr_nopos())
+        (collection::vec($inner, (0, 10)), trailers()).prop_map(|(mut a, trailers)| {
+            trailers.on(a.iter_mut());
+            ExprKind::Array { args: Arc::from_iter(a) }.to_expr_nopos()
+        })
     };
 }
 
 macro_rules! list_lit {
     ($inner:expr) => {
-        collection::vec($inner, (0, 10))
-            .prop_map(|a| { ExprKind::List { args: Arc::from_iter(a) } }.to_expr_nopos())
+        (collection::vec($inner, (0, 10)), trailers()).prop_map(|(mut a, trailers)| {
+            trailers.on(a.iter_mut());
+            ExprKind::List { args: Arc::from_iter(a) }.to_expr_nopos()
+        })
     };
 }
 
@@ -1295,25 +1428,27 @@ macro_rules! map {
 
 macro_rules! tuple {
     ($inner:expr) => {
-        collection::vec($inner, (2, 10))
-            .prop_map(|a| { ExprKind::Tuple { args: Arc::from_iter(a) } }.to_expr_nopos())
+        (collection::vec($inner, (2, 10)), trailers()).prop_map(|(mut a, trailers)| {
+            trailers.on(a.iter_mut());
+            ExprKind::Tuple { args: Arc::from_iter(a) }.to_expr_nopos()
+        })
     };
 }
 
 macro_rules! structwith {
     ($inner:expr) => {
-        ($inner, collection::vec((field_name(), decorated($inner)), (1, 10))).prop_map(
-            |(source, mut replace)| {
+        ($inner, collection::vec((field_name(), decorated($inner)), (1, 10)), trailers())
+            .prop_map(|(source, mut replace, trailers)| {
                 let source = Arc::new(source);
                 replace.sort_by_key(|(f, _)| f.clone());
                 replace.dedup_by_key(|(f, _)| f.clone());
+                trailers.on(replace.iter_mut().map(|(_, e)| e));
                 ExprKind::StructWith(StructWithExpr {
                     source,
                     replace: Arc::from_iter(replace),
                 })
                 .to_expr_nopos()
-            },
-        )
+            })
     };
 }
 
@@ -1345,6 +1480,16 @@ macro_rules! deref {
     };
 }
 
+/// An interface: a file's when `toplevel`, else a `sig { .. }`.
+fn module_sig(toplevel: bool) -> impl Strategy<Value = Sig> {
+    (collection::vec(module_sigitem(), (1, 10)), trailers()).prop_map(
+        move |(mut items, trailers)| {
+            let below = trailers.on_decls(&mut items, |si| &mut si.eol);
+            Sig { items: Arc::from(items), toplevel, below }
+        },
+    )
+}
+
 fn module_sigitem() -> impl Strategy<Value = SigItem> {
     (undecorated_sigitem(), comments()).prop_map(|(mut si, comments)| {
         si.comments = comments;
@@ -1359,6 +1504,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                 SigItem {
                     kind: SigKind::Bind(BindSig { name: name.into(), typ }),
                     comments: Comments::default(),
+                    eol: Eol::default(),
                     doc: Doc(doc),
                     pos: Default::default(),
                     ori: Arc::new(Origin::default()),
@@ -1370,6 +1516,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                 ExprKind::TypeDef(td) => SigItem {
                     kind: SigKind::TypeDef((*td).clone()),
                     comments: Comments::default(),
+                    eol: Eol::default(),
                     doc: Doc(doc),
                     pos: Default::default(),
                     ori: Arc::new(Origin::default()),
@@ -1381,6 +1528,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
             |(reexport, paths, doc)| SigItem {
                 kind: SigKind::Use { reexport, names: UseItem::sorted(paths) },
                 comments: Comments::default(),
+                eol: Eol::default(),
                 doc: Doc(doc),
                 pos: Default::default(),
                 ori: Arc::new(Origin::default()),
@@ -1389,6 +1537,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
         (random_fname(), option::of(doc_text())).prop_map(|(name, doc)| SigItem {
             kind: SigKind::Module(name.into()),
             comments: Comments::default(),
+            eol: Eol::default(),
             doc: Doc(doc),
             pos: Default::default(),
             ori: Arc::new(Origin::default()),
@@ -1399,6 +1548,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                     ExprKind::Trait(t) => SigItem {
                         kind: SigKind::Trait(t),
                         comments: Comments::default(),
+                        eol: Eol::default(),
                         doc: Doc(doc),
                         pos: Default::default(),
                         ori: Arc::new(Origin::default()),
@@ -1414,6 +1564,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                         ..(*i).clone()
                     })),
                     comments: Comments::default(),
+                    eol: Eol::default(),
                     doc: Doc(doc),
                     pos: Default::default(),
                     ori: Arc::new(Origin::default()),
@@ -1426,11 +1577,13 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
 
 fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
     (t0.name == t1.name)
+        && (t0.below.lines() == t1.below.lines())
         && (t0.methods.len() == t1.methods.len())
         && t0.methods.iter().zip(t1.methods.iter()).all(|(m0, m1)| {
             (m0.name == m1.name)
                 && (m0.doc == m1.doc)
                 && (m0.comments.lines() == m1.comments.lines())
+                && (m0.eol.text() == m1.eol.text())
                 && (m0.self_index == m1.self_index)
                 && (check_type(&Type::Fn(m0.typ.clone()), &Type::Fn(m1.typ.clone())))
                 && match (&m0.default, &m1.default) {
@@ -1468,23 +1621,19 @@ fn module_sandbox() -> impl Strategy<Value = Sandbox> {
 
 macro_rules! dynamic_module {
     ($inner:expr) => {
-        (
-            random_fname(),
-            module_sandbox(),
-            collection::vec(module_sigitem(), (1, 10)),
-            decorated($inner),
-        )
-            .prop_map(|(name, sandbox, sig, source)| {
+        (random_fname(), module_sandbox(), module_sig(false), decorated($inner)).prop_map(
+            |(name, sandbox, sig, source)| {
                 ExprKind::Module {
                     name: name.into(),
                     value: Arc::new(ModuleKind::Dynamic {
                         sandbox,
-                        sig: Sig { items: Arc::from(sig), toplevel: false },
+                        sig,
                         source: Arc::new(source),
                     }),
                 }
                 .to_expr_nopos()
-            })
+            },
+        )
     };
 }
 
@@ -1714,20 +1863,24 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                 option::of(decorated(inner.clone())),
                 option::of(decorated(inner.clone())),
                 collection::vec(decorated(seq_item!(inner.clone())), 1..5),
+                trailers(),
             )
-                .prop_map(|(queued, trigger, abort, flush, body)| {
-                    ExprKind::Seq(Arc::new(SeqExpr {
-                        kind: if queued {
-                            SeqKind::Queued { flush: flush.map(Arc::new) }
-                        } else {
-                            SeqKind::Plain
-                        },
-                        trigger,
-                        abort: abort.map(Arc::new),
-                        body: Arc::from(body),
-                    }))
-                    .to_expr_nopos()
-                }),
+                .prop_map(
+                    |(queued, trigger, abort, flush, mut body, trailers)| {
+                        trailers.on(body.iter_mut());
+                        ExprKind::Seq(Arc::new(SeqExpr {
+                            kind: if queued {
+                                SeqKind::Queued { flush: flush.map(Arc::new) }
+                            } else {
+                                SeqKind::Plain
+                            },
+                            trigger,
+                            abort: abort.map(Arc::new),
+                            body: Arc::from(body),
+                        }))
+                        .to_expr_nopos()
+                    }
+                ),
             lambda!(inner.clone()),
             bind!(inner.clone()),
             connect!(inner.clone()),
@@ -1906,12 +2059,13 @@ fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
         })
 }
 
-fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
-    s0.len() == s1.len()
-        && s0
-            .iter()
-            .zip(s1.iter())
-            .all(|(s0, s1)| s0.comments.lines() == s1.comments.lines())
+fn check_module_sig(sig0: &Sig, sig1: &Sig) -> bool {
+    let (s0, s1) = (&sig0.items[..], &sig1.items[..]);
+    sig0.below.lines() == sig1.below.lines()
+        && s0.len() == s1.len()
+        && s0.iter().zip(s1.iter()).all(|(s0, s1)| {
+            s0.comments.lines() == s1.comments.lines() && s0.eol.text() == s1.eol.text()
+        })
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
             (
                 SigItem {
@@ -1962,6 +2116,8 @@ fn check_dec(d0: &Option<Arc<Decorations>>, d1: &Option<Arc<Decorations>>) -> bo
         (None, None) => true,
         (Some(d0), Some(d1)) => {
             (d0.comments == d1.comments)
+                && (d0.eol == d1.eol)
+                && (d0.below == d1.below)
                 && (d0.attrs.len() == d1.attrs.len())
                 && d0.attrs.iter().zip(d1.attrs.iter()).all(|(a0, a1)| {
                     a0.name == a1.name
@@ -2295,6 +2451,7 @@ proptest! {
 
     #[test]
     fn expr_round_trip(s in expr()) {
+        let s = untrailed(&s);
         let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
         let e = parse_one(st.as_str()).unwrap();
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}");
@@ -2306,7 +2463,7 @@ proptest! {
     /// as itself, parens aside.
     #[test]
     fn printer_parenthesizes_unparenthesized_trees(s in expr()) {
-        let s = strip_parens(&s);
+        let s = strip_parens(&untrailed(&s));
         let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
         let e = strip_parens(&parse_one(st.as_str()).unwrap());
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
@@ -2349,7 +2506,7 @@ proptest! {
     #[test]
     fn pack_round_trip(s in expr()) {
         use crate::expr::serialize::{pack_module, unpack_module};
-        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
+        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(80));
         let e = parse_one(st.as_str()).unwrap();
         let packed = pack_module(std::slice::from_ref(&e)).unwrap();
         let unpacked = unpack_module(&packed, Arc::new(Origin::unspecified(""))).unwrap();
@@ -2362,9 +2519,8 @@ proptest! {
 
     /// The package codec hands back an interface as it prints.
     #[test]
-    fn sig_pack_round_trip(items in collection::vec(module_sigitem(), (1, 10))) {
+    fn sig_pack_round_trip(sig in module_sig(true)) {
         use crate::expr::serialize::{pack_sig, unpack_sig};
-        let sig = Sig { items: Arc::from(items), toplevel: true };
         let packed = pack_sig(&sig).unwrap();
         let unpacked = unpack_sig(&packed, Arc::new(Origin::unspecified(""))).unwrap();
         prop_assert_eq!(sig.to_string(), unpacked.to_string());
@@ -2379,22 +2535,32 @@ fn decorations_of(e: &Expr) -> Vec<String> {
     e.fold((), &mut |(), e| {
         out.push(format!("{:?}", e.dec));
         if let ExprKind::Trait(t) = &e.kind {
-            out.extend(t.methods.iter().map(|m| format!("{:?}", m.comments.lines())))
+            out.extend(trait_comments(t))
         }
     });
     out
 }
 
+/// A trait's comments in order: above and after each method, and below
+/// the last.
+fn trait_comments(t: &TraitExpr) -> impl Iterator<Item = String> + '_ {
+    t.methods
+        .iter()
+        .map(|m| format!("{:?} {:?}", m.comments.lines(), m.eol.text()))
+        .chain(iter::once(format!("{:?}", t.below.lines())))
+}
+
 /// The comments of an interface's items and trait methods, in order: what
 /// a canonical print leaves out.
-fn sig_comments(sig: &Sig) -> Vec<&[ArcStr]> {
+fn sig_comments(sig: &Sig) -> Vec<String> {
     let mut out = vec![];
     for si in sig.items.iter() {
-        out.push(si.comments.lines());
+        out.push(format!("{:?} {:?}", si.comments.lines(), si.eol.text()));
         if let SigKind::Trait(t) = &si.kind {
-            out.extend(t.methods.iter().map(|m| m.comments.lines()))
+            out.extend(trait_comments(t))
         }
     }
+    out.push(format!("{:?}", sig.below.lines()));
     out
 }
 
@@ -2700,6 +2866,7 @@ mod tree_sitter_compat {
 
         #[test]
         fn ts_expr(s in expr()) {
+            let s = untrailed(&s);
             let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
             assert_ts_parses(&st);
         }

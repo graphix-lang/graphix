@@ -212,7 +212,8 @@ fn comments_below_a_block_ride_its_last_statement() {
     for src in ["{ let x = 1; x\n// below\n}", "{ let x = 1; x;\n// below\n}"] {
         let e = parse_one(src).unwrap();
         let ExprKind::Block { exprs } = &e.kind else { panic!("{src}: not a block") };
-        assert_eq!(&dec_of(&exprs[1]).below[..], [literal!(" below")], "{src}");
+        let last = exprs.last().unwrap();
+        assert_eq!(&dec_of(last).below[..], [literal!(" below")], "{src}");
     }
 }
 
@@ -307,10 +308,24 @@ fn comment_above_impl_method() {
 // `TraitMethod`/`SigItem` need eol/below) and flip this test, or narrow the rule in
 // CLAUDE.md and give the refusals the "a comment stands on a line of its own" note.
 // probe: design/review-2026-10-26/repro/tests-parser-comment-lists.sh (tests-parser-01)
-fn trailing_impl_comment_is_error() {
-    assert!(
-        parse_one("impl Show for Counter { let show = |c| \"c\"\n// nope\n}").is_err()
-    );
+// 2026-10-26 claude: The for-claude twins (t-parser-b-02, t-parser-a-04, t-parser-b-03,
+// t-parser-a-03) were fixed by taking 'the rule covers every list': interface items and
+// trait methods take an eol comment (`Eol`) and the lines below the last (`Sig::below`,
+// `TraitExpr::below`), impl bodies parse as statements, and a comment-only .gx or .gxi
+// parses; CLAUDE.md and the book's comment section say so. If you rule the rule
+// narrower, those XCRs come back to CR. tests-parser-01's test is now
+// a_comment_below_the_last_impl_method_rides_it.
+fn a_comment_below_the_last_impl_method_rides_it() {
+    for src in [
+        "impl Show for Counter { let show = |c| \"c\"\n// below\n}",
+        "impl Show for Counter { let show = |c| \"c\";\n// below\n}",
+    ] {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Impl(i) = &e.kind else { panic!("{src}: not an impl") };
+        assert_eq!(i.methods.len(), 1, "{src}");
+        assert_eq!(&dec_of(&i.methods[0]).below[..], [literal!(" below")], "{src}");
+    }
+    assert!(parse_one("impl Show for Counter {\n// nothing\n}").is_err());
 }
 
 #[test]
@@ -2659,6 +2674,38 @@ fn an_integer_out_of_range_names_its_type() {
     for src in ["u8:255", "i8:-128", "-9223372036854775808", "1e3"] {
         parse_one(src).unwrap();
     }
+}
+
+// a splice and an attribute print on one line, so no comment of any kind
+// stands in one; the reason reaches the report where the splice spans lines
+#[test]
+fn no_comment_stands_inside_a_splice_or_an_attribute() {
+    let splice = "a comment cannot stand inside a string's splice";
+    for (src, note) in [
+        ("let s = \"[{ let x = 1; // hi\n x }]\";\ns", splice),
+        ("let s = \"[{ let x = 1;\n x\n // below\n }]\";\ns", splice),
+        ("let s = \"a[f(\n  // above\n  1\n)]b\";\ns", splice),
+        ("let s = \"a[[\n  1, // one\n  2\n][0]$]b\";\ns", splice),
+        ("let s = \"\"\"a \\[f(\n // c\n 1)] b\"\"\";\ns", splice),
+        ("let s = \"[{ trait T {\n // c\n val f: fn(self) -> i64 }; 1 }]\";\ns", splice),
+        (
+            "#[parallel(f(\n    1, // which\n    2\n))]\nlet a = f(1);\na",
+            "a comment cannot stand inside an attribute",
+        ),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(note), "{src}: {msg}");
+    }
+}
+
+// a `//` that starts its line is never the comment ending the line above,
+// whatever the item before it consumed
+#[test]
+fn a_comment_starting_a_line_stands_below() {
+    let e = parse_one("{ a; impl T for i64\n// below\n}").unwrap();
+    let ExprKind::Block { exprs } = &e.kind else { panic!("not a block") };
+    let last = dec_of(exprs.last().unwrap());
+    assert_eq!((last.eol, &last.below[..]), (None, &[literal!(" below")][..]));
 }
 
 #[test]

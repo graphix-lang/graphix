@@ -153,10 +153,41 @@ pub struct Attr {
     pub args: Arc<[Expr]>,
 }
 
-/// The `//` lines above an interface item or a trait method. Like an
-/// expression's comments they decide nothing: equal to every other.
+/// What a parse keeps beside an interface's or a trait's syntax for the
+/// formatter. Like an expression's comments it decides nothing: equal to
+/// every other.
 #[derive(Debug, Clone, Default)]
-pub struct Comments(Option<Arc<[ArcStr]>>);
+pub struct Aside<T>(T);
+
+impl<T> PartialEq for Aside<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> PartialOrd for Aside<T> {
+    fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
+        Some(Ordering::Equal)
+    }
+}
+
+impl<T: netidx_core::pack::Pack> netidx_core::pack::Pack for Aside<T> {
+    fn encoded_len(&self) -> usize {
+        self.0.encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        self.0.encode(buf)
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self(T::decode(buf)?))
+    }
+}
+
+/// The `//` lines above an interface item or a trait method, or below the
+/// last of a list of them.
+pub type Comments = Aside<Option<Arc<[ArcStr]>>>;
 
 impl Comments {
     pub fn of(lines: impl ExactSizeIterator<Item = ArcStr>) -> Self {
@@ -168,29 +199,17 @@ impl Comments {
     }
 }
 
-impl PartialEq for Comments {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
+/// The `//` comment ending an interface item's or a trait method's line,
+/// after its separator.
+pub type Eol = Aside<Option<ArcStr>>;
 
-impl PartialOrd for Comments {
-    fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
-        Some(Ordering::Equal)
-    }
-}
-
-impl netidx_core::pack::Pack for Comments {
-    fn encoded_len(&self) -> usize {
-        self.0.encoded_len()
+impl Eol {
+    pub fn new(comment: Option<ArcStr>) -> Self {
+        Self(comment)
     }
 
-    fn encode(&self, buf: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
-        self.0.encode(buf)
-    }
-
-    fn decode(buf: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
-        Ok(Self(netidx_core::pack::Pack::decode(buf)?))
+    pub fn text(&self) -> Option<&ArcStr> {
+        self.0.as_ref()
     }
 }
 
@@ -257,12 +276,14 @@ pub enum TypeDefBody {
 pub struct TraitExpr {
     pub name: Name,
     pub methods: Arc<[TraitMethod]>,
+    pub below: Comments,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct TraitMethod {
     pub comments: Comments,
+    pub eol: Eol,
     pub doc: Doc,
     /// What every implementation of the method must be (`#[pure]`,
     /// `#[sync]`): definition assertions its bodies inherit.
@@ -370,6 +391,7 @@ pub enum SigKind {
 #[derive(Debug, Clone)]
 pub struct SigItem {
     pub comments: Comments,
+    pub eol: Eol,
     pub doc: Doc,
     pub kind: SigKind,
     // where errors about the item point: excluded from equality, packed
@@ -398,6 +420,7 @@ impl PartialOrd for SigItem {
 pub struct Sig {
     pub items: Arc<[SigItem]>,
     pub toplevel: bool,
+    pub below: Comments,
 }
 
 impl Deref for Sig {
@@ -1700,6 +1723,7 @@ impl Expr {
                 name: t.name.clone(),
                 methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
                     comments: m.comments.clone(),
+                    eol: m.eol.clone(),
                     doc: m.doc.clone(),
                     attrs: m.attrs.clone(),
                     name: m.name.clone(),
@@ -1707,6 +1731,7 @@ impl Expr {
                     self_index: m.self_index,
                     default: m.default.as_ref().map(|e| f(e)),
                 })),
+                below: t.below.clone(),
             })),
             Impl(im) => Impl(Arc::new(ImplExpr {
                 trait_name: im.trait_name.clone(),
