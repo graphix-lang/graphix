@@ -9,6 +9,66 @@ use crate::{
 use nohash::{IntMap, IntSet};
 use smallvec::SmallVec;
 use std::mem;
+use triomphe::Arc;
+
+/// What an evaluation catching up owes the inputs it learns only as it
+/// runs (a callee bound at its dispatch, a reference's new target): the
+/// fire of one written after `since`, the evaluating arm's last run,
+/// unless an enclosing select tracks it, whose bits decide.
+#[derive(Debug)]
+pub(crate) struct CatchUp {
+    since: u64,
+    tracked: Arc<IntSet<BindId>>,
+    outer: Option<Arc<CatchUp>>,
+}
+
+impl CatchUp {
+    fn tracks(&self, id: &BindId) -> bool {
+        let mut scope = Some(self);
+        while let Some(s) = scope {
+            if s.tracked.contains(id) {
+                return true;
+            }
+            scope = s.outer.as_deref();
+        }
+        false
+    }
+}
+
+/// Whether the catch-up scope owes `id` a fire: it was written after the
+/// arm's last run, untracked, and is not delivered this cycle.
+pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) -> bool {
+    let Some(scope) = &ctx.catch_up else { return false };
+    !scope.tracks(id)
+        && !ctx.event.variables.contains_key(id)
+        && ctx
+            .rt
+            .store_get(id)
+            .is_some_and(|(tv, stamp)| *stamp > scope.since && !tv.tag().is_bottom())
+}
+
+/// Deliver, fired at its standing value, each input `fill` names that the
+/// catch-up scope owes; the deliveries are for [`TrackedFires::restore`].
+pub(crate) fn deliver_owed<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    fill: impl FnOnce(&mut Refs),
+) -> Injected {
+    let mut injected = Injected::new();
+    if ctx.catch_up.is_none() {
+        return injected;
+    }
+    let mut r = Refs::default();
+    fill(&mut r);
+    for id in r.refed.difference(&r.bound) {
+        if owed(ctx, id)
+            && let Some((tv, _)) = ctx.rt.store_get(id)
+        {
+            let fired = TagValue::fired(tv.value_cloned());
+            injected.push((*id, ctx.event.variables.put(*id, fired)));
+        }
+    }
+    injected
+}
 
 /// Wake-catch-up fire tracking (design/wake_catchup.md): one fire bit
 /// per arm-body input, set when the input fires and consumed by the
@@ -36,6 +96,11 @@ pub(crate) struct TrackedFires {
     /// evaluation, which names what a node knows only once it ran (a
     /// `Deref`'s target).
     ran: Vec<bool>,
+    /// Per arm: the cycle it last ran, or the one the tracker was built.
+    last_run: Vec<u64>,
+    /// `all`'s keys for a catch-up scope, built when one opens after
+    /// `all` changed.
+    keys: Option<Arc<IntSet<BindId>>>,
 }
 
 /// The catch-up deliveries made for one evaluation, with what each
@@ -64,30 +129,11 @@ impl TrackedFires {
         }
     }
 
-    /// A tracker over `n` arms; `fill(i, r)` collects arm `i`'s refs.
-    // CR claude for claude: [bug/medium] An arm's tracked inputs come from its
-    // compile-time refs and are refreshed only at a deselect. A callee reached through
-    // a function value has no instance before its first dispatch, so the variables its
-    // body reads are untracked until the arm's first deselect. A fire of such a
-    // variable while another arm was selected is therefore lost at the arm's first
-    // entry. A statically resolved callee with the same body catches the fire up. In
-    // the probe, `|x| a ~ x` called directly prints "static 6". The same lambda chosen
-    // by a select prints nothing, on both engines, so the fuzzer cannot see it. The
-    // wake rule ("the fork" in design/wake_catchup.md) prescribes the catch-up, so how
-    // a callee resolves changes what a program outputs. A fix needs a way to learn, at
-    // a dynamic callee's first dispatch, which of its body's inputs fired since the arm
-    // last ran. One option is a per-variable fire epoch compared with the arm's last
-    // evaluation. Another is to seed the bits from the function value's definition refs
-    // when the arm reads a function-typed input. Pick one, then correct
-    // lang::collection::collection_refs_reach_its_slots: its [9]-only expectation
-    // encodes the lost catch-up. Also add a static twin of that pin. probe:
-    // design/review-2026-10-12/repro/tests-lang-rest-b-02.gx (tests-lang-rest-b-02)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): option A, a fire stamp per variable:
-    // each variable records the cycle of its last fire and an arm the cycle it last
-    // ran; at a wake, an input stamped after the arm's last run fired while it slept.
-    // Covers dynamic callees and moving references.
+    /// A tracker over `n` arms, built in `cycle`; `fill(i, r)` collects
+    /// arm `i`'s refs.
     pub(crate) fn new(
         env: &Env,
+        cycle: u64,
         n: usize,
         mut fill: impl FnMut(usize, &mut Refs),
     ) -> Self {
@@ -98,6 +144,8 @@ impl TrackedFires {
             pending: IntSet::default(),
             carried: IntSet::default(),
             ran: vec![false; n],
+            last_run: vec![cycle; n],
+            keys: None,
         };
         for i in 0..n {
             let mut r = Refs::default();
@@ -141,6 +189,7 @@ impl TrackedFires {
     // change. Gating on rebuilds plus a per-arm count of the Deref retargets under it
     // would do; it wants a pin of a woken arm whose reference moved while it slept.
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
+        self.keys = None;
         let Self { per_arm, consumes, all, pending, carried, .. } = self;
         let mut r = Refs::default();
         fill(&mut r);
@@ -216,6 +265,7 @@ impl TrackedFires {
         fill(&mut r);
         let (mut inputs, mut consumed) = (IntSet::default(), IntSet::default());
         Self::arm_refs(env, &r, &mut inputs, &mut consumed);
+        self.keys = None;
         let Self { per_arm, consumes, all, pending, .. } = self;
         for id in inputs {
             if per_arm[i].insert(id) {
@@ -274,6 +324,39 @@ impl TrackedFires {
                 bits.insert(*id);
             }
         }
+    }
+
+    /// Arm `i` runs: under a wake or step view, open the catch-up scope
+    /// for what it learns as it runs; what to put back, for [`Self::ran`].
+    pub(crate) fn open<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        i: usize,
+    ) -> Option<Option<Arc<CatchUp>>> {
+        if !ctx.event.init() {
+            return None;
+        }
+        let all = &self.all;
+        let tracked = self
+            .keys
+            .get_or_insert_with(|| Arc::new(all.keys().copied().collect()))
+            .clone();
+        let since = self.last_run[i];
+        let scope = CatchUp { since, tracked, outer: ctx.catch_up.clone() };
+        Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))))
+    }
+
+    /// Arm `i` ran this cycle: close the scope [`Self::open`] opened.
+    pub(crate) fn ran<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        i: usize,
+        outer: Option<Option<Arc<CatchUp>>>,
+    ) {
+        if let Some(outer) = outer {
+            ctx.catch_up = outer;
+        }
+        self.last_run[i] = ctx.rt.cycle();
     }
 
     /// Arm `i` is entered: the carried fires it reads are its entry's.

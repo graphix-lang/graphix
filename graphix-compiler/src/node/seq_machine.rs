@@ -123,7 +123,9 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
         let (tracked, lets) = tracked.get_or_insert_with(|| {
             let tracked =
-                TrackedFires::new(&ctx.env, steps.len(), |i, r| steps[i].refs(r));
+                TrackedFires::new(&ctx.env, ctx.rt.cycle(), steps.len(), |i, r| {
+                    steps[i].refs(r)
+                });
             let mut lets = IntSet::default();
             for n in steps.iter().flat_map(|s| s.nodes.iter()) {
                 if let NodeView::Bind(b) = n.view() {
@@ -334,6 +336,7 @@ fn evaluate<R: Rt, E: UserEvent>(
             tracked.enter(k)
         }
         let injected = tracked.deliver(ctx, k);
+        let scope = tracked.open(ctx, k);
         let mut done = false;
         for i in evaluation_order(step.nodes.len(), &step.catches) {
             if i > step.value && !done {
@@ -347,6 +350,7 @@ fn evaluate<R: Rt, E: UserEvent>(
                 });
             }
         }
+        tracked.ran(ctx, k, scope);
         TrackedFires::restore(ctx.event, injected);
         tracked.evaluated(&ctx.env, k, |r| step.refs(r));
         done

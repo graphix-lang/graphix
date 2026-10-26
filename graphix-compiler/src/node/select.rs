@@ -91,33 +91,7 @@ impl LazyArmFacts {
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
         LazyArmFacts {
-            // CR claude for claude: [bug/medium] The tracker is built from each arm's
-            // refs at the first update, and a dynamic call site's refs are only its
-            // function node and arguments. So a variable captured by the closure the
-            // site will dispatch (in1 in `|x| count(in1) + x`) is untracked until the
-            // arm has been selected and deselected once (`deselect` refreshes it). A
-            // fire of that variable while a never-selected arm sleeps is lost at the
-            // arm's first selection. The static twin `g(0)` catches it up, and so does
-            // the same dynamic arm at its second selection. The outcome depends on
-            // dispatch kind and history, which breaks the wake catch-up invariant (each
-            // event influences the arm exactly once). Fix: make the tracked set cover
-            // what a dynamic site can reach before dispatch, e.g. by tracking the free
-            // refs of the lambda value currently delivered to the site's function node
-            // (re-read when that value changes). Pin the static/dynamic first-selection
-            // pair. x-engine-firing-05 (function value bottom while the capture fires)
-            // has the same root. probe:
-            // design/review-2026-10-12/repro/x-engine-firing-03.sh (fuzz-schedule form:
-            // x-engine-firing-01.gx) (x-engine-firing-03)
-            // 2026-10-15 claude: same root as tests-lang-rest-b-02 (wake.rs, for eric),
-            // which asks for the mechanism (a per-variable fire epoch, or seeding from
-            // the function value's definition refs); waiting on that ruling.
-            // TrackedFires::evaluated (5c66bda6a) does not cover it: it walks the arm
-            // without callees, and the lost fire predates the first dispatch.
-            // 2026-10-24 claude: Eric ruled (2026-10-24): option A, a fire stamp per
-            // variable: each variable records the cycle of its last fire and an arm the
-            // cycle it last ran; at a wake, an input stamped after the arm's last run
-            // fired while it slept. Covers dynamic callees and moving references.
-            tracked: TrackedFires::new(&ctx.env, arms.len(), |i, r| {
+            tracked: TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
                 arm_refs(&arms[i], r)
             }),
             sleep_on_deselect: arms
@@ -218,9 +192,11 @@ fn evaluate_arm<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
 ) -> (Tag, Option<Value>) {
     let injected = tracked.deliver(ctx, i);
+    let scope = tracked.open(ctx, i);
     let tv = arm.1.update(ctx);
     let t = tv.tag();
     let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
+    tracked.ran(ctx, i, scope);
     TrackedFires::restore(ctx.event, injected);
     tracked.evaluated(&ctx.env, i, |r| arm_refs(arm, r));
     (t, v)
@@ -1563,7 +1539,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     }
                     false => View::Step,
                 };
-                // CR claude for claude: [bug/medium] An arm's tracked inputs come from
+                // XCR claude for claude: [bug/medium] An arm's tracked inputs come from
                 // `TrackedFires::new` at the select's first update and are refreshed
                 // only in `deselect`. `Deref::refs` names its target only after the
                 // Deref's first update. So an arm selected for the first time reads
@@ -1594,6 +1570,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // arm the cycle it last ran; at a wake, an input stamped after the
                 // arm's last run fired while it slept. Covers dynamic callees and
                 // moving references.
+                // 2026-10-25 claude: Built with tests-lang-rest-b-02's fire stamps: an
+                // arm evaluated under a wake or step view opens a catch-up scope
+                // (node::wake::CatchUp: the arm's last run, the select's tracked
+                // inputs, the enclosing scopes), and a Deref whose target no enclosing
+                // select tracks reads it FIRED when it was written after that run
+                // (wake::owed), so a moving reference's later target is caught up
+                // without a refresh. No pin of the moving case: a target that moves
+                // while the arm sleeps moves the reference too, whose own fire is
+                // tracked, and I did not find one that failed before. The dynamic
+                // callee half is pinned by
+                // lang::select::first_entry_dynamic_callee_catches_up.
                 let (t, v) =
                     ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx));
                 planes.emit(t, v)

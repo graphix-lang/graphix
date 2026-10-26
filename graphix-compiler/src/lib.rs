@@ -1546,6 +1546,9 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
     pub(crate) boundary: Option<prune::BoundaryRef>,
     /// The runtime's prune mode when the view was made.
     pub(crate) prune: PruneMode,
+    /// What the arm being caught up owes the inputs it learns as it runs
+    /// (`node::wake::CatchUp`).
+    pub(crate) catch_up: Option<triomphe::Arc<node::wake::CatchUp>>,
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
@@ -2038,6 +2041,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             fork: branch::ForkFlags::default(),
             boundary: None,
             prune,
+            catch_up: None,
         }
     }
 }
@@ -2134,6 +2138,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             fork: self.fork,
             boundary: self.boundary.clone(),
             prune: self.prune,
+            catch_up: self.catch_up.clone(),
         }
     }
 

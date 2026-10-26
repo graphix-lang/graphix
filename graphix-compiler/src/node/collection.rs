@@ -664,9 +664,10 @@ fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
                 for slot in slots.iter_mut() {
                     (kind.call)(slot).sleep(ctx);
                 }
-                let mut missed = TrackedFires::new(&ctx.env, 1, |_, r| {
-                    slots.iter_mut().for_each(|slot| (kind.call)(slot).refs(r))
-                });
+                let mut missed =
+                    TrackedFires::new(&ctx.env, ctx.rt.cycle(), 1, |_, r| {
+                        slots.iter_mut().for_each(|slot| (kind.call)(slot).refs(r))
+                    });
                 missed.observe(ctx);
                 *seen = SourceSeen::Paused(missed);
             }

@@ -1406,6 +1406,27 @@ run!(wake_spent_directly, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "b"), 
     matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 110, 120, 1, 1, 1])
 }; FuseExpect::Jit);
 
+// A fire a never-entered arm missed reaches its first entry through the
+// callee it calls, whether the call resolves statically or through a
+// function value bound only at that entry (its body's inputs are learned
+// then, and owed what fired since the arm's last run).
+const FIRST_ENTRY_CALLEE: &str = r#"
+{
+  let a = 0;
+  let mode = 0;
+  let gs = |x| a ~ x;
+  let gd = select mode { 0 => |x| a ~ x, _ => |x| x };
+  let n = 0;
+  n <- select n { k if k < 8 => k + 1, _ => never() };
+  a <- select n { 3 => 7, _ => never() };
+  select n { 6 => CALL(n), _ => never() }
+}
+"#;
+
+run!(first_entry_static_callee_catches_up, &FIRST_ENTRY_CALLEE.replace("CALL", "gs"), prints("i64:6"); FuseExpect::Jit);
+
+run!(first_entry_dynamic_callee_catches_up, &FIRST_ENTRY_CALLEE.replace("CALL", "gd"), prints("i64:6"); FuseExpect::Jit);
+
 // An arm-local `<-` target persists across the arm's sleep: a wake
 // resumes the arm, so the written 11 survives.
 // findings/arm-local-bind-aug2026/

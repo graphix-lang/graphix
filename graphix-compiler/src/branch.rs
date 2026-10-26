@@ -830,6 +830,7 @@ struct Shared<'a, R: Rt, E: UserEvent> {
     fork: ForkFlags,
     boundary: Option<BoundaryRef>,
     prune: graphix_types::stack::PruneMode,
+    catch_up: Option<triomphe::Arc<crate::node::wake::CatchUp>>,
 }
 
 impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
@@ -844,6 +845,7 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
             fork: ctx.fork,
             boundary: ctx.boundary.clone(),
             prune: ctx.prune,
+            catch_up: ctx.catch_up.clone(),
         }
     }
 
@@ -864,6 +866,7 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
             fork: self.fork,
             boundary: self.boundary.clone(),
             prune: self.prune,
+            catch_up: self.catch_up.clone(),
         }
     }
 }

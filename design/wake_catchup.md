@@ -86,6 +86,24 @@ under it, so an inner select's missed window is covered by the outer
 bits; the wake evaluation carries the tags down and the inner select
 routes and consumes with them.
 
+## Inputs learned as an arm runs
+
+The bits cover the inputs an arm names before it runs. Two it learns
+only as it runs: the body of a callee a function value selects, bound
+at its first dispatch, and a reference's new target. For those a write
+stamps its variable with the cycle it landed in (the store's stamp), and
+each arm records the cycle it last ran (`TrackedFires::last_run`, the
+tracker's first cycle until it runs). An arm evaluated under a wake or
+step view opens a catch-up scope (`node::wake::CatchUp`): its last run,
+the select's tracked inputs and the scopes around it. A callee bound
+fresh inside the scope is delivered, FIRED for its update, each input
+of its body written after that run; a `Deref` reads such a target FIRED.
+An input an enclosing select tracks is left to that select's bits, so a
+fire another arm consumed is not raised twice; consumption of an input
+no arm names is not tracked, so two arms reading one only through
+function values may each catch it up. Pins:
+`lang::select::first_entry_{static,dynamic}_callee_catches_up`.
+
 ## Worked examples
 
 `select cond { true => in0 + 1, false => in0 + 42 }`, `in0` init 1,

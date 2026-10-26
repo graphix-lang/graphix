@@ -2465,7 +2465,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if let Some(f) = self.callee.apply_mut() {
                 let absent = self.absent.get_or_insert_with(|| Absent {
                     missed: SmallVec::new(),
-                    captured: TrackedFires::new(&ctx.env, 1, |_, r| f.refs(r)),
+                    captured: TrackedFires::new(&ctx.env, ctx.rt.cycle(), 1, |_, r| {
+                        f.refs(r)
+                    }),
                 });
                 absent.observe(ctx, &set);
                 f.sleep(ctx);
@@ -2539,9 +2541,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
             Some(f) => {
-                // A fresh bind dispatches under the init view.
+                // A fresh bind dispatches under the init view, owed the
+                // fires its body's inputs had while the arm around it slept.
+                let owed = super::wake::deliver_owed(ctx, |r| f.refs(r));
                 let arg_refs = &mut self.arg_refs;
-                Some(ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone()))
+                let tv = ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone());
+                TrackedFires::restore(ctx.event, owed);
+                Some(tv)
             }
         };
         if dbgenv::gxdbg_cs() {

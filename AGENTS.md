@@ -802,7 +802,10 @@ node graph IS the IR — there is no parallel typed IR
   siblings are inputs of their own; a pattern bind, of this select or
   an enclosing one, is a facet of its scrutinee's delivery: reading it
   consumes that input's bit, and it is never delivered; an arm a guard's
-  flip selects binds stale). An input that
+  flip selects binds stale). An input an arm learns as it runs (a callee
+  a function value binds, a reference's new target) that no enclosing
+  select tracks is caught up by its write stamp against the arm's last
+  run (`node::wake::CatchUp`). An input that
   went bottom during the sleep is bottom at the wake: a bottom input
   SETS a node's resident (`TagValue::set_bottom`), never rides it, and
   every wake refresh stands a stale bottom like a value. Sleep state is

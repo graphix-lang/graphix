@@ -1895,8 +1895,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             return self.resident.set_bottom(addr.triggers());
         };
         let (id, moved) = self.address(ctx, cell);
+        // a target the arm around it learns only now may owe a fire
+        let owed = super::wake::owed(ctx, &id);
         let res = match read_var(ctx, &id) {
             Some(VarRead::Delivered(tv)) => Some(tv.clone()),
+            Some(VarRead::Standing(tv)) if owed => {
+                Some(TagValue::fired(tv.value_cloned()))
+            }
             Some(VarRead::Standing(tv)) => Some(standing_view(ctx.event, tv)),
             None => None,
         };
