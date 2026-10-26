@@ -2855,6 +2855,48 @@ run!(
     FuseExpect::None
 );
 
+// A written binding's type is one instance however it is written: a
+// variable an annotation or `never<T>` names, or a ⊥ initializer's
+// pattern, is the binding's, so a definition writing it is not
+// generalized over it.
+run!(
+    written_annotation_variable_is_monomorphic,
+    r#"{ let r: ['a, null] = null; let f = |x| { r <- x; x }; (f(1), f("a")) }"#,
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    written_never_annotation_is_monomorphic,
+    r#"{ let r = never<['a, null]>(); let f = |x| { r <- x; x }; (f(1), f("a")) }"#,
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    written_bottom_pattern_is_monomorphic,
+    r#"{ let (a, b) = never(); let f = |x| { a <- x; x }; let p = (f(1), f("s")); (a, b) }"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    written_body_annotation_variable_is_monomorphic,
+    r#"{ let f = |x| { let r: 'a = never(); let g = |y| { r <- y; y }; (g(1), g("a"), r) };
+         f(1) }"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    unwritten_annotated_lambda_stays_generic,
+    r#"{ let id: fn(x: 'a) -> 'a = |x| x;
+         let f = |x| { let r: ['a, null] = null; r <- x; x };
+         (id(1), id("s"), f(2), f("t")) }"#,
+    prints(r#"[i64:1, "s", i64:2, "t"]"#);
+    FuseExpect::Jit
+);
+
 // A written binding holding a function in a part, a struct field or a
 // tuple element written through a place reference, shares one instance
 // of it with its writers; so does a binding a lambda body writes. Each

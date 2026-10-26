@@ -26,7 +26,7 @@ use crate::{
     },
     typ::{
         CoreTrait, FnType, Mutability, Type,
-        tvar::{AtLevel, Level},
+        tvar::{AtLevel, Level, current_level},
     },
     wrap,
 };
@@ -317,6 +317,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             });
             for id in targets {
                 ctx.mark_connect_target(id).map_err(|e| e.at(&spec))?;
+                if let Some(b) = ctx.env.by_id.get(&id) {
+                    b.typ.claim_free(current_level())
+                }
             }
         }
         if !matches!(pat, expr::StructurePattern::Bind(_)) {

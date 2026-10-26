@@ -437,7 +437,7 @@ fn once(
     r
 }
 
-// CR claude for claude: [bug/high] lower never claims a generic cell, on the assumption
+// XCR claude for claude: [bug/high] lower never claims a generic cell, on the assumption
 // that every generic cell is a scheme's. Cells born generic as scratch also become live
 // bindings' types: a let annotation's free variables (`let r: ['a, null] = null`,
 // `never<['a, null]>()`), whose cells node::lambda::body_annotation only aliases, and a
@@ -451,6 +451,19 @@ fn once(
 // give the merged cell the shallower level of the two (TVar::claim, which takes generic
 // cells), so a live cell never ends up generic. probe:
 // design/review-2026-10-26/repro/t-tvar-annotation-var-generic.gx (t-tvar-01)
+// 2026-10-26 claude: Bind::compile claims the type of each name its block writes (a <-
+// target or &mut referent, the ids it hands mark_connect_target) for the binding's
+// level with Type::claim_free, which claims every cell the type reaches through
+// bindings, generic ones included, except a nested fn type's own quantifiers. An
+// annotation's variables, never<T>'s and a ⊥ initializer's pattern cells are then the
+// binding's, so a definition writing it shares them and is not generalized over them;
+// an unwritten annotated lambda stays generic. The repro and its four variants are
+// refused at the check. Not done: the merge_into backstop (a merge keeping the
+// shallower level through claim): no case is known to reach it after this change, and
+// it would reach every scheme merge. Pins: lang::types::written_annotation_variable_is_monomorphic,
+// written_never_annotation_is_monomorphic, written_bottom_pattern_is_monomorphic,
+// written_body_annotation_variable_is_monomorphic,
+// unwritten_annotated_lambda_stays_generic.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A generic cell stays generic (a scheme bound into a cell is still a
@@ -1982,6 +1995,40 @@ impl Type {
             Type::Fn(ft) => ft.alias_tvars(known),
             t => t.for_each_child(&mut |c| c.alias_tvars(known)),
         })
+    }
+
+    /// Claim every cell `self` reaches, through bindings, for `level`
+    /// ([`TVar::claim`]), a generic one included, but a nested fn type's
+    /// own quantifiers: the type of a binding something writes, whose
+    /// writers share its one instance.
+    #[doc(hidden)]
+    pub fn claim_free(&self, level: Level) {
+        fn go(
+            t: &Type,
+            level: Level,
+            quantified: &mut SmallVec<[ArcStr; 4]>,
+            seen: &mut AHashSet<usize>,
+        ) {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => {
+                    if !quantified.contains(&tv.name) && seen.insert(tv.cell_addr()) {
+                        tv.claim(level);
+                        if let Some(b) = tv.binding() {
+                            go(&b, level, quantified, seen)
+                        }
+                    }
+                }
+                t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
+                Type::Fn(ft) => {
+                    let outer = quantified.len();
+                    quantified.extend(ft.quantifiers.iter().cloned());
+                    ft.for_each_type(&mut |t| go(t, level, quantified, seen));
+                    quantified.truncate(outer);
+                }
+                t => t.for_each_child(&mut |c| go(c, level, quantified, seen)),
+            })
+        }
+        go(self, level, &mut SmallVec::new(), &mut LPooled::take())
     }
 
     /// Whether the cell at `addr` ([`ForeignWrite`]) is one of this type's,
