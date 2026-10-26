@@ -1,7 +1,8 @@
 use super::{Alignment, Line, Style, style, Tui};
-/// `scroll.y` is in lines and `scroll.x` is in chars, and x scrolls only
-/// unwrapped text; `wrap` breaks long lines at the width, and `trim`
-/// drops the leading whitespace of a wrapped line.
+/// `scroll.y` is in lines (with `wrap`, the rows they wrap to) and
+/// `scroll.x` is in chars, and x scrolls only unwrapped text; `wrap`
+/// breaks long lines at the width, and `trim` drops the leading
+/// whitespace of a wrapped line.
 type Paragraph = {
   alignment: &[Alignment, null],
   lines: &[Array<Line>, string],

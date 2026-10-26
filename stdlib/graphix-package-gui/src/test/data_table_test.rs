@@ -598,6 +598,54 @@ let result = data_table(
     Ok(())
 }
 
+/// Scrolling absolute rows subscribes the rows that come into the
+/// window and drops those that leave it, both ways.
+#[tokio::test(flavor = "current_thread")]
+async fn scrolling_moves_the_subscription_window() -> Result<()> {
+    let p = "/local/dt_scroll_window";
+    let n_rows: usize = 300;
+    let mut publishes: LPooled<String> = LPooled::take();
+    let mut rows: LPooled<String> = LPooled::take();
+    for i in 0..n_rows {
+        writeln!(publishes, "sys::net::publish(\"{p}/r{i}/c0\", v64:{i});").unwrap();
+        if i > 0 {
+            rows.push_str(", ");
+        }
+        write!(rows, "\"{p}/r{i}\"").unwrap();
+    }
+    let code = format!(
+        r#"
+
+{publishes}
+let tbl = {{ rows: [{rows}], columns: ["c0"] }};
+let result = data_table(#table: &tbl)
+"#
+    );
+    let mut h = dt(&code).await?;
+    let window_is_live = |h: &GuiTestHarness| {
+        let (s, e) = h.dt().dt_subscription_rows();
+        let grid = h.dt_snapshot().grid;
+        h.dt().dt_subscription_count() == e - s
+            && grid.iter().enumerate().all(|(i, row)| {
+                let live = (s..e).contains(&i).then(|| format_compact!("{i}"));
+                row[0] == live.as_deref().unwrap_or("")
+            })
+    };
+    settle(&mut h, "the first window", window_is_live).await?;
+    // a layout that changes the rows in view, then a scroll that does not
+    h.render()?;
+    h.dt_mut().handle_scroll(0.0, 0.0, 800.0, 600.0);
+    settle(&mut h, "the window of the laid out view", window_is_live).await?;
+    h.dt_mut().handle_scroll(0.0, 200.0 * 22.0, 800.0, 600.0);
+    assert_eq!(h.dt().dt_first_cell().0, 200);
+    settle(&mut h, "the window around row 200", window_is_live).await?;
+    assert_eq!(h.dt().dt_subscription_rows().0, 150);
+    h.dt_mut().handle_scroll(0.0, 0.0, 800.0, 600.0);
+    settle(&mut h, "the window back at the top", window_is_live).await?;
+    assert_eq!(h.dt().dt_subscription_rows().0, 0);
+    Ok(())
+}
+
 /// A row a resort brings into view, whose sort cell was already
 /// subscribed off-screen, gets its current value through on_update. The
 /// rows are listed in descending order, so r0 shows only once the sort
@@ -1547,12 +1595,32 @@ let result = data_table(
 "#;
     let mut h = dt(code).await?;
     let _ = h.view();
-    let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
     assert_eq!(h.dt().dt_user_width("c0"), None);
-    h.dt_mut().handle_column_resize_start(idx);
-    h.dt_mut().handle_column_resize_start(idx);
+    h.dt_mut().handle_column_resize_start(literal!("c0"));
+    h.dt_mut().handle_column_resize_start(literal!("c0"));
     let w = h.dt().dt_user_width("c0").expect("auto-fit writes user_widths");
     assert!(w > 80.0, "auto-fit width must exceed MIN_COL_WIDTH, got {w}");
+    Ok(())
+}
+
+/// Quick presses on two columns' handles, as after a scroll brings
+/// another column under the cursor, start a drag of the second.
+#[tokio::test(flavor = "current_thread")]
+async fn resize_presses_on_two_columns_drag_the_second() -> Result<()> {
+    let code = r#"
+
+let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
+let result = data_table(#table: &tbl)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.view();
+    h.dt_mut().handle_column_resize_start(literal!("c0"));
+    h.dt_mut().handle_column_resize_start(literal!("c1"));
+    assert_eq!(h.dt().dt_user_width("c0"), None);
+    assert!(h.dt_mut().handle_mouse_move_resize(100.0).is_none());
+    assert!(h.dt_mut().handle_mouse_move_resize(150.0).is_none());
+    assert_eq!(h.dt().dt_user_width("c0"), None);
+    assert!(h.dt().dt_user_width("c1").is_some());
     Ok(())
 }
 
@@ -2266,8 +2334,7 @@ let tbl = { rows: ["r0"], columns: [
 let result = data_table(#table: &tbl)
 "#;
     let mut h = dt(code).await?;
-    let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
-    h.dt_mut().handle_column_resize_start(idx);
+    h.dt_mut().handle_column_resize_start(literal!("c0"));
     assert!(h.dt_mut().handle_mouse_move_resize(100.0).is_none());
     let (cb, nw) = h.dt_mut().handle_mouse_move_resize(400.0).expect("on_resize");
     h.dt_mut().handle_column_resize_end();

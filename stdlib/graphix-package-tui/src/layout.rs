@@ -4,10 +4,11 @@ use super::{
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{BindId, expr::ExprId};
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
+use poolshark::local::LPooled;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect, Spacing},
@@ -61,25 +62,20 @@ impl FromValue for SpacingV {
     }
 }
 
+#[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
+struct ChildV {
+    child: Value,
+    constraint: ConstraintV,
+    size: Option<BindId>,
+}
+
+/// A child widget, kept while its `Tui` value is: its constraint and
+/// size output are set in place.
 struct Slot<X: GXExt> {
     size: SizeReport<X>,
     constraint: Constraint,
     child: TuiW,
-}
-
-impl<X: GXExt> Slot<X> {
-    async fn compile(gx: GXHandle<X>, v: Value) -> Result<Self> {
-        #[derive(FromValue)]
-        #[value(shape = "graphix_compiler::rep::GraphixShape")]
-        struct Fields {
-            child: Value,
-            constraint: ConstraintV,
-        }
-        let size = SizeReport::compile(&gx, &v).await?;
-        let Fields { child, constraint } = v.cast_to()?;
-        let child = compile(gx, child).await.context("compiling child")?;
-        Ok(Self { size, constraint: constraint.0, child })
-    }
 }
 
 graphix_rt::props! {
@@ -97,6 +93,7 @@ graphix_rt::props! {
 pub(super) struct LayoutW<X: GXExt> {
     gx: GXHandle<X>,
     p: Props<X>,
+    /// Keyed on each child's `Tui` value.
     children: Vec<(Value, Slot<X>)>,
     children_ref: Ref<X>,
 }
@@ -113,7 +110,7 @@ impl<X: GXExt> LayoutW<X> {
     }
 
     async fn set_children(&mut self, v: Value) -> Result<()> {
-        // CR claude for claude: [bug/medium] Slots are keyed on the whole Child value,
+        // XCR claude for claude: [bug/medium] Slots are keyed on the whole Child value,
         // constraint included. A constraint computed from state rebuilds the child's
         // entire subtree on every change, and the rebuild drops the old input handlers'
         // Callables, so an event an outer handler passed on with `Continue never
@@ -122,8 +119,27 @@ impl<X: GXExt> LayoutW<X> {
         // slot. probe:
         // design/review-2026-10-26/repro/tui-core-layout-rebuild-loses-event.py ((2, 2)
         // where a constant constraint gives (2, 4)) (tui-core-03)
-        reconcile(&mut self.children, v.cast_to()?, |v| Slot::compile(self.gx.clone(), v))
-            .await
+        // 2026-10-26 claude: LayoutW reconciles its slots on each ChildV's child (Tui)
+        // value; after the reconcile every slot takes its constraint, and
+        // SizeReport::retarget recompiles the size ref only when the bind id differs.
+        // Pin: input_test a_layout_child_keeps_its_handlers_when_its_constraint_changes
+        // (Length(n + 3), keys a w a w: seen 4, was 2).
+        let children: LPooled<Vec<ChildV>> = v.cast_to()?;
+        let gx = &self.gx;
+        let tuis = children.iter().map(|c| c.child.clone()).collect();
+        reconcile(&mut self.children, tuis, |v| async move {
+            let child = compile(gx.clone(), v).await.context("compiling child")?;
+            Ok(Slot { size: SizeReport::none(), constraint: Constraint::Min(0), child })
+        })
+        .await?;
+        // every constraint is set before a size output can fail
+        for ((_, slot), c) in self.children.iter_mut().zip(children.iter()) {
+            slot.constraint = c.constraint.0;
+        }
+        for ((_, slot), c) in self.children.iter_mut().zip(children.iter()) {
+            slot.size.retarget(gx, c.size).await?;
+        }
+        Ok(())
     }
 }
 

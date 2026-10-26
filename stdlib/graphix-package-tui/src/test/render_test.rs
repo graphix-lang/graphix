@@ -137,6 +137,37 @@ let result = paragraph(#scroll: &{x: 0, y: 1500}, &lines)
     h.assert_lines(&["L1500", "L1501"])
 }
 
+#[tokio::test]
+async fn a_paragraph_scrolls_past_u16_lines() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::paragraph::paragraph;
+let text = str::join(#sep: "\n", array::init(70000, |i| "L[i]"));
+let result = paragraph(#wrap: &false, #scroll: &{x: 0, y: 69998}, &text)
+"#,
+        8,
+        3,
+    )
+    .await?;
+    h.assert_lines(&["L69998", "L69999"])
+}
+
+/// Wrapped, an offset counts the rows the lines wrap to.
+#[tokio::test]
+async fn a_wrapped_paragraph_scrolls_past_u16_rows() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::paragraph::paragraph;
+let text = str::join(#sep: "\n", array::init(40000, |i| "[i + 100000] x"));
+let result = paragraph(#scroll: &{x: 0, y: 70001}, &text)
+"#,
+        6,
+        2,
+    )
+    .await?;
+    h.assert_lines(&["x", "135001"])
+}
+
 /// The per-axis margins win over `#margin`, whichever is written.
 #[tokio::test]
 async fn layout_margins_apply_per_axis_last() -> Result<()> {

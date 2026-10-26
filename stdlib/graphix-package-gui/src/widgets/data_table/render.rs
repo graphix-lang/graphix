@@ -331,7 +331,7 @@ impl<X: GXExt> DataTableW<X> {
                             .height(iced_core::Length::Fill),
                     )
                     .interaction(iced_core::mouse::Interaction::ResizingColumn)
-                    .on_press(self.msg(TableMsg::ColumnResizeStart(ci)))
+                    .on_press(self.msg(TableMsg::ColumnResizeStart(name.clone())))
                     .into();
                 Row::new()
                     .push(text_el)

@@ -47,6 +47,42 @@ let result = input_handler(#handle: &outer, &input_handler(#handle: &inner, &tex
     Ok(())
 }
 
+/// A layout child whose constraint changes keeps its widgets, so an
+/// event an outer handler passes on still reaches the inner one.
+#[tokio::test]
+async fn a_layout_child_keeps_its_handlers_when_its_constraint_changes() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::input_handler::{self, *};
+use tui::layout::{child, layout};
+use tui::text::text;
+let n = 0;
+let seen = 0;
+let outer = |e: Event| -> [`Stop, `Continue] on_press(e, |k| select k.code {
+  c@ `Char("w") => { n <- (c ~ n) + 1; `Continue },
+  _ => `Continue
+});
+let inner = |e: Event| -> [`Stop, `Continue] on_press(e, |k| {
+  seen <- (k ~ seen) + 1;
+  `Stop
+});
+let result = layout(&[child(
+  #constraint: `Length(n + 3),
+  input_handler(#handle: &outer, &input_handler(#handle: &inner, &text(&"x")))
+)])
+"#,
+    )
+    .await?;
+    h.watch("test::n").await?;
+    h.watch("test::seen").await?;
+    for c in ['a', 'w', 'a', 'w'] {
+        h.dispatch_event(ch(c)).await?;
+    }
+    assert_eq!(h.get_watched("test::n"), Some(&Value::I64(2)));
+    assert_eq!(h.get_watched("test::seen"), Some(&Value::I64(4)));
+    Ok(())
+}
+
 /// A disabled handler steps aside: its child, nested handlers included,
 /// gets every event until it is enabled again (tests-tui-03, tui-core-07).
 #[tokio::test]

@@ -1,31 +1,23 @@
+use super::tag_newtype;
 use super::{ChildW, SizeReport, StyleV, TuiW, TuiWidget, validate::ScrollCount};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use graphix_compiler::{expr::ExprId, rep};
+use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
-use netidx::publisher::{FromValue, Value};
+use netidx::publisher::Value;
 use ratatui::{
     Frame,
     layout::Rect,
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-#[derive(Clone)]
-struct ScrollbarOrientationV(ScrollbarOrientation);
-
-impl FromValue for ScrollbarOrientationV {
-    fn from_value(v: Value) -> Result<Self> {
-        let v = match rep::bare_tag(&v)? {
-            "VerticalRight" => ScrollbarOrientation::VerticalRight,
-            "VerticalLeft" => ScrollbarOrientation::VerticalLeft,
-            "HorizontalBottom" => ScrollbarOrientation::HorizontalBottom,
-            "HorizontalTop" => ScrollbarOrientation::HorizontalTop,
-            s => bail!("invalid ScrollBarOrientation {s}"),
-        };
-        Ok(Self(v))
-    }
-}
+tag_newtype!(#[derive(Clone)] ScrollbarOrientationV(ScrollbarOrientation), "scrollbar orientation", {
+    "VerticalRight" => ScrollbarOrientation::VerticalRight,
+    "VerticalLeft" => ScrollbarOrientation::VerticalLeft,
+    "HorizontalBottom" => ScrollbarOrientation::HorizontalBottom,
+    "HorizontalTop" => ScrollbarOrientation::HorizontalTop,
+});
 
 graphix_rt::props! {
     struct Props {

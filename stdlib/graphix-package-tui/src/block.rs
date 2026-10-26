@@ -1,3 +1,4 @@
+use super::tag_newtype;
 use super::{
     AlignmentV, ChildW, LineV, SizeReport, StyleV, TitlePositionV, TuiW, TuiWidget,
     into_borrowed_line, validate::Dim,
@@ -15,19 +16,11 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding},
 };
 
-#[derive(Clone, Copy)]
-struct MergeStrategyV(MergeStrategy);
-
-impl FromValue for MergeStrategyV {
-    fn from_value(v: Value) -> Result<Self> {
-        match rep::bare_tag(&v)? {
-            "Replace" => Ok(Self(MergeStrategy::Replace)),
-            "Exact" => Ok(Self(MergeStrategy::Exact)),
-            "Fuzzy" => Ok(Self(MergeStrategy::Fuzzy)),
-            s => bail!("invalid merge strategy {s}"),
-        }
-    }
-}
+tag_newtype!(#[derive(Clone, Copy)] MergeStrategyV(MergeStrategy), "merge strategy", {
+    "Replace" => MergeStrategy::Replace,
+    "Exact" => MergeStrategy::Exact,
+    "Fuzzy" => MergeStrategy::Fuzzy,
+});
 
 #[derive(Clone, Copy)]
 struct BordersV(Borders);
@@ -60,22 +53,14 @@ impl FromValue for BordersV {
     }
 }
 
-#[derive(Clone, Copy)]
-struct BorderTypeV(BorderType);
-
-impl FromValue for BorderTypeV {
-    fn from_value(v: Value) -> Result<Self> {
-        match rep::bare_tag(&v)? {
-            "Plain" => Ok(Self(BorderType::Plain)),
-            "Rounded" => Ok(Self(BorderType::Rounded)),
-            "Double" => Ok(Self(BorderType::Double)),
-            "Thick" => Ok(Self(BorderType::Thick)),
-            "QuadrantInside" => Ok(Self(BorderType::QuadrantInside)),
-            "QuadrantOutside" => Ok(Self(BorderType::QuadrantOutside)),
-            s => bail!("invalid border type {s}"),
-        }
-    }
-}
+tag_newtype!(#[derive(Clone, Copy)] BorderTypeV(BorderType), "border type", {
+    "Plain" => BorderType::Plain,
+    "Rounded" => BorderType::Rounded,
+    "Double" => BorderType::Double,
+    "Thick" => BorderType::Thick,
+    "QuadrantInside" => BorderType::QuadrantInside,
+    "QuadrantOutside" => BorderType::QuadrantOutside,
+});
 
 #[derive(Clone, Copy)]
 struct PaddingV(Padding);

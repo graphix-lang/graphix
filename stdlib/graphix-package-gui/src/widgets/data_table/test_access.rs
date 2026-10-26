@@ -79,22 +79,6 @@ impl<X: GXExt> DataTableW<X> {
         Some((row_path, col_arc))
     }
 
-    /// Index of `col` in the visible column metadata, as
-    /// `handle_column_resize_start` expects; `None` when not visible.
-    pub fn dt_meta_col_idx(&self, col: &str) -> Option<usize> {
-        let show_name = self.show_row_name();
-        if col == ROW_NAME_KEY {
-            return if show_name { Some(0) } else { None };
-        }
-        let (vis_start, vis_end) = self.display_col_range();
-        let pos = self.columns.get_index_of(col)?;
-        if pos < vis_start || pos >= vis_end {
-            return None;
-        }
-        let offset = if show_name { 1 } else { 0 };
-        Some(offset + (pos - vis_start))
-    }
-
     /// Pixel bounds of the cell at (row_idx, col). Requires a prior
     /// `view()` to have populated the width cache.
     pub fn dt_cell_bounds(
@@ -166,6 +150,11 @@ impl<X: GXExt> DataTableW<X> {
     /// How many netidx subscriptions the table holds.
     pub fn dt_subscription_count(&self) -> usize {
         self.cells.inner.lock().dvals.len()
+    }
+
+    /// The rows whose cells are subscribed, `[start, end)`.
+    pub fn dt_subscription_rows(&self) -> (usize, usize) {
+        self.subscription_row_range()
     }
 
     pub fn dt_is_resizing(&self) -> bool {

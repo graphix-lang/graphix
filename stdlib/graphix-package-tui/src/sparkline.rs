@@ -1,5 +1,6 @@
+use super::tag_newtype;
 use super::{StyleV, TuiW, TuiWidget};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use graphix_compiler::{expr::ExprId, rep};
@@ -17,18 +18,10 @@ use ratatui::{
 /// (`value * height * 8 / max`), which this keeps exact and overflow free.
 const SCALE: u64 = 1 << 20;
 
-#[derive(Clone, Copy)]
-struct RenderDirectionV(RenderDirection);
-
-impl FromValue for RenderDirectionV {
-    fn from_value(v: Value) -> Result<Self> {
-        match rep::bare_tag(&v)? {
-            "LeftToRight" => Ok(Self(RenderDirection::LeftToRight)),
-            "RightToLeft" => Ok(Self(RenderDirection::RightToLeft)),
-            s => bail!("invalid render direction {s}"),
-        }
-    }
-}
+tag_newtype!(#[derive(Clone, Copy)] RenderDirectionV(RenderDirection), "render direction", {
+    "LeftToRight" => RenderDirection::LeftToRight,
+    "RightToLeft" => RenderDirection::RightToLeft,
+});
 
 /// A bar's value, absent when it is null or not finite.
 struct Bar {

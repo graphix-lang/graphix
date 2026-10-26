@@ -14,6 +14,7 @@ use ratatui::{
         calendar::{CalendarEventStore, Monthly},
     },
 };
+use std::mem;
 use time::{Date, Month};
 
 /// The [`Date`] nearest `(year, month, day)`, and whether it differs.
@@ -71,13 +72,19 @@ pub(super) struct CalendarW<X: GXExt> {
     p: Props<X>,
     events_ref: Ref<X>,
     events: CalendarEventStore,
+    short: Buffer,
 }
 
 impl<X: GXExt> CalendarW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
         let p = Props::compile(&gx, &v).await.context("calendar")?;
         let events_ref = gx.compile_field(&v, "events").await?;
-        let mut t = Self { p, events_ref, events: CalendarEventStore::default() };
+        let mut t = Self {
+            p,
+            events_ref,
+            events: CalendarEventStore::default(),
+            short: Buffer::default(),
+        };
         if let Some(v) = t.events_ref.last.take() {
             t.set_events(&v)?;
         }
@@ -135,7 +142,7 @@ impl<X: GXExt> TuiWidget for CalendarW<X> {
         } else {
             // ratatui draws every week, bounded by the buffer and not the
             // area, so a short one draws into a buffer of its own
-            // CR claude for claude: [bug/medium] Buffer::merge in ratatui-core indexes
+            // XCR claude for claude: [bug/medium] Buffer::merge in ratatui-core indexes
             // cells with u16 arithmetic, `(y - area.y) * area.width`. On a terminal of
             // more than 65535 cells, a short calendar panics the display in dev and
             // soak builds and scrambles frame cells in release. The empty buffer also
@@ -147,11 +154,22 @@ impl<X: GXExt> TuiWidget for CalendarW<X> {
             // Record the merge overflow in UPSTREAM.md. probe:
             // design/review-2026-10-26/repro/tui-widgets-calendar-merge-overflow.sh
             // (tui-widgets-01)
-            let mut short = Buffer::empty(Rect::new(0, 0, rect.width, rect.height));
-            cal.render(short.area, &mut short);
-            short.area.x = rect.x;
-            short.area.y = rect.y;
-            frame.buffer_mut().merge(&short);
+            // 2026-10-26 claude: The short path keeps a Buffer in CalendarW, resizes it
+            // to the rect, swaps the frame's cells of the rect in, renders, and swaps
+            // them back: no merge, no u16 indexing, the parent's styles kept, no
+            // whole-frame walk. UPSTREAM.md records the merge overflow. Pins:
+            // widgets_test a_short_calendar_draws_on_a_large_screen (300x300),
+            // a_short_calendar_keeps_its_background.
+            let rect = rect.intersection(frame.area());
+            let buf = frame.buffer_mut();
+            self.short.resize(rect);
+            for pos in rect.positions() {
+                mem::swap(&mut self.short[pos], &mut buf[pos]);
+            }
+            cal.render(rect, &mut self.short);
+            for pos in rect.positions() {
+                mem::swap(&mut self.short[pos], &mut buf[pos]);
+            }
         }
         Ok(())
     }

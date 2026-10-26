@@ -1,8 +1,9 @@
+use super::tag_newtype;
 use super::{
     AlignmentV, BoundsV, LineV, MarkerV, PointV, StyleV, TuiW, TuiWidget,
     into_borrowed_line, layout::ConstraintV, reconcile,
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle, Ref};
@@ -14,40 +15,22 @@ use ratatui::{
     widgets::{Axis, Chart, Dataset, GraphType, LegendPosition},
 };
 
-#[derive(Clone, Copy)]
-struct GraphTypeV(GraphType);
+tag_newtype!(#[derive(Clone, Copy)] GraphTypeV(GraphType), "graph type", {
+    "Scatter" => GraphType::Scatter,
+    "Line" => GraphType::Line,
+    "Bar" => GraphType::Bar,
+});
 
-impl FromValue for GraphTypeV {
-    fn from_value(v: Value) -> Result<Self> {
-        let g = match rep::bare_tag(&v)? {
-            "Scatter" => GraphType::Scatter,
-            "Line" => GraphType::Line,
-            "Bar" => GraphType::Bar,
-            s => bail!("invalid graphtype {s}"),
-        };
-        Ok(Self(g))
-    }
-}
-
-#[derive(Clone, Copy)]
-struct LegendPositionV(LegendPosition);
-
-impl FromValue for LegendPositionV {
-    fn from_value(v: Value) -> Result<Self> {
-        let p = match rep::bare_tag(&v)? {
-            "Top" => LegendPosition::Top,
-            "TopRight" => LegendPosition::TopRight,
-            "TopLeft" => LegendPosition::TopLeft,
-            "Left" => LegendPosition::Left,
-            "Right" => LegendPosition::Right,
-            "Bottom" => LegendPosition::Bottom,
-            "BottomRight" => LegendPosition::BottomRight,
-            "BottomLeft" => LegendPosition::BottomLeft,
-            s => bail!("invalid legend position {s}"),
-        };
-        Ok(Self(p))
-    }
-}
+tag_newtype!(#[derive(Clone, Copy)] LegendPositionV(LegendPosition), "legend position", {
+    "Top" => LegendPosition::Top,
+    "TopRight" => LegendPosition::TopRight,
+    "TopLeft" => LegendPosition::TopLeft,
+    "Left" => LegendPosition::Left,
+    "Right" => LegendPosition::Right,
+    "Bottom" => LegendPosition::Bottom,
+    "BottomRight" => LegendPosition::BottomRight,
+    "BottomLeft" => LegendPosition::BottomLeft,
+});
 
 #[derive(Clone)]
 struct AxisV {

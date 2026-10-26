@@ -323,6 +323,46 @@ let result = layout(#direction: &`Vertical, &[
     Ok(())
 }
 
+/// A screen of more than 65535 cells.
+#[tokio::test]
+async fn a_short_calendar_draws_on_a_large_screen() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::{layout::{child, layout}, text::text, calendar::{calendar, date}};
+let result = layout(&[
+  child(#constraint: `Length(3), calendar(&date(2024, 5, 15))),
+  child(#constraint: `Fill(1), text(&"below"))
+])
+"#,
+        300,
+        300,
+    )
+    .await?;
+    h.assert_lines(&[
+        "           1  2  3  4",
+        "  5  6  7  8  9 10 11",
+        " 12 13 14 15 16 17 18",
+        "below",
+    ])
+}
+
+#[tokio::test]
+async fn a_short_calendar_keeps_its_background() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::{style, block::block, calendar::{calendar, date}};
+let result = block(#style: &style(#bg: `Blue), &calendar(&date(2024, 5, 15)))
+"#,
+        24,
+        3,
+    )
+    .await?;
+    let buf = h.render()?;
+    assert_eq!(buf[(0, 0)].bg, Color::Blue);
+    assert_eq!(buf[(23, 2)].bg, Color::Blue);
+    Ok(())
+}
+
 #[tokio::test]
 async fn canvas_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(

@@ -188,60 +188,24 @@ impl<X: GXExt> DataTableW<X> {
         let pos_changed = row_changed || self.first_col != new_first_col;
         self.first_row = new_first_row;
         self.first_col = new_first_col;
-        // CR claude for claude: [test-gap/medium] No test drives this path with
-        // absolute rows: the data_table tests scroll only virtual rows or horizontally,
-        // so nothing checks that rows scrolled into the window get subscribed and rows
-        // leaving it get dropped. Dropping `prev.needs_subscription_reconcile` above,
-        // reversing the `difference` in update_subscriptions' non-full branch, or
-        // deleting this call would all pass. Add a test: about 300 published absolute
-        // rows, handle_scroll to row 200, wait for the visible cells' values, and
-        // assert dt_subscription_count() stays at window x columns; then scroll back
-        // and check again. Found by reading; not run. (gui-datatable-02)
         if row_changed {
             self.update_subscriptions();
         }
         metrics_changed || pos_changed
     }
 
-    /// The header cell at `col_meta_idx` (the row-name column first when
-    /// shown) was pressed on its resize handle; a second press within
-    /// 400 ms auto-fits every column.
-    // CR claude for claude: [structure/low] The press carries a header slot index, and
-    // this function rebuilds render's col_meta mapping from show_row_name, mode and a
-    // fresh display_col_range. last_resize_click is also keyed by slot, so pressing
-    // slot 2's handle, scrolling one column, and pressing slot 2 again within 400 ms
-    // auto-fits every column instead of starting a drag. Carry the column name in
-    // ColumnResizeStart (render has it in col_meta), key the double-click by name, and
-    // delete this mapping and the test accessor dt_meta_col_idx. Found by reading; not
-    // run. (gui-datatable-05)
-    pub(crate) fn handle_column_resize_start(&mut self, col_meta_idx: usize) -> bool {
+    /// The resize handle of column `name` was pressed; a second press
+    /// on the same column's handle within 400 ms auto-fits every column.
+    pub(crate) fn handle_column_resize_start(&mut self, name: ArcStr) -> bool {
         let now = Instant::now();
-        let is_double = self.last_resize_click.is_some_and(|(idx, t)| {
-            idx == col_meta_idx && now.duration_since(t).as_millis() < 400
+        let is_double = self.last_resize_click.as_ref().is_some_and(|(last, t)| {
+            *last == name && now.duration_since(*t).as_millis() < 400
         });
-        self.last_resize_click = Some((col_meta_idx, now));
+        self.last_resize_click = Some((name.clone(), now));
         if is_double {
             self.auto_fit_all_columns();
             return true;
         }
-        let show_name = self.show_row_name();
-        let name: ArcStr = match (show_name, col_meta_idx) {
-            (true, 0) => ROW_NAME_KEY,
-            (_, i) => {
-                let data_idx = i - show_name as usize;
-                match self.mode {
-                    DisplayMode::Value if data_idx == 0 => VALUE_COL_KEY,
-                    DisplayMode::Value => return false,
-                    DisplayMode::Table => {
-                        let (vis_start, _) = self.display_col_range();
-                        match self.columns.get_index(vis_start + data_idx) {
-                            Some((name, _)) => name.clone(),
-                            None => return false,
-                        }
-                    }
-                }
-            }
-        };
         let current_width = self.column_canonical_width(&name);
         self.resize_drag =
             Some(ResizeDrag { col_name: name, last_x: None, current_width });

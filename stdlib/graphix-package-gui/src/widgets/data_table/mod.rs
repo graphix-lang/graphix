@@ -110,7 +110,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     user_widths: Mutex<AHashMap<ArcStr, f32>>,
     resize_drag: Option<ResizeDrag>,
     /// Last resize-handle click, for double-click detection.
-    last_resize_click: Option<(usize, Instant)>,
+    last_resize_click: Option<(ArcStr, Instant)>,
     mode: DisplayMode,
     /// The table's rows in its own order.
     table_rows: Vec<Path>,
@@ -456,7 +456,9 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             TableMsg::Scroll(v, h, vp_w, vp_h) => {
                 self.handle_scroll(*v, *h, *vp_w, *vp_h)
             }
-            TableMsg::ColumnResizeStart(ci) => self.handle_column_resize_start(*ci),
+            TableMsg::ColumnResizeStart(name) => {
+                self.handle_column_resize_start(name.clone())
+            }
             TableMsg::ColumnResizeMove(x) => {
                 if self.resize_drag.is_none() {
                     return false;

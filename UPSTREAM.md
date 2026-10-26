@@ -131,3 +131,18 @@ the state of a fix, and Graphix's side.
 - **Graphix's side.** Worked around: `LengthV` reads a weight only from
   1 to 255 (`stdlib/graphix-package-gui/src/types.rs`), so up to 257
   siblings cannot overflow the sum. Not reported.
+
+## ratatui-core 0.1.2: Buffer::merge indexes cells in u16
+
+- **Bug.** `Buffer::merge` moves the receiver's cells to their place in
+  the union area with `((y - area.y) * area.width + x - area.x) as
+  usize`, all `u16`: a union of more than 65535 cells (a 300x300
+  terminal) panics a debug build and in release writes cells to wrong
+  positions. `Buffer::index_of` computes in `usize` and is sound.
+- **Repro.** `design/review-2026-10-26/repro/tui-widgets-calendar-merge-overflow.sh`
+  against a Graphix that still merges.
+- **Graphix's side.** Worked around (a short calendar on a large screen
+  crashed the display): the calendar draws a short month into a buffer
+  over its own rect and swaps the cells with the frame's
+  (`stdlib/graphix-package-tui/src/calendar.rs`); nothing in Graphix
+  calls `merge`. Not reported.

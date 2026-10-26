@@ -87,8 +87,8 @@ pub enum TableMsg {
     CellEditSubmit,
     /// Cell edit cancelled (Escape or click elsewhere).
     CellEditCancel,
-    /// Column resize drag started (col_meta index).
-    ColumnResizeStart(usize),
+    /// Column resize drag started (column name).
+    ColumnResizeStart(ArcStr),
     /// Cursor moved while a column resize drag might be active
     /// (cursor x in widget-local coordinates); only a dragging table consumes it.
     ColumnResizeMove(f32),

@@ -49,9 +49,9 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Direction, Flex, Rect},
     style::{Color, Modifier, Style},
-    symbols,
+    symbols::Marker,
     text::{Line, Span, Text},
-    widgets::TitlePosition,
+    widgets::{HighlightSpacing, TitlePosition},
 };
 use scrollbar::ScrollbarW;
 use sparkline::SparklineW;
@@ -73,7 +73,7 @@ use tokio::{
     time::{Interval, MissedTickBehavior, interval},
 };
 use triomphe::Arc;
-use validate::{Byte, Offset};
+use validate::{Byte, Index, Offset};
 
 mod barchart;
 mod block;
@@ -104,25 +104,32 @@ pub mod testing;
 #[cfg(test)]
 mod test;
 
-#[derive(Clone, Copy)]
-struct AlignmentV(Alignment);
+/// A newtype over a ratatui enum, read from the bare variant tags in its
+/// table.
+macro_rules! tag_newtype {
+    ($(#[$m:meta])* $name:ident($ty:ty), $what:literal, {
+        $($tag:literal => $val:expr),+ $(,)?
+    }) => {
+        $(#[$m])*
+        struct $name($ty);
 
-// CR claude for claude: [structure/low] This impl and eleven others in this crate
-// (FlexV, TitlePositionV, DirectionV, HighlightSpacingV, MarkerV, MergeStrategyV,
-// BorderTypeV, and those in scrollbar, chart and sparkline) are the same rep::bare_tag
-// match written out again. One macro_rules! taking the newtype, the ratatui type and
-// the "Tag" => value table would replace about 130 lines. Found by reading; not run.
-// (tui-core-04)
-impl FromValue for AlignmentV {
-    fn from_value(v: Value) -> Result<Self> {
-        match rep::bare_tag(&v)? {
-            "Left" => Ok(AlignmentV(Alignment::Left)),
-            "Right" => Ok(AlignmentV(Alignment::Right)),
-            "Center" => Ok(AlignmentV(Alignment::Center)),
-            s => bail!("invalid alignment {s}"),
+        impl ::netidx::publisher::FromValue for $name {
+            fn from_value(v: ::netidx::publisher::Value) -> ::anyhow::Result<Self> {
+                Ok(Self(match ::graphix_compiler::rep::bare_tag(&v)? {
+                    $($tag => $val,)+
+                    s => ::anyhow::bail!(concat!("invalid ", $what, " {}"), s),
+                }))
+            }
         }
-    }
+    };
 }
+use tag_newtype;
+
+tag_newtype!(#[derive(Clone, Copy)] AlignmentV(Alignment), "alignment", {
+    "Left" => Alignment::Left,
+    "Right" => Alignment::Right,
+    "Center" => Alignment::Center,
+});
 
 #[derive(Clone, Copy)]
 struct ColorV(Color);
@@ -278,31 +285,22 @@ impl FromValue for LinesV {
     }
 }
 
-#[derive(Clone, Copy)]
-struct FlexV(Flex);
-
-impl FromValue for FlexV {
-    fn from_value(v: Value) -> Result<Self> {
-        let t = match rep::bare_tag(&v)? {
-            "Legacy" => Flex::Legacy,
-            "Start" => Flex::Start,
-            "End" => Flex::End,
-            "Center" => Flex::Center,
-            "SpaceBetween" => Flex::SpaceBetween,
-            "SpaceEvenly" => Flex::SpaceEvenly,
-            "SpaceAround" => Flex::SpaceAround,
-            s => bail!("invalid flex {s}"),
-        };
-        Ok(Self(t))
-    }
-}
+tag_newtype!(#[derive(Clone, Copy)] FlexV(Flex), "flex", {
+    "Legacy" => Flex::Legacy,
+    "Start" => Flex::Start,
+    "End" => Flex::End,
+    "Center" => Flex::Center,
+    "SpaceBetween" => Flex::SpaceBetween,
+    "SpaceEvenly" => Flex::SpaceEvenly,
+    "SpaceAround" => Flex::SpaceAround,
+});
 
 /// A scroll in content lines (y) and chars (x).
 #[derive(Debug, Clone, Copy, FromValue)]
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct ScrollV {
     x: Offset,
-    y: Offset,
+    y: Index,
 }
 
 /// A point, the Graphix tuple `(f64, f64)`.
@@ -340,46 +338,21 @@ impl FromValue for BoundsV {
     }
 }
 
-#[derive(Clone, Copy)]
-struct TitlePositionV(TitlePosition);
+tag_newtype!(#[derive(Clone, Copy)] TitlePositionV(TitlePosition), "position", {
+    "Top" => TitlePosition::Top,
+    "Bottom" => TitlePosition::Bottom,
+});
 
-impl FromValue for TitlePositionV {
-    fn from_value(v: Value) -> Result<Self> {
-        match rep::bare_tag(&v)? {
-            "Top" => Ok(Self(TitlePosition::Top)),
-            "Bottom" => Ok(Self(TitlePosition::Bottom)),
-            s => bail!("invalid position {s}"),
-        }
-    }
-}
+tag_newtype!(#[derive(Clone, Copy)] DirectionV(Direction), "direction", {
+    "Horizontal" => Direction::Horizontal,
+    "Vertical" => Direction::Vertical,
+});
 
-#[derive(Clone, Copy)]
-struct DirectionV(Direction);
-
-impl FromValue for DirectionV {
-    fn from_value(v: Value) -> Result<Self> {
-        let t = match rep::bare_tag(&v)? {
-            "Horizontal" => Direction::Horizontal,
-            "Vertical" => Direction::Vertical,
-            s => bail!("invalid direction tag {s}"),
-        };
-        Ok(Self(t))
-    }
-}
-
-#[derive(Clone)]
-struct HighlightSpacingV(ratatui::widgets::HighlightSpacing);
-
-impl FromValue for HighlightSpacingV {
-    fn from_value(v: Value) -> Result<Self> {
-        match rep::bare_tag(&v)? {
-            "Always" => Ok(Self(ratatui::widgets::HighlightSpacing::Always)),
-            "Never" => Ok(Self(ratatui::widgets::HighlightSpacing::Never)),
-            "WhenSelected" => Ok(Self(ratatui::widgets::HighlightSpacing::WhenSelected)),
-            s => bail!("invalid highlight spacing {s}"),
-        }
-    }
-}
+tag_newtype!(#[derive(Clone)] HighlightSpacingV(HighlightSpacing), "highlight spacing", {
+    "Always" => HighlightSpacing::Always,
+    "Never" => HighlightSpacing::Never,
+    "WhenSelected" => HighlightSpacing::WhenSelected,
+});
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, IntoValue)]
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
@@ -406,25 +379,16 @@ impl SizeV {
     }
 }
 
-#[derive(Clone, Copy)]
-struct MarkerV(symbols::Marker);
-
-impl FromValue for MarkerV {
-    fn from_value(v: Value) -> Result<Self> {
-        let m = match rep::bare_tag(&v)? {
-            "Dot" => symbols::Marker::Dot,
-            "Block" => symbols::Marker::Block,
-            "Bar" => symbols::Marker::Bar,
-            "Braille" => symbols::Marker::Braille,
-            "HalfBlock" => symbols::Marker::HalfBlock,
-            "Quadrant" => symbols::Marker::Quadrant,
-            "Sextant" => symbols::Marker::Sextant,
-            "Octant" => symbols::Marker::Octant,
-            s => bail!("invalid marker {s}"),
-        };
-        Ok(Self(m))
-    }
-}
+tag_newtype!(#[derive(Clone, Copy)] MarkerV(Marker), "marker", {
+    "Dot" => Marker::Dot,
+    "Block" => Marker::Block,
+    "Bar" => Marker::Bar,
+    "Braille" => Marker::Braille,
+    "HalfBlock" => Marker::HalfBlock,
+    "Quadrant" => Marker::Quadrant,
+    "Sextant" => Marker::Sextant,
+    "Octant" => Marker::Octant,
+});
 
 fn into_borrowed_line<'a>(line: &'a Line<'static>) -> Line<'a> {
     let spans = line
@@ -615,11 +579,25 @@ impl<X: GXExt> SizeReport<X> {
             size: Option<BindId>,
         }
         let Fields { size } = v.clone().cast_to().context("size output")?;
-        let r = match size {
-            Some(id) => Some(gx.compile_ref(id).await?),
-            None => None,
-        };
-        Ok(Self { r, last: None })
+        let mut report = Self::none();
+        report.retarget(gx, size).await?;
+        Ok(report)
+    }
+
+    fn none() -> Self {
+        Self { r: None, last: None }
+    }
+
+    /// Report to `size` from now on.
+    async fn retarget(&mut self, gx: &GXHandle<X>, size: Option<BindId>) -> Result<()> {
+        if self.r.as_ref().map(|r| r.bid) != size {
+            self.r = match size {
+                Some(id) => Some(gx.compile_ref(id).await?),
+                None => None,
+            };
+            self.last = None;
+        }
+        Ok(())
     }
 
     fn report(&mut self, rect: Rect) -> Result<()> {
@@ -1048,6 +1026,11 @@ impl Drop for GiveBack {
     }
 }
 
+#[cfg(unix)]
+fn hold_stderr() -> Option<StderrHeld> {
+    StderrHeld::hold().inspect_err(|e| error!("stderr stays on the terminal: {e:?}")).ok()
+}
+
 /// The terminal while the display holds it: raw mode, the alternate
 /// screen, bracketed paste, its events and stderr. Dropping it gives all
 /// of that back, the event reader first.
@@ -1061,6 +1044,7 @@ struct Live {
     events: Fuse<EventStream>,
     terminal: DefaultTerminal,
     _give_back: GiveBack,
+    /// Last, so what it kept is written after the terminal is given back.
     #[cfg(unix)]
     _stderr: Option<StderrHeld>,
 }
@@ -1080,7 +1064,7 @@ impl Live {
                 prev(info)
             }))
         });
-        // CR claude for claude: [bug/medium] The alternate screen is entered here, but
+        // XCR claude for claude: [bug/medium] The alternate screen is entered here, but
         // stderr is held only at the end of take, after the modes, the mouse and
         // Terminal::new; recover has the same order. Stderr written in that window
         // lands raw on the TUI and ratatui never erases it. A resume after tui::suspend
@@ -1090,6 +1074,14 @@ impl Live {
         // terminal is given back. probe:
         // design/review-2026-10-26/repro/tui-core-stderr-leak-at-resume.py (3 of 5 runs
         // leak) (tui-core-01)
+        // 2026-10-26 claude: Live::take holds stderr (hold_stderr) before raw mode and
+        // the alternate screen; recover replays the old hold and holds again before
+        // re-taking the modes; _stderr stays the last field. Pin: terminal_test
+        // stderr_never_reaches_the_alternate_screen (a thread writes stderr nonstop
+        // through 20 take/panic/recover cycles; no LEAK between 1049h and 1049l; fails
+        // every run with take or recover reverted).
+        #[cfg(unix)]
+        let stderr = hold_stderr();
         terminal::enable_raw_mode().context("raw mode")?;
         let give_back = GiveBack;
         TERMINAL_INTERRUPTED.store(false, Ordering::Release);
@@ -1107,9 +1099,7 @@ impl Live {
             terminal,
             _give_back: give_back,
             #[cfg(unix)]
-            _stderr: StderrHeld::hold()
-                .inspect_err(|e| error!("stderr stays on the terminal: {e:?}"))
-                .ok(),
+            _stderr: stderr,
         })
     }
 
@@ -1118,17 +1108,14 @@ impl Live {
             return Ok(false);
         }
         #[cfg(unix)]
-        drop(self._stderr.take());
+        {
+            drop(self._stderr.take());
+            self._stderr = hold_stderr();
+        }
         terminal::enable_raw_mode().context("recover raw mode")?;
         take_terminal_modes(&mut std::io::stdout())?;
         set_mouse(mouse);
         self.terminal.resize(self.terminal.size()?.into())?;
-        #[cfg(unix)]
-        {
-            self._stderr = StderrHeld::hold()
-                .inspect_err(|e| error!("stderr stays on the terminal: {e:?}"))
-                .ok();
-        }
         Ok(true)
     }
 }

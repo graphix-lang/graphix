@@ -203,6 +203,61 @@ async fn caught_panics_do_not_leave_the_display_cooked() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Nothing written to stderr reaches the alternate screen, however
+/// close to the display taking or recovering the terminal.
+#[cfg(unix)]
+#[tokio::test]
+async fn stderr_never_reaches_the_alternate_screen() -> anyhow::Result<()> {
+    use std::{
+        io::Write,
+        sync::atomic::{AtomicBool, Ordering},
+    };
+    if let Some(output) =
+        in_child("stderr_never_reaches_the_alternate_screen", Some(b""), || {
+            // stderr joins the display's stream, so the order of the two shows
+            if unsafe { libc::dup2(1, 2) } < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let stop = AtomicBool::new(false);
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::io::stderr().write_all(b"LEAK\n");
+                    }
+                });
+                let r = (0..20).try_for_each(|_| {
+                    let mut live = crate::Live::take(false)?;
+                    let _ =
+                        std::panic::catch_unwind(|| panic!("caught while displaying"));
+                    assert!(live.recover(false)?);
+                    Ok(())
+                });
+                stop.store(true, Ordering::Relaxed);
+                r
+            })
+        })
+        .await?
+    {
+        assert!(output.status.success(), "{output:?}");
+        let out = &output.stdout[..];
+        let find = |hay: &[u8], needle: &[u8]| {
+            hay.windows(needle.len()).position(|w| w == needle)
+        };
+        let mut rest = out;
+        let mut screens = 0;
+        while let Some(i) = find(rest, b"\x1b[?1049h") {
+            let screen = &rest[i..];
+            let end = find(screen, b"\x1b[?1049l").unwrap_or(screen.len());
+            let screen_text = String::from_utf8_lossy(&screen[..end]);
+            assert!(!screen_text.contains("LEAK"), "{screen_text:?}");
+            screens += 1;
+            rest = &screen[end..];
+        }
+        assert_eq!(screens, 40);
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn aborting_panics_replay_stderr_and_the_diagnostic() -> anyhow::Result<()> {
