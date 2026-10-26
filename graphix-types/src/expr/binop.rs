@@ -93,11 +93,12 @@ impl BinOp {
     }
 
     /// The character that, following the token, makes it something else:
-    /// `>]` closes a list literal and `<-` is a connect.
+    /// `>]` closes a list literal, `<-` is a connect and `//` a comment.
     pub fn not_before(self) -> Option<char> {
         match self {
             BinOp::Gt => Some(']'),
             BinOp::Lt => Some('-'),
+            BinOp::Div => Some('/'),
             _ => None,
         }
     }

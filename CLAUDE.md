@@ -1098,9 +1098,12 @@ cycle, across workers; the compiler never pins threads.
   expression a lowering built and prints no snippet naming one, and a
   write a lowering built gets no declaration hint. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
-- **Comments** are legal only above an expression, a select arm, an impl
-  or trait method, a struct-literal field or an interface item; `///`
-  docs only in an interface. Parse errors report the furthest point
+- **Comments** are legal above an expression, a select arm, an impl or
+  trait method, a struct-literal field or an interface item, at the end
+  of a list item's line after its separator (a statement, an arm, a
+  field, an element, an argument: `Decorations::eol`) and below a list's
+  last item or a file's (`Decorations::below`); `///` docs only in an
+  interface. Parse errors report the furthest point
   reached with the source line and a caret, and a refusal its reason.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is

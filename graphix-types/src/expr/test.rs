@@ -45,10 +45,10 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
 fn uncommented(e: &Expr) -> Expr {
     let mut e = e.map_children(&mut |c| uncommented(c));
     if let Some(d) = e.dec.clone()
-        && !d.comments.is_empty()
+        && (!d.comments.is_empty() || d.eol.is_some() || !d.below.is_empty())
     {
         e.dec = (!d.attrs.is_empty()).then(|| {
-            Arc::new(Decorations { comments: Arc::from_iter([]), attrs: d.attrs.clone() })
+            Arc::new(Decorations { attrs: d.attrs.clone(), ..Decorations::default() })
         });
     }
     e
@@ -170,6 +170,7 @@ fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
                 Some(Arc::new(Decorations {
                     comments: Arc::from_iter(comments),
                     attrs: Arc::from_iter(attrs),
+                    ..Decorations::default()
                 }))
             }
         },
@@ -2880,11 +2881,11 @@ fn compiler_kinds_children_agree() {
 fn a_decorated_clone_is_another_tree() {
     let e = parse_one("f(x)").unwrap();
     let dec = Some(Arc::new(Decorations {
-        comments: Arc::from_iter([]),
         attrs: Arc::from_iter([Attr {
             name: literal!("serial"),
             args: Arc::from_iter([]),
         }]),
+        ..Decorations::default()
     }));
     assert!(e.same_tree(&e.clone()));
     let mut own = e.clone();

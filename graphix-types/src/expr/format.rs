@@ -318,12 +318,15 @@ impl Parsed {
 
     fn print(&self, buf: &mut PrettyBuf) -> Result<()> {
         match self {
-            Self::Program(exprs) => {
-                pretty_file_items(buf, exprs, |buf, e| match e.kind {
+            Self::Program(exprs) => pretty_file_items(
+                buf,
+                exprs,
+                |buf, e| match e.kind {
                     ExprKind::NoOp => Ok(()),
                     _ => e.fmt_pretty(buf),
-                })?
-            }
+                },
+                |e: &Expr| Some(e),
+            )?,
             Self::Interface(sig) => sig.fmt_pretty_inner(buf)?,
         }
         Ok(())

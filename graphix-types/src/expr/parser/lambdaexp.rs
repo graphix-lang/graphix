@@ -1,6 +1,6 @@
 use super::{
     arithexp::mutability,
-    csep, expr, fname,
+    comma_items, csep, expr, fname,
     grow::refusal,
     name, sep_by_tok, spaces, spaces1, sptoken, structure_pattern,
     typexp::{flatten_bounds, tvar_bound, typ},
@@ -75,7 +75,8 @@ where
         between(
             token('('),
             sptoken(')'),
-            spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
+            spaces()
+                .with(comma_items(applyarg, || token(')'), true).map(|(args, _)| args)),
         ),
         position(),
     )

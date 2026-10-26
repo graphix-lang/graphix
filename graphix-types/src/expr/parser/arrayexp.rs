@@ -1,6 +1,6 @@
 use crate::expr::{
     Expr, ExprKind,
-    parser::{csep, expr, grow::because, sep_by_tok, spaces, spstring, sptoken},
+    parser::{comma_items, expr, grow::because, spaces, spstring, sptoken},
 };
 use combine::{
     ParseError, Parser, RangeStream, attempt, between,
@@ -28,7 +28,7 @@ where
         between(
             token('['),
             sptoken(']'),
-            sep_by_tok(expr(), csep(), attempt(sptoken(']'))),
+            comma_items(expr, || attempt(sptoken(']')), true).map(|(args, _)| args),
         ),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
@@ -49,7 +49,7 @@ where
         between(
             attempt(string("[<")),
             spstring(">]"),
-            sep_by_tok(expr(), csep(), attempt(spstring(">]"))),
+            comma_items(expr, || attempt(spstring(">]")), true).map(|(args, _)| args),
         ),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {

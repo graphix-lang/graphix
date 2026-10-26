@@ -21,7 +21,7 @@ use combine::{
         range::{take_while, take_while1},
         token::produce,
     },
-    position, satisfy, sep_by1,
+    position, satisfy, sep_by1, skip_many,
     stream::StreamErrorFor,
     stream::{
         Range,
@@ -229,36 +229,6 @@ where
 /// Graphix has no 1-tuple: `(x,)` is refused, not read as `(x)`.
 pub(super) const ONE_TUPLE: &str = "tuples must have at least 2 elements";
 
-/// `sep_by1` of statements, an empty one standing for what `f` makes of
-/// its position: a list may end with its separator, and be empty.
-pub fn sep_by1_tok_exp<I, O, OC, F, EP, SP, TP>(
-    p: EP,
-    sep: SP,
-    term: TP,
-    f: F,
-) -> impl Parser<I, Output = OC>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-    OC: Extend<O> + Default,
-    SP: Parser<I>,
-    EP: Parser<I, Output = O>,
-    TP: Parser<I>,
-    F: Fn(I::Position) -> O,
-{
-    sep_by1((position(), choice((ahead(term).map(|_| None::<O>), p.map(Some)))), sep).map(
-        move |mut e: LPooled<Vec<(_, Option<O>)>>| {
-            let mut res = OC::default();
-            res.extend(e.drain(..).map(|(pos, e)| match e {
-                Some(e) => e,
-                None => f(pos),
-            }));
-            res
-        },
-    )
-}
-
 // Whitespace only: `//` comments are never skipped, so a comment anywhere
 // `leading_decorations()` does not run is a parse error.
 fn spaces<I>() -> impl Parser<I, Output = ()>
@@ -280,18 +250,8 @@ where
     many(none_of(['\r', '\n']))
 }
 
-// CR claude for claude: [structure/medium] A `//` comment parses only on its own line
-// directly above an item, so these are refused (`graphix --check`, 2026-10-13): a
-// comment after code on its line (`let x = 1; // c`), one between `let x =` and its
-// value, one on the last line of a file or block (nothing below it), and even `{`
-// then `// c` above the block's first item. The refusals print "Unexpected `/`"
-// without the reason note_reason records here. Eric (2026-10-13): end-of-line and
-// trailing comments may become legal, which needs a place in the AST for each so
-// graphix fmt round-trips them; it can wait. (parser-comments-01)
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`; `docs` says whether one is legal here.
-// 2026-10-24 claude: Eric ruled (2026-10-24): do it: trailing and end-of-line
-// comments.
 fn comment_line<I>(docs: bool) -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -409,13 +369,13 @@ fn decorate(mut e: Expr, (mut comments, mut attrs): Leading) -> Expr {
     if comments.is_empty() && attrs.is_empty() {
         return e;
     }
-    if let Some(own) = e.dec.take() {
-        comments.extend(own.comments.iter().cloned());
-        attrs.extend(own.attrs.iter().cloned());
-    }
+    let own = e.dec.take().map(|d| (*d).clone()).unwrap_or_default();
+    comments.extend(own.comments.iter().cloned());
+    attrs.extend(own.attrs.iter().cloned());
     e.dec = Some(Arc::new(Decorations {
         comments: Arc::from_iter(comments.drain(..)),
         attrs: Arc::from_iter(attrs.drain(..)),
+        ..own
     }));
     e
 }
@@ -642,13 +602,13 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    separator(',', "a `,` separates this item from the one before")
+    separator(',', COMMA_WHY)
 }
 
 /// `sep` between two items. Where what follows an item could start another
 /// one, the reason names the missing separator; where a list meets a `;`,
 /// it names the list left open; either for a failure right there.
-fn separator<I>(sep: char, why: &'static str) -> impl Parser<I, Output = char>
+fn separator_tok<I>(sep: char, why: &'static str) -> impl Parser<I, Output = char>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -679,7 +639,215 @@ where
                 }),
         ),
     ))
-    .skip(spaces())
+}
+
+/// [`separator`], then the space after it.
+fn separator<I>(sep: char, why: &'static str) -> impl Parser<I, Output = char>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    separator_tok(sep, why).skip(spaces())
+}
+
+/// [`separator`], keeping the comment that ends its line.
+fn separator_eol<I>(
+    sep: char,
+    why: &'static str,
+) -> impl Parser<I, Output = Option<ArcStr>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    separator_tok(sep, why).with(eol_comment()).skip(spaces())
+}
+
+const COMMA_WHY: &str = "a `,` separates this item from the one before";
+const SEMI_WHY: &str = "a `;` separates this statement from the one before";
+
+/// A `//` comment ending a line after code, its text kept verbatim.
+fn eol_comment<I>() -> impl Parser<I, Output = Option<ArcStr>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    optional(attempt(
+        skip_many(satisfy(|c| c == ' ' || c == '\t'))
+            .with(string("//"))
+            .with(line_text()),
+    ))
+    .map(|t: Option<CompactString>| t.map(|t| ArcStr::from(t.as_str())))
+}
+
+/// The own-line comments after a list's last item, above what closes it.
+fn below_comments<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    many(attempt(spaces().with(comment_line(false))))
+}
+
+/// A list item that carries the comments after it: on its last
+/// expression.
+pub(super) trait Commentable {
+    fn last_expr(&mut self) -> &mut Expr;
+}
+
+impl Commentable for Expr {
+    fn last_expr(&mut self) -> &mut Expr {
+        self
+    }
+}
+
+impl<K> Commentable for (K, Expr) {
+    fn last_expr(&mut self) -> &mut Expr {
+        &mut self.1
+    }
+}
+
+/// Give `e` the comment ending its line and the lines below it.
+fn trail(e: &mut Expr, eol: Option<ArcStr>, below: &[ArcStr]) {
+    if eol.is_none() && below.is_empty() {
+        return;
+    }
+    let mut d = e.dec.take().map(|d| (*d).clone()).unwrap_or_default();
+    if eol.is_some() {
+        d.eol = eol;
+    }
+    if !below.is_empty() {
+        d.below = d.below.iter().chain(below.iter()).cloned().collect();
+    }
+    e.dec = Some(Arc::new(d));
+}
+
+/// What sits in a list's place: an item, or the end, with the comments
+/// above it.
+enum Slot<O> {
+    Item(O),
+    End(LPooled<Vec<ArcStr>>),
+}
+
+/// `p` separated by `sep` (a `;` or `,`, see [`separator`]) up to `term`,
+/// which is not consumed; a trailing separator leaves an empty slot, as
+/// does a list with nothing in it. Each item takes the comment ending
+/// its line, after its separator, and the last the own-line comments
+/// below it.
+fn commented<I, O, EP, TP, PF, TF>(
+    p: PF,
+    sep: char,
+    why: &'static str,
+    term: TF,
+) -> impl Parser<I, Output = LPooled<Vec<(SourcePosition, Option<O>)>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    O: Commentable,
+    EP: Parser<I, Output = O>,
+    TP: Parser<I>,
+    PF: Fn() -> EP,
+    TF: Fn() -> TP,
+{
+    let slot = move || {
+        (
+            position(),
+            choice((
+                attempt(below_comments().skip(ahead(term()))).map(Slot::End),
+                p().map(Slot::Item),
+            )),
+        )
+    };
+    (
+        slot(),
+        many::<LPooled<Vec<_>>, _, _>((separator_eol(sep, why), slot())),
+        eol_comment(),
+        below_comments(),
+    )
+        .and_then(|(first, mut rest, eol, below)| {
+            let mut items: LPooled<Vec<(SourcePosition, Option<O>)>> = LPooled::take();
+            let place = |items: &mut LPooled<Vec<(SourcePosition, Option<O>)>>,
+                         eol: Option<ArcStr>,
+                         below: &[ArcStr]|
+             -> bool {
+                match items.iter_mut().rev().find_map(|(_, o)| o.as_mut()) {
+                    Some(o) => {
+                        trail(o.last_expr(), eol, below);
+                        true
+                    }
+                    None => eol.is_none() && below.is_empty(),
+                }
+            };
+            let mut ok = true;
+            for (eol, (pos, slot)) in std::iter::once((None, first)).chain(rest.drain(..))
+            {
+                ok &= place(&mut items, eol, &[]);
+                match slot {
+                    Slot::Item(o) => items.push((pos, Some(o))),
+                    Slot::End(below) => {
+                        ok &= place(&mut items, None, &below);
+                        items.push((pos, None))
+                    }
+                }
+            }
+            ok &= place(&mut items, eol, &below);
+            match ok {
+                true => Ok(items),
+                false => Err(<StreamErrorFor<I>>::message_static_message(
+                    "a comment here has no item to describe",
+                )),
+            }
+        })
+}
+
+/// [`commented`] statements: an empty slot is an empty statement.
+fn statements<I, TP, TF>(term: TF) -> impl Parser<I, Output = LPooled<Vec<Expr>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    TP: Parser<I>,
+    TF: Fn() -> TP,
+{
+    commented(expr, ';', SEMI_WHY, term).map(|mut items: LPooled<Vec<_>>| {
+        let mut res: LPooled<Vec<Expr>> = LPooled::take();
+        res.extend(items.drain(..).map(|(pos, e)| {
+            e.unwrap_or_else(|| ExprKind::NoOp.to_expr(pos).ending(pos))
+        }));
+        res
+    })
+}
+
+/// [`commented`] `,` items, and whether the list ended in its separator;
+/// at least one unless `empty`.
+pub(super) fn comma_items<I, O, EP, TP, PF, TF>(
+    p: PF,
+    term: TF,
+    empty: bool,
+) -> impl Parser<I, Output = (LPooled<Vec<O>>, bool)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    O: Commentable,
+    EP: Parser<I, Output = O>,
+    TP: Parser<I>,
+    PF: Fn() -> EP,
+    TF: Fn() -> TP,
+{
+    commented(p, ',', COMMA_WHY, term).and_then(move |mut items: LPooled<Vec<_>>| {
+        let trailing = items.len() > 1 && matches!(items.last(), Some((_, None)));
+        if !empty && !matches!(items.first(), Some((_, Some(_)))) {
+            return Err(<StreamErrorFor<I>>::message_static_message("expected an item"));
+        }
+        let mut res: LPooled<Vec<O>> = LPooled::take();
+        res.extend(items.drain(..).filter_map(|(_, o)| o));
+        Ok((res, trailing))
+    })
 }
 
 fn semisep<I>() -> impl Parser<I, Output = char>
@@ -688,7 +856,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    separator(';', "a `;` separates this statement from the one before")
+    separator(';', SEMI_WHY)
 }
 
 fn sptoken<I>(t: char) -> impl Parser<I, Output = char>
@@ -1083,13 +1251,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(
-        sptoken('{'),
-        sptoken('}'),
-        sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-            ExprKind::NoOp.to_expr(pos).ending(pos)
-        }),
-    )
+    between(sptoken('{'), sptoken('}'), statements(|| token('}')))
 }
 
 /// `abort(e)` or `flush(e)`, after a `;` unless it opens the head.
@@ -1219,12 +1381,21 @@ where
             between(
                 sptoken('{'),
                 sptoken('}'),
-                spaces().with(sep_by1_tok(
-                    (leading_decorations(), pattern(), spstring("=>").with(expr()))
-                        .map(|(dec, pat, body)| (pat, decorate(body, dec))),
-                    csep(),
-                    token('}'),
-                )),
+                spaces().with(
+                    comma_items(
+                        || {
+                            (
+                                leading_decorations(),
+                                pattern(),
+                                spstring("=>").with(expr()),
+                            )
+                                .map(|(dec, pat, body)| (pat, decorate(body, dec)))
+                        },
+                        || token('}'),
+                        false,
+                    )
+                    .map(|(arms, _)| arms),
+                ),
             ),
         )),
     )
@@ -1272,7 +1443,8 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    let field = (
+    let field = || {
+        (
         leading_decorations(),
         position(),
         fldname(),
@@ -1297,16 +1469,18 @@ where
                 }
             };
             value((name, decorate(v, dec))).right()
-        });
-    (sep_by1_tok(field, csep(), token('}')), position()).and_then(
-        |(mut fields, end): (LPooled<Vec<(ArcStr, Expr)>>, _)| match sort_unique(
-            &mut fields,
-            |(n, _)| n,
-        ) {
-            true => Ok(fields),
-            false => Err(grow::refusal::<I>(end, "struct fields must be unique")),
-        },
-    )
+        })
+    };
+    (comma_items(field, || token('}'), false).map(|(fields, _)| fields), position())
+        .and_then(
+            |(mut fields, end): (LPooled<Vec<(ArcStr, Expr)>>, _)| match sort_unique(
+                &mut fields,
+                |(n, _)| n,
+            ) {
+                true => Ok(fields),
+                false => Err(grow::refusal::<I>(end, "struct fields must be unique")),
+            },
+        )
 }
 
 fn structure<I>() -> impl Parser<I, Output = Expr>
@@ -1336,7 +1510,8 @@ where
     enum Tail {
         Map(Expr, LPooled<Vec<(Expr, Expr)>>),
         With(LPooled<Vec<(ArcStr, Expr)>>),
-        Block(LPooled<Vec<Expr>>),
+        /// The comment ending the first statement's line, and the rest.
+        Block(Option<ArcStr>, LPooled<Vec<Expr>>),
         One,
     }
     let entry = || (expr(), spstring("=>").with(expr()));
@@ -1350,11 +1525,8 @@ where
         attempt(spaces1().with(string("with")).skip(space()))
             .with(struct_fields())
             .map(Tail::With),
-        semisep()
-            .with(sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp.to_expr(pos).ending(pos)
-            }))
-            .map(Tail::Block),
+        (separator_eol(';', SEMI_WHY), statements(|| token('}')))
+            .map(|(eol, rest)| Tail::Block(eol, rest)),
         produce(|| Tail::One),
     ));
     /// The source of a functional update: a name, a `?`/`$` chain on one,
@@ -1405,11 +1577,14 @@ where
                             }),
                         }
                     }
-                    Some((first, Tail::Block(mut rest))) => ExprKind::Block {
-                        exprs: Arc::from_iter(
-                            std::iter::once(first).chain(rest.drain(..)),
-                        ),
-                    },
+                    Some((mut first, Tail::Block(eol, mut rest))) => {
+                        trail(&mut first, eol, &[]);
+                        ExprKind::Block {
+                            exprs: Arc::from_iter(
+                                std::iter::once(first).chain(rest.drain(..)),
+                            ),
+                        }
+                    }
                     Some((_, Tail::One)) => {
                         return grow::refuse(
                             end,
@@ -1436,7 +1611,7 @@ where
         optional(attempt(spaces().skip(look_ahead(token('(')))).with(between(
             token('('),
             sptoken(')'),
-            sep_by1_tok(expr(), csep(), token(')')),
+            comma_items(expr, || token(')'), false).map(|(args, _)| args),
         ))),
     )
         .map(|(pos, tag, args): (_, ArcStr, Option<LPooled<Vec<Expr>>>)| {
@@ -1676,13 +1851,8 @@ pub fn without_shebang(text: &ArcStr) -> ArcStr {
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());
-    let mut r: LPooled<Vec<Expr>> = parse_all!(
-        &ori.text,
-        || ori.clone(),
-        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
-            ExprKind::NoOp.to_expr(pos).ending(pos)
-        })
-    )?;
+    let mut r: LPooled<Vec<Expr>> =
+        parse_all!(&ori.text, || ori.clone(), statements(eof))?;
     Ok(Arc::from_iter(r.drain(..)))
 }
 

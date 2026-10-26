@@ -473,8 +473,8 @@ fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
         ],
     );
     live.dec = Some(Arc::new(Decorations {
-        comments: Arc::from_iter([]),
         attrs: Arc::from_iter([Attr { name: RUN_EVENT, args: Arc::from_iter([]) }]),
+        ..Decorations::default()
     }));
     apply_filter(pos, live, lambda_sampling(pos, armed))
 }
@@ -665,6 +665,8 @@ fn decorated(value: &Expr, dec: &Option<Arc<Decorations>>) -> Expr {
         Some(own) => Arc::new(Decorations {
             comments: own.comments.iter().chain(dec.comments.iter()).cloned().collect(),
             attrs: dec.attrs.iter().chain(own.attrs.iter()).cloned().collect(),
+            eol: own.eol.clone().or_else(|| dec.eol.clone()),
+            below: own.below.iter().chain(dec.below.iter()).cloned().collect(),
         }),
     });
     value

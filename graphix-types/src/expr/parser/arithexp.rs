@@ -3,12 +3,12 @@ use crate::expr::{
     parser::{
         ONE_TUPLE, any, apply_args, array, array_index_suffix,
         arrayexp::Index,
-        brace, cast, construct, csep, expr, fldname,
+        brace, cast, comma_items, construct, expr, fldname,
         grow::{fold_fits, grow, refuse},
         interpolated,
         lambdaexp::{any_lambda, lambda_ahead},
-        list_lit, literal, live_expr, never_expr, raw_string, reference, select,
-        sep_by1_tok_trailing, seq, spaces, sptoken, variant,
+        list_lit, literal, live_expr, never_expr, raw_string, reference, select, seq,
+        spaces, sptoken, variant,
     },
 };
 use crate::typ::Mutability;
@@ -157,11 +157,7 @@ where
 {
     (
         position(),
-        between(
-            token('('),
-            sptoken(')'),
-            sep_by1_tok_trailing(expr(), csep(), token(')')),
-        ),
+        between(token('('), sptoken(')'), comma_items(expr, || token(')'), false)),
         position(),
     )
         .then(

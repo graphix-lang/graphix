@@ -194,13 +194,31 @@ impl netidx_core::pack::Pack for Comments {
     }
 }
 
-/// The `//` comment lines and `#[..]` attributes on their own line directly
-/// above an `Expr`. Invisible to `Expr` equality.
+/// The `//` comments and `#[..]` attributes an `Expr` carries: the lines
+/// directly above it, and, as an item of a list, the comment ending its
+/// last line and the lines below it when it is the list's last. Invisible
+/// to `Expr` equality.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Decorations {
     pub comments: Arc<[ArcStr]>,
     pub attrs: Arc<[Attr]>,
+    /// The comment after the item and its separator, on the same line.
+    pub eol: Option<ArcStr>,
+    /// The own-line comments below the last item of a list, above what
+    /// closes it.
+    pub below: Arc<[ArcStr]>,
+}
+
+impl Default for Decorations {
+    fn default() -> Self {
+        Self {
+            comments: Arc::from_iter([]),
+            attrs: Arc::from_iter([]),
+            eol: None,
+            below: Arc::from_iter([]),
+        }
+    }
 }
 
 /// One accessor of a place, from the root outward.

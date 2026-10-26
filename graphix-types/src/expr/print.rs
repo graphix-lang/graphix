@@ -246,14 +246,16 @@ fn pretty_print_exprs(
 fn pretty_items(buf: &mut PrettyBuf, exprs: &[Expr], sep: &str) -> fmt::Result {
     for (i, e) in exprs.iter().enumerate() {
         if i > 0 {
-            buf.kill_newline();
-            writeln!(buf, "{sep}")?
+            item_sep(buf, &exprs[i - 1], sep)?
         }
         if !matches!(e.kind, ExprKind::NoOp) {
             e.fmt_pretty(buf)?
         }
     }
-    Ok(())
+    match exprs.last() {
+        Some(last) => item_end(buf, last),
+        None => Ok(()),
+    }
 }
 
 /// The `;`-separated items of a file: a blank line stands on both sides
@@ -264,6 +266,7 @@ pub(crate) fn pretty_file_items<T>(
     buf: &mut PrettyBuf,
     items: &[T],
     item: impl Fn(&mut PrettyBuf, &T) -> fmt::Result,
+    expr: impl Fn(&T) -> Option<&Expr>,
 ) -> fmt::Result {
     let mut prev_spans_lines = false;
     for (i, it) in items.iter().enumerate() {
@@ -274,9 +277,14 @@ pub(crate) fn pretty_file_items<T>(
             buf.insert_newline(start)
         }
         prev_spans_lines = spans_lines;
-        if i < items.len() - 1 {
-            buf.kill_newline();
-            writeln!(buf, ";")?
+        match (i < items.len() - 1, expr(it)) {
+            (true, Some(e)) => item_sep(buf, e, ";")?,
+            (true, None) => {
+                buf.kill_newline();
+                writeln!(buf, ";")?
+            }
+            (false, Some(e)) => item_end(buf, e)?,
+            (false, None) => (),
         }
     }
     Ok(())
@@ -452,7 +460,7 @@ fn head_min(e: &ExprKind) -> usize {
 /// Whether `e`, the only argument between parentheses, opens on their
 /// line and closes with them: `f({`, `` `Tag([ ``.
 fn hugs_parens(e: &Expr) -> bool {
-    !shows(&e.dec) && opens_with_bracket(&e.kind)
+    !shows(&e.dec) && !trails(&e.dec) && opens_with_bracket(&e.kind)
 }
 
 /// `e` between `open` and `close`, hugging them, where it may and its
@@ -580,17 +588,52 @@ fn shows_comments(lines: &[ArcStr]) -> bool {
     print_as_written() && !lines.is_empty()
 }
 
-/// Whether `dec` prints anything: its attributes, and its comments as
-/// written. Only what prints decides a layout.
+/// Whether `dec` prints anything above what it decorates: its attributes,
+/// and its comments as written. Only what prints decides a layout.
 fn shows(dec: &Option<Arc<Decorations>>) -> bool {
     dec.as_ref().is_some_and(|d| !d.attrs.is_empty() || shows_comments(&d.comments))
 }
 
-/// Whether anything in `e`, `e` included, prints on lines of its own
-/// above what it decorates: a comment, an attribute, a doc. Such a tree
-/// has no single-line form.
+/// Whether `dec` prints comments after a list item: one ending its line,
+/// or lines below the last.
+fn trails(dec: &Option<Arc<Decorations>>) -> bool {
+    print_as_written()
+        && dec.as_ref().is_some_and(|d| d.eol.is_some() || !d.below.is_empty())
+}
+
+/// Whether anything in `e`, `e` included, prints on lines of its own or
+/// ends one: a comment, an attribute, a doc. Such a tree has no
+/// single-line form.
 pub(crate) fn decorated(e: &Expr) -> bool {
-    shows(&e.dec) || kind_decorated(&e.kind)
+    shows(&e.dec) || trails(&e.dec) || kind_decorated(&e.kind)
+}
+
+/// The comment ending `e`'s line, as written.
+fn write_eol(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
+    match e.dec.as_ref().and_then(|d| d.eol.as_ref()) {
+        Some(c) if print_as_written() => write!(buf, " //{c}"),
+        _ => Ok(()),
+    }
+}
+
+/// `sep` after the list item `prev`, then the comment ending its line.
+fn item_sep(buf: &mut PrettyBuf, prev: &Expr, sep: &str) -> fmt::Result {
+    buf.kill_newline();
+    write!(buf, "{sep}")?;
+    write_eol(buf, prev)?;
+    writeln!(buf)
+}
+
+/// After a list's last item `last`: the comment ending its line and the
+/// lines below it.
+fn item_end(buf: &mut PrettyBuf, last: &Expr) -> fmt::Result {
+    if !trails(&last.dec) {
+        return Ok(());
+    }
+    buf.kill_newline();
+    write_eol(buf, last)?;
+    writeln!(buf)?;
+    write_comments(buf, last.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[]))
 }
 
 fn kind_decorated(k: &ExprKind) -> bool {
@@ -1189,7 +1232,12 @@ impl PrettyDisplay for Sig {
             writeln!(buf, "sig {{")?;
         }
         if self.toplevel {
-            pretty_file_items(buf, &self.items, |buf, si| si.fmt_pretty_inner(buf))?
+            pretty_file_items(
+                buf,
+                &self.items,
+                |buf, si| si.fmt_pretty_inner(buf),
+                |_| None,
+            )?
         } else {
             buf.nested(|buf| {
                 for (i, si) in self.iter().enumerate() {
@@ -1396,10 +1444,10 @@ fn write_fields(f: &mut Formatter<'_>, fields: &[(ArcStr, Expr)]) -> fmt::Result
 /// The fields of a struct literal or a functional update, one to a line.
 fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result {
     buf.nested(|buf| {
-        for (i, (name, e)) in as_written(fields).into_iter().enumerate() {
+        let fields = as_written(fields);
+        for (i, (name, e)) in fields.iter().enumerate() {
             if i > 0 {
-                buf.kill_newline();
-                writeln!(buf, ",")?
+                item_sep(buf, &fields[i - 1].1, ",")?
             }
             write_leading(buf, &e.dec)?;
             match puns(name, e) {
@@ -1410,7 +1458,10 @@ fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result 
                 }
             }
         }
-        Ok(())
+        match fields.last() {
+            Some((_, last)) => item_end(buf, last),
+            None => Ok(()),
+        }
     })
 }
 
@@ -1555,8 +1606,7 @@ impl PrettyDisplay for ApplyExpr {
         buf.nested(|buf| {
             for (i, (name, e)) in args.iter().enumerate() {
                 if i > 0 {
-                    buf.kill_newline();
-                    writeln!(buf, ",")?
+                    item_sep(buf, &args[i - 1].1, ",")?
                 }
                 match name {
                     None => e.fmt_pretty(buf)?,
@@ -1567,7 +1617,10 @@ impl PrettyDisplay for ApplyExpr {
                     }
                 }
             }
-            Ok(())
+            match args.last() {
+                Some((_, last)) => item_end(buf, last),
+                None => Ok(()),
+            }
         })?;
         writeln!(buf, ")")
     }
@@ -1827,9 +1880,9 @@ impl PrettyDisplay for SelectExpr {
                 }
                 write!(buf, "=>")?;
                 pretty_tail_bare(buf, expr)?;
-                if i < arms.len() - 1 {
-                    buf.kill_newline();
-                    writeln!(buf, ",")?
+                match i < arms.len() - 1 {
+                    true => item_sep(buf, expr, ",")?,
+                    false => item_end(buf, expr)?,
                 }
             }
             Ok(())

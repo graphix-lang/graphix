@@ -189,9 +189,18 @@ fn interior_comment_is_error() {
     assert!(parse_one("1 +\n// nope\n2").is_err());
 }
 
+/// The decorations of `e`, or the empty ones.
+fn dec_of(e: &Expr) -> Decorations {
+    e.dec.as_deref().cloned().unwrap_or_default()
+}
+
 #[test]
-fn trailing_block_comment_is_error() {
-    assert!(parse_one("{ let x = 1; x\n// nope\n}").is_err());
+fn comments_below_a_block_ride_its_last_statement() {
+    for src in ["{ let x = 1; x\n// below\n}", "{ let x = 1; x;\n// below\n}"] {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Block { exprs } = &e.kind else { panic!("{src}: not a block") };
+        assert_eq!(&dec_of(&exprs[1]).below[..], [literal!(" below")], "{src}");
+    }
 }
 
 fn comments_of(e: &Expr) -> Vec<ArcStr> {
@@ -244,9 +253,12 @@ fn attr_above_select_arm() {
 }
 
 #[test]
-fn trailing_arm_comment_is_error() {
-    assert!(parse_one("select x { _ => 1\n// nope\n}").is_err());
-    assert!(parse_one("select x { _ => 1,\n// nope\n}").is_err());
+fn comments_below_the_last_arm_ride_its_body() {
+    for src in ["select x { _ => 1\n// below\n}", "select x { _ => 1,\n// below\n}"] {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Select(sel) = &e.kind else { panic!("{src}: not a select") };
+        assert_eq!(&dec_of(&sel.arms[0].1).below[..], [literal!(" below")], "{src}");
+    }
 }
 
 fn method_comments(e: &Expr) -> Vec<Vec<ArcStr>> {
@@ -2488,16 +2500,18 @@ fn a_struct_pattern_has_one_rest_last() {
 }
 
 #[test]
-fn a_comment_stands_on_a_line_of_its_own() {
-    for (src, col) in [
-        ("{ let y = 1; // c\n y }", 14),
-        ("let x = 1; // c\nx", 12),
-        ("select x {\n0 => 1, // c\n_ => 2\n}", 9),
-    ] {
-        let msg = parse_program(src);
-        assert!(msg.contains("a comment stands on a line of its own"), "{src}: {msg}");
-        assert!(msg.contains(&format!("column: {col}")), "{src}: {msg}");
-    }
+fn a_comment_ending_a_line_rides_the_item_before_it() {
+    let block = parse_one("{ let y = 1; // c\n y }").unwrap();
+    let ExprKind::Block { exprs } = &block.kind else { panic!("not a block") };
+    assert_eq!(dec_of(&exprs[0]).eol, Some(literal!(" c")));
+    let sel = parse_one("select x {\n0 => 1, // c\n_ => 2 // d\n}").unwrap();
+    let ExprKind::Select(sel) = &sel.kind else { panic!("not a select") };
+    assert_eq!(dec_of(&sel.arms[0].1).eol, Some(literal!(" c")));
+    assert_eq!(dec_of(&sel.arms[1].1).eol, Some(literal!(" d")));
+    // after an opening bracket there is no item to ride
+    let msg = parse_program("select x { // c\n0 => 1,\n_ => 2\n}");
+    assert!(msg.contains("a comment stands on a line of its own"), "{msg}");
+    assert!(msg.contains("column: 12"), "{msg}");
 }
 
 #[test]

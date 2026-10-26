@@ -110,12 +110,13 @@ constant argument to `exit` runs at init — always gate it).
   [`Local(loc), `Remote(rem)]` written by a key snaps back to the initial
   order whenever anything inside `loc` or `rem` changes. Store a tag
   (`let front: [`Local, `Remote] = `Local`) and select the struct by it.
-- **Comments** are legal only on their own line above an expression, a
-  select arm, an impl or trait method, a struct-literal field or an
-  interface item. Trailing, interior and dangling comments are parse
-  errors. `///` doc comments only in `.gxi`. The examples in this skill
-  annotate lines with trailing `// ..` notes for brevity: those notes are
-  explanations, not Graphix; copied code puts a comment on its own line.
+- **Comments** stand on their own line above an expression, a select
+  arm, an impl or trait method, a struct-literal field or an interface
+  item; end a list item's line after its `;` or `,` (a statement, an arm,
+  a field, an element, an argument: `x: 1, // across`); or stand below a
+  list's last item or at the end of a file. One between an operator and
+  its operand, or after an opening bracket on its line, is a parse
+  error. `///` doc comments only in `.gxi`.
 
 ## Basics
 

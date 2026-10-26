@@ -70,8 +70,24 @@ select n {
 }
 ```
 
-Anywhere else is a parse error — after an expression on the same line
-(`x + 1; // no`), between an operator and its operand, or dangling before
-a closing `}` with nothing below it. The rule is what lets the parser keep
-every comment in the syntax tree, so tools that rewrite a program (the
-formatter, the REPL echo) never lose one.
+A comment may also end the line of an item in a list, after the item's
+`;` or `,`: a statement, a `select` arm, a struct field, an array or tuple
+element, or a call's argument. And comments may stand below the last
+item, above the bracket that closes the list, or at the end of a file.
+
+```graphix
+let point = {
+  x: 1, // across
+  y: 2 // down
+};
+select point.x {
+  0 => "origin", // nothing to do
+  k => "at [k]"
+  // every other column
+}
+```
+
+Anywhere else is a parse error: between an operator and its operand
+(`x + // no`), or after an opening bracket on its line. The rule is what
+lets the parser keep every comment in the syntax tree, so tools that
+rewrite a program (the formatter, the REPL echo) never lose one.

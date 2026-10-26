@@ -108,19 +108,13 @@ fn fork_kind(spec: &Expr, attr: &crate::expr::Attr) -> Result<Option<ForkKind>> 
 fn split_fork(dec: &Decorations) -> (SmallVec<[Attr; 2]>, Decorations) {
     let (fork, kept): (SmallVec<[_; 2]>, SmallVec<[_; 2]>) =
         dec.attrs.iter().cloned().partition(|a| ForkKind::of(&a.name, None).is_some());
-    (
-        fork,
-        Decorations { comments: dec.comments.clone(), attrs: kept.into_iter().collect() },
-    )
+    (fork, Decorations { attrs: kept.into_iter().collect(), ..dec.clone() })
 }
 
 /// `e` with `attrs` added to its decorations.
 fn decorated(e: &Expr, attrs: impl IntoIterator<Item = Attr>) -> Expr {
     let mut e = e.clone();
-    let mut dec = e.dec.as_deref().cloned().unwrap_or_else(|| Decorations {
-        comments: Arc::from_iter([]),
-        attrs: Arc::from_iter([]),
-    });
+    let mut dec = e.dec.as_deref().cloned().unwrap_or_default();
     dec.attrs = dec.attrs.iter().cloned().chain(attrs).collect();
     e.dec = Some(Arc::new(dec));
     e
@@ -182,10 +176,7 @@ fn fork_on_body(spec: &Expr) -> Option<Expr> {
         .cloned()
         .chain(spec.dec.iter().flat_map(|d| d.attrs.iter().cloned()))
         .collect();
-    spec.dec = Some(Arc::new(Decorations {
-        comments: kept.comments.clone(),
-        attrs: attrs.into_iter().collect(),
-    }));
+    spec.dec = Some(Arc::new(Decorations { attrs: attrs.into_iter().collect(), ..kept }));
     Some(spec)
 }
 
@@ -253,8 +244,8 @@ fn compile_inner<R: Rt, E: UserEvent>(
         let mut wrapper = spec.clone();
         wrapper.id = ExprId::new();
         wrapper.dec = Some(Arc::new(Decorations {
-            comments: Arc::from_iter([]),
             attrs: fork.into_iter().collect(),
+            ..Decorations::default()
         }));
         let node = compile_inner(ctx, flags, child, scope, top_id, statement)?;
         return Ok(ForkControl::new(ctx.shared_spec(wrapper), kind, node));

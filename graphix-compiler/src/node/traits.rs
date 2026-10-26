@@ -316,8 +316,8 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                 e.kind = ExprKind::Bind(Arc::new(b));
                 e.dec = (!d.requires.is_empty()).then(|| {
                     Arc::new(Decorations {
-                        comments: Arc::from_iter([]),
                         attrs: Arc::from_iter(required_attrs(&d.requires)),
+                        ..Decorations::default()
                     })
                 });
                 exprs.push(e);
@@ -685,14 +685,14 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             let dec = match &m.dec {
                 _ if decl.requires.is_empty() => m.dec.clone(),
                 None => Some(Arc::new(Decorations {
-                    comments: Arc::from_iter([]),
                     attrs: Arc::from_iter(required_attrs(&decl.requires)),
+                    ..Decorations::default()
                 })),
                 Some(d) => Some(Arc::new(Decorations {
-                    comments: d.comments.clone(),
                     attrs: Arc::from_iter(
                         d.attrs.iter().cloned().chain(required_attrs(&decl.requires)),
                     ),
+                    ..(**d).clone()
                 })),
             };
             let mut e = m.clone();
