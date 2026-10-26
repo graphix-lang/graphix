@@ -27,8 +27,8 @@ use crate::{
     format_with_flags,
     fusion::{
         kernel_abi::{
-            AbiKind, FreezeError, KernelParam, KernelSig, ParamKind,
-            freeze_for_abi_normalized, try_freeze_for_abi_normalized,
+            FreezeError, KernelParam, KernelSig, ParamKind, freeze_for_abi_normalized,
+            try_freeze_for_abi_normalized,
         },
         lowering::expand_refs,
     },
@@ -1655,24 +1655,7 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
             freeze_for_abi_normalized(&resolved)?
         }
     };
-    // CR claude for claude: [structure/low] This AbiKind list (everything but Unit)
-    // duplicates lowering::is_call_arg_supported. Make that function pub(crate), give
-    // it one name for both uses, and call it here so a new AbiKind is decided in one
-    // place. Found by reading; not run. (f-mod-lowering-06)
-    match kernel_abi::abi_kind(&return_type) {
-        Some(
-            AbiKind::Scalar(_)
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value
-            | AbiKind::String
-            | AbiKind::Null,
-        ) => Some(return_type),
-        Some(AbiKind::Unit) | None => None,
-    }
+    kernel_abi::crosses_boundary(&return_type).then_some(return_type)
 }
 
 /// Why a node can never be inside a kernel: an effect or a declaration.

@@ -325,6 +325,18 @@ const SYNC_ON_ASYNC_INSTANCE: &str = r#"
 
 run!(sync_on_async_instance, SYNC_ON_ASYNC_INSTANCE, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
+// A let-bound callback handed to a builtin carries the facts of the
+// parameters it calls, as a literal callback does.
+const SYNC_ON_LET_BOUND_CALLBACK: &str = r#"
+{
+  #[sync]
+  let d = |f: fn(v: i64) -> bool, v: i64| { let g = |x| f(x); filter(v, g) };
+  d(|x| sys::time::after_idle(duration:0.001s, x) > 0, 3)
+}
+"#;
+
+run!(sync_on_let_bound_callback, SYNC_ON_LET_BOUND_CALLBACK, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
 // A definition's assertion sees every instance: the pure instance of
 // `loop` does not stand in for the one whose callback counts.
 const TAIL_RECURSIVE_STATEFUL_INSTANCE: &str = r#"
@@ -358,17 +370,23 @@ run!(
     TAIL_RECURSIVE_PURE_INSTANCES,
     prints("[i64:6, i64:12]"); FuseExpect::Jit);
 
-// A labeled formal keeps the self-call off the loop, so the recursion
-// is not constant-space although every self-call is in tail position.
+// Labeled formals loop as positional ones do: a self-call passes each by
+// name, in any order, and one it omits takes its default.
 const TAIL_RECURSIVE_LABELED: &str = r#"
 {
   #[tail_recursive]
   let rec f = |#acc: i64 = 0, n: i64| -> i64 select n { 0 => acc, _ => f(#acc: acc + 1, n - 1) };
-  f(10)
+  #[tail_recursive]
+  let rec g = |#s: string = "", #u: i64 = 5, n: i64| -> string select n {
+    0 => "[s]/[u]",
+    1 => g(#s: "[s]1", n - 1),
+    _ => g(#u: u + n, #s: "[s][n]", n - 1)
+  };
+  (f(10), g(4), g(#u: 0, #s: "x", 3))
 }
 "#;
 
-run!(tail_recursive_labeled, TAIL_RECURSIVE_LABELED, refused("no loop is built"); FuseExpect::None; build_only);
+run!(tail_recursive_labeled, TAIL_RECURSIVE_LABELED, prints(r#"[i64:10, "4321/5", "x321/5"]"#); FuseExpect::Jit);
 
 // The instance `h` recurses through is mutually recursive; the tail
 // instance over `|x| x` does not stand in for it.

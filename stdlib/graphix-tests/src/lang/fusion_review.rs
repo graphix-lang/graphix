@@ -479,3 +479,41 @@ run!(prologue_unguarded_or_arm_reaches_the_chain, r#"
      #[native] g(`A(1), 9), #[native] g(`B(4), 9), #[native] g(`A(5), 2), #[native] g(`A(5), 9), #[native] g(`C, 0))
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:3, i64:50, i64:1, i64:1, i64:1, i64:5, i64:0, i64:0]"); FuseExpect::Jit);
+
+// A callee's raise goes to the handler of the call chain that reached
+// it: two instances of one lambda under different catches, whose own
+// bodies raise nothing, share no kernel.
+run!(callee_raise_reaches_its_own_chains_handler, r#"
+{
+  let mk = |v: i64| -> Result<i64, `E(i64)> select v > 100 { true => error(`E(v)), false => v };
+  let h = |v: i64| mk(v)? + 1;
+  let g = |v: i64| h(v) * 2;
+  let x = 500;
+  let one = {
+    let n = 0;
+    catch(e) n <- e ~ 1;
+    let r = g(x);
+    n
+  };
+  let two = {
+    let n = 0;
+    catch(e) n <- e ~ 2;
+    let r = g(x + 1);
+    n
+  };
+  sys::time::after_idle(duration:10.ms, (one, two))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2]"); FuseExpect::Jit);
+
+// A banked `~` in a callee's body is runtime state, not a capture: the
+// callee's kernel takes no slot for it.
+run!(callee_banked_sample_is_no_capture, r#"
+{
+  let g = |a: i64, t: i64| {
+    let z = t ~ a;
+    a * 2 + 1
+  };
+  let h = |a: i64| #[native] g(a, a + 1);
+  h(3)
+}
+"#, is(Value::I64(7)); FuseExpect::Jit);

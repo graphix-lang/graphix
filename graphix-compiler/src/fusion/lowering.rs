@@ -642,7 +642,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Ok(t) => t,
         Err(b) => return Some(b),
     };
-    if !arg_types.iter().all(|t| is_call_arg_supported(t)) {
+    if !arg_types.iter().all(kernel_abi::crosses_boundary) {
         return None;
     }
     if abi_kind(&return_type).is_none() {
@@ -1125,20 +1125,21 @@ fn expand_ref_node<'a>(
 }
 
 /// The catch-coverage fingerprint of a lambda instance's body: each
-/// `?`/`$` site's resolved handler bind in emission order (`u64::MAX`
-/// = handler-less), inline collection callbacks included. Part of the
-/// kernel cache key, because a kernel bakes its handler ids into its
-/// deliver sites.
+/// `?`/`$` site's resolved handler bind in walk order (`u64::MAX` =
+/// handler-less), over every node its kernel runs, inline collection
+/// callbacks and statically called bodies included. Part of the kernel
+/// cache key, because a kernel bakes its handler ids into its deliver
+/// sites and links the callee kernels built with theirs.
 pub(crate) type QopCoverage = SmallVec<[u64; 4]>;
 
 /// The lambda-resolution fingerprint of a lambda instance's body: per
-/// statically-resolved call site it emits, the callee's `LambdaId` and the
-/// identity of each fn-typed argument forwarded (`u64::MAX` when
-/// unresolvable). Part of the kernel cache key, because a kernel bakes
-/// those resolutions as CLIF calls.
+/// statically-resolved call site its kernel runs, callee bodies
+/// included, the callee's `LambdaId` and the identity of each fn-typed
+/// argument forwarded (`u64::MAX` when unresolvable). Part of the kernel
+/// cache key, because a kernel bakes those resolutions as CLIF calls.
 pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 
-// CR claude for claude: [bug/critical] The coverage half of the kernel cache key walks
+// XCR claude for claude: [bug/critical] The coverage half of the kernel cache key walks
 // only this body's own emitted nodes (for_each_emitted_node), not the callees it
 // reaches. A `?` in a callee raises to the handler of whichever call chain reached it.
 // Two instances of this lambda under different catches therefore get the same key. The
@@ -1148,13 +1149,18 @@ pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 // does, and add a run! fixture for this shape. probe:
 // design/review-2026-10-26/repro/f-mod-lowering-callee-raise-wrong-handler.gx
 // (graphix-fuzz check: DIVERGENCE, (1, 2) vs (1, 0)). (f-mod-lowering-01)
+// 2026-10-26 claude: body_fingerprint now walks fusion::for_each_reachable_node, so
+// both the coverage and the resolution halves of the kernel key cover every callee
+// body the kernel runs and links. Pin: graphix-tests
+// fusion_review::callee_raise_reaches_its_own_chains_handler (jit and jit_par fail
+// with the emitted-only walk).
 fn body_fingerprint<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ec: &CompileCtx<R, E>,
 ) -> (QopCoverage, FnResolutions) {
     let mut cov = QopCoverage::new();
     let mut res = FnResolutions::new();
-    fusion::for_each_emitted_node(body, &mut |n| match n.view() {
+    fusion::for_each_reachable_node(body, &mut |n| match n.view() {
         NodeView::Qop(q) if q.raises() => match q.handler().map(|h| h.id()) {
             Some((bind, top)) => {
                 cov.push(bind.inner());
@@ -1490,21 +1496,23 @@ fn formal_slots<R: Rt, E: UserEvent>(
 #[derive(Default)]
 pub(crate) struct ReadsMemo {
     reads: nohash::IntMap<LambdaInstanceId, Arc<[BindId]>>,
-    fn_shaped: nohash::IntMap<BindId, bool>,
+    captured: nohash::IntMap<BindId, bool>,
 }
 
 impl ReadsMemo {
-    /// A function-valued binding is called, never captured.
+    /// A function-valued binding is called, never captured, and an id
+    /// with no binding (a banked `~`'s debt) is runtime state, not a
+    /// value the caller could forward.
     fn captured<R: Rt, E: UserEvent>(
         &mut self,
         id: BindId,
         ec: &CompileCtx<R, E>,
     ) -> bool {
-        !*self.fn_shaped.entry(id).or_insert_with(|| {
+        *self.captured.entry(id).or_insert_with(|| {
             ec.env
                 .by_id
                 .get(&id)
-                .is_some_and(|b| is_fn_shaped(&expand_refs(&b.typ, &ec.env), &ec.env))
+                .is_some_and(|b| !is_fn_shaped(&expand_refs(&b.typ, &ec.env), &ec.env))
         })
     }
 }
@@ -1590,7 +1598,7 @@ fn capture_slots<R: Rt, E: UserEvent>(
     external.sort_by_key(|id| id.inner());
     let mut out: LPooled<Vec<(CaptureSlot, ParamKind)>> = LPooled::take();
     for bind_id in external.drain(..) {
-        // CR claude for claude: [bug/medium] A banked `~` reports its debt BindId in
+        // XCR claude for claude: [bug/medium] A banked `~` reports its debt BindId in
         // refs. That is a runtime variable with no env binding, so external_reads keeps
         // it and this line refuses the kernel with 'a capture has no binding'. The same
         // body fuses as a region: collect_region_inputs skips the id and block emission
@@ -1599,6 +1607,11 @@ fn capture_slots<R: Rt, E: UserEvent>(
         // ReadsMemo::captured so emission names the real blocker or fuses. probe:
         // design/review-2026-10-26/repro/f-mod-lowering-sample-debt-capture.gx
         // (f-mod-lowering-03)
+        // 2026-10-26 claude: ReadsMemo::captured now holds a binding captured only when
+        // the env has it and it is not fn-shaped, so a banked sample's debt id never
+        // becomes a capture slot (the callee fuses, as the region does). Pin:
+        // graphix-tests fusion_review::callee_banked_sample_is_no_capture (jit and
+        // jit_par refuse with 'a capture has no binding' without the fix).
         let b = ec.env.by_id.get(&bind_id).ok_or("a capture has no binding")?;
         let typ = expand_refs(&b.typ, &ec.env);
         let no_slot = || format_compact!("capture `{}` has no kernel encoding", b.name);
@@ -1612,10 +1625,10 @@ fn capture_slots<R: Rt, E: UserEvent>(
 
 /// What keeps the structural tail-loop predicate from holding shared by the JIT's native-loop
 /// gate and the interpreter's `tail_loop` gate, so both backends loop
-/// the same lambdas: `g` is self-recursive through `self_bind`, every
-/// formal is positional, every loop-carried formal is a kernel-encodable
-/// kind, and a self-call sits in tail position. Not sync-gated; the
-/// interpreter's `analyze` adds that gate.
+/// the same lambdas: `g` is self-recursive through `self_bind`, takes no
+/// variadic, every loop-carried formal is a kernel-encodable kind, and a
+/// self-call sits in tail position. Not sync-gated; the interpreter's
+/// `analyze` adds that gate.
 pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: BindId,
@@ -1632,13 +1645,13 @@ pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
     if !is_rec {
         return Some(NoLoop::Memory);
     }
-    // The rebind maps the self-call's positional args 1:1 onto the formals.
+    // The rebind maps the self-call's args 1:1 onto the formals.
     if g.typ().vargs.is_some() {
         return Some(NoLoop::Formals);
     }
     let inv = invariant_formals(g, Some(self_bind));
     for (i, fa) in g.typ().args.iter().enumerate() {
-        // CR claude for claude: [perf/medium] A labeled formal refuses the loop, so the
+        // XCR claude for claude: [perf/medium] A labeled formal refuses the loop, so the
         // accumulator idiom `|#acc: i64 = 0, n: i64| ... f(#acc: acc + 1, n - 1)` keeps
         // one live activation per depth. At depth 200000 it trips a 100000 activation
         // budget, while the positional twin runs in constant space. attributes.rs
@@ -1648,9 +1661,14 @@ pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
         // tail_recursive_labeled into a passing #[tail_recursive] pin. probe:
         // design/review-2026-10-26/repro/tests-lang-rest-a-labeled-accumulator-no-tail-loop.sh
         // (tests-lang-rest-a-03)
-        if !matches!(fa.kind, FnArgKind::Positional { .. }) {
-            return Some(NoLoop::Formals);
-        }
+        // 2026-10-26 claude: tail_loop_blocker no longer refuses a labeled formal;
+        // emit_self_tail_call takes each rebound formal's argument through
+        // lowering::formal_arg (an omitted label is the default the bind added) and emits them
+        // in CallSite::update_order. The repro prints 200000 for both forms under a 100000
+        // budget; graphix-fuzz check agrees on a reactive probe with reordered and omitted
+        // labels. Pin: attributes.rs tail_recursive_labeled is now a passing #[tail_recursive]
+        // fixture (an omitted label, a reordered call, a string formal); it fails with labeled
+        // formals refused. Book recursion.md and the NoLoop::Formals text updated.
         if inv[i] {
             continue;
         }
@@ -1819,27 +1837,6 @@ pub(crate) fn param_kind(t: &Type) -> Option<ParamKind> {
         AbiKind::Value => ParamKind::Value { typ: t.clone() },
         AbiKind::Unit | AbiKind::Null => return None,
     })
-}
-
-/// A marshallable call argument shape: every fusable shape but `Unit`.
-// CR claude for claude: [structure/low] fusion::freeze_region_return ends with the same
-// nine-member AbiKind match. Export this predicate and call it there, so call arguments
-// and region returns cannot drift apart. Found by reading; not run. (x-dup-07)
-fn is_call_arg_supported(t: &Type) -> bool {
-    match abi_kind(t) {
-        Some(
-            AbiKind::Scalar(_)
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value
-            | AbiKind::String
-            | AbiKind::Null,
-        ) => true,
-        Some(AbiKind::Unit) | None => false,
-    }
 }
 
 /// True if `t` derefs to the single-bit `bytes` primitive.

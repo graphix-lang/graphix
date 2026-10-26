@@ -223,6 +223,25 @@ pub fn abi_kind(t: &Type) -> Option<AbiKind> {
     abi_kind_d(t, None)
 }
 
+/// Whether a value of `t` crosses a kernel's boundary, as a call's
+/// argument or a region's return: every encoded shape but `Unit`.
+pub(crate) fn crosses_boundary(t: &Type) -> bool {
+    match abi_kind(t) {
+        Some(
+            AbiKind::Scalar(_)
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value
+            | AbiKind::String
+            | AbiKind::Null,
+        ) => true,
+        Some(AbiKind::Unit) | None => false,
+    }
+}
+
 fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
     // The TVar lock is not reentrant: clone out of the guard before recursing.
     let resolved = t.deref_cloned();

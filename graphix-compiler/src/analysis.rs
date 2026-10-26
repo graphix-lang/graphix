@@ -370,8 +370,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
 
 /// Check every pending assertion whose definition this analysis
 /// reached, retiring all but a `#[sync]`, a passed `#[tail_recursive]`
-/// into `due`; drop those whose definition is gone. Stops at the first
-/// failure.
+/// into `due`. Stops at the first failure.
 fn check_def_assertions<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
@@ -385,7 +384,7 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
         graph.instances.values().map(|g| g.id()).collect();
     let mut i = 0;
     while i < pending.len() {
-        // CR claude for claude: [risk/low] Under parallel evaluation, None here does
+        // XCR claude for claude: [risk/low] Under parallel evaluation, None here does
         // not mean the definition is gone. Branch compile forks share one
         // def_assertions list (CxView::deref_mut clones the parent's Arc), but each
         // fork's lambda_defs cannot see the definitions a sibling branch compiled this
@@ -395,14 +394,21 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
         // remove ones whose definition is gone only at the root view; or give branch
         // forks their own list, as compile tasks have, and merge it at the join. Found
         // by reading; not run. (c-analysis-branch-04)
-        let Some(d) = lambda_def(ctx, pending[i].id) else {
-            pending.remove(i);
-            continue;
-        };
-        if !covered.contains(&d.id) {
+        // a definition this view does not see is a sibling branch's: its
+        // deletion retires its assertions (`Lambda::delete`)
+        // 2026-10-26 claude: check_def_assertions no longer drops an assertion whose
+        // definition its view cannot see; it skips it as unreached. Lambda::delete
+        // retires a definition's assertions where it removes the definition from
+        // lambda_defs, so the list stays bounded. No pin: the loss needs a sibling
+        // branch's analysis to run between another branch's runtime compile and the
+        // join, which no fixture orders deterministically; review the reasoning. A
+        // restored (image) definition never in lambda_defs now keeps its assertion
+        // pending instead of dropping it at the next analysis.
+        let Some(d) = lambda_def(ctx, pending[i].id).filter(|d| covered.contains(&d.id))
+        else {
             i += 1;
             continue;
-        }
+        };
         if let Some(msg) = assertion_failure(pending[i].kind, d) {
             let a = pending.remove(i);
             return Err(anyhow!("{msg}").at(&a.spec));
@@ -520,7 +526,7 @@ fn no_loop_message(why: Option<&NoLoop>) -> CompactString {
             site(e)
         ),
         Some(NoLoop::Formals) => format_compact!(
-            "{HEAD}: a labeled, variadic or opaque formal, or one of a type a fused \
+            "{HEAD}: a variadic or opaque formal, or one of a type a fused \
              kernel cannot carry, is one the loop cannot rebind"
         ),
         Some(NoLoop::Memory) | None => format_compact!(
@@ -934,33 +940,38 @@ fn callback_facts<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     unresolved: &Unresolved,
 ) -> LambdaFacts {
+    // a definition handed over: its own facts, joined with those of the
+    // function parameters its body calls, which its check left open
+    let of_def = |d: &LambdaDef<R, E>| -> LambdaFacts {
+        let calls = d.param_calls.lock();
+        // the builtin supplies the definition's own parameters from data;
+        // an enclosing definition's resolve per instance, or are its
+        // caller's to judge
+        let captured = |id: &BindId| match (unresolved.params)(*id) {
+            true => LambdaFacts::PURE,
+            false => ctx
+                .fn_forward_resolutions
+                .get(id)
+                .and_then(|lid| lambda_def(ctx, *lid))
+                .map_or(unresolved.facts, def_facts),
+        };
+        let own = match calls.own {
+            true => LambdaFacts::ASYNC,
+            false => LambdaFacts::PURE,
+        };
+        let base = def_facts(d).join(own);
+        calls.captured.iter().map(captured).fold(base, |a, f| a.join(f))
+    };
     let function = |n: &Node<R, E>| -> LambdaFacts {
         let lid = match n.view() {
             NodeView::Lambda(l) => {
-                let Some(d) = l.def_value().downcast_ref::<LambdaDef<R, E>>() else {
-                    return unresolved.facts;
-                };
-                let calls = d.param_calls.lock();
-                // the builtin supplies the literal's own parameters from data;
-                // an enclosing definition's resolve per instance, or are its
-                // caller's to judge
-                let captured = |id: &BindId| match (unresolved.params)(*id) {
-                    true => LambdaFacts::PURE,
-                    false => ctx
-                        .fn_forward_resolutions
-                        .get(id)
-                        .and_then(|lid| lambda_def(ctx, *lid))
-                        .map_or(unresolved.facts, def_facts),
-                };
-                let own = match calls.own {
-                    true => LambdaFacts::ASYNC,
-                    false => LambdaFacts::PURE,
-                };
-                let base = def_facts(d).join(own);
-                return calls.captured.iter().map(captured).fold(base, |a, f| a.join(f));
+                return l
+                    .def_value()
+                    .downcast_ref::<LambdaDef<R, E>>()
+                    .map_or(unresolved.facts, of_def);
             }
             NodeView::Ref(r) if (unresolved.params)(r.id) => return LambdaFacts::PURE,
-            // CR claude for claude: [bug/medium] A Ref callback takes its definition's
+            // XCR claude for claude: [bug/medium] A Ref callback takes its definition's
             // own facts and never its ParamCalls, which the literal branch above joins
             // (`own` is ASYNC, and each captured parameter takes its callee's facts). A
             // let-bound callback that calls the enclosing function's parameter
@@ -970,6 +981,11 @@ fn callback_facts<R: Rt, E: UserEvent>(
             // branch's computation for it (one closure over `&LambdaDef`). probe:
             // design/review-2026-10-26/repro/c-lambda-sync-through-let-callback.gx
             // (c-lambda-04)
+            // 2026-10-26 claude: callback_facts computes a handed definition's facts in
+            // one closure, of_def (its own facts joined with ParamCalls: own is async,
+            // each captured parameter takes its resolution), used by the literal branch
+            // and by a Ref resolved through bind_to_lambda or fn_forward_resolutions.
+            // Pin: attributes.rs sync_on_let_bound_callback (accepted without the fix).
             NodeView::Ref(r) => ctx
                 .bind_to_lambda
                 .get(&r.id)
@@ -978,7 +994,7 @@ fn callback_facts<R: Rt, E: UserEvent>(
                 .or_else(|| ctx.fn_forward_resolutions.get(&r.id).copied()),
             _ => None,
         };
-        lid.and_then(|lid| lambda_def(ctx, lid)).map_or(unresolved.facts, def_facts)
+        lid.and_then(|lid| lambda_def(ctx, lid)).map_or(unresolved.facts, of_def)
     };
     cs.args
         .values()
@@ -1162,37 +1178,6 @@ fn lambda_def<'a, R: Rt, E: UserEvent>(
     lid: LambdaId,
 ) -> Option<&'a LambdaDef<R, E>> {
     ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
-}
-
-// CR claude for claude: [structure/low] This walks the same ladder as callee_def
-// (static target, resolved lambda, bind_to_lambda), and its one caller,
-// calls_recursive, then applies lambda_def, which is callee_def's result. Delete it and
-// have calls_recursive use callee_def, so a rung added to one ladder cannot be missed
-// in the other. Found by reading; not run. (x-dup-05)
-// CR claude for claude: [structure/low] This is callee_def without its final
-// lambda_def: the same static target -> resolved lambda -> bind_to_lambda chain. Its
-// one caller, calls_recursive, applies lambda_def itself, which makes it callee_def(cs,
-// ctx). Delete this fn and call callee_def there, so the chain exists once. Found by
-// reading; not run. (c-analysis-branch-06)
-fn callee_lambda<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> Option<LambdaId> {
-    if let Some(target) = cs.static_target() {
-        return Some(target.definition);
-    }
-    if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
-        return Some(g.id());
-    }
-    if let NodeView::Ref(r) = cs.fnode().view()
-        && let Some(d) = ctx
-            .bind_to_lambda
-            .get(&r.id)
-            .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
-    {
-        return Some(d.id);
-    }
-    None
 }
 
 /// Whether an untaken arm must sleep: pure computation with no
@@ -1423,8 +1408,7 @@ pub(crate) fn region_facts<R: Rt, E: UserEvent>(
 
 fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) -> bool {
     let NodeView::CallSite(cs) = n.view() else { return false };
-    callee_lambda(cs, ctx)
-        .and_then(|lid| lambda_def(ctx, lid))
+    callee_def(cs, ctx)
         .is_some_and(|d| *d.recursion.lock() != RecursionKind::NotRecursive)
 }
 

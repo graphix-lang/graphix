@@ -2060,6 +2060,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // `typecheck1`'s `ids()` walks grow with them
         if let Some(def) = self.def.downcast_ref::<LambdaDef<R, E>>() {
             ctx.lambda_defs.remove(&def.id);
+            ctx.def_assertions.lock().retain(|a| a.id != def.id);
             ctx.fusion.forget_def(def.id);
         }
     }

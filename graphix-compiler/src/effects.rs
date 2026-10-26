@@ -208,7 +208,7 @@ pub enum RecursionKind {
 /// loop ([`RecursionKind::TailCalls`]), for `#[tail_recursive]` to say.
 #[derive(Debug, Clone)]
 pub enum NoLoop {
-    /// A labeled, variadic or opaque formal, which a loop cannot rebind.
+    /// A variadic or opaque formal, which a loop cannot rebind.
     Formals,
     /// Per-call memory: a collection operation, a non-tail self-call, a
     /// callee holding one.

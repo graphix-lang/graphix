@@ -9,9 +9,10 @@ use crate::{
     fusion::{
         self,
         kernel_abi::{self, AbiKind},
+        lowering::formal_arg,
     },
     node::{callsite::CallSite, select::Select},
-    typ::{FnArgKind, Type},
+    typ::Type,
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -289,33 +290,25 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// A self-call in tail position: evaluate the new formal values,
-/// rebind the leading tail-call slots via `emit_tail_rebind_jump`,
-/// and jump to the loop head.
+/// A self-call in tail position: evaluate the new formal values in the
+/// order the node-walk updates them, rebind the leading tail-call slots
+/// via `emit_tail_rebind_jump`, and jump to the loop head.
 fn emit_self_tail_call<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
 ) -> Result<()> {
-    let spec_apply = match &cs.spec().kind {
-        ExprKind::Apply(a) => a,
-        _ => bail!("emit_clif: self tail-call spec isn't an Apply"),
-    };
-    debug_assert!(
-        cs.ftype().is_some_and(|t| t
-            .args
-            .iter()
-            .all(|a| matches!(a.kind, FnArgKind::Positional { .. }))),
-        "tail_loop_blocker admits only positional formals"
-    );
     let Some(OwnCall { info, .. }) = cx.ctx.self_call else {
         bail!("emit_clif: a self tail-call outside a self-recursive body");
     };
+    let ftype = cs
+        .resolved_ftype()
+        .or_else(|| cs.ftype())
+        .ok_or_else(|| anyhow!("emit_clif: self tail-call has no FnType"))?;
     let (skipped, invariant) = (&info.kernel.skipped_args, &info.kernel.tail_invariant);
-    let mut rebinds: SmallVec<[TailRebind; 8]> = SmallVec::new();
-    // an owned value is held while the later args emit
-    let mut held = 0;
+    // per rebound formal, its slot and its argument
+    let mut carried: SmallVec<[(usize, &Node<R, E>); 8]> = SmallVec::new();
     let mut slot_idx = 0usize;
-    for i in 0..spec_apply.args.len() {
+    for i in 0..ftype.args.len() {
         let iu = i as u32;
         // A skipped formal has no slot; an invariant formal keeps its slot
         // but is never rebound.
@@ -327,9 +320,17 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         if invariant.contains(&iu) {
             continue;
         }
-        let arg = cs
-            .arg_positional(i)
+        let arg = formal_arg(cs, &ftype, i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
+        carried.push((slot, arg));
+    }
+    let nodes: SmallVec<[Option<&Node<R, E>>; 8]> =
+        carried.iter().map(|(_, n)| Some(*n)).collect();
+    let mut rebinds: SmallVec<[TailRebind; 8]> = SmallVec::new();
+    // an owned value is held while the later args emit
+    let mut held = 0;
+    for j in cs.update_order(&nodes) {
+        let (slot, arg) = carried[j];
         let kind = LocalKind::of_param(&cx.ctx.tail.call_slots[slot].kind);
         let s = emit_into_slot(cx, arg, kind)?;
         if let Some(k) = s.owns {
