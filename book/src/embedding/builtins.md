@@ -57,38 +57,15 @@ When the timer fires, the approximate sequence of events is,
 At the next tick `clock` fires again, `once` returns its value `Stale`,
 and `println` does not print.
 
-<!-- CR claude for claude: [doc-drift/medium] This section contradicts the sleep rule
-and this chapter's own later paragraph on `sleep`. An async call aborted by a sleep
-keeps its last result, and the wake restarts nothing. Only an event source clears its
-output to phantom: `CachedArgsAsync::sleep` leaves `out` alone, and `Iter::sleep` resets
-it. An author who follows this text resets a valid result and re-issues a call with no
-argument fire. Delete the section, or reduce it to the rule stated under `sleep` below.
-Found by reading; not run. (book-modules-udt-02) -->
-## Sleeping asynchronous builtins
-
-If sleeping a builtin discards pending work or detaches an event source,
-also reset its output to `TagValue::phantom()`. On wake, a restarted
-operation must wait for its own completion instead of exposing the previous
-activation's result. This applies outside `seq` as well as inside it.
-Retain outputs for paused computations whose semantic value remains valid;
-do not reset every builtin merely because it is classified asynchronous.
-
-<!-- CR claude for claude: [doc-drift/medium] The example `Once::update` guards its
-bottom arms with `!self.done`, so after the latch a bottom argument rides the old value.
-The dense-bottom rule is that a bottom input sets the result bottom and never rides it.
-The real core `Once` returns `bottom_of([x.tag()])` first and reads its argument through
-`seam_tick`, and the package skeleton's comment says the same. Replace this body with
-the real one, and name the seam helpers (`bottom_of`, `seam_tick`, `seam_value`,
-`seam_arg`) as the raw-Apply author's API. Found by reading; not run.
-(book-modules-udt-03) -->
 ## Implementing Once
 
 ```rust
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
-    UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    expr::ExprId, image::ImageBuf, typ::FnType,
 };
+use graphix_package_core::{bottom_of, seam_tick};
 use netidx_core::pack::{Pack, PackError};
 
 #[derive(Debug, Default)]
@@ -135,15 +112,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        match from[0].update(ctx).view() {
-            TagView::Fired(tv) if !self.done => {
+        let x = from[0].update(ctx);
+        if let Some(bottom) = bottom_of([x.tag()]) {
+            return bottom;
+        }
+        match seam_tick(x) {
+            Some(tv) if !self.done => {
                 self.done = true;
-                let v = tv.value_cloned();
-                self.out.set(TagValue::fired(v))
+                self.out.set(TagValue::fired(tv.value_cloned()))
             }
-            // a bottom input before the update makes the result bottom
-            TagView::FreshBottom if !self.done => self.out.set_bottom(true),
-            TagView::StaleBottom if !self.done => self.out.set_bottom(false),
             _ => self.out.ride(),
         }
     }
@@ -177,16 +154,30 @@ output depends on (`Sync`: the same cycle, with state kept across
 invocations), and `image_encode`/`image_decode` write and restore the
 state `init` built when the session is cached as an image.
 
-The most important method of `Apply` is `update`. `sleep` is called
-when the node's select arm is unselected, and sleep is a pause: values
-and other semantic state are kept, so the node resumes from them when
-the arm wakes, and a wake starts nothing an argument did not ask for. A
-builtin aborts an operation in flight that it cannot pause, and an
-event source clears its output to `TagValue::phantom()`, since its
-output is its last event (see above). `reborn` is called before an
-update that follows a sleep and is a birth, a seq step entered for its
-next run: that is where `once` clears its flag, as a new one would
-hold nothing.
+The most important method of `Apply` is `update`. `once` reads its
+argument through the seam helpers of `graphix_package_core`, the raw
+`Apply` author's API. `bottom_of` takes the tags of the values the
+builtin consumes and, when any is bottom, gives the bottom to return in
+place of a ride: a bottom input makes the result bottom, before the
+latch and after it, and the latched value shows again once the input
+returns. `seam_tick` is `Some` only for a `Fired` delivery, the event
+that advances a builtin's state; `seam_value` is `Some` for any
+delivery holding a value, fired or stale, for an argument read as
+configuration; `seam_arg` updates an argument node and returns its
+value and whether it fired. Every argument is updated every cycle,
+before any early return.
+
+`sleep` is called when the node's select arm is unselected, and sleep
+is a pause: values and other semantic state are kept, so the node
+resumes from them when the arm wakes, and a wake starts nothing an
+argument did not ask for. A builtin aborts an operation in flight that
+it cannot pause and keeps its last result: the wake does not issue the
+call again (a call that is not cancel-safe, a stream read for one,
+finishes instead and answers at the wake). Only an event source clears
+its output to `TagValue::phantom()`, since its output is its last
+event. `reborn` is called before an update that follows a sleep and is
+a birth, a seq step entered for its next run: that is where `once`
+clears its flag, as a new one would hold nothing.
 
 ## Higher Order Functions
 

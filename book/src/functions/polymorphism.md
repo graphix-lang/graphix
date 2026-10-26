@@ -10,7 +10,7 @@ that using type variables and constraints in our annotations.
 ```graphix
 〉let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y
 〉f
--: fn<'a: unbound: Number + Singleton>(x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
+-: fn<'a: Number + Singleton>(x: 'a: unbound within Number & Singleton, y: 'a: unbound within Number & Singleton) -> 'a: unbound within Number & Singleton
 Abstract('a: Number |x: 'a, y: 'a| -> 'a x + y)
 ```
 
@@ -24,32 +24,20 @@ In type annotations of lambda expressions,
 - After the return type, you can optionally specify a throws type, `throws
   Type`, which will set the type that is thrown by the function
 
-<!-- CR claude for claude: [doc-drift/medium] These readouts no longer match the shell.
-It prints `fn<'a: Number + Singleton>(x: 'a: unbound within Number & Singleton, ..)`. An
-inferred variable has no `fn<..>` prefix, and `apply` shows no `fn<'e: unbound: _>`, so
-the explanation of the colon-separated form and of `'e` constrained to `_` describes
-output that no longer exists. reading_types.md ("Auto Parameters") and the map
-transcripts in fundamental_types.md have the same drift. Re-run the transcripts and
-rewrite the explanation. probe: design/review-2026-10-26/repro/book-core-type-readout.sh
-(book-core-03) -->
-When a function type is printed, the stuff between the `fn<>` are the
-type constraints, the syntax in this readout is a colon separated list
-of,
-
-- type variable name, for example '_2073
-- current value, or unbound if there is no current value
-- constraint type
+When a function type is printed, the `fn<>` header lists the bounds on
+the type variables the definition declares, `'a: Number + Singleton`. The shell also prints each type variable where it occurs
+with its current state: `'a: unbound` when nothing has bound it yet, the
+type it is bound to when something has, and the bounds it must stay
+within, joined by `&`,
 
 ```
-fn<'a: unbound: Number + Singleton>
-(x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
+'a: unbound within Number & Singleton
 ```
 
-We can remove the (unbound) current values and it becomes easier to read,
+We can remove the current states and it becomes easier to read,
 
 ```
-fn<'a: Number + Singleton>
-(x: 'a, y: 'a) -> 'a
+fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
 ```
 
 We just have one variable now, `'a` representing both argument types
@@ -88,10 +76,10 @@ different types to the same call,
 
 ```graphix
 〉f(1, 1.2)
-error: in expr
+error: in expr f(1, 1.2)
 
 Caused by:
-    0: at: line: 1, column: 6, in: f64:1.2
+    0: at: line: 1, column: 6, in: 1.2
     1: type mismatch 'a: i64 does not contain f64
 ```
 
@@ -105,7 +93,7 @@ same type is refused at the definition rather than at some later call,
 
 ```graphix
 〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ['a, 'b] x + y
-error: ... type mismatch 'a does not contain 'b
+error: ... cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)
 ```
 
 `+` takes two values of one type, so `x + y` needs `'a` and `'b` to be
@@ -156,15 +144,15 @@ without issue, but sometimes annotations are required.
 ```graphix
 〉 let apply = |x: 'a, f: fn(x: 'a) -> 'b throws 'e| -> 'b throws 'e f(x)
 〉 apply
--: fn<'e: unbound: _>(x: 'a: unbound, f: fn(x: 'a: unbound) -> 'b: unbound throws 'e: unbound) -> 'b: unbound throws 'e: unbound
+-: fn(x: 'a: unbound, f: fn(x: 'a: unbound) -> 'b: unbound throws 'e: unbound) -> 'b: unbound throws 'e: unbound
 Abstract(|x: 'a, f: fn(x: 'a) -> 'b throws 'e| -> 'b throws 'e f(x))
 ```
 
 Here we've specified a single argument apply, it takes an argument, and a
 function `f`, and calls `f` on the argument. Note that we've explicitly said
-that whatever type of error `f` throws, `apply` will throw as well. That was
-constrained by the compiler to `_` meaning basically this could throw anything
-or also not throw at all, it just depends on `f`.
+that whatever type of error `f` throws, `apply` will throw as well. `'e`
+has no bound, so the header lists nothing: `f` may throw anything, or
+nothing at all, and each call's `'e` is whatever its `f` throws.
 
 We can see a more practical example in the type of `array::map` (this
 implementation of which I will not repeat here), which is,
@@ -187,11 +175,15 @@ and are enforced at each call site. For example consider,
 let f = |x, y| x + y
 ```
 
-Its type, with the unbound current values removed, is
+The shell prints its type as
 
 ```
-fn<'_1: Number + Singleton>(x: '_1, y: '_1) -> '_1
+fn(x: '_1: unbound within Number & Singleton, y: '_1: unbound within Number & Singleton) -> '_1: unbound within Number & Singleton
 ```
+
+The compiler named the variable it inferred (`'_1`; the number differs
+from run to run), and the header lists only declared variables, so the
+bounds show where it occurs.
 
 One inferred variable stands for both arguments and the return type. The
 body's `+` gave it the arithmetic bound: `Number + Singleton`, one numeric

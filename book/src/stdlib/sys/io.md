@@ -10,7 +10,7 @@ it: a write to `Stdin` is a type error. Anything else that implements them — i
 written in Graphix — works with the same code.
 
 ```graphix
-use sys::io::{Read, Write, Close};
+use sys::io::{Read, Close};
 
 let f = sys::fs::open(`Read, "/etc/hostname")?;
 let text = buffer::to_string(Read::read_all(f)?)?;
@@ -27,24 +27,6 @@ which reads under one lock instead of looping.
 {{#include ../../../../stdlib/graphix-package-sys/src/graphix/io.gxi}}
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] This table lists sys::process::Pipe and
-sys::io::Stdio, which no longer exist. The paragraph after it says a wrong-direction
-call returns an IOError, but the stream types are now split per direction
-(sys::io::Stdin/Stdout/Stderr, sys::process::ChildStdin/ChildStdout/ChildStderr), each
-implementing only its own traits, so the check refuses such a call ('Stdin does not
-implement Write'). List the nine types and their traits, say a wrong-direction call does
-not compile, fix the same claim in sys/process.md's first paragraph, and rebuild docs/.
-probe: design/review-2026-10-26/repro/x-doc-drift-io-direction.gx (x-doc-drift-01) -->
-<!-- CR claude for claude: [doc-drift/medium] This table names `sys::process::Pipe` and
-`sys::io::Stdio`, which no longer exist. The stream types are
-ChildStdin/ChildStdout/ChildStderr and Stdin/Stdout/Stderr, each implementing only its
-direction (process.gxi, io.gxi). The paragraph under the table is also wrong: a
-misdirected call is a type error ("Stdin does not implement Write"), not a run-time
-IOError, as this page's own first paragraph says. Rewrite the table per type, delete
-that paragraph, fix the same `Pipe` sentence in stdlib/sys/process.md, and drop the
-unused `Write` import from the first example. probe:
-design/review-2026-10-26/repro/book-modules-udt-io-direction.gx (book-modules-udt-01)
--->
 ## Which stream implements what
 
 | type | Read | Lines | Write | Close | other |
@@ -52,13 +34,16 @@ design/review-2026-10-26/repro/book-modules-udt-io-direction.gx (book-modules-ud
 | `sys::fs::File` | ✓ | ✓ | ✓ | ✓ | `sys::fs::Seek` |
 | `sys::tcp::TcpStream` | ✓ | ✓ | ✓ | ✓ | `sys::tcp::Socket` |
 | `sys::tls::TlsStream` | ✓ | ✓ | ✓ | ✓ | `sys::tcp::Socket` |
-| `sys::process::Pipe` | ✓ | ✓ | ✓ | ✓ | |
-| `sys::io::Stdio` | ✓ | ✓ | ✓ | ✓ | |
+| `sys::process::ChildStdin` | | | ✓ | ✓ | |
+| `sys::process::ChildStdout` | ✓ | ✓ | | ✓ | |
+| `sys::process::ChildStderr` | ✓ | ✓ | | ✓ | |
+| `sys::io::Stdin` | ✓ | ✓ | | ✓ | |
+| `sys::io::Stdout` | | | ✓ | ✓ | |
+| `sys::io::Stderr` | | | ✓ | ✓ | |
 
-A handle whose direction is wrong for the call — writing to `stdin`,
-reading from a child's stdin pipe — returns an `IOError` rather than
-failing to compile: the trait says the operation exists, the operating
-system says which end of the pipe you are holding.
+A call in the wrong direction — writing to `stdin`, reading from a
+child's stdin pipe — does not compile: the check refuses it with
+`Stdin does not implement Write`.
 
 ## Parsing and writing formats
 

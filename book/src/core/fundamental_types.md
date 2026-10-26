@@ -455,7 +455,7 @@ Maps can be constructed using the `{key => value}` syntax:
 
 ```graphix
 〉{"a" => 1, "b" => 2, "c" => 3}
--: Map<'_1893: string, '_1895: i64>
+-: Map<string, i64>
 {"a" => 1, "b" => 2, "c" => 3}
 ```
 
@@ -469,7 +469,7 @@ is a `Map<string, i64>`.
 
 ```graphix,ignore
 {{"foo" => 42} => "foo", {"bar" => 42} => "bar"}
--: Map<'_1919: Map<'_1915: string, '_1917: i64>, '_1921: string>
+-: Map<Map<string, i64>, string>
 {{"bar" => 42} => "bar", {"foo" => 42} => "foo"}
 ```
 
@@ -480,7 +480,7 @@ Maps can be indexed using the `map{key}` syntax to retrieve values:
 ```graphix
 〉let m = {"a" => 1, "b" => 2, "c" => 3}
 〉m{"b"}
--: ['_1907: i64, Error<`MapKeyError(string)>]
+-: [i64, Error<`MapKeyError(string)>]
 2
 ```
 
@@ -488,7 +488,7 @@ If a key is not present in the map, indexing returns a `MapKeyError`:
 
 ```graphix
 〉m{"missing"}
--: ['_1907: i64, Error<`MapKeyError(string)>]
+-: [i64, Error<`MapKeyError(string)>]
 error:`MapKeyError("map key \"missing\" not found")
 ```
 

@@ -1,8 +1,10 @@
 # sys::process
 
 The `sys::process` module starts and manages local child processes. A
-stdio handle configured as `Pipe` is a `sys::process::Pipe`, which
-implements the [sys::io](io.md) traits.
+child stream redirected to `` `Pipe `` is the parent's end of the pipe,
+a type per direction: `ChildStdin` implements the [sys::io](io.md)
+`Write` and `Close` traits, `ChildStdout` and `ChildStderr` implement
+`Read`, `Lines` and `Close`.
 
 ```graphix
 {{#include ../../../../stdlib/graphix-package-sys/src/graphix/process.gxi}}

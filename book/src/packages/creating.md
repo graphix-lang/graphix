@@ -272,14 +272,6 @@ to do something special with a value returned to the shell by a script or in the
 REPL. For example the TUI package uses a custom display to take control of the
 terminal and render a terminal UI from the returned value.
 
-<!-- CR claude for claude: [doc-drift/medium] The trait shown here is missing `idle`,
-which `graphix_package::CustomDisplay` requires with no default, so DebugDisplay does
-not compile. `Stop` is `oneshot::Sender<Result<Ended>>`, so the program sends
-`Ok(Ended::Requested)` or `Ok(Ended::Interrupted)`, not `Ok(())`. The example's
-`init_custom` also drops `_e`, which by this page's own rule removes the expression it
-claimed. Show the real trait, document `idle` (answers `GXHandle::notify_idle`), fix the
-Stop wording, and keep the CompExp in a DebugDisplay field. Found by reading; not run.
-(book-modules-udt-04) -->
 ### The `CustomDisplay` Trait
 
 A custom display implements `CustomDisplay<X>`:
@@ -300,8 +292,18 @@ pub trait CustomDisplay<X: GXExt>: Any {
     /// The updates of one runtime cycle have all been processed: a
     /// display that redraws shows the cycle whole here.
     async fn batch_done(&mut self);
+
+    /// The runtime went idle after the display asked
+    /// (`GXHandle::notify_idle`), every update before it processed.
+    async fn idle(&mut self);
 }
 ```
+
+Every method is required. `idle` answers a display that called
+`GXHandle::notify_idle`: it comes after every update before it, so a
+display waiting to learn whether something it sent was answered (the
+GUI's controls do) finds out here. A display that never asks gives it
+an empty body.
 
 ### Registering a Custom Display
 
@@ -313,8 +315,10 @@ closures in `defpackage!`:
   use the default display or delegate to your package.
 - **`init_custom`** constructs your `CustomDisplay`. It receives a `stop`
   channel (`graphix_package::Stop`), which the display keeps for as long as it
-  lives. Send `Ok(())` on it when the program is done (the user closed the
-  window, the script called your exit builtin) and `Err(e)` when the display
+  lives. It carries `Result<graphix_package::Ended>`: send
+  `Ok(Ended::Requested)` when the program is done (the user closed the
+  window, the script called your exit builtin), `Ok(Ended::Interrupted)`
+  when the user interrupted it (Ctrl-C), and `Err(e)` when the display
   cannot go on (the terminal went away). Dropping it unsent means the display
   died. The shell calls `clear()` before dropping the display; a script then
   exits, with the error if there was one, and the REPL returns to its prompt.
@@ -326,16 +330,18 @@ Here is a minimal example that prints every update to stderr:
 use async_trait::async_trait;
 use graphix_compiler::{env::Env, expr::ExprId};
 use graphix_package::{CustomDisplay, Stop};
-use graphix_rt::GXExt;
+use graphix_rt::{CompExp, GXExt};
 use netidx_value::Value;
 
-struct DebugDisplay {
+struct DebugDisplay<X: GXExt> {
     // held so the shell knows the display is alive
     _stop: Stop,
+    // held so the expression it displays stays in the runtime
+    _expr: CompExp<X>,
 }
 
 #[async_trait]
-impl<X: GXExt> CustomDisplay<X> for DebugDisplay {
+impl<X: GXExt> CustomDisplay<X> for DebugDisplay<X> {
     async fn clear(&mut self) {
         eprintln!("[debug display] cleared");
     }
@@ -345,6 +351,8 @@ impl<X: GXExt> CustomDisplay<X> for DebugDisplay {
     }
 
     async fn batch_done(&mut self) {}
+
+    async fn idle(&mut self) {}
 }
 
 defpackage! {
@@ -355,8 +363,8 @@ defpackage! {
             matches!(t, Some(graphix_compiler::typ::Type::Array(_)))
         })
     },
-    init_custom => |_gx, _env, stop, _e, _run_on_main| {
-        Ok(Box::new(DebugDisplay { _stop: stop }))
+    init_custom => |_gx, _env, stop, e, _run_on_main| {
+        Ok(Box::new(DebugDisplay { _stop: stop, _expr: e }))
     }
 }
 ```
@@ -364,10 +372,10 @@ defpackage! {
 The `e` parameter is a `CompExp` which has a `typ` field (the inferred result
 type) and an `id` field (the expression ID). Typically `is_custom` checks
 whether the result type matches something your display knows how to render, as
-the TUI package does with its widget types. The custom display is responsible
-for keeping the CompExp alive (if that is necessary), if it is dropped the
-expression will be removed from the runtime (just like any other dropped
-CompExp).
+the TUI package does with its widget types. `init_custom` takes the CompExp
+by value, and the display keeps it for as long as it shows the expression:
+when it is dropped the expression is removed from the runtime, as any other
+dropped CompExp is.
 
 ## Dependencies Between Packages
 

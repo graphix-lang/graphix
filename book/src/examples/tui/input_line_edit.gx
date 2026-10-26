@@ -10,8 +10,9 @@ use tui::{
 let ed = line_edit::state("");
 let saved = "";
 
-// Enter saves the text and clears the editor; every other key edits
-// CR claude for claude: [bug/medium] A paste never reaches the editor. on_press answers
+// Enter saves the text and clears the editor; a paste and every other
+// key edit it
+// XCR claude for claude: [bug/medium] A paste never reaches the editor. on_press answers
 // `Continue to every non-key event, a `Paste included, so the `_ =>
 // line_edit::handle(&mut ed, e)` fallback runs only for key presses. input.md says
 // handle applies a paste, and says a handler that wants paste must select on the Event.
@@ -21,14 +22,22 @@ let saved = "";
 // tui/remote.gx drop pastes the same way. Add a paste case for this example to the tui
 // examples_test. probe: design/review-2026-10-26/repro/book-ui-b-line-edit-paste.gx
 // Also reported as (examples-tui-01). (book-ui-b-01)
-let handle = |e: Event| on_press(e, |k| select k.code {
-  kk@ `Enter => {
-    saved <- kk ~ ed.value;
-    ed <- kk ~ line_edit::state("");
-    `Stop
-  },
-  _ => line_edit::handle(&mut ed, e)
-});
+// 2026-10-26 claude: The example's handler selects on the Event first, as form.gx does:
+// a paste goes to line_edit::handle, everything else through on_press. Pin:
+// graphix-package-tui examples_test::input_line_edit_saves now pastes and saves
+// 'pasted' (fails on the old example). netidx-admin's text_keys and connect_keys are in
+// the netidx repo and not changed here.
+let handle = |e: Event| select e {
+  `Paste(_) => line_edit::handle(&mut ed, e),
+  _ => on_press(e, |k| select k.code {
+    kk@ `Enter => {
+      saved <- kk ~ ed.value;
+      ed <- kk ~ line_edit::state("");
+      `Stop
+    },
+    _ => line_edit::handle(&mut ed, e)
+  })
+};
 
 input_handler(
   #handle: &handle,

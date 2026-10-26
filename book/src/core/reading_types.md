@@ -339,17 +339,19 @@ when debugging.)
 
 In the shell this type signature is made a bit more complex by the
 shell also telling you what type variables are currently bound to, or
-`unbound` if they aren't bound. So in the shell this pops out as,
+`unbound` if they aren't bound, and the bounds each must stay within.
+The `fn<>` header lists only the variables a definition declares, so
+an inferred variable's bounds show where it occurs. In the shell this
+pops out as,
 
 ```graphix
 〉f
--: fn<'_2067: unbound: Number + Singleton>(x: '_2067: unbound, y: '_2067: unbound) -> '_2067: unbound
+-: fn(x: '_2067: unbound within Number & Singleton, y: '_2067: unbound within Number & Singleton) -> '_2067: unbound within Number & Singleton
 ```
 
-The constraint `'_2067: unbound: Number + Singleton` is read as: `_2067`
-is not currently bound to a type but is constrained to one type of
-`Number`. This is
-all useful information, even though it's intimidating at first it's
+`'_2067: unbound within Number & Singleton` is read as: `'_2067` is
+not currently bound to a type, and it must be one type of `Number`.
+This is all useful information, even though it's intimidating at first it's
 worth putting in the work to learn to decipher it.
 
 ## Putting It All Together

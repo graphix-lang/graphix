@@ -4,7 +4,7 @@
 use super::{ch, key};
 use crate::testing::TuiTestHarness;
 use anyhow::{Context, Result, bail};
-use crossterm::event::KeyCode;
+use crossterm::event::{Event, KeyCode};
 use ratatui::style::Color;
 use std::{
     fs,
@@ -160,6 +160,9 @@ async fn input_line_edit_saves() -> Result<()> {
     h.dispatch_events("hi".chars().map(|c| ch(c))).await?;
     h.dispatch_event(key(KeyCode::Enter)).await?;
     assert!(shows(&mut h, "saved: hi")?);
+    h.dispatch_event(Event::Paste("pasted".into())).await?;
+    h.dispatch_event(key(KeyCode::Enter)).await?;
+    assert!(shows(&mut h, "saved: pasted")?);
     Ok(())
 }
 
