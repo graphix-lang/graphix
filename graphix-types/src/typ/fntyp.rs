@@ -984,6 +984,15 @@ impl FnType {
     // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
     // needed. Stop generalize/claim at a nested fn type a closed definition already
     // generalized; share nested fn types that reach no cell.
+    // 2026-10-26 claude: Measured (debug, --check): every other shape in the probe is
+    // now linear ([X], {a: X}, (X, 1), `A(X) at 0.4-0.6 s for 1000 and 2000 lets; &X
+    // 0.55/0.72 s; {"k" => X} 0.55/1.35 s); the closure chain alone stays quadratic, 3.6
+    // s at 1000 lets and 14.9 s at 2000. Its nested fn types hold no type variable at
+    // all, so the fix is a cached "holds no TVar" fact per FnType that generalize, claim
+    // (reached_cells) and reset_tvars_int stop at. Not done: FnType's fields are public
+    // and it is built by struct literal at about 33 sites, and code clones one and then
+    // edits a field, so a cached fact goes stale unless it lives behind a constructor;
+    // that refactor is the work.
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
