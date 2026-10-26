@@ -2,9 +2,11 @@
 
 `sys::io` is where the io capabilities live. A stream is not one type
 with a tag saying what it is — it is a type of its own (`sys::fs::File`,
-`sys::tcp::TcpStream`, `sys::tls::TlsStream`, `sys::process::Pipe`,
-`sys::io::Stdio`), and the traits it implements say what you can do
-with it. Anything else that implements them — including a stream
+`sys::tcp::TcpStream`, `sys::tls::TlsStream`, a type per direction for
+a child's pipes, `sys::process::ChildStdin`, `ChildStdout` and
+`ChildStderr`, and for the process's own, `sys::io::Stdin`, `Stdout`
+and `Stderr`), and the traits it implements say what you can do with
+it: a write to `Stdin` is a type error. Anything else that implements them — including a stream
 written in Graphix — works with the same code.
 
 ```graphix

@@ -1,22 +1,32 @@
-impl Read for Stdio {
+impl Read for Stdin {
     let read = |s, n| 'sys_io_read;
     let read_exact = |s, n| 'sys_io_read_exact;
     let read_all = |s| 'sys_io_read_all
 };
 
-impl Lines for Stdio {
+impl Lines for Stdin {
     let lines = |s| 'sys_io_lines;
     let lines_batched = |s| 'sys_io_lines_batched
 };
 
-impl Write for Stdio {
+impl Close for Stdin { let close = |s| 'sys_io_close };
+
+impl Write for Stdout {
     let write = |s, data| 'sys_io_write;
     let write_exact = |s, data| 'sys_io_write_exact;
     let flush = |s| 'sys_io_flush
 };
 
-impl Close for Stdio { let close = |s| 'sys_io_close };
+impl Close for Stdout { let close = |s| 'sys_io_close };
 
-let stdin = |trigger: Any| -> Stdio 'sys_io_stdin;
-let stdout = |trigger: Any| -> Stdio 'sys_io_stdout;
-let stderr = |trigger: Any| -> Stdio 'sys_io_stderr
+impl Write for Stderr {
+    let write = |s, data| 'sys_io_write;
+    let write_exact = |s, data| 'sys_io_write_exact;
+    let flush = |s| 'sys_io_flush
+};
+
+impl Close for Stderr { let close = |s| 'sys_io_close };
+
+let stdin = |trigger: Any| -> Stdin 'sys_io_stdin;
+let stdout = |trigger: Any| -> Stdout 'sys_io_stdout;
+let stderr = |trigger: Any| -> Stderr 'sys_io_stderr

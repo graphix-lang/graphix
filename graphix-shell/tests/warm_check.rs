@@ -50,6 +50,6 @@ fn interface_defaults_check_warm() {
 #[test]
 fn abstract_types_print_by_name_warm() {
     let [cold, warm] = check_twice("let s = sys::io::stdout(null);\ns + 1\n");
-    assert!(refusal(&cold).is_some_and(|l| l.contains("Stdio")), "{}", cold.stderr);
+    assert!(refusal(&cold).is_some_and(|l| l.contains("Stdout")), "{}", cold.stderr);
     assert_eq!(refusal(&cold), refusal(&warm), "{}", warm.stderr);
 }

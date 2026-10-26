@@ -19,7 +19,7 @@ use tokio::{
 };
 use triomphe::Arc;
 
-use crate::{StreamKind, wrap_pipe};
+use crate::{StreamKind, wrap_child_stderr, wrap_child_stdin, wrap_child_stdout};
 
 type Status = Option<Result<ExitStatusValue, ArcStr>>;
 
@@ -237,9 +237,11 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
     let pid =
         spawned.id().ok_or_else(|| anyhow::anyhow!("child process has no OS pid"))?
             as i64;
-    let stdin = spawned.take_stdin().map(|s| wrap_pipe(StreamKind::ChildStdin(s)));
-    let stdout = spawned.take_stdout().map(|s| wrap_pipe(StreamKind::ChildStdout(s)));
-    let stderr = spawned.take_stderr().map(|s| wrap_pipe(StreamKind::ChildStderr(s)));
+    let stdin = spawned.take_stdin().map(|s| wrap_child_stdin(StreamKind::ChildStdin(s)));
+    let stdout =
+        spawned.take_stdout().map(|s| wrap_child_stdout(StreamKind::ChildStdout(s)));
+    let stderr =
+        spawned.take_stderr().map(|s| wrap_child_stderr(StreamKind::ChildStderr(s)));
     let (status_tx, status_rx) = watch::channel(None);
     let (ctl, ctl_rx) = mpsc::unbounded_channel();
     tokio::spawn(own_child(spawned, opts.kill_on_drop, status_tx, ctl_rx));

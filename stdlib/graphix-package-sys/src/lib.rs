@@ -255,11 +255,12 @@ impl AsyncWrite for StreamKind {
 
 /// Which kind of stream a handle is.
 ///
-/// One representation, five nominal Graphix types (`sys::fs::File`,
-/// `sys::tcp::TcpStream`, `sys::tls::TlsStream`, `sys::process::Pipe`,
-/// `sys::io::Stdio`): the io code is shared, each type carries the trait
-/// impls that say what it can do, and the marker is what the abstract
-/// registry keys a UUID on.
+/// One representation, nine nominal Graphix types (`sys::fs::File`,
+/// `sys::tcp::TcpStream`, `sys::tls::TlsStream`, a type per direction of
+/// `sys::process::Child*` and `sys::io::Std*`): the io code is shared,
+/// each type carries the trait impls that say what it can do, so a read
+/// of a write-only stream is a type error, and the marker is what the
+/// abstract registry keys a UUID on.
 pub trait StreamMark: 'static + Send + Sync {
     /// The type's canonical Graphix path. Its UUID is derived from it
     /// ([`abstract_uuid`]), so a type test (`File as f`) recognizes
@@ -521,23 +522,16 @@ macro_rules! stream_kinds {
     };
 }
 
-// CR claude for claude: [structure/low] Stdio and Pipe each name both directions of
-// stream and implement Read, Lines and Write. So `Read::read(child.stdin$, n)` and
-// `Write::write(sys::io::stdin(null), d)` pass the check and fail at run time, through
-// StreamKind's Unsupported arms. Splitting each by direction makes the misuse a type
-// error, and lets those arms go: e.g. marks for sys::io::Stdin/Stdout and
-// sys::process::PipeIn/PipeOut, each with only the matching Read+Lines or Write impls
-// in io.gx/process.gx. This changes the stdlib API. probe:
-// design/review-2026-10-19/repro/sys-io-direction-less-stdio-pipe.gx (sys-io-03)
-// 2026-10-24 claude: Eric ruled (2026-10-24): split Stdio and Pipe into a type per
-// direction, each implementing only its own traits (Stdin; Stdout/Stderr; ChildStdin
-// Write; ChildStdout/ChildStderr Read).
 stream_kinds! {
     FileMark => "sys::fs::File", FILE_WRAPPER, wrap_file;
     TcpMark => "sys::tcp::TcpStream", TCP_WRAPPER, wrap_tcp;
     TlsMark => "sys::tls::TlsStream", TLS_WRAPPER, wrap_tls;
-    PipeMark => "sys::process::Pipe", PIPE_WRAPPER, wrap_pipe;
-    StdioMark => "sys::io::Stdio", STDIO_WRAPPER, wrap_stdio;
+    ChildStdinMark => "sys::process::ChildStdin", CHILD_STDIN_WRAPPER, wrap_child_stdin;
+    ChildStdoutMark => "sys::process::ChildStdout", CHILD_STDOUT_WRAPPER, wrap_child_stdout;
+    ChildStderrMark => "sys::process::ChildStderr", CHILD_STDERR_WRAPPER, wrap_child_stderr;
+    StdinMark => "sys::io::Stdin", STDIN_WRAPPER, wrap_stdin;
+    StdoutMark => "sys::io::Stdout", STDOUT_WRAPPER, wrap_stdout;
+    StderrMark => "sys::io::Stderr", STDERR_WRAPPER, wrap_stderr;
 }
 
 pub fn get_stream(cached: &CachedVals, idx: usize) -> Option<Arc<Halves>> {

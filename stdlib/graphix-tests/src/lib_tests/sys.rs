@@ -77,7 +77,7 @@ run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::None);
 
-// Writing to stdin is an error.
+// Stdin does not write: a write to it is a type error.
 const STDIN_WRITE_ERR: &str = r#"
 {
     use sys::io::Write;
@@ -86,9 +86,12 @@ const STDIN_WRITE_ERR: &str = r#"
 }
 "#;
 
-run!(stdin_write_err, STDIN_WRITE_ERR, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Error(_)))
-}; FuseExpect::None);
+run!(
+    stdin_write_err,
+    STDIN_WRITE_ERR,
+    graphix_package_core::testing::refused("Stdin does not implement Write");
+    FuseExpect::None
+);
 
 const WRITE_EXACT_ZERO: &str = r#"
 {

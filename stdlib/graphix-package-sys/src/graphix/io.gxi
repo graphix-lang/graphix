@@ -1,6 +1,11 @@
-/// A handle to one of the process's standard streams, from [stdin],
-/// [stdout] or [stderr].
-type Stdio;
+/// The process's standard input, from [stdin]: it reads.
+type Stdin;
+
+/// The process's standard output, from [stdout]: it writes.
+type Stdout;
+
+/// The process's standard error, from [stderr]: it writes.
+type Stderr;
 
 /// A source of bytes.
 ///
@@ -150,16 +155,19 @@ trait Close {
     val close: fn(self) -> Result<null, `IOError(string)>;
 };
 
-impl Read for Stdio;
-impl Lines for Stdio;
-impl Write for Stdio;
-impl Close for Stdio;
+impl Read for Stdin;
+impl Lines for Stdin;
+impl Close for Stdin;
+impl Write for Stdout;
+impl Close for Stdout;
+impl Write for Stderr;
+impl Close for Stderr;
 
 /// Return a handle to standard input.
-val stdin: fn(trigger: Any) -> Stdio;
+val stdin: fn(trigger: Any) -> Stdin;
 
 /// Return a handle to standard output.
-val stdout: fn(trigger: Any) -> Stdio;
+val stdout: fn(trigger: Any) -> Stdout;
 
 /// Return a handle to standard error.
-val stderr: fn(trigger: Any) -> Stdio;
+val stderr: fn(trigger: Any) -> Stderr;

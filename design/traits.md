@@ -465,17 +465,22 @@ io was the feature's first client and its acceptance test; the old
 `Stream<'a>` and its phantom tag are gone and the API break was
 accepted pre-release.
 
-**Five nominal types, one representation.** `sys::fs::File`,
-`sys::tcp::TcpStream`, `sys::tls::TlsStream`, `sys::process::Pipe` and
-`sys::io::Stdio` are Rust-backed abstract types (body-less in their
-`.gxi`s). Behind them `StreamKind` survives as ONE enum — read/write/
-close is the same code whatever the descriptor, and five copies would
-buy nothing the nominal split does not. What makes them five distinct
+**Nine nominal types, one representation.** `sys::fs::File`,
+`sys::tcp::TcpStream`, `sys::tls::TlsStream`, a type per direction of a
+child's pipes (`sys::process::ChildStdin`, `ChildStdout`,
+`ChildStderr`) and of the process's own streams (`sys::io::Stdin`,
+`Stdout`, `Stderr`) are Rust-backed abstract types (body-less in their
+`.gxi`s), each implementing only the traits its direction allows, so a
+read of a write-only stream is a type error. Behind them `StreamKind`
+survives as ONE enum — read/write/close is the same code whatever the
+descriptor, and nine copies would buy nothing the nominal split does
+not; its arms refusing the wrong direction are a backstop no Graphix
+program reaches. What makes them nine distinct
 Rust types (which is what the abstract registry keys a UUID on) is a
 marker parameter: `Stream<K: StreamMark>` with a `stream_kinds!` list
 minting the markers, wrappers and accessor
 (`graphix-package-sys/src/lib.rs`); `get_stream` reaches the shared
-cell from any of the five, so the io builtins are shared. The TYPE
+cell from any of the nine, so the io builtins are shared. The TYPE
 says which operations are legal and the trait implementations enforce
 it.
 
@@ -522,7 +527,8 @@ NOMINAL, not a full type check: parameters are not carried at runtime.
 
 **API**: `Read::read(s, n)`, `Seek::seek`, `Socket::shutdown`;
 `process::Redirect` is the redirect config (the name `Stdio` freed for
-the handle); `Child`'s pipe fields are `[Pipe, null]`. A TLS upgrade
+the handle); `Child`'s pipe fields are `[ChildStdin, null]`,
+`[ChildStdout, null]` and `[ChildStderr, null]`. A TLS upgrade
 CONSUMES the TCP handle: the session moves into the returned
 `TlsStream` and the handle passed in is left empty, so a stray
 plaintext read on it errors instead of silently reading the encrypted

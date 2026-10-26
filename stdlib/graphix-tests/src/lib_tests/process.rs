@@ -404,3 +404,15 @@ async fn kill_on_drop_kills_the_child() -> Result<()> {
     ctx.shutdown().await;
     Ok(())
 }
+
+// A stream is typed by its direction: a child's stdin does not read.
+run!(
+    child_stdin_does_not_read,
+    r#"{
+  use sys::io::Read;
+  let c = sys::process::spawn(sys::process::options("/bin/true"))$;
+  Read::read(c.stdin$, u64:10)
+}"#,
+    graphix_package_core::testing::refused("ChildStdin does not implement Read");
+    FuseExpect::None
+);

@@ -5783,7 +5783,7 @@ mod tests {
     fn a_self_clocked_sequence_beside_an_async_value_is_excluded() {
         // `iter` emits one element per cycle; the cycle an async
         // handle lands in decides which element a group's predicate
-        // answers over: `[]` or `[Stdio]` by load
+        // answers over: `[]` or `[Stderr]` by load
         assert_eq!(
             oracle_tier(
                 "array::group(sys::io::stderr(null), |n, _| array::iter([1, 2, 100]) > 3)"

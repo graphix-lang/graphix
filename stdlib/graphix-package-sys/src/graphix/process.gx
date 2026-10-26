@@ -27,21 +27,36 @@ let wait = |proc: Proc| -> Result<ExitStatus, `ProcessError(string)> 'sys_proces
 let pid = |proc: Proc| -> i64 'sys_process_pid;
 let kill = |#grace: duration = duration:0.s, proc: Proc| -> null 'sys_process_kill;
 
-impl Read for Pipe {
+impl Read for ChildStdout {
     let read = |s, n| 'sys_io_read;
     let read_exact = |s, n| 'sys_io_read_exact;
     let read_all = |s| 'sys_io_read_all
 };
 
-impl Lines for Pipe {
+impl Lines for ChildStdout {
     let lines = |s| 'sys_io_lines;
     let lines_batched = |s| 'sys_io_lines_batched
 };
 
-impl Write for Pipe {
+impl Close for ChildStdout { let close = |s| 'sys_io_close };
+
+impl Read for ChildStderr {
+    let read = |s, n| 'sys_io_read;
+    let read_exact = |s, n| 'sys_io_read_exact;
+    let read_all = |s| 'sys_io_read_all
+};
+
+impl Lines for ChildStderr {
+    let lines = |s| 'sys_io_lines;
+    let lines_batched = |s| 'sys_io_lines_batched
+};
+
+impl Close for ChildStderr { let close = |s| 'sys_io_close };
+
+impl Write for ChildStdin {
     let write = |s, data| 'sys_io_write;
     let write_exact = |s, data| 'sys_io_write_exact;
     let flush = |s| 'sys_io_flush
 };
 
-impl Close for Pipe { let close = |s| 'sys_io_close }
+impl Close for ChildStdin { let close = |s| 'sys_io_close }

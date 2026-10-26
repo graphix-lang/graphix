@@ -3,14 +3,23 @@ use sys::io::{Read, Lines, Write, Close};
 /// An opaque handle to a managed child process.
 type Proc;
 
-/// One end of a pipe to a child process: the child's stdin (which the
-/// parent writes) or its stdout or stderr (which the parent reads).
-type Pipe;
+/// The parent's end of a pipe to a child's stdin: it writes.
+type ChildStdin;
 
-impl Read for Pipe;
-impl Lines for Pipe;
-impl Write for Pipe;
-impl Close for Pipe;
+/// The parent's end of a pipe from a child's stdout: it reads.
+type ChildStdout;
+
+/// The parent's end of a pipe from a child's stderr: it reads.
+type ChildStderr;
+
+impl Write for ChildStdin;
+impl Close for ChildStdin;
+impl Read for ChildStdout;
+impl Lines for ChildStdout;
+impl Close for ChildStdout;
+impl Read for ChildStderr;
+impl Lines for ChildStderr;
+impl Close for ChildStderr;
 
 /// Where one of the child's standard streams goes.
 type Redirect = [
@@ -38,9 +47,9 @@ type SpawnOptions = {
 type Child = {
   proc: Proc,
   pid: i64,
-  stdin: [Pipe, null],
-  stdout: [Pipe, null],
-  stderr: [Pipe, null],
+  stdin: [ChildStdin, null],
+  stdout: [ChildStdout, null],
+  stderr: [ChildStderr, null],
 };
 
 type ExitStatus = {

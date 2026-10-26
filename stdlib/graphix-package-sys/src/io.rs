@@ -26,7 +26,9 @@ use tokio::{
     sync::Notify,
 };
 
-use crate::{Halves, StreamKind, get_stream, stream_of, wrap_stdio};
+use crate::{
+    Halves, StreamKind, get_stream, stream_of, wrap_stderr, wrap_stdin, wrap_stdout,
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct IoReadEv;
@@ -517,7 +519,7 @@ impl EvalCachedAsync for IoCloseEv {
 pub(crate) type IoClose = CachedArgsAsync<IoCloseEv>;
 
 macro_rules! stdio {
-    ($name:ident, $ev:ident, $builtin:literal, $kind:ident, $constructor:ident) => {
+    ($name:ident, $ev:ident, $builtin:literal, $kind:ident, $constructor:ident, $wrap:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
 
@@ -531,7 +533,7 @@ macro_rules! stdio {
                 cached: &CachedVals,
             ) -> Option<Value> {
                 cached.value(0)?;
-                Some(wrap_stdio(StreamKind::$kind(tokio::io::$constructor())))
+                Some($wrap(StreamKind::$kind(tokio::io::$constructor())))
             }
         }
 
@@ -539,9 +541,9 @@ macro_rules! stdio {
     };
 }
 
-stdio!(IoStdin, IoStdinEv, "sys_io_stdin", Stdin, stdin);
-stdio!(IoStdout, IoStdoutEv, "sys_io_stdout", Stdout, stdout);
-stdio!(IoStderr, IoStderrEv, "sys_io_stderr", Stderr, stderr);
+stdio!(IoStdin, IoStdinEv, "sys_io_stdin", Stdin, stdin, wrap_stdin);
+stdio!(IoStdout, IoStdoutEv, "sys_io_stdout", Stdout, stdout, wrap_stdout);
+stdio!(IoStderr, IoStderrEv, "sys_io_stderr", Stderr, stderr, wrap_stderr);
 
 graphix_package_core::unit_image_state!(
     IoReadEv,
