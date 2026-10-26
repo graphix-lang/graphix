@@ -15,6 +15,16 @@ use std::{sync::Arc, time::Instant};
 use futures::try_join;
 use winit::window::{Window, WindowAttributes, WindowId};
 
+/// What an update changed of a window's own properties.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Changed {
+    Title,
+    /// A size the window does not show yet.
+    Size(WindowSizeV),
+    Theme,
+    Icon,
+}
+
 /// Resolved window state — all refs compiled but no OS window yet.
 pub struct ResolvedWindow<X: GXExt> {
     pub gx: GXHandle<X>,
@@ -65,6 +75,51 @@ impl<X: GXExt> ResolvedWindow<X> {
             .with_window_icon(self.decoded_icon.clone())
     }
 
+    /// Take an update of one of the window's own properties, and say what
+    /// it changed: a size the window does not already show is one to
+    /// request, and a new icon is decoded.
+    pub fn update(&mut self, id: ExprId, v: &Value) -> Result<Option<Changed>> {
+        if self.title.update_changed(id, v).context("window update title")?.is_some() {
+            return Ok(Some(Changed::Title));
+        }
+        // XCR claude for claude: [bug/medium] These TRefs fire whenever their
+        // reference's cell is written, not only when the value changes. A place
+        // reference such as `#size: &mut app.size` refires on every write of `app`.
+        // Each size refire calls request_inner_size with the program's size unless
+        // last_set_size matches, and last_set_size is only set at ResizeSettled. So any
+        // unrelated write of `app` before a user resize settles (RESIZE_END_DEBOUNCE)
+        // snaps the window back to the old size, and the resize is lost. Each icon
+        // refire also re-reads and re-decodes the image on the main thread and re-sends
+        // it to the window system, and each theme refire rebuilds a custom theme. Fix:
+        // keep the previous value and act only when it changed, as ImageW does with
+        // ImageSourceV::same_as. Request the size only when it differs from the
+        // previous `p.size.t` and from last_set_size, and decode the icon only when
+        // `!old.same_as(new)`. probe:
+        // design/review-2026-10-26/repro/gui-core-size-ref-refires.gx (shows the
+        // refire; the window side was found by reading). (gui-core-01)
+        // 2026-10-26 claude: ResolvedWindow::update now takes the window's property
+        // updates through TRef::update_changed (graphix-rt), which skips a value equal
+        // to the last one taken before casting it, so a refire neither decodes the
+        // icon, rebuilds the theme, sets the title nor redraws; it returns
+        // Changed::Size only for a size the window does not already show
+        // (TRef::set_deref at ResizeSettled sets it), which replaces last_set_size.
+        // Pin: graphix-package-gui
+        // test::window_test::a_property_delivered_unchanged_changes_nothing (fails with
+        // update in place of update_changed, and with the shown-size check removed).
+        let shown = self.size.t;
+        if let Some(sz) = self.size.update_changed(id, v).context("window update size")? {
+            return Ok((shown != Some(*sz)).then_some(Changed::Size(*sz)));
+        }
+        if self.theme.update_changed(id, v).context("window update theme")?.is_some() {
+            return Ok(Some(Changed::Theme));
+        }
+        if self.icon.update_changed(id, v).context("window update icon")?.is_some() {
+            self.decoded_icon = window_icon(&self.icon);
+            return Ok(Some(Changed::Icon));
+        }
+        Ok(None)
+    }
+
     /// Consume self and attach an OS window and its surface, producing a
     /// TrackedWindow.
     pub fn into_tracked(
@@ -85,7 +140,6 @@ impl<X: GXExt> ResolvedWindow<X> {
             pending_events: Vec::new(),
             needs_redraw: true,
             redraw_at: None,
-            last_set_size: None,
             pending_resize: None,
             resize_render_timer_armed: false,
             last_render: Instant::now(),
@@ -139,7 +193,6 @@ pub struct TrackedWindow<X: GXExt> {
     pub pending_events: Vec<iced_core::Event>,
     pub needs_redraw: bool,
     pub redraw_at: Option<Instant>,
-    pub last_set_size: Option<WindowSizeV>,
     pub pending_resize: Option<(u32, u32, f64)>,
     /// True while a resize render timer is armed; at most one per drag.
     pub resize_render_timer_armed: bool,
@@ -167,57 +220,42 @@ impl<X: GXExt> TrackedWindow<X> {
             if let Some(t) = p.title.t.as_ref() {
                 self.window.set_title(t);
             }
-            if let Some(sz) = p.size.t.as_ref() {
-                let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
-                    sz.size().width,
-                    sz.size().height,
-                ));
+            if let Some(sz) = p.size.t {
+                self.request_size(sz);
             }
             self.window.set_window_icon(p.decoded_icon.clone());
             self.needs_redraw = true;
             return Ok(());
         }
-        let mut changed = false;
-        let p = &mut self.props;
-        if let Some(t) = p.title.update(id, v).context("window update title")? {
-            self.window.set_title(t);
-            changed = true;
-        }
-        // CR claude for claude: [bug/medium] These TRefs fire whenever their
-        // reference's cell is written, not only when the value changes. A place
-        // reference such as `#size: &mut app.size` refires on every write of `app`.
-        // Each size refire calls request_inner_size with the program's size unless
-        // last_set_size matches, and last_set_size is only set at ResizeSettled. So any
-        // unrelated write of `app` before a user resize settles (RESIZE_END_DEBOUNCE)
-        // snaps the window back to the old size, and the resize is lost. Each icon
-        // refire also re-reads and re-decodes the image on the main thread and re-sends
-        // it to the window system, and each theme refire rebuilds a custom theme. Fix:
-        // keep the previous value and act only when it changed, as ImageW does with
-        // ImageSourceV::same_as. Request the size only when it differs from the
-        // previous `p.size.t` and from last_set_size, and decode the icon only when
-        // `!old.same_as(new)`. probe:
-        // design/review-2026-10-26/repro/gui-core-size-ref-refires.gx (shows the
-        // refire; the window side was found by reading). (gui-core-01)
-        if let Some(sz) = p.size.update(id, v).context("window update size")? {
-            if self.last_set_size.take() != Some(*sz) {
-                let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
-                    sz.size().width,
-                    sz.size().height,
-                ));
+        let mut changed = match self.props.update(id, v)? {
+            None => false,
+            Some(Changed::Title) => {
+                if let Some(t) = self.props.title.t.as_ref() {
+                    self.window.set_title(t);
+                }
+                true
             }
-            changed = true;
-        }
-        if p.theme.update(id, v).context("window update theme")?.is_some() {
-            changed = true;
-        }
-        if p.icon.update(id, v).context("window update icon")?.is_some() {
-            p.decoded_icon = window_icon(&p.icon);
-            self.window.set_window_icon(p.decoded_icon.clone());
-            changed = true;
-        }
+            Some(Changed::Size(sz)) => {
+                self.request_size(sz);
+                true
+            }
+            Some(Changed::Theme) => true,
+            Some(Changed::Icon) => {
+                self.window.set_window_icon(self.props.decoded_icon.clone());
+                true
+            }
+        };
+        let p = &mut self.props;
         changed |= p.content.update(rt, &p.gx, id, v).context("window content")?;
         self.needs_redraw |= changed;
         Ok(())
+    }
+
+    fn request_size(&self, sz: WindowSizeV) {
+        let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
+            sz.size().width,
+            sz.size().height,
+        ));
     }
 
     pub fn window_id(&self) -> WindowId {

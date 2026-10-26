@@ -284,8 +284,8 @@ impl<X: GXExt, T: FromValue> TRef<X, T> {
     /// Create a new typed reference from `r`
     ///
     /// If conversion of `r` fails, return an error.
-    pub fn new(mut r: Ref<X>) -> Result<Self> {
-        let t = r.last.take().map(|v| v.cast_to()).transpose()?;
+    pub fn new(r: Ref<X>) -> Result<Self> {
+        let t = r.last.clone().map(|v| v.cast_to()).transpose()?;
         Ok(TRef { r, t })
     }
 
@@ -296,11 +296,22 @@ impl<X: GXExt, T: FromValue> TRef<X, T> {
     /// return None. Return an Error if the conversion failed.
     pub fn update(&mut self, id: ExprId, v: &Value) -> Result<Option<&mut T>> {
         if self.r.id == id {
-            let v = v.clone().cast_to()?;
-            self.t = Some(v);
+            self.t = Some(v.clone().cast_to()?);
+            self.r.last = Some(v.clone());
             Ok(self.t.as_mut())
         } else {
             Ok(None)
+        }
+    }
+
+    /// As [`TRef::update`], except that a value equal to the last one taken
+    /// is no update: a reference delivers whenever its cell is written, so
+    /// `&app.size` delivers an unchanged size at every write of `app`.
+    pub fn update_changed(&mut self, id: ExprId, v: &Value) -> Result<Option<&mut T>> {
+        if self.r.id == id && self.r.last.as_ref() == Some(v) {
+            Ok(None)
+        } else {
+            self.update(id, v)
         }
     }
 }

@@ -280,6 +280,15 @@ fn draw_shape(
         Stroke::default().with_color(s.color.0).with_width(s.width.0)
     }
     match shape {
+        // CR claude for claude: [bug/low] A finite line far past the canvas draws
+        // nothing. A `Line` from x=-1e30 to x=1e30 at y 10..20 leaves the test
+        // harness's 200x200 frame black and is not flagged as invalid geometry, while
+        // the same line at x=±1e12 draws across rows 14 and 15. Found by the pixel
+        // probes added for (tests-gui-a-01): canvas_huge_line_keeps_finite_endpoints
+        // (±3e38) can only assert that the line is not skipped. Fix: clip a stroke's
+        // segments, in f64, to a box far past any canvas before tessellating
+        // (CheckedPath), or flag such geometry as invalid; which, and for which shapes
+        // (lines, or every path), is to decide. (canvas-huge-line-01)
         CanvasShape::Line { from, to, color, width } => {
             let path = CheckedPath::build(|b| {
                 b.move_to(from.0);

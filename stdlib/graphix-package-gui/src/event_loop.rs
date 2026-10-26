@@ -514,7 +514,6 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
             ToGui::ResizeSettled(window_id, sz) => {
                 if let Some(tw) = self.window_mut(window_id) {
                     if tw.props.size.t.as_ref() != Some(&sz) {
-                        tw.last_set_size = Some(sz);
                         // through the reference, to what it names
                         if let Err(e) = tw.props.size.set_deref(sz) {
                             error!(target: FAILURE_TARGET, "failed to set window size: {e:?}");

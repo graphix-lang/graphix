@@ -27,6 +27,7 @@ mod interaction_test;
 mod reconcile_test;
 mod theme_test;
 mod widgets_test;
+mod window_test;
 
 const IMPORTS: &str = "\
 use gui::*;\n\

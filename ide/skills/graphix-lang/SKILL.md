@@ -92,9 +92,10 @@ constant argument to `exit` runs at init — always gate it).
 - **An async call inside a select arm loses its reply when the arm
   sleeps.** `select run { `Remove(n) => remove(n, n ~ target), _ =>
   never() }`: a second `run` of another variant while `remove` is in
-  flight puts the arm to sleep, the builtin's result id is rebound, and
-  the reply is dropped: the op still happened, the toast and the reload
-  never come. Select the EVENT, call outside the arm:
+  flight puts the arm to sleep and the call is aborted: the op may or may
+  not have happened, and the toast and the reload never come (a call whose
+  work cannot be dropped, a stream read or a handshake, finishes instead
+  and answers at the wake). Select the EVENT, call outside the arm:
   `{ let n = select run { `Remove(n) => n, _ => never() }; remove(n, n ~
   target) }`. A call that is a seq step is safe (a step does not sleep
   mid-run).
@@ -261,16 +262,11 @@ null }, ask)`. An event argument opens it (`up <- ask ~ true; sel <- ask ~
 cursor reset and a payload. When a function's body has grown sections,
 each section with its own lets is a candidate.
 
-<!-- CR claude for claude: [doc-drift/low] The example is wrong: `&T` is covariant, so
-`val selstyle: Style` passed as `&a::selstyle` to a list's `#highlight_style: &[Style,
-null]` checks. Drop the paragraph, or use an example where the declared type matters,
-such as an invariant `&mut T` parameter. probe:
-design/review-2026-10-26/repro/lang-skill-gxi-ref-covariant/main.gx (lang-skill-06) -->
-A value shared across modules through a `.gxi` has the type you declare,
-not the one each use would have inferred: `&selstyle` for a list's
-`#highlight_style: &[Style, null]` needs `val selstyle: [Style, null]`,
-while `line(#style: hint)` needs a plain `Style`. Declare what the uses
-need, and take the null off with `$` at the odd one out.
+A `val` in a `.gxi` declares exactly the type its implementation has:
+`val x: [i64, null]` over `let x = 3` is refused (`declared [i64, null]
+but implemented i64`). When a use needs the wider type, annotate the
+binding (`let x: [i64, null] = 3`); every module then sees the declared
+type, so the others take the null off with `a::x$`.
 
 No currying: a call supplies every required argument, and `add(1)` on a
 two-argument `add` is refused (`missing required argument`), not a
@@ -286,25 +282,19 @@ asks for two things. A parameter whose fields you read and whose type
 no call fixes: a top-level function, a handler handed to a widget
 (`|e: Event|`). A callback passed to `array::map`/`find`/`fold` over a
 typed array needs none. And a `let` whose initial value is narrower
-than its writers: `let notice: [string, null] = null`, `let go: Any =
-never()` with writers of two types, `let verify: Any = known` written
-by a key. A fold's accumulator is the type of its init, so
+than its writers: `let notice: [string, null] = null`, `let go: [i64,
+string] = never()` with writers of both (the check names the union to
+declare), or `let go: Any = never()` for a trigger whose value nobody
+reads. A fold's accumulator is the type of its init, so
 `array::fold(xs, null, |acc, x| ..)` makes `acc` null: annotate the init
 (`let init: [i64, null] = null`), never the callback. A `let` over a
-<!-- CR claude for claude: [doc-drift/low] Both return-type cases are stale. A
-.gxi-declared `fn(x: i64) -> i64` takes `let f = |x| x + 1` unannotated; `-> T` is
-needed only where the declared return differs from the inferred one (the match is
-exact). `let h = |x: 'a| {v: x}; h(1).v` checks with no `-> T`, in one module or across
-two. The `let go: Any = never()` advice above also differs from the checker, which asks
-for the union (`declare go: [i64, string]`). probe:
-design/review-2026-10-26/repro/lang-skill-return-annotations-unneeded.sh (lang-skill-05)
--->
 call, a select or a seq needs nothing. A lambda's return type is needed
-in two places only: a function declared in the `.gxi` keeps its `-> T`
-in the `.gx` (an inferred return does not cross modules), and a
-function with a type variable in its signature keeps it when a caller
-reads a field of the result. To find the set: strip, `--check`, restore
-what it names.
+only where it must be wider than its body's: a `.gxi`'s `val f: fn(x:
+i64) -> [i64, null]` must match its implementation exactly, so `let f =
+|x| x + 1` is refused and `|x| -> [i64, null] x + 1` checks. An
+inferred return crosses modules, and a caller reads a field of a generic
+function's result (`h(1).v` over `|x: 'a| {v: x}`) with no `-> T`. To
+find the set: strip, `--check`, restore what it names.
 
 ## Select
 
@@ -313,19 +303,16 @@ first, guard second; must be exhaustive with no dead arms; a bottom
 scrutinee yields a bottom select (put `hold` on the scrutinee to persist
 across a bottom cycle).
 
-<!-- CR claude for claude: [doc-drift/low] "an async call in flight is aborted" (and the
-"loses its reply" rule above) leaves out the exception CLAUDE.md states and
-EvalCachedAsync's `kept` implements. A call of an eval that is not CANCEL_SAFE (a stream
-read or write, a cursor read, a tls handshake, a file seek) finishes and answers at the
-wake. An aborted cancel-safe call may not have happened at all, so "the op still
-happened" is not guaranteed either. Found by reading; not run. (lang-skill-07) -->
 - An unselected arm with state, an effect or a raise sleeps. Sleep is a
   pause and a wake a resume: `count`, `once`, `take`, `skip`, `uniq`,
   `hold` and queues keep their state; an async call in flight is
-  aborted and not made again unless an argument fires (its last result
-  stays); a timer's run resumes; a net subscription or publication is
-  torn down and re-attached at the wake; a seq's run is aborted (a
-  `seqq`'s queued requests stay and run). Only the inputs that fired
+  aborted, and may or may not have happened, unless its work cannot be
+  dropped (a stream read or write, a db cursor read, a tls handshake, a
+  file seek), which finishes and answers at the wake; none is made again
+  unless an argument fires (its last result stays); a timer's run
+  resumes; a net subscription or publication is torn down and
+  re-attached at the wake; a seq's run is aborted (a `seqq`'s queued
+  requests stay and run). Only the inputs that fired
   while the arm slept are delivered at the wake, once each.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
@@ -460,17 +447,16 @@ waits for it (two cycles over inline). `graphix --expand` shows the machine.
 
 ## Errors
 
-<!-- CR claude for claude: [doc-drift/medium] The Errors section never gives the
-binder's type. In `catch(e)` and `with(e)` it is `Error<ErrChain<E>>`, so the raised
-value is `e.0.error`, and `select e { `NotFound(s) => .. }` is refused as never
-matching. Every catch in netidx-admin writes `(e.0).error`. Add that sentence and use it
-in the example (`catch(e) msg <- "[e.0.error]"`). probe:
-design/review-2026-10-26/repro/lang-skill-catch-binder-is-errchain.gx (lang-skill-04)
--->
 ```graphix
 error(`NotFound("missing"))?     // raise to the nearest catch
-{ catch(e) handle(e); risky()?; more()? }   // catch INSTALLS a handler for the rest of its block
+{ catch(e) msg <- "[e.0.error]"; risky()?; more()? }   // catch INSTALLS a handler for the rest of its block
 ```
+
+The binder of `catch(e)` and `with(e)` is `Error<ErrChain<E>>`, not the
+raised `E`: the raised value is `e.0.error` (`e.0` also holds the site,
+`pos` and `ori`, and the `cause`). Match on that, `` select e.0.error {
+`NotFound(s) => .. } ``; `` select e { `NotFound(s) => .. } `` is refused
+as never matching.
 
 <!-- CR claude for eric: [doc-drift/medium] A handler that does not read its binder runs
 at birth, not when an error arrives. `{ catch(e) failed <- true; x? }` sets failed with
@@ -594,23 +580,19 @@ forward only to be dropped is unwrapped at the source, once: `let dir =
 d$`, and every reader (a later seq step included) takes `dir` (unless
 an event samples it: see the banking under `$` gates).
 
-<!-- CR claude for claude: [doc-drift/low] filter_map's callback returns `['b, null,
-`Keep('b)]`: null drops the element and `` `Keep(v) `` keeps a v that may be null. The
-skill never says so, though two idioms below use filter_map, and `|x| x` over `[1, null,
-2]` silently gives `[1, 2]`. Add that, and also that a struct read fills a field the
-data omits with null where its type admits null. probe:
-design/review-2026-10-26/repro/lang-skill-filter-map-drops-null.gx (lang-skill-08) -->
 `array`: map filter filter_map fold flatten find find_map concat push
 window(#n, arr, @v) len iter iterq sort enumerate zip (`window`'s second
-argument is the array windowed, usually `t ~ data`, and its values
-after it are variadic). `list` (the same over `List<'a>`, plus `cons
-head tail uncons nth take drop to_array from_array ..`), `map`, `str`
-(`contains split trim replace join len parse ..`), `re`, `rand`, `db`
-(an embedded key-value store: `open`, `tree`, `get`, `insert`, cursors,
-transactions, subscriptions), `sqlite` (`open`, `exec`, `query`, `begin`
-/`commit`), `hbs` (`render`, handlebars templates), `args` (command-line
-parsing: `positional`, `option`, `flag`, `command`, `parse`), `xls`
-(`sheets`, `read`).
+argument is the array windowed, usually `t ~ data`, and its values after
+it are variadic). `filter_map`'s callback returns `` ['b, null,
+`Keep('b)] ``: `null` drops the element and `` `Keep(v) `` keeps `v`, a
+null included, so `|x| x` over `[1, null, 2]` gives `[1, 2]`. `list`
+(the same over `List<'a>`, plus `cons head tail uncons nth take drop
+to_array from_array ..`), `map`, `str` (`contains split trim replace
+join len parse ..`), `re`, `rand`, `db` (an embedded key-value store:
+`open`, `tree`, `get`, `insert`, cursors, transactions, subscriptions),
+`sqlite` (`open`, `exec`, `query`, `begin` /`commit`), `hbs` (`render`,
+handlebars templates), `args` (command-line parsing: `positional`,
+`option`, `flag`, `command`, `parse`), `xls` (`sheets`, `read`).
 
 `sys::time`: `timer(timeout: [duration, Number], repeat)` (a finite
 repeat count ends it; an arm's sleep pauses it), `after_idle(timeout, v)`,
@@ -710,7 +692,9 @@ target reads the text as a Graphix literal (`(1, "a")`, `{x: 1}`,
 `` `B(3) ``, `[<1, 2>]`, `{"k" => 1}`) cast to it, else the bare text cast
 (`"42"`, an RFC3339 datetime). `json::read` into a target holding an
 integer or `decimal` reads a number's text exactly (past `i64` is an
-`InvalidCast`); a read into neither, `Array<Any>`, gives `f64`.
+`InvalidCast`); a read into neither, `Array<Any>`, gives `f64`. A struct
+target reads a field the data omits as null where the field's type
+admits null.
 
 Derive, do not add a second writer. Two unordered writers to one
 variable race when one replaces it wholesale (a file load landing after
