@@ -1142,6 +1142,23 @@ safe fn graphix_list_get_value(v: ManuallyDrop<TagValue>, j: usize) -> TagValue 
     TagValue::fired(r)
 }
 
+/// The j-th head of a list's words, borrowed; `Value::Null` on a short
+/// chain.
+///
+/// # Safety
+///
+/// The result aliases the list's cell: it is valid while the list is
+/// alive and is never dropped or passed to a consuming helper.
+unsafe fn graphix_list_head_borrowed(v: ManuallyDrop<TagValue>, j: usize) -> TagValue {
+    let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
+        // SAFETY: a bitwise alias of the cell's head; the kernel never
+        // drops it, so the list keeps the only ownership.
+        Some((h, _)) => TagValue::fired(unsafe { std::ptr::read(h) }),
+        None => TagValue::fired(Value::Null),
+    });
+    r
+}
+
 /// Owned `ValArray` bits of the j-th head; the empty array on mismatch.
 safe fn graphix_list_get_array(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {

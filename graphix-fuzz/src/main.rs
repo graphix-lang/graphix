@@ -1188,6 +1188,29 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          }\n",
     ),
     (
+        // owned binds below the arm's top: an element's or-pattern under a
+        // guard that goes bottom, a payload's struct and a list head's tuple
+        "select-leaf-binds",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let d = x % i64:5;\n\
+         let v: [`A(string, Array<i64>), `B(string, Array<i64>)] = select x % i64:2 {\n\
+             i64:0 => `A(\"s[x]\", [x]),\n\
+             _ => `B(\"t\", [x, x])\n\
+         };\n\
+         let o = select (v, x) {\n\
+             (`A(s, a) | `B(s, a), n) if (i64:10 / d) > i64:1 => str::len(s) + array::len(a) + n,\n\
+             _ => i64:0\n\
+         };\n\
+         let p = select `P({s: \"p[x]\", a: [x]}) { `P({s, a}) => str::len(s) + array::len(a) };\n\
+         let l = select [<(\"h[x]\", [x]), (\"t\", [])>] {\n\
+             [<(s, a), ..>] => str::len(s) + array::len(a),\n\
+             [<>] => i64:0\n\
+         };\n\
+         o + p + l\n",
+    ),
+    (
         // the list face: `ListHead`/`ListTail` clones in a list-pattern arm
         "select-list-binds",
         "let clk = sys::time::timer(duration:0.001s, true);\n\

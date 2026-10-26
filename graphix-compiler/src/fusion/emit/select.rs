@@ -21,6 +21,7 @@ use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
 };
+use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
 
@@ -30,7 +31,10 @@ use super::{
         clean_disc, is_tainted, is_untainted, local_payload_ty, owned_words,
         propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
-    body::{BodyCx, ensure_owned_composite_src, fold_stale, node_composite_source},
+    body::{
+        BodyCx, emit_into_slot, ensure_owned_composite_src, fold_stale,
+        node_composite_source,
+    },
     call::{CompositeSource, emit_drop_local},
     flow::emit_scope_drops,
     lower::{freeze_node_typ, resolve_node_typ},
@@ -159,6 +163,7 @@ fn elem_index(cx: &mut BodyCx, idx: ElemIdx) -> (ElementRead, ClifValue) {
 
 /// A pattern binding installed in the arm's matched region under the
 /// pattern's `BindId`.
+#[derive(Clone)]
 enum SelectArmBind {
     /// `n => ...` — bind the scalar scrutinee itself.
     Scrut(BindId),
@@ -168,16 +173,10 @@ enum SelectArmBind {
     /// the arm's scope exit; legal under a mask, where a mismatch yields a
     /// drop-safe default.
     Value { id: BindId, kind: LocalKind },
-    /// `` `Tag(x) `` — bind one variant payload; a wrong-tag read yields 0,
-    /// or a drop-safe default behind a tainted disc for a non-scalar,
-    /// cloned out as an owned local. `on` is the variant read when it is
-    /// not the scrutinee (a payload of an enclosing variant, borrowed).
-    Payload {
-        id: BindId,
-        idx: usize,
-        kind: LocalKind,
-        on: Option<(ClifValue, ClifValue)>,
-    },
+    /// `` `Tag(x) `` — bind payload `idx` of the variant whose borrowed
+    /// words are `on`; a wrong-tag read yields 0, or a drop-safe default
+    /// behind a tainted disc for a non-scalar, cloned out as an owned local.
+    Payload { id: BindId, idx: usize, kind: LocalKind, on: (ClifValue, ClifValue) },
     /// `[<a, b>]` / `[<h, rest..>]` — bind the j-th head of the list
     /// whose words are `list` (the scrutinee, or a borrowed leaf or
     /// payload), cloned out as an owned local of `kind` (legal under a
@@ -195,10 +194,15 @@ enum SelectArmBind {
     /// `[start, len - back)` of an array scrutinee, cloned out as an
     /// owned composite local.
     Subslice { id: BindId, start: usize, back: usize, parent_ptr: ClifValue },
+    /// A binding or-pattern below the arm's top (`(`A(x) | `B(x), n)`):
+    /// each alternative's test and binds, the first that matches binding
+    /// the names they share.
+    Or(Box<[AltMatch]>),
 }
 
 impl SelectArmBind {
-    fn id(&self) -> BindId {
+    /// The names this binds.
+    fn ids(&self, f: &mut impl FnMut(BindId)) {
         match self {
             Self::Scrut(id)
             | Self::Value { id, .. }
@@ -206,9 +210,32 @@ impl SelectArmBind {
             | Self::ListHead { id, .. }
             | Self::ListTail { id, .. }
             | Self::Elem { id, .. }
-            | Self::Subslice { id, .. } => *id,
+            | Self::Subslice { id, .. } => f(*id),
+            // the alternatives bind the same names
+            Self::Or(alts) => {
+                for b in alts.first().into_iter().flat_map(|(_, b)| b.iter()) {
+                    b.ids(f)
+                }
+            }
         }
     }
+}
+
+/// Keep only the binds whose names `reads` reads.
+fn retain_read(binds: &mut SmallVec<[SelectArmBind; 8]>, reads: &Refs) {
+    binds.retain(|b| match b {
+        SelectArmBind::Or(alts) => {
+            for (_, b) in alts.iter_mut() {
+                retain_read(b, reads)
+            }
+            alts.first().is_some_and(|(_, b)| !b.is_empty())
+        }
+        b => {
+            let mut read = false;
+            b.ids(&mut |id| read |= reads.refed.contains(&id));
+            read
+        }
+    });
 }
 
 /// `select` at expression position. Canonical semantics are
@@ -335,7 +362,9 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 
 /// A destructuring `let pat = value`: its pattern's leaves bound over
 /// `value` as a select arm's are, into the block's scope. An owned value
-/// stays a block local, dropped with the block's others.
+/// stays a block local, dropped with the block's others. The pattern is
+/// irrefutable, so its test fails only over a bottom value, whose flags
+/// the binds already carry: they install unmasked.
 pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     pattern: &StructPatternNode,
@@ -347,10 +376,8 @@ pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
         .ok_or_else(|| anyhow!("emit_clif: let pattern type {typ} doesn't freeze"))?;
     let (scrut, scrut_typ, _kept) = classify_scrutinee(cx, value, typ, id)?;
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-    let cond = emit_structure_cond(
-        cx, pattern, &scrut_typ, false, scrut, &scrut_typ, &mut binds,
-    )?;
-    // CR claude for claude: [bug/high] A let pattern is irrefutable, so `cond` is false
+    emit_structure_cond(cx, pattern, &scrut_typ, false, scrut, &scrut_typ, &mut binds)?;
+    // XCR claude for claude: [bug/high] A let pattern is irrefutable, so `cond` is false
     // only for a bottom placeholder (the empty array, a NULL|TAINT Value).
     // mask_unmatched then ORs STALE into every bind and turns a fired bottom into a
     // standing one, where the node-walk delivers it fresh. `count` over `let (a, b) =
@@ -359,7 +386,17 @@ pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
     // propagate_flags, and the reads are total. Pass mask None here and in
     // emit_composite_binds, and pin the repro. probe:
     // design/review-2026-10-26/repro/f-select-let-destructure-stale.gx (f-select-01)
-    install_arm_binds(cx, &binds, scrut, cond)
+    // 2026-10-26 claude: emit_let_binds and emit_composite_binds install their binds
+    // unmasked (the binds carry the value's own flags), so a let over a fresh bottom
+    // binds fresh bottoms. Also fixed: classify_scrutinee read a composite scrutinee
+    // with node.emit_clif, so a let whose value's own type is a union of composites (an
+    // annotated tuple let over a select, or an or-pattern let) handed the null Value
+    // placeholder to graphix_valarray_len and aborted; it now reads through
+    // emit_into_slot, which narrows a value-shaped production. Pins:
+    // fusion_review::let_destructure_over_fresh_bottom (jit fails with the mask
+    // restored) and let_destructure_over_a_union_of_composites (jit aborts without
+    // emit_into_slot).
+    install_arm_binds(cx, &binds, scrut, None)
 }
 
 /// An irrefutable composite pattern's names bound over the composite
@@ -374,8 +411,8 @@ pub(super) fn emit_composite_binds(
 ) -> Result<()> {
     let scrut = SelectScrut::Composite { disc, ptr };
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-    let cond = emit_structure_cond(cx, pattern, typ, false, scrut, typ, &mut binds)?;
-    install_arm_binds(cx, &binds, scrut, cond)
+    emit_structure_cond(cx, pattern, typ, false, scrut, typ, &mut binds)?;
+    install_arm_binds(cx, &binds, scrut, None)
 }
 
 /// [`classify_select_scrutinee`] for the value `node`, of the frozen
@@ -418,10 +455,13 @@ fn classify_scrutinee<R: Rt, E: UserEvent>(
             };
             SelectScrut::Value { kind, disc: cv.disc, payload: cv.payload }
         }
+        // a value-shaped production (a union of composites, a let's
+        // value read at the let's type) reads as the composite
         AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
-            let cv = node.emit_clif(cx)?;
-            adopt(cx, LocalKind::Composite, cv.disc, cv.payload, owned);
-            SelectScrut::Composite { disc: cv.disc, ptr: cv.payload }
+            let s = emit_into_slot(cx, node, LocalKind::Composite)?;
+            let owned = s.source == CompositeSource::Owned;
+            adopt(cx, LocalKind::Composite, s.cv.disc, s.cv.payload, owned);
+            SelectScrut::Composite { disc: s.cv.disc, ptr: s.cv.payload }
         }
         // A string is a value whose read is always owned: the select
         // keeps it until the merge.
@@ -446,10 +486,8 @@ fn classify_scrutinee<R: Rt, E: UserEvent>(
 /// the end, struct leaves read `a[i][1]`.
 ///
 /// Element reads are total, so the condition is the AND of the length
-/// test and every leaf's own test, in one block. An array, tuple or
-/// struct `@` or rest bind lowers as a subslice. Variant leaves test
-/// borrowed words; non-scalar binds clone owned locals. Or- and abstract
-/// leaves refuse.
+/// test and every leaf's own test ([`emit_leaf_cond`]), in one block. An
+/// array, tuple or struct `@` or rest bind lowers as a subslice.
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -478,16 +516,11 @@ fn emit_composite_pattern_cond_inner(
         typ: Type,
     }
     let (leaves, len_cc, n): (SmallVec<[LeafSpec; 8]>, IntCC, usize) = match pat {
-        StructPatternNode::Slice { kind, all, binds: pbinds } => {
-            // CR claude for claude: [dead/low] Unreachable: emit_structure_cond and the
-            // nested-leaf loop both send list patterns to emit_list_pattern_cond before
-            // they call this function, here and for `SlicePrefix { list: true }` below.
-            // The 'yet' wrongly says lists are unsupported in composites. Drop both
-            // checks and match only the Tuple and Array kinds, so a list falls to the
-            // existing catch-all refusal. Found by reading; not run. (f-select-06)
-            if matches!(kind, SliceKind::List) {
-                return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
-            }
+        StructPatternNode::Slice {
+            kind: kind @ (SliceKind::Tuple | SliceKind::Array),
+            all,
+            binds: pbinds,
+        } => {
             if let Some(id) = all {
                 binds.push(SelectArmBind::Subslice {
                     id: *id,
@@ -531,10 +564,7 @@ fn emit_composite_pattern_cond_inner(
                 .collect::<Result<SmallVec<[_; 8]>>>()?;
             (leaves, IntCC::Equal, base + pbinds.len())
         }
-        StructPatternNode::SlicePrefix { list, all, prefix, tail } => {
-            if *list {
-                return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
-            }
+        StructPatternNode::SlicePrefix { list: false, all, prefix, tail } => {
             for (id, start) in all
                 .iter()
                 .map(|id| (id, 0))
@@ -641,142 +671,206 @@ fn emit_composite_pattern_cond_inner(
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
     };
-    let mut lit_leaves: SmallVec<[(ElemIdx, PrimType, &Value); 8]> = SmallVec::new();
-    let mut nested: SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> = SmallVec::new();
-    let mut value_leaves: SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> =
-        SmallVec::new();
+    let n_c = cx.b.ins().iconst(types::I64, n as i64);
+    let mut cond = cx.b.ins().icmp(len_cc, len, n_c);
     for leaf in &leaves {
-        match leaf.sub {
-            StructPatternNode::Abstract { .. } => {
-                return Err(anyhow!("emit_clif: abstract pattern leaf not lowerable"));
+        let at = LeafAt::Elem { ptr, idx: leaf.idx };
+        if let Some(c) = emit_leaf_cond(cx, at, leaf.sub, &leaf.typ, binds)? {
+            cond = cx.b.ins().band(cond, c);
+        }
+    }
+    Ok(cond)
+}
+
+/// Where a sub-pattern's value lives: every read of it is total.
+#[derive(Clone, Copy)]
+enum LeafAt {
+    /// An element or field of the composite `ptr`.
+    Elem { ptr: ClifValue, idx: ElemIdx },
+    /// Payload `idx` of the variant whose borrowed words are `v`.
+    Payload { v: (ClifValue, ClifValue), idx: usize },
+    /// Head `idx` of the list whose words are `list`.
+    ListHead { list: (ClifValue, ClifValue), idx: usize },
+}
+
+impl LeafAt {
+    /// The bind of the value here, of type `typ`, as a local of `kind`.
+    fn bind(self, id: BindId, typ: &Type, kind: LocalKind) -> SelectArmBind {
+        match self {
+            LeafAt::Elem { ptr, idx } => {
+                SelectArmBind::Elem { id, idx, typ: typ.clone(), kind, parent_ptr: ptr }
             }
-            StructPatternNode::Ignore => {}
-            StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(&leaf.typ) {
-                Some(prim) => binds.push(SelectArmBind::Elem {
-                    id: *id,
-                    idx: leaf.idx,
-                    typ: leaf.typ.clone(),
-                    kind: LocalKind::Scalar(prim),
-                    parent_ptr: ptr,
-                }),
-                None => {
-                    let kind = owned_kind(&leaf.typ).ok_or_else(|| {
-                        anyhow!(
-                            "emit_clif: select pattern leaf bind {:?} not lowerable",
-                            leaf.typ
-                        )
-                    })?;
-                    binds.push(SelectArmBind::Elem {
-                        id: *id,
-                        idx: leaf.idx,
-                        typ: leaf.typ.clone(),
-                        kind: kind.into(),
-                        parent_ptr: ptr,
-                    })
-                }
-            },
-            // The typed element read is total: a slot not of `prim`'s
-            // family reads as 0, which a `0` literal would match. Only the
-            // static type proves the read faithful; any other literal tests
-            // the element's value.
-            StructPatternNode::Literal(v)
-                if let Some(prim) = kernel_abi::scalar_prim_of_value(v)
-                    && kernel_abi::scalar_prim(&leaf.typ) == Some(prim) =>
-            {
-                lit_leaves.push((leaf.idx, prim, v));
-            }
-            sub @ StructPatternNode::Literal(_) => {
-                value_leaves.push((leaf.idx, sub, leaf.typ.clone()))
-            }
-            sub @ (StructPatternNode::Slice { kind: SliceKind::List, .. }
-            | StructPatternNode::SlicePrefix { list: true, .. }
-            | StructPatternNode::Variant { .. }) => {
-                nested.push((leaf.idx, sub, leaf.typ.clone()));
-            }
-            sub @ (StructPatternNode::Slice { .. }
-            | StructPatternNode::SlicePrefix { .. }
-            | StructPatternNode::SliceSuffix { .. }
-            | StructPatternNode::Struct { .. }) => {
-                match kernel_abi::abi_kind(&leaf.typ) {
-                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                        nested.push((leaf.idx, sub, leaf.typ.clone()));
-                    }
-                    other => {
-                        return Err(anyhow!(
-                            "emit_clif: nested pattern over a leaf of shape \
-                             {other:?} not lowerable"
-                        ));
-                    }
-                }
-            }
-            sub @ StructPatternNode::Or { .. } if !binds_any(sub) => {
-                value_leaves.push((leaf.idx, sub, leaf.typ.clone()))
-            }
-            // CR claude for claude: [perf/medium] A binding or-pattern at an element
-            // position always de-fuses here, even when its alternatives bind the same
-            // kind. So `select v { (`A(x) | `B(x), n) => x + n }` node-walks and
-            // `#[native]` on it is refused, while the same or-pattern as a whole arm
-            // fuses through emit_or_chain. CLAUDE.md promises or-patterns at bracketed
-            // element positions fuse natively. Lower this leaf as emit_or_chain does:
-            // try each alternative on the element, install the first match's binds and
-            // forward them to one join block under the shared BindIds. probe:
-            // design/review-2026-10-26/repro/x-rerun-4-or-elem-bind-defuse.gx
-            // (x-rerun-4-04)
-            StructPatternNode::Or { .. } => {
-                return Err(anyhow!(
-                    "emit_clif: a binding or-pattern leaf not lowerable"
-                ));
+            LeafAt::Payload { v, idx } => SelectArmBind::Payload { id, idx, kind, on: v },
+            LeafAt::ListHead { list, idx } => {
+                SelectArmBind::ListHead { id, idx, kind, list }
             }
         }
     }
-    let n_c = cx.b.ins().iconst(types::I64, n as i64);
-    let mut cond = cx.b.ins().icmp(len_cc, len, n_c);
-    for (idx, prim, v) in lit_leaves {
-        let elem = read_scrut_elem(cx, ptr, idx, prim)?;
-        let lit = compile_const(cx.b, v, prim)?;
-        let c = compile_cmp(cx.b, CmpOp::Eq, prim, elem, lit);
-        cond = cx.b.ins().band(cond, c);
-    }
-    for (idx, sub, typ) in nested {
-        // a Value leaf's `@` bind reads it out of the composite
-        let whole = |id| SelectArmBind::Elem {
-            id,
-            idx,
-            typ: typ.clone(),
-            kind: LocalKind::Value,
-            parent_ptr: ptr,
+
+    /// The value's words, borrowed; null where there is none.
+    fn words(self, cx: &mut BodyCx) -> Result<(ClifValue, ClifValue)> {
+        let (helper, (d, p), idx) = match self {
+            LeafAt::Elem { ptr, idx } => return value_leaf_words(cx, ptr, idx),
+            LeafAt::Payload { v, idx } => ("graphix_variant_payload_borrowed", v, idx),
+            LeafAt::ListHead { list, idx } => ("graphix_list_head_borrowed", list, idx),
         };
-        let c = match sub {
-            StructPatternNode::Variant { tag, all, binds: payloads } => {
-                if let Some(id) = all {
-                    binds.push(whole(*id));
-                }
-                let child = value_leaf_words(cx, ptr, idx)?;
-                emit_variant_cond(cx, child, Some(child), tag, payloads, &typ, binds)?
-            }
-            StructPatternNode::Slice { kind: SliceKind::List, .. }
-            | StructPatternNode::SlicePrefix { list: true, .. } => {
-                let child = value_leaf_words(cx, ptr, idx)?;
-                emit_list_pattern_cond(cx, sub, child, &typ, whole, binds)?
+        let idx = cx.b.ins().iconst(types::I64, idx as i64);
+        let call = cx.call_helper(helper, &[d, p, idx])?;
+        Ok((call[0], call[1]))
+    }
+
+    /// The value of the composite type `typ` as a borrowed array, the empty
+    /// array where it is none, and the test that it is of `typ` where its
+    /// type does not say so. A payload's type is its arm's predicate's,
+    /// which another case of the same tag and arity may share.
+    fn array(
+        self,
+        cx: &mut BodyCx,
+        typ: &Type,
+    ) -> Result<(ClifValue, Option<ClifValue>)> {
+        if let LeafAt::Elem { ptr, idx } = self {
+            let (read, idx_v) = elem_index(cx, idx);
+            let helper = match read {
+                ElementRead::ArrayIndex => "graphix_valarray_get_array_borrowed",
+                ElementRead::StructField => "graphix_struct_get_array_borrowed",
+            };
+            return Ok((cx.call_helper(helper, &[ptr, idx_v])?[0], None));
+        }
+        let (disc, payload) = self.words(cx)?;
+        let test = match self {
+            LeafAt::Payload { .. } => {
+                let t = cx.interned_type(typ)?;
+                let call =
+                    cx.call_helper("graphix_inferred_type_matches", &[disc, payload, t])?;
+                cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0)
             }
             _ => {
-                let (read, idx_v) = elem_index(cx, idx);
-                let helper = match read {
-                    ElementRead::ArrayIndex => "graphix_valarray_get_array_borrowed",
-                    ElementRead::StructField => "graphix_struct_get_array_borrowed",
-                };
-                let child = cx.call_helper(helper, &[ptr, idx_v])?[0];
-                emit_composite_pattern_cond(cx, child, &typ, sub, binds)?
+                let cd = clean_disc(cx.b, disc);
+                cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY)
             }
         };
-        cond = cx.b.ins().band(cond, c);
+        let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
+        let ptr = cx.b.ins().select(test, payload, empty);
+        Ok((ptr, matches!(self, LeafAt::Payload { .. }).then_some(test)))
     }
-    for (idx, sub, typ) in value_leaves {
-        let child = value_leaf_words(cx, ptr, idx)?;
-        let c = emit_value_leaf_cond(cx, sub, &typ, child)?;
-        cond = cx.b.ins().band(cond, c);
-    }
-    Ok(cond)
+}
+
+/// The condition of the sub-pattern `sub` over the value of type `typ`
+/// at `at`, pushing its binds onto `binds`; `None` when every value
+/// matches. A tuple, array or struct pattern reads the value as an array.
+fn emit_leaf_cond(
+    cx: &mut BodyCx,
+    at: LeafAt,
+    sub: &StructPatternNode,
+    typ: &Type,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
+) -> Result<Option<ClifValue>> {
+    stack::ensure_sufficient(|| emit_leaf_cond_inner(cx, at, sub, typ, binds))
+}
+
+fn emit_leaf_cond_inner(
+    cx: &mut BodyCx,
+    at: LeafAt,
+    sub: &StructPatternNode,
+    typ: &Type,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
+) -> Result<Option<ClifValue>> {
+    Ok(match sub {
+        StructPatternNode::Abstract { .. } => {
+            bail!("emit_clif: abstract pattern leaf not lowerable")
+        }
+        StructPatternNode::Ignore => None,
+        StructPatternNode::Bind(id) => {
+            let kind = payload_local_kind(typ).ok_or_else(|| {
+                anyhow!("emit_clif: select pattern leaf bind {typ:?} not lowerable")
+            })?;
+            binds.push(at.bind(*id, typ, kind));
+            None
+        }
+        // The typed element read is total: a slot not of `prim`'s family
+        // reads as 0, which a `0` literal would match. Only the static
+        // type proves the read faithful; any other literal tests the
+        // value.
+        StructPatternNode::Literal(v)
+            if let LeafAt::Elem { ptr, idx } = at
+                && let Some(prim) = kernel_abi::scalar_prim_of_value(v)
+                && kernel_abi::scalar_prim(typ) == Some(prim) =>
+        {
+            let elem = read_scrut_elem(cx, ptr, idx, prim)?;
+            let lit = compile_const(cx.b, v, prim)?;
+            Some(compile_cmp(cx.b, CmpOp::Eq, prim, elem, lit))
+        }
+        StructPatternNode::Literal(_) => {
+            let words = at.words(cx)?;
+            Some(emit_value_leaf_cond(cx, sub, typ, words)?)
+        }
+        StructPatternNode::Or { .. } if !binds_any(sub) => {
+            let words = at.words(cx)?;
+            Some(emit_value_leaf_cond(cx, sub, typ, words)?)
+        }
+        // XCR claude for claude: [perf/medium] A binding or-pattern at an element
+        // position always de-fuses here, even when its alternatives bind the same
+        // kind. So `select v { (`A(x) | `B(x), n) => x + n }` node-walks and
+        // `#[native]` on it is refused, while the same or-pattern as a whole arm
+        // fuses through emit_or_chain. CLAUDE.md promises or-patterns at bracketed
+        // element positions fuse natively. Lower this leaf as emit_or_chain does:
+        // try each alternative on the element, install the first match's binds and
+        // forward them to one join block under the shared BindIds. probe:
+        // design/review-2026-10-26/repro/x-rerun-4-or-elem-bind-defuse.gx
+        // (x-rerun-4-04)
+        // 2026-10-26 claude: emit_leaf_cond lowers a binding or-leaf at an
+        // element, payload or list head: each alternative is a leaf at the same
+        // place, the leaf's test is their OR, and SelectArmBind::Or installs
+        // through emit_or_chain (alternatives handed over, a miss binding
+        // placeholders as stale as the scrutinee, so a let over a fresh bottom
+        // stays fresh). Pins: fusion_review::select_nested_leaves_fuse o0-o6
+        // (#[native], fails with the leaf refused) and
+        // let_destructure_over_fresh_bottom's g; leak witness select-leaf-binds
+        // (graphix-fuzz leakcheck; a 60 s manual run showed interp 15 kB/s, jit 6
+        // kB/s).
+        StructPatternNode::Or { alts } => {
+            let alts = alts
+                .iter()
+                .map(|alt| {
+                    let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+                    let c = emit_leaf_cond(cx, at, alt, typ, &mut binds)?;
+                    Ok((c, binds))
+                })
+                .collect::<Result<Box<[AltMatch]>>>()?;
+            let any = or_of_alts(cx, &alts);
+            binds.push(SelectArmBind::Or(alts));
+            any
+        }
+        StructPatternNode::Variant { tag, all, binds: payloads } => {
+            if let Some(id) = all {
+                binds.push(at.bind(*id, typ, LocalKind::Value));
+            }
+            let words = at.words(cx)?;
+            Some(emit_variant_cond(cx, words, tag, payloads, typ, binds)?)
+        }
+        StructPatternNode::Slice { kind: SliceKind::List, .. }
+        | StructPatternNode::SlicePrefix { list: true, .. } => {
+            let words = at.words(cx)?;
+            let whole = |id| at.bind(id, typ, LocalKind::Value);
+            Some(emit_list_pattern_cond(cx, sub, words, typ, whole, binds)?)
+        }
+        StructPatternNode::Slice { .. }
+        | StructPatternNode::SlicePrefix { .. }
+        | StructPatternNode::SliceSuffix { .. }
+        | StructPatternNode::Struct { .. } => match kernel_abi::abi_kind(typ) {
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                let (ptr, test) = at.array(cx, typ)?;
+                let c = emit_composite_pattern_cond(cx, ptr, typ, sub, binds)?;
+                Some(match test {
+                    Some(t) => cx.b.ins().band(t, c),
+                    None => c,
+                })
+            }
+            other => bail!(
+                "emit_clif: nested pattern over a leaf of shape {other:?} not lowerable"
+            ),
+        },
+    })
 }
 
 /// The borrowed Value words of the leaf at `idx` of the composite `ptr`.
@@ -854,7 +948,7 @@ struct GuardPlanes {
 
 /// What the guard prologue emitted of an arm, for the chain to reuse.
 enum Tested {
-    /// A guarded non-or arm: its condition; its binds are installed.
+    /// A guarded arm: its condition; the binds it reads are installed.
     Guarded(Option<ClifValue>),
     /// An unguarded non-or arm: its condition and its bind specs.
     Unguarded(Option<ClifValue>, SmallVec<[SelectArmBind; 8]>),
@@ -865,7 +959,9 @@ enum Tested {
 /// Arm `pat`'s pattern condition against `scrut`, pushing its binds
 /// onto `binds`; `None` when the arm matches unconditionally. An
 /// or-pattern installs its shared binds itself, in the chain's done
-/// block (`nomatch`, `mask` and `pre` as for [`emit_or_chain`]).
+/// block ([`emit_or_chain`]): a miss goes to `nomatch`, else binds
+/// standing placeholders; `pre` holds every alternative's test when a
+/// block dominating this one emitted them ([`emit_alt_matches`]).
 fn emit_arm_condition<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     pat: &PatternNode<R, E>,
@@ -882,16 +978,23 @@ fn emit_arm_condition<R: Rt, E: UserEvent>(
                 "emit_clif: explicit type predicate on an or-pattern arm not lowerable"
             );
         }
-        let m = emit_or_chain(
-            cx,
-            alts,
-            &pat.type_predicate,
-            scrut,
-            scrut_typ,
-            nomatch,
-            mask,
-            pre,
-        )?;
+        let mut pre = pre;
+        if pre.as_ref().is_some_and(|m| m.len() != alts.len()) {
+            bail!("emit_clif: an or-chain's tests are not its alternatives'")
+        }
+        let pred = &pat.type_predicate;
+        let alt_types = set_members(pred, alts.len());
+        let nomatch = match nomatch {
+            Some(b) => NoMatch::Fail(b),
+            None => NoMatch::Placeholders(cx.b.ins().iconst(types::I64, STALE)),
+        };
+        let mut alt = |cx: &mut BodyCx, k: usize| match pre.as_mut() {
+            Some(m) => Ok(std::mem::take(&mut m[k])),
+            None => {
+                emit_alt_match(cx, alts, k, alt_types.as_deref(), pred, scrut, scrut_typ)
+            }
+        };
+        let m = emit_or_chain(cx, alts.len(), &mut alt, scrut, nomatch, mask)?;
         return Ok(Some(m));
     }
     let (tcond, scond) = emit_arm_cond(cx, pat, scrut, scrut_typ, binds)?;
@@ -950,7 +1053,8 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     let open = cx.b.declare_var(types::I8);
     let reaches_first = cx.b.ins().iconst(types::I8, 1);
     cx.b.def_var(open, reaches_first);
-    for (i, (pat, _)) in sel.arms.iter().enumerate().take(impure.map_or(0, |l| l + 1)) {
+    for (i, (pat, body)) in sel.arms.iter().enumerate().take(impure.map_or(0, |l| l + 1))
+    {
         let reached = cx.b.use_var(open);
         let Some(g) = &pat.guard else {
             // an unguarded arm claims by its condition; its binds are the
@@ -997,13 +1101,25 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             Some(c) => cx.b.ins().band(c, reached),
             None => reached,
         };
-        // CR claude for claude: [perf/low] Every bind of a guarded arm is cloned here
+        // XCR claude for claude: [perf/low] Every bind of a guarded arm is cloned here
         // on every invocation, including those neither the guard nor the body reads.
         // The chain retains only read binds; do the same here (body refs plus guard
         // refs). A guarded or-arm is also left out of Tested::Guarded below, so the
         // chain emits its alternative chain and owned clones a second time. Its
         // prologue binds are already clean wherever the chain takes the arm, so record
         // Tested::Guarded(pcond) for it too. Found by reading; not run. (f-select-04)
+        // 2026-10-26 claude: The prologue keeps only the binds the guard or the body
+        // reads (retain_read, shared with the chain), and a guarded or-arm records
+        // Tested::Guarded, so the chain branches on the prologue's test and reuses its
+        // binds instead of emitting the alternatives and their clones again. No pin
+        // can see the clones; behaviour is pinned by
+        // fusion_review::select_nested_leaves_fuse g0/g1 and
+        // prologue_unguarded_or_arm_reaches_the_chain, and the
+        // select-or-arm-bottom-guard leak witness covers the or-arm's binds.
+        let mut reads = Refs::default();
+        body.refs(&mut reads);
+        g.node.refs(&mut reads);
+        retain_read(&mut binds, &reads);
         install_arm_binds(cx, &binds, scrut, Some(mask))?;
         // CR claude for eric: [bug/medium] The prologue runs this guard on every
         // invocation, also where an earlier arm claimed the value. A `$` or
@@ -1027,9 +1143,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let claims = cx.b.ins().band(mask, stops);
         let still = cx.b.ins().band_not(reached, claims);
         cx.b.def_var(open, still);
-        if !matches!(&pat.structure_predicate, StructPatternNode::Or { .. }) {
-            tested[i] = Some(Tested::Guarded(pcond));
-        }
+        tested[i] = Some(Tested::Guarded(pcond));
     }
     // At any read this holds the fold over exactly the consultation
     // points control flow executed.
@@ -1102,7 +1216,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         {
             g.node.refs(&mut reads);
         }
-        binds.retain(|b| reads.refed.contains(&b.id()));
+        retain_read(&mut binds, &reads);
         install_arm_binds(cx, &binds, scrut, None)?;
         if let (Some(g), Some(fail)) = (&pat.guard, fail) {
             let eff = match guard_vals[i] {
@@ -1414,9 +1528,10 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     Ok((tcond, scond))
 }
 
-/// Whether an arm's written type test names the scrutinee's own type,
-/// holding no abstract type (whose test is nominal): every value passes.
-// CR claude for claude: [perf/low] A test is trivial here only when the predicate
+/// Whether every value of the scrutinee's type passes an arm's written
+/// type test: the test holds the type, which holds no abstract type
+/// (whose test is nominal).
+// XCR claude for claude: [perf/low] A test is trivial here only when the predicate
 // equals the scrutinee's type. A wider predicate that every value passes still de-fuses
 // the select: over an i64 scrutinee, `Number as x` and `[i64, string] as x` are "not
 // lowerable", and `Any as x` fails to freeze before this check runs. Fix: count as
@@ -1424,13 +1539,22 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
 // and before the predicate is frozen, keeping the holds_abstract exclusion. Pin the
 // three forms under #[native]. Variant of tests-select-03. probe:
 // design/review-2026-10-26/repro/x-rerun-2-wider-type-test-defuses.sh (x-rerun-2-04)
+// 2026-10-26 claude: type_test_is_trivial is a containment probe (no binding) of the
+// resolved predicate over the frozen scrutinee type, before any freeze, and the
+// abstract exclusion is the scrutinee type's (a predicate that holds Any no longer
+// counts as abstract). Pin: fusion_review::select_nested_leaves_fuse y0-y3 (Number,
+// Any, [i64, string], a Number bind read in the body), which fails with the equality
+// test restored.
 fn type_test_is_trivial<R: Rt, E: UserEvent>(
     cx: &BodyCx,
     pat: &PatternNode<R, E>,
     scrut_typ: &Type,
 ) -> bool {
-    freeze_node_typ(cx.ctx, &pat.type_predicate)
-        .is_some_and(|p| &p == scrut_typ && !p.holds_abstract(cx.ctx.type_env))
+    let env = cx.ctx.type_env;
+    !scrut_typ.holds_abstract(env)
+        && resolve_node_typ(cx.ctx, &pat.type_predicate)
+            .contains_with_flags(BitFlags::empty(), env, scrut_typ)
+            .unwrap_or(false)
 }
 
 fn emit_null_cond(cx: &mut BodyCx, scrut: SelectScrut, typ: &Type) -> Result<ClifValue> {
@@ -1473,7 +1597,7 @@ fn mask_unmatched(
 /// `list`, of type `list_typ`: one `graphix_list_match` spine walk (`k`
 /// cells, `exact` requires nil after); head binds clone out by ABI kind;
 /// the rest bind is the k-th tail, shared; `whole` is the `@` bind of
-/// the list where it was read. Nested element patterns refuse.
+/// the list where it was read. Each head's own pattern is a leaf.
 fn emit_list_pattern_cond(
     cx: &mut BodyCx,
     pat: &StructPatternNode,
@@ -1501,37 +1625,33 @@ fn emit_list_pattern_cond(
         binds.push(whole(*id));
     }
     let k = elems.len();
-    for (j, sub) in elems.iter().enumerate() {
-        match sub {
-            StructPatternNode::Bind(id) => {
-                let kind = payload_local_kind(&et).ok_or_else(|| {
-                    anyhow!("emit_clif: list element shape {et:?} not lowerable")
-                })?;
-                binds.push(SelectArmBind::ListHead { id: *id, idx: j, kind, list });
-            }
-            StructPatternNode::Ignore => {}
-            // CR claude for claude: [perf/medium] A literal or or-pattern in a list
-            // element position is refused here, so `#[native] select a { [<"a", ..>] =>
-            // 1, _ => 0 }` over List<string> (or `[<1, ..>]` over List<i64>)
-            // node-walks. The same leaves fuse in tuple, slice and struct element
-            // positions. Read the j-th head as ListHead does and test it with the slice
-            // path's leaf lowering, ANDed into the list-match condition. probe:
-            // design/review-2026-10-26/repro/x-rerun-5-list-literal-leaf-defuses.gx
-            // (x-rerun-5-06)
-            _ => {
-                return Err(anyhow!(
-                    "emit_clif: nested list element pattern not lowerable"
-                ));
-            }
+    let kc = cx.b.ins().iconst(types::I64, k as i64);
+    let ex = cx.b.ins().iconst(types::I8, exact as i64);
+    let mut cond = cx.call_helper("graphix_list_match", &[list.0, list.1, kc, ex])?[0];
+    // XCR claude for claude: [perf/medium] A literal or or-pattern in a list
+    // element position is refused here, so `#[native] select a { [<"a", ..>] =>
+    // 1, _ => 0 }` over List<string> (or `[<1, ..>]` over List<i64>)
+    // node-walks. The same leaves fuse in tuple, slice and struct element
+    // positions. Read the j-th head as ListHead does and test it with the slice
+    // path's leaf lowering, ANDed into the list-match condition. probe:
+    // design/review-2026-10-26/repro/x-rerun-5-list-literal-leaf-defuses.gx
+    // (x-rerun-5-06)
+    // 2026-10-26 claude: emit_list_pattern_cond tests every head with
+    // emit_leaf_cond at LeafAt::ListHead, read through the new borrowed
+    // graphix_list_head_borrowed helper, so a literal, or-pattern, variant,
+    // tuple or struct head fuses. Pin: fusion_review::select_nested_leaves_fuse
+    // p1-p3i (#[native]), failing with non-bind heads refused.
+    for (idx, sub) in elems.iter().enumerate() {
+        if let Some(c) =
+            emit_leaf_cond(cx, LeafAt::ListHead { list, idx }, sub, &et, binds)?
+        {
+            cond = cx.b.ins().band(cond, c);
         }
     }
     if let Some(id) = tail {
         binds.push(SelectArmBind::ListTail { id: *id, k, list });
     }
-    let kc = cx.b.ins().iconst(types::I64, k as i64);
-    let ex = cx.b.ins().iconst(types::I8, exact as i64);
-    let call = cx.call_helper("graphix_list_match", &[list.0, list.1, kc, ex])?;
-    Ok(call[0])
+    Ok(cond)
 }
 
 /// The [`LocalKind`] a non-scalar bind takes (a variant payload, a
@@ -1622,11 +1742,8 @@ fn install_arm_binds(
                 let (d, p) = owned_words(cx.b, *kind, &call);
                 (*id, d, p, *kind)
             }
-            SelectArmBind::Payload { id, idx, kind, on } => {
-                let (vd, vp) = match on {
-                    Some(on) => *on,
-                    None => (sdisc, value_payload()?),
-                };
+            SelectArmBind::Payload { id, idx, kind, on: (vd, vp) } => {
+                let (vd, vp) = (*vd, *vp);
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                 match kind {
                     LocalKind::Scalar(prim) => {
@@ -1695,6 +1812,15 @@ fn install_arm_binds(
                     bits,
                     LocalKind::Composite,
                 )
+            }
+            SelectArmBind::Or(alts) => {
+                let stale = cx.b.ins().band_imm_u(sdisc, STALE);
+                let nomatch = NoMatch::Placeholders(stale);
+                let mut alt = |_: &mut BodyCx, k: usize| Ok(alts[k].clone());
+                stack::ensure_sufficient(|| {
+                    emit_or_chain(cx, alts.len(), &mut alt, scrut, nomatch, mask)
+                })?;
+                continue;
             }
         };
         let disc = propagate_flags(cx.b, disc, &[sdisc]);
@@ -1978,7 +2104,7 @@ fn emit_structure_cond(
                         pred_typ
                     )
                 })?;
-            Some(emit_variant_cond(cx, (disc, payload), None, tag, pbinds, &pred, binds)?)
+            Some(emit_variant_cond(cx, (disc, payload), tag, pbinds, &pred, binds)?)
         }
         p @ (StructPatternNode::Slice { kind: SliceKind::List, .. }
         | StructPatternNode::SlicePrefix { list: true, .. }) => {
@@ -2091,11 +2217,11 @@ fn emit_member_cond(
     Ok(Some((test, c)))
 }
 
-/// A variant pattern's condition over the variant `v` (the scrutinee
-/// when `on` is `None`, else a payload of an enclosing variant, borrowed,
-/// whose words `on` also holds): its tag and arity, then each payload's
-/// own pattern against its member of `pred`, the frozen predicate.
-// CR claude for claude: [perf/medium] A struct, tuple or slice pattern in a payload (``
+/// A variant pattern's condition over the variant whose words are `v`
+/// (the scrutinee, or a borrowed leaf or payload): its tag and arity,
+/// then each payload's own pattern against its member of `pred`, the
+/// frozen predicate.
+// XCR claude for claude: [perf/medium] A struct, tuple or slice pattern in a payload (``
 // `Text({ id, .. }) ``, the admin TUI's idiom) refuses below as a 'nested variant
 // payload pattern', and emit_list_pattern_cond refuses every non-bind head (`[<(0, s),
 // t..>]`). So the whole select node-walks, while emit_composite_pattern_cond_inner
@@ -2104,25 +2230,42 @@ fn emit_member_cond(
 // select the payload word against graphix_valarray_empty_borrowed on the tag test, as
 // emit_member_cond does. probe:
 // design/review-2026-10-26/repro/f-select-payload-struct-pattern.gx (f-select-03)
+// 2026-10-26 claude: The leaf classifier is emit_leaf_cond over LeafAt (an element, a
+// payload, a list head); emit_variant_cond and emit_list_pattern_cond use it, so a
+// struct, tuple or slice pattern in a payload or at a list head, a variant's all-bind
+// in a payload, and every leaf kind the composite path took fuse. A payload or head
+// read as an array selects the empty array unless its disc is ARRAY. Pin:
+// fusion_review::select_nested_leaves_fuse p0-p2 (#[native]), failing with composite
+// payload patterns refused.
+// 2026-10-26 claude: A composite pattern at a payload also tests the payload against its
+// type (graphix_inferred_type_matches), since a payload's type is the arm predicate's
+// and another case of the same tag and arity may hold another struct
+// (select::partial_struct_completes_against_what_reaches caught it;
+// fusion_review::select_nested_leaves_fuse p4 pins it), and emit_variant_cond refuses a
+// predicate whose cases of one tag and arity disagree on their payloads.
 fn emit_variant_cond(
     cx: &mut BodyCx,
     v: (ClifValue, ClifValue),
-    on: Option<(ClifValue, ClifValue)>,
     tag: &ArcStr,
     pbinds: &[StructPatternNode],
     pred: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
-    let elts = kernel_abi::variant_cases(pred)
-        .and_then(|cases| {
-            cases.into_iter().find(|(t, e)| t == tag && e.len() == pbinds.len())
-        })
-        .map(|(_, e)| e)
-        .ok_or_else(|| {
-            anyhow!(
-                "emit_clif: variant pattern `{tag}` doesn't match its predicate {pred}"
-            )
-        })?;
+    // each payload is read at its one type: the predicate's cases of this
+    // tag and arity must agree on it
+    let mut cases = kernel_abi::variant_cases(pred)
+        .into_iter()
+        .flatten()
+        .filter(|(t, e)| t == tag && e.len() == pbinds.len())
+        .map(|(_, e)| e);
+    let elts = cases.next().ok_or_else(|| {
+        anyhow!("emit_clif: variant pattern `{tag}` doesn't match its predicate {pred}")
+    })?;
+    if cases.any(|e| e != elts) {
+        bail!(
+            "emit_clif: variant pattern `{tag}` over cases of {pred} whose payloads differ"
+        )
+    }
     let tag_ptr = cx.interned_str(tag)?;
     // The helper checks arity as well as tag: same-tag arms at different
     // arities are distinct cases.
@@ -2130,81 +2273,9 @@ fn emit_variant_cond(
     let call = cx.call_helper("graphix_variant_tag_eq", &[v.0, v.1, tag_ptr, arity])?;
     let mut cond = call[0];
     for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
-        match sub {
-            StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(elt) {
-                Some(prim) => binds.push(SelectArmBind::Payload {
-                    id: *id,
-                    idx,
-                    kind: LocalKind::Scalar(prim),
-                    on,
-                }),
-                None => {
-                    let kind = owned_kind(elt).ok_or_else(|| {
-                        anyhow!("emit_clif: variant payload shape {elt:?} not lowerable")
-                    })?;
-                    binds.push(SelectArmBind::Payload {
-                        id: *id,
-                        idx,
-                        kind: kind.into(),
-                        on,
-                    })
-                }
-            },
-            StructPatternNode::Ignore => {}
-            sub @ StructPatternNode::Literal(_) => {
-                let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
-                let call = cx.call_helper(
-                    "graphix_variant_payload_borrowed",
-                    &[v.0, v.1, idx_c],
-                )?;
-                let eq = emit_value_leaf_cond(cx, sub, elt, (call[0], call[1]))?;
-                cond = cx.b.ins().band(cond, eq);
-            }
-            sub @ StructPatternNode::Or { .. } if !binds_any(sub) => {
-                let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
-                let call = cx.call_helper(
-                    "graphix_variant_payload_borrowed",
-                    &[v.0, v.1, idx_c],
-                )?;
-                let eq = emit_value_leaf_cond(cx, sub, elt, (call[0], call[1]))?;
-                cond = cx.b.ins().band(cond, eq);
-            }
-            StructPatternNode::Variant { tag, all: None, binds: nbinds } => {
-                let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
-                let call = cx.call_helper(
-                    "graphix_variant_payload_borrowed",
-                    &[v.0, v.1, idx_c],
-                )?;
-                let rs = call;
-                let nested = (rs[0], rs[1]);
-                let inner =
-                    emit_variant_cond(cx, nested, Some(nested), tag, nbinds, elt, binds)?;
-                cond = cx.b.ins().band(cond, inner);
-            }
-            sub @ (StructPatternNode::Slice { kind: SliceKind::List, .. }
-            | StructPatternNode::SlicePrefix { list: true, .. }) => {
-                let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
-                let call = cx.call_helper(
-                    "graphix_variant_payload_borrowed",
-                    &[v.0, v.1, idx_c],
-                )?;
-                let whole =
-                    |id| SelectArmBind::Payload { id, idx, kind: LocalKind::Value, on };
-                let inner = emit_list_pattern_cond(
-                    cx,
-                    sub,
-                    (call[0], call[1]),
-                    elt,
-                    whole,
-                    binds,
-                )?;
-                cond = cx.b.ins().band(cond, inner);
-            }
-            _ => {
-                return Err(anyhow!(
-                    "emit_clif: nested variant payload pattern not lowerable"
-                ));
-            }
+        if let Some(c) = emit_leaf_cond(cx, LeafAt::Payload { v, idx }, sub, elt, binds)?
+        {
+            cond = cx.b.ins().band(cond, c);
         }
     }
     Ok(cond)
@@ -2214,13 +2285,12 @@ fn emit_variant_cond(
 /// BindId, so the name is never looked up.
 const PAT_BIND_NAME: ArcStr = arcstr::literal!("__pat");
 
-/// A drop-safe TAINT|STALE placeholder pair for a local of `kind`: the
-/// or-chain's no-match binds. Standing unconditionally, unlike
-/// `nodes::emit_bottom_placeholder`: a delivery that never happened is
-/// not an event, so there is no trigger to follow.
+/// A drop-safe tainted placeholder pair for a local of `kind` whose
+/// STALE bits are `stale`: the or-chain's no-match binds.
 fn placeholder_for_kind(
     cx: &mut BodyCx,
     kind: LocalKind,
+    stale: ClifValue,
 ) -> Result<(ClifValue, ClifValue)> {
     let abi = match kind {
         LocalKind::Scalar(p) => AbiKind::Scalar(p),
@@ -2229,7 +2299,19 @@ fn placeholder_for_kind(
         LocalKind::Value => AbiKind::Value,
     };
     let cv = emit_bottom_of_kind(cx, abi)?;
-    Ok((cx.b.ins().bor_imm_u(cv.disc, STALE), cv.payload))
+    Ok((cx.b.ins().bor(cv.disc, stale), cv.payload))
+}
+
+/// Where an or-chain goes when no alternative matches.
+#[derive(Clone, Copy)]
+enum NoMatch {
+    /// The caller's fail block, with no binds.
+    Fail(Block),
+    /// The done block, binding tainted placeholders whose STALE bits are
+    /// these: STALE for an arm that was not delivered (a delivery that
+    /// never happened is not an event), the scrutinee's for a leaf, which
+    /// misses only over a bottom scrutinee.
+    Placeholders(ClifValue),
 }
 
 /// An or-pattern alternative's structure condition (`None`: it takes
@@ -2284,59 +2366,42 @@ fn or_of_alts(cx: &mut BodyCx, m: &[AltMatch]) -> Option<ClifValue> {
     any
 }
 
-/// Emit an or-pattern arm's alternative chain: alternatives test left
-/// to right; the first match installs its binds and jumps to one `done`
-/// block whose params bind the arm's locals once under the shared
-/// BindIds, each at its alternatives' common kind, or as a Value where
-/// they differ (a shared name's type is the union of theirs). `nomatch`:
-/// `Some` = the caller's fail block, jumped with no binds; `None` = route
-/// through `done` with matched=0 and tainted placeholders. Where `mask`
-/// is false the binds read as bottom too (an arm the chain does not
-/// reach). `pre` holds every alternative's test when a block dominating
-/// this one emitted them ([`emit_alt_matches`]); else each is emitted
-/// where the chain reaches it. Returns the matched i8 with the builder
-/// in `done` and the binds installed; the caller's env mark, taken
-/// before this, scopes the arm-exit drops over them.
+/// Emit an or-pattern's alternative chain over the `n` alternatives
+/// `alt` yields (each emitted where the chain reaches it, or handed over
+/// from a block dominating this one): alternatives test left to right;
+/// the first match installs its binds and jumps to one `done` block whose
+/// params bind the locals once under the shared BindIds, each at its
+/// alternatives' common kind, or as a Value where they differ (a shared
+/// name's type is the union of theirs). Where `mask` is false the binds
+/// read as bottom too (an arm the chain does not reach). Returns the
+/// matched i8 with the builder in `done` and the binds installed; the
+/// caller's env mark, taken before this, scopes the arm-exit drops over
+/// them.
 fn emit_or_chain(
     cx: &mut BodyCx,
-    alts: &[StructPatternNode],
-    pred_typ: &Type,
+    n: usize,
+    alt: &mut dyn FnMut(&mut BodyCx, usize) -> Result<AltMatch>,
     scrut: SelectScrut,
-    scrut_typ: &Type,
-    nomatch: Option<Block>,
+    nomatch: NoMatch,
     mask: Option<ClifValue>,
-    mut pre: Option<SmallVec<[AltMatch; 4]>>,
 ) -> Result<ClifValue> {
-    if pre.as_ref().is_some_and(|m| m.len() != alts.len()) {
-        bail!("emit_clif: an or-chain's tests are not its alternatives'")
-    }
-    let alt_types = set_members(pred_typ, alts.len());
-    let tests: SmallVec<[Block; 4]> =
-        (0..alts.len()).map(|_| cx.b.create_block()).collect();
+    let tests: SmallVec<[Block; 4]> = (0..n).map(|_| cx.b.create_block()).collect();
     // the last alternative fails to `nomatch`, else to a block of its own
     // that hands the done block placeholders
-    let last_fail = nomatch.unwrap_or_else(|| cx.b.create_block());
+    let last_fail = match nomatch {
+        NoMatch::Fail(b) => b,
+        NoMatch::Placeholders(_) => cx.b.create_block(),
+    };
     cx.b.ins().jump(tests[0], &[]);
     // each matched alternative hands its binds, at its own kinds, to a
     // block of its own, which joins them to the done block's layout
     let mut matched: SmallVec<[(Block, SmallVec<[(BindId, LocalKind); 8]>); 4]> =
         SmallVec::new();
-    for k in 0..alts.len() {
+    for k in 0..n {
         cx.b.switch_to_block(tests[k]);
         cx.b.seal_block(tests[k]);
-        let fail_to = if k + 1 < alts.len() { tests[k + 1] } else { last_fail };
-        let (scond, binds) = match pre.as_mut() {
-            Some(m) => std::mem::take(&mut m[k]),
-            None => emit_alt_match(
-                cx,
-                alts,
-                k,
-                alt_types.as_deref(),
-                pred_typ,
-                scrut,
-                scrut_typ,
-            )?,
-        };
+        let fail_to = if k + 1 < n { tests[k + 1] } else { last_fail };
+        let (scond, binds) = alt(cx, k)?;
         let mk = cx.b.create_block();
         match scond {
             Some(c) => {
@@ -2351,8 +2416,10 @@ fn emit_or_chain(
         cx.b.seal_block(mk);
         let amark = cx.env.mark();
         install_arm_binds(cx, &binds, scrut, None)?;
-        let mut ids: SmallVec<[BindId; 8]> =
-            binds.iter().map(SelectArmBind::id).collect();
+        let mut ids: SmallVec<[BindId; 8]> = SmallVec::new();
+        for b in binds.iter() {
+            b.ids(&mut |id| ids.push(id));
+        }
         ids.sort_by_key(|id| id.inner());
         if let Some((_, first)) = matched.first()
             && (ids.len() != first.len()
@@ -2420,7 +2487,7 @@ fn emit_or_chain(
         }
         cx.b.ins().jump(done, &args);
     }
-    if nomatch.is_none() {
+    if let NoMatch::Placeholders(stale) = nomatch {
         let ph = last_fail;
         cx.b.switch_to_block(ph);
         cx.b.seal_block(ph);
@@ -2428,7 +2495,7 @@ fn emit_or_chain(
         let mut args: SmallVec<[BlockArg; 20]> = SmallVec::new();
         args.push(zero.into());
         for (_, kind) in layout.iter() {
-            let (d, pv) = placeholder_for_kind(cx, *kind)?;
+            let (d, pv) = placeholder_for_kind(cx, *kind, stale)?;
             args.push(d.into());
             args.push(pv.into());
         }

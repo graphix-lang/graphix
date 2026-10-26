@@ -517,3 +517,108 @@ run!(callee_banked_sample_is_no_capture, r#"
   h(3)
 }
 "#, is(Value::I64(7)); FuseExpect::Jit);
+
+// A destructuring let over a fresh bottom binds fresh bottoms: the
+// tuple below is bottom, and logs nothing, at every even step.
+run!(let_destructure_over_fresh_bottom, r#"
+{
+    let step = 0;
+    step <- select step { s if s < 6 => s + 1, _ => never() };
+    let f = |n: i64, d: i64| {
+        let (a, b) = select n { k if (10 / d) > 0 => (k, k), k => (k, 0) };
+        a + b
+    };
+    let g = |n: i64, d: i64| {
+        let (`A(a) | `B(a), b) = select n { k if (10 / d) > 0 => (`A(k), k), k => (`B(k), 0) };
+        a + b
+    };
+    let t = (step, count(f(step, step % 2)), count(g(step, step % 2)));
+    let log = [];
+    log <- t ~ array::push(log, t);
+    sys::time::after_idle(duration:10.ms, log)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:1, i64:1, i64:1], [i64:3, i64:2, i64:2], [i64:5, i64:3, i64:3]]"); FuseExpect::Jit);
+
+// A destructuring let reads a value whose own type is a union of
+// composites, bottom included, at the let's composite type.
+run!(let_destructure_over_a_union_of_composites, r#"
+{
+    let f = |n: i64, d: i64| {
+        let (v, b): ([`A(i64), `B(i64)], i64) = select n {
+            k if (10 / d) > 0 => (`A(k), k),
+            k => (`B(k), 0)
+        };
+        select v { `A(x) | `B(x) => x + b }
+    };
+    (any(#[native] f(3, 0), 9), #[native] f(3, 1), #[native] f(3, 20))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:9, i64:6, i64:3]"); FuseExpect::Jit);
+
+// Select shapes that fuse: a binding or-pattern at an element, payload
+// or list head (o*), a tuple, struct or slice pattern in a payload (whose
+// type another case of its tag may share) or at a list head and a literal
+// at a list head (p*), a guarded or-arm and a
+// guarded arm whose binds nothing reads (g*), a type test that holds the
+// scrutinee's type (y*).
+run!(select_nested_leaves_fuse, r#"
+{
+    let o0 = |v: ([`A(i64), `B(i64), `C(string), `D], i64)| #[native] select v {
+        (`A(x) | `B(x), n) => x + n,
+        (`C(s), n) => str::len(s) + n,
+        (`D, n) => n
+    };
+    let o1 = |v: ([`A(i64), `B(i64), `C], i64)| #[native] select v {
+        (`A(x) | `B(x), n) if (10 / n) > 1 => x * n,
+        (_, n) => n
+    };
+    let o2 = |v: ([`P(string), `Q(string), `R], i64)| #[native] select v { (`P(s) | `Q(s), _) => s, (`R, _) => "r" };
+    let o3 = |v: ([`I(i64), `F(f64)], i64)| #[native] select v { (`I(x) | `F(x), n) => "[x]/[n]" };
+    let o4 = |v: `W([`A(i64), `B(i64), `C])| #[native] select v { `W(`A(x) | `B(x)) => x, `W(_) => 0 };
+    let o5 = |l: List<[`A(i64), `B(i64), `C]>| #[native] select l { [<`A(x) | `B(x), ..>] => x, _ => -1 };
+    let o6 = |v: ([`A(i64), `B(i64)], i64)| #[native] { let (`A(x) | `B(x), n) = v; x - n };
+    type Q = [`Text({id: i64, name: string}), `Pair((i64, string)), `Arr(Array<i64>), `Nest(`In(i64))];
+    let p0 = |q: Q| #[native] select q {
+        `Text({ id, name }) => id + str::len(name),
+        `Pair(p@ (n, _)) => n + p.0,
+        `Arr([.., last]) => last,
+        `Nest(w@ `In(k)) => k + (select w { `In(j) => j }),
+        _ => -2
+    };
+    let p1 = |l: List<{a: i64, b: [`X, `Y(i64)]}>| #[native] select l {
+        [<{a: 0, ..}, ..>] => 0,
+        [<{a, b: `Y(y)}, ..>] => a * y,
+        [<{a, b: `X}, ..>] => a,
+        _ => -9
+    };
+    let p2 = |l: List<(i64, string)>| #[native] select l {
+        [<(0, s), t..>] => "zero[s][list::len(t)]",
+        [<(n, _), ..>] => "head[n]",
+        [<>] => "empty"
+    };
+    let p3 = |a: List<string>| -> i64 #[native] select a { [<"a", ..>] => 1, _ => 0 };
+    let p3i = |a: List<i64>| -> i64 #[native] select a { [<1 | 2, ..>] => 1, _ => 0 };
+    let p4 = |w: [`A({x: i64, y: string}), `A({x: i64, z: f64})]| #[native] select w {
+        `A({x, y}) => x + str::len(y),
+        `A({x, ..}) => x + 10
+    };
+    let g0 = |v: [`A(i64), `B(i64), `C], k: i64| #[native] select v { `A(x) | `B(x) if (10 / k) > x => x, _ => 0 };
+    let g1 = |v: (string, i64)| #[native] select v { (s, n) if (10 / n) > 2 => n, (s, _) => str::len(s) };
+    let y0 = |s: i64| -> i64 #[native] select s { Number as _ => 1 };
+    let y1 = |s: i64| -> i64 #[native] select s { Any as _ => 2 };
+    let y2 = |s: i64| #[native] select s { [i64, string] as x => x };
+    let y3 = |s: i64| #[native] select s { Number as x => "[x]" };
+    (
+        (o0((`A(1), 10)), o0((`B(2), 20)), o0((`C("x"), 30)), o0((`D, 40))),
+        (o1((`A(5), 2)), o1((`B(5), 9)), o1((`C, 3))),
+        (o2((`P("hello"), 1)), o2((`Q("wo"), 1)), o2((`R, 1))),
+        (o3((`I(1), 10)), o3((`F(2.5), 20))),
+        (o4(`W(`B(4))), o4(`W(`C)), o5([<`A(7)>]), o5([<`C>]), o5([<>]), o6((`B(9), 4))),
+        (p0(`Text({id: 1, name: "ab"})), p0(`Pair((2, "x"))), p0(`Arr([1, 2, 3])), p0(`Nest(`In(4))), p0(`Arr([]))),
+        (p1([<{a: 1, b: `X}>]), p1([<{a: 2, b: `Y(5)}>]), p1([<{a: 0, b: `X}>]), p1([<>])),
+        (p2([<(0, "a")>]), p2([<(1, "b"), (0, "c")>]), p2([<>]), p2([<(0, "d"), (2, "e")>])),
+        (p3([<"a", "b">]), p3([<"b">]), p3i([<2, 9>]), p3i([<3>]), p4(`A({x: 3, z: 1.5})), p4(`A({x: 1, y: "s"}))),
+        (g0(`A(3), 2), g0(`B(7), 2), g0(`C, 2), g1(("abc", 2)), g1(("abc", 5))),
+        (y0(5), y1(5), y2(5), y3(5))
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[[i64:11, i64:22, i64:31, i64:40], [i64:10, i64:9, i64:3], ["hello", "wo", "r"], ["1/10", "2.5/20"], [i64:4, i64:0, i64:7, i64:-1, i64:-1, i64:5], [i64:3, i64:4, i64:3, i64:8, i64:-2], [i64:1, i64:10, i64:0, i64:-9], ["zeroa0", "head1", "empty", "zerod1"], [i64:1, i64:0, i64:1, i64:0, i64:13, i64:2], [i64:3, i64:0, i64:0, i64:2, i64:3], [i64:1, i64:2, i64:5, "5"]]"#); FuseExpect::Jit);
