@@ -155,6 +155,23 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
     if stacker::remaining_stack().unwrap_or(0) >= RED_ZONE { f() } else { grow(f) }
 }
 
+/// A future whose polls run under [`ensure_sufficient`]: an async walk
+/// of a tree nests a poll for every level.
+pub struct StackGuarded<F>(pub F);
+
+impl<F: std::future::Future> std::future::Future for StackGuarded<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        // SAFETY: the inner future is pinned with self and never moved out.
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        ensure_sufficient(|| inner.poll(cx))
+    }
+}
+
 /// Whether one more segment would put the runtime running on this
 /// thread over its budget; outside a cycle there is none to exceed. The
 /// budget is counted in whole segments.

@@ -23,7 +23,7 @@ impl<X: GXExt> QrCodeW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let p = Props::compile(&gx, &source).await.context("qr_code")?;
         let qr_data = Self::encode(&p);
-        Ok(Box::new(Self { p, qr_data }))
+        Ok(GuiW::new(Self { p, qr_data }))
     }
 
     fn encode(p: &Props<X>) -> Option<widget::qr_code::Data> {

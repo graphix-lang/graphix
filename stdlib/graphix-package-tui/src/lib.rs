@@ -34,7 +34,7 @@ use graphix_package_core::{
     CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState, seam_tick,
 };
 use graphix_rt::{CompExp, GXExt, GXHandle, TRef, reconcile};
-use graphix_types::stack::ensure_sufficient;
+use graphix_types::stack::{StackGuarded, ensure_sufficient};
 use input_handler::{InputHandlerW, event_to_value};
 use layout::LayoutW;
 use line_gauge::LineGaugeW;
@@ -63,7 +63,6 @@ use std::{
     marker::PhantomData,
     pin::{Pin, pin},
     sync::atomic::{AtomicBool, Ordering},
-    task::Poll,
     time::Duration,
 };
 use text::TextW;
@@ -512,20 +511,6 @@ impl TuiW {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         ensure_sufficient(|| self.0.draw(frame, rect))
-    }
-}
-
-/// A future whose polls run with a guaranteed stack: an async walk of a
-/// widget tree nests a poll for every level.
-struct StackGuarded<F>(F);
-
-impl<F: Future> Future for StackGuarded<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<F::Output> {
-        // The inner future is pinned with self and never moved out.
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
-        ensure_sufficient(|| inner.poll(cx))
     }
 }
 

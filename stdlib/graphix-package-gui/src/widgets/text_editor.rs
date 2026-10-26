@@ -1,6 +1,4 @@
-use super::{
-    Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell, call_arg,
-};
+use super::{Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell};
 use crate::types::{FontV, PaddingV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -44,7 +42,7 @@ impl<X: GXExt> TextEditorW<X> {
         .context("text_editor")?;
         let editor =
             text_editor::Content::with_text(p.content.t.as_deref().unwrap_or(""));
-        Ok(Box::new(Self {
+        Ok(GuiW::new(Self {
             gx,
             p,
             on_edit,
@@ -63,9 +61,6 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("text_editor")?;
-        if self.echoes.answered(id) {
-            super::ask_idle(&self.gx);
-        }
         let mut sync = false;
         if id == self.p.content.r.id
             && let Some(text) = &self.p.content.t
@@ -75,7 +70,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         self.on_edit
             .update(rt, &self.gx, id, v, &mut changed)
             .context("text_editor on_edit recompile")?;
-        sync |= self.echoes.retain_handler(&self.on_edit);
+        sync |= self.echoes.update(&self.gx, id, &self.on_edit);
         self.sync_content |= sync;
         Ok(changed || sync)
     }
@@ -151,12 +146,12 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                     }
                 }
             }
-            Message::Call(..) => match call_arg(msg, self.on_edit.id()) {
-                Some(Value::String(text)) => {
-                    self.echoes.send(text.clone(), &self.on_edit, msg, shell)
-                }
-                _ => false,
-            },
+            Message::Call(..) => {
+                self.echoes.on_call(msg, &self.on_edit, shell, |v| match v {
+                    Value::String(text) => Some(text.clone()),
+                    _ => None,
+                })
+            }
             Message::Nop | Message::Table(..) | Message::ComboText(..) => false,
         }
     }

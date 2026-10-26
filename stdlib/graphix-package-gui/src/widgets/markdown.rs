@@ -41,7 +41,7 @@ impl<X: GXExt> MarkdownW<X> {
         )
         .context("markdown")?;
         let items = Self::parse(&p);
-        Ok(Box::new(Self { gx, p, on_link, items }))
+        Ok(GuiW::new(Self { gx, p, on_link, items }))
     }
 }
 

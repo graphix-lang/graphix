@@ -20,7 +20,7 @@ pub(crate) struct ProgressBarW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> ProgressBarW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        Ok(Box::new(Self(Props::compile(&gx, &source).await.context("progress_bar")?)))
+        Ok(GuiW::new(Self(Props::compile(&gx, &source).await.context("progress_bar")?)))
     }
 }
 

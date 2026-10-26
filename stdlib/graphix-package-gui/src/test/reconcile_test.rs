@@ -31,7 +31,7 @@ async fn children_survive_a_failed_recompile_and_retry() -> Result<()> {
     let mut h = fixture().await?;
     let source = named_ref(&h, "test::source").await?;
     let proposed = named_ref(&h, "test::proposed").await?.last.clone().unwrap();
-    let mut children = Children::compile(&h.f.gx, source).await?;
+    let mut children: Children<NoExt> = Children::compile(&h.f.gx, source).await?;
     let (id, original) = (children.r.id, children.r.last.clone());
     let rt = tokio::runtime::Handle::current();
     for _ in 0..2 {

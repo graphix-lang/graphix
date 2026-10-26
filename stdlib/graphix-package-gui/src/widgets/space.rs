@@ -17,7 +17,7 @@ pub(crate) struct SpaceW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> SpaceW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        Ok(Box::new(Self(Props::compile(&gx, &source).await.context("space")?)))
+        Ok(GuiW::new(Self(Props::compile(&gx, &source).await.context("space")?)))
     }
 }
 

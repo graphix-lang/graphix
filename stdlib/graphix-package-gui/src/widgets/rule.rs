@@ -17,7 +17,7 @@ impl<X: GXExt> HorizontalRuleW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let p =
             HorizontalProps::compile(&gx, &source).await.context("horizontal_rule")?;
-        Ok(Box::new(Self(p)))
+        Ok(GuiW::new(Self(p)))
     }
 }
 
@@ -47,7 +47,7 @@ pub(crate) struct VerticalRuleW<X: GXExt>(VerticalProps<X>);
 impl<X: GXExt> VerticalRuleW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let p = VerticalProps::compile(&gx, &source).await.context("vertical_rule")?;
-        Ok(Box::new(Self(p)))
+        Ok(GuiW::new(Self(p)))
     }
 }
 

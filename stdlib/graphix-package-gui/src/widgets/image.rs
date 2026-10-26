@@ -53,7 +53,7 @@ impl<X: GXExt> ImageW<X> {
                 .context("image")?;
         let source = TRef::new(src).context("image source")?;
         let handle = source.t.as_ref().map(ImageHandle::of);
-        Ok(Box::new(Self { p, source, handle }))
+        Ok(GuiW::new(Self { p, source, handle }))
     }
 }
 

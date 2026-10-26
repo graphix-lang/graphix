@@ -152,8 +152,11 @@ async fn assert_deferred_focus(context_menu: bool) -> Result<()> {
         r#"use gui::text::text; let result = text(&"placeholder")"#,
     )
     .await?;
-    h.inner.root.w =
-        Box::new(FocusInput { id: Id::unique(), prepared: false, context_menu });
+    h.inner.root.w = crate::widgets::GuiW::new(FocusInput {
+        id: Id::unique(),
+        prepared: false,
+        context_menu,
+    });
     assert!(matches!(h.type_text("a").as_slice(), [Message::Nop]));
     Ok(())
 }

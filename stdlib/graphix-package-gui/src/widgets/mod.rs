@@ -3,10 +3,15 @@ use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref, reconcile};
+use graphix_types::stack::{StackGuarded, ensure_sufficient};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
 use serde_derive::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin};
+use std::{
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+};
 
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
@@ -142,8 +147,6 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// have none (the default); containers override.
     fn for_each_child_mut(&mut self, _f: &mut dyn FnMut(&mut GuiW<X>)) {}
 
-    fn for_each_child(&self, _f: &mut dyn FnMut(&GuiW<X>)) {}
-
     /// Dispatch a message to the widget. Returns `true` if a redraw
     /// is needed. Follow-up messages go through `shell`. The default
     /// forwards to children.
@@ -151,21 +154,6 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         let mut changed = false;
         self.for_each_child_mut(&mut |c| changed |= c.on_message(msg, shell));
         changed
-    }
-
-    /// True if this widget or any descendant is tracking a
-    /// column-resize drag.
-    // CR claude for claude: [dead/low] Nothing calls this through the trait. Its one
-    // caller is DataTableW::on_message, on itself, and DataTableW overrides it as
-    // resize_drag.is_some(), so the recursive default is dead. It is also the only
-    // non-test user of the immutable for_each_child, which 11 containers implement
-    // beside for_each_child_mut. Make it an inline read of resize_drag in the data
-    // table. Then make for_each_child test-only, or move its three test callers to
-    // for_each_child_mut and delete it. Found by reading; not run. (gui-widgets-a-03)
-    fn is_column_resizing(&self) -> bool {
-        let mut resizing = false;
-        self.for_each_child(&mut |c| resizing |= c.is_column_resizing());
-        resizing
     }
 
     /// Return a DataTableSnapshot if this widget is a data table.
@@ -219,7 +207,58 @@ pub(crate) fn ask_idle<X: GXExt>(gx: &GXHandle<X>) {
     }
 }
 
-pub type GuiW<X> = Box<dyn GuiWidget<X>>;
+/// A widget in a tree as deep as the program builds it: every walk into
+/// one runs with a guaranteed stack.
+pub struct GuiW<X: GXExt>(Box<dyn GuiWidget<X>>);
+
+impl<X: GXExt> GuiW<X> {
+    pub(crate) fn new(w: impl GuiWidget<X>) -> Self {
+        Self(Box::new(w))
+    }
+
+    pub(crate) fn handle_update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        ensure_sufficient(|| self.0.handle_update(rt, id, v))
+    }
+
+    pub(crate) fn view(&self) -> IcedElement<'_> {
+        ensure_sufficient(|| self.0.view())
+    }
+
+    pub(crate) fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
+        ensure_sufficient(|| self.0.on_message(msg, shell))
+    }
+
+    pub(crate) fn take_ops(&mut self, out: &mut Vec<WidgetOp>) {
+        ensure_sufficient(|| self.0.take_ops(out))
+    }
+
+    pub(crate) fn before_view(&mut self) -> bool {
+        ensure_sufficient(|| self.0.before_view())
+    }
+
+    pub(crate) fn idle(&mut self) -> bool {
+        ensure_sufficient(|| self.0.idle())
+    }
+}
+
+impl<X: GXExt> Deref for GuiW<X> {
+    type Target = dyn GuiWidget<X>;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl<X: GXExt> DerefMut for GuiW<X> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
+    }
+}
 
 /// What a widget asks of its iced widgets between frames.
 pub enum WidgetOp {
@@ -248,7 +287,7 @@ impl<X: GXExt> Child<X> {
 
     pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
         let w = match r.last.as_ref() {
-            None => Box::new(EmptyW) as GuiW<X>,
+            None => GuiW::new(EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await?,
         };
         Ok(Self { r, w })
@@ -273,34 +312,77 @@ impl<X: GXExt> Child<X> {
     }
 }
 
-/// A list of child widgets: its ref, and each widget beside the value it
-/// compiled from, so a new list keeps the children it still holds.
-pub struct Children<X: GXExt> {
-    pub(crate) r: Ref<X>,
-    pub(crate) ws: Vec<(Value, GuiW<X>)>,
+/// What a `Children` list holds: compiled from an element of the list's
+/// value, and taking each update for what it compiled.
+pub(crate) trait Item<X: GXExt>: Sized + Send {
+    fn compile(gx: &GXHandle<X>, v: Value) -> impl Future<Output = Result<Self>> + Send;
+
+    /// Take an update for this item or its descendants. Returns whether
+    /// the window should redraw.
+    fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool>;
 }
 
-impl<X: GXExt> Children<X> {
-    /// The children the widget value `v`'s field `name` refers to.
-    pub(crate) async fn field(gx: &GXHandle<X>, v: &Value, name: &str) -> Result<Self> {
-        let r = gx.compile_field(v, name).await?;
-        Self::compile(gx, r).await.with_context(|| format!("children {name}"))
+impl<X: GXExt> Item<X> for GuiW<X> {
+    fn compile(gx: &GXHandle<X>, v: Value) -> impl Future<Output = Result<Self>> + Send {
+        compile(gx.clone(), v)
     }
 
-    pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
-        let vals = match r.last.as_ref() {
-            None => LPooled::take(),
-            Some(v) => v.clone().cast_to::<LPooled<Vec<Value>>>()?,
-        };
-        let mut ws = Vec::new();
-        reconcile(&mut ws, vals, |v| compile(gx.clone(), v)).await?;
-        Ok(Self { r, ws })
+    fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        _gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        self.handle_update(rt, id, v)
+    }
+}
+
+/// A list property: its ref, and each item beside the value it compiled
+/// from, so a new list keeps the items it still holds.
+pub struct Children<X: GXExt, T = GuiW<X>> {
+    pub(crate) r: Ref<X>,
+    pub(crate) ws: Vec<(Value, T)>,
+}
+
+impl<X: GXExt, T: Item<X>> Children<X, T> {
+    /// The list the widget value `v`'s field `name` refers to.
+    pub(crate) fn field(
+        gx: &GXHandle<X>,
+        v: &Value,
+        name: &str,
+    ) -> impl Future<Output = Result<Self>> + Send {
+        async move {
+            let r = gx.compile_field(v, name).await?;
+            Self::compile(gx, r).await.with_context(|| format!("children {name}"))
+        }
     }
 
-    /// Take an update for the ref or for a descendant. A new list keeps
-    /// every child whose value it still holds, wherever it moved, and
-    /// compiles only the values it did not. Returns whether the window
-    /// should redraw.
+    pub(crate) fn compile(
+        gx: &GXHandle<X>,
+        r: Ref<X>,
+    ) -> impl Future<Output = Result<Self>> + Send {
+        async move {
+            let vals = match r.last.as_ref() {
+                None => LPooled::take(),
+                Some(v) => v.clone().cast_to::<LPooled<Vec<Value>>>()?,
+            };
+            let mut ws = Vec::new();
+            reconcile(&mut ws, vals, |v| T::compile(gx, v)).await?;
+            Ok(Self { r, ws })
+        }
+    }
+
+    /// Take an update for the ref or for an item. A new list keeps every
+    /// item whose value it still holds, wherever it moved, and compiles
+    /// only the values it did not. Returns whether the window should
+    /// redraw.
     pub(crate) fn update(
         &mut self,
         rt: &tokio::runtime::Handle,
@@ -309,7 +391,7 @@ impl<X: GXExt> Children<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        // CR claude for claude: [structure/low] This recompile-on-change block is
+        // XCR claude for claude: [structure/low] This recompile-on-change block is
         // copied by hand in MenuItems::update, MenuBarW::handle_update and twice in
         // TableW::handle_update. The matching None-or-cast at compile time is copied in
         // MenuItems::compile, MenuBarW::compile and TableW::compile. Children is
@@ -319,14 +401,21 @@ impl<X: GXExt> Children<X> {
         // items, menu groups and table columns and rows. That deletes the copies, which
         // today differ in their error context. Found by reading; not run.
         // (gui-widgets-b-03)
+        // 2026-10-26 claude: Children<X, T = GuiW<X>> holds any Item (compile from a
+        // value, take an update); GuiW, MenuItemKind, CompiledMenuGroup, CompiledColumn
+        // and a table row (Vec<GuiW>) implement it, so MenuItems is Children<X,
+        // MenuItemKind<X>> and MenuBarW's menus and TableW's columns and rows are
+        // Children; the four hand copies and the three None-or-cast blocks are gone,
+        // each list's context now added by its caller. Pins: the gui package's menu,
+        // context menu, table and reconcile tests (all 324 pass).
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
             let vals = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
-            rt.block_on(reconcile(&mut self.ws, vals, |v| compile(gx.clone(), v)))?;
+            rt.block_on(reconcile(&mut self.ws, vals, |v| T::compile(gx, v)))?;
             self.r.last = Some(v.clone());
             changed = true;
         }
         for (_, w) in &mut self.ws {
-            changed |= w.handle_update(rt, id, v)?;
+            changed |= w.update(rt, gx, id, v)?;
         }
         Ok(changed)
     }
@@ -439,7 +528,7 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 /// control shows its newest send, so input that comes before an echo builds
 /// on what the user did, not on the stale value; a send answered and not
 /// echoed by the time the runtime is idle was rejected.
-// CR claude for claude: [structure/low] The echo protocol is four steps, and every
+// XCR claude for claude: [structure/low] The echo protocol is four steps, and every
 // control repeats them by hand: answered then ask_idle, and retain_handler, in
 // handle_update; idle; and call_arg then send in on_message. That happens in checkbox
 // and toggler (toggle.rs, whose two trait impls are identical outside the macro that
@@ -448,6 +537,15 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 // Give Echoes an update(gx, id, handler) -> bool (answered + ask_idle + retain_handler)
 // and an on_call(msg, handler, shell, extract) -> bool, and move the shared toggle
 // methods into toggle_widget!. Found by reading; not run. (gui-widgets-b-04)
+// 2026-10-26 claude: Echoes::update(gx, id, handler) does answered + ask_idle +
+// retain_handler and Echoes::on_call(msg, handler, shell, extract) replaces call_arg +
+// send; answered, retain_handler and send are private now, so a control cannot take
+// part of the protocol. toggle_widget! generates both toggles' whole GuiWidget impl,
+// view included (the iced constructor is its last argument). Pins:
+// rejected_toggles_return_to_the_program_value,
+// rejected_text_input_returns_to_the_program_value,
+// rejected_text_editor_returns_to_the_program_value all fail with ask_idle dropped from
+// Echoes::update.
 pub(crate) struct Echoes<T>(std::collections::VecDeque<(ExprId, Option<T>, bool)>);
 
 impl<T: PartialEq> Echoes<T> {
@@ -455,12 +553,14 @@ impl<T: PartialEq> Echoes<T> {
         Self(std::collections::VecDeque::new())
     }
 
-    pub(crate) fn send<X: GXExt>(
+    /// Send the call `msg` makes to `handler`, when it makes one whose
+    /// argument `extract` reads, and hold what it sent until its echo.
+    pub(crate) fn on_call<X: GXExt>(
         &mut self,
-        value: T,
-        handler: &Handler<X>,
         msg: &Message,
+        handler: &Handler<X>,
         shell: &mut MessageShell,
+        extract: impl FnOnce(&Value) -> Option<T>,
     ) -> bool {
         let (Some(f), Message::Call(id, args)) = (handler.f.as_ref(), msg) else {
             return false;
@@ -468,6 +568,9 @@ impl<T: PartialEq> Echoes<T> {
         if f.id() != *id {
             return false;
         }
+        let Some(value) = args.first().and_then(extract) else {
+            return false;
+        };
         shell.call_handled = true;
         match f.call_answered(args.clone()) {
             Ok(()) => {
@@ -492,10 +595,26 @@ impl<T: PartialEq> Echoes<T> {
         at.is_some()
     }
 
+    /// Take an update after `handler`'s: an answer to a send not echoed
+    /// yet asks for the runtime's idle, which judges it, and a changed
+    /// handler retires the old one's sends. Returns whether what the
+    /// control shows changed.
+    pub(crate) fn update<X: GXExt>(
+        &mut self,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        handler: &Handler<X>,
+    ) -> bool {
+        if self.answered(id) {
+            ask_idle(gx);
+        }
+        self.retain_handler(handler)
+    }
+
     /// The answer `id` came for the oldest send it answers: one echoed
     /// already retires, one not waits for the runtime's idle to judge it,
     /// and this says so.
-    pub(crate) fn answered(&mut self, id: ExprId) -> bool {
+    fn answered(&mut self, id: ExprId) -> bool {
         let Some(i) = self.0.iter().position(|(a, _, done)| *a == id && !done) else {
             return false;
         };
@@ -522,7 +641,7 @@ impl<T: PartialEq> Echoes<T> {
         rejected
     }
 
-    pub(crate) fn retain_handler<X: GXExt>(&mut self, handler: &Handler<X>) -> bool {
+    fn retain_handler<X: GXExt>(&mut self, handler: &Handler<X>) -> bool {
         let answer = handler.f.as_ref().map(|f| f.answer);
         let mut changed = false;
         self.0.retain(|(id, v, _)| {
@@ -670,17 +789,13 @@ macro_rules! flex_widget {
                     Children::field(&gx, &source, "children"),
                 )
                 .context($label)?;
-                Ok(Box::new(Self { gx, p, children }))
+                Ok(GuiW::new(Self { gx, p, children }))
             }
         }
 
         impl<X: GXExt> GuiWidget<X> for $name<X> {
             fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
                 self.children.ws.iter_mut().for_each(|(_, w)| f(w))
-            }
-
-            fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-                self.children.ws.iter().for_each(|(_, w)| f(w))
             }
 
             fn handle_update(
@@ -729,7 +844,7 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 
 /// Compile a widget value into a GuiW. Returns a boxed future to
 /// avoid infinite-size futures from recursive async calls.
-// CR claude for claude: [bug/medium] This compile, and the handle_update, view and
+// XCR claude for claude: [bug/medium] This compile, and the handle_update, view and
 // on_message recursion over the widget tree, run with no stack guard. A container chain
 // 300 deep, compiled as the event loop does it (Handle::block_on on the 8 MiB main
 // thread), overflows and aborts the process; 100 deep compiles. The TUI got the fix for
@@ -738,8 +853,18 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 // both UI packages share (graphix-rt, beside reconcile), wrap this Box::pin in it, and
 // run the GuiWidget recursion under ensure_sufficient. probe:
 // design/review-2026-10-26/repro/x-stack-gui-deep-widget.rs (x-stack-02)
+// 2026-10-26 claude: StackGuarded moved to graphix_types::stack beside
+// ensure_sufficient (the TUI imports it there; graphix-rt does not reach graphix-types,
+// so not beside reconcile). widgets::compile is Box::pin(StackGuarded(..)), and GuiW is
+// now a newtype over the boxed widget whose handle_update, view, on_message, take_ops,
+// before_view and idle run under ensure_sufficient (Deref gives the rest), so every
+// walk into a child goes through the guard. Pin: a_deep_widget_tree_compiles_and_walks
+// (widgets_test.rs) compiles a 1000-deep container chain and runs every walk on a 128
+// KiB thread; it aborts with a stack overflow without the compile guard, and again
+// without the walk guards. Not covered: iced's own layout, draw and event recursion
+// over the Element tree, which is upstream.
 pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
-    Box::pin(async move {
+    Box::pin(StackGuarded(async move {
         let Some((s, [v])) = rep::variant(&source) else {
             bail!("invalid gui widget {source}")
         };
@@ -783,7 +908,7 @@ pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
                 graphix_compiler::typ::Naked(&v)
             ),
         }
-    })
+    }))
 }
 
 /// Compile an array of widget values into a Vec of GuiW.

@@ -33,7 +33,7 @@ impl<X: GXExt> RadioW<X> {
             Handler::field(&gx, &source, "on_select"),
         )
         .context("radio")?;
-        Ok(Box::new(Self { gx, p, on_select }))
+        Ok(GuiW::new(Self { gx, p, on_select }))
     }
 }
 

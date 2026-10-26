@@ -29,17 +29,13 @@ impl<X: GXExt> GridW<X> {
             Children::field(&gx, &source, "children"),
         )
         .context("grid")?;
-        Ok(Box::new(Self { gx, p, children }))
+        Ok(GuiW::new(Self { gx, p, children }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for GridW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         self.children.ws.iter_mut().for_each(|(_, w)| f(w))
-    }
-
-    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        self.children.ws.iter().for_each(|(_, w)| f(w))
     }
 
     fn handle_update(

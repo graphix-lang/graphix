@@ -1,6 +1,4 @@
-use super::{
-    Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell, call_arg,
-};
+use super::{Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell};
 use crate::types::{FontV, LengthV, PaddingV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -40,7 +38,7 @@ impl<X: GXExt> TextInputW<X> {
             Handler::field(&gx, &source, "on_submit"),
         )
         .context("text_input")?;
-        Ok(Box::new(Self { gx, p, on_input, on_submit, echoes: Echoes::new() }))
+        Ok(GuiW::new(Self { gx, p, on_input, on_submit, echoes: Echoes::new() }))
     }
 }
 
@@ -63,11 +61,7 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         self.on_submit
             .update(rt, &self.gx, id, v, &mut changed)
             .context("text_input on_submit recompile")?;
-        if self.echoes.answered(id) {
-            super::ask_idle(&self.gx);
-        }
-        changed |= self.echoes.retain_handler(&self.on_input);
-        Ok(changed)
+        Ok(self.echoes.update(&self.gx, id, &self.on_input) || changed)
     }
 
     fn idle(&mut self) -> bool {
@@ -111,11 +105,9 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
     }
 
     fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
-        match call_arg(msg, self.on_input.id()) {
-            Some(Value::String(s)) => {
-                self.echoes.send(s.clone(), &self.on_input, msg, shell)
-            }
-            _ => false,
-        }
+        self.echoes.on_call(msg, &self.on_input, shell, |v| match v {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
     }
 }

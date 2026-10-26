@@ -690,25 +690,25 @@ async fn stack_children_follow_rotation() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let _ = h.watch("test::slides").await?;
-    let order = |h: &InteractionHarness| -> Vec<usize> {
-        let count = |w: &crate::widgets::GuiW<NoExt>| {
+    let order = |h: &mut InteractionHarness| -> Vec<usize> {
+        let count = |w: &mut crate::widgets::GuiW<NoExt>| {
             let mut n = 0;
-            w.for_each_child(&mut |_| n += 1);
+            w.for_each_child_mut(&mut |_| n += 1);
             n
         };
         let (mut i, mut out) = (0, Vec::new());
-        h.inner.root.w.for_each_child(&mut |c| {
+        h.inner.root.w.for_each_child_mut(&mut |c| {
             if i == 1 {
-                c.for_each_child(&mut |slide| out.push(count(slide)));
+                c.for_each_child_mut(&mut |slide| out.push(count(slide)));
             }
             i += 1;
         });
         out
     };
-    assert_eq!(order(&h), [0, 1]);
+    assert_eq!(order(&mut h), [0, 1]);
     let msgs = h.click(WIDGET_HIT);
     h.dispatch_calls(&msgs).await?;
-    assert_eq!(order(&h), [1, 0]);
+    assert_eq!(order(&mut h), [1, 0]);
     Ok(())
 }
 
@@ -1473,6 +1473,20 @@ async fn stepped_slider_keys_wheel_and_drags_share_one_lattice() -> Result<()> {
         ))]);
         let dragged = f64_arg(&h.click(hit));
         assert_eq!(dragged - dragged.floor(), 0.5, "{name} drag: {dragged}");
+        for (start, key, sent) in
+            [(0.2, Named::ArrowUp, 0.3), (0.3, Named::ArrowDown, 0.2)]
+        {
+            let code = format_compact!(
+                "{IMPORTS}; let result = {name}(#min: &0.0, #max: &0.3, #step: &0.1, #on_change: |v| null, &{start})"
+            );
+            let mut h = InteractionHarness::with_viewport(&code, size).await?;
+            h.move_cursor(hit);
+            assert_eq!(
+                f64_arg(&h.press_key(key)),
+                sent,
+                "{name} decimal step from {start}"
+            );
+        }
     }
     Ok(())
 }

@@ -37,14 +37,8 @@ macro_rules! slider_dim_set {
     };
 }
 
-/// Generate a horizontal or vertical slider widget. Dims are passed in
-/// alphabetical order with a kind tag: `length` (primary axis) or
-/// `scalar` (cross axis).
-// CR claude for claude: [doc-drift/low] The doc above says the dims are passed in
-// alphabetical order. graphix_rt::props! looks each field up by name (compile_field(v,
-// stringify!(field))), so order has no effect, and the struct below already lists value
-// before height and width. Drop the ordering sentence and keep what the kind tags mean.
-// Found by reading; not run. (gui-widgets-b-05)
+/// Generate a horizontal or vertical slider widget. Each dim carries a
+/// kind tag: `length` (primary axis) or `scalar` (cross axis).
 macro_rules! slider_widget {
     ($name:ident, $props:ident, $label:literal, $Widget:ident,
      $dim1:ident: $kind1:tt, $dim2:ident: $kind2:tt) => {
@@ -78,7 +72,7 @@ macro_rules! slider_widget {
                     Handler::field(&gx, &source, "on_release"),
                 )
                 .context($label)?;
-                Ok(Box::new(Self { gx, p, on_change, on_release }))
+                Ok(GuiW::new(Self { gx, p, on_change, on_release }))
             }
         }
 
@@ -210,7 +204,7 @@ impl Scale {
                 min: bounds.min,
                 max: bounds.max,
                 step,
-                // CR claude for claude: [bug/medium] The step count is floor((max -
+                // XCR claude for claude: [bug/medium] The step count is floor((max -
                 // min) / step), and that quotient often comes out a hair under an
                 // integer in floating point: 0.3 / 0.1 is 2.9999999999999996, and 0.6 /
                 // 0.1 and 0.7 / 0.1 likewise. slider(#min: &0.0, #max: &0.3, #step:
@@ -224,7 +218,13 @@ impl Scale {
                 // only uses step 1.0. probe:
                 // design/review-2026-10-26/repro/gui-widgets-b-slider-step-floor.py
                 // (replays this formula in f64). (gui-widgets-b-01)
-                count: ((bounds.max - bounds.min) / step).floor(),
+                // 2026-10-26 claude: Scale::new counts steps through step_count, which
+                // takes a quotient within 4 ulps of an integer as that integer, else
+                // floors it; [0, 0.3] by 0.1 now has four positions. Pin:
+                // stepped_slider_keys_wheel_and_drags_share_one_lattice (0.2 + ArrowUp
+                // sends 0.3, 0.3 + ArrowDown sends 0.2, on both sliders; with floor the
+                // first sends nothing).
+                count: step_count((bounds.max - bounds.min) / step),
             },
             _ => Self::Fraction(bounds),
         }
@@ -248,6 +248,18 @@ impl Scale {
             }
             Self::Fraction(bounds) => bounds.value(position),
         }
+    }
+}
+
+/// The whole steps in a span of `quotient` steps. A quotient within a
+/// few ulps of an integer is that integer, since a decimal step is not
+/// exact in binary (0.3 / 0.1 is 2.9999999999999996).
+fn step_count(quotient: f64) -> f64 {
+    let nearest = quotient.round();
+    if (quotient - nearest).abs() <= 4.0 * f64::EPSILON * nearest.max(1.0) {
+        nearest
+    } else {
+        quotient.floor()
     }
 }
 

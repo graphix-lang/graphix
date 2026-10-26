@@ -29,7 +29,7 @@ impl<X: GXExt> TextW<X> {
     }
 
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        Ok(Box::new(Self(Props::compile(&gx, &source).await.context("text")?)))
+        Ok(GuiW::new(Self(Props::compile(&gx, &source).await.context("text")?)))
     }
 }
 

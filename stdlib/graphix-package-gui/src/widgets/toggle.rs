@@ -1,6 +1,4 @@
-use super::{
-    Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell, call_arg,
-};
+use super::{Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell};
 use crate::types::{LengthV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -20,10 +18,11 @@ graphix_rt::props! {
     }
 }
 
-/// Generate the struct, compile(), and handle_update helper for a boolean
-/// toggle widget; `$state` names the boolean field.
+/// Generate a boolean toggle widget; `$state` names the boolean field and
+/// `$new` builds the iced widget from the state shown, `$shown`, and the
+/// label, `$text`.
 macro_rules! toggle_widget {
-    ($name:ident, $label:literal, $state:ident) => {
+    ($name:ident, $label:literal, $state:ident, |$shown:ident, $text:ident| $new:expr) => {
         pub(crate) struct $name<X: GXExt> {
             gx: GXHandle<X>,
             p: Props<X>,
@@ -49,10 +48,12 @@ macro_rules! toggle_widget {
                     " ",
                     stringify!($state)
                 ))?;
-                Ok(Box::new(Self { gx, p, $state, on_toggle, echoes: Echoes::new() }))
+                Ok(GuiW::new(Self { gx, p, $state, on_toggle, echoes: Echoes::new() }))
             }
+        }
 
-            fn do_update(
+        impl<X: GXExt> GuiWidget<X> for $name<X> {
+            fn handle_update(
                 &mut self,
                 rt: &tokio::runtime::Handle,
                 id: ExprId,
@@ -70,120 +71,52 @@ macro_rules! toggle_widget {
                 self.on_toggle
                     .update(rt, &self.gx, id, v, &mut changed)
                     .context(concat!($label, " on_toggle"))?;
-                if self.echoes.answered(id) {
-                    super::ask_idle(&self.gx);
-                }
-                changed |= self.echoes.retain_handler(&self.on_toggle);
-                Ok(changed)
+                Ok(self.echoes.update(&self.gx, id, &self.on_toggle) || changed)
             }
 
-            /// The state shown: the newest toggle not echoed yet, else the
-            /// program's.
-            fn shown(&self) -> bool {
-                *self.echoes.shown(self.$state.t.as_ref()).unwrap_or(&false)
+            fn idle(&mut self) -> bool {
+                self.echoes.idle()
             }
 
-            fn note_toggle(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
-                match call_arg(msg, self.on_toggle.id()) {
-                    Some(Value::Bool(b)) => {
-                        self.echoes.send(*b, &self.on_toggle, msg, shell)
+            fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
+                self.echoes.on_call(msg, &self.on_toggle, shell, |v| match v {
+                    Value::Bool(b) => Some(*b),
+                    _ => None,
+                })
+            }
+
+            fn view(&self) -> IcedElement<'_> {
+                let $text = self.p.label.t.as_deref().unwrap_or("");
+                let $shown = *self.echoes.shown(self.$state.t.as_ref()).unwrap_or(&false);
+                let mut w = $new;
+                if !self.p.disabled.t.unwrap_or(false) {
+                    if let Some(callable) = &self.on_toggle.f {
+                        let id = callable.id();
+                        w = w.on_toggle(move |b| {
+                            Message::Call(id, ValArray::from_iter([Value::from(b)]))
+                        });
                     }
-                    _ => false,
                 }
+                if let Some(width) = self.p.width.t.as_ref() {
+                    w = w.width(width.0);
+                }
+                if let Some(Some(TextSizeV(sz))) = self.p.size.t {
+                    w = w.size(sz);
+                }
+                if let Some(Some(sp)) = self.p.spacing.t {
+                    w = w.spacing(sp as f32);
+                }
+                w.into()
             }
         }
     };
 }
 
-toggle_widget!(CheckboxW, "checkbox", is_checked);
+toggle_widget!(CheckboxW, "checkbox", is_checked, |checked, label| {
+    widget::Checkbox::new(checked).label(label)
+});
 
-impl<X: GXExt> GuiWidget<X> for CheckboxW<X> {
-    fn handle_update(
-        &mut self,
-        rt: &tokio::runtime::Handle,
-        id: ExprId,
-        v: &Value,
-    ) -> Result<bool> {
-        self.do_update(rt, id, v)
-    }
-
-    fn idle(&mut self) -> bool {
-        self.echoes.idle()
-    }
-
-    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
-        self.note_toggle(msg, shell)
-    }
-
-    fn view(&self) -> IcedElement<'_> {
-        let label = self.p.label.t.as_deref().unwrap_or("");
-        let checked = self.shown();
-        let mut cb = widget::Checkbox::new(checked).label(label);
-        if !self.p.disabled.t.unwrap_or(false) {
-            if let Some(callable) = &self.on_toggle.f {
-                let id = callable.id();
-                cb = cb.on_toggle(move |b| {
-                    Message::Call(id, ValArray::from_iter([Value::from(b)]))
-                });
-            }
-        }
-        if let Some(w) = self.p.width.t.as_ref() {
-            cb = cb.width(w.0);
-        }
-        if let Some(Some(TextSizeV(sz))) = self.p.size.t {
-            cb = cb.size(sz);
-        }
-        if let Some(Some(sp)) = self.p.spacing.t {
-            cb = cb.spacing(sp as f32);
-        }
-        cb.into()
-    }
-}
-
-toggle_widget!(TogglerW, "toggler", is_toggled);
-
-impl<X: GXExt> GuiWidget<X> for TogglerW<X> {
-    fn handle_update(
-        &mut self,
-        rt: &tokio::runtime::Handle,
-        id: ExprId,
-        v: &Value,
-    ) -> Result<bool> {
-        self.do_update(rt, id, v)
-    }
-
-    fn idle(&mut self) -> bool {
-        self.echoes.idle()
-    }
-
-    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
-        self.note_toggle(msg, shell)
-    }
-
-    fn view(&self) -> IcedElement<'_> {
-        let label = self.p.label.t.as_deref().unwrap_or("");
-        let toggled = self.shown();
-        let mut tg = widget::Toggler::new(toggled);
-        if !label.is_empty() {
-            tg = tg.label(label);
-        }
-        if !self.p.disabled.t.unwrap_or(false) {
-            if let Some(callable) = &self.on_toggle.f {
-                let id = callable.id();
-                tg = tg.on_toggle(move |b| {
-                    Message::Call(id, ValArray::from_iter([Value::from(b)]))
-                });
-            }
-        }
-        if let Some(w) = self.p.width.t.as_ref() {
-            tg = tg.width(w.0);
-        }
-        if let Some(Some(TextSizeV(sz))) = self.p.size.t {
-            tg = tg.size(sz);
-        }
-        if let Some(Some(sp)) = self.p.spacing.t {
-            tg = tg.spacing(sp as f32);
-        }
-        tg.into()
-    }
-}
+toggle_widget!(TogglerW, "toggler", is_toggled, |toggled, label| {
+    let tg = widget::Toggler::new(toggled);
+    if label.is_empty() { tg } else { tg.label(label) }
+});

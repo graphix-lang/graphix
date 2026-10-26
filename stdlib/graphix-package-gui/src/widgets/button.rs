@@ -31,17 +31,13 @@ impl<X: GXExt> ButtonW<X> {
             Child::field(&gx, &source, "child"),
         )
         .context("button")?;
-        Ok(Box::new(Self { gx, p, on_press, child }))
+        Ok(GuiW::new(Self { gx, p, on_press, child }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         f(&mut self.child.w);
-    }
-
-    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child.w);
     }
 
     fn handle_update(

@@ -96,7 +96,7 @@ impl<X: GXExt> ChartW<X> {
             cached_view: Cell::new(None),
         };
         chart.refresh_data();
-        Ok(Box::new(chart))
+        Ok(GuiW::new(chart))
     }
 
     pub(crate) fn bar_categories(&self) -> &[ArcStr] {

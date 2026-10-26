@@ -40,7 +40,7 @@ impl<X: GXExt> ComboBoxW<X> {
         .context("combo_box")?;
         let typed = String::new();
         let state = Self::state(&p, &typed);
-        Ok(Box::new(Self { gx, p, on_select, state, typed }))
+        Ok(GuiW::new(Self { gx, p, on_select, state, typed }))
     }
 }
 

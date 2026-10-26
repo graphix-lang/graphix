@@ -26,7 +26,7 @@ impl<X: GXExt> KeyboardAreaW<X> {
             Handler::field(&gx, &source, "on_key_release"),
         )
         .context("keyboard_area")?;
-        Ok(Box::new(Self { gx, child, on_key_press, on_key_release }))
+        Ok(GuiW::new(Self { gx, child, on_key_press, on_key_release }))
     }
 }
 
@@ -64,10 +64,6 @@ pub(crate) fn key_event_to_value(
 impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         f(&mut self.child.w);
-    }
-
-    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child.w);
     }
 
     fn handle_update(

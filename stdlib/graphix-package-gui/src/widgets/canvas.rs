@@ -212,7 +212,7 @@ impl<X: GXExt> CanvasW<X> {
 
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let p = Props::compile(&gx, &source).await.context("canvas")?;
-        Ok(Box::new(Self {
+        Ok(GuiW::new(Self {
             p,
             cache: iced_canvas::Cache::new(),
             invalid_geometry: Cell::new(false),

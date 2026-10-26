@@ -261,7 +261,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         w.push_defaults_to_sparklines(None);
         w.reconcile();
-        Ok(Box::new(w))
+        Ok(GuiW::new(w))
     }
 }
 
@@ -458,7 +458,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             }
             TableMsg::ColumnResizeStart(ci) => self.handle_column_resize_start(*ci),
             TableMsg::ColumnResizeMove(x) => {
-                if !self.is_column_resizing() {
+                if self.resize_drag.is_none() {
                     return false;
                 }
                 if let Some((cid, w)) = self.handle_mouse_move_resize(*x) {
@@ -471,10 +471,6 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             }
             TableMsg::ColumnResizeEnd => self.handle_column_resize_end(),
         }
-    }
-
-    fn is_column_resizing(&self) -> bool {
-        self.resize_drag.is_some()
     }
 
     fn take_ops(&mut self, out: &mut Vec<WidgetOp>) {

@@ -33,17 +33,21 @@ impl<X: GXExt> MouseAreaW<X> {
             Handler::field(&gx, &source, "on_move"),
         )
         .context("mouse_area")?;
-        Ok(Box::new(Self { gx, child, on_press, on_release, on_enter, on_exit, on_move }))
+        Ok(GuiW::new(Self {
+            gx,
+            child,
+            on_press,
+            on_release,
+            on_enter,
+            on_exit,
+            on_move,
+        }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         f(&mut self.child.w);
-    }
-
-    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child.w);
     }
 
     fn handle_update(

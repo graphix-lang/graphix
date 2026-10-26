@@ -492,7 +492,7 @@ async fn a_refused_update_does_not_drop_the_rest_of_the_batch() -> Result<()> {
 
     let mut h = harness(r#"text(&"test")"#).await?;
     h.drain().await?;
-    h.root.w = Box::new(Counter(0));
+    h.root.w = crate::widgets::GuiW::new(Counter(0));
     let (tx, rx) = mpsc::channel(1);
     h.f.rx = rx;
     let mut batch: GPooled<Vec<GXEvent>> = GPooled::take();
@@ -503,4 +503,37 @@ async fn a_refused_update_does_not_drop_the_rest_of_the_batch() -> Result<()> {
     assert!(h.drain().await.is_err());
     assert_eq!(h.root.w.as_any().downcast_ref::<Counter>().unwrap().0, 2);
     Ok(())
+}
+
+/// A widget tree as deep as the program builds it compiles, and every
+/// walk of it runs on a stack of its own, even from a thread with little
+/// of one (x-stack-02).
+#[tokio::test(flavor = "current_thread")]
+async fn a_deep_widget_tree_compiles_and_walks() -> Result<()> {
+    use crate::widgets::{Message, MessageShell};
+    use graphix_compiler::expr::ExprId;
+    let code = format!(
+        "{IMPORTS};\nlet label = \"x\";\nlet result = array::fold(\
+         array::init(1000, |i| i), text(&label), |acc, i| container(&acc))"
+    );
+    let mut h = GuiTestHarness::new(&code).await?;
+    h.set_var("test::label", Value::from("y"))?;
+    assert!(h.drain().await?, "the leaf takes the update");
+    let (rt, w) = (h.rt_handle.clone(), &mut h.root.w);
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(128 << 10)
+            .spawn_scoped(s, move || -> Result<()> {
+                w.handle_update(&rt, ExprId::new(), &Value::Null)?;
+                let message = Message::ComboText(ExprId::new(), String::new());
+                w.on_message(&message, &mut MessageShell::default());
+                w.idle();
+                w.take_ops(&mut Vec::new());
+                w.before_view();
+                drop(w.view());
+                Ok(())
+            })?
+            .join()
+            .expect("the walks ran")
+    })
 }

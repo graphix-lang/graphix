@@ -40,10 +40,13 @@ pub struct SnapPoint {
     pub value: CompactString,
 }
 
-/// A drag in progress: where it started and the view it started from.
+/// A press in progress: where it went down, the view it started from,
+/// and whether the cursor has left `CLICK_SLOP` of `origin`, which makes
+/// it a pan rather than a click.
 struct Drag {
     origin: Point,
     position: Point,
+    panning: bool,
     x_view: Option<(f64, f64)>,
     y_view: Option<(f64, f64)>,
     yaw: f64,
@@ -64,7 +67,6 @@ pub struct ChartState {
     /// the tooltip is redrawn when it changes.
     hover: Option<(usize, usize)>,
     drag: Option<Drag>,
-    press: Option<Point>,
     last_click: Option<(Point, Instant)>,
 }
 
@@ -79,7 +81,6 @@ impl Default for ChartState {
             scale_factor: 1.0,
             hover: None,
             drag: None,
-            press: None,
             last_click: None,
         }
     }
@@ -141,7 +142,6 @@ impl ChartState {
             self.reset_view();
             self.hover = None;
             self.drag = None;
-            self.press = None;
             self.last_click = None;
         }
         match event {
@@ -154,9 +154,13 @@ impl ChartState {
                         return Some(Action::capture());
                     }
                     d.position = local;
+                    d.panning |= d.origin.distance(local) > CLICK_SLOP;
+                    if !d.panning {
+                        return Some(Action::capture());
+                    }
                     let (dx, dy) = (local.x - d.origin.x, local.y - d.origin.y);
                     let before = self.view_for(chart);
-                    // CR claude for claude: [bug/medium] A press released within
+                    // XCR claude for claude: [bug/medium] A press released within
                     // CLICK_SLOP counts as a click for the double-click test, but by
                     // then the first CursorMoved of the press has already run
                     // handle_drag. That sets x_view and y_view to the starting view
@@ -168,6 +172,13 @@ impl ChartState {
                     // click release), and add a click-with-jitter case to
                     // double_clicks_are_clicks_in_one_place. Found by reading; not run.
                     // (gui-chart-02)
+                    // 2026-10-26 claude: A Drag records panning, set once the cursor
+                    // leaves CLICK_SLOP of its origin; a move before that pans nothing,
+                    // and a release is a click only of a press that never panned
+                    // (ChartState::press, which always equalled the drag's origin, is
+                    // gone). Pin: double_clicks_are_clicks_in_one_place clicks with a
+                    // one-pixel move and asserts no view was pinned, and every click
+                    // there now jitters.
                     self.handle_drag(mode, chart.plot_info.get(), dx, dy);
                     return Some(if self.view_for(chart) != before {
                         chart.cache.clear();
@@ -211,10 +222,10 @@ impl ChartState {
                     return None;
                 }
                 let pos = cursor.position_in(bounds)?;
-                self.press = Some(pos);
                 self.drag = Some(Drag {
                     origin: pos,
                     position: pos,
+                    panning: false,
                     x_view: self
                         .x_view
                         .or_else(|| chart.plot_info.get().map(|i| i.x_range)),
@@ -227,10 +238,10 @@ impl ChartState {
                 Some(Action::capture())
             }
             Event::Mouse(ME::ButtonReleased(mouse::Button::Left)) => {
-                let dragged = self.drag.take().is_some();
-                if let (Some(down), Some(up)) =
-                    (self.press.take(), cursor.position_in(bounds))
-                    && down.distance(up) <= CLICK_SLOP
+                let drag = self.drag.take()?;
+                if !drag.panning
+                    && let Some(up) = cursor.position_in(bounds)
+                    && drag.origin.distance(up) <= CLICK_SLOP
                 {
                     let now = Instant::now();
                     match self.last_click.take() {
@@ -243,7 +254,7 @@ impl ChartState {
                         _ => self.last_click = Some((up, now)),
                     }
                 }
-                dragged.then(|| Action::request_redraw().and_capture())
+                Some(Action::request_redraw().and_capture())
             }
             Event::Mouse(ME::CursorLeft) => {
                 self.hover.take().map(|_| Action::request_redraw())

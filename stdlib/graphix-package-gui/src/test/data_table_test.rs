@@ -2363,12 +2363,12 @@ let result = table(&[table_column(&text(&"t"))], &[[dt]])
 "#
     );
     let mut h = GuiTestHarness::new(&table_code(&code)).await?;
-    fn order(w: &crate::widgets::GuiW<NoExt>) -> Option<Vec<String>> {
+    fn order(w: &mut crate::widgets::GuiW<NoExt>) -> Option<Vec<String>> {
         if let Some(s) = w.data_table_snapshot() {
             return Some(s.row_basenames);
         }
         let mut found = None;
-        w.for_each_child(&mut |c| {
+        w.for_each_child_mut(&mut |c| {
             if found.is_none() {
                 found = order(c)
             }
@@ -2378,7 +2378,7 @@ let result = table(&[table_column(&text(&"t"))], &[[dt]])
     let wait = |want: [&'static str; 2]| {
         move |h: &mut GuiTestHarness| {
             h.before_view();
-            order(&h.root.w).is_some_and(|o| o == want)
+            order(&mut h.root.w).is_some_and(|o| o == want)
         }
     };
     h.wait_until(wait(["r1", "r0"]), std::time::Duration::from_secs(5), "first sort")

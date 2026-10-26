@@ -32,7 +32,7 @@ impl<X: GXExt> PickListW<X> {
             Handler::field(&gx, &source, "on_select"),
         )
         .context("pick_list")?;
-        Ok(Box::new(Self { gx, p, on_select }))
+        Ok(GuiW::new(Self { gx, p, on_select }))
     }
 }
 

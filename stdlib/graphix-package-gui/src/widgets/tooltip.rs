@@ -29,7 +29,7 @@ impl<X: GXExt> TooltipW<X> {
             Child::field(&gx, &source, "tip"),
         )
         .context("tooltip")?;
-        Ok(Box::new(Self { gx, p, child, tip }))
+        Ok(GuiW::new(Self { gx, p, child, tip }))
     }
 }
 
@@ -37,11 +37,6 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         f(&mut self.child.w);
         f(&mut self.tip.w);
-    }
-
-    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child.w);
-        f(&self.tip.w);
     }
 
     fn handle_update(

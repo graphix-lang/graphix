@@ -16,21 +16,18 @@ pub(crate) struct ContextMenuW<X: GXExt> {
 
 impl<X: GXExt> ContextMenuW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let (child, items) = try_join!(Child::field(&gx, &source, "child"), async {
-            MenuItems::compile(&gx, gx.compile_field(&source, "items").await?).await
-        },)
+        let (child, items) = try_join!(
+            Child::field(&gx, &source, "child"),
+            MenuItems::field(&gx, &source, "items"),
+        )
         .context("context_menu")?;
-        Ok(Box::new(Self { gx: gx.clone(), child, items }))
+        Ok(GuiW::new(Self { gx: gx.clone(), child, items }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for ContextMenuW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         f(&mut self.child.w);
-    }
-
-    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child.w);
     }
 
     fn handle_update(

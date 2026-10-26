@@ -666,7 +666,8 @@ async fn a_view_belongs_to_its_chart_mode() -> Result<()> {
 }
 
 /// A press that moves is a drag, two quick clicks in one place reset the
-/// view, and two quick clicks apart do not.
+/// view, and two quick clicks apart do not; a click whose cursor jitters
+/// inside the slop pans nothing.
 #[tokio::test(flavor = "current_thread")]
 async fn double_clicks_are_clicks_in_one_place() -> Result<()> {
     use iced_core::{event::Event, mouse::Event as ME};
@@ -679,14 +680,18 @@ async fn double_clicks_are_clicks_in_one_place() -> Result<()> {
     let away = Event::Mouse(ME::CursorMoved { position: Point::new(1.0, 1.0) });
     let _ = state.handle_event(c, &away, bounds, mouse::Cursor::Unavailable);
     let click = |state: &mut ChartState, p: Point| {
-        let at = mouse::Cursor::Available(p);
-        for ev in [
-            ME::ButtonPressed(mouse::Button::Left),
-            ME::ButtonReleased(mouse::Button::Left),
+        let up = Point::new(p.x + 1.0, p.y);
+        for (ev, at) in [
+            (ME::ButtonPressed(mouse::Button::Left), p),
+            (ME::CursorMoved { position: up }, up),
+            (ME::ButtonReleased(mouse::Button::Left), up),
         ] {
+            let at = mouse::Cursor::Available(at);
             let _ = state.handle_event(c, &Event::Mouse(ev), bounds, at);
         }
     };
+    click(&mut state, Point::new(300.0, 200.0));
+    assert_eq!((state.x_view, state.y_view), (None, None), "a click pans nothing");
     state.x_view = Some((1.0, 2.0));
     click(&mut state, Point::new(100.0, 100.0));
     click(&mut state, Point::new(250.0, 100.0));
