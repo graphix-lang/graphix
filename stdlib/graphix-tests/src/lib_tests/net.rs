@@ -480,14 +480,16 @@ run!(net_rpc_handler_raises, r#"{
             && matches!(&a[1], Value::String(m) if &**m == "the rpc failed")))
 }; FuseExpect::None);
 
-// Past #max_inflight unanswered calls, a call is refused.
+// Past #max_inflight unanswered calls, a call is refused: the second is
+// made once the handler holds the first.
 run!(net_rpc_max_inflight, r#"{
+  let holding = never<null>();
   sys::net::rpc(#path: "/local/pin/inflight", #doc: "hold", #spec: null, #max_inflight: 1,
-    #f: |a: null| never<i64>());
+    #f: |a: null| { holding <- a; never<i64>() });
   let held: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
     sys::net::call("/local/pin/inflight", null);
   let refused: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
-    sys::net::call(sys::time::after_idle(duration:100.ms, null) ~ "/local/pin/inflight", null);
+    sys::net::call(holding ~ "/local/pin/inflight", null);
   refused
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::Array(a)
