@@ -3845,6 +3845,70 @@ run!(
 );
 
 run!(
+    nested_union_binds_take_every_member,
+    r#"{
+    type P = [(i64, i64), (string, string)];
+    let f = |x: Array<P>| select x { [(a, _)] => "one [a]", _ => "other" };
+    let g = |x: {f: P}| select x { {f: (a, _)} => "f [a]" };
+    let h = |x: (P, i64)| select x { ((a, _), _) => "t [a]" };
+    let k = |x: `A(P)| select x { `A((a, _)) => "v [a]" };
+    let l = |x: Array<P>| select x { [(a, _), ..] => "s [a]", [] => "e" };
+    let o = |x: Array<[`A(i64), `B(string)]>| select x { [`A(y) | `B(y), ..] => "o [y]", _ => "e" };
+    let m = |x: List<P>| select x { [<(a, _), r..>] => "m [a] [list::len(r)]", _ => "e" };
+    [f([(1, 2)]), f([("s", "t")]), g({f: (1, 2)}), g({f: ("s", "t")}), h(((1, 2), 0)),
+     h((("s", "t"), 0)), k(`A((1, 2))), k(`A(("s", "t"))), l([("s", "t")]), l([(1, 2)]),
+     o([`B("x")]), o([`A(1)]), m([<("s", "t"), (1, 2)>])]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => a
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.as_str(),
+                _ => "",
+            })
+            .eq([
+                "one 1", "one s", "f 1", "f s", "t 1", "t s", "v 1", "v s", "s s", "s 1",
+                "o x", "o 1", "m s 1",
+            ]),
+        _ => false,
+    }
+);
+
+run!(
+    nested_whole_capture_takes_every_member,
+    r#"{
+    type U = [(i64, string), (string, i64)];
+    let n = |v: (U, i64)| select v {
+        (a@ (_, _), m) => select a {
+            (i64, string) as (x, _) => x + m,
+            (string, i64) as (_, y) => y + m
+        }
+    };
+    let w = |v: `W(U)| select v {
+        `W(a@ (_, _)) => select a {
+            (i64, string) as (x, _) => x,
+            (string, i64) as (_, y) => y * 10
+        }
+    };
+    [n((("a", 1), 2)), n(((3, "b"), 4)), w(`W(("c", 5))), w(`W((6, "d")))]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [3, 7, 50, 6],
+        _ => false,
+    }
+);
+
+run!(
+    nested_union_slice_bind_is_the_union,
+    r#"{
+    let g = |v: Array<[{a: i64, b: string}, {a: string, b: i64}]>|
+        select v { [{a, b}, ..] => a + 1, [] => 0 - 1 };
+    g([{a: "q", b: 1}])
+}"#,
+    refused("cannot compute [i64, string] + i64")
+);
+
+run!(
     slice_rest_scrutinee_type,
     r#"{
     type Tok = [`Open, `Close, `Num(i64)];

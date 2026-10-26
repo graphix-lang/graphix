@@ -789,7 +789,7 @@ impl StructPatternNode {
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
-    /// its part of each member the element's structure admits.
+    /// the union of its part of each member the element's structure admits.
     fn hold_slice_members(&self, env: &Env, typ: &Type) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
@@ -802,17 +802,24 @@ impl StructPatternNode {
                     members_or_open(env, &et, &mut members)?
                 }
                 let mut leaves: SmallVec<[Leaf; 4]> = SmallVec::new();
+                let mut parts: AHashMap<BindId, SmallVec<[Type; 4]>> =
+                    AHashMap::default();
                 for c in self.children() {
+                    parts.clear();
                     for m in members.iter() {
                         if !c.footprint(env, m, false).could_match(env, m)? {
                             continue;
                         }
                         leaves.clear();
                         c.leaves(env, m, false, false, &mut leaves)?;
-                        for l in leaves.iter() {
-                            if let Some(b) = env.by_id.get(&l.id) {
-                                b.typ.check_contains(env, &l.typ)?
-                            }
+                        for l in leaves.drain(..) {
+                            parts.entry(l.id).or_default().push(l.typ)
+                        }
+                    }
+                    for (id, ts) in parts.iter() {
+                        if let Some(b) = env.by_id.get(id) {
+                            let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
+                            b.typ.check_contains(env, &Type::union_exact(env, &ts)?)?
                         }
                     }
                 }
@@ -2070,7 +2077,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
-        if reaching.len() > 1 || wholes.len() > 1 {
+        if !wholes.is_empty() {
             self.wholes_by_member(env, &wholes, &mut leaves)?;
         }
         for l in leaves.iter().filter(|l| l.fresh || tests_error) {

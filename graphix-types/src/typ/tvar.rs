@@ -2218,7 +2218,7 @@ impl Type {
         crate::expr::union_members(env, self, &mut members)?;
         members.retain(|m| pred.could_match(env, m).unwrap_or(true));
         match members.len() {
-            // CR claude for claude: [bug/critical] With one member this checks `self ⊇
+            // XCR claude for claude: [bug/critical] With one member this checks `self ⊇
             // pred` through contains, which commits a union NESTED under a constructor
             // (an array element, a tuple position, a struct field, a variant payload)
             // to its first member that holds the pattern's shape. The arm's binds and
@@ -2233,9 +2233,163 @@ impl Type {
             // sub-part), as the top level does, and pin each position. probe:
             // design/review-2026-10-26/repro/c-pattern-nested-union-first-member.gx
             // (c-pattern-01)
-            0 | 1 => self.contains(env, pred),
+            // 2026-10-26 claude: narrow_pattern narrows a member that holds a union
+            // under a constructor pred has part by part (Type::needs_split,
+            // narrow_parts): each part narrows as a pattern does against what reaches
+            // it, an element's set (a slice's elements and rest) member by member, and
+            // narrow_per_member narrows each member the same way (narrow_member), so a
+            // bind takes the union of its parts over every member at any depth. Whole
+            // captures under such a position are typed by member through
+            // Type::split_members (tuple, struct and variant unions split, an element
+            // union kept whole) in StructPatternNode::wholes_by_member, so they still
+            // fit the scrutinee's type (capture_keeps_its_member). The repro's
+            // irrefutable arms now make its `_` arms dead (refused); without them it
+            // prints every member's arm in both engines, and the slice form is
+            // refused at the check. Pins: lang::select::nested_union_binds_take_every_member,
+            // nested_union_slice_bind_is_the_union,
+            // nested_whole_capture_takes_every_member. Still open: a let pattern over a
+            // nested union (`let {f: (a, _)} = x` with x: {f: P}) is refused as
+            // refutable, the same first-member commit on node::bind's shape check
+            // (pre-existing, not touched).
+            // 2026-10-26 claude: Rebased over the whole-capture rework
+            // (StructPatternNode::member_parts, wholes_by_member over raw members):
+            // Type::split_members is gone, and wholes_by_member now runs whenever a member
+            // reaches the arm, so a nested whole capture over one reaching member takes its
+            // part of each member under the constructor too
+            // (nested_whole_capture_takes_every_member). hold_slice_members holds an element
+            // name to the union of its parts over the element's members, not to each in turn,
+            // so an or-name an element binds is no longer bound to its first member's part
+            // ([`A(y) | `B(y), ..] in nested_union_binds_take_every_member).
+            0 => self.contains(env, pred),
+            1 if members[0].needs_split(env, pred)? => members[0].narrow_parts(env, pred),
+            1 => self.contains(env, pred),
             _ => pred.narrow_per_member(env, &members).map(|()| true),
         }
+    }
+
+    /// `self ⊇ pred` for one member of what reaches a pattern: by
+    /// [`Self::narrow_parts`] where a union stands under a constructor
+    /// `pred` has, else by containment.
+    fn narrow_member(&self, env: &Env, pred: &Type) -> Result<bool> {
+        if self.needs_split(env, pred)? {
+            self.narrow_parts(env, pred)
+        } else {
+            self.contains(env, pred)
+        }
+    }
+
+    /// Whether a union of `self` stands where `pred` has a constructor
+    /// (a tuple position, a struct field, a variant payload, an array or
+    /// list element), which containment would commit to its first member
+    /// that holds the constructor.
+    fn needs_split(&self, env: &Env, pred: &Type) -> Result<bool> {
+        ensure_sufficient(|| {
+            let Some(p) = pred.deref_cloned() else { return Ok(false) };
+            if let Type::Set(qs) = &p {
+                for q in qs.iter() {
+                    if self.needs_split(env, q)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            let Some(t) = self.shape_under(env, &p)? else { return Ok(false) };
+            let any = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
+                for (t, p) in parts {
+                    if t.needs_split(env, p)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            };
+            match (&t, &p) {
+                (Type::Set(_), _) => Ok(true),
+                (Type::Tuple(ts), Type::Tuple(ps))
+                | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
+                    any(&mut ts.iter().zip(ps.iter()))
+                }
+                (Type::Struct(fs), Type::Struct(pfs)) => any(&mut fs
+                    .iter()
+                    .zip(pfs.iter())
+                    .map(|((_, t, _), (_, p, _))| (t, p))),
+                (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
+                    e.needs_split(env, pe)
+                }
+                _ => Ok(false),
+            }
+        })
+    }
+
+    /// `self` looked through (bindings, a typedef) where `pred` is the
+    /// same constructor with the same parts (arity, tag, field names), or a
+    /// union where `pred` is a constructor; `None` anywhere else.
+    fn shape_under(&self, env: &Env, p: &Type) -> Result<Option<Type>> {
+        let t = match self.deref_cloned() {
+            Some(t @ Type::Ref(_)) => t.lookup_ref(env)?,
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let same = match (&t, p) {
+            (Type::Set(_), p) => matches!(
+                p,
+                Type::Tuple(_)
+                    | Type::Struct(_)
+                    | Type::Variant(..)
+                    | Type::Array(_)
+                    | Type::List(_)
+            ),
+            (Type::Tuple(ts), Type::Tuple(ps)) => ts.len() == ps.len(),
+            (Type::Variant(tag, ts, _), Type::Variant(ptag, ps, _)) => {
+                tag == ptag && ts.len() == ps.len()
+            }
+            (Type::Struct(fs), Type::Struct(pfs)) => {
+                fs.len() == pfs.len()
+                    && fs.iter().zip(pfs.iter()).all(|((n, ..), (pn, ..))| n == pn)
+            }
+            (Type::Array(_), Type::Array(_)) | (Type::List(_), Type::List(_)) => true,
+            _ => false,
+        };
+        Ok(same.then_some(t))
+    }
+
+    /// `self ⊇ pred` part by part, where [`Self::needs_split`] holds: each
+    /// part of `pred` narrows against its part of `self` as a pattern does
+    /// against what reaches it ([`Self::narrow_pattern`]), so a union under
+    /// a constructor gives a bind the union of its parts over every member
+    /// its pattern can match. An element's set (a slice's elements and
+    /// rest) narrows member by member, as containment of a set does.
+    fn narrow_parts(&self, env: &Env, pred: &Type) -> Result<bool> {
+        ensure_sufficient(|| {
+            let Some(p) = pred.deref_cloned() else { return self.contains(env, pred) };
+            let Some(t) = self.shape_under(env, &p)? else {
+                return self.contains(env, pred);
+            };
+            let all = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
+                for (t, p) in parts {
+                    if !t.narrow_pattern(env, p)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            };
+            match (&t, &p) {
+                (Type::Tuple(ts), Type::Tuple(ps))
+                | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
+                    all(&mut ts.iter().zip(ps.iter()))
+                }
+                (Type::Struct(fs), Type::Struct(pfs)) => all(&mut fs
+                    .iter()
+                    .zip(pfs.iter())
+                    .map(|((_, t, _), (_, p, _))| (t, p))),
+                (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
+                    match pe.deref_cloned() {
+                        Some(Type::Set(ref qs)) => all(&mut qs.iter().map(|q| (&**e, q))),
+                        _ => e.narrow_pattern(env, pe),
+                    }
+                }
+                _ => self.contains(env, pred),
+            }
+        })
     }
 
     /// `members ⊇ self` for a select arm's predicate over what reaches the
@@ -2276,7 +2430,7 @@ impl Type {
                 let copy = alt
                     .reset_tvars_int(&mut known, Fresh::Copy)
                     .unwrap_or_else(|| alt.clone());
-                if !m.contains(env, &copy)? {
+                if !m.narrow_member(env, &copy)? {
                     continue;
                 }
                 for (c, p) in cells.iter().zip(parts.iter_mut()) {
