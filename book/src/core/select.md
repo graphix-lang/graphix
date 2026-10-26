@@ -40,18 +40,14 @@ is not made again, and the only events it sees are the ones that fired
 while it slept, each once, at its current value. The first time an arm
 is selected is its birth: its constants fire then, and only then.
 
-<!-- CR claude for claude: [doc-drift/low] Only a guard the select consults makes it
-produce, one on or above the taken arm; a guard below the arm that claims the value is
-never run. With x = 0 and g moving, `select x { 0 => "zero", n if n > g => "big", _ =>
-"small" }` prints "zero" once, which is the intended rule. Say "a new value read by a
-guard it consults". probe: design/review-2026-10-26/repro/book-core-unconsulted-guard.gx
-(book-core-06) -->
 Like every other expression, a select updates whenever any of its inputs
-update: a new value of the argument, a new value read by a guard, or a new
-value produced by the selected arm's body all cause the select to produce its
-current value — even if the same arm stays selected and the value is
-unchanged. If you want updates only when the value actually changes, wrap the
-argument (or the whole select) in `uniq`.
+update: a new value of the argument, a new value read by a guard it
+consults, or a new value produced by the selected arm's body all cause the
+select to produce its current value — even if the same arm stays selected and the value is
+unchanged. The select consults the guards of the arms it tries, top down,
+up to the one it takes; a guard below the taken arm is not run, so a new
+value it would read changes nothing. If you want updates only when the
+value actually changes, wrap the argument (or the whole select) in `uniq`.
 
 ## Matching Types
 
@@ -232,17 +228,26 @@ select a {
 }
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] This is stale. The checker pools bool
-literals and variant heads per length, so `[true]` with `[false]` covers length 1
-(likewise `` [`A] `` with `` [`B] ``, and the list forms), and a `_` after a ladder
-written that way is refused as unreachable. Only a guard, or an element no set of arms
-can complete (an integer literal, a nested slice), claims nothing. Fix the List Patterns
-paragraph the same way. probe:
-design/review-2026-10-26/repro/book-core-slice-pooled-coverage.gx (book-core-04) -->
-An arm carrying a guard, or an element pattern that can refute (a
-literal, a variant, a nested slice), only matches SOME arrays of its
-length, so it claims no coverage — the error says so when that is why
-a select falls short. Note also that a slice arm covers only arrays
+An arm carrying a guard only matches SOME arrays of its length, so it
+claims no coverage. Element patterns that can refute claim coverage
+together: exact-length arms whose bool literals and variant heads admit,
+position by position, every combination cover their length. So this
+select is exhaustive too, and a `_` arm after it is refused as
+unreachable:
+
+```graphix
+let a: Array<bool> = [true];
+select a {
+  [] => 0,
+  [true] => 1,
+  [false] => 2,
+  [_, _, ..] => 3
+}
+```
+
+Any other literal (an integer, a string), a nested slice, or a
+refutable element in an arm with a rest pattern claims nothing — the
+error says so when that is why a select falls short. Note also that a slice arm covers only arrays
 of its own inferred (or written) element type: if the scrutinee is a
 union of differently-typed arrays, each array member needs the whole
 length ladder to check out against every slice arm's type.
@@ -288,8 +293,9 @@ forms because their slices are zero-copy views, so `[x, rest..]` and
 
 Exhaustiveness and dead-arm checking work by length exactly as for
 slice patterns: `[<>]` plus `[<h, rest..>]` covers every list, an
-exact-length arm above a rest arm claims its length, and a guard or a
-refutable element pattern claims no coverage.
+exact-length arm above a rest arm claims its length, a guard claims no
+coverage, and refutable elements pool per length as they do in a slice
+(`` [<`A>] `` with `` [<`B>] `` covers length 1 of ``List<[`A, `B]>``).
 
 ### Tuple Patterns
 

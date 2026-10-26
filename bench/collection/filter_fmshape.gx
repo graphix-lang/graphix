@@ -1,11 +1,11 @@
-// array filter as the trait DEFAULT body — filter_map with a
-// select on the predicate.
+// array filter as the trait DEFAULT body: filter_map with a select on
+// the predicate that keeps or drops each element.
 let n = 100000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let flt = array::filter_map(src, |x| select (x + seed) % 2 == 0 {
-    true => x,
+    true => `Keep(x),
     false => null
 });
 let result = array::fold(flt, 0, |a, x| a + x);

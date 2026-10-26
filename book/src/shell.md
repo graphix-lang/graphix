@@ -63,14 +63,11 @@ This is useful for:
 - Integrating with editors and build tools
 - Quick validation during development
 
-<!-- CR claude for claude: [doc-drift/low] `#[parallel]` is also verified only by a
-build: `--check` accepts `#[parallel] (1 + 2)`, which `--expand` refuses ("has nothing
-to run in parallel"). Add it to the list. probe:
-design/review-2026-10-26/repro/book-core-shell-check-cache-notes.sh (book-core-08) -->
 The check is every definition's check and every call site's, the same
 check the language server runs. It does not build the program: it
 compiles no native code and analyzes no instance, so `#[native]`,
-`#[tail_recursive]`, `#[sync]`, `#[async]` and `#[pure]` are verified by a run
+`#[parallel]`, `#[tail_recursive]`, `#[sync]`, `#[async]` and `#[pure]` are
+verified by a run
 (`--expand` builds, to show each instance's steps). Files parse in
 parallel, so a large module split into several files checks faster.
 
@@ -251,35 +248,26 @@ entry listed before file entries shadows the user's own modules. Add a note: net
 modules are code from whoever may publish at that path; use authenticated netidx with
 restricted publish permissions, and put file entries first when local modules must win.
 Found by reading; not run. (x-security-08) -->
-<!-- CR claude for claude: [doc-drift/medium] This section is wrong. The shell looks for
-a netidx script's modules beside the script: `mod utils` in `netidx:/a/b/prog` loads
-`/a/b/utils.gx` or `/a/b/utils/mod.gx` (NetidxResolver rooted at the script's dirname,
-with the MODULE_LAYOUTS suffixes), not `/a/b/prog/utils`. The Option 3 recipe under
-"Shared Libraries" is broken too: `netidx publisher` takes no path argument, and `mod
-mylib` looks for `/shared/graphix/mylib.gx`. Describe the as-on-disk rule and give a
-working publish command. probe:
-design/review-2026-10-26/repro/book-core-netidx-modpath.sh (book-core-02) -->
-When you run a program from netidx, the **netidx path** is added to the module search path.
+A program run from netidx finds its modules beside it, as a file's do
+on disk: the directory of its netidx path is the module search path.
 
 If you run:
 ```bash
 graphix netidx:/my/graphix/modules/myprogram
 ```
 
-The shell:
-1. subscribes to `/my/graphix/modules/myprogram`
-2. Loads and executes it
-3. Adds `netidx:/my/graphix/modules/myprogram` to the module search path
-
-So if `myprogram` contains `mod utils`, the shell will look for
-`netidx:/my/graphix/modules/myprogram/utils`.
+The shell subscribes to `/my/graphix/modules/myprogram`, loads and
+executes it, and resolves its modules under `/my/graphix/modules`. So
+if `myprogram` contains `mod utils`, the shell looks for
+`/my/graphix/modules/utils.gx`, then `/my/graphix/modules/utils/mod.gx`,
+each with its interface beside it (`utils.gxi`, `utils/mod.gxi`).
 
 ### Module Search Path Priority
 
 The complete module search path, in order of priority:
 
 1. **File parent directory** (if running a local file)
-2. **Netidx path** (if running from netidx)
+2. **Netidx parent path** (if running from netidx)
 3. **GRAPHIX_MODPATH** entries (from the environment variable)
 4. **Platform-specific init directory**:
    - Linux: `~/.local/share/graphix`
@@ -410,10 +398,13 @@ graphix myproject/main.gx
 Publish shared modules to netidx for organization-wide sharing:
 
 ```bash
-# Publish the library
-netidx publisher /shared/graphix/mylib < mylib.gx
+# Publish the library, for as long as this runs
+cat > publish_mylib.gx <<'EOF'
+sys::net::publish("/shared/graphix/mylib.gx", sys::fs::read_all("mylib.gx")$)$
+EOF
+graphix publish_mylib.gx
 
-# Use it from any program
+# Use it from any program: `mod mylib` loads /shared/graphix/mylib.gx
 GRAPHIX_MODPATH=netidx:/shared/graphix graphix myprogram.gx
 ```
 
@@ -515,14 +506,10 @@ graphix --no-cache ./myprogram.gx
 graphix --warm ./myprogram.gx
 ```
 
-<!-- CR claude for claude: [doc-drift/low] `--fusion-stats` needs no `--no-cache`: the
-shell never restores the program entry when it is set (Shell::configure), so it prints
-the profile on a warm start too. Drop it from this sentence and drop `--no-cache` from
-the Debugging Native Code example. probe:
-design/review-2026-10-26/repro/book-core-shell-check-cache-notes.sh (book-core-09) -->
-A restored program compiles nothing, so diagnostics printed while
-compiling (some warnings, `--fusion-stats`) appear only on a cold
-start: pass `--no-cache` to see them.
+A restored program compiles nothing, so warnings printed while
+compiling appear only on a cold start: pass `--no-cache` to see them.
+`--fusion-stats` never starts from the cache's program entry, so it
+always prints its profile.
 
 ### Debugging Native Code
 
@@ -532,7 +519,7 @@ graphix --no-fusion ./myprogram.gx
 
 # print the fusion profile (regions attempted and fused, and why
 # the rest were not) to stderr after compiling
-graphix --no-cache --fusion-stats ./myprogram.gx
+graphix --fusion-stats ./myprogram.gx
 ```
 
 `--no-fusion` is also how to see the interpreter's diagnostics for

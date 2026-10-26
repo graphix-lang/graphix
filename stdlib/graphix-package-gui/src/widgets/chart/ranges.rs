@@ -1,9 +1,17 @@
-use super::{dataset::DatasetEntry, types::*};
+use super::{
+    dataset::{ChartMode, DatasetEntry},
+    types::*,
+};
 use chrono::{DateTime, Utc};
 use graphix_rt::GXExt;
 
 /// An hour in ms: how far a single time-series point's range reaches.
 const HOUR_MS: f64 = 3_600_000.0;
+
+/// How far inside chrono's ends a drawn time range stays: plotters steps
+/// its key points one period past a range's end, and below 292 years a
+/// period is at most 2.5 spans.
+const TIME_MARGIN_MS: f64 = 1000.0 * 365.25 * 24.0 * HOUR_MS;
 
 /// The extent of the finite values added to it.
 struct Extent {
@@ -136,8 +144,10 @@ pub fn checked_range(r: (f64, f64)) -> Option<(f64, f64)> {
         .then_some(r)
 }
 
-/// A time range in ms, inside what a datetime can hold.
-// CR claude for claude: [bug/high] A view wholly past the end of chrono's range falls
+/// A drawable time range in ms: `r` slid inside chrono's range less
+/// `TIME_MARGIN_MS` at each end, its span kept, or all of that when `r`
+/// is wider. `r` is ordered.
+// XCR claude for claude: [bug/high] A view wholly past the end of chrono's range falls
 // back to (hi - HOUR, hi). plotters' RangedDateTime::key_points then steps one period
 // past its end and panics ("`DateTime + TimeDelta` overflowed"), crashing the GUI. A
 // user reaches it from any time-series chart by zooming out (about 200 wheel notches
@@ -148,16 +158,32 @@ pub fn checked_range(r: (f64, f64)) -> Option<(f64, f64)> {
 // still a datetime (e.g. about 1000 years in), clamp a time series' stored x_view the
 // same way, and pin a one-hour range at the end. probe:
 // design/review-2026-10-26/repro/gui-chart-time-end-panic.rs (gui-chart-01)
+// 2026-10-26 claude: time_range now slides a range, span kept, inside chrono's range
+// less TIME_MARGIN_MS (1000 years) at each end, or gives all of that when wider;
+// handle_drag/handle_zoom store a time series' x_view through it (drawable_x), so the
+// view kept is the view drawn. Pin: chart_test::a_time_view_past_the_end_of_time_draws
+// (400 zoom-out notches then a drag past the end, and hour-long and panned-away views
+// at both ends of time); it panicked in plotters with the fix undone.
 pub fn time_range(r: (f64, f64)) -> (f64, f64) {
-    let lo = datetime_ms(&DateTime::<Utc>::MIN_UTC);
-    let hi = datetime_ms(&DateTime::<Utc>::MAX_UTC);
-    let (a, b) = (r.0.clamp(lo, hi), r.1.clamp(lo, hi));
-    if a < b {
-        (a, b)
-    } else if b < hi {
-        (b, (b + HOUR_MS).min(hi))
+    let lo = datetime_ms(&DateTime::<Utc>::MIN_UTC) + TIME_MARGIN_MS;
+    let hi = datetime_ms(&DateTime::<Utc>::MAX_UTC) - TIME_MARGIN_MS;
+    let span = r.1 - r.0;
+    if !(span < hi - lo) {
+        (lo, hi)
+    } else if r.0 < lo {
+        (lo, lo + span.max(1.0))
+    } else if r.1 > hi {
+        (hi - span.max(1.0), hi)
     } else {
-        (hi - HOUR_MS, hi)
+        r
+    }
+}
+
+/// The x range `mode` draws for the view `x`.
+pub fn drawable_x(mode: ChartMode, x: (f64, f64)) -> (f64, f64) {
+    match mode {
+        ChartMode::TimeSeries => time_range(x),
+        _ => x,
     }
 }
 

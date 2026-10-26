@@ -2,7 +2,7 @@ use super::{
     ChartW,
     clip::View,
     dataset::{ChartMode, DatasetEntry, first_pie, pie_slices, pie_start_angle},
-    ranges::checked_range,
+    ranges::{checked_range, drawable_x},
     types::*,
 };
 use crate::widgets::{ChartId, Renderer};
@@ -287,7 +287,8 @@ impl ChartState {
                 if mode != ChartMode::Bar {
                     let x = d.x_view.unwrap_or(info.x_range);
                     let by = -(dx / info.rect.width) as f64 * (x.1 - x.0);
-                    self.x_view = shift(x, by).or(self.x_view);
+                    self.x_view =
+                        shift(x, by).map(|x| drawable_x(mode, x)).or(self.x_view);
                 }
                 let y = d.y_view.unwrap_or(info.y_range);
                 let by = (dy / info.rect.height) as f64 * (y.1 - y.0);
@@ -319,8 +320,9 @@ impl ChartState {
             // millisecond is the least a view is worth narrowing to
             let least = if mode == ChartMode::TimeSeries { 1.0 } else { 0.0 };
             let t = ((cursor.x - info.rect.x) / info.rect.width).clamp(0.0, 1.0) as f64;
-            self.x_view =
-                zoom(self.x_view.unwrap_or(info.x_range), t, least).or(self.x_view);
+            self.x_view = zoom(self.x_view.unwrap_or(info.x_range), t, least)
+                .map(|x| drawable_x(mode, x))
+                .or(self.x_view);
         }
         let t = ((cursor.y - info.rect.y) / info.rect.height).clamp(0.0, 1.0) as f64;
         self.y_view =

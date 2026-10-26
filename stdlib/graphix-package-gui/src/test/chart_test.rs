@@ -534,6 +534,51 @@ let result = chart(&[line(&d)])"#,
     Ok(())
 }
 
+/// A time-series view zoomed out and dragged past the end of time, or
+/// an hour at its end, draws, and the view kept is the view drawn.
+#[tokio::test(flavor = "current_thread")]
+async fn a_time_view_past_the_end_of_time_draws() -> Result<()> {
+    use crate::widgets::chart::datetime_ms;
+    use chrono::{DateTime, Utc};
+    use iced_core::{event::Event, mouse::Event as ME};
+    let h = chart_harness("&[line(&day1)]").await?;
+    let size = Size::new(400.0, 300.0);
+    let bounds = Rectangle::with_size(size);
+    let mut state = ChartState::default();
+    let center = draw_in(&h, &state, size).await.expect("drawn").rect.center();
+    let to = Point::new(center.x - 300.0, center.y);
+    let wheel =
+        ME::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 } };
+    let events = std::iter::repeat_n((wheel, center), 400).chain([
+        (ME::ButtonPressed(mouse::Button::Left), center),
+        (ME::CursorMoved { position: to }, to),
+        (ME::ButtonReleased(mouse::Button::Left), to),
+    ]);
+    for (ev, p) in events {
+        state.handle_event(
+            chart(&h),
+            &Event::Mouse(ev),
+            bounds,
+            mouse::Cursor::Available(p),
+        );
+    }
+    let drawn = draw_in(&h, &state, size).await.expect("drawn").x_range;
+    assert_eq!(state.x_view, Some(drawn));
+    let start = datetime_ms(&DateTime::<Utc>::MIN_UTC);
+    let end = datetime_ms(&DateTime::<Utc>::MAX_UTC);
+    for view in [
+        (end - 3_600_000.0, end),
+        (end + 1e15, end + 2e15),
+        (start, start + 3_600_000.0),
+        (start - 2e15, start - 1e15),
+    ] {
+        state.x_view = Some(view);
+        let (a, b) = draw_in(&h, &state, size).await.expect("drawn").x_range;
+        assert_eq!(b - a, view.1 - view.0, "{view:?}");
+    }
+    Ok(())
+}
+
 /// A datetime `x_range` sets a time series' x range.
 #[tokio::test(flavor = "current_thread")]
 async fn a_datetime_x_range_is_honoured() -> Result<()> {

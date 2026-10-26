@@ -614,7 +614,7 @@ fn draw_xy_chart<DB: DrawingBackend, X: GXExt>(
         .and_then(|r| checked_range((r.min, r.max)));
     let x = view.x.and_then(checked_range).or(user_x).unwrap_or(auto_x);
     let y = y_range(w, view, auto_y);
-    let plot = View { x: if time { time_range(x) } else { x }, y };
+    let plot = View { x: drawable_x(w.mode, x), y };
     let mesh = cs.and_then(|s| s.mesh.as_ref());
     let (x_label, y_label) = axis_labels(w);
     let descs = (x_label.is_some(), y_label.is_some());

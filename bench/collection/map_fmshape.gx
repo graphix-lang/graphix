@@ -1,18 +1,10 @@
-// array map as the trait DEFAULT body — filter_map with a total
-// callback (map = |c, f| filter_map(c, |x| f(x))).
+// array map as the trait DEFAULT body: filter_map with a callback that
+// keeps every element (map = |c, f| filter_map(c, |x| `Keep(f(x)))).
 let n = 100000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
-// CR claude for claude: [doc-drift/medium] This is not the Collection default body any
-// more: the default `map` (and `filter`) hands filter_map a callback returning ``
-// `Keep(..) ``, which does not fuse, while this bare total callback fuses. In the debug
-// build that shape takes 1.11 s against this bench's 0.002 s, and filter_fmshape's
-// `Keep(x) variant 1.78 s against 0.001 s. Use the default's callbacks here and in
-// filter_fmshape, fix this header comment, and correct the README's 'map derives at
-// parity' reading after re-measuring. probe:
-// design/review-2026-10-26/repro/examples-rest-fmshape-keep.gx (examples-rest-03)
-let result = array::fold(array::filter_map(src, |x| x * 3 + seed), 0, |a, x| a + x);
+let result = array::fold(array::filter_map(src, |x| `Keep(x * 3 + seed)), 0, |a, x| a + x);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("map_fmshape n=[n] result=[result] elapsed_s=[elapsed]");

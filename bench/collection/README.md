@@ -10,8 +10,9 @@ operation reached or written another way:
 - **`*_trait`**: the same intrinsic reached through `Collection::…`
   trait dispatch.
 - **`*_fmshape` / `find_fold`**: the trait DEFAULT's body shape written
-  out directly (`map` as `filter_map` with a total callback, `find` as
-  the default's fold carrying `` `Found(x) `` or null).
+  out directly (`map` and `filter` as `filter_map` with a callback
+  returning `` `Keep(x) `` or null, `find` as the default's fold
+  carrying `` `Found(x) `` or null).
 - **`flatmap_fold` / `map_init`**: other derivations of a required
   method (`flat_map` as fold + concat, `map` as `init(len, a[i])`).
 - **`*_rec` / `map_push`**: the operation written in Graphix as a tail
@@ -53,12 +54,12 @@ node-walk did not finish within run.sh's 120 s limit.
 | `fold_trait`     | 100k | 0.45 ms   | 1.55 s    | 3459x   |
 | `fold_rec`       | 100k | 1.73 ms   | 7.08 s*   | 4092x   |
 | `map_intr`       | 100k | 1.87 ms   | 3.05 s    | 1629x   |
-| `map_fmshape`    | 100k | 2.09 ms   | 2.84 s    | 1355x   |
+| `map_fmshape`    | 100k | †         | †         | †       |
 | `map_init`       | 100k | 1.88 ms   | 3.60 s    | 1916x   |
 | `map_intr_10k`   | 10k  | 0.24 ms   | 0.20 s    | 810x    |
 | `map_push`       | 10k  | 0.14 s    | 5.59 s    | 40x     |
 | `filter_intr`    | 100k | 1.30 ms   | 2.50 s    | 1923x   |
-| `filter_fmshape` | 100k | 1.24 ms   | 3.16 s    | 2549x   |
+| `filter_fmshape` | 100k | †         | †         | †       |
 | `find_intr`      | 500k | 0.49 ms   | 7.21 s    | 14773x  |
 | `find_fold`      | 500k | †         | †         | †       |
 | `find_rec`       | 500k | 5.86 ms   | 38.6 s*   | 6587x   |
@@ -86,9 +87,12 @@ rows move little.
 
 - **Trait dispatch costs nothing** once resolved: `fold_trait` and
   `mfold_trait` match their intrinsics under the JIT.
-- **`map` derives at parity**: `map_fmshape` (`filter_map` with a total
-  callback, which fusion routes to the map loop) and `map_init` run
-  with `map_intr`; `filter_fmshape` runs with `filter_intr`.
+- **`map` and `filter` through the defaults node-walk**: their
+  `filter_map` callback may return `` `Keep(x) ``, which does not fuse,
+  so `map_fmshape` and `filter_fmshape` cost what the node-walk does
+  (in a debug build 1.5 s and 1.3 s, against 1.8 ms and 1.2 ms for
+  `map_intr` and `filter_intr`). `map_init`, `map` by construction over
+  the length, runs with `map_intr`.
 - **The hand-written fold** (`fold_rec`) runs a few times the
   intrinsic: the loop pays its own bounds check, `$` and select per
   element. Its node-walk is linear; each activation costs tens of
