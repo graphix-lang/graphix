@@ -472,11 +472,12 @@ async fn iter_reentry_emits_no_old_element(mode: Mode) -> Result<()> {
 }
 
 // A throttle's held value waits out its arm's sleep and is delivered at
-// the wake, the window since the last emission long past.
+// the wake, the window since the last emission long past. `n` counts in
+// consecutive cycles, well inside the window.
 async fn throttle_holds_across_a_sleep(mode: Mode) -> Result<()> {
     let code = r#"{
         let n = 0;
-        n <- sys::time::timer(duration:5.ms, 3) ~ n + 1;
+        n <- select n { k if k < 3 => k + 1, _ => never() };
         let off = select n { 3 => true, _ => never() };
         let on = true;
         on <- off ~ false;
