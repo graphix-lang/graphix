@@ -912,8 +912,9 @@ impl<X: GXExt> GXHandle<X> {
     }
 
     /// Wait until the runtime has no cycle ready, confirmed on a second
-    /// pass. Every update of the cycles before it is already in the event
-    /// stream. A pending timer, IO or spawned task reads as idle: what it
+    /// pass. Every update of the cycles before it, and the
+    /// [`GXEvent::Idle`] a pending [`GXHandle::notify_idle`] sends at the
+    /// same verdict, is already in the event stream. A pending timer, IO or spawned task reads as idle: what it
     /// brings later is not waited for.
     pub async fn wait_idle(&self) -> Result<()> {
         self.exec(|res| ToGX::WaitIdle { res }).await

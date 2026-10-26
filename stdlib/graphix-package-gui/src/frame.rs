@@ -4,10 +4,17 @@
 
 use crate::{
     theme::{GraphixTheme, with_view_theme},
-    widgets::{GuiW, Message, Renderer, WidgetOp},
+    widgets::{GuiW, Message, Renderer, WidgetOp, menu_bar_widget::with_text_focus},
 };
 use graphix_rt::{GXExt, GXHandle};
-use iced_core::{Event, Size, clipboard::Clipboard, mouse, renderer::Style, window};
+use iced_core::{
+    Event, Rectangle, Size,
+    clipboard::Clipboard,
+    keyboard, mouse,
+    renderer::Style,
+    widget::{Id, Operation, operation::Focusable},
+    window,
+};
 use iced_runtime::user_interface::{Cache, State, UserInterface};
 use poolshark::local::LPooled;
 use std::{collections::VecDeque, time::Instant};
@@ -47,7 +54,17 @@ pub fn frame<X: GXExt>(
                 }
             }
         }
-        let (on_events, _) = ui.update(events, cursor, renderer, clipboard, messages);
+        let key_pressed = events
+            .iter()
+            .any(|e| matches!(e, Event::Keyboard(keyboard::Event::KeyPressed { .. })));
+        let text_focused = key_pressed && {
+            let mut op = TextFocused(false);
+            ui.operate(renderer, &mut op);
+            op.0
+        };
+        let (on_events, _) = with_text_focus(text_focused, || {
+            ui.update(events, cursor, renderer, clipboard, messages)
+        });
         let redraw = [Event::Window(window::Event::RedrawRequested(Instant::now()))];
         let (on_redraw, _) = ui.update(&redraw, cursor, renderer, clipboard, messages);
         let style = Style { text_color: theme.palette().text };
@@ -58,6 +75,25 @@ pub fn frame<X: GXExt>(
             State::Updated { .. } => on_redraw,
         }
     })
+}
+
+/// Whether a widget has the keyboard focus; iced's focusable widgets are
+/// its text widgets.
+struct TextFocused(bool);
+
+impl Operation for TextFocused {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self)
+    }
+
+    fn focusable(
+        &mut self,
+        _id: Option<&Id>,
+        _bounds: Rectangle,
+        state: &mut dyn Focusable,
+    ) {
+        self.0 |= state.is_focused()
+    }
 }
 
 /// Apply what widgets published, in order: every message goes to

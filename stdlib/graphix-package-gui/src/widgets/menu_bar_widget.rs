@@ -7,6 +7,7 @@ use super::{Message, Renderer, measure_text};
 use crate::{theme::GraphixTheme, types::ShortcutV};
 use graphix_rt::CallableId;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use std::cell::Cell;
 
 /// A menu item as the menu widgets draw it, borrowed from its widget.
 pub(crate) enum MenuItemDesc<'a> {
@@ -25,13 +26,42 @@ pub(crate) struct MenuGroupDesc<'a> {
     pub items: Vec<MenuItemDesc<'a>>,
 }
 
-/// The enabled action matching either character form and the exact modifiers.
+thread_local! {
+    static TEXT_FOCUSED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f`, which delivers a window's events to its widgets, with
+/// `focused` saying whether a text widget has the keyboard focus.
+pub(crate) fn with_text_focus<R>(focused: bool, f: impl FnOnce() -> R) -> R {
+    let prev = TEXT_FOCUSED.replace(focused);
+    let r = f();
+    TEXT_FOCUSED.set(prev);
+    r
+}
+
+/// A key a focused text widget owns: its copy, cut, paste, undo and
+/// select-all.
+fn owned_by_text(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
+    let keyboard::Key::Character(c) = key else { return false };
+    let mut chars = c.chars().map(|c| c.to_ascii_lowercase());
+    modifiers.command()
+        && matches!(
+            (chars.next(), chars.next()),
+            (Some('c' | 'v' | 'x' | 'z' | 'a'), None)
+        )
+}
+
+/// The enabled action matching either character form and the exact
+/// modifiers, unless a focused text widget owns the key.
 pub(crate) fn shortcut_action<'a>(
     items: impl IntoIterator<Item = &'a MenuItemDesc<'a>>,
     key: &keyboard::Key,
     modified_key: &keyboard::Key,
     modifiers: keyboard::Modifiers,
 ) -> Option<CallableId> {
+    if TEXT_FOCUSED.get() && owned_by_text(key, modifiers) {
+        return None;
+    }
     items.into_iter().find_map(|item| match item {
         MenuItemDesc::Action {
             shortcut: Some(sc),
@@ -542,7 +572,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                 modifiers,
                 ..
             }) => {
-                // CR claude for claude: [bug/medium] A shortcut fires here whatever has
+                // XCR claude for claude: [bug/medium] A shortcut fires here whatever has
                 // the keyboard focus. Nothing checks focus or capture, and iced's
                 // Column hands the key to every child, so a focused text_input or
                 // text_editor handles the same key too. menu::shortcut accepts a key
@@ -564,6 +594,18 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                 // before its siblings in iced's Column, so telling it a text widget has
                 // focus needs a focus query (iced's operation::focusable) at the key
                 // event.
+                // 2026-10-26 claude: The other half is done: frame() asks the built
+                // interface whether a widget has the keyboard focus (iced's only
+                // focusable widgets are text_input and text_editor; the TextFocused
+                // operation) before it delivers a frame with a key press, and runs the
+                // update under menu_bar_widget::with_text_focus; shortcut_action then
+                // answers no action for Ctrl/Cmd with c, v, x, z or a while a text
+                // widget has the focus, so the menu bar and the open menus leave those
+                // keys to it and fire every other shortcut. The event loop and the test
+                // harnesses share frame(). Book: ui/gui/menu.md says so. Pin:
+                // interaction_test::a_focused_text_widget_owns_its_editing_keys (Ctrl+C
+                // fires the menu unfocused, not with a text_input or text_editor
+                // focused, Ctrl+S fires either way); it fails with the rule disabled.
                 let items = self.descs.iter().flat_map(|m| m.items.iter());
                 if let Some(id) = shortcut_action(items, key, modified_key, *modifiers) {
                     state.open_menu = None;

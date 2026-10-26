@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::expr::ExprId;
 use graphix_package_core::testing::{self, Fixture, find_bind_id};
-use graphix_rt::{CallableId, GXHandle, NoExt};
+use graphix_rt::{CallableId, GXEvent, GXHandle, NoExt};
 use iced_core::{Event, Point, Size, clipboard, keyboard, mouse, window};
 use iced_runtime::user_interface;
 use iced_wgpu::{
@@ -150,27 +150,30 @@ impl GuiTestHarness {
         })
     }
 
-    /// Deliver every update until the runtime is idle with nothing left
-    /// to deliver, then tell the widgets it is idle, as `GXEvent::Idle`
-    /// does. Returns true if either changed the widget tree. A value from
+    /// Deliver every event until the runtime is idle with nothing left
+    /// to deliver, a `GXEvent::Idle` to the widgets' `idle` as a window
+    /// does. Returns true if any changed the widget tree. A value from
     /// outside the runtime (netidx) can come later: wait for it with
     /// `wait_until`.
     async fn drain(&mut self) -> Result<bool> {
         let Self { f: Fixture { gx, rx, watches, .. }, root, rt_handle, .. } = self;
         let mut first_error = None;
-        let deliver = async |id, v: Value| {
-            watches.note(id, &v);
-            match update_widget(root, gx, rt_handle, id, &v) {
-                Ok(changed) => Ok(changed),
-                Err(e) => {
-                    log::error!(target: graphix_compiler::FAILURE_TARGET, "{e:#}");
-                    first_error.get_or_insert(e);
-                    Ok(false)
+        let deliver = async |e| match e {
+            GXEvent::Updated(id, v) => {
+                watches.note(id, &v);
+                match update_widget(root, gx, rt_handle, id, &v) {
+                    Ok(changed) => Ok(changed),
+                    Err(e) => {
+                        log::error!(target: graphix_compiler::FAILURE_TARGET, "{e:#}");
+                        first_error.get_or_insert(e);
+                        Ok(false)
+                    }
                 }
             }
+            GXEvent::Idle => Ok(root.w.idle()),
+            GXEvent::Env(_) => Ok(false),
         };
-        let (changed, _) = testing::drain_idle(gx, rx, deliver).await?;
-        let changed = root.w.idle() || changed;
+        let (changed, _) = testing::drain_events(gx, rx, deliver).await?;
         match first_error {
             Some(e) => Err(e),
             None => Ok(changed),
@@ -178,8 +181,8 @@ impl GuiTestHarness {
     }
 
     /// Deliver the runtime's next batch, waiting for it, and nothing
-    /// after it: the widgets see one cycle's updates and not the idle.
-    /// Returns whether the batch held an update.
+    /// after it: the widgets see one cycle's updates and not the idle
+    /// verdicts after it. Returns whether the batch held an update.
     async fn deliver_batch(&mut self) -> Result<bool> {
         let Self { f: Fixture { gx, rx, watches, .. }, root, rt_handle, .. } = self;
         let mut batch = tokio::time::timeout(Duration::from_secs(10), rx.recv())
@@ -188,10 +191,16 @@ impl GuiTestHarness {
             .context("the runtime is gone")?;
         let mut updated = false;
         for e in batch.drain(..) {
-            if let graphix_rt::GXEvent::Updated(id, v) = e {
-                watches.note(id, &v);
-                update_widget(root, gx, rt_handle, id, &v)?;
-                updated = true;
+            match e {
+                GXEvent::Updated(id, v) => {
+                    watches.note(id, &v);
+                    update_widget(root, gx, rt_handle, id, &v)?;
+                    updated = true;
+                }
+                GXEvent::Idle => {
+                    root.w.idle();
+                }
+                GXEvent::Env(_) => (),
             }
         }
         Ok(updated)
@@ -685,6 +694,19 @@ fn expect_call(msgs: &[Message]) -> CallableId {
         .collect();
     assert_eq!(calls.len(), 1, "expected exactly one Call message, got {}", calls.len());
     calls[0]
+}
+
+/// The f64 first argument of the one Call in `msgs`.
+fn f64_arg(msgs: &[Message]) -> f64 {
+    expect_call(msgs);
+    let arg = msgs.iter().find_map(|m| match m {
+        Message::Call(_, args) => args.first(),
+        _ => None,
+    });
+    match arg {
+        Some(Value::F64(v)) => *v,
+        v => panic!("not an f64: {v:?}"),
+    }
 }
 
 fn expect_call_with_args(

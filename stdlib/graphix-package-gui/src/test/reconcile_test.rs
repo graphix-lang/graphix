@@ -97,7 +97,7 @@ async fn a_changed_result_rebuilds_the_root() -> Result<()> {
             .shape_count()
     };
     assert_eq!(shapes(&h), Some(0));
-    named_ref(&h, "test::n").await?.set(Value::I64(1))?;
+    h.set_var("test::n", Value::I64(1))?;
     h.drain().await?;
     assert_eq!(shapes(&h), Some(1));
     Ok(())

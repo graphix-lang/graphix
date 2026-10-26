@@ -1557,9 +1557,6 @@ impl<X: GXExt> GX<X> {
                     if let Some((_, tx)) = self.result_watch.take() {
                         let _ = tx.send(None);
                     }
-                    for tx in self.idle_waiters.drain(..) {
-                        let _ = tx.send(());
-                    }
                     // a full channel leaves it pending for the next verdict
                     // CR claude for claude: [risk/low] When try_reserve finds the
                     // channel full, notify_idle stays set, but idle_passes goes back to
@@ -1589,6 +1586,9 @@ impl<X: GXExt> GX<X> {
                         batch.push(GXEvent::Idle);
                         permit.send(batch);
                         self.notify_idle = false;
+                    }
+                    for tx in self.idle_waiters.drain(..) {
+                        let _ = tx.send(());
                     }
                     if settled {
                         for tx in self.settle_waiters.drain(..) {

@@ -1,10 +1,14 @@
 use super::{GuiW, GuiWidget, IcedElement, Renderer};
 use crate::types::{ColorV, Finite, LengthV, SizeV, TextSizeV};
 use anyhow::{Context, Result};
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use iced_core::{Point, Rectangle, mouse};
-use netidx::publisher::{FromValue, Value};
+use netidx::{
+    protocol::valarray::ValArray,
+    publisher::{FromValue, Value},
+};
 use netidx_derive::FromValue;
 
 use iced_widget::canvas as iced_canvas;
@@ -125,21 +129,33 @@ pub(crate) enum PathSegment {
 #[derive(Clone, Debug)]
 pub(crate) struct ShapeVec(pub Vec<CanvasShape>);
 
+impl ShapeVec {
+    /// The shapes of `a` that read, and, when any did not, a report of
+    /// how many were left out and why the first was.
+    pub(crate) fn read(a: &ValArray) -> (Self, Option<CompactString>) {
+        let mut shapes = Vec::with_capacity(a.len());
+        let mut skipped = None;
+        for s in a.iter() {
+            match CanvasShape::from_value(s.clone()) {
+                Ok(s) => shapes.push(s),
+                Err(e) => skipped.get_or_insert((0, e)).0 += 1,
+            }
+        }
+        let report = skipped.map(|(n, e)| {
+            format_compact!("canvas: {n} shape(s) skipped, the first: {e:#}")
+        });
+        (Self(shapes), report)
+    }
+}
+
 impl FromValue for ShapeVec {
     fn from_value(v: Value) -> Result<Self> {
         let Value::Array(a) = v else {
             anyhow::bail!("expected an array of shapes, got {v}")
         };
-        let mut shapes = Vec::with_capacity(a.len());
-        let mut skipped = 0;
-        for s in a.iter() {
-            match CanvasShape::from_value(s.clone()) {
-                Ok(s) => shapes.push(s),
-                Err(_) => skipped += 1,
-            }
-        }
-        if skipped > 0 {
-            // CR claude for claude: [bug/medium] This warning uses the default log
+        let (shapes, report) = Self::read(&a);
+        if let Some(report) = report {
+            // XCR claude for claude: [bug/medium] This warning uses the default log
             // target, and the shell logs only FAILURE_TARGET by default, so a skipped
             // shape vanishes with no message. The draw path's "canvas skipped
             // non-finite geometry" and every other refused prop do reach stderr. The
@@ -148,11 +164,18 @@ impl FromValue for ShapeVec {
             // reported as "a field is not a finite number". Log under FAILURE_TARGET at
             // error, and name the first cast error instead of a fixed cause. Found by
             // reading; not run. (gui-widgets-a-02)
-            log::warn!(
-                "canvas: {skipped} shape(s) skipped: a field is not a finite number"
-            );
+            // 2026-10-26 claude: ShapeVec::read now returns the shapes that read and a
+            // report naming how many were left out and the first one's cast error (a
+            // Text of size 0 says 'a text size must be finite, positive and at most
+            // 4096 pixels, got 0'); ShapeVec::from_value logs it at error under
+            // FAILURE_TARGET. Pin:
+            // canvas_test::a_shape_left_out_is_reported_with_its_cause (fails against
+            // the fixed 'not a finite number' text). The log target itself has no pin:
+            // the gui lib tests share env_logger's process-global logger, so a test
+            // cannot capture records.
+            log::error!(target: graphix_compiler::FAILURE_TARGET, "{report}");
         }
-        Ok(Self(shapes))
+        Ok(shapes)
     }
 }
 

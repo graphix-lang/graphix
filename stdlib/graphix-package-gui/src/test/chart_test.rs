@@ -113,29 +113,20 @@ async fn error_bar_renders() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] This passes whether the line is dashed, solid or
-// not drawn. draw_xy_chart records plot_info before any series is drawn, and a series
-// error only reaches annotate's log. No other test looks at a dashed line's pixels.
-// Fix: screenshot a magenta dashed_line(#dash: 10.0, #gap: 10.0) and a magenta solid
-// line over the same points, as line_pixels does. Assert the dashed count is above zero
-// and well below the solid count. Found by reading; not run. (tests-gui-b-03)
 async fn dashed_line_renders() -> Result<()> {
-    let h = chart_harness(
-        "#width: &`Fill, #height: &`Fixed(200.0), \
-         &[chart::dashed_line(#dash: 10.0, #gap: 5.0, \
-           &[(0.0, 0.0), (5.0, 5.0), (10.0, 2.0)])]",
-    )
-    .await?;
-    assert!(draw(&h).await.is_some());
+    let solid = line_pixels("line", "").await?;
+    let dashed = line_pixels("dashed_line", "#dash: 10.0, #gap: 10.0,").await?;
+    assert!(dashed > 0 && 4 * dashed < 3 * solid, "dashed {dashed}, solid {solid}");
     Ok(())
 }
 
-/// The pixels of a line in a color no other part of the chart uses.
-async fn line_pixels(stroke: &str) -> Result<usize> {
+/// The pixels of a magenta line, a color no other part of the chart uses,
+/// drawn by `constructor` given `args`.
+async fn line_pixels(constructor: &str, args: &str) -> Result<usize> {
     let mut h = chart_harness(&format_compact!(
         "#width: &`Fill, #height: &`Fixed(200.0), \
-         &[chart::line(#color: color(#r: 1.0, #g: 0.0, #b: 1.0)$, \
-           #stroke_width: {stroke}, &[(0.0, 0.0), (5.0, 5.0)])]"
+         &[chart::{constructor}(#color: color(#r: 1.0, #g: 0.0, #b: 1.0)$, \
+           {args} &[(0.0, 0.0), (5.0, 5.0)])]"
     ))
     .await?;
     Ok(color_pixels(&h.screenshot(400, 200), [255, 0, 255]))
@@ -143,8 +134,11 @@ async fn line_pixels(stroke: &str) -> Result<usize> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn series_style_stroke_width() -> Result<()> {
+    let width = async |w: &str| {
+        line_pixels("line", &format_compact!("#stroke_width: {w},")).await
+    };
     let (thin, thick, half) =
-        (line_pixels("1.0").await?, line_pixels("4.0").await?, line_pixels("0.5").await?);
+        (width("1.0").await?, width("4.0").await?, width("0.5").await?);
     assert!(thick > 2 * thin, "stroke 4: {thick}, stroke 1: {thin}");
     assert!(half > 0, "a half-pixel line draws");
     Ok(())
@@ -330,13 +324,11 @@ async fn the_tooltip_follows_new_data_under_a_resting_cursor() -> Result<()> {
     let moved = iced_core::Event::Mouse(mouse::Event::CursorMoved { position: p });
     state.handle_event(chart(&h), &moved, bounds, at);
     assert_eq!(state.tooltip(chart(&h), bounds, at).unwrap().value, "(5.0000, 5.0000)");
-    let pts =
-        graphix_package_core::testing::find_bind_id(&h.f.compiled.env, "test::pts")?;
     let moved_pts = Value::Array(ValArray::from_iter([graphix_compiler::rep::tuple([
         Value::F64(5.0),
         Value::F64(5.1),
     ])]));
-    h.f.gx.compile_ref(pts).await?.set(moved_pts)?;
+    h.set_var("test::pts", moved_pts)?;
     h.drain().await?;
     draw_in(&h, &state, size).await;
     assert_eq!(state.tooltip(chart(&h), bounds, at).unwrap().value, "(5.0000, 5.1000)");
@@ -390,18 +382,21 @@ async fn shared_style_with_update() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn mesh_style_3d() -> Result<()> {
-    let h = chart_harness(
+    let mut h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
          #style: &chart_style(#mesh: mesh_style( \
-           #grid_color: color(#r: 0.3, #g: 0.3, #b: 0.35, #a: 1.0)$, \
-           #bold_line_color: color(#r: 0.6, #g: 0.6, #b: 0.6, #a: 1.0)$, \
+           #grid_color: color(#r: 0.0, #g: 1.0, #b: 1.0, #a: 1.0)$, \
+           #bold_line_color: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, \
            #x_labels: 4, #y_labels: 3, #z_labels: 2, \
            #x_light_lines: 0, #y_light_lines: 1, #z_light_lines: 2)), \
          &[chart::scatter3d(&[(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)])]",
     )
     .await?;
     assert_eq!(chart(&h).mode(), ChartMode::ThreeD);
-    let _ = draw(&h).await;
+    let pixels = h.screenshot(400, 200);
+    let (bold, light) =
+        (color_pixels(&pixels, [0, 255, 0]), color_pixels(&pixels, [0, 255, 255]));
+    assert!(bold > 100 && light > 100, "bold {bold}, light {light}");
     Ok(())
 }
 
@@ -513,11 +508,14 @@ async fn zero_and_negative_mesh_counts_draw() -> Result<()> {
         let h = chart_harness(&format!("{style}, &[{data}]")).await?;
         assert!(draw(&h).await.is_some(), "{data}");
     }
-    let h = chart_harness(&format!(
-        "{style}, &[scatter3d(&[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)])]"
+    let mut h = chart_harness(&format!(
+        "{style}, &[scatter3d(#color: color(#r: 1.0, #g: 0.0, #b: 1.0)$, #point_size: 6.0, \
+           &[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)])]"
     ))
     .await?;
-    let _ = draw(&h).await;
+    let pixels = h.screenshot(400, 300);
+    assert!(color_pixels(&pixels, [255, 0, 255]) > 20, "the points draw");
+    assert!(color_pixels(&pixels, [255, 255, 255]) < 400 * 300 / 2, "the axes draw");
     Ok(())
 }
 
@@ -745,27 +743,18 @@ async fn numeric_and_datetime_series_do_not_mix() -> Result<()> {
 
 /// A surface draws from its grid whatever order its axes run in.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/medium] This pin cannot fail except by a panic.
-// draw_3d_chart never sets plot_info, so draw() returns None for every 3D chart, and
-// the result is discarded. The defect it pins (a descending grid drawn with the first
-// row's z everywhere, design/review-2026-10-05/repro/gui-chart-08.rs) draws a wrong
-// picture without panicking, so the test passes with it back. mesh_style_3d and the 3D
-// case of zero_and_negative_mesh_counts_draw have the same problem.
-// invalid_3d_points_are_omitted_and_break_lines compares against charts that draw no
-// series, so it passes if Line3D, Surface or Scatter3D draw nothing. Fix: fix all three
-// ranges and screenshot, as assert_same_series_pixels does. Assert the descending
-// surface differs from the same grid with every z set to the first row's z, and from an
-// axes-only 3D chart. Add the same 'differs from empty' control to the invalid-3D
-// comparisons. Found by reading; not run. (tests-gui-b-02)
 async fn a_descending_surface_draws() -> Result<()> {
-    let h = chart_harness(
-        "&[surface(#color_by_z: true, &[\
-           [(2.0, 2.0, 5.0), (2.0, 1.0, 5.0), (2.0, 0.0, 5.0)], \
-           [(1.0, 2.0, 9.0), (1.0, 1.0, 9.0)], \
-           [(0.0, 2.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 1.0)]])]",
-    )
-    .await?;
-    let _ = draw(&h).await;
+    let ridge = |mid: &str| {
+        format_compact!(
+            "surface(#color_by_z: true, &[\
+               [(2.0, 2.0, 1.0), (2.0, 1.0, 1.0), (2.0, 0.0, 1.0)], \
+               [(1.0, 2.0, {mid}), (1.0, 1.0, {mid}), (1.0, 0.0, {mid})], \
+               [(0.0, 2.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 1.0)]])"
+        )
+    };
+    assert_draws_more_than_axes(&ridge("4.0")).await?;
+    let flat = series_screenshot(&ridge("1.0")).await?;
+    assert!(series_screenshot(&ridge("4.0")).await? != flat, "drawn as its first row");
     Ok(())
 }
 
@@ -822,18 +811,31 @@ async fn bar_slots_sum_duplicates_and_follow_data_changes() -> Result<()> {
     Ok(())
 }
 
-async fn assert_same_series_pixels(actual: &str, expected: &str) -> Result<()> {
-    let args = |data| {
-        format_compact!(
-            "#width: &`Fill, #height: &`Fixed(200.0), \
+/// A 400x200 frame of `data` drawn over fixed ranges, 0 to 5 on every axis.
+async fn series_screenshot(data: &str) -> Result<Vec<u8>> {
+    let mut h = chart_harness(&format_compact!(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
          #x_range: &{{min: 0.0, max: 5.0}}, \
          #y_range: &{{min: 0.0, max: 5.0}}, \
          #z_range: &{{min: 0.0, max: 5.0}}, &[{data}]"
-        )
-    };
-    let mut actual = chart_harness(&args(actual)).await?;
-    let mut expected = chart_harness(&args(expected)).await?;
-    assert!(actual.screenshot(400, 200) == expected.screenshot(400, 200));
+    ))
+    .await?;
+    Ok(h.screenshot(400, 200))
+}
+
+async fn assert_same_series_pixels(actual: &str, expected: &str) -> Result<()> {
+    assert!(series_screenshot(actual).await? == series_screenshot(expected).await?);
+    Ok(())
+}
+
+/// A 3D chart whose one point is outside the fixed ranges: its axes alone.
+const AXES_ONLY_3D: &str = "scatter3d(&[(20.0, 20.0, 20.0)])";
+
+async fn assert_draws_more_than_axes(data: &str) -> Result<()> {
+    assert!(
+        series_screenshot(data).await? != series_screenshot(AXES_ONLY_3D).await?,
+        "{data} draws nothing"
+    );
     Ok(())
 }
 
@@ -888,7 +890,15 @@ async fn invalid_3d_points_are_omitted_and_break_lines() -> Result<()> {
                 "surface(&[[(1.0, 1.0, 1.0), (2.0, 1.0, 2.0)], [(1.0, 2.0, 2.0), {invalid}]])"
             ),
             "line3d(#point_size: 0.0, &[(1.0, 1.0, 1.0)])",
-        ).await?;
+        )
+        .await?;
+    }
+    for drawn in [
+        "scatter3d(&[(1.0, 1.0, 1.0)])",
+        "line3d(#point_size: 0.0, &[(1.0, 1.0, 1.0), (2.0, 2.0, 2.0)])",
+        "surface(&[[(1.0, 1.0, 1.0), (2.0, 1.0, 2.0)], [(1.0, 2.0, 2.0), (2.0, 2.0, 2.0)]])",
+    ] {
+        assert_draws_more_than_axes(drawn).await?;
     }
     Ok(())
 }

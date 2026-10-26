@@ -1,5 +1,5 @@
 use super::GuiTestHarness;
-use crate::widgets::canvas::{CanvasShape, CanvasW, PathSegment};
+use crate::widgets::canvas::{CanvasShape, CanvasW, PathSegment, ShapeVec};
 use anyhow::Result;
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -91,6 +91,34 @@ async fn a_non_finite_shape_is_left_out() -> Result<()> {
     )
     .await?;
     draws(&mut h, &[(50, 25, RED)]);
+    Ok(())
+}
+
+/// Shapes left out are reported with how many and why the first was.
+#[tokio::test(flavor = "current_thread")]
+async fn a_shape_left_out_is_reported_with_its_cause() -> Result<()> {
+    let mut h = GuiTestHarness::new(concat!(
+        "use gui::{color, canvas::canvas};\n",
+        "let white = color(#r: 1.0, #g: 1.0, #b: 1.0, #a: 1.0)$;\n",
+        r#"let shapes = [`Text({content: "a", position: {x: 5.0, y: 10.0}, color: white, size: 0.0}), "#,
+        "`Line({from: {x: 0.0, y: 0.0}, to: {x: 1.0, y: 1.0}, color: white, width: 1.0}), ",
+        r#"`Text({content: "b", position: {x: 5.0, y: 10.0}, color: white, size: 1e9})];"#,
+        "\nlet result = canvas(&shapes)",
+    ))
+    .await?;
+    let Value::Array(shapes) = h.watch("test::shapes").await? else {
+        panic!("not an array")
+    };
+    let (read, report) = ShapeVec::read(&shapes);
+    assert_eq!(read.0.len(), 1);
+    let report = report.expect("a report");
+    assert!(
+        report.starts_with("canvas: 2 shape(s) skipped")
+            && report.contains(
+                "a text size must be finite, positive and at most 4096 pixels, got 0"
+            ),
+        "{report}"
+    );
     Ok(())
 }
 

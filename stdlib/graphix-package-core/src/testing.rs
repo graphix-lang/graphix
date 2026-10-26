@@ -622,6 +622,20 @@ pub async fn drain_idle(
     rx: &mut Events,
     mut deliver: impl AsyncFnMut(ExprId, Value) -> Result<bool>,
 ) -> Result<(bool, Option<Instant>)> {
+    drain_events(gx, rx, async |e| match e {
+        GXEvent::Updated(id, v) => deliver(id, v).await,
+        GXEvent::Env(_) | GXEvent::Idle => Ok(false),
+    })
+    .await
+}
+
+/// [`drain_idle`] handing `on_event` every event in order, a
+/// [`GXEvent::Idle`] included.
+pub async fn drain_events(
+    gx: &graphix_rt::GXHandle<NoExt>,
+    rx: &mut Events,
+    mut on_event: impl AsyncFnMut(GXEvent) -> Result<bool>,
+) -> Result<(bool, Option<Instant>)> {
     let (mut changed, mut last) = (false, None);
     loop {
         let idle = gx.wait_idle();
@@ -632,11 +646,11 @@ pub async fn drain_idle(
                 biased;
                 Some(mut batch) = rx.recv() => {
                     for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
+                        if let GXEvent::Updated(..) = e {
                             delivered = true;
                             last = Some(Instant::now());
-                            changed |= deliver(id, v).await?;
                         }
+                        changed |= on_event(e).await?;
                     }
                 }
                 r = &mut idle => break r?,

@@ -26,7 +26,7 @@ Creates a keyboard shortcut from modifier flags and a single character key; any 
 - **`#logo`** -- Hold the logo/super key. Defaults to `false`.
 - **positional `string`** -- A single character (e.g. `"N"`, `"Z"`). Returns an error if the key is not exactly one character.
 
-The shortcut text (e.g. "Ctrl+N") is displayed right-aligned in dimmed text next to the menu item label. In a menu bar, pressing the key combination triggers the action anywhere in the window. In a context menu it triggers the action while that menu is open: several rows may carry the same context menu, and a closed one has no row to act on.
+The shortcut text (e.g. "Ctrl+N") is displayed right-aligned in dimmed text next to the menu item label. In a menu bar, pressing the key combination triggers the action anywhere in the window, except Ctrl (Cmd on macOS) with C, V, X, Z or A while a text input or text editor has the keyboard focus: those keys are the text widget's. In a context menu it triggers the action while that menu is open: several rows may carry the same context menu, and a closed one has no row to act on.
 
 ## `menu::action` Parameters
 

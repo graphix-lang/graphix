@@ -1,5 +1,5 @@
 use super::{
-    IMPORTS, InteractionHarness, char_key, expect_call, expect_call_with_args,
+    IMPORTS, InteractionHarness, char_key, expect_call, expect_call_with_args, f64_arg,
     interaction_harness as harness,
 };
 use anyhow::Result;
@@ -774,23 +774,10 @@ async fn combo_box_keeps_typing_across_equal_options() -> Result<()> {
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     let _ = h.type_text("ban");
-    // CR claude for claude: [style/low] This writes test::opts the long way. It
-    // compiles one Ref, then compiles a fresh one each iteration only to call set and
-    // drop it, a runtime round trip and a ref registration per pass.
-    // GuiTestHarness::set_var does this in one call, and
-    // combo_box_keeps_typing_across_new_options already uses it.
-    // the_tooltip_follows_new_data_under_a_resting_cursor (chart_test) and
-    // a_changed_result_rebuilds_the_root (reconcile_test) repeat the same find_bind_id
-    // + compile_ref + set. Read the value once and call set_var at all three sites.
-    // Found by reading; not run. (tests-gui-b-05)
-    let opts = graphix_package_core::testing::find_bind_id(
-        &h.inner.f.compiled.env,
-        "test::opts",
-    )?;
-    let opts_ref = h.inner.f.gx.compile_ref(opts).await?;
+    let opts =
+        Value::Array(ValArray::from_iter(["apple", "banana", "cherry"].map(Value::from)));
     for _ in 0..3 {
-        let v = opts_ref.last.clone().expect("the options");
-        h.inner.f.gx.compile_ref(opts).await?.set(v)?;
+        h.inner.set_var("test::opts", opts.clone())?;
         h.drain().await?;
     }
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
@@ -925,15 +912,7 @@ async fn sliders_are_f64_and_continuous() -> Result<()> {
         let code = format!("{IMPORTS};\nlet result = {slider}");
         let mut h =
             InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
-        let msgs = h.click(Point::new(x, 10.0));
-        expect_call(&msgs);
-        match msgs.iter().find_map(|m| match m {
-            super::Message::Call(_, a) => a.first().cloned(),
-            _ => None,
-        }) {
-            Some(Value::F64(v)) => Ok(v),
-            v => anyhow::bail!("not an f64: {v:?}"),
-        }
+        Ok(f64_arg(&h.click(Point::new(x, 10.0))))
     };
     let stepped = value_at(
         "slider(#min: &0.0, #max: &1.0, #step: &0.05, #on_change: |v| null, &0.0)",
@@ -1073,6 +1052,49 @@ async fn text_input_keeps_focus_across_resize() -> Result<()> {
     expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("ab")));
     h.dispatch_calls(&msgs).await?;
     assert_eq!(h.get_watched("test::value"), Some(&Value::from("ab")));
+    Ok(())
+}
+
+/// A focused text widget owns its copy, cut, paste, undo and select-all
+/// keys; the menu bar takes them only while no text widget has the focus,
+/// and its other shortcuts always.
+#[tokio::test(flavor = "current_thread")]
+async fn a_focused_text_widget_owns_its_editing_keys() -> Result<()> {
+    for input in ["text_input", "text_editor"] {
+        let code = format_compact!(
+            "{IMPORTS};\n\
+             let copies = 0;\n\
+             let saves = 0;\n\
+             let item = |k: string, n: &mut i64| menu::action(\
+                 #on_click: |c| *n <- c ~ *n + 1, \
+                 #shortcut: &menu::shortcut(#ctrl: true, k)$, &k);\n\
+             let result = column(&[\
+                 menu::bar(&[menu::menu(&\"Edit\", &[item(\"c\", &mut copies), item(\"s\", &mut saves)])]), \
+                 {input}(&\"text\")])"
+        );
+        let mut h =
+            InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+        h.watch("test::copies").await?;
+        h.watch("test::saves").await?;
+        let msgs = h.press_ctrl("c");
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(
+            h.get_watched("test::copies"),
+            Some(&Value::I64(1)),
+            "{input} unfocused"
+        );
+        h.click(Point::new(150.0, 60.0));
+        let msgs = h.press_ctrl("c");
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(
+            h.get_watched("test::copies"),
+            Some(&Value::I64(1)),
+            "{input} focused"
+        );
+        let msgs = h.press_ctrl("s");
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(h.get_watched("test::saves"), Some(&Value::I64(1)), "{input} save");
+    }
     Ok(())
 }
 
@@ -1316,7 +1338,7 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/medium] These echo tests judge a rejected send
+// XCR claude for claude: [test-gap/medium] These echo tests judge a rejected send
 // through GuiTestHarness::drain, which calls root.w.idle() after every drain whether or
 // not a widget asked. testing::drain_idle drops GXEvent::Idle. A real window runs
 // idle() only on GXEvent::Idle, which the runtime sends only after a widget's ask_idle
@@ -1327,6 +1349,15 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 // root.w.idle() only when a GXEvent::Idle batch arrives (a hook in drain_idle or
 // GuiTestHarness::drain), as event_loop.rs does on ToGui::Idle. Found by reading; not
 // run. (tests-gui-b-01)
+// 2026-10-26 claude: GuiTestHarness::drain now calls root.w.idle() only for a
+// GXEvent::Idle, as event_loop.rs does on ToGui::Idle (deliver_batch too), through the
+// new testing::drain_events, which hands every event to its callback in order;
+// drain_idle is drain_events over updates. The runtime now sends the Idle batch before
+// it answers the idle waiters of the same verdict, so a wait_idle answered means the
+// Idle is already in the stream (GXHandle::wait_idle's doc says so). Pin: with ask_idle
+// a no-op, rejected_toggles_return_to_the_program_value,
+// rejected_text_input_returns_to_the_program_value and
+// rejected_text_editor_returns_to_the_program_value fail.
 async fn rejected_toggles_return_to_the_program_value() -> Result<()> {
     for kind in ["checkbox", "toggler"] {
         let code = format_compact!(
@@ -1403,34 +1434,18 @@ async fn continuous_slider_keys_and_wheel_move_one_percent() -> Result<()> {
         );
         let mut h = InteractionHarness::with_viewport(&code, size).await?;
         h.move_cursor(hit);
-        // CR claude for claude: [structure/low] This closure (the f64 first argument of
-        // the Call in msgs) is written out four times in this file: here, in
-        // stepped_slider_keys_wheel_and_drags_share_one_lattice (identical), in
-        // sliders_are_f64_and_continuous and in
-        // continuous_slider_extreme_range_clicks_stay_inside. Add one `fn f64_arg(msgs:
-        // &[Message]) -> f64` beside expect_call in test/mod.rs, built on expect_call
-        // so it also asserts exactly one call, and use it at all four. Found by
-        // reading; not run. (tests-gui-b-04)
-        let value = |msgs: &[super::Message]| -> f64 {
-            msgs.iter()
-                .find_map(|m| match m {
-                    super::Message::Call(_, args) => match args.first() {
-                        Some(Value::F64(v)) => Some(*v),
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .expect("slider callback")
-        };
-        assert!((value(&h.press_key(Named::ArrowUp)) - 51.0).abs() < 1e-10, "{name} key");
+        assert!(
+            (f64_arg(&h.press_key(Named::ArrowUp)) - 51.0).abs() < 1e-10,
+            "{name} key"
+        );
         h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
             keyboard::Modifiers::CTRL,
         ))]);
-        assert!((value(&h.scroll(0.0, -1.0)) - 49.0).abs() < 1e-10, "{name} wheel");
+        assert!((f64_arg(&h.scroll(0.0, -1.0)) - 49.0).abs() < 1e-10, "{name} wheel");
         h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
             keyboard::Modifiers::empty(),
         ))]);
-        assert!((value(&h.click(hit)) - 37.325).abs() < 0.0002, "{name} fine drag");
+        assert!((f64_arg(&h.click(hit)) - 37.325).abs() < 0.0002, "{name} fine drag");
     }
     Ok(())
 }
@@ -1448,26 +1463,15 @@ async fn stepped_slider_keys_wheel_and_drags_share_one_lattice() -> Result<()> {
         );
         let mut h = InteractionHarness::with_viewport(&code, size).await?;
         h.move_cursor(hit);
-        let value = |msgs: &[super::Message]| -> f64 {
-            msgs.iter()
-                .find_map(|m| match m {
-                    super::Message::Call(_, args) => match args.first() {
-                        Some(Value::F64(v)) => Some(*v),
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .expect("slider callback")
-        };
-        assert_eq!(value(&h.press_key(Named::ArrowUp)), 6.5, "{name} key");
+        assert_eq!(f64_arg(&h.press_key(Named::ArrowUp)), 6.5, "{name} key");
         h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
             keyboard::Modifiers::CTRL,
         ))]);
-        assert_eq!(value(&h.scroll(0.0, -1.0)), 4.5, "{name} wheel");
+        assert_eq!(f64_arg(&h.scroll(0.0, -1.0)), 4.5, "{name} wheel");
         h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
             keyboard::Modifiers::empty(),
         ))]);
-        let dragged = value(&h.click(hit));
+        let dragged = f64_arg(&h.click(hit));
         assert_eq!(dragged - dragged.floor(), 0.5, "{name} drag: {dragged}");
     }
     Ok(())
@@ -1483,17 +1487,7 @@ async fn continuous_slider_extreme_range_clicks_stay_inside() -> Result<()> {
             "{IMPORTS}; let result = {name}(#min: &-1.7e308, #max: &1.7e308, #on_change: |v| null, &0.0)"
         );
         let mut h = InteractionHarness::with_viewport(&code, size).await?;
-        let msgs = h.click(hit);
-        let value = msgs
-            .iter()
-            .find_map(|m| match m {
-                super::Message::Call(_, args) => match args.first() {
-                    Some(Value::F64(v)) => Some(*v),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .expect("slider callback");
+        let value = f64_arg(&h.click(hit));
         assert!(
             value.is_finite() && (value / 1.7e308 + 0.5).abs() < 1e-6,
             "{name}: {value}"
