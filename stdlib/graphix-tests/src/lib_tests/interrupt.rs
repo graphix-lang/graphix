@@ -189,3 +189,53 @@ async fn interrupted_recursion_rides_interp() -> Result<()> {
 async fn interrupted_recursion_rides_fused() -> Result<()> {
     interrupted_recursion_rides(BitFlags::empty()).await
 }
+
+/// One run of [`interrupted_reply_is_delivered_again`]: whether `cnt`
+/// went on counting after the interrupt.
+async fn timer_survives_interrupt() -> Result<bool> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = init_flags(tx, BitFlags::empty()).await?;
+    let mut held = Vec::new();
+    for stmt in [
+        "let rec spin = |n: i64| -> i64 select n < 0 { true => n, false => spin(n + 1) }",
+        "let cnt = 0",
+        "let go = sys::time::timer(duration:100.ms, false); let r = spin(go ~ 0); \
+         let f = |x: i64| { let t = sys::time::timer(duration:100.ms, true); t ~ x }; \
+         let tk = f(1); cnt <- tk ~ cnt + 1",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(stmt)).await?);
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    ctx.rt.interrupt();
+    held.push(ctx.rt.compile(ArcStr::from("cnt")).await?);
+    let cnt = held.last().unwrap().exprs[0].id;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut counting = false;
+    while let Some(v) =
+        value_of(&mut rx, cnt, deadline - tokio::time::Instant::now()).await
+    {
+        if matches!(v, netidx::publisher::Value::I64(n) if n >= 5) {
+            counting = true;
+            break;
+        }
+    }
+    ctx.shutdown().await;
+    Ok(counting)
+}
+
+/// A reply an interrupt kept from its reader, here a repeating timer's
+/// fire in a function body the interrupt skipped, is delivered again the
+/// next cycle, so the timer re-arms. `go` and the timer in `f` land in one
+/// cycle about half the time, the cycle `spin` wedges and the interrupt
+/// cuts short: six runs at once, of which all but about one in 64 would
+/// see a dead timer without the re-delivery.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupted_reply_is_delivered_again() -> Result<()> {
+    let runs: Vec<_> = (0..6).map(|_| tokio::spawn(timer_survives_interrupt())).collect();
+    for (i, run) in runs.into_iter().enumerate() {
+        if !run.await?? {
+            bail!("run {i}: the timer inside f died at the interrupt")
+        }
+    }
+    Ok(())
+}

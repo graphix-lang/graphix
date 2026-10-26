@@ -902,34 +902,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             publish_production(ctx, Feeds::Pattern(pat), tv, false, root);
         }
         // an interrupted dispatch is not a bottom: it rides its last result
-        // CR claude for claude: [bug/medium] An interrupted dispatch skips the body, and
-        // with it every builtin in the body that reads its own delivery from ctx.event
-        // this cycle. do_cycle then clears the event and nothing delivers it again. A
-        // repeating sys::time::Timer keeps its spent id and never re-arms. A
-        // CachedArgsAsync site never decrements `inflight`, so a Fifo site queues every
-        // later call forever. IoLines' reader waits on `drained` forever. The Inbox of
-        // http::serve and sys::net::rpc keeps `woken` set and is never woken again. The
-        // collection slot loops that stop on an interrupt do the same. The interrupt
-        // doc promises a value recomputes when an input fires again; these never do.
-        // Decide the remedy. One option: the run loop delivers again, next cycle, the
-        // reply and custom deliveries an interrupted cycle left unconsumed in its
-        // event. The other is that only loops abort, never a body. Pin it either way.
-        // probe: design/review-2026-10-19/repro/x-concurrency-interrupt-kills-timer.sh
-        // (x-concurrency-01)
-        // 2026-10-24 claude: Eric ruled (2026-10-24): re-deliver: the run loop
-        // re-delivers, next cycle, the deliveries an interrupted cycle left unconsumed.
-        // 2026-10-25 claude: Plan, not started: the run loop marks each reply it
-        // delivers (Via::Reply variables and custom deliveries) in the cycle's event; a
-        // reader marks its own reply consumed; at the end of a cycle the interrupt cut
-        // short, the replies left unmarked are queued again, Via::Reply, for the next.
-        // Custom deliveries are mostly taken already (Event::take_custom), so what stays
-        // in the map is unconsumed, but db subscribe and watch peek with with_custom and
-        // must mark instead. Reply variables have no mark: the readers are core's
-        // CachedArgsAsync (lib.rs, three sites), time.rs's timer and after_idle,
-        // net.rs's subscribe/rpc, io.rs's lines reader, http, db, gui, the admin
-        // ceremony, and anything reading one through read_var. A reader missed is
-        // re-delivered a reply it consumed, but only after an interrupted cycle. Pin:
-        // the probe's timer re-arms after an interrupt.
         if ctx.control.interrupted() {
             return self.resident.ride();
         }

@@ -276,6 +276,10 @@ pub(super) struct GX<X: GXExt> {
     /// Answers whose call's cycle queued writes: they go out at the end of
     /// the next cycle, once those writes have landed.
     held_answers: Vec<(ExprId, Value)>,
+    /// The replies delivered this cycle, variables and custom: those an
+    /// interrupt kept from every reader are delivered again
+    /// ([`Self::redeliver_unseen_replies`]).
+    replied: Vec<BindId>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Resolvers,
     batch_pool: Pool<Vec<GXEvent>>,
@@ -336,6 +340,7 @@ impl<X: GXExt> GX<X> {
             callables: IntMap::default(),
             calls: VecDeque::new(),
             held_answers: Vec::new(),
+            replied: Vec::new(),
             sub: cfg.sub,
             resolvers: std::sync::Arc::from(cfg.resolvers),
             batch_pool: Pool::new(10, 1000000),
@@ -583,6 +588,7 @@ impl<X: GXExt> GX<X> {
         } else {
             tokio::task::block_in_place(run_nodes);
         }
+        self.redeliver_unseen_replies();
         // before the send loop, which may compile roots for the next cycle
         self.ctx.event.clear();
         self.ctx.rt.updated.clear();
@@ -728,7 +734,35 @@ impl<X: GXExt> GX<X> {
         };
         self.ctx.rt.store_insert(id, graphix_compiler::TagValue::fired(v.clone()));
         self.ctx.event.variables.insert(id, graphix_compiler::TagValue::fired(v));
+        if matches!(via, Via::Reply) {
+            self.replied.push(id);
+        }
         self.wake_readers(&id);
+    }
+
+    /// After a cycle the interrupt cut short: a reply no reader reached,
+    /// its boundary unvisited (a dispatch or a loop the interrupt skipped),
+    /// is delivered again next cycle, so the builtin waiting on it is not
+    /// left waiting forever. A reply some reader reached was consumed.
+    fn redeliver_unseen_replies(&mut self) {
+        let cycle = self.ctx.rt.cycle;
+        let interrupted = self.ctx.control.interrupted();
+        for id in self.replied.drain(..) {
+            let seen = self.ctx.rt.by_ref.get(&id).is_none_or(|readers| {
+                readers
+                    .iter()
+                    .any(|(r, _)| r.boundary.as_ref().is_none_or(|b| b.visited(cycle)))
+            });
+            if !interrupted || seen {
+                continue;
+            }
+            if let Some(u) = self.ctx.event.take_custom(&id) {
+                self.ctx.rt.custom_updates.push(id, u, Via::Reply);
+            } else if let Some((tv, _)) = self.ctx.rt.store_get(&id) {
+                let u = VarUpdate::Set(tv.value_cloned());
+                self.ctx.rt.var_updates.push(id, u, Via::Reply);
+            }
+        }
     }
 
     /// `id`'s delivery this cycle, or its wait behind what `id` has waiting
@@ -778,6 +812,9 @@ impl<X: GXExt> GX<X> {
             return;
         }
         self.ctx.event.custom.lock().insert(id, u);
+        if matches!(via, Via::Reply) {
+            self.replied.push(id);
+        }
         self.wake_readers(&id);
     }
 

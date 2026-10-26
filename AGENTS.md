@@ -846,7 +846,9 @@ node graph IS the IR — there is no parallel typed IR
   unconditionally; shrink = delete (a depth not reached this cycle is
   deleted; re-reaching it is fresh). No depth limit; evaluation is
   atomic within a cycle; containment is the cooperative interrupt
-  (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`) and the
+  (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`; a reply the
+  interrupted cycle kept from every reader, their boundaries unvisited,
+  is delivered again the next cycle: `GX::redeliver_unseen_replies`) and the
   activation budget: live activations (calls, slots, kernel blocks)
   bound per runtime, unlimited by default, set by an embedder
   (`Control::set_activation_budget`) or `GRAPHIX_ACTIVATION_BUDGET`. Kernel
