@@ -1837,6 +1837,9 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         // formal in the body takes an instance of it, never binds them
         let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         def.typ.inner_quantifiers(&mut quantifiers);
+        for tv in quantifiers.values() {
+            tv.mark_formal_quantifier()
+        }
         let rigid = named
             .values()
             .map(|tv| tv.open_rigid())

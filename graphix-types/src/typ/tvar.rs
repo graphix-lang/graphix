@@ -514,6 +514,10 @@ pub(crate) enum CellFact {
     /// a `_` annotation, a `-> _` return): a fact the gate keeps, where a
     /// ⊥ nothing required is vacuous and reopens.
     BottomRequired,
+    /// The cell is a quantifier of a rank-2 formal: wherever the formal is
+    /// passed on, in its definition's check or an instance's elaboration,
+    /// it is any instance of itself, copied fresh for each use.
+    FormalQuantifier,
 }
 
 impl Default for TCell {
@@ -1342,6 +1346,21 @@ impl TVar {
         if decided(&c) {
             c.facts |= CellFact::BottomRequired;
         }
+    }
+
+    /// Mark the cell a quantifier of a rank-2 formal; see
+    /// [`CellFact::FormalQuantifier`].
+    pub fn mark_formal_quantifier(&self) {
+        let cell = self.cell();
+        let mut c = cell.write();
+        if decided(&c) {
+            c.facts |= CellFact::FormalQuantifier;
+        }
+    }
+
+    /// Whether the cell is a quantifier of a rank-2 formal.
+    pub(crate) fn is_formal_quantifier(&self) -> bool {
+        self.cell().read().facts.contains(CellFact::FormalQuantifier)
     }
 
     /// Whether a ⊥ was produced into the cell while it was open: a

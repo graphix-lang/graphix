@@ -3713,3 +3713,16 @@ run!(
         let result: Array<(string, i64)> = cast<Array<(string, i64)>>(m)$
     "#
 );
+
+// A rank-2 formal passed on is any instance of itself in an instance's
+// elaboration as in its definition's check: two uses at two types.
+run!(
+    rank2_formal_forwarded_twice,
+    r#"{
+  let app = |a: 'a, k: fn(x: 'a) -> 'a| k(a);
+  let f = |g: fn<'b: Number + Singleton>(x: 'b) -> 'b| (app(1.5, g), app(1, g));
+  f(|x| x + x)
+}"#,
+    prints("[f64:3., i64:2]");
+    FuseExpect::Jit
+);

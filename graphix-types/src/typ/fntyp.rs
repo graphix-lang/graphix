@@ -825,7 +825,7 @@ impl FnType {
     /// A rank-2 formal in its definition's body: its open quantifiers are
     /// held rigid there, so its value is still any instance of itself.
     fn is_rigid_formal(&self) -> bool {
-        self.any_open_quantifier(|tv| tv.is_rigid())
+        self.any_open_quantifier(|tv| tv.is_rigid() || tv.is_formal_quantifier())
     }
 
     fn any_open_quantifier(&self, also: impl Fn(&TVar) -> bool) -> bool {
@@ -1137,24 +1137,13 @@ impl FnType {
         // 2026-10-19 claude: The has_open_quantifier change in contains_gated makes
         // this repro print 1 but breaks two fixtures (see the t-fntyp-03 note);
         // reverted with it.
-        // CR claude for claude: [bug/high] A rank-2 formal is any instance of itself
-        // only while its quantifiers are rigid, which holds only in the definition's
-        // check. In an instance's elaboration the formal's quantifiers are open but not
-        // rigid. So passing g to a generic HOF binds g's own 'b, and a second pass at
-        // another type is refused. Example: `|g: fn<'b: Number + Singleton>(x: 'b) ->
-        // 'b| (app(1.5, g), app(1, g))` checks, but the build refuses "fn(x: i64) ->
-        // i64 does not contain fn<..>(x: 'b: f64) -> 'b: f64" (graphix-fuzz check:
-        // DIVERGENCE). Take shared_call for any type with an open quantifier
-        // (has_open_quantifier), or carry the formal's rigidity into the instance. Pin
-        // the two-use shape. probe:
-        // design/review-2026-10-19/repro/t-fntyp-rank2-forward-twice.gx (t-fntyp-03)
-        // 2026-10-19 claude: Taking shared_call for any type with an open quantifier
-        // (the CR's first option) does not fix this repro (the build still refuses
-        // fn(x: 'b: f64)) and makes
-        // lang::functions::declared_bound_quantifier_in_the_return_narrows and
-        // lang::traits::select_over_ctor_application produce nothing; reverted. The
-        // instance path that binds g's 'b is elsewhere: carrying the formal's rigidity
-        // into the instance is the option left.
+        // 2026-10-25 claude: t-fntyp-03 is fixed beside it: a rank-2 formal's own
+        // quantifiers now carry CellFact::FormalQuantifier, set at the definition's
+        // gate and kept through copies, images and resolve_tvars, so is_rigid_formal
+        // holds in an instance's elaboration too and pre_unify_params pushes nothing
+        // into such a formal. This repro is a different path and still fails: the
+        // call's result is the formal itself (|g| g), and the annotation h: fn(y: i64)
+        // -> i64 binds the result's 'b, which the instance's formal shares.
         let t = match t.is_rigid_formal() {
             true => {
                 fresh = t.shared_call();
@@ -1220,6 +1209,11 @@ impl FnType {
     /// before its body is typechecked. Return and throws are what the
     /// body determines and are left open.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
+        // a rank-2 formal passed on is any instance of itself, copied fresh
+        // at the check: nothing is pushed into its own quantifiers
+        if t.is_rigid_formal() {
+            return Ok(());
+        }
         let mut hist = ContainsHist::new();
         for (s, t) in self.align(t).0 {
             t.typ.contains_int(ContainsFlags::Commit.into(), env, &mut hist, &s.typ)?;

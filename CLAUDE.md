@@ -706,7 +706,9 @@ node graph IS the IR — there is no parallel typed IR
   rank-2: its argument is checked with `'b` rigid and held to exactly
   its declared bounds, predicates included (`fn<'b: Number>` takes no
   `|x| x * x`: declare `Number + Singleton`), a call copies `'b`
-  generic, and an open quantifier never binds to its bound, no site's
+  generic, the formal passed on is any instance of itself in an
+  instance's elaboration as in the definition's check
+  (`CellFact::FormalQuantifier`), and an open quantifier never binds to its bound, no site's
   settle decides it (`design/tvar_constraints.md`); `Any` binds an open
   cell only in a contravariant position (a `|v: Any|` callback fixes its
   formal's type; `let x: Any = y` decides nothing of `y`);

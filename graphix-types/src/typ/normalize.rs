@@ -342,6 +342,9 @@ impl Type {
                                 let c = c.resolve_tvars_seen_int(cx).unwrap_or(c);
                                 fresh.add_cell_constraint(c);
                             }
+                            if tv.is_formal_quantifier() {
+                                fresh.mark_formal_quantifier()
+                            }
                         } else if cx.predicates {
                             for c in tv.cell_constraints() {
                                 if c.is_predicate() {
