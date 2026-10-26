@@ -730,3 +730,27 @@ run!(watch_rebuilds_after_wake, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
 }, timeout: 3; FuseExpect::Jit);
+
+// A stream over a watch that sleeps mid-burst leaves the burst to every
+// other stream on the watch: 8 creates and the Established all reach
+// `events` while the `path` stream beside it is put to sleep.
+#[cfg(unix)]
+run!(watch_sibling_sleep_keeps_the_burst, r#"{
+    use sys::fs::watch;
+    let dir = sys::fs::tempdir::create(null)?;
+    let d = sys::fs::tempdir::path(dir);
+    let w = watch::create(null)?;
+    let wa = watch::watch(#interest: [`Established, `Create], w, d)?;
+    let ev = watch::events(wa)?;
+    let n = 0;
+    n <- ev ~ n + 1;
+    let est = select ev.event { `Established => true, _ => false };
+    let mode = 0;
+    let side = select mode { 0 => watch::path(wa), _ => never() };
+    mode <- filter(est, |e| !e) ~ 1;
+    let c = sys::process::spawn(sys::process::options(
+        #args: ["-c", "cd [d] && touch a b c d e f g h"],
+        filter(est, |e| e) ~ "/bin/sh"
+    ));
+    sys::time::after_idle(duration:500.ms, n) ~ n
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(9))), timeout: 10; FuseExpect::Jit);

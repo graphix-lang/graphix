@@ -37,22 +37,18 @@ use std::{
     marker::PhantomData,
     time::Duration,
 };
-
-/// How long a TLS handshake may take before the stream is dropped: the
-/// standard TCP timeout. rustls has no clock of its own, so a peer that
-/// goes quiet mid-handshake would otherwise hold its socket and task until
-/// it hung up.
-pub const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
-// CR claude for claude: [style/low] This import stands alone after
-// TLS_HANDSHAKE_TIMEOUT, splitting the import block. Move it into the grouped `use`
-// statements, and put the constant below the imports. Found by reading; not run.
-// (core-lib-06)
 use tokio::time::Instant;
 
 pub(crate) mod buffer;
 pub(crate) mod math;
 pub(crate) mod opt;
 pub(crate) mod queuefn;
+
+/// How long a TLS handshake may take before the stream is dropped: the
+/// standard TCP timeout. rustls has no clock of its own, so a peer that
+/// goes quiet mid-handshake would otherwise hold its socket and task until
+/// it hung up.
+pub const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The success member `T` of a `Result<T, E>` return type, in either the
 /// named form or the expanded `[T, Error<E>]` form. Shape only; the
@@ -148,6 +144,15 @@ impl CastTarget {
         }
     }
 
+    /// [`Self::read`] of data whose decimals stand for floats read exactly
+    /// ([`Type::cast_exact_floats`]).
+    pub fn read_exact_floats(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
+        match (&self.0, v) {
+            (Some(t), v) if !matches!(v, Value::Error(_)) => t.cast_exact_floats(env, v),
+            (_, v) => self.read(env, tag, v),
+        }
+    }
+
     /// Data cast to the target (an error in it refused like any value the
     /// target does not admit), or with no target an error saying so.
     pub fn read_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
@@ -208,7 +213,7 @@ pub struct TypedRead<F> {
 
 impl<F> TypedRead<F> {
     fn new(env: &Env, target: CastTarget) -> Self {
-        // CR claude for claude: [bug/medium] exact is decided once for the whole
+        // XCR claude for claude: [bug/medium] exact is decided once for the whole
         // target, so one integer field turns every inexact number in the document into
         // a decimal, including those read into Any. Read into {n: i64, xs: Array<Any>},
         // the xs elements select as decimal. Read into {xs: Array<Any>}, the same text
@@ -218,6 +223,16 @@ impl<F> TypedRead<F> {
         // the target type to the visitor. probe:
         // design/review-2026-10-26/repro/x-kind-markers-json-exact-leaks-to-any.gx
         // (x-kind-markers-06)
+        // 2026-10-26 claude: The parse stays exact for the whole document; the cast now
+        // decides per position: json's ReadFormat::read casts through
+        // CastTarget::read_exact_floats (Type::cast_exact_floats,
+        // CastCx::decimal_floats), where a decimal at an Any, unbound, or primitive
+        // position holding neither an integer nor a decimal becomes the f64 its text
+        // reads as before it is cast. The book's json Numbers section says so (book not
+        // rebuilt: local mdbook 0.4.49). Pin:
+        // lib_tests::json::json_exact_number_is_per_position (the old read gives
+        // decimals at the Any and string positions); the repro prints f64 on both
+        // lines.
         Self { exact: target.holds_exact_number(env), target, format: PhantomData }
     }
 }
@@ -303,9 +318,10 @@ impl ExitRequest {
         (Self(triomphe::Arc::new(parking_lot::Mutex::new(Some(tx)))), rx)
     }
 
-    /// Ask to exit with `code`; false when the embedder no longer listens.
-    /// A program already exiting keeps its first code.
-    // CR claude for claude: [bug/medium] When the receiver is gone, sys::exit falls
+    /// Ask to exit with `code`. A program already exiting keeps its first
+    /// code, and one whose embedder no longer listens has been dropped by
+    /// it: the process is the embedder's to end.
+    // XCR claude for claude: [bug/medium] When the receiver is gone, sys::exit falls
     // through to std::process::exit with the program's code. The fuzz harness drops the
     // receiver while the runtime still runs: compile_with_stats binds `let Started {
     // ctx, .. }`, so the receiver is dropped before the first cycle, and start_session
@@ -317,10 +333,16 @@ impl ExitRequest {
     // true`), and drop order_result's comment that a subject's sys::exit ends the
     // child. probe: design/review-2026-10-26/repro/fuzz-lib-b-exit-kills-harness.sh
     // (fuzz-lib-b-01)
-    pub fn request(&self, code: i32) -> bool {
-        match self.0.lock().take() {
-            Some(tx) => tx.send(code).is_ok(),
-            None => true,
+    // 2026-10-26 claude: ExitRequest::request returns nothing: an embedder that seeded
+    // one owns the process, so a send its dropped receiver refuses is handled, and
+    // sys::exit falls back to std::process::exit only without an ExitRequest.
+    // order_result's comment is gone. Pin:
+    // lib_tests::sys::exit_without_a_listener_keeps_the_process (runs the program in a
+    // child of the test binary; the old code ends it with status 3); check-one with a 1
+    // ms budget now writes agree and exits 0.
+    pub fn request(&self, code: i32) {
+        if let Some(tx) = self.0.lock().take() {
+            let _ = tx.send(code);
         }
     }
 }

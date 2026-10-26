@@ -173,3 +173,37 @@ run!(stdio_constructors_are_sync, r#"{
         && output(null) != output(null)
         && error(null) != error(null)
 }"#, is(Value::Bool(true)); FuseExpect::None);
+
+// sys::exit under an embedder that seeded an ExitRequest and stopped
+// listening ends nothing: the process is the embedder's. The program runs
+// in a child of this binary, which a process exit would end with the
+// program's code (fuzz-lib-b-01).
+#[tokio::test(flavor = "current_thread")]
+async fn exit_without_a_listener_keeps_the_process() -> Result<()> {
+    const CHILD: &str = "GRAPHIX_TEST_EXIT_CHILD";
+    const NAME: &str = "lib_tests::sys::exit_without_a_listener_keeps_the_process";
+    if std::env::var_os(CHILD).is_some() {
+        let (v, ctx) = testing::eval_with_setup(
+            "{ let x = 3; sys::exit(x); x }",
+            &crate::TEST_REGISTER,
+            |ctx| {
+                ctx.libstate.set(graphix_package_core::ExitRequest::new().0);
+            },
+        )
+        .await?;
+        assert_eq!(v, Value::I64(3));
+        ctx.shutdown().await;
+        return Ok(());
+    }
+    let out = std::process::Command::new(std::env::current_exe()?)
+        .args([NAME, "--exact", "--include-ignored"])
+        .env(CHILD, "1")
+        .output()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{:?}\n{stdout}",
+        out.status
+    );
+    Ok(())
+}

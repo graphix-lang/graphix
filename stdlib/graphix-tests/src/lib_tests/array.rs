@@ -1254,6 +1254,21 @@ run!(group_answers_only_a_waiting_element, r#"{
     matches!(v, Ok(v) if v.to_string() == "[[i64:1, i64:2, i64:3]]")
 }; FuseExpect::Jit);
 
+// A predicate that answers a cycle late, while elements queue behind it:
+// each answer is the element's in flight, so every group ends at an even
+// element.
+run!(group_late_answer_belongs_to_its_element, r#"{
+    let c = 0;
+    c <- select c < 8 { true => c + 1, false => never() };
+    let pred = |n: i64, x: i64| { let r = never(); r <- x; r % 2 == 0 };
+    let g = array::group(c, pred);
+    let log: Array<Array<i64>> = [];
+    log <- g ~ array::push(log, g);
+    sys::time::after_idle(duration: 200.ms, log) ~ log
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[i64:0], [i64:1, i64:2], [i64:3, i64:4], [i64:5, i64:6], [i64:7, i64:8]]")
+}; FuseExpect::Jit);
+
 // A seq step's next run is a rebirth: group forgets what an aborted run
 // buffered (collections-str-05).
 run!(group_is_reborn_with_a_seq_run, r#"{

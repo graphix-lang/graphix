@@ -426,3 +426,19 @@ run!(
     DECODE_UNFINISHED_WRITES_NOTHING,
     prints("[i64:1, u8:0, false]")
 );
+
+// A decode writes a place as it writes a binding: every packet fires
+// both, the same value or not.
+run!(decode_writes_a_place_every_packet, r#"{
+    let c = 0;
+    c <- select c < 6 { true => c + 1, false => never() };
+    let s = { a: u8:0 };
+    let x = u8:0;
+    let pkt = select c { k if k >= 1 && k <= 3 => buffer::encode([`U8(u8:7), `U8(u8:7)]), _ => never() };
+    let rest = buffer::decode(pkt, [`U8(&mut s.a), `U8(&mut x)]);
+    let place_fires = 0;
+    let bind_fires = 0;
+    place_fires <- s.a ~ place_fires + 1;
+    bind_fires <- x ~ bind_fires + 1;
+    select c { 6 => (place_fires, bind_fires), _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:4, i64:4]"); FuseExpect::Jit);

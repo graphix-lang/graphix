@@ -13,8 +13,8 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, Shape, TypedRead, f32_as_written,
-    shape,
+    CachedArgsAsync, CachedVals, CastTarget, ReadFormat, ReadInput, Shape, TypedRead,
+    f32_as_written, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -339,6 +339,11 @@ impl ReadFormat for Json {
                 Err(e) => errf!(Self::TAG, "{e}"),
             }
         }
+    }
+
+    /// Every decimal `parse` makes is a float it read exactly.
+    fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
+        target.read_exact_floats(env, &Self::TAG, v)
     }
 }
 

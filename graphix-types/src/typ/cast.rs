@@ -142,6 +142,20 @@ struct CastCx {
     /// Only a conversion that loses nothing counts: a union tries its
     /// members so first.
     exact: bool,
+    /// The data's decimals stand for floats read exactly
+    /// ([`Type::cast_exact_floats`]).
+    decimal_floats: bool,
+}
+
+impl CastCx {
+    /// `v` as the f64 a float position reads, when it is a decimal that
+    /// stands for a float.
+    fn float_of(&self, v: &Value) -> Option<Value> {
+        match v {
+            Value::Decimal(_) if self.decimal_floats => convert(v.clone(), Typ::F64),
+            _ => None,
+        }
+    }
 }
 
 /// An `is_a` walk's state: the references on its path with the value
@@ -645,7 +659,7 @@ impl Type {
             | Type::NoError
             | Type::Ordered
             | Type::Discernible => Err(self.cast_fail("a constraint", v)),
-            Type::Bottom | Type::Any => Ok(None),
+            Type::Bottom | Type::Any => Ok(cx.float_of(v)),
             Type::Fn(_) => match v {
                 Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => Ok(None),
                 _ => Err(self.cast_fail("not a function", v)),
@@ -688,6 +702,12 @@ impl Type {
                 Err(self.cast_fail("a reference can't be read from data", v))
             }
             Type::Primitive(s) => {
+                if !s.intersects(Typ::integer() | Typ::Decimal)
+                    && let Some(f) = cx.float_of(v)
+                {
+                    let c = self.cast_inner(env, cx, src, &f)?;
+                    return Ok(Some(c.unwrap_or(f)));
+                }
                 // a tuple, struct, variant or list is no primitive; a bare
                 // variant reads as a string by its tag
                 if rep::kind(v).is_some() {
@@ -724,7 +744,7 @@ impl Type {
             }
             Type::TVar(tv) => match tv.binding() {
                 Some(t) => t.cast_int(env, cx, src, v),
-                None => Ok(None),
+                None => Ok(cx.float_of(v)),
             },
             Type::Error(e) => {
                 let src = src_head(src, env, v);
@@ -1223,19 +1243,27 @@ impl Type {
     /// `InvalidCast` error value. An array and a list are told apart by
     /// shape.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, v).unwrap_or_else(|e| e)
+        self.cast_value_int(env, None, v, false).unwrap_or_else(|e| e)
     }
 
     /// [`Self::cast_value`] with its refusal apart from a cast value that
     /// is an error: `Err` is the `InvalidCast` error value.
     pub fn try_cast_value(&self, env: &Env, v: Value) -> Result<Value, Value> {
-        self.cast_value_int(env, None, v)
+        self.cast_value_int(env, None, v, false)
     }
 
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
     /// decides whether a value is an array or a list.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
-        self.cast_value_int(env, Some(src), v).unwrap_or_else(|e| e)
+        self.cast_value_int(env, Some(src), v, false).unwrap_or_else(|e| e)
+    }
+
+    /// [`Self::cast_value`] of data whose decimals stand for floats read
+    /// exactly (a json number past a float's precision): a decimal stays
+    /// one only where its position holds an integer or a decimal, and is
+    /// elsewhere the f64 its text reads as.
+    pub fn cast_exact_floats(&self, env: &Env, v: Value) -> Value {
+        self.cast_value_int(env, None, v, true).unwrap_or_else(|e| e)
     }
 
     // CR claude for claude: [bug/medium] The cast recurses once per nesting level of
@@ -1251,12 +1279,14 @@ impl Type {
         env: &Env,
         src: Option<&Type>,
         v: Value,
+        decimal_floats: bool,
     ) -> Result<Value, Value> {
         let mut cx = CastCx {
             hist: LPooled::take(),
             sizes: LPooled::take(),
             expanded: LPooled::take(),
             exact: false,
+            decimal_floats,
         };
         match self.cast_int(env, &mut cx, src, &v) {
             Ok(None) => Ok(v),

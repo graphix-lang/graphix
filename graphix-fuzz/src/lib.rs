@@ -3057,8 +3057,6 @@ fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult
             _ => (),
         }
     }
-    // a subject's `sys::exit` ends the child with any status, so a clean
-    // order is one that wrote its last line
     res.clean = exited_zero && finished;
     if !res.clean {
         let mut next = order.generator();

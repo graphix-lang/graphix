@@ -387,6 +387,20 @@ run!(json_number_read_exactly, r#"{
     (show(a), show(b), show(c), show(d), e$.x, f$)
 }"#, prints(r#"["refused", "refused", "9007199254740993", "12345678901234567890.123456789", f64:0.3, [f64:9007199254740994., f64:0.1]]"#); FuseExpect::Jit);
 
+// Exactness is the position's: beside an integer field, a number read
+// into Any or a string is the f64 a read with no integer gives, and one
+// read into a decimal stays exact (x-kind-markers-06).
+run!(json_exact_number_is_per_position, r#"{
+    type E = [`JsonErr(string), `InvalidCast(string)];
+    let a: Result<{n: i64, s: string, xs: Array<Any>}, E> = json::read(
+        "{\"n\": 1, \"s\": 0.1000000000000000000001, \"xs\": \[0.1000000000000000000001, 9007199254740993.5\]}"
+    );
+    let b: Result<{d: decimal, x: Any}, E> = json::read(
+        "{\"d\": 0.1000000000000000000001, \"x\": 0.1000000000000000000001}"
+    );
+    (a$.s, a$.xs, b$.d, b$.x)
+}"#, prints(r#"["0.1", [f64:0.1, f64:9007199254740994.], decimal:0.1000000000000000000001, f64:0.1]"#); FuseExpect::None);
+
 // A number past f64's range is an error, never a NaN the text never held
 // (x-engine-collections-05).
 run!(json_number_out_of_range, r#"{

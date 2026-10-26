@@ -763,12 +763,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
             let code = u8::try_from(code).map_or(1, i32::from);
-            let asked = ctx
-                .libstate
-                .get::<graphix_package_core::ExitRequest>()
-                .is_some_and(|r| r.request(code));
-            if !asked {
-                std::process::exit(code);
+            match ctx.libstate.get::<graphix_package_core::ExitRequest>() {
+                Some(r) => r.request(code),
+                None => std::process::exit(code),
             }
         }
         TagValue::phantom_ref()

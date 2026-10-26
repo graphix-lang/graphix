@@ -272,15 +272,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        macro_rules! set {
-            ($v:expr) => {{
-                self.ready = false;
-                self.buf.push($v.clone());
-                let len = Value::I64(self.buf.len() as i64);
-                self.pred.feed_arg(ctx, 0, TagValue::fired(len));
-                self.pred.feed_arg(ctx, 1, TagValue::fired($v));
-            }};
-        }
         let x = from[0].update(ctx);
         let x_tag = x.tag();
         if let Some(tv) = seam_tick(x) {
@@ -289,59 +280,62 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         if let Some(tv) = seam_value(from[1].update(ctx)) {
             self.pred.feed_fn(ctx, tv.clone());
         }
-        if self.ready && self.queue.len() > 0 {
-            let v = self.queue.pop_front().unwrap();
-            set!(v);
+        if self.ready
+            && let Some(v) = self.queue.pop_front()
+        {
+            self.ready = false;
+            self.buf.push(v.clone());
+            let len = Value::I64(self.buf.len() as i64);
+            self.pred.feed_arg(ctx, 0, TagValue::fired(len));
+            self.pred.feed_arg(ctx, 1, TagValue::fired(v));
         }
-        let res = loop {
-            // Cooperative interrupt: abort a wedged grouping loop.
-            if ctx.interrupted() {
-                break None;
-            }
-            match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
-                // only an element waiting is answered: f re-fired by what
-                // else it reads answers nothing
-                None => break None,
-                Some(_) if self.ready => break None,
-                Some(v) => {
-                    self.ready = true;
-                    match v {
-                        Value::Bool(true) => {
-                            let group = Value::Array(ValArray::from_iter_exact(
-                                self.buf.drain(..),
-                            ));
-                            // what queued while f answered starts now; f ran
-                            // this cycle, so it sees the element next cycle
-                            if let Some(v) = self.queue.pop_front() {
-                                self.ready = false;
-                                self.buf.push(v.clone());
-                                ctx.rt.set_var(self.pred.args()[0], Value::I64(1));
-                                ctx.rt.set_var(self.pred.args()[1], v);
-                            }
-                            break Some(group);
-                        }
-                        // CR claude for claude: [bug/medium] After a false answer, the
-                        // next queued element is fed and f is updated again in the same
-                        // cycle. Whatever made f fire this cycle (the input behind the
-                        // answer just consumed) fires it again, and that stale fire is
-                        // taken as the new element's answer. With f = |n, x| { let r =
-                        // never(); r <- x; r % 2 == 0 }, a late answerer the gxi
-                        // allows, group yields [1, 2, 3, 4] where element 2 answered
-                        // true, so the result should be [1, 2] then [3, 4]. Both
-                        // engines agree. Fix: start each queued element for the next
-                        // cycle with rt.set_var on pred.args(), as the true branch
-                        // already does, and drop the same-cycle re-update. Then one
-                        // answer per cycle belongs to the element in flight. Add a pin
-                        // with a late-answering predicate; every current group test
-                        // answers synchronously. probe:
-                        // design/review-2026-10-26/repro/collections-str-group-stale-answer.gx
-                        // (collections-str-01)
-                        _ => match self.queue.pop_front() {
-                            None => break None,
-                            Some(v) => set!(v),
-                        },
+        let res = match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
+            // only an element waiting is answered: f re-fired by what
+            // else it reads answers nothing
+            None => None,
+            Some(_) if self.ready => None,
+            Some(answer) => {
+                self.ready = true;
+                let group = match answer {
+                    Value::Bool(true) => {
+                        Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
                     }
+                    _ => None,
+                };
+                // what queued while f answered starts next cycle: what fired f
+                // now would fire it again, and that is no answer for the next
+                // element
+                // XCR claude for claude: [bug/medium] After a false answer, the
+                // next queued element is fed and f is updated again in the same
+                // cycle. Whatever made f fire this cycle (the input behind the
+                // answer just consumed) fires it again, and that stale fire is
+                // taken as the new element's answer. With f = |n, x| { let r =
+                // never(); r <- x; r % 2 == 0 }, a late answerer the gxi
+                // allows, group yields [1, 2, 3, 4] where element 2 answered
+                // true, so the result should be [1, 2] then [3, 4]. Both
+                // engines agree. Fix: start each queued element for the next
+                // cycle with rt.set_var on pred.args(), as the true branch
+                // already does, and drop the same-cycle re-update. Then one
+                // answer per cycle belongs to the element in flight. Add a pin
+                // with a late-answering predicate; every current group test
+                // answers synchronously. probe:
+                // design/review-2026-10-26/repro/collections-str-group-stale-answer.gx
+                // (collections-str-01)
+                // 2026-10-26 claude: Group::update starts every queued element for the
+                // next cycle through pred.args() after any answer, true or false, and
+                // updates f once per cycle: the grouping loop and its interrupt check
+                // are gone. Pin:
+                // lib_tests::array::group_late_answer_belongs_to_its_element (the old
+                // code gives [[0], [1, 2, 3, 4], [5, 6], [7, 8]] in every mode); the
+                // repro now groups [1, 2] [3, 4] [5, 6] [7, 8] in both engines.
+                if let Some(v) = self.queue.pop_front() {
+                    self.ready = false;
+                    self.buf.push(v.clone());
+                    ctx.rt
+                        .set_var(self.pred.args()[0], Value::I64(self.buf.len() as i64));
+                    ctx.rt.set_var(self.pred.args()[1], v);
                 }
+                group
             }
         };
         // a group of earlier elements delivers; a bottom input stands in
@@ -417,13 +411,7 @@ fn fc_rotate(args: &[Value]) -> Option<Value> {
                 return Some(Value::Array(a.clone()));
             }
             let p = a.len() - r;
-            // CR claude for claude: [perf/low] The length is known, so the scratch Vec
-            // is a needless second copy of every element. Build the result directly
-            // with array_of(a.len(), a[p..].iter().chain(&a[..p]).cloned()) and drop
-            // tmp. Found by reading; not run. (collections-str-05)
-            let mut tmp: LPooled<Vec<Value>> = LPooled::take();
-            tmp.extend(a[p..].iter().chain(&a[..p]).cloned());
-            Some(Value::Array(ValArray::from_iter_exact(tmp.drain(..))))
+            Some(array_of(a.len(), a[p..].iter().chain(&a[..p]).cloned()))
         }
         _ => None,
     }
