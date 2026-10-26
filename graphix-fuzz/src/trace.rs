@@ -14,7 +14,7 @@ use graphix_compiler::{
     BindId, NoUserEvent, abstract_value,
     expr::ExprId,
     node::lambda::{DefOrigin, LambdaDef},
-    reference,
+    reference, rep,
 };
 use graphix_rt::{GXRt, NoExt, TraceEvent, TraceSegment};
 use netidx::publisher::Value;
@@ -36,14 +36,31 @@ pub struct Epoch {
     pub capped: bool,
 }
 
+/// What a trace has seen of the values whose equality is their run's
+/// identity, numbered by first sight across the trace.
+#[derive(Default)]
+struct RunIds {
+    refs: Vec<BindId>,
+    handles: Vec<Value>,
+}
+
+/// A Rust-backed abstract (a file, a socket, a process, a db handle):
+/// equal only to itself, so no two runs share one.
+fn is_handle(v: &Value) -> bool {
+    matches!(v, Value::Abstract(_))
+        && rep::marker_kind(v).is_none()
+        && v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>().is_none()
+}
+
 /// Fn values normalize to the lambda's printed source (`LambdaDef::src`)
 /// so traces of two compiles of one program compare equal; a
 /// `LambdaDef`'s own equality is its minted id. A reference normalizes to
-/// `&refN`, N its cell's index in `refs` (first sight across the trace):
-/// its cell is a per-run bind id, while which values alias is not. An
-/// abstract value's payload normalizes too. Iterative because value
-/// nesting depth is program-controlled.
-fn normalize(v: &Value, refs: &mut Vec<BindId>) -> Value {
+/// `&refN` and a handle ([`is_handle`]) to `&handleN`, N its index in
+/// `ids` (first sight across the trace): which values alias is a
+/// program's, their identity a run's. An abstract value's payload
+/// normalizes too. Iterative because value nesting depth is
+/// program-controlled.
+fn normalize(v: &Value, ids: &mut RunIds) -> Value {
     if !holds_run_ids(v) {
         return v.clone();
     }
@@ -81,11 +98,14 @@ fn normalize(v: &Value, refs: &mut Vec<BindId>) -> Value {
                 }
             }
             Task::Visit(v) if let Some(c) = reference::cell(v) => {
-                let i = refs.iter().position(|r| *r == c).unwrap_or_else(|| {
-                    refs.push(c);
-                    refs.len() - 1
-                });
+                let i = first_sight(&mut ids.refs, c);
                 out.push(Value::String(ArcStr::from(format_compact!("&ref{i}").as_str())))
+            }
+            Task::Visit(v) if is_handle(v) => {
+                let i = first_sight(&mut ids.handles, v.clone());
+                out.push(Value::String(ArcStr::from(
+                    format_compact!("&handle{i}").as_str(),
+                )))
             }
             Task::Visit(v) => {
                 out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>() {
@@ -124,8 +144,15 @@ fn normalize(v: &Value, refs: &mut Vec<BindId>) -> Value {
     out.pop().expect("normalize: empty result stack")
 }
 
-/// Whether `v` holds a lambda or a reference anywhere, what [`normalize`]
-/// rewrites.
+fn first_sight<T: PartialEq>(seen: &mut Vec<T>, x: T) -> usize {
+    seen.iter().position(|s| *s == x).unwrap_or_else(|| {
+        seen.push(x);
+        seen.len() - 1
+    })
+}
+
+/// Whether `v` holds a lambda, a reference or a handle anywhere, what
+/// [`normalize`] rewrites.
 fn holds_run_ids(v: &Value) -> bool {
     let mut work: Vec<&Value> = vec![v];
     while let Some(v) = work.pop() {
@@ -136,7 +163,7 @@ fn holds_run_ids(v: &Value) -> bool {
             v if let Some(a) = abstract_value::get(v) => work.push(&a.payload),
             v => {
                 if reference::cell(v).is_some()
-                    || v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>().is_some()
+                    || matches!(v, Value::Abstract(_)) && rep::marker_kind(v).is_none()
                 {
                     return true;
                 }
@@ -185,7 +212,7 @@ pub fn same(a: &Value, b: &Value) -> bool {
                 work.push((&x.payload, &y.payload));
                 x.id == y.id && x.params == y.params
             }
-            // CR claude for claude: [bug/medium] A Rust-backed abstract
+            // XCR claude for claude: [bug/medium] A Rust-backed abstract
             // (impl_abstract_arc: sys File/TcpStream/Proc, db, sqlite and http handles)
             // reaches this arm, and its == is pointer identity. Two runs never agree on
             // a handle, so any program whose watched value holds one is
@@ -196,6 +223,11 @@ pub fn same(a: &Value, b: &Value) -> bool {
             // identity is not. probe:
             // design/review-2026-10-26/repro/fuzz-main-aux-handle-value-unsure.gx
             // (fuzz-main-aux-02)
+            // 2026-10-26 claude: trace::normalize numbers a Rust-backed abstract (any
+            // Value::Abstract that is no kind marker, lambda, reference or nominal
+            // abstract: trace::is_handle) by first sight across the trace as &handleN,
+            // as references are, so aliasing is compared and identity is not; the repro
+            // now ends AGREE. Pin: trace::tests::handles_compare_by_aliasing.
             (a, b) => a == b,
         };
         if !equal {
@@ -217,15 +249,15 @@ impl Epoch {
 
     /// Project a runtime segment onto the watched expr: anchor at the
     /// segment's first event, keep `Updated(eid)` values, normalized
-    /// ([`normalize`], numbering references in `refs`).
-    fn from_segment(seg: &TraceSegment, eid: ExprId, refs: &mut Vec<BindId>) -> Self {
+    /// ([`normalize`], numbering run identities in `ids`).
+    fn from_segment(seg: &TraceSegment, eid: ExprId, ids: &mut RunIds) -> Self {
         let anchor = Self::anchor(seg).unwrap_or(0);
         let events = seg
             .events
             .iter()
             .filter_map(|e| match e {
                 TraceEvent::Updated { cycle, id, value } if *id == eid => {
-                    Some(((*cycle - anchor) as u32, normalize(value, refs)))
+                    Some(((*cycle - anchor) as u32, normalize(value, ids)))
                 }
                 TraceEvent::Updated { .. } | TraceEvent::Compiled { .. } => None,
             })
@@ -265,8 +297,8 @@ impl Trace {
     pub fn from_segments(segs: &[TraceSegment], eid: ExprId) -> Self {
         Trace {
             epochs: {
-                let mut refs = Vec::new();
-                segs.iter().map(|s| Epoch::from_segment(s, eid, &mut refs)).collect()
+                let mut ids = RunIds::default();
+                segs.iter().map(|s| Epoch::from_segment(s, eid, &mut ids)).collect()
             },
             stdout: Vec::new(),
             exit: None,
@@ -424,6 +456,27 @@ mod tests {
             stdout: Vec::new(),
             exit: None,
         }
+    }
+
+    #[derive(Debug)]
+    struct Handle {
+        inner: triomphe::Arc<u8>,
+    }
+
+    graphix_package_core::impl_abstract_arc!(Handle, static HANDLE = "fuzz::test::Handle");
+
+    #[test]
+    fn handles_compare_by_aliasing() {
+        let h = || HANDLE.wrap(Handle { inner: triomphe::Arc::new(0) });
+        let norm = |vs: &[&Value]| {
+            let mut ids = RunIds::default();
+            vs.iter().map(|v| normalize(v, &mut ids)).collect::<Vec<_>>()
+        };
+        let (a, b, c, d) = (h(), h(), h(), h());
+        let nested = Value::Array([b.clone(), a.clone()].into_iter().collect());
+        let nested2 = Value::Array([d.clone(), c.clone()].into_iter().collect());
+        assert_eq!(norm(&[&a, &a, &nested]), norm(&[&c, &c, &nested2]));
+        assert_ne!(norm(&[&a, &a, &b]), norm(&[&c, &d, &d]));
     }
 
     #[test]

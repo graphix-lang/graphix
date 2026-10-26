@@ -548,6 +548,8 @@ binds. label-permute (SOUND), default-materialize and default-elide (EXPECTED) a
 missing. Update the names and the catalog; keep "adjacent independent binds" as the rule
 once stmt-permute stops moving the block's last statement. Found by reading; not run.
 (fuzz-mutate-06) -->
+<!-- 2026-10-26 claude: stmt-permute no longer moves the block's last statement
+(fuzz-mutate-01). -->
 compiler bug); block-wrap (`e` → `{ let __t = e; __t }`, not on direct
 or parenthesized lambda literals (a `let rec` takes only a lambda) nor
 on `never()`: a `let` over ⊥ is an open

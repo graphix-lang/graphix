@@ -82,7 +82,9 @@ sites: `f(1); f(1.5)` over the wrapped `f` is accepted, rightly. Right
 site: the definition, or the statement of any value use up to the
 second of the two: every value use shares the wrapped binding's cells,
 so the checker refuses at whichever conflicts first, a use the map
-gives no primitive first parameter included.
+gives no primitive first parameter included. An unannotated `let g = f`
+forwards the wrapped binding, so the value uses of `g` are uses of `f`
+(family 7's sites follow the same aliases).
 
 **2. Rigid variables.** Site: a lambda with declared variables (`'a`,
 `'b`) whose parameters `x: 'a`, `y: 'b` are in scope in the body.
@@ -109,8 +111,10 @@ labeled defaults, variadic positions, a parameter typed `Any`, a first
 argument whose type its uses decide (a `let` over `never()`, or a value
 holding one, `[n]`: the call decides it after every other argument, so
 it meets nothing). Built:
-(b), two positionals of one variable, the first a concrete primitive,
-right site the call; (a) is family 4's argument case.
+(b), two or more positionals of one variable, the second mutated and
+every other one there a concrete primitive (each takes part in the
+widest-argument rule), the literal disjoint from them all, right site
+the call; (a) is family 4's argument case.
 
 **4. Widening into a rigid consumer.** Site: a use of a value `v: T`
 whose parent is one of:
@@ -123,7 +127,10 @@ whose parent is one of:
   with an unannotated parameter (which may be a cell shared with the
   environment, `|y| z <- y` over `let z = never()`, that the call widens)
   and no function of the subject's own modules (whose state is such a
-  cell as well);
+  cell as well): a bare callee is rigid only as a builtin or a `let` of
+  a lambda literal with every parameter annotated, since any other name
+  the body binds (a destructuring `let`, a `use`, an alias) may be such
+  a lambda;
 - the value of a writer to a binding typed by its initializer or an
   annotation.
 

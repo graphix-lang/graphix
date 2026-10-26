@@ -236,23 +236,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     }
     // a let over ⊥ (or an empty collection) is a cell its first reader
     // decides, so two of its readers do not commute
-    // each open let's cell, and the cells every let reading one reaches
-    // (a lambda capturing it, an alias): their first reader decides them
-    let mut open: Open = HashMap::new();
-    for st in stmts.iter() {
-        let ExprKind::Bind(b) = &st.kind else { continue };
-        let mut cells = cells_of(&open, &stmt_names(st).refs);
-        if b.typ.is_none() && open_value(&b.value) {
-            b.pattern.with_names(&mut |n| {
-                cells.insert(n.to_string());
-            });
-        }
-        if !cells.is_empty() {
-            b.pattern.with_names(&mut |n| {
-                open.insert(n.to_string(), cells.clone());
-            });
-        }
-    }
+    let open = open_lets(&stmts);
     // let-inline: substitute a single-use, unannotated, non-shadowed
     // `let x = e` into its one later use
     {
@@ -347,7 +331,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // stmt-permute: swap adjacent independent statements
     {
         let mut sites = Vec::new();
-        // CR claude for claude: [bug/medium] This also swaps the block's last
+        // XCR claude for claude: [bug/medium] This also swaps the block's last
         // statement, which is the block's value. When the statement before it is a
         // `let`, the mutant ends in a let, which the checker refuses by rule ("a
         // block's value is its last statement, and a let has none"). typemorph then
@@ -358,7 +342,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         // adjacent independent binds. probe:
         // design/review-2026-10-26/repro/fuzz-mutate-stmt-permute-trailing-let.gx
         // (fuzz-mutate-01)
-        for i in 0..stmts.len().saturating_sub(1) {
+        // 2026-10-26 claude: stmt-permute's sites stop one short of the block's last
+        // statement, so the block's value never moves. Pin:
+        // typemorph::test::the_block_value_stays_last (fails with the range back at
+        // len-1).
+        for i in 0..stmts.len().saturating_sub(2) {
             if permutable(&stmts[i], &stmts[i + 1], &open) {
                 sites.push(i);
             }
@@ -633,7 +621,29 @@ fn stmt_names(e: &Expr) -> StmtNames {
 }
 
 /// Each open name and the cells of open lets it reaches.
-type Open = HashMap<String, HashSet<String>>;
+pub(crate) type Open = HashMap<String, HashSet<String>>;
+
+/// Each unannotated let over an [`open_value`] among `stmts`, with its
+/// cell, and every let reading one with the cells it reaches (a lambda
+/// capturing it, an alias): their first reader decides them.
+pub(crate) fn open_lets(stmts: &[Expr]) -> Open {
+    let mut open: Open = HashMap::new();
+    for st in stmts {
+        let ExprKind::Bind(b) = &st.kind else { continue };
+        let mut cells = cells_of(&open, &stmt_names(st).refs);
+        if b.typ.is_none() && open_value(&b.value) {
+            b.pattern.with_names(&mut |n| {
+                cells.insert(n.to_string());
+            });
+        }
+        if !cells.is_empty() {
+            b.pattern.with_names(&mut |n| {
+                open.insert(n.to_string(), cells.clone());
+            });
+        }
+    }
+    open
+}
 
 /// The open cells `refs` reach.
 fn cells_of(open: &Open, refs: &HashSet<String>) -> HashSet<String> {
@@ -786,27 +796,36 @@ fn reads_no_name(e: &Expr) -> bool {
     !e.fold(false, &mut |found, n| found || matches!(n.kind, ExprKind::Ref { .. }))
 }
 
-/// Whether `n` itself introduces `name`. A `use` binds each item's
-/// rename or last segment, a glob anything; a form whose names this does
-/// not enumerate (`mod`, traits and impls) binds anything.
-pub(crate) fn binds(n: &Expr, name: &str) -> bool {
-    match &n.kind {
-        ExprKind::Bind(b) => pattern_binds(&b.pattern, name),
-        ExprKind::Lambda(l) => l.args.iter().any(|a| pattern_binds(&a.pattern, name)),
-        ExprKind::Select(s) => {
-            s.arms.iter().any(|(p, _)| pattern_binds(&p.structure_predicate, name))
-        }
-        ExprKind::Catch(c) => &*c.bind == name,
-        ExprKind::TryWith(t) => &*t.bind == name,
-        ExprKind::Seq(s) if let Some(SeqTrigger::Bind(b)) = &s.trigger => {
-            pattern_binds(&b.pattern, name)
-        }
-        ExprKind::Use { names, .. } => {
-            names.iter().any(|u| u.bound_name().is_none_or(|n| n == name))
-        }
-        ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_) => true,
-        _ => false,
+/// Each name `n` itself introduces, `None` for one that binds any name: a
+/// `use` binds each item's rename or last segment, a glob anything; a form
+/// whose names this does not enumerate (`mod`, traits and impls) binds
+/// anything.
+pub(crate) fn each_bound<'a>(n: &'a Expr, f: &mut impl FnMut(Option<&'a str>)) {
+    fn pattern<'a>(p: &'a StructurePattern, f: &mut impl FnMut(Option<&'a str>)) {
+        p.with_names(&mut |n| f(Some(n.as_str())))
     }
+    match &n.kind {
+        ExprKind::Bind(b) => pattern(&b.pattern, f),
+        ExprKind::Lambda(l) => l.args.iter().for_each(|a| pattern(&a.pattern, f)),
+        ExprKind::Select(s) => {
+            s.arms.iter().for_each(|(p, _)| pattern(&p.structure_predicate, f))
+        }
+        ExprKind::Catch(c) => f(Some(c.bind.as_str())),
+        ExprKind::TryWith(t) => f(Some(t.bind.as_str())),
+        ExprKind::Seq(s) if let Some(SeqTrigger::Bind(b)) = &s.trigger => {
+            pattern(&b.pattern, f)
+        }
+        ExprKind::Use { names, .. } => names.iter().for_each(|u| f(u.bound_name())),
+        ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_) => f(None),
+        _ => (),
+    }
+}
+
+/// Whether `n` itself introduces `name` ([`each_bound`]).
+pub(crate) fn binds(n: &Expr, name: &str) -> bool {
+    let mut found = false;
+    each_bound(n, &mut |b| found |= b.is_none_or(|b| b == name));
+    found
 }
 
 /// Whether statement `st` binds `name` for the statements after it: by
@@ -1055,6 +1074,17 @@ mod test {
             "the guard use takes the value: {}",
             inlined[0].body
         );
+    }
+
+    #[test]
+    fn the_block_value_stays_last() {
+        let (probes, _) = probes("{ let a = i64:1; let b = i64:2; i64:42 }", 8);
+        let swaps: Vec<_> = probes
+            .iter()
+            .filter(|p| p.kind == TmKind::StmtPermute)
+            .map(|p| p.site)
+            .collect();
+        assert_eq!(swaps, [0], "only the two lets swap");
     }
 
     #[test]

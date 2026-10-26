@@ -10,6 +10,7 @@
 use crate::{mutate, typemorph};
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
+use enumflags2::BitFlags;
 use graphix_compiler::{
     SourcePosition,
     expr::{
@@ -581,22 +582,30 @@ fn holds(t: &Type, p: &impl Fn(&Type) -> bool) -> bool {
 /// over ⊥: its type a cell its uses decide, so a writer or an annotation
 /// decides it rather than being refused. A call's return is decided by
 /// its callee and its arguments, open through an open argument or a
-/// callee bound to a lambda with no return type whose body is open (a
-/// generalized return, fresh at each call); an unannotated let read by
-/// name shares its initializer's cell; a block is its last expression.
+/// callee bound to a lambda with no return type whose body is open or
+/// reads an open let (a generalized return, fresh at each call; the
+/// captures are typemorph's [`typemorph::open_lets`]); an unannotated let
+/// read by name shares its initializer's cell; a block is its last
+/// expression; an operator, a negation, a `$`/`?` or a read of a part
+/// is open through an operand that is, a constructor through a part, and
+/// a `$`/`?` also over a value that is only an error.
 fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
     if typemorph::open_value(value) {
         return true;
     }
+    let open = |e: &Expr| open_init(types, block, si, e);
     match &typemorph::unparen(value).kind {
         ExprKind::Apply(ap) => {
-            ap.args.iter().any(|(_, a)| open_init(types, block, si, a))
-                || earlier_let(block, si, &ap.function).is_some_and(|(_, d)| {
+            ap.args.iter().any(|(_, a)| open(a))
+                || earlier_let(block, si, &ap.function).is_some_and(|(j, d)| {
                     match &typemorph::unparen(&d.value).kind {
                         ExprKind::Lambda(l) => {
                             l.rtype.is_none()
-                                && matches!(&l.body, LambdaBody::Expr(b)
+                                && (matches!(&l.body, LambdaBody::Expr(b)
                                     if open_init(types, &[], 0, b))
+                                    || matches!(&d.pattern, StructurePattern::Bind(n)
+                                        if typemorph::open_lets(&block[..=j])
+                                            .contains_key(n.name.as_str())))
                         }
                         _ => false,
                     }
@@ -609,7 +618,33 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         ExprKind::Block { exprs } => {
             exprs.last().is_some_and(|l| open_init(types, exprs, exprs.len() - 1, l))
         }
-        // CR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
+        ExprKind::Constant(_)
+        | ExprKind::Lambda(_)
+        | ExprKind::TypeCast { .. }
+        | ExprKind::StringInterpolate { .. }
+        | ExprKind::Not { .. } => false,
+        ExprKind::BinOp { op, rhs, .. } if sample(*op) => open(rhs),
+        ExprKind::BinOp { op, lhs, rhs } if arith_or_compare(*op) && !comparison(*op) => {
+            open(lhs) || open(rhs)
+        }
+        // a comparison or a logical operator is a bool
+        ExprKind::BinOp { .. } => false,
+        // a value that is only an error succeeds with ⊥
+        ExprKind::OrNever(x) | ExprKind::Qop { arg: x, .. } => {
+            open(x) || !types.of(x).first().is_some_and(succeeds)
+        }
+        ExprKind::Neg(x)
+        | ExprKind::StructRef { source: x, .. }
+        | ExprKind::TupleRef { source: x, .. }
+        | ExprKind::ArrayRef { source: x, .. }
+        | ExprKind::ArraySlice { source: x, .. }
+        | ExprKind::MapRef { source: x, .. } => open(x),
+        ExprKind::Array { args }
+        | ExprKind::List { args }
+        | ExprKind::Tuple { args }
+        | ExprKind::Variant { args, .. } => args.iter().any(open),
+        ExprKind::Struct(st) => st.args.iter().any(|(_, a)| open(a)),
+        // XCR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
         // whose own type is a TVar, bound or not. So this fallback calls an operator's,
         // a negation's and a `$`/`?` result open, and retype, widen-hop, shared-var and
         // ref-widen (and abstract_widen's own `types.cell` test) skip every let over `a
@@ -624,8 +659,28 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         // design/review-2026-10-26/repro/fuzz-mutate-cell-skips-operators.sh and
         // design/review-2026-10-26/repro/fuzz-mutate-open-init-captured-cell.gx
         // (fuzz-mutate-02)
+        // 2026-10-26 claude: open_init recurses into operator, negation, $/?, part-read
+        // and constructor operands instead of reading ExprTypeSite::cell (a $/? over a
+        // value that is only an error is open: succeeds), comparisons and logic ops are
+        // bools, and a call is open through a callee let with no return type whose let
+        // reaches an open cell by typemorph::open_lets (typemorph's closure, now one
+        // function both modules use). abstract_widen's own per-node cell test is
+        // unchanged. Pins: must_reject_families_are_refused_where_their_rules_say (let
+        // v = 2 + 1, -(2 + 1), cast<i64>(2.5)$ now get a retype site) and
+        // must_reject_families_skip_what_their_rules_allow (the captured-cell mk(1)
+        // subject).
         _ => types.cell(value),
     }
+}
+
+/// Whether a value of `t` may be other than an error.
+fn succeeds(t: &Type) -> bool {
+    t.with_deref(|d| match d {
+        None | Some(Type::Bottom | Type::Error(_)) => false,
+        Some(Type::Set(ts)) => ts.iter().any(succeeds),
+        Some(Type::Primitive(p)) => p.iter().any(|k| k != Typ::Error),
+        Some(_) => true,
+    })
 }
 
 /// The last `let` of the name `r` reads among the statements of `block`
@@ -669,7 +724,11 @@ fn comparison(op: BinOp) -> bool {
 }
 
 fn arith_or_compare(op: BinOp) -> bool {
-    !matches!(op, BinOp::And | BinOp::Or | BinOp::Sample | BinOp::StrictSample)
+    !matches!(op, BinOp::And | BinOp::Or) && !sample(op)
+}
+
+fn sample(op: BinOp) -> bool {
+    matches!(op, BinOp::Sample | BinOp::StrictSample | BinOp::BankedSample)
 }
 
 /// The preorder indices of a call's arguments, `i` the call's.
@@ -703,6 +762,38 @@ fn reached_uses(
         }
     }
     (calls, refs)
+}
+
+/// [`reached_uses`] of `f` and of every name an unannotated `let g = f`
+/// forwards it under, transitively (once `f` is not generalized an alias
+/// shares its cells), in preorder; and the names it travels under.
+fn forwarded_uses<'a>(
+    stmts: &[(usize, usize, &'a Expr)],
+    si: usize,
+    f: &'a str,
+) -> (Vec<usize>, Vec<(usize, usize)>, Vec<&'a str>) {
+    let (mut calls, mut refs, mut names) = (Vec::new(), Vec::new(), Vec::new());
+    let mut todo = vec![(si, f)];
+    while let Some((si, f)) = todo.pop() {
+        names.push(f);
+        let (c, r) = reached_uses(stmts, si, f);
+        for &(_, k) in &r {
+            let st: &'a Expr = stmts[k].2;
+            if let ExprKind::Bind(b) = &st.kind
+                && let (StructurePattern::Bind(g), None, false) =
+                    (&b.pattern, &b.typ, b.rec)
+                && matches!(&typemorph::unparen(&b.value).kind,
+                    ExprKind::Ref { name } if name.to_string() == f)
+            {
+                todo.push((k, g.as_str()));
+            }
+        }
+        calls.extend(c);
+        refs.extend(r);
+    }
+    calls.sort_unstable();
+    refs.sort_unstable();
+    (calls, refs, names)
 }
 
 /// Each argument of `ap` with its preorder index (`i` is the call's)
@@ -831,12 +922,13 @@ fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     }
 }
 
-/// Family 3. A call whose callee takes two positionals of one variable,
-/// the first argument a concrete primitive, gets a second argument of a
-/// type the first's does not relate to: with no argument containing the
-/// other the widest-argument rule refuses, and a variable a callback
-/// holds keeps the first (`callsite.rs::Widening`). A first argument whose
-/// type its uses decide (`open_init`) is skipped. Right site: the call.
+/// Family 3. A call whose callee takes two or more positionals of one
+/// variable, every argument there but the second a concrete primitive,
+/// gets a second argument of a type none of theirs relates to: with no
+/// argument containing the others the widest-argument rule refuses, and a
+/// variable a callback holds keeps the first (`callsite.rs::Widening`). A
+/// call where one of them has a type its uses decide (`open_init`) is
+/// skipped. Right site: the call.
 fn shared_var(
     root: &Expr,
     pre: &[Expr],
@@ -871,19 +963,24 @@ fn shared_var(
             ((a + 1)..params.len()).find(|b| same(params[a], params[*b])).map(|b| (a, b))
         });
         let Some((a, b)) = pair else { continue };
-        // a first argument whose type this call decided meets nothing
         let si = stmts
             .iter()
             .find(|(_, at, _)| (*at..*at + sizes[*at]).contains(&i))
             .map_or(0, |(si, ..)| *si);
-        if open_init(types, block, si, &ap.args[a].1) {
-            continue;
-        }
-        let Some(t) = types.of(&ap.args[a].1).first() else { continue };
-        if !concrete(t) || primitive(t).is_none() {
-            continue;
-        }
-        // CR claude for claude: [bug/low] The literal is disjoint from the first
+        // every other argument of the variable takes part in the widest-argument
+        // rule; one whose type this call decided meets nothing
+        let held = (0..params.len())
+            .filter(|c| *c != b && same(params[a], params[*c]))
+            .map(|c| {
+                let arg = &ap.args[c].1;
+                if open_init(types, block, si, arg) {
+                    return None;
+                }
+                types.of(arg).first().filter(|t| concrete(t)).and_then(|t| primitive(t))
+            })
+            .try_fold(BitFlags::empty(), |acc, p| Some(acc | p?));
+        let Some(held) = held else { continue };
+        // XCR claude for claude: [bug/low] The literal is disjoint from the first
         // argument's type only, but every argument at the shared variable's parameters
         // takes part in the widest-argument rule. A third argument whose type contains
         // both (`g(1, "tm", u)` with `u: [i64, string]`) makes the call legal, so the
@@ -892,7 +989,13 @@ fn shared_var(
         // skip such a call. probe:
         // design/review-2026-10-26/repro/fuzz-mutate-shared-var-third-arg.gx
         // (fuzz-mutate-05)
-        let Some(u) = disjoint_literal(t) else { continue };
+        // 2026-10-26 claude: shared_var takes every argument at a parameter of the
+        // shared variable but the mutated second: each must be a concrete primitive
+        // not open by open_init, and the literal is disjoint from their union. Pins:
+        // must_reject_families_skip_what_their_rules_allow (g(1, 2, u) with u: [i64,
+        // string]) and must_reject_families_are_refused_where_their_rules_say (g(1, 2,
+        // 3)).
+        let Some(u) = disjoint_literal(&Type::Primitive(held)) else { continue };
         let at = arg_indices(i, &sizes, ap.args.len())[b];
         let cand = mutate::replace(root, at, &u);
         out.extend(finish(Family::SharedVar, i, &cand, |_, pre| {
@@ -1021,7 +1124,7 @@ fn labels_default(
         else {
             continue;
         };
-        let (_, refs) = reached_uses(&stmts, si, f);
+        let (_, refs, names) = forwarded_uses(&stmts, si, f);
         // a value use of `f` as an argument, and the parameter it meets
         let expected = pre.iter().enumerate().find_map(|(i, n)| {
             let ExprKind::Apply(ap) = &n.kind else { return None };
@@ -1056,7 +1159,7 @@ fn labels_default(
         let cand = mutate::replace(root, at + 1, &lambda);
         let mut sites = vec![si];
         sites.extend(stmts.iter().skip(si + 1).filter(|(_, _, st)| {
-            st.fold(false, &mut |m, n| m || matches!(&n.kind, ExprKind::Ref { name } if name.to_string() == **f))
+            st.fold(false, &mut |m, n| m || matches!(&n.kind, ExprKind::Ref { name } if names.contains(&name.to_string().as_str())))
         }).map(|(k, _, _)| *k));
         out.extend(finish(Family::LabelDefault, at, &cand, |back, _| {
             sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
@@ -1085,20 +1188,26 @@ fn widen_consumer(
     // than refuses. A call is a consumer only through a package's module
     // path (never the subject's own modules), a builtin the body does not
     // rebind, or a let-bound lambda literal whose every parameter is
-    // annotated; any other name the body binds may be such a lambda (an
-    // alias, a block's value, a field).
+    // annotated; any other name the body binds, by any form, may be such
+    // a lambda (an alias, a destructured element, an import).
     let mut untyped: AHashSet<&str> = AHashSet::default();
+    let mut binds_any = false;
     for e in pre {
-        let ExprKind::Bind(b) = &e.kind else { continue };
-        let StructurePattern::Bind(f) = &b.pattern else { continue };
-        match &typemorph::unparen(&b.value).kind {
-            ExprKind::Lambda(l) if l.args.iter().all(|a| a.constraint.is_some()) => (),
-            _ => {
-                untyped.insert(f.as_str());
-            }
+        if let ExprKind::Bind(b) = &e.kind
+            && let StructurePattern::Bind(_) = &b.pattern
+            && let ExprKind::Lambda(l) = &typemorph::unparen(&b.value).kind
+            && l.args.iter().all(|a| a.constraint.is_some())
+        {
+            continue;
         }
+        typemorph::each_bound(e, &mut |n| match n {
+            Some(n) => {
+                untyped.insert(n);
+            }
+            None => binds_any = true,
+        });
     }
-    // CR claude for claude: [bug/low] A bare name counts as a consumer unless a `let
+    // XCR claude for claude: [bug/low] A bare name counts as a consumer unless a `let
     // NAME = <lambda with an unannotated parameter>` binds it. A callee bound by a
     // destructuring let (`let (f, k) = (|y| z <- y, 0)`), or a subject-module function
     // brought in by `use m0::f` or `use m0::f as g` (the generator writes both forms),
@@ -1109,12 +1218,19 @@ fn widen_consumer(
     // bare name untyped). probe:
     // design/review-2026-10-26/repro/fuzz-mutate-widen-consumer-callee-holes.gx
     // (fuzz-mutate-03)
+    // 2026-10-26 claude: widen_consumer's untyped set takes every name any node of the
+    // body binds (typemorph::each_bound, which typemorph::binds now rides: let
+    // patterns, lambda and arm binders, catch/try binds, use items, a glob or
+    // mod/trait/impl making every bare name untyped), except a let of a lambda literal
+    // with every parameter annotated. Pin:
+    // must_reject_families_skip_what_their_rules_allow (the destructuring, use m0::f
+    // and use m0::f as g subjects); design/must_reject.md family 4 says so.
     let consumer_callee = |f: &Expr| match &typemorph::unparen(f).kind {
         ExprKind::Ref { name } => {
             let name = name.to_string();
             match name.split_once("::") {
                 Some((m, _)) => !modules.contains(&m),
-                None => !untyped.contains(name.as_str()),
+                None => !binds_any && !untyped.contains(name.as_str()),
             }
         }
         _ => false,
@@ -1348,7 +1464,8 @@ fn widen_through_let(
 /// is wrapped so the binding is not generalized. A call instantiates its
 /// callee whatever the binding, but a value reference to a binding that
 /// is not generalized holds the binding's own cells, so the two uses
-/// meet in one instance and cannot both hold.
+/// meet in one instance and cannot both hold; an alias `let g = f`
+/// forwards the binding, and its value uses are among them.
 fn mono_reuse(
     root: &Expr,
     pre: &[Expr],
@@ -1370,7 +1487,7 @@ fn mono_reuse(
         else {
             continue;
         };
-        let (calls, refs) = reached_uses(&stmts, si, f);
+        let (calls, refs, _) = forwarded_uses(&stmts, si, f);
         // a callee's reference sits right after its call in preorder
         let values: Vec<(usize, usize)> = refs
             .into_iter()
@@ -1404,7 +1521,7 @@ fn mono_reuse(
         let jb = *jb;
         // every value use shares the wrapped binding's cells, so the
         // checker refuses at whichever reached use conflicts first
-        // CR claude for claude: [bug/low] The value uses here, and labels_default's
+        // XCR claude for claude: [bug/low] The value uses here, and labels_default's
         // sites, follow `f` by name only. A forwarding alias `let g = f` shares the
         // wrapped binding's cells once `f` is no longer generalized, so a use of `g`
         // before the second use of `f` meets the conflict first, and the refusal there
@@ -1414,8 +1531,15 @@ fn mono_reuse(
         // is forwarded. probe:
         // design/review-2026-10-26/repro/fuzz-mutate-alias-misplaced.gx
         // (fuzz-mutate-04)
+        // 2026-10-26 claude: mono_reuse and labels_default follow unannotated let g = f
+        // forwards transitively (forwarded_uses): an alias's value uses are value uses
+        // and sites, and labels_default's sites are the statements mentioning any
+        // alias. Pins: must_reject_families_are_refused_where_their_rules_say (the
+        // alias subjects for mono-reuse and label-default); design/must_reject.md
+        // family 1 says so.
         let mut sites = vec![si];
         sites.extend(values.iter().map(|(_, j)| *j).filter(|j| *j <= jb));
+        sites.sort_unstable();
         sites.dedup();
         let probe = finish(Family::MonoReuse, at, &cand, |back, _| {
             sites.iter().map(|j| nth_stmt(back, *j).and_then(span)).collect()

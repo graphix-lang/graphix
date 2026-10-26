@@ -6110,10 +6110,24 @@ mod tests {
             ("{ let v = 1; let w = v + 1; w }", "retype#"),
             // a call's return is no cell its uses decide
             ("{ let f = |x: i64| -> i64 x; let v = f(1); let w = v + 1; w }", "retype#"),
+            // nor is an operator's, a negation's or a `$`'s over concrete operands
+            ("{ let v = 2 + 1; v }", "retype#"),
+            ("{ let v = -(2 + 1); v }", "retype#"),
+            ("{ let v = cast<i64>(2.5)$; v }", "retype#"),
             // the hop: the widened `a` reaches `+` through `w`'s let
             ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-hop#"),
             ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
             ("{ let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }", "shared-var#"),
+            (
+                "{ let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let r = g(1, 2, 3); r }",
+                "shared-var#",
+            ),
+            // an alias's value uses share the wrapped binding's cells
+            (
+                "{ let f = |x| x; let g = f; let a = array::map([1], f); \
+                 let c = array::map([\"s\"], g); let b = array::map([\"s\"], f); (a, b, c) }",
+                "mono-reuse#",
+            ),
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-unknown#"),
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-missing#"),
             (
@@ -6123,6 +6137,12 @@ mod tests {
             (
                 "{ let f = |#a: i64 = 1, x: i64| -> i64 a + x; \
                  let w = |h: fn(?#a: i64, x: i64) -> i64| -> i64 h(2); w(f) }",
+                "label-default#",
+            ),
+            (
+                "{ let f = |#a: i64 = 1, x: i64| -> i64 a + x; \
+                 let w = |h: fn(?#a: i64, x: i64) -> i64| -> i64 h(2); \
+                 let g = f; let p = w(g); let q = w(f); p + q }",
                 "label-default#",
             ),
             // the retyped `m` reaches the writer of `src` through `src`'s let
@@ -6262,11 +6282,35 @@ mod tests {
                 "{ let z = never(); let f = { let k = 0; |y| z <- y }; let r = f(1); (r, z) }",
                 "widen-consumer#",
             ),
+            // a callee a destructuring let or a `use` binds
+            (
+                "{ let z = never(); let (f, k) = (|y| z <- y, 0); let r = f(1); (r, z, k) }",
+                "widen-consumer#",
+            ),
+            (
+                "{ use m0::f; let r = f(1); r }\n// file-v1: m0.gx\nlet z = never();\nlet f = |y| z <- y;\n",
+                "widen-consumer#",
+            ),
+            (
+                "{ use m0::f as g; let r = g(1); r }\n// file-v1: m0.gx\nlet z = never();\nlet f = |y| z <- y;\n",
+                "widen-consumer#",
+            ),
+            // a call's result is the open cell its callee's body captures
+            (
+                "{ let z = never(); let mk = |u: i64| z; let v = mk(1); let w = v + 1; w }",
+                "retype#",
+            ),
             // the annotation would decide the open referent
             ("{ let x = never(); let r = &mut x; *r <- 2; x }", "ref-widen#"),
             // the call decides the open first argument's type
             (
                 "{ let g = |x: 'a, y: 'a| -> 'a x; let z = never(); let r = g(z, 1); [r, z] }",
+                "shared-var#",
+            ),
+            // a third argument of the variable holds both
+            (
+                "{ let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let u: [i64, string] = 1; \
+                 let r = g(1, 2, u); r }",
                 "shared-var#",
             ),
         ] {
