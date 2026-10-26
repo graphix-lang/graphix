@@ -464,6 +464,35 @@ fn once(
 // written_never_annotation_is_monomorphic, written_bottom_pattern_is_monomorphic,
 // written_body_annotation_variable_is_monomorphic,
 // unwritten_annotated_lambda_stays_generic.
+/// The pairs of distinct open cells at one place in `a` and `b`, which
+/// are equal ([`Type`]'s `PartialEq`, under which open cells are), into
+/// `out`; false where a pair holds a rigid cell, which never merges.
+fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool {
+    ensure_sufficient(|| match (a, b) {
+        (Type::TVar(x), Type::TVar(y)) => match (x.binding(), y.binding()) {
+            _ if x.cell_addr() == y.cell_addr() => true,
+            (Some(a), Some(b)) => open_pairs(&a, &b, out),
+            (None, None) if !x.is_rigid() && !y.is_rigid() => {
+                out.push((x.clone(), y.clone()));
+                true
+            }
+            _ => false,
+        },
+        (Type::TVar(x), b) => x.binding().is_some_and(|a| open_pairs(&a, b, out)),
+        (a, Type::TVar(y)) => y.binding().is_some_and(|b| open_pairs(a, &b, out)),
+        (a, b) => {
+            let mut cs: SmallVec<[Type; 8]> = SmallVec::new();
+            a.for_each_child(&mut |c| cs.push(c.clone()));
+            let mut cs = cs.iter();
+            let mut paired = true;
+            b.for_each_child(&mut |c| {
+                paired &= cs.next().is_some_and(|a| open_pairs(a, c, out))
+            });
+            paired
+        }
+    })
+}
+
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A generic cell stays generic (a scheme bound into a cell is still a
@@ -1703,10 +1732,11 @@ impl Type {
         }
     }
 
-    /// An open member of a `OneNumber` cell's binding beside a numeric one:
-    /// it may yet be another numeric type, which no bound can rule out, so
-    /// the definition that leaves it open is refused (annotate it).
-    // CR claude for claude: [bug/medium] This needs a known numeric member. Two open
+    /// An open member of a `OneNumber` cell's binding beside a numeric one,
+    /// or two open members beside none: one may yet be another numeric type
+    /// than the rest, which no bound on either can rule out, so the
+    /// definition that leaves them open is refused (annotate it).
+    // XCR claude for claude: [bug/medium] This needs a known numeric member. Two open
     // members with none known each get OneNumber alone (require_one_number), yet they
     // may bind two different numeric types. `let g = |b, y, z| f(select b { true => z,
     // false => y })` over a `'a: [Number, null] + OneNumber` f passes the check, and
@@ -1717,11 +1747,24 @@ impl Type {
     // numeric one. probe:
     // design/review-2026-10-26/repro/x-typecheck-generics-onenumber-two-open.gx
     // (x-typecheck-generics-03)
+    // 2026-10-26 claude: one_number_open also holds beside no numeric member when two
+    // distinct open cells remain, so site_bounds refuses the definition (annotate it)
+    // as it does one open member beside a numeric one; one cell met twice is one
+    // member. The repro is refused at the check. Pins:
+    // lang::types::one_number_two_open_members_refused,
+    // one_number_one_open_member_twice.
     pub fn one_number_open(&self) -> bool {
         let mut parts = UnionParts::new(Measure::Numbers);
-        self.union_parts(None, &mut parts).is_ok()
-            && parts.known > 0
-            && !parts.open.is_empty()
+        if self.union_parts(None, &mut parts).is_err() {
+            return false;
+        }
+        match (parts.known, parts.open.split_first()) {
+            (_, None) => false,
+            (0, Some((first, rest))) => {
+                rest.iter().any(|tv| tv.cell_addr() != first.cell_addr())
+            }
+            (_, Some(_)) => true,
+        }
     }
 
     /// [`Self::require_singleton`] for an operand whose type must be one
@@ -3011,6 +3054,9 @@ struct UnionParts {
     /// met twice is one.
     prims: BitFlags<netidx_value::Typ>,
     others: SmallVec<[Type; 2]>,
+    /// The open cells, pair by pair, of members that differ in them
+    /// alone (`[Array<'y>, Array<'z>]`): one member once they are one.
+    same: SmallVec<[(TVar, TVar); 2]>,
 }
 
 impl UnionParts {
@@ -3022,6 +3068,7 @@ impl UnionParts {
             open: SmallVec::new(),
             prims: BitFlags::empty(),
             others: SmallVec::new(),
+            same: SmallVec::new(),
         }
     }
 
@@ -3038,9 +3085,15 @@ impl UnionParts {
         }
     }
 
-    /// Beside no known member, the open members must be one type: merge
-    /// them into one cell.
+    /// Members that differ in open cells alone are one member: merge
+    /// those cells. Beside no known member, the open members must be one
+    /// type: merge them into one cell.
     fn merge_open(&self) {
+        for (a, b) in self.same.iter() {
+            if a.cell_addr() != b.cell_addr() {
+                a.alias_cells(b)
+            }
+        }
         if self.known == 0
             && let Some((first, rest)) = self.open.split_first()
         {
@@ -3062,6 +3115,22 @@ impl UnionParts {
         }
     }
 
+    /// Whether `t` is a member counted already: identical to one, or
+    /// differing from one in open cells alone, whose pairs `same` records.
+    fn same_member(&mut self, t: &Type) -> bool {
+        if self.others.iter().any(|o| union_identical(o, t)) {
+            return true;
+        }
+        let start = self.same.len();
+        for o in self.others.iter() {
+            if o == t && open_pairs(o, t, &mut self.same) {
+                return true;
+            }
+            self.same.truncate(start);
+        }
+        false
+    }
+
     fn member(&mut self, t: &Type) {
         let n = match (self.measure, t) {
             (measure, Type::Primitive(p)) => {
@@ -3073,7 +3142,7 @@ impl UnionParts {
                 }
             }
             (_, Type::Any) => 2,
-            // CR claude for claude: [bug/medium] `others.contains` compares with Type's
+            // XCR claude for claude: [bug/medium] `others.contains` compares with Type's
             // PartialEq, under which two distinct unbound cells are equal. [Array<'y>,
             // Array<'z>] therefore counts as one member and Singleton admits it in a
             // generic definition's check. The instance at 'y = i64, 'z = string then
@@ -3085,7 +3154,18 @@ impl UnionParts {
             // or unify them as merge_open unifies bare open members. probe:
             // design/review-2026-10-26/repro/t-tvar-singleton-open-members-equal.gx
             // (t-tvar-02)
-            (_, t) if self.others.contains(t) => 0,
+            // 2026-10-26 claude: UnionParts::member counts a member as met when it is
+            // union_identical to one counted, or equal to one under PartialEq with
+            // every differing place a pair of distinct non-rigid open cells
+            // (open_pairs, kept in UnionParts::same); merge_open merges those pairs, so
+            // the members become one and their writers must agree. A pair with a rigid
+            // cell counts as a second member. The repro is refused at the check (i64
+            // does not contain string); k(false, 1, 2) stays accepted; two declared
+            // variables are refused at the definition. Pins:
+            // lang::types::singleton_members_apart_in_open_cells_merge,
+            // singleton_members_apart_in_open_cells_one_type,
+            // singleton_members_apart_in_declared_variables_refused.
+            (_, t) if self.same_member(t) => 0,
             (measure, t) => {
                 self.others.push(t.clone());
                 match measure {

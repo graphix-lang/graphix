@@ -1182,6 +1182,21 @@ run!(
     refused("an open member of which may yet be another numeric type: annotate it");
     FuseExpect::None
 );
+// Two open members beside no numeric one are refused alike: each may yet
+// be a numeric type, and two of them two different ones.
+run!(
+    one_number_two_open_members_refused,
+    "{ let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x; \
+       let g = |b, y, z| f(select b { true => z, false => y }); g(false, 2.5, 1) }",
+    refused("an open member of which may yet be another numeric type: annotate it");
+    FuseExpect::None
+);
+run!(
+    one_number_one_open_member_twice,
+    "{ let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x; \
+       let g = |b, y| f(select b { true => y, false => y }); g(false, 2) }",
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
 run!(
     one_number_beside_an_annotated_member,
     "{ let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x; \
@@ -2357,6 +2372,33 @@ run!(discernible_accepts, DISCERNIBLE_ACCEPTS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a.iter().all(|v| *v == Value::Bool(true)) && a.len() == 6,
     _ => false,
 });
+
+// Under `Singleton` two members that differ in open cells alone are one
+// member, whose cells merge: the writers of each must agree, and two
+// declared variables, which can't merge, are two members.
+run!(
+    singleton_members_apart_in_open_cells_merge,
+    r#"{ let h = 'a: Singleton |x: 'a| -> 'a x;
+         let k = |b, y, z| h(select b { true => [y], false => [z] });
+         k(false, 1, "a") }"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    singleton_members_apart_in_open_cells_one_type,
+    r#"{ let h = 'a: Singleton |x: 'a| -> 'a x;
+         let k = |b, y, z| h(select b { true => [y], false => [z] });
+         k(false, 1, 2) }"#,
+    prints("[i64:2]")
+);
+run!(
+    singleton_members_apart_in_declared_variables_refused,
+    r#"{ let h = 'a: Singleton |x: 'a| -> 'a x;
+         let k = |b, y: 'y, z: 'z| h(select b { true => [y], false => [z] });
+         k(false, 1, 2) }"#,
+    refused("unbound within Singleton does not contain");
+    FuseExpect::None
+);
 
 // Under `Singleton` the open members of a union must be one type: they
 // merge into one cell, and two declared variables, which can't merge,
