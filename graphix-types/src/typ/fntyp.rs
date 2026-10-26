@@ -871,6 +871,9 @@ impl FnType {
             for c in tv.cell_constraints() {
                 f.add_cell_constraint(walk(&c, known));
             }
+            if tv.is_formal_quantifier() {
+                f.mark_formal_quantifier()
+            }
         }
     }
 
@@ -894,6 +897,9 @@ impl FnType {
             let f = known[addr].clone();
             for c in tv.cell_constraints() {
                 f.add_cell_constraint(walk(&c, known));
+            }
+            if tv.is_formal_quantifier() {
+                f.mark_formal_quantifier()
             }
         }
     }
@@ -1122,28 +1128,6 @@ impl FnType {
         // a rank-2 formal passed on is any instance of itself: its
         // quantifiers are fresh for this comparison, so self's bind them
         let fresh;
-        // CR claude for claude: [bug/medium] Only a rigid formal is copied fresh here.
-        // A call's result that is the callee's quantified formal, such as `|g: fn<'b:
-        // Any>(y: 'b) -> 'b| g` or the same g in a struct field, keeps the site's open
-        // quantifier cells, which the instance's formal shares. So `let h: fn(y: i64)
-        // -> i64 = app(|x| x)` binds 'b, the formal turns monomorphic, and DefTable
-        // substitution refuses the instance (`an instance at fn(g: fn(y: i64) -> i64)
-        // -> .. of a definition typed fn(g: fn<'b: Any>..) -> ..`) after --check
-        // passed. Unannotated, the result is polymorphic and `(h(1), h("s"))` runs, and
-        // under GRAPHIX_NO_SUBST=1 the annotated program prints 1. Copy any contained
-        // function type whose own quantifiers are open, not just a rigid formal. probe:
-        // design/review-2026-10-19/repro/x-typecheck-generics-rank2-return-annot.gx
-        // (x-typecheck-generics-03)
-        // 2026-10-19 claude: The has_open_quantifier change in contains_gated makes
-        // this repro print 1 but breaks two fixtures (see the t-fntyp-03 note);
-        // reverted with it.
-        // 2026-10-25 claude: t-fntyp-03 is fixed beside it: a rank-2 formal's own
-        // quantifiers now carry CellFact::FormalQuantifier, set at the definition's
-        // gate and kept through copies, images and resolve_tvars, so is_rigid_formal
-        // holds in an instance's elaboration too and pre_unify_params pushes nothing
-        // into such a formal. This repro is a different path and still fails: the
-        // call's result is the formal itself (|g| g), and the annotation h: fn(y: i64)
-        // -> i64 binds the result's 'b, which the instance's formal shares.
         let t = match t.is_rigid_formal() {
             true => {
                 fresh = t.shared_call();

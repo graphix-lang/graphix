@@ -3726,3 +3726,16 @@ run!(
     prints("[f64:3., i64:2]");
     FuseExpect::Jit
 );
+
+// A call that returns its rank-2 formal returns it polymorphic: an
+// annotation on the result picks an instance and leaves the formal alone.
+run!(
+    rank2_formal_returned_then_annotated,
+    r#"{
+  let app = |g: fn<'b: Any>(y: 'b) -> 'b| g;
+  let h: fn(y: i64) -> i64 = app(|x| x);
+  h(1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
