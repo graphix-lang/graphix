@@ -1522,3 +1522,28 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+// A List is a value as deep as it is long: a store writes and reads one
+// of 100000 elements as a value and one of 10000 as a key, and a cursor
+// takes the long key as its prefix.
+run_with_tempdir!(
+    name: db_long_lists_round_trip,
+    code: r#"{{
+        let d = db::open("{}")$;
+        let t: db::Tree<List<i64>, List<i64>> = db::tree(d, null)$;
+        let k = list::init(10000, |i| i);
+        let v = list::init(100000, |i| i);
+        seq {{
+            let _ = db::insert(t, k, v)$;
+            let got = select db::get(t, k)$ {{ null => [<>], l => l }};
+            let read = db::cursor::read_many(db::cursor::new(#prefix: k, t), 10)$;
+            let (rk, rv) = read[0]$;
+            (list::len(got), got == v, array::len(read), rk == k, rv == v)
+        }}
+    }}"#,
+    setup: |td| { td.path().join("long_lists.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"[i64:100000, true, i64:1, true, true]"#);
+        Ok(())
+    }
+);

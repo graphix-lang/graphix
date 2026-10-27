@@ -178,7 +178,7 @@ fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
             let mut part = |c: &Value| rewrite(c, depth, forms);
             let data = match forms {
                 Forms::Strip => crate::rep::strip_with(v, &mut part)?,
-                // CR claude for claude: [bug/high] The Keep walk recurses into a list's
+                // XCR claude for claude: [bug/high] The Keep walk recurses into a list's
                 // tail through rewrite and map_parts, two frames per element, with no
                 // ensure_sufficient anywhere on this path. write_marked_data runs it
                 // over every db key and value, so storing a List of a few hundred
@@ -191,6 +191,13 @@ fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
                 // List of several thousand elements. probe:
                 // design/review-2026-10-26/repro/t-rep-db-list-value-overflow.gx
                 // (t-rep-01)
+                // 2026-10-27 claude: Fixed in rep::map_parts (x-stack-01): it is
+                // stack-guarded and walks a list's spine iteratively, so the Keep walk
+                // takes a constant number of frames per list whatever its length;
+                // rewrite needs no guard of its own (its other recursion is the
+                // abstract branch, bounded by MAX_DEPTH). Pin: graphix-tests
+                // lib_tests::db::db_long_lists_round_trip; the review's probe now
+                // prints done.
                 Forms::Keep => crate::rep::map_parts(v, &mut part)?,
             };
             // keys that differ as values may write as the same data

@@ -414,9 +414,10 @@ pub fn strip_with<E>(
 }
 
 /// `v`'s parts, each `f`'s rewrite of it, as `strip_with` rewrites an
-/// unmarked level: an array's elements (a marker included), a map's keys
-/// and values, an error's payload; `None` when no part changed.
-// CR claude for claude: [bug/high] map_parts recurses through its callback with no
+/// unmarked level: an array's elements (a marker included), a list's
+/// heads and the end of its spine, a map's keys and values, an error's
+/// payload; `None` when no part changed.
+// XCR claude for claude: [bug/high] map_parts recurses through its callback with no
 // stack guard, and abstract_value::rewrite (Forms::Keep, to_marked_data) recurses
 // through it once per level. strip_with, the Strip path, is guarded.
 // CachedVals::as_data runs this over every async builtin's DATA_ARGS, and a List is a
@@ -425,54 +426,98 @@ pub fn strip_with<E>(
 // the body in crate::stack::ensure_sufficient as strip_with does, and pin a db round
 // trip of a 100k-element List. probe:
 // design/review-2026-10-26/repro/x-stack-db-list-value.gx (x-stack-01)
+// 2026-10-27 claude: map_parts runs under crate::stack::ensure_sufficient, and a list
+// cell's spine is walked in a loop (rep::map_spine: each head and the spine's end
+// mapped, the cells after the last change shared), so rewrite's Keep path no longer
+// recurses per element. Pins: graphix-tests lib_tests::db::db_long_lists_round_trip (a
+// 100000-element List value and a 10000-element List key through insert, get and a
+// prefix cursor; aborts with a stack overflow with the fix undone) and rep::tests (the
+// spine walk's results, a 1000000-element list).
 pub fn map_parts<E>(
     v: &Value,
     f: &mut impl FnMut(&Value) -> Result<Option<Value>, E>,
 ) -> Result<Option<Value>, E> {
-    let array = |mut vs: LPooled<Vec<Value>>| {
-        Value::Array(ValArray::from_iter_exact(vs.drain(..)))
-    };
-    Ok(match v {
-        Value::Array(a) => {
-            let mut out: LPooled<Vec<Value>> = LPooled::take();
-            for (i, e) in a.iter().enumerate() {
-                match f(e)? {
-                    Some(e) => {
-                        if out.is_empty() {
-                            out.extend(a[..i].iter().cloned());
+    crate::stack::ensure_sufficient(|| {
+        if crate::list::split(v).is_some() {
+            return map_spine(v, f);
+        }
+        let array = |mut vs: LPooled<Vec<Value>>| {
+            Value::Array(ValArray::from_iter_exact(vs.drain(..)))
+        };
+        Ok(match v {
+            Value::Array(a) => {
+                let mut out: LPooled<Vec<Value>> = LPooled::take();
+                for (i, e) in a.iter().enumerate() {
+                    match f(e)? {
+                        Some(e) => {
+                            if out.is_empty() {
+                                out.extend(a[..i].iter().cloned());
+                            }
+                            out.push(e)
                         }
-                        out.push(e)
+                        None if !out.is_empty() => out.push(e.clone()),
+                        None => (),
                     }
-                    None if !out.is_empty() => out.push(e.clone()),
-                    None => (),
                 }
+                (!out.is_empty()).then(|| array(out))
             }
-            (!out.is_empty()).then(|| array(out))
-        }
-        Value::Map(m) => {
-            let mut kvs: Option<LPooled<Vec<(Value, Value)>>> = None;
-            for (i, (k, e)) in m.into_iter().enumerate() {
-                let (k1, e1) = (f(k)?, f(e)?);
-                if kvs.is_none() && (k1.is_some() || e1.is_some()) {
-                    kvs = Some(
-                        m.into_iter()
-                            .take(i)
-                            .map(|(k, e)| (k.clone(), e.clone()))
-                            .collect(),
-                    );
+            Value::Map(m) => {
+                let mut kvs: Option<LPooled<Vec<(Value, Value)>>> = None;
+                for (i, (k, e)) in m.into_iter().enumerate() {
+                    let (k1, e1) = (f(k)?, f(e)?);
+                    if kvs.is_none() && (k1.is_some() || e1.is_some()) {
+                        kvs = Some(
+                            m.into_iter()
+                                .take(i)
+                                .map(|(k, e)| (k.clone(), e.clone()))
+                                .collect(),
+                        );
+                    }
+                    if let Some(kvs) = &mut kvs {
+                        kvs.push((
+                            k1.unwrap_or_else(|| k.clone()),
+                            e1.unwrap_or_else(|| e.clone()),
+                        ));
+                    }
                 }
-                if let Some(kvs) = &mut kvs {
-                    kvs.push((
-                        k1.unwrap_or_else(|| k.clone()),
-                        e1.unwrap_or_else(|| e.clone()),
-                    ));
-                }
+                kvs.map(|mut kvs| Value::Map(Map::from_iter(kvs.drain(..))))
             }
-            kvs.map(|mut kvs| Value::Map(Map::from_iter(kvs.drain(..))))
-        }
-        Value::Error(e) => f(e)?.map(|e| Value::Error(e.into())),
-        _ => None,
+            Value::Error(e) => f(e)?.map(|e| Value::Error(e.into())),
+            _ => None,
+        })
     })
+}
+
+/// [`map_parts`] of the list cell `v`, walking its spine in a loop (a
+/// list is a value as deep as it is long); the cells after the last part
+/// `f` changed are shared.
+fn map_spine<E>(
+    v: &Value,
+    f: &mut impl FnMut(&Value) -> Result<Option<Value>, E>,
+) -> Result<Option<Value>, E> {
+    let mut heads: LPooled<Vec<Value>> = LPooled::take();
+    let (mut shared, mut unchanged) = (v, 0);
+    let mut cur = v;
+    while let Some((head, tail)) = crate::list::split(cur) {
+        match f(head)? {
+            None => unchanged += 1,
+            Some(h) => {
+                heads.extend(crate::list::heads(shared).take(unchanged).cloned());
+                heads.push(h);
+                (shared, unchanged) = (tail, 0);
+            }
+        }
+        cur = tail;
+    }
+    let rest = match f(cur)? {
+        Some(end) => {
+            heads.extend(crate::list::heads(shared).take(unchanged).cloned());
+            end
+        }
+        None if heads.is_empty() => return Ok(None),
+        None => shared.clone(),
+    };
+    Ok(Some(crate::list::cons_all(&mut heads, rest)))
 }
 
 /// The derives' [`netidx_value::Shape`] for a type Graphix code sees:
@@ -510,5 +555,52 @@ impl netidx_value::Shape for GraphixShape {
 
     fn variant(v: &Value) -> Option<(&ArcStr, &[Value])> {
         read_variant(v).map(|(tag, p)| (tag, p.elems()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_parts;
+    use crate::list;
+    use netidx_value::Value;
+    use std::convert::Infallible;
+
+    fn ints(v: &[i64]) -> Value {
+        list::from_iter(v.iter().map(|i| Value::I64(*i)))
+    }
+
+    fn times10(
+        at: &'static [i64],
+    ) -> impl FnMut(&Value) -> Result<Option<Value>, Infallible> {
+        |c| {
+            Ok(match c {
+                Value::I64(i) if at.contains(i) => Some(Value::I64(i * 10)),
+                _ => None,
+            })
+        }
+    }
+
+    #[test]
+    fn a_list_maps_its_heads_and_its_end() {
+        let l = ints(&[1, 2, 3, 4, 5]);
+        assert_eq!(map_parts(&l, &mut times10(&[])), Ok(None));
+        assert_eq!(map_parts(&l, &mut times10(&[2])), Ok(Some(ints(&[1, 20, 3, 4, 5]))));
+        assert_eq!(
+            map_parts(&l, &mut times10(&[1, 5])),
+            Ok(Some(ints(&[10, 2, 3, 4, 50])))
+        );
+        let mut end =
+            |c: &Value| Ok::<_, Infallible>(list::is_nil(c).then(|| ints(&[6])));
+        assert_eq!(map_parts(&l, &mut end), Ok(Some(ints(&[1, 2, 3, 4, 5, 6]))));
+    }
+
+    #[test]
+    fn a_long_list_maps_in_a_loop() {
+        let n = 1_000_000;
+        let l = list::from_iter((0..n).map(Value::I64));
+        assert_eq!(map_parts(&l, &mut times10(&[])), Ok(None));
+        let mapped = map_parts(&l, &mut times10(&[999_999])).unwrap().unwrap();
+        assert_eq!(list::heads(&mapped).last(), Some(&Value::I64(9_999_990)));
+        assert_eq!(list::len(&mapped), Some(n as usize));
     }
 }
