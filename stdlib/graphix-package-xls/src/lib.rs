@@ -12,7 +12,7 @@ use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use quick_xml::events::{BytesStart, Event};
 use std::{
-    io::{BufRead, BufReader, Cursor, Read, Seek},
+    io::{BufReader, Cursor, Read, Seek},
     time::Duration,
 };
 use tokio::task;

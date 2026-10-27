@@ -363,7 +363,7 @@ impl Shape for Flat {
 
 /// A list property: its ref, and each item beside the value it compiled
 /// from, so a new list keeps the items it still holds.
-pub struct Children<X: GXExt, T = GuiW<X>, S = Flat> {
+pub(crate) struct Children<X: GXExt, T = GuiW<X>, S = Flat> {
     pub(crate) r: Ref<X>,
     pub(crate) ws: Vec<(Value, T)>,
     pub(crate) shape: S,
@@ -862,7 +862,7 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 
 /// Compile a widget value into a GuiW. Returns a boxed future to
 /// avoid infinite-size futures from recursive async calls.
-// CR claude for claude: [bug/medium] This compile, and the handle_update, view and
+// XCR claude for claude: [bug/medium] This compile, and the handle_update, view and
 // on_message recursion over the widget tree, run with no stack guard. A container chain
 // 300 deep, compiled as the event loop does it (Handle::block_on on the 8 MiB main
 // thread), overflows and aborts the process; 100 deep compiles. The TUI got the fix for
@@ -892,6 +892,12 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 // recursion is) or, since it is a crash, something Graphix bounds or works around, e.g.
 // a depth limit refused at compile with a clear error. Dropping a deep GuiW chain is
 // unguarded destructor recursion too, which the stack-discipline rules list.
+// 2026-10-27 claude: Pin added: widgets_test::a_deep_widget_tree_draws builds a
+// 300-deep container chain and runs a whole frame (frame::frame: build, operate,
+// update, redraw, draw) on an 8 MiB thread, the event loop's size. iced's own recursion
+// is no crash at depths a program reaches: the same frame ran at 1000, 3000 and 10000
+// deep on 8 MiB (10000 in 78 s, debug), and dropping the 10000-deep GuiW chain did not
+// overflow, so no UPSTREAM entry.
 pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
     Box::pin(StackGuarded(async move {
         let Some((s, [v])) = rep::variant(&source) else {

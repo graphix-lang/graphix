@@ -2941,6 +2941,17 @@ run!(capture_keeps_its_member, r#"{
   (f(("a", 1)), k([1, 2]), n(((1, "b"), 2)))
 }"#, prints("[i64:1, i64:10, i64:3]"); FuseExpect::Jit);
 
+// A whole capture over an open cell with a bound is the cell: every value
+// reaching the arm is one (bounded-capture-01).
+run!(
+    capture_over_a_bounded_open_cell,
+    r#"{
+  let f = 'a: (i64, string) |x: 'a| -> 'a select x { v@ (n, _) => v };
+  f((1, "a"))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[1, "a"]"#)
+);
+
 const CAPTURE_UNION_MEMBER: &str = r#"
 {
   type Pair = { left: i64, right: i64 };

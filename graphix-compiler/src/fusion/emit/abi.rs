@@ -332,13 +332,19 @@ impl LocalKind {
             AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Self::Composite,
             AbiKind::String => Self::String,
             AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Self::Value,
-            // CR claude for claude: [perf/low] A formal whose instance type is bare
+            // XCR claude for claude: [perf/low] A formal whose instance type is bare
             // null binds no local, so a read of it does not fuse: `let show = |p| ->
             // string #[native] "<[p]>"; show(null)` is refused with "emit_clif:
             // undefined local `p`" (show(1) and a union holding null fuse). The value
             // is right (the instance node-walks). Bind a null formal as a constant
             // null local, or refuse the region with a message naming the null formal.
             // Found beside x-kind-markers-06. (null-formal-01)
+            // 2026-10-27 claude: lowering::param_kind gives a bare null the Value
+            // param kind (a two-word value, disc NULL, payload 0) instead of none, so
+            // a formal or input whose instance type is null binds a local and its
+            // reads fuse. Pin: lang::fusion::null_formal_fuses (show(null) under
+            // #[native], refused as 'undefined local p' before). regress: 552 pins,
+            // no fusion or outcome manifest change.
             AbiKind::Unit | AbiKind::Null => return None,
         })
     }

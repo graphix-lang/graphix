@@ -138,7 +138,7 @@ pub(crate) fn reserve_above(
     }
     let start = |c: u64| c.max(spans.reserved.extent);
     let prev = reserved
-        .fetch_update(Relaxed, Relaxed, |c| {
+        .try_update(Relaxed, Relaxed, |c| {
             start(c).checked_add(len).filter(|end| *end <= MINT_BASE)
         })
         .ok()?;

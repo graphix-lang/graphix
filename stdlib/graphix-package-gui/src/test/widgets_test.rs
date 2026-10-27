@@ -597,3 +597,26 @@ async fn a_deep_widget_tree_compiles_and_walks() -> Result<()> {
             .expect("the walks ran")
     })
 }
+
+/// A window's frame of a 300-deep container chain, iced's layout, update
+/// and draw included, runs on a stack the event loop's size (x-stack-02).
+#[test]
+fn a_deep_widget_tree_draws() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\nlet result = array::fold(\
+         array::init(300, |i| i), text(&\"x\"), |acc, i| container(&acc))"
+    );
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(move || -> Result<()> {
+            let rt =
+                tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            rt.block_on(async {
+                let mut h = GuiTestHarness::new(&code).await?;
+                h.render();
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("the frame ran")
+}

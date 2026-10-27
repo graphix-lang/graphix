@@ -704,10 +704,9 @@ impl Control {
 
     /// Release an activation [`activation_born`] charged here.
     pub fn activation_died(&self) {
-        let _ =
-            self.activations.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_sub(1))
-            });
+        let _ = self.activations.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            Some(n.saturating_sub(1))
+        });
     }
 
     /// Request that in-flight loops abort this cycle; cleared when the
@@ -735,7 +734,7 @@ impl Control {
         prev & CAUSES == 0
             && self
                 .flags
-                .fetch_update(Ordering::Release, Ordering::Acquire, |f| {
+                .try_update(Ordering::Release, Ordering::Acquire, |f| {
                     (f & CAUSES == 0).then_some(f | cause)
                 })
                 .is_ok()

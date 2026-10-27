@@ -1,4 +1,4 @@
-use crate::netstate::{NetRpcWake, NetState, NetWrite};
+use crate::netstate::{NetRpcWake, NetState, NetWrite, Reader};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
@@ -227,7 +227,7 @@ pub(crate) struct Subscribe {
     /// `sleep()` tears the subscription down, so the first update after
     /// must re-establish it from the PRESENT path.
     slept: WakeBit,
-    cur: Option<(Path, Dval)>,
+    cur: Option<(Path, Reader)>,
     var: RtVar,
     target: CastTarget,
     out: TagValue,
@@ -297,8 +297,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             (Some(Value::String(path)), true) => {
                 let path = Path::from(path);
                 if self.cur.as_ref().is_none_or(|(p, _)| *p != path) {
-                    if let Some((_, dv)) = self.cur.take() {
-                        NetState::get(ctx).unsubscribe(dv, self.var.id);
+                    if self.cur.take().is_some() {
                         self.var.remint(ctx);
                     }
                     if !Path::is_absolute(&path) {
@@ -307,20 +306,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                             "expected absolute path"
                         )));
                     }
-                    let dval = match NetState::get(ctx).subscribe(
+                    let reader = match NetState::get(ctx).subscribe(
                         ctx,
                         UpdatesFlags::BEGIN_WITH_LAST,
                         path.clone(),
                         self.var.id,
                     ) {
-                        Ok(dv) => dv,
+                        Ok(reader) => reader,
                         Err(e) => {
                             return self
                                 .out
                                 .set(TagValue::fired(errf!(ERR_TAG, "{e:#}")));
                         }
                     };
-                    self.cur = Some((path, dval));
+                    self.cur = Some((path, reader));
                 }
             }
             (Some(v), true) => {
@@ -366,17 +365,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.release(ctx);
-        if let Some((_, dv)) = self.cur.take() {
-            NetState::get(ctx).unsubscribe(dv, self.var.id)
-        }
+        self.cur = None;
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         self.slept.set();
-        if let Some((_, dv)) = self.cur.take() {
-            NetState::get(ctx).unsubscribe(dv, self.var.id);
-        }
+        self.cur = None;
         self.var.remint(ctx);
     }
 }

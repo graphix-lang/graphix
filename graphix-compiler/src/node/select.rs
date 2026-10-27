@@ -2107,7 +2107,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             union_members(&ctx.env, &reaching, &mut members)?;
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
-            pat.bind_narrowed(&ctx.env, &narrowed, &members, checking).at(&site)?;
+            pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
+                .at(&site)?;
             // a runtime test can't tell apart two types with one runtime form
             if checking
                 && pat.explicit_type_predicate

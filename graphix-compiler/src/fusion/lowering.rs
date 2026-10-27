@@ -1765,9 +1765,9 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     ok
 }
 
-/// The kernel param shape of a frozen value type; `None` for `Unit`,
-/// bare `Null` (widened to a nullable at construction), fn types, and a
-/// type whose top level is not concrete (an opaque recursive leaf).
+/// The kernel param shape of a frozen value type; `None` for `Unit`, fn
+/// types, and a type whose top level is not concrete (an opaque recursive
+/// leaf). A bare `null` travels as a value.
 pub(crate) fn param_kind(t: &Type) -> Option<ParamKind> {
     Some(match abi_kind(t)? {
         AbiKind::Scalar(p) => ParamKind::Scalar(p),
@@ -1784,8 +1784,8 @@ pub(crate) fn param_kind(t: &Type) -> Option<ParamKind> {
         AbiKind::Variant => ParamKind::Variant { cases: kernel_abi::variant_cases(t)? },
         AbiKind::Nullable => ParamKind::Nullable { elem: kernel_abi::nullable_inner(t)? },
         AbiKind::String => ParamKind::String,
-        AbiKind::Value => ParamKind::Value { typ: t.clone() },
-        AbiKind::Unit | AbiKind::Null => return None,
+        AbiKind::Value | AbiKind::Null => ParamKind::Value { typ: t.clone() },
+        AbiKind::Unit => return None,
     })
 }
 

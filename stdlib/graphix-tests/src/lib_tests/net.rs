@@ -480,8 +480,8 @@ run!(net_second_subscriber, r#"
 }; FuseExpect::None);
 
 // A reader that wakes gets the path's value though NetState held no Dval of
-// it while it slept: the rpc client the call keeps does, so netidx still
-// streams the path and sends a new reader nothing.
+// it while it slept: the rpc client the call keeps does, so the path is
+// already streamed when the reader joins.
 // The reader starts once the call answers, sleeps once it has seen the
 // value, and wakes the cycle after.
 run!(net_rewoken_reader_of_a_held_path, r#"
@@ -500,6 +500,30 @@ run!(net_rewoken_reader_of_a_held_path, r#"
 }
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[0] == Value::I64(5) && matches!(a[1], Value::I64(n) if n >= 2))
+}; FuseExpect::Jit);
+
+// A reader joining a busy path sees each value newer than the last: its
+// first is the path's value as it joined, and no update it already
+// has follows.
+run!(net_late_reader_of_a_busy_path, r#"
+{
+  let x = 0;
+  sys::net::publish("/local/pin/late", x);
+  let a: i64 = sys::net::subscribe("/local/pin/late")$;
+  let go = false;
+  go <- once(a) ~ true;
+  x <- select (go, x) { (true, n) if n < 30000 => n + 1, _ => never() };
+  let late = select a { n if n >= 500 => a ~ "/local/pin/late", _ => never() };
+  let b: i64 = sys::net::subscribe(late)$;
+  let prev = -1;
+  prev <- b;
+  let rising = true;
+  rising <- b ~ (rising && b > prev);
+  let nb = count(b);
+  select b { 30000 => (rising && b > prev, nb > 1), _ => never() }
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::Bool(true), Value::Bool(true)])
 }; FuseExpect::Jit);
 
 // Every update of a burst reaches the subscriber, in order.

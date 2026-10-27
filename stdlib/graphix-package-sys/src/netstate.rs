@@ -7,9 +7,10 @@ use anyhow::{Error, Result, anyhow};
 use arcstr::literal;
 use compact_str::format_compact;
 use futures::{
-    StreamExt,
+    FutureExt, StreamExt,
     channel::mpsc,
     future::{AbortHandle, Abortable},
+    stream::{self, SelectAll},
 };
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent, branch::RtView,
@@ -22,8 +23,7 @@ use netidx::{
     },
     resolver_client::ChangeTracker,
     subscriber::{
-        Dval, DvalWeak, Event as NEvent, SubId, Subscriber, SubscriberBuilder,
-        UpdatesFlags,
+        Dval, Event as NEvent, SubId, Subscriber, SubscriberBuilder, UpdatesFlags,
     },
 };
 use netidx_derive::IntoValue;
@@ -45,20 +45,6 @@ graphix_compiler::dbg_flag!(rpc_dbg, "GXDBG_RPC");
 /// How long a released write target that has not connected yet is kept
 /// for the writes queued on it.
 const QUEUED_WRITE_GRACE: Duration = Duration::from_secs(10);
-
-/// Drop a Dval [`NetState`] handed out: the subscription ends with its last
-/// holder, and its route with it.
-fn drop_dval(routes: &Mutex<Routes>, dv: Dval) {
-    let sub_id = dv.id();
-    drop(dv);
-    let mut routes = routes.lock();
-    if let Some(route) = routes.subs.get_mut(&sub_id) {
-        route.held -= 1;
-        if route.held == 0 {
-            routes.subs.remove(&sub_id);
-        }
-    }
-}
 
 fn error_value(error: Error) -> Value {
     Value::error(format_compact!("{error:#}").as_str())
@@ -249,44 +235,24 @@ async fn build(
     Ok((publisher, subscriber, None))
 }
 
-#[derive(Default)]
-struct Routes {
-    subs: IntMap<SubId, Route>,
-    writes: IntMap<Id, BindId>,
-    /// Each subscription the updates channel is registered on, while it
-    /// lives: netidx keeps the registration as long as any Dval of the
-    /// path does, ours or another holder's (an rpc client, a data table),
-    /// and then sends a new reader nothing (`NO_SPURIOUS`), so the
-    /// subscribe replays the last value itself.
-    registered: IntMap<SubId, DvalWeak>,
-    /// The size `registered` is pruned of ended subscriptions at.
-    prune_at: usize,
+type Updates = GPooled<Vec<(SubId, NEvent)>>;
+
+/// A reader's updates channel, as the pump drains it.
+type ReaderRx = Abortable<mpsc::Receiver<Updates>>;
+
+/// One subscribe's reader: the subscription, and its own updates channel,
+/// which netidx starts with the path's last value in order with the
+/// stream. The pump drains it until the reader drops.
+#[derive(Debug)]
+pub(crate) struct Reader {
+    _dv: Dval,
+    stop: AbortHandle,
 }
 
-impl Routes {
-    /// Record that the updates channel is registered on `dv`; whether it
-    /// was already.
-    fn register(&mut self, dv: &Dval) -> bool {
-        if self.registered.contains_key(&dv.id()) {
-            return true;
-        }
-        if self.registered.len() >= self.prune_at {
-            self.registered.retain(|_, w| w.upgrade().is_some());
-            self.prune_at = (self.registered.len() * 2).max(64);
-        }
-        self.registered.insert(dv.id(), dv.downgrade());
-        false
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.stop.abort()
     }
-}
-
-/// One subscription's routing. netidx SHARES Dvals by path: several
-/// builtins subscribing the same path get the same SubId, so routing is a
-/// fan-out list. The route lives while any Dval this state handed out for
-/// the SubId does (a reader's or a write target's).
-#[derive(Default)]
-struct Route {
-    ids: smallvec::SmallVec<[BindId; 2]>,
-    held: usize,
 }
 
 struct PendingRequest(AbortHandle);
@@ -299,8 +265,9 @@ impl Drop for PendingRequest {
 
 struct Inner {
     handles: NetHandles,
-    routes: Arc<Mutex<Routes>>,
-    netidx_updates_tx: mpsc::Sender<GPooled<Vec<(SubId, NEvent)>>>,
+    /// The publish builtin's write BindId of each published Id.
+    writes: Arc<Mutex<IntMap<Id, BindId>>>,
+    readers_tx: mpsc::UnboundedSender<(BindId, ReaderRx)>,
     writes_tx: mpsc::Sender<GPooled<Vec<WriteRequest>>>,
     rpcs_tx: mpsc::Sender<BindId>,
     /// The flusher holds this buffer without retaining the Inner.
@@ -352,10 +319,10 @@ impl NetState {
         timeouts: NetTimeouts,
         handles: NetHandles,
     ) -> Self {
-        let (updates_tx, mut updates_rx) = mpsc::channel(100);
+        let (readers_tx, mut readers_rx) = mpsc::unbounded();
         let (writes_tx, mut writes_rx) = mpsc::channel(100);
         let (rpcs_tx, mut rpcs_rx) = mpsc::channel(100);
-        let routes: Arc<Mutex<Routes>> = Arc::default();
+        let writes: Arc<Mutex<IntMap<Id, BindId>>> = Arc::default();
         // the graph-facing delivery channels
         let (mut var_tx, var_rx) = mpsc::channel(100);
         let (mut custom_tx, custom_rx) = mpsc::channel(100);
@@ -381,8 +348,8 @@ impl NetState {
         };
         let st = NetState(Arc::new(Inner {
             handles,
-            routes: routes.clone(),
-            netidx_updates_tx: updates_tx,
+            writes: writes.clone(),
+            readers_tx,
             writes_tx,
             rpcs_tx,
             pending_publish_batch,
@@ -392,34 +359,38 @@ impl NetState {
             requests: Mutex::new(IntMap::default()),
             change_trackers: Mutex::new(IntMap::default()),
         }));
-        // PUMP: netidx events -> graph events. Subscription updates route
-        // SubId -> the subscribing builtin's BindId; writes route the
-        // published Id -> the publish builtin's write BindId.
+        // PUMP: netidx events -> graph events. Each reader's updates go to
+        // its BindId; writes route the published Id -> the publish
+        // builtin's write BindId.
         {
-            let routes = routes.clone();
+            let writes = writes.clone();
             task::spawn(async move {
+                let mut readers = SelectAll::new();
                 loop {
                     tokio::select! {
-                        batch = updates_rx.next() => match batch {
+                        reader = readers_rx.next() => match reader {
                             None => break,
-                            Some(mut batch) => {
-                                let mut out = VBATCH.take();
-                                {
-                                    // every update, in order, to every reader
-                                    let routes = routes.lock();
-                                    for (sub_id, ev) in batch.drain(..) {
-                                        if let Some(route) = routes.subs.get(&sub_id) {
-                                            for id in &route.ids {
-                                                out.push((*id, translate(ev.clone())));
-                                            }
-                                        }
-                                    }
+                            Some((id, rx)) => readers.push(
+                                rx.map(move |batch: Updates| (id, batch))
+                            ),
+                        },
+                        Some((id, mut batch)) = readers.next(), if !readers.is_empty() => {
+                            let mut out = VBATCH.take();
+                            out.extend(batch.drain(..).map(|(_, ev)| (id, translate(ev))));
+                            // the readers of one update share its cycle where
+                            // their batches are already here
+                            for _ in 0..readers.len() {
+                                match readers.next().now_or_never() {
+                                    Some(Some((id, mut batch))) => out.extend(
+                                        batch.drain(..).map(|(_, ev)| (id, translate(ev)))
+                                    ),
+                                    Some(None) | None => break,
                                 }
-                                if !out.is_empty() {
-                                    use futures::SinkExt;
-                                    if var_tx.send(out).await.is_err() {
-                                        break;
-                                    }
+                            }
+                            if !out.is_empty() {
+                                use futures::SinkExt;
+                                if var_tx.send(out).await.is_err() {
+                                    break;
                                 }
                             }
                         },
@@ -428,9 +399,9 @@ impl NetState {
                             Some(mut batch) => {
                                 let mut out = CBATCH.take();
                                 {
-                                    let routes = routes.lock();
+                                    let writes = writes.lock();
                                     for req in batch.drain(..) {
-                                        if let Some(id) = routes.writes.get(&req.id) {
+                                        if let Some(id) = writes.get(&req.id) {
                                             out.push((
                                                 *id,
                                                 Box::new(NetWrite(req))
@@ -485,146 +456,145 @@ impl NetState {
         self.0.handles.get_or_materialize(cfg)
     }
 
+    /// Subscribe `path` for the reader `id`, on a channel of its own.
+    // XCR claude for claude: [risk/low] The route is created and the id pushed only
+    // after subscribe_updates has returned. Two consequences follow. (1) For a Dval
+    // that is already live (one held by write_target), subscribe_updates makes the
+    // connection task replay the last value into updates_tx on another thread. The
+    // pump drops that replay if it reaches the routes lock before route.ids holds
+    // this id. (2) drop_dval removes the route when `held` reaches 0, but netidx
+    // keeps our updates_tx on a Dval that someone else still holds (the GUI
+    // data_table through NetState::subscriber). A later subscribe makes a fresh
+    // route with streamed=false, and the connection dedups the channel and skips
+    // the replay (already registered + NO_SPURIOUS), so the new reader gets no
+    // value until the path changes. Fix: push the id under the routes lock before
+    // calling subscribe_updates, and replay dv.last() whenever a reader joins a
+    // route that netidx already streams, which needs `streamed` to outlive held==0
+    // while the Dval does. (x-concurrency-07)
+    // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
+    // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
+    // pushes its replay into stream_batch, and process_updates_batch broadcasts
+    // that replay to every channel on the subscription. New readers would fire
+    // existing readers too (contrary to net_second_subscriber), and several
+    // channel registrations in one batch can replay duplicates to new readers.
+    // Netidx must target the replay at the joining channel in stream order;
+    // then sys can remove shared routing/manual last replay. Equality filtering
+    // would discard legitimate repeated writes. Socket probes cannot run here;
+    // the candidate sys rewrite was discarded. Upstream changes are outside scope.
+    // 2026-10-16 claude: Same mechanism as sys-net-02 just below (a reader joining a route
+    // netidx already streams gets its replay targeted at it), which Eric readdressed to
+    // himself on 2026-10-14; readdressed with it.
+    // 2026-10-17 claude: Point (2) is fixed with sys-net-02: Routes::register remembers,
+    // per SubId and while the subscription lives (a DvalWeak), that the updates channel is
+    // registered, so a reader subscribing after its route was removed gets the replay. Pin
+    // lib_tests::net::net_rewoken_reader_of_a_held_path. Point (1), the replay racing the
+    // route's creation, stands.
+    // 2026-10-24 claude: Eric ruled (2026-10-24): fix the replay ordering upstream in
+    // netidx (per-reader BEGIN_WITH_LAST targeted at the joining channel in stream order),
+    // then simplify sys's routing.
+    // 2026-10-27 claude: Point (1), the pump dropping a replay that beat the route's
+    // creation, is gone with sys-net-01's fix: there is no route, each reader's channel
+    // carries its own replay and the pump learns the channel before it can lose anything
+    // on it (the channel buffers). Point (2) stays fixed without Routes::register: a
+    // reader joining a subscription another holder keeps gets its own channel's replay
+    // from netidx. Pins: lib_tests::net::net_rewoken_reader_of_a_held_path,
+    // net_second_subscriber, net_late_reader_of_a_busy_path.
+    // XCR claude for claude: [bug/high] A late second reader of a busy path sees the
+    // same value twice, or newer then older values. This replay sends dv.last()
+    // through set_var, and then the reader's BindId joins route.ids. The pump reads
+    // route.ids when it drains a batch, not when netidx queued it, so updates
+    // already waiting on the shared netidx_updates_tx channel (older than or equal
+    // to last) also go to the new reader, after the replay. Any uniq, delta or
+    // state machine over a subscription goes wrong. Probe:
+    // design/review-2026-10-12/repro/sys-net-01.gx, run several times: "b#1=10473
+    // b#2=10471" and "b#1=10968 b#2=10968". Fix: let netidx order the replay with
+    // the stream. Give each Subscribe its own updates channel, registered with
+    // BEGIN_WITH_LAST and without NO_SPURIOUS, and drop the set_var replay and
+    // route.streamed. If one shared channel stays, store a join point per reader so
+    // the pump skips batches queued before that reader joined. Add a pin with a
+    // fast publisher and a late subscriber that asserts strictly increasing values.
+    // The existing net_second_subscriber pin uses a static value, so it cannot
+    // catch this. (sys-net-01)
+    // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
+    // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
+    // pushes its replay into stream_batch, and process_updates_batch broadcasts
+    // that replay to every channel on the subscription. New readers would fire
+    // existing readers too (contrary to net_second_subscriber), and several
+    // channel registrations in one batch can replay duplicates to new readers.
+    // Netidx must target the replay at the joining channel in stream order;
+    // then sys can remove shared routing/manual last replay. Equality filtering
+    // would discard legitimate repeated writes. Socket probes cannot run here;
+    // the candidate sys rewrite was discarded. Upstream changes are outside scope.
+    // 2026-10-24 claude: Eric ruled (2026-10-24): fix the replay ordering upstream in
+    // netidx (per-reader BEGIN_WITH_LAST targeted at the joining channel in stream order),
+    // then simplify sys's routing.
+    // 2026-10-25 claude: The load flake in lib_tests::net::net_subscribe_arm_rewake is
+    // this mechanism. Driving that fixture by its deliveries instead of the 150 ms timer
+    // (x <- got ~ x + 1) makes each wake land before netidx has delivered the update the
+    // arm slept through, and in the test harness about one run in four per mode fails: [0,
+    // -1, 0, -1, 4, -1] and [0, -1, 2, -1, 2, -1] (the woken subscribe joined a
+    // subscription netidx still held and replayed its pre-sleep dv.last()), and once
+    // interp hung with no delivery after a wake (the replay lost, probably point (1) of
+    // x-concurrency-07, unconfirmed). The timer usually gives netidx time to catch up;
+    // under load it does not. The fixture keeps the timer until the upstream fix lands;
+    // then switch it to delivery-driven, which pins this. Probe:
+    // design/review-2026-10-12/repro/sys-net-01-rewake.gx (clean in 6 shell runs, the
+    // harness reproduces it).
+    // 2026-10-27 claude: Built per Eric's 10-24 ruling. Upstream (netidx connection.rs
+    // handle_connect_stream) a joining channel's last-value replay now goes to that
+    // channel alone, queued in by_chan at the point it joins, so it follows every update
+    // sent before the join and precedes every update after (it was pushed into a batch
+    // broadcast to every channel on the subscription, after the batch's updates). Here
+    // each subscribe owns its updates channel, registered with BEGIN_WITH_LAST and no
+    // NO_SPURIOUS, and the pump drains every reader's channel (a SelectAll; a reader
+    // dropping aborts its stream). The set_var replay, Routes' subs/held/registered,
+    // route.streamed and drop_dval are gone; Subscribe holds a Reader. One change to
+    // review: two readers of one path now each get their own copy of an update; the pump
+    // puts the copies that have already arrived into one batch, but one that arrives later
+    // lands a cycle later. Pins: netidx
+    // test::publisher::a_joining_channel_gets_its_replay_alone_in_order (reader out of
+    // order on the old connection.rs, 3 of 3 runs);
+    // lib_tests::net::net_late_reader_of_a_busy_path (late reader of a 30000-update path
+    // sees each value newer than the last; fails in 3-4 of 4 modes on every one of 12 runs
+    // of the old code). The 10-25 note's plan to drive net_subscribe_arm_rewake by its
+    // deliveries does not hold: it then fails as [0, -1, 0, -1, 0, -1] on the fixed code,
+    // because each On window ends at its first delivery, and that delivery is netidx's
+    // last-known value of the path while the publisher's newer one is still in flight.
+    // That is publish latency, not this mechanism, so the fixture keeps its timer.
     pub(crate) fn subscribe<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
         flags: UpdatesFlags,
         path: Path,
         id: BindId,
-    ) -> Result<Dval> {
-        let updates_tx = self.0.netidx_updates_tx.clone();
-        // The shared channel is registered once per Dval: a later
-        // subscriber of the path gets the path's last value alone, never a
-        // re-send to every subscriber of it.
-        let flags = flags | UpdatesFlags::NO_SPURIOUS;
-        // CR claude for claude: [risk/low] The route is created and the id pushed only
-        // after subscribe_updates has returned. Two consequences follow. (1) For a Dval
-        // that is already live (one held by write_target), subscribe_updates makes the
-        // connection task replay the last value into updates_tx on another thread. The
-        // pump drops that replay if it reaches the routes lock before route.ids holds
-        // this id. (2) drop_dval removes the route when `held` reaches 0, but netidx
-        // keeps our updates_tx on a Dval that someone else still holds (the GUI
-        // data_table through NetState::subscriber). A later subscribe makes a fresh
-        // route with streamed=false, and the connection dedups the channel and skips
-        // the replay (already registered + NO_SPURIOUS), so the new reader gets no
-        // value until the path changes. Fix: push the id under the routes lock before
-        // calling subscribe_updates, and replay dv.last() whenever a reader joins a
-        // route that netidx already streams, which needs `streamed` to outlive held==0
-        // while the Dval does. (x-concurrency-07)
-        // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
-        // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
-        // pushes its replay into stream_batch, and process_updates_batch broadcasts
-        // that replay to every channel on the subscription. New readers would fire
-        // existing readers too (contrary to net_second_subscriber), and several
-        // channel registrations in one batch can replay duplicates to new readers.
-        // Netidx must target the replay at the joining channel in stream order;
-        // then sys can remove shared routing/manual last replay. Equality filtering
-        // would discard legitimate repeated writes. Socket probes cannot run here;
-        // the candidate sys rewrite was discarded. Upstream changes are outside scope.
-        // 2026-10-16 claude: Same mechanism as sys-net-02 just below (a reader joining a route
-        // netidx already streams gets its replay targeted at it), which Eric readdressed to
-        // himself on 2026-10-14; readdressed with it.
-        // 2026-10-17 claude: Point (2) is fixed with sys-net-02: Routes::register remembers,
-        // per SubId and while the subscription lives (a DvalWeak), that the updates channel is
-        // registered, so a reader subscribing after its route was removed gets the replay. Pin
-        // lib_tests::net::net_rewoken_reader_of_a_held_path. Point (1), the replay racing the
-        // route's creation, stands.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): fix the replay ordering upstream in
-        // netidx (per-reader BEGIN_WITH_LAST targeted at the joining channel in stream order),
-        // then simplify sys's routing.
-        let dv =
-            self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
-        let mut routes = self.0.routes.lock();
-        let streamed = routes.register(&dv);
-        let route = routes.subs.entry(dv.id()).or_default();
-        // CR claude for claude: [bug/high] A late second reader of a busy path sees the
-        // same value twice, or newer then older values. This replay sends dv.last()
-        // through set_var, and then the reader's BindId joins route.ids. The pump reads
-        // route.ids when it drains a batch, not when netidx queued it, so updates
-        // already waiting on the shared netidx_updates_tx channel (older than or equal
-        // to last) also go to the new reader, after the replay. Any uniq, delta or
-        // state machine over a subscription goes wrong. Probe:
-        // design/review-2026-10-12/repro/sys-net-01.gx, run several times: "b#1=10473
-        // b#2=10471" and "b#1=10968 b#2=10968". Fix: let netidx order the replay with
-        // the stream. Give each Subscribe its own updates channel, registered with
-        // BEGIN_WITH_LAST and without NO_SPURIOUS, and drop the set_var replay and
-        // route.streamed. If one shared channel stays, store a join point per reader so
-        // the pump skips batches queued before that reader joined. Add a pin with a
-        // fast publisher and a late subscriber that asserts strictly increasing values.
-        // The existing net_second_subscriber pin uses a static value, so it cannot
-        // catch this. (sys-net-01)
-        // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
-        // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
-        // pushes its replay into stream_batch, and process_updates_batch broadcasts
-        // that replay to every channel on the subscription. New readers would fire
-        // existing readers too (contrary to net_second_subscriber), and several
-        // channel registrations in one batch can replay duplicates to new readers.
-        // Netidx must target the replay at the joining channel in stream order;
-        // then sys can remove shared routing/manual last replay. Equality filtering
-        // would discard legitimate repeated writes. Socket probes cannot run here;
-        // the candidate sys rewrite was discarded. Upstream changes are outside scope.
-        // 2026-10-24 claude: Eric ruled (2026-10-24): fix the replay ordering upstream in
-        // netidx (per-reader BEGIN_WITH_LAST targeted at the joining channel in stream order),
-        // then simplify sys's routing.
-        // 2026-10-25 claude: The load flake in lib_tests::net::net_subscribe_arm_rewake is
-        // this mechanism. Driving that fixture by its deliveries instead of the 150 ms timer
-        // (x <- got ~ x + 1) makes each wake land before netidx has delivered the update the
-        // arm slept through, and in the test harness about one run in four per mode fails: [0,
-        // -1, 0, -1, 4, -1] and [0, -1, 2, -1, 2, -1] (the woken subscribe joined a
-        // subscription netidx still held and replayed its pre-sleep dv.last()), and once
-        // interp hung with no delivery after a wake (the replay lost, probably point (1) of
-        // x-concurrency-07, unconfirmed). The timer usually gives netidx time to catch up;
-        // under load it does not. The fixture keeps the timer until the upstream fix lands;
-        // then switch it to delivery-driven, which pins this. Probe:
-        // design/review-2026-10-12/repro/sys-net-01-rewake.gx (clean in 6 shell runs, the
-        // harness reproduces it).
-        if streamed
-            && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
-            && let ev @ NEvent::Update(_) = dv.last()
-        {
-            ctx.rt.set_var(id, translate(ev));
-        }
-        route.held += 1;
-        route.ids.push(id);
-        Ok(dv)
+    ) -> Result<Reader> {
+        let (tx, rx) = mpsc::channel(100);
+        let (rx, stop) = stream::abortable(rx);
+        let dv = self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, tx)]);
+        let _ = self.0.readers_tx.unbounded_send((id, rx));
+        Ok(Reader { _dv: dv, stop })
     }
 
-    /// The path's Dval for writing alone: no updates and no route.
+    /// The path's Dval for writing alone: no updates.
     pub(crate) fn write_target<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
         path: Path,
     ) -> Result<Dval> {
-        let dv = self.handles(ctx)?.subscriber.subscribe(path);
-        self.0.routes.lock().subs.entry(dv.id()).or_default().held += 1;
-        Ok(dv)
+        Ok(self.handles(ctx)?.subscriber.subscribe(path))
     }
 
     /// Release a Dval [`Self::write_target`] gave. One holding writes it
     /// queued while connecting is kept until it connects, which sends them,
     /// or for [`QUEUED_WRITE_GRACE`], where a runtime is there to wait.
     pub(crate) fn release(&self, dv: Dval) {
-        let rt = match tokio::runtime::Handle::try_current() {
-            Ok(rt) if dv.queued_writes() > 0 => rt,
-            Ok(_) | Err(_) => return drop_dval(&self.0.routes, dv),
-        };
-        let routes = self.0.routes.clone();
-        rt.spawn(async move {
-            let _ = time::timeout(QUEUED_WRITE_GRACE, dv.wait_subscribed()).await;
-            drop_dval(&routes, dv)
-        });
-    }
-
-    pub(crate) fn unsubscribe(&self, dv: Dval, id: BindId) {
+        if dv.queued_writes() > 0
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
         {
-            let mut routes = self.0.routes.lock();
-            if let Some(route) = routes.subs.get_mut(&dv.id()) {
-                if let Some(i) = route.ids.iter().position(|x| *x == id) {
-                    route.ids.remove(i);
-                }
-            }
+            rt.spawn(async move {
+                let _ = time::timeout(QUEUED_WRITE_GRACE, dv.wait_subscribed()).await;
+            });
         }
-        drop_dval(&self.0.routes, dv)
     }
 
     pub(crate) fn publish<R: Rt, E: UserEvent>(
@@ -642,7 +612,7 @@ impl NetState {
             writes_tx,
         )?;
         if let Some(id) = write_id {
-            self.0.routes.lock().writes.insert(val.id(), id);
+            self.0.writes.lock().insert(val.id(), id);
         }
         Ok(val)
     }
@@ -665,7 +635,7 @@ impl NetState {
     }
 
     pub(crate) fn unpublish(&self, val: Val) {
-        self.0.routes.lock().writes.remove(&val.id());
+        self.0.writes.lock().remove(&val.id());
         drop(val)
     }
 

@@ -12,7 +12,7 @@ use graphix_compiler::{
 use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::PackError;
 use netidx_derive::{FromValue, IntoValue};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;

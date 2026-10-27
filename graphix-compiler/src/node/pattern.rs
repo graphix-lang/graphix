@@ -470,18 +470,25 @@ impl StructPatternNode {
     /// The `all@` capture and the slice rest, each standing over the
     /// whole of this pattern's type.
     fn whole_binds(&self) -> impl Iterator<Item = BindId> {
-        let (all, rest) = match self {
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Or { .. } => {
-                (None, None)
-            }
-            Self::SlicePrefix { all, tail: rest, .. }
-            | Self::SliceSuffix { all, head: rest, .. } => (*all, *rest),
-            Self::Slice { all, .. }
+        let rest = match self {
+            Self::SlicePrefix { tail: rest, .. }
+            | Self::SliceSuffix { head: rest, .. } => *rest,
+            _ => None,
+        };
+        self.capture().into_iter().chain(rest)
+    }
+
+    /// The `name@` capture of the whole value this pattern tests.
+    fn capture(&self) -> Option<BindId> {
+        match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Or { .. } => None,
+            Self::SlicePrefix { all, .. }
+            | Self::SliceSuffix { all, .. }
+            | Self::Slice { all, .. }
             | Self::Struct { all, .. }
             | Self::Variant { all, .. }
-            | Self::Abstract { all, .. } => (*all, None),
-        };
-        all.into_iter().chain(rest)
+            | Self::Abstract { all, .. } => *all,
+        }
     }
 
     /// Narrow each abstract payload's own representation, which its binds
@@ -1909,8 +1916,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// stands over one of `reaching`, the members of what reaches the arm
     /// as they were before the narrowing, at a time, so it takes the
     /// union of its part of each member the arm can match, where a plain
-    /// bind takes the union of its position's parts.
-    // CR claude for claude: [bug/medium] A whole capture over an open rigid cell
+    /// bind takes the union of its position's parts. Over `scrut`, an open
+    /// cell, `reaching` is empty and the whole capture is the cell.
+    // XCR claude for claude: [bug/medium] A whole capture over an open rigid cell
     // with a typed bound takes the pattern's fresh cells, not the cell:
     // `'a: (i64, string) |x: 'a| -> 'a select x { v@ (n, _) => v }` is refused
     // ("'a: unbound within (i64, string) does not contain ('_1: unbound, '_2:
@@ -1918,10 +1926,17 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     // test and coverage read the cell through its bound (x-rerun-3-04); the
     // narrowing here does not, since `reaching` has no members. A whole capture
     // at the scrutinee's position should be the cell itself. (bounded-capture-01)
+    // 2026-10-27 claude: bind_narrowed takes the scrutinee: over an open cell (no
+    // reaching members), an inferred arm's whole capture
+    // (StructPatternNode::capture, the name@ of the whole value) is typed as the
+    // cell itself rather than from the pattern's fresh cells. Pin:
+    // lang::select::capture_over_a_bounded_open_cell (the CR's program, refused
+    // before).
     pub(super) fn bind_narrowed(
         &self,
         env: &Env,
         narrowed: &Type,
+        scrut: &Type,
         reaching: &[Type],
         checking: bool,
     ) -> Result<()> {
@@ -1953,6 +1968,14 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
         if !wholes.is_empty() {
             self.wholes_by_member(env, &wholes, &mut leaves)?;
+        }
+        if !self.explicit_type_predicate
+            && reaching.is_empty()
+            && let Some(id) = self.structure_predicate.capture()
+        {
+            for l in leaves.iter_mut().filter(|l| l.id == id) {
+                l.typ = scrut.clone()
+            }
         }
         for l in leaves.iter().filter(|l| l.fresh || tests_error) {
             if let Some(b) = env.by_id.get(&l.id) {

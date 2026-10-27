@@ -239,12 +239,6 @@ impl Glob {
             Self::Chain(from) => chain_levels(from).find_map(|l| f(l, n).map(|t| (l, t))),
         }
     }
-
-    fn source(&self) -> &ModPath {
-        match self {
-            Self::Module(m) | Self::Chain(m) => m,
-        }
-    }
 }
 
 impl Pack for ScopeNames {
