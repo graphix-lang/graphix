@@ -120,8 +120,9 @@ the state of a fix, and Graphix's side.
 - **Bug.** `iced_widget::text::rich::update` requests no redraw when the
   hovered link index changes, so link underlines flicker between
   adjacent link spans.
-- **Graphix's side.** Not worked around (cosmetic); noted in
-  `stdlib/graphix-package-gui/src/widgets/markdown.rs`. Not reported.
+- **Graphix's side.** Not worked around (cosmetic); the markdown
+  widget (`stdlib/graphix-package-gui/src/widgets/markdown.rs`) shows it.
+  Not reported.
 
 ## netidx (ours): a stream replay reaches every channel of a subscription
 

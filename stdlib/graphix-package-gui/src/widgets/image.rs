@@ -65,16 +65,6 @@ impl<X: GXExt> GuiWidget<X> for ImageW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("image")?;
-        // CR claude for claude: [perf/low] This clones the whole source on every update
-        // just to compare it. ImageSourceV::Path and ::Svg are Strings, so an inline
-        // SVG is copied here, on top of the copy ImageSourceV::from_value makes, on
-        // every re-fire of the ref. Hold ArcStr in ImageSourceV::Path/Svg (immutable
-        // shared text), which makes both copies reference counts, or take the old value
-        // out with mem::take and restore it if the update fails. Found by reading; not
-        // run. (gui-widgets-a-04)
-        // 2026-10-26 claude: ImageSourceV::Path and ::Svg now hold ArcStr
-        // (gui-core-04), so this clone and from_value's read are reference counts and
-        // same_as compares pointers first; what remains is whether to clone at all.
         let old = (id == self.source.r.id).then(|| self.source.t.clone()).flatten();
         if let Some(new) = self.source.update(id, v).context("image source")?
             && !old.is_some_and(|o| o.same_as(new))

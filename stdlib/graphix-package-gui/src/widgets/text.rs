@@ -28,6 +28,12 @@ impl<X: GXExt> TextW<X> {
         self.0.size.t.flatten().map(|size| size.0)
     }
 
+    /// The id of the content's ref, which each compile mints afresh.
+    #[cfg(test)]
+    pub(crate) fn content_ref(&self) -> ExprId {
+        self.0.content.r.id
+    }
+
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         Ok(GuiW::new(Self(Props::compile(&gx, &source).await.context("text")?)))
     }

@@ -8,15 +8,6 @@ use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 
-// TODO: link hover underlines flicker between adjacent link spans;
-// upstream bug in `iced_widget::text::rich::update` (no redraw when
-// the hovered link index changes).
-
-// CR claude for claude: [style/low] The TODO above (link hover underlines flicker, an
-// iced_widget rich-text bug) repeats the UPSTREAM.md entry "iced_widget 0.14: rich text
-// does not redraw when the hovered link changes", which already names this file. A
-// dependency's bug belongs in UPSTREAM.md only, so delete the comment. Found by
-// reading; not run. (gui-widgets-a-06)
 graphix_rt::props! {
     struct Props {
         content: ArcStr,

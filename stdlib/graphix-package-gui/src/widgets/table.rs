@@ -1,11 +1,12 @@
-use super::{Child, Children, GuiW, GuiWidget, IcedElement, Item, compile_children};
+use super::{Child, Children, GuiW, GuiWidget, IcedElement, Item, compile};
 use crate::types::{HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
 use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle};
+use graphix_rt::{GXExt, GXHandle, Ref, reconcile};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use poolshark::local::LPooled;
 
 graphix_rt::props! {
     struct ColumnProps {
@@ -28,11 +29,75 @@ graphix_rt::props! {
     }
 }
 
+/// The rows property: every row's cells in one list, beside the values
+/// they compiled from, so a new table keeps each cell whose value it
+/// still holds, wherever it moved, and compiles only the cells it did not.
+pub(crate) struct Rows<X: GXExt> {
+    r: Ref<X>,
+    pub(crate) cells: Vec<(Value, GuiW<X>)>,
+    /// Where each row ends in `cells`.
+    ends: LPooled<Vec<usize>>,
+}
+
+impl<X: GXExt> Rows<X> {
+    async fn field(gx: &GXHandle<X>, source: &Value) -> Result<Self> {
+        let r = gx.compile_field(source, "rows").await?;
+        let mut rows = Self { r, cells: Vec::new(), ends: LPooled::take() };
+        if let Some(v) = rows.r.last.clone() {
+            rows.set(gx, v).await?;
+        }
+        Ok(rows)
+    }
+
+    /// Take the rows `v`. The cells stay as they were unless every new
+    /// cell compiles.
+    async fn set(&mut self, gx: &GXHandle<X>, v: Value) -> Result<()> {
+        let mut items: LPooled<Vec<Value>> = LPooled::take();
+        let mut ends: LPooled<Vec<usize>> = LPooled::take();
+        for row in v.cast_to::<LPooled<Vec<Value>>>()?.drain(..) {
+            items.extend(row.cast_to::<LPooled<Vec<Value>>>()?.drain(..));
+            ends.push(items.len());
+        }
+        reconcile(&mut self.cells, items, |v| compile(gx.clone(), v)).await?;
+        self.ends = ends;
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    fn row(&self, i: usize) -> &[(Value, GuiW<X>)] {
+        let start = i.checked_sub(1).map_or(0, |j| self.ends[j]);
+        &self.cells[start..self.ends[i]]
+    }
+
+    /// Take an update for the ref or for a cell. Returns whether the
+    /// window should redraw.
+    fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        if id == self.r.id && self.r.last.as_ref() != Some(v) {
+            rt.block_on(self.set(gx, v.clone()))?;
+            self.r.last = Some(v.clone());
+            changed = true;
+        }
+        for (_, cell) in &mut self.cells {
+            changed |= cell.handle_update(rt, id, v)?;
+        }
+        Ok(changed)
+    }
+}
+
 pub(crate) struct TableW<X: GXExt> {
     gx: GXHandle<X>,
     columns: Children<X, CompiledColumn<X>>,
-    /// Each row's cells beside the value they compiled from.
-    // CR claude for claude: [bug/low] Rows are kept by whole-row value. A row whose
+    // XCR claude for claude: [bug/low] Rows are kept by whole-row value. A row whose
     // value changed goes through compile_children, which compiles every cell again. So
     // when one cell changes its widget (a select that swaps text for text_input, say),
     // its siblings in that row are rebuilt as well. A text_editor beside it loses its
@@ -42,7 +107,14 @@ pub(crate) struct TableW<X: GXExt> {
     // reconcile a changed row's cells against the old row at the same index
     // (reconcile(&mut old_cells, new_items, ..)) instead of compiling them all. Found
     // by reading; not run. (gui-widgets-b-02)
-    cells: Children<X, Vec<GuiW<X>>>,
+    // 2026-10-26 claude: TableW's rows are now Rows: every row's cells in one list
+    // beside their values, with each row's end, reconciled as one list
+    // (graphix_rt::reconcile), so a changed cell compiles alone and its siblings,
+    // moved or not, keep their widgets; the Vec<GuiW> Item impl and compile_children
+    // are gone. Pin: reconcile_test::a_changed_cell_keeps_its_row_siblings (a text
+    // beside a cell that swaps text for text_input keeps its content ref; fails when
+    // the row compiles afresh).
+    pub(crate) rows: Rows<X>,
     p: Props<X>,
 }
 
@@ -68,36 +140,15 @@ impl<X: GXExt> Item<X> for CompiledColumn<X> {
     }
 }
 
-/// A table row: its cells.
-impl<X: GXExt> Item<X> for Vec<GuiW<X>> {
-    fn compile(gx: &GXHandle<X>, v: Value) -> impl Future<Output = Result<Self>> + Send {
-        compile_children(gx.clone(), v)
-    }
-
-    fn update(
-        &mut self,
-        rt: &tokio::runtime::Handle,
-        _gx: &GXHandle<X>,
-        id: ExprId,
-        v: &Value,
-    ) -> Result<bool> {
-        let mut changed = false;
-        for cell in self {
-            changed |= cell.handle_update(rt, id, v)?;
-        }
-        Ok(changed)
-    }
-}
-
 impl<X: GXExt> TableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let (columns, cells, p) = try_join!(
+        let (columns, rows, p) = try_join!(
             Children::field(&gx, &source, "columns"),
-            Children::field(&gx, &source, "rows"),
+            async { Rows::field(&gx, &source).await.context("table rows") },
             Props::compile(&gx, &source),
         )
         .context("table")?;
-        Ok(GuiW::new(Self { gx: gx.clone(), columns, cells, p }))
+        Ok(GuiW::new(Self { gx: gx.clone(), columns, rows, p }))
     }
 }
 
@@ -110,13 +161,18 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("table")?;
         changed |= self.columns.update(rt, &self.gx, id, v).context("table columns")?;
-        changed |= self.cells.update(rt, &self.gx, id, v).context("table rows")?;
+        changed |= self.rows.update(rt, &self.gx, id, v).context("table rows")?;
         Ok(changed)
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         self.columns.ws.iter_mut().for_each(|(_, c)| f(&mut c.header.w));
-        self.cells.ws.iter_mut().flat_map(|(_, r)| r.iter_mut()).for_each(f)
+        self.rows.cells.iter_mut().for_each(|(_, cell)| f(cell))
     }
 
     fn view(&self) -> IcedElement<'_> {
@@ -124,13 +180,12 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         if self.columns.ws.is_empty() {
             return iced_widget::Space::new().into();
         }
-        let num_rows = self.cells.ws.len();
-        let cells = &self.cells.ws;
+        let rows = &self.rows;
         let cols = self.columns.ws.iter().enumerate().map(|(c, (_, col))| {
             let header = col.header.w.view();
             let mut tc = widget::table::column(header, move |row: usize| {
-                match cells.get(row).and_then(|(_, r)| r.get(c)) {
-                    Some(cell) => cell.view(),
+                match rows.row(row).get(c) {
+                    Some((_, cell)) => cell.view(),
                     None => iced_widget::Space::new().into(),
                 }
             });
@@ -145,7 +200,7 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
             }
             tc
         });
-        let mut t = widget::table::table(cols, 0..num_rows);
+        let mut t = widget::table::table(cols, 0..rows.len());
         if let Some(w) = self.p.width.t.as_ref() {
             t = t.width(w.0);
         }

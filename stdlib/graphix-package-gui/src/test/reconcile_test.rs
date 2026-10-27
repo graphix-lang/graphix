@@ -102,3 +102,30 @@ async fn a_changed_result_rebuilds_the_root() -> Result<()> {
     assert_eq!(shapes(&h), Some(1));
     Ok(())
 }
+
+/// A table whose cell changes its widget keeps the cells beside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_cell_keeps_its_row_siblings() -> Result<()> {
+    use crate::widgets::{table::TableW, text::TextW};
+    let mut h = GuiTestHarness::new(
+        r#"
+        use gui::{text::text, text_input::text_input, table::{table, table_column}};
+        let n = 0;
+        let a = text(&"a");
+        let b = select n { 0 => text(&"b"), _ => text_input(&"c") };
+        let result = table(&[table_column(&text(&"A")), table_column(&text(&"B"))], &[[a, b]])
+    "#,
+    )
+    .await?;
+    let first = |h: &GuiTestHarness| {
+        let t = h.root.w.as_any().downcast_ref::<TableW<NoExt>>().expect("a table");
+        assert_eq!(t.rows.cells.len(), 2);
+        let a = t.rows.cells[0].1.as_any().downcast_ref::<TextW<NoExt>>().expect("text");
+        a.content_ref()
+    };
+    let before = first(&h);
+    h.set_var("test::n", Value::I64(1))?;
+    assert!(h.drain().await?, "the changed cell changes the table");
+    assert_eq!(first(&h), before, "the unchanged cell is kept");
+    Ok(())
+}

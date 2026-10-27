@@ -97,7 +97,6 @@ fn touch_phases_reach_the_widgets_at_logical_positions() {
 }
 
 async fn assert_deferred_focus(context_menu: bool) -> Result<()> {
-    use super::InteractionHarness;
     use crate::widgets::{GuiWidget, IcedElement, Message, WidgetOp};
     use graphix_compiler::expr::ExprId;
     use graphix_rt::NoExt;
@@ -148,11 +147,10 @@ async fn assert_deferred_focus(context_menu: bool) -> Result<()> {
         }
     }
 
-    let mut h = InteractionHarness::new(
-        r#"use gui::text::text; let result = text(&"placeholder")"#,
-    )
-    .await?;
-    h.inner.root.w = crate::widgets::GuiW::new(FocusInput {
+    let mut h =
+        GuiTestHarness::new(r#"use gui::text::text; let result = text(&"placeholder")"#)
+            .await?;
+    h.root.w = crate::widgets::GuiW::new(FocusInput {
         id: Id::unique(),
         prepared: false,
         context_menu,

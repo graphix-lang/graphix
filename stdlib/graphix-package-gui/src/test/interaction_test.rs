@@ -1,6 +1,6 @@
 use super::{
-    IMPORTS, InteractionHarness, char_key, expect_call, expect_call_with_args, f64_arg,
-    interaction_harness as harness,
+    GuiTestHarness, IMPORTS, char_key, expect_call, expect_call_with_args, f64_arg,
+    gui_harness as harness,
 };
 use anyhow::Result;
 use compact_str::format_compact;
@@ -19,7 +19,7 @@ async fn button_click_produces_call() -> Result<()> {
         let calls = 0;
         let result = button(#on_press: |t| calls <- t ~ calls + 1, &text(&"Click"))
     "#;
-    let mut h = InteractionHarness::new(code).await?;
+    let mut h = GuiTestHarness::new(code).await?;
     assert_eq!(h.watch("test::calls").await?, Value::I64(0));
     for n in 1..=2 {
         let msgs = h.click(WIDGET_HIT);
@@ -38,7 +38,7 @@ async fn button_tap_produces_call() -> Result<()> {
         use gui::{button::button, text::text};
         let result = button(#on_press: |t| t, &text(&"Tap"))
     "#;
-    let mut h = InteractionHarness::new(code).await?;
+    let mut h = GuiTestHarness::new(code).await?;
     let id = touch::Finger(1);
     let mut msgs = h.process_events(&[Event::Touch(touch::Event::FingerPressed {
         id,
@@ -66,7 +66,7 @@ async fn table_cell_count_mismatch_lays_out() -> Result<()> {
     ];
     for case in cases {
         let code = format_compact!("{IMPORTS};\nlet result = table(&{case})");
-        let mut h = InteractionHarness::new(&code).await?;
+        let mut h = GuiTestHarness::new(&code).await?;
         let _ = h.view();
         let _ = h.click(WIDGET_HIT);
         h.resize(Size::new(40.0, 20.0));
@@ -81,7 +81,7 @@ async fn checkbox_click_no_panic() -> Result<()> {
          let checked = &false;\n\
          let result = checkbox(#label: &\"Toggle me\", checked)"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     Ok(())
@@ -97,7 +97,7 @@ async fn toggle_dispatches(widget: &str) -> Result<()> {
         let result = {widget}(#label: &"Toggle", #on_toggle: toggle, &state)
     "#
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     assert_eq!(h.watch("test::state").await?, Value::Bool(false));
     assert_eq!(h.watch("test::calls").await?, Value::I64(0));
     for (i, value) in [true, false].into_iter().enumerate() {
@@ -122,7 +122,7 @@ async fn toggler_click_no_panic() -> Result<()> {
          let toggled = &false;\n\
          let result = toggler(#label: &\"Dark mode\", toggled)"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     Ok(())
@@ -140,7 +140,7 @@ async fn slider_click_no_panic() -> Result<()> {
          let val = &50.0;\n\
          let result = slider(#min: &0.0, #max: &100.0, val)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
     let _ = h.click(Point::new(150.0, 10.0));
     Ok(())
 }
@@ -152,7 +152,7 @@ async fn slider_drag_no_panic() -> Result<()> {
          let val = &50.0;\n\
          let result = slider(#min: &0.0, #max: &100.0, val)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
     let from = Point::new(100.0, 10.0);
     let _ = h.drag_horizontal(from, 180.0, 5);
     Ok(())
@@ -166,7 +166,7 @@ async fn slider_on_change_produces_call() -> Result<()> {
          let result = slider(#min: &0.0, #max: &100.0, \
              #on_change: |v| changed <- v ~ true, &50.0)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
     let initial = h.watch("test::changed").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(150.0, 10.0));
@@ -183,7 +183,7 @@ async fn slider_on_release_produces_call() -> Result<()> {
          let result = slider(#min: &0.0, #max: &100.0, \
              #on_release: |click| released <- click ~ true, &50.0)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
     let initial = h.watch("test::released").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(150.0, 10.0));
@@ -199,7 +199,7 @@ async fn vertical_slider_click_no_panic() -> Result<()> {
          let val = &50.0;\n\
          let result = vertical_slider(#min: &0.0, #max: &100.0, val)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
     let _ = h.click(Point::new(10.0, 50.0));
     Ok(())
 }
@@ -212,7 +212,7 @@ async fn vertical_slider_on_change_produces_call() -> Result<()> {
          let result = vertical_slider(\
              #min: &0.0, #max: &100.0, #on_change: |v| changed <- v ~ true, &50.0)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
     let initial = h.watch("test::changed").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(10.0, 50.0));
@@ -230,7 +230,7 @@ async fn vertical_slider_on_release_produces_call() -> Result<()> {
              #min: &0.0, #max: &100.0, \
              #on_release: |click| released <- click ~ true, &50.0)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
     let initial = h.watch("test::released").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(10.0, 50.0));
@@ -246,7 +246,7 @@ async fn text_input_click_and_type_no_panic() -> Result<()> {
          let val = &\"\";\n\
          let result = text_input(#placeholder: &\"Type here\", val)"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     h.click(WIDGET_HIT);
     let _ = h.type_text("abc");
     Ok(())
@@ -262,7 +262,7 @@ async fn text_input_submit_produces_call() -> Result<()> {
              #on_submit: |_| null, \
              val)"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     h.click(WIDGET_HIT);
     h.type_text("query");
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
@@ -279,7 +279,7 @@ async fn text_input_on_input_produces_call() -> Result<()> {
         let input = |s| { value <- s; calls <- s ~ calls + 1; null };
         let result = text_input(#on_input: input, &value)
     "#;
-    let mut h = InteractionHarness::new(code).await?;
+    let mut h = GuiTestHarness::new(code).await?;
     assert_eq!(h.watch("test::value").await?, Value::from(""));
     assert_eq!(h.watch("test::calls").await?, Value::I64(0));
     h.click(WIDGET_HIT);
@@ -300,7 +300,7 @@ async fn radio_click_no_panic() -> Result<()> {
          let sel = &\"none\";\n\
          let result = radio(#label: &\"Option A\", #selected: sel, &\"option_a\")"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     Ok(())
@@ -318,7 +318,7 @@ async fn radio_dispatches_every_click_without_initial_selection() -> Result<()> 
             radio(#label: &"B", #size: &20.0, #selected: &selected, #on_select: pick, &"b")
         ])
     "#;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(300.0, 100.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(code, Size::new(300.0, 100.0)).await?;
     h.watch("test::selected").await?;
     h.watch("test::calls").await?;
     assert_eq!(h.get_watched("test::selected"), Some(&Value::from("none")));
@@ -364,7 +364,7 @@ async fn pick_list_on_select_produces_call() -> Result<()> {
         let result = pick_list(#selected: &selected, #on_select: pick,
                                &["Red", "Green", "Blue"])
     "#;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(300.0, 200.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(code, Size::new(300.0, 200.0)).await?;
     assert_eq!(h.watch("test::selected").await?, Value::from("Red"));
     assert_eq!(h.watch("test::calls").await?, Value::I64(0));
     for (i, selected) in ["Green", "Red"].into_iter().enumerate() {
@@ -386,7 +386,7 @@ async fn mouse_area_press_produces_call() -> Result<()> {
              #on_press: |click| pressed <- click ~ true, \
              &text(&\"Click zone\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::pressed").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(WIDGET_HIT);
@@ -404,7 +404,7 @@ async fn mouse_area_release_produces_call() -> Result<()> {
              #on_release: |click| released <- click ~ true, \
              &text(&\"Click zone\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::released").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(WIDGET_HIT);
@@ -420,7 +420,7 @@ async fn text_editor_click_and_type_no_panic() -> Result<()> {
          let val = &\"\";\n\
          let result = text_editor(#placeholder: &\"Edit...\", val)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
     h.click(WIDGET_HIT);
     let _ = h.type_text("hello");
     Ok(())
@@ -432,7 +432,7 @@ async fn text_editor_on_edit_produces_callback() -> Result<()> {
         "{IMPORTS};\n\
          let result = text_editor(#placeholder: &\"Edit...\", #on_edit: |s| null, &\"\")"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
     h.click(WIDGET_HIT);
     let msgs = h.type_text("a");
     let results = h.process_editor_actions(&msgs);
@@ -451,7 +451,7 @@ async fn combo_box_on_select_produces_call() -> Result<()> {
         let result = combo_box(#selected: &selected, #on_select: choose,
                                &["Alpha", "Beta", "Gamma"])
     "#;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(300.0, 200.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(code, Size::new(300.0, 200.0)).await?;
     assert_eq!(h.watch("test::selected").await?, Value::from("Alpha"));
     assert_eq!(h.watch("test::calls").await?, Value::I64(0));
     let _ = h.view();
@@ -479,7 +479,7 @@ async fn scrollable_on_scroll_produces_call() -> Result<()> {
                  text(&\"Line 10\")\
              ]))"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
     h.move_cursor(Point::new(10.0, 10.0));
     // down: the first frame published the viewport at the top
     let msgs = h.scroll(0.0, -3.0);
@@ -499,7 +499,7 @@ async fn mouse_area_on_enter_produces_call() -> Result<()> {
              #on_enter: |click| entered <- click ~ true, \
              &text(&\"Zone\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::entered").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.move_cursor(WIDGET_HIT);
@@ -517,7 +517,7 @@ async fn mouse_area_on_exit_produces_call() -> Result<()> {
              #on_exit: |click| exited <- click ~ true, \
              &text(&\"Zone\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::exited").await?;
     assert_eq!(initial, Value::Bool(false));
     h.move_cursor(WIDGET_HIT);
@@ -536,7 +536,7 @@ async fn mouse_area_on_move_produces_call() -> Result<()> {
              #on_move: |pos| moved <- pos ~ true, \
              &text(&\"Zone\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::moved").await?;
     assert_eq!(initial, Value::Bool(false));
     let msgs = h.move_cursor(WIDGET_HIT);
@@ -554,7 +554,7 @@ async fn keyboard_area_on_key_press_produces_call() -> Result<()> {
              #on_key_press: |ev| pressed <- ev ~ true, \
              &text(&\"Type here\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::pressed").await?;
     assert_eq!(initial, Value::Bool(false));
     h.click(WIDGET_HIT);
@@ -596,7 +596,7 @@ async fn keyboard_area_passes_keys_it_has_no_handler_for() -> Result<()> {
              #on_key_press: |ev| outer <- ev.key, \
              &keyboard_area(#on_key_release: |ev| inner <- ev.key, &text(&\"Type here\")))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.watch("test::outer").await?;
     let _ = h.watch("test::inner").await?;
     h.click(WIDGET_HIT);
@@ -636,7 +636,7 @@ async fn keyboard_area_on_key_release_produces_call() -> Result<()> {
              #on_key_release: |ev| released <- ev ~ true, \
              &text(&\"Type here\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::released").await?;
     assert_eq!(initial, Value::Bool(false));
     h.click(WIDGET_HIT);
@@ -654,7 +654,7 @@ async fn button_press_rotates(handler: &str) -> Result<()> {
              #on_press: {handler}, \
              &text(&\">\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let initial = h.watch("test::charts").await?;
     assert_eq!(initial.clone().cast_to::<[i64; 3]>()?, [1, 2, 3]);
     let msgs = h.click(WIDGET_HIT);
@@ -688,16 +688,16 @@ async fn stack_children_follow_rotation() -> Result<()> {
              button(#on_press: |e| seq e {{ slides <- array::rotate(slides) }}, &text(&\">\")), \
              stack(&slides)])"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.watch("test::slides").await?;
-    let order = |h: &mut InteractionHarness| -> Vec<usize> {
+    let order = |h: &mut GuiTestHarness| -> Vec<usize> {
         let count = |w: &mut crate::widgets::GuiW<NoExt>| {
             let mut n = 0;
             w.for_each_child_mut(&mut |_| n += 1);
             n
         };
         let (mut i, mut out) = (0, Vec::new());
-        h.inner.root.w.for_each_child_mut(&mut |c| {
+        h.root.w.for_each_child_mut(&mut |c| {
             if i == 1 {
                 c.for_each_child_mut(&mut |slide| out.push(count(slide)));
             }
@@ -720,8 +720,8 @@ async fn text_input_ctrl_v_pastes() -> Result<()> {
         "{IMPORTS};\n\
          let result = text_input(#on_input: |s| null, &\"\")"
     );
-    let mut h = InteractionHarness::new(&code).await?;
-    h.inner.frame_state().clipboard.0 = Some("pasted".into());
+    let mut h = GuiTestHarness::new(&code).await?;
+    h.frame_state().clipboard.0 = Some("pasted".into());
     h.click(WIDGET_HIT);
     let msgs = h.press_ctrl("v");
     expect_call_with_args(
@@ -738,7 +738,7 @@ async fn mouse_area_exits_when_the_cursor_leaves_the_window() -> Result<()> {
         "{IMPORTS};\n\
          let result = mouse_area(#on_exit: |c| null, &text(&\"Zone\"))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     h.move_cursor(WIDGET_HIT);
     let msgs = h.process_events(&[Event::Mouse(mouse::Event::CursorLeft)]);
     expect_call(&msgs);
@@ -747,7 +747,7 @@ async fn mouse_area_exits_when_the_cursor_leaves_the_window() -> Result<()> {
 
 /// Open the dropdown at `WIDGET_HIT` and click down its list until a row
 /// chooses `option`; the messages of that click.
-fn pick(h: &mut InteractionHarness, option: &str) -> Vec<super::Message> {
+fn pick(h: &mut GuiTestHarness, option: &str) -> Vec<super::Message> {
     let _ = h.view();
     for y in (24..160).step_by(4) {
         let _ = h.click(WIDGET_HIT);
@@ -770,14 +770,14 @@ async fn combo_box_keeps_typing_across_equal_options() -> Result<()> {
          let opts = [\"apple\", \"banana\", \"cherry\"];\n\
          let result = combo_box(#on_select: |s| null, #placeholder: &\"Pick\", &opts)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     let _ = h.type_text("ban");
     let opts =
         Value::Array(ValArray::from_iter(["apple", "banana", "cherry"].map(Value::from)));
     for _ in 0..3 {
-        h.inner.set_var("test::opts", opts.clone())?;
+        h.set_var("test::opts", opts.clone())?;
         h.drain().await?;
     }
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
@@ -793,13 +793,13 @@ async fn combo_box_keeps_typing_across_new_options() -> Result<()> {
          let opts = [\"apple\", \"banana\", \"cherry\"];\n\
          let result = combo_box(#on_select: |s| null, #placeholder: &\"Pick\", &opts)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     let typed = h.type_text("ban");
     h.apply(&typed);
     let more = ["apple", "banana", "cherry", "date"].map(Value::from);
-    h.inner.set_var("test::opts", Value::Array(ValArray::from_iter(more)))?;
+    h.set_var("test::opts", Value::Array(ValArray::from_iter(more)))?;
     h.drain().await?;
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
     expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("banana")));
@@ -815,7 +815,7 @@ async fn text_input_keys_outrun_their_echoes() -> Result<()> {
          let v = \"\";\n\
          let result = text_input(#on_input: |s| v <- s, &v)"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.watch("test::v").await?;
     let _ = h.click(WIDGET_HIT);
     for c in ["a", "b", "c"] {
@@ -835,7 +835,7 @@ async fn checkbox_clicks_outrun_their_echoes() -> Result<()> {
          let c = false;\n\
          let result = checkbox(#label: &\"c\", #on_toggle: |b| c <- b, &c)"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.watch("test::c").await?;
     for expected in [true, false] {
         let msgs = h.click(WIDGET_HIT);
@@ -858,7 +858,7 @@ async fn text_editor_keeps_its_cursor_through_echoes() -> Result<()> {
              text_editor(#on_edit: |s| doc <- s ~ {{doc with text: s, n: doc.n + 1}}, &doc.text)\
          ])"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
     let _ = h.watch("test::doc").await?;
     let _ = h.click(WIDGET_HIT);
     for c in ["a", "b", "c"] {
@@ -882,7 +882,7 @@ async fn a_hover_only_mouse_area_passes_clicks() -> Result<()> {
              #on_enter: |_| null, \
              &button(#on_press: |c| pressed <- c ~ true, &text(&\"go\")))"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let _ = h.watch("test::pressed").await?;
     let msgs = h.click(WIDGET_HIT);
     h.dispatch_calls(&msgs).await?;
@@ -898,7 +898,7 @@ async fn a_radio_without_its_value_selects_nothing() -> Result<()> {
          let v: string = never();\n\
          let result = radio(#label: &\"r\", #on_select: |x| null, &v)"
     );
-    let mut h = InteractionHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
     assert!(matches!(&msgs[..], [super::Message::Nop]), "{msgs:?}");
     Ok(())
@@ -910,8 +910,7 @@ async fn a_radio_without_its_value_selects_nothing() -> Result<()> {
 async fn sliders_are_f64_and_continuous() -> Result<()> {
     let value_at = async |slider: &str, x: f32| -> Result<f64> {
         let code = format!("{IMPORTS};\nlet result = {slider}");
-        let mut h =
-            InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
+        let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
         Ok(f64_arg(&h.click(Point::new(x, 10.0))))
     };
     let stepped = value_at(
@@ -925,7 +924,8 @@ async fn sliders_are_f64_and_continuous() -> Result<()> {
             .await?;
     assert!(free > 0.05 && free < 0.95, "{free}");
     let mut h = harness("progress_bar(#min: &1.0, #max: &0.0, &0.5)").await?;
-    h.inner.render()
+    h.render();
+    Ok(())
 }
 
 /// A context menu opens at a right-click, chooses an item at a click,
@@ -941,7 +941,7 @@ async fn context_menu_items_and_shortcuts() -> Result<()> {
              &\"Copy\");\n\
          let result = menu::context_menu(&[copy], &text(&\"target\"))"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
     let _ = h.watch("test::n").await?;
     let msgs = h.press_ctrl("c");
     assert!(
@@ -971,7 +971,7 @@ async fn an_open_menu_takes_presses_over_it() -> Result<()> {
              &[off], \
              &button(#on_press: |c| pressed <- c ~ true, &text(&\"a wide button\")))"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
     let _ = h.watch("test::pressed").await?;
     right_click(&mut h, Point::new(5.0, 5.0));
     let msgs = h.click(Point::new(20.0, 15.0));
@@ -980,7 +980,7 @@ async fn an_open_menu_takes_presses_over_it() -> Result<()> {
     Ok(())
 }
 
-fn right_click(h: &mut InteractionHarness, at: Point) {
+fn right_click(h: &mut GuiTestHarness, at: Point) {
     let _ = h.view();
     let _ = h.move_cursor(at);
     let _ = h.process_events(&[Event::Mouse(mouse::Event::ButtonPressed(
@@ -1003,11 +1003,11 @@ async fn a_context_menu_without_items_closes() -> Result<()> {
          let result = menu::context_menu(&items, \
              &container(#width: &`Fill, #height: &`Fixed(40.0), &text(&\"target\")))"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
     right_click(&mut h, Point::new(20.0, 20.0));
     let _ = h.move_cursor(Point::new(250.0, 280.0));
     for shown in [false, true] {
-        h.inner.set_var("test::show", Value::Bool(shown))?;
+        h.set_var("test::show", Value::Bool(shown))?;
         h.drain().await?;
         let _ = h.process_events(&[]);
     }
@@ -1035,7 +1035,7 @@ let valid = |k: string| select menu::shortcut(#ctrl: true, k) { error as e => fa
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_input_keeps_focus_across_resize() -> Result<()> {
-    let mut h = InteractionHarness::new(
+    let mut h = GuiTestHarness::new(
         r#"
         use gui::text_input::text_input;
         let value = "";
@@ -1072,8 +1072,7 @@ async fn a_focused_text_widget_owns_its_editing_keys() -> Result<()> {
                  menu::bar(&[menu::menu(&\"Edit\", &[item(\"c\", &mut copies), item(\"s\", &mut saves)])]), \
                  {input}(&\"text\")])"
         );
-        let mut h =
-            InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+        let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
         h.watch("test::copies").await?;
         h.watch("test::saves").await?;
         let msgs = h.press_ctrl("c");
@@ -1123,7 +1122,7 @@ async fn menu_shortcuts_match_modified_characters() -> Result<()> {
             "#
             );
             let mut h =
-                InteractionHarness::with_viewport(&code, Size::new(400.0, 200.0)).await?;
+                GuiTestHarness::with_viewport(&code, Size::new(400.0, 200.0)).await?;
             assert_eq!(h.watch("test::calls").await?, Value::I64(0));
             if context {
                 right_click(&mut h, WIDGET_HIT);
@@ -1146,7 +1145,7 @@ async fn menu_shortcuts_match_modified_characters() -> Result<()> {
     Ok(())
 }
 
-async fn two_context_menus() -> Result<InteractionHarness> {
+async fn two_context_menus() -> Result<GuiTestHarness> {
     let code = r#"
         use gui::{column::column, menu, text::text, container::container};
         let del_a = 0;
@@ -1163,7 +1162,7 @@ async fn two_context_menus() -> Result<InteractionHarness> {
             row("B", |c| del_b <- c ~ del_b + 1, |c| copy_b <- c ~ copy_b + 1)
         ])
     "#;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(400.0, 300.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(code, Size::new(400.0, 300.0)).await?;
     for var in ["test::del_a", "test::copy_a", "test::del_b", "test::copy_b"] {
         h.watch(var).await?;
     }
@@ -1192,7 +1191,7 @@ async fn opening_a_second_context_menu_closes_the_first() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_menu_bar_heading_toggles_its_menu_closed() -> Result<()> {
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         r#"
         use gui::menu;
         let calls = 0;
@@ -1232,8 +1231,7 @@ async fn context_menu_over_tooltip_can_choose_an_item() -> Result<()> {
             )
         "#
         );
-        let mut h =
-            InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+        let mut h = GuiTestHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
         h.watch("test::calls").await?;
         right_click(&mut h, Point::new(50.0, 50.0));
         let msgs = h.click(Point::new(80.0, 60.0));
@@ -1257,13 +1255,13 @@ async fn invalid_slider_ranges_are_inert() -> Result<()> {
             let code = format_compact!(
                 "{IMPORTS}; let result = {kind}(#min: &({min}), #max: &({max}), #on_change: |v| null, #on_release: |v| null, &5.0)"
             );
-            let mut h = InteractionHarness::with_viewport(&code, size).await?;
+            let mut h = GuiTestHarness::with_viewport(&code, size).await?;
             let msgs = h.click(hit);
             assert!(
                 !msgs.iter().any(|m| matches!(m, super::Message::Call(..))),
                 "{kind} {min}..{max}: {msgs:?}"
             );
-            h.inner.render()?;
+            h.render();
         }
     }
     Ok(())
@@ -1308,12 +1306,12 @@ async fn handler_presence_changes_request_a_frame() -> Result<()> {
         let code = format_compact!(
             "{IMPORTS}; let enabled = false; let handler = select enabled {{ true => |v: Any| null, false => null }}; let change = |v: bool| enabled <- v; let result = {widget}"
         );
-        let mut h = InteractionHarness::new(&code).await?;
-        let change = h.inner.compile_named_callable("test::change").await?;
-        h.inner.drain().await?;
+        let mut h = GuiTestHarness::new(&code).await?;
+        let change = h.compile_named_callable("test::change").await?;
+        h.drain().await?;
         for enabled in [true, false] {
-            h.inner.f.gx.call(change, ValArray::from_iter([Value::Bool(enabled)]))?;
-            assert!(h.inner.drain().await?, "{widget}: enabled={enabled}");
+            h.f.gx.call(change, ValArray::from_iter([Value::Bool(enabled)]))?;
+            assert!(h.drain().await?, "{widget}: enabled={enabled}");
         }
     }
     Ok(())
@@ -1324,7 +1322,7 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
     let code = format_compact!(
         "{IMPORTS}; let doc = \"abcdef\"; let result = text_editor(#on_edit: |s| doc <- s ~ \"\", &doc)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
     h.watch("test::doc").await?;
     h.click(WIDGET_HIT);
     let msgs = h.press_key(iced_core::keyboard::key::Named::End);
@@ -1363,7 +1361,7 @@ async fn rejected_toggles_return_to_the_program_value() -> Result<()> {
         let code = format_compact!(
             "{IMPORTS}; let seen = false; let result = {kind}(#on_toggle: |v| seen <- v, &false)"
         );
-        let mut h = InteractionHarness::new(&code).await?;
+        let mut h = GuiTestHarness::new(&code).await?;
         h.watch("test::seen").await?;
         for _ in 0..2 {
             let msgs = h.click(WIDGET_HIT);
@@ -1379,7 +1377,7 @@ async fn rejected_text_edit(kind: &str, handler: &str) -> Result<()> {
     let code = format_compact!(
         "{IMPORTS}; let seen = \"\"; let result = {kind}(#{handler}: |s| seen <- s, &\"\")"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
     h.watch("test::seen").await?;
     h.click(WIDGET_HIT);
     for key in ["a", "b"] {
@@ -1398,13 +1396,13 @@ async fn a_two_hop_echo_keeps_the_edit() -> Result<()> {
         "{IMPORTS}; let doc = \"\"; let edit: string = never(); doc <- edit; \
          let result = text_editor(#on_edit: |s| edit <- s, &doc)"
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
     h.watch("test::doc").await?;
     h.click(WIDGET_HIT);
     let msgs = h.process_events(&[char_key("a")]);
     h.apply(&msgs);
     // the first cycle with an update answers the edit; its echo is later
-    while !h.inner.deliver_batch().await? {}
+    while !h.deliver_batch().await? {}
     assert_eq!(h.get_watched("test::doc"), Some(&Value::from("")));
     let msgs = h.process_events(&[char_key("b")]);
     h.dispatch_calls(&msgs).await?;
@@ -1432,7 +1430,7 @@ async fn continuous_slider_keys_and_wheel_move_one_percent() -> Result<()> {
         let code = format_compact!(
             "{IMPORTS}; let result = {name}(#min: &0.0, #max: &100.0, #on_change: |v| null, &50.0)"
         );
-        let mut h = InteractionHarness::with_viewport(&code, size).await?;
+        let mut h = GuiTestHarness::with_viewport(&code, size).await?;
         h.move_cursor(hit);
         assert!(
             (f64_arg(&h.press_key(Named::ArrowUp)) - 51.0).abs() < 1e-10,
@@ -1461,7 +1459,7 @@ async fn stepped_slider_keys_wheel_and_drags_share_one_lattice() -> Result<()> {
         let code = format_compact!(
             "{IMPORTS}; let result = {name}(#min: &0.5, #max: &10.5, #step: &1.0, #on_change: |v| null, &5.5)"
         );
-        let mut h = InteractionHarness::with_viewport(&code, size).await?;
+        let mut h = GuiTestHarness::with_viewport(&code, size).await?;
         h.move_cursor(hit);
         assert_eq!(f64_arg(&h.press_key(Named::ArrowUp)), 6.5, "{name} key");
         h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
@@ -1479,7 +1477,7 @@ async fn stepped_slider_keys_wheel_and_drags_share_one_lattice() -> Result<()> {
             let code = format_compact!(
                 "{IMPORTS}; let result = {name}(#min: &0.0, #max: &0.3, #step: &0.1, #on_change: |v| null, &{start})"
             );
-            let mut h = InteractionHarness::with_viewport(&code, size).await?;
+            let mut h = GuiTestHarness::with_viewport(&code, size).await?;
             h.move_cursor(hit);
             assert_eq!(
                 f64_arg(&h.press_key(key)),
@@ -1500,7 +1498,7 @@ async fn continuous_slider_extreme_range_clicks_stay_inside() -> Result<()> {
         let code = format_compact!(
             "{IMPORTS}; let result = {name}(#min: &-1.7e308, #max: &1.7e308, #on_change: |v| null, &0.0)"
         );
-        let mut h = InteractionHarness::with_viewport(&code, size).await?;
+        let mut h = GuiTestHarness::with_viewport(&code, size).await?;
         let value = f64_arg(&h.click(hit));
         assert!(
             value.is_finite() && (value / 1.7e308 + 0.5).abs() < 1e-6,

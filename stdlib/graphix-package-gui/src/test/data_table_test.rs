@@ -253,20 +253,20 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(400.0, 200.0),
     )
     .await?;
-    let _ = h.inner.watch("test::clicked_col").await?;
-    h.inner.drain().await?;
+    let _ = h.watch("test::clicked_col").await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "c1").expect("c1 visible");
+    let bounds = h.dt().dt_cell_bounds(0, "c1").expect("c1 visible");
     let p = iced_core::Point::new(bounds.x + 15.0, 10.0);
     let msgs = h.click(p);
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
 
-    let col = h.inner.get_watched("test::clicked_col");
+    let col = h.get_watched("test::clicked_col");
     assert_eq!(
         col,
         Some(&Value::String(arcstr::literal!("c1"))),
@@ -306,45 +306,45 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(400.0, 200.0),
     )
     .await?;
-    h.inner.drain().await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "c1").expect("c1 visible");
+    let bounds = h.dt().dt_cell_bounds(0, "c1").expect("c1 visible");
     let click = iced_core::Point::new(bounds.x + 15.0, 10.0);
 
     // Click 1: absent → Ascending.
     let msgs = h.click(click);
-    h.inner.dispatch_calls(&msgs).await?;
-    h.inner.drain().await?;
+    h.dispatch_calls(&msgs).await?;
+    h.drain().await?;
     let _ = h.view();
     assert_eq!(
-        h.inner.dt().dt_sort_indicator("c1").as_deref(),
+        h.dt().dt_sort_indicator("c1").as_deref(),
         Some(" ▲"),
         "first click should leave c1 sorted ascending",
     );
 
     // Click 2: Ascending → Descending.
     let msgs = h.click(click);
-    h.inner.dispatch_calls(&msgs).await?;
-    h.inner.drain().await?;
+    h.dispatch_calls(&msgs).await?;
+    h.drain().await?;
     let _ = h.view();
     assert_eq!(
-        h.inner.dt().dt_sort_indicator("c1").as_deref(),
+        h.dt().dt_sort_indicator("c1").as_deref(),
         Some(" ▼"),
         "second click should flip c1 to descending",
     );
 
     // Click 3: Descending → absent.
     let msgs = h.click(click);
-    h.inner.dispatch_calls(&msgs).await?;
-    h.inner.drain().await?;
+    h.dispatch_calls(&msgs).await?;
+    h.drain().await?;
     let _ = h.view();
     assert_eq!(
-        h.inner.dt().dt_sort_indicator("c1"),
+        h.dt().dt_sort_indicator("c1"),
         None,
         "third click should remove c1 from sort_by",
     );
@@ -633,7 +633,7 @@ let result = data_table(#table: &tbl)
     };
     settle(&mut h, "the first window", window_is_live).await?;
     // a layout that changes the rows in view, then a scroll that does not
-    h.render()?;
+    h.render();
     h.dt_mut().handle_scroll(0.0, 0.0, 800.0, 600.0);
     settle(&mut h, "the window of the laid out view", window_is_live).await?;
     h.dt_mut().handle_scroll(0.0, 200.0 * 22.0, 800.0, 600.0);
@@ -933,15 +933,15 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(500.0, 200.0),
     )
     .await?;
-    let _ = h.inner.watch("test::log").await?;
-    h.inner.drain().await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let bounds = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     let p = iced_core::Point::new(bounds.x + 15.0, bounds.center().y);
     let msgs = h.click(p);
     expect_call_with_args(&msgs, |args| {
@@ -950,9 +950,9 @@ let result = data_table(
             [Value::String(p), Value::Bool(true)]
             if p == &arcstr::literal!("r0/c0"))
     });
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
     assert_eq!(
-        h.inner.get_watched("test::log"),
+        h.get_watched("test::log"),
         Some(&Value::String(arcstr::literal!("r0/c0=true"))),
     );
     Ok(())
@@ -979,15 +979,15 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(500.0, 300.0),
     )
     .await?;
-    let _ = h.inner.watch("test::log").await?;
-    h.inner.drain().await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let bounds = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     let open_msgs = h.click(bounds.center());
     assert!(
         !open_msgs.iter().any(|m| matches!(m, Message::Call(_, _))),
@@ -1006,9 +1006,9 @@ let result = data_table(
             [Value::String(p), Value::String(id)]
             if p == &arcstr::literal!("r0/c0") && id == &arcstr::literal!("b"))
     });
-    h.inner.dispatch_calls(&pick_msgs).await?;
+    h.dispatch_calls(&pick_msgs).await?;
     assert_eq!(
-        h.inner.get_watched("test::log"),
+        h.get_watched("test::log"),
         Some(&Value::String(arcstr::literal!("r0/c0=b"))),
     );
     Ok(())
@@ -1032,15 +1032,15 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(500.0, 200.0),
     )
     .await?;
-    let _ = h.inner.watch("test::log").await?;
-    h.inner.drain().await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let bounds = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     // The cell is a Row [−, label, +]; scanning from the right, the
     // first Call is the + button.
     let only_call = |msgs: &[Message]| -> Option<ValArray> {
@@ -1055,7 +1055,7 @@ let result = data_table(
         let msgs = h.click(p);
         if let Some(args) = only_call(&msgs) {
             hit_args = Some(args);
-            h.inner.dispatch_calls(&msgs).await?;
+            h.dispatch_calls(&msgs).await?;
             break;
         }
     }
@@ -1069,7 +1069,7 @@ let result = data_table(
         args,
     );
     assert_eq!(
-        h.inner.get_watched("test::log"),
+        h.get_watched("test::log"),
         Some(&Value::String(arcstr::literal!("r0/c0=6"))),
     );
     Ok(())
@@ -1090,14 +1090,14 @@ let tbl = { rows: ["r0"], columns: [
     ] };
 let result = data_table(#table: &tbl)
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(500.0, 200.0),
     )
     .await?;
-    h.inner.drain().await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let bounds = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     let mut edits = Vec::new();
     for offset in (2..=90).step_by(2) {
         let p = iced_core::Point::new(bounds.x + offset as f32, bounds.center().y);
@@ -1131,15 +1131,15 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(500.0, 200.0),
     )
     .await?;
-    let _ = h.inner.watch("test::log").await?;
-    h.inner.drain().await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let bounds = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     let p = iced_core::Point::new(bounds.x + 15.0, bounds.center().y);
     let msgs = h.click(p);
     expect_call_with_args(&msgs, |args| {
@@ -1148,9 +1148,9 @@ let result = data_table(
             [Value::String(p), Value::String(label)]
             if p == &arcstr::literal!("r0/c0") && label == &arcstr::literal!("Run"))
     });
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
     assert_eq!(
-        h.inner.get_watched("test::log"),
+        h.get_watched("test::log"),
         Some(&Value::String(arcstr::literal!("r0/c0=Run"))),
     );
     Ok(())
@@ -1384,17 +1384,16 @@ let result = data_table(
 )
 "#;
     let mut h =
-        InteractionHarness::with_viewport(&table_code(code), Size::new(600.0, 200.0))
-            .await?;
+        GuiTestHarness::with_viewport(&table_code(code), Size::new(600.0, 200.0)).await?;
     let _ = h.watch("test::log").await?;
     h.drain().await?;
     let _ = h.view();
-    let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let b = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     let handle = Point::new(b.x + b.width - 7.5, 14.0);
     h.drag_live(handle, Point::new(handle.x + 80.0, 14.0), 4).await?;
     h.drain().await?;
     assert_eq!(h.get_watched("test::log"), Some(&Value::F64(180.0)));
-    assert!(!h.inner.dt().dt_is_resizing());
+    assert!(!h.dt().dt_is_resizing());
     Ok(())
 }
 
@@ -1507,35 +1506,35 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(500.0, 200.0),
     )
     .await?;
     let _ = h.watch("test::selected").await?;
     let _ = h.watch("test::activated").await?;
-    h.inner.drain().await?;
+    h.drain().await?;
     let _ = h.view();
     // A click focuses the KeyboardArea.
     let msgs = h.click(iced_core::Point::new(100.0, 40.0));
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
 
     let msgs = h.press_key(iced_core::keyboard::key::Named::ArrowRight);
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
     assert_eq!(
         h.get_watched("test::selected"),
         Some(&Value::String(arcstr::literal!("r0/c1")))
     );
 
     let msgs = h.press_key(iced_core::keyboard::key::Named::ArrowDown);
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
     assert_eq!(
         h.get_watched("test::selected"),
         Some(&Value::String(arcstr::literal!("r1/c1")))
     );
 
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
     assert_eq!(
         h.get_watched("test::activated"),
         Some(&Value::String(arcstr::literal!("r1")))
@@ -1631,25 +1630,24 @@ let result = data_table(#table: &tbl)
 "#;
     use iced_core::Size;
     let mut h =
-        InteractionHarness::with_viewport(&table_code(code), Size::new(800.0, 400.0))
-            .await?;
+        GuiTestHarness::with_viewport(&table_code(code), Size::new(800.0, 400.0)).await?;
     for _ in 0..20 {
         h.drain().await?;
     }
     let _ = h.view();
-    let (w0, h0, rows0) = h.inner.dt().dt_viewport_metrics();
+    let (w0, h0, rows0) = h.dt().dt_viewport_metrics();
     assert!((w0 - 800.0).abs() < 0.5, "initial viewport_width ~800, got {w0}");
     assert!((h0 - 400.0).abs() < 0.5, "initial viewport_height ~400, got {h0}");
     assert!(rows0 > 1, "rows_in_view > 1 at 400px tall, got {rows0}");
 
     h.resize(Size::new(200.0, 80.0));
-    let (w1, h1, rows1) = h.inner.dt().dt_viewport_metrics();
+    let (w1, h1, rows1) = h.dt().dt_viewport_metrics();
     assert!((w1 - 200.0).abs() < 0.5, "post-shrink viewport_width ~200, got {w1}");
     assert!((h1 - 80.0).abs() < 0.5, "post-shrink viewport_height ~80, got {h1}");
     assert!(rows1 < rows0, "rows_in_view shrank: before {rows0}, after {rows1}");
 
     h.resize(Size::new(1200.0, 600.0));
-    let (w2, h2, _rows2) = h.inner.dt().dt_viewport_metrics();
+    let (w2, h2, _rows2) = h.dt().dt_viewport_metrics();
     assert!((w2 - 1200.0).abs() < 0.5, "post-grow viewport_width ~1200, got {w2}");
     assert!((h2 - 600.0).abs() < 0.5, "post-grow viewport_height ~600, got {h2}");
     Ok(())
@@ -1737,15 +1735,15 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
+    let mut h = GuiTestHarness::with_viewport(
         &table_code(code),
         iced_core::Size::new(500.0, 200.0),
     )
     .await?;
-    let _ = h.inner.watch("test::pressed_val").await?;
-    h.inner.drain().await?;
+    let _ = h.watch("test::pressed_val").await?;
+    h.drain().await?;
     let _ = h.view();
-    let bounds = h.inner.dt().dt_cell_bounds(0, "go").expect("go col visible");
+    let bounds = h.dt().dt_cell_bounds(0, "go").expect("go col visible");
     let p = iced_core::Point::new(bounds.x + 15.0, bounds.center().y);
     let msgs = h.click(p);
     expect_call_with_args(&msgs, |args| {
@@ -1756,9 +1754,9 @@ let result = data_table(
             if p == &arcstr::literal!("r0/go"),
         )
     });
-    h.inner.dispatch_calls(&msgs).await?;
+    h.dispatch_calls(&msgs).await?;
     assert_eq!(
-        h.inner.get_watched("test::pressed_val"),
+        h.get_watched("test::pressed_val"),
         Some(&Value::I64(7)),
         "callback must receive the typed Value, not a string",
     );
@@ -2028,22 +2026,22 @@ let result = data_table(
 "#
     );
     let mut h =
-        InteractionHarness::with_viewport(&table_code(&code), Size::new(400.0, 300.0))
+        GuiTestHarness::with_viewport(&table_code(&code), Size::new(400.0, 300.0))
             .await?;
     let _ = h.view();
-    let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let b = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     h.live(&left_click(Point::new(b.x + 10.0, b.y + 10.0))).await?;
     for _ in 0..40 {
         h.live(&[named_key(Named::ArrowDown)]).await?;
         h.drain().await?;
     }
-    let (keyed, _) = h.inner.dt().dt_first_cell();
+    let (keyed, _) = h.dt().dt_first_cell();
     assert!(keyed > 20, "the keys scrolled the view: first row {keyed}");
     h.live(&[Event::Mouse(mouse::Event::WheelScrolled {
         delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
     })])
     .await?;
-    let (wheeled, _) = h.inner.dt().dt_first_cell();
+    let (wheeled, _) = h.dt().dt_first_cell();
     assert!(wheeled > keyed, "a notch down from row {keyed} went to row {wheeled}");
     Ok(())
 }
@@ -2058,21 +2056,20 @@ let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
 let result = data_table(#table: &tbl)
 "#;
     let mut h =
-        InteractionHarness::with_viewport(&table_code(code), Size::new(600.0, 200.0))
-            .await?;
+        GuiTestHarness::with_viewport(&table_code(code), Size::new(600.0, 200.0)).await?;
     let _ = h.view();
-    let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let b = h.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     let handle = Point::new(b.x + b.width - 7.5, 14.0);
     h.drag_live(handle, Point::new(-50.0, 14.0), 4).await?;
-    assert!(!h.inner.dt().dt_is_resizing());
-    let w = h.inner.dt().dt_user_width("c0");
+    assert!(!h.dt().dt_is_resizing());
+    let w = h.dt().dt_user_width("c0");
     assert_eq!(w, Some(80.0), "the drag left c0 at its minimum width");
     h.live(&[
         Event::Mouse(mouse::Event::CursorMoved { position: Point::new(100.0, 100.0) }),
         Event::Mouse(mouse::Event::CursorMoved { position: Point::new(300.0, 100.0) }),
     ])
     .await?;
-    assert_eq!(h.inner.dt().dt_user_width("c0"), w);
+    assert_eq!(h.dt().dt_user_width("c0"), w);
     Ok(())
 }
 
@@ -2098,22 +2095,22 @@ let result = data_table(#table: &tbl)
 "#
     );
     let mut h =
-        InteractionHarness::with_viewport(&table_code(&code), Size::new(400.0, 200.0))
+        GuiTestHarness::with_viewport(&table_code(&code), Size::new(400.0, 200.0))
             .await?;
-    settle(&mut h.inner, "the live value", |h| {
+    settle(&mut h, "the live value", |h| {
         h.dt().dt_sparkline_values("live", "load").unwrap_or_default().contains(&1.0)
     })
     .await?;
-    assert_eq!(h.inner.dt().dt_sparkline_count(), 2);
-    h.inner.set_var("test::phase", Value::I64(1))?;
-    settle(&mut h.inner, "one row", |h| h.dt_snapshot().row_basenames.len() == 1).await?;
-    assert_eq!(h.inner.dt().dt_sparkline_count(), 1, "the removed row's history goes");
-    let live = h.inner.dt().dt_sparkline_values("live", "load").unwrap_or_default();
+    assert_eq!(h.dt().dt_sparkline_count(), 2);
+    h.set_var("test::phase", Value::I64(1))?;
+    settle(&mut h, "one row", |h| h.dt_snapshot().row_basenames.len() == 1).await?;
+    assert_eq!(h.dt().dt_sparkline_count(), 1, "the removed row's history goes");
+    let live = h.dt().dt_sparkline_values("live", "load").unwrap_or_default();
     assert!(!live.contains(&5.0), "no fallback in a live row: {live:?}");
     let old = std::time::Instant::now() - std::time::Duration::from_secs(120);
-    h.inner.dt().dt_restamp_sparklines(old);
+    h.dt().dt_restamp_sparklines(old);
     let _ = h.view();
-    assert_eq!(h.inner.dt().dt_sparkline_len("live", "load"), Some(0));
+    assert_eq!(h.dt().dt_sparkline_len("live", "load"), Some(0));
     Ok(())
 }
 
@@ -2234,8 +2231,7 @@ let result = keyboard_area(
 )
 "#;
     let mut h =
-        InteractionHarness::with_viewport(&table_code(code), Size::new(400.0, 200.0))
-            .await?;
+        GuiTestHarness::with_viewport(&table_code(code), Size::new(400.0, 200.0)).await?;
     let _ = h.watch("test::key").await?;
     let _ = h.watch("test::got").await?;
     let _ = h.process_events(&[]);
@@ -2270,12 +2266,12 @@ let result = data_table(#selection: &sel, #table: &tbl)
         wide.join(", ")
     );
     let mut h =
-        InteractionHarness::with_viewport(&table_code(&code), Size::new(800.0, 200.0))
+        GuiTestHarness::with_viewport(&table_code(&code), Size::new(800.0, 200.0))
             .await?;
     let _ = h.view();
-    h.inner.dt_mut().handle_table_key(&crate::widgets::TableKeyAction::Right);
+    h.dt_mut().handle_table_key(&crate::widgets::TableKeyAction::Right);
     let _ = h.view();
-    let b = h.inner.dt().dt_cell_bounds(0, "c10").expect("c10 drawn");
+    let b = h.dt().dt_cell_bounds(0, "c10").expect("c10 drawn");
     assert!(b.x + b.width <= 800.0, "c10 at {}..{}", b.x, b.x + b.width);
     let narrow: Vec<String> = (0..10).map(|n| col(n, 40.0)).collect();
     let code = format!(
@@ -2287,10 +2283,10 @@ let result = data_table(#table: &tbl)
         narrow.join(", ")
     );
     let mut h =
-        InteractionHarness::with_viewport(&table_code(&code), Size::new(800.0, 200.0))
+        GuiTestHarness::with_viewport(&table_code(&code), Size::new(800.0, 200.0))
             .await?;
     let _ = h.view();
-    assert!(h.inner.dt().dt_cell_bounds(0, "c9").is_some(), "the tenth 40 px column");
+    assert!(h.dt().dt_cell_bounds(0, "c9").is_some(), "the tenth 40 px column");
     Ok(())
 }
 
@@ -2531,9 +2527,9 @@ async fn only_declared_column_headers_call_the_program() -> Result<()> {
         "#
         ));
         let mut h =
-            InteractionHarness::with_viewport(&code, iced_core::Size::new(300.0, 100.0))
+            GuiTestHarness::with_viewport(&code, iced_core::Size::new(300.0, 100.0))
                 .await?;
-        h.inner.drain().await?;
+        h.drain().await?;
         let msgs = h.click(iced_core::Point::new(10.0, 14.0));
         if clickable {
             expect_call_with_args(&msgs, |args| {
@@ -2557,13 +2553,13 @@ async fn space_on_toggle_keeps_table_navigation() -> Result<()> {
         let result = data_table(#show_row_name: &false, #selection: &sel, #on_select: |#path: string| sel <- [path], #table: &tbl)
     "#,
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 150.0)).await?;
-    h.inner.drain().await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(300.0, 150.0)).await?;
+    h.drain().await?;
     h.live(&left_click(Point::new(10.0, 14.0))).await?;
     h.live(&[named_key(Named::Space)]).await?;
-    assert_eq!(h.inner.dt().dt_editing(), None);
+    assert_eq!(h.dt().dt_editing(), None);
     h.live(&[named_key(Named::ArrowDown)]).await?;
-    assert_eq!(h.inner.dt_snapshot().selection, ["r1/on"]);
+    assert_eq!(h.dt_snapshot().selection, ["r1/on"]);
     Ok(())
 }
 
@@ -2578,17 +2574,17 @@ async fn clicking_another_cell_cancels_text_edit() -> Result<()> {
         let result = data_table(#show_row_name: &false, #selection: &sel, #on_select: |#path: string| sel <- [path], #table: &tbl)
     "#,
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 150.0)).await?;
-    h.inner.drain().await?;
+    let mut h = GuiTestHarness::with_viewport(&code, Size::new(400.0, 150.0)).await?;
+    h.drain().await?;
     h.live(&left_click(Point::new(10.0, 14.0))).await?;
     h.live(&[named_key(Named::Space)]).await?;
-    assert_eq!(h.inner.dt().dt_editing(), Some(("r0".into(), "a".into())));
+    assert_eq!(h.dt().dt_editing(), Some(("r0".into(), "a".into())));
     h.view();
-    let target = h.inner.dt().dt_cell_bounds(0, "b").unwrap().center();
+    let target = h.dt().dt_cell_bounds(0, "b").unwrap().center();
     h.live(&left_click(target)).await?;
-    assert_eq!(h.inner.dt().dt_editing(), None);
+    assert_eq!(h.dt().dt_editing(), None);
     h.live(&[named_key(Named::ArrowDown)]).await?;
-    assert_eq!(h.inner.dt_snapshot().selection, ["r1/b"]);
+    assert_eq!(h.dt_snapshot().selection, ["r1/b"]);
     Ok(())
 }
 

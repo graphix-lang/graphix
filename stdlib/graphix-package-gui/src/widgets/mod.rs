@@ -911,17 +911,6 @@ pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
     }))
 }
 
-/// Compile an array of widget values into a Vec of GuiW.
-pub async fn compile_children<X: GXExt>(
-    gx: GXHandle<X>,
-    v: Value,
-) -> Result<Vec<GuiW<X>>> {
-    let items = v.cast_to::<LPooled<Vec<Value>>>()?;
-    let mut pairs: LPooled<Vec<(Value, GuiW<X>)>> = LPooled::take();
-    reconcile(&mut pairs, items, |item| compile(gx.clone(), item)).await?;
-    Ok(pairs.drain(..).map(|(_, w)| w).collect())
-}
-
 #[cfg(test)]
 mod echo_tests {
     use super::*;

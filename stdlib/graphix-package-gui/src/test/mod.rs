@@ -70,10 +70,6 @@ async fn gui_harness(widget_expr: &str) -> Result<GuiTestHarness> {
     GuiTestHarness::new(&widget_code(widget_expr)).await
 }
 
-async fn interaction_harness(widget_expr: &str) -> Result<InteractionHarness> {
-    InteractionHarness::new(&widget_code(widget_expr)).await
-}
-
 const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
     &graphix_package_core::P,
     &graphix_package_array::P,
@@ -102,10 +98,14 @@ fn update_widget(
 }
 
 /// Test harness for GUI widget integration tests: compiles graphix
-/// code producing a Widget value, builds the widget tree, and drives
-/// interactions through the reactive loop.
+/// code producing a Widget value, builds the widget tree, drives
+/// interactions through the reactive loop, and simulates clicks, typing
+/// and drags on a headless renderer, collecting the resulting
+/// `Message`s.
 struct GuiTestHarness {
     f: Fixture,
+    /// The window size the event helpers lay out at.
+    viewport: Size,
     /// The program's `test::result`, rebuilt when it changes, as a
     /// window's content is.
     root: Child<NoExt>,
@@ -138,12 +138,17 @@ impl GuiTestHarness {
     /// Compile module-level graphix code whose last binding, `result`,
     /// is a Widget value.
     async fn new(code: &str) -> Result<Self> {
+        Self::with_viewport(code, Size::new(300.0, 50.0)).await
+    }
+
+    async fn with_viewport(code: &str, viewport: Size) -> Result<Self> {
         let (f, _) = Fixture::new(code, TEST_REGISTER, |_| ()).await?;
         let result =
             f.gx.compile_ref(find_bind_id(&f.compiled.env, "test::result")?).await?;
         let root = Child::compile(&f.gx, result).await.context("compile widget tree")?;
         Ok(Self {
             f,
+            viewport,
             root,
             rt_handle: tokio::runtime::Handle::current(),
             frame: cell::OnceCell::new(),
@@ -233,6 +238,9 @@ impl GuiTestHarness {
         Ok(())
     }
 
+    /// Give the widgets `msgs` as the event loop does after a frame, the
+    /// calls sent to the runtime without letting it run: the next frame
+    /// comes before their echoes, as fast input does.
     fn apply(&mut self, msgs: &[Message]) {
         let widget = &mut self.root.w;
         crate::frame::apply_messages(&self.f.gx, msgs.iter().cloned(), |msg, pending| {
@@ -275,13 +283,8 @@ impl GuiTestHarness {
     }
 
     /// Build, lay out and draw the widget tree once at 800 x 600.
-    // CR claude for claude: [readability/low] [readability/low] render always returns
-    // Ok(()). frame() has no error to report, so every `h.render()?` reads as a check
-    // that cannot fail. Return () (or the frame's messages) and drop the `?` at the
-    // call sites. Found by reading; not run. (tests-gui-a-06)
-    fn render(&mut self) -> Result<()> {
+    fn render(&mut self) {
         let _ = self.frame(Size::new(800.0, 600.0), &[]);
-        Ok(())
     }
 
     /// A frame at `width` x `height` over a black background, as RGBA.
@@ -289,11 +292,6 @@ impl GuiTestHarness {
         let _ = self.frame(Size::new(width as f32, height as f32), &[]);
         let viewport = Viewport::with_physical_size(Size::new(width, height), 1.0);
         self.frame_state().renderer.screenshot(&viewport, iced_core::Color::BLACK)
-    }
-
-    /// The widget's element, built and dropped.
-    fn view(&self) -> crate::widgets::IcedElement<'_> {
-        self.root.w.view()
     }
 
     /// Flush deferred per-widget state as the event loop does before a
@@ -371,6 +369,125 @@ impl GuiTestHarness {
     async fn compile_named_callable(&mut self, name: &str) -> Result<CallableId> {
         self.f.compile_named_callable(name).await
     }
+
+    /// One frame over `events`: the messages the widgets produced.
+    fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
+        self.frame(self.viewport, events)
+    }
+
+    /// Simulate a window resize; runs one layout pass so
+    /// responsive-wrapped widgets see the new size immediately.
+    fn resize(&mut self, viewport: Size) {
+        self.viewport = viewport;
+        let _ = self.process_events(&[Event::Window(window::Event::Resized(viewport))]);
+    }
+
+    fn view(&mut self) -> crate::widgets::IcedElement<'_> {
+        // A `responsive`-wrapped widget fills its size-dependent state
+        // during layout, not in `view()`, so lay out once first.
+        let _ = self.process_events(&[]);
+        self.root.w.view()
+    }
+
+    /// One frame per event, as input that arrives frames apart: the
+    /// messages every frame produced, none of them applied.
+    fn frames(&mut self, events: &[Event]) -> Vec<Message> {
+        events
+            .iter()
+            .flat_map(|ev| self.process_events(std::slice::from_ref(ev)))
+            .collect()
+    }
+
+    fn click(&mut self, pos: Point) -> Vec<Message> {
+        self.frames(&left_click(pos))
+    }
+
+    /// Deliver `events` one frame each, applying each frame's messages
+    /// before the next as the event loop does.
+    async fn live(&mut self, events: &[Event]) -> Result<()> {
+        for ev in events {
+            let msgs = self.process_events(std::slice::from_ref(ev));
+            self.dispatch_calls(&msgs).await?;
+        }
+        Ok(())
+    }
+
+    /// A left-button drag from `from` to `to`, live.
+    async fn drag_live(&mut self, from: Point, to: Point, steps: u32) -> Result<()> {
+        self.live(&drag(from, to, steps)).await
+    }
+
+    fn type_text(&mut self, text: &str) -> Vec<Message> {
+        let mut all_msgs = Vec::new();
+        let mut buf = [0; 4];
+        for ch in text.chars() {
+            all_msgs.extend(self.process_events(&[char_key(ch.encode_utf8(&mut buf))]));
+        }
+        all_msgs
+    }
+
+    fn press_key(&mut self, named: keyboard::key::Named) -> Vec<Message> {
+        self.process_events(&[named_key(named)])
+    }
+
+    /// Ctrl and a letter, the modifiers delivered first as the event loop
+    /// does.
+    fn press_ctrl(&mut self, c: &str) -> Vec<Message> {
+        let ctrl = keyboard::Modifiers::CTRL;
+        self.process_events(&[
+            Event::Keyboard(keyboard::Event::ModifiersChanged(ctrl)),
+            key_press(keyboard::Key::Character(c.into()), ctrl, None),
+        ])
+    }
+
+    fn release_key(&mut self, named: iced_core::keyboard::key::Named) -> Vec<Message> {
+        use iced_core::keyboard;
+        self.process_events(&[Event::Keyboard(keyboard::Event::KeyReleased {
+            key: keyboard::Key::Named(named),
+            modified_key: keyboard::Key::Named(named),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+        })])
+    }
+
+    fn scroll(&mut self, delta_x: f32, delta_y: f32) -> Vec<Message> {
+        self.process_events(&[Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: delta_x, y: delta_y },
+        })])
+    }
+
+    fn move_cursor(&mut self, pos: Point) -> Vec<Message> {
+        self.process_events(&[Event::Mouse(mouse::Event::CursorMoved { position: pos })])
+    }
+
+    /// Drive `Message::EditorAction`s through `on_message` and collect
+    /// the `Call` messages the editor publishes, one per edit.
+    fn process_editor_actions(&mut self, msgs: &[Message]) -> Vec<(CallableId, Value)> {
+        let mut out = Vec::new();
+        for m in msgs {
+            if let Message::EditorAction(_, _) = m {
+                let mut shell = MessageShell::default();
+                self.root.w.on_message(m, &mut shell);
+                for emitted in shell.out.drain(..) {
+                    if let Message::Call(cid, args) = emitted {
+                        if let Some(v) = args.into_iter().next() {
+                            out.push((cid, v));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A left-button drag from `from` to `to_x` on `from`'s row, a frame
+    /// per event, its messages collected.
+    fn drag_horizontal(&mut self, from: Point, to_x: f32, steps: u32) -> Vec<Message> {
+        self.frames(&drag(from, Point::new(to_x, from.y), steps))
+    }
 }
 
 /// A key going down, as the event loop delivers it.
@@ -409,6 +526,21 @@ fn left_click(at: Point) -> [Event; 3] {
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
         Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
     ]
+}
+
+/// A left-button drag from `from` to `to`: the move there, the press,
+/// `steps` moves evenly along the way and the release.
+fn drag(from: Point, to: Point, steps: u32) -> Vec<Event> {
+    let moved = |position| Event::Mouse(mouse::Event::CursorMoved { position });
+    let along = (1..=steps).map(|i| {
+        let f = i as f32 / steps as f32;
+        moved(Point::new(from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f))
+    });
+    std::iter::once(moved(from))
+        .chain([Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))])
+        .chain(along)
+        .chain([Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))])
+        .collect()
 }
 
 /// Shared headless wgpu adapter and device, created once for all tests.
@@ -478,20 +610,6 @@ impl HeadlessGpu {
     }
 }
 
-/// `GuiTestHarness` plus a headless renderer and iced `UserInterface`,
-/// for simulating clicks, typing and drags and collecting the
-/// resulting `Message`s.
-// CR claude for claude: [structure/low] [structure/low] InteractionHarness is
-// GuiTestHarness plus one Size. drain/watch/get_watched/dispatch_calls/apply only
-// forward to inner, and the tests use both spellings (h.watch vs h.inner.watch, h.drain
-// vs h.inner.drain), sometimes in the same test. Put a viewport field on
-// GuiTestHarness, move the event helpers onto it, and delete this wrapper and its
-// forwarders. Found by reading; not run. (tests-gui-a-05)
-struct InteractionHarness {
-    inner: GuiTestHarness,
-    viewport: Size,
-}
-
 /// A clipboard holding one text.
 #[derive(Default)]
 struct TestClipboard(Option<String>);
@@ -503,184 +621,6 @@ impl clipboard::Clipboard for TestClipboard {
 
     fn write(&mut self, _kind: clipboard::Kind, contents: String) {
         self.0 = Some(contents)
-    }
-}
-
-impl InteractionHarness {
-    async fn new(code: &str) -> Result<Self> {
-        Self::with_viewport(code, Size::new(300.0, 50.0)).await
-    }
-
-    async fn with_viewport(code: &str, viewport: Size) -> Result<Self> {
-        Ok(Self { inner: GuiTestHarness::new(code).await?, viewport })
-    }
-
-    /// One frame over `events`: the messages the widgets produced.
-    fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
-        self.inner.frame(self.viewport, events)
-    }
-
-    async fn drain(&mut self) -> Result<bool> {
-        self.inner.drain().await
-    }
-
-    /// Simulate a window resize; runs one layout pass so
-    /// responsive-wrapped widgets see the new size immediately.
-    fn resize(&mut self, viewport: Size) {
-        self.viewport = viewport;
-        let _ = self.process_events(&[Event::Window(window::Event::Resized(viewport))]);
-    }
-
-    fn view(&mut self) -> crate::widgets::IcedElement<'_> {
-        // A `responsive`-wrapped widget fills its size-dependent state
-        // during layout, not in `view()`, so lay out once first.
-        let _ = self.process_events(&[]);
-        self.inner.view()
-    }
-
-    async fn watch(&mut self, name: &str) -> Result<Value> {
-        self.inner.watch(name).await
-    }
-
-    fn get_watched(&self, name: &str) -> Option<&Value> {
-        self.inner.get_watched(name)
-    }
-
-    async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
-        self.inner.dispatch_calls(msgs).await
-    }
-
-    fn click(&mut self, pos: Point) -> Vec<Message> {
-        // One UI frame per event so pressed → released transitions.
-        left_click(pos)
-            .iter()
-            .flat_map(|ev| self.process_events(std::slice::from_ref(ev)))
-            .collect()
-    }
-
-    /// Deliver `events` one frame each, applying each frame's messages
-    /// before the next as the event loop does.
-    async fn live(&mut self, events: &[Event]) -> Result<()> {
-        for ev in events {
-            let msgs = self.process_events(std::slice::from_ref(ev));
-            self.dispatch_calls(&msgs).await?;
-        }
-        Ok(())
-    }
-
-    /// Give the widgets `msgs` as the event loop does after a frame, the
-    /// calls sent to the runtime without letting it run: the next frame
-    /// comes before their echoes, as fast input does.
-    fn apply(&mut self, msgs: &[Message]) {
-        self.inner.apply(msgs);
-    }
-
-    /// A left-button drag from `from` to `to`, live.
-    async fn drag_live(&mut self, from: Point, to: Point, steps: u32) -> Result<()> {
-        let mut events = vec![
-            Event::Mouse(mouse::Event::CursorMoved { position: from }),
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-        ];
-        for i in 1..=steps {
-            let f = i as f32 / steps as f32;
-            let position =
-                Point::new(from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f);
-            events.push(Event::Mouse(mouse::Event::CursorMoved { position }));
-        }
-        events.push(Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)));
-        self.live(&events).await
-    }
-
-    fn type_text(&mut self, text: &str) -> Vec<Message> {
-        let mut all_msgs = Vec::new();
-        let mut buf = [0; 4];
-        for ch in text.chars() {
-            all_msgs.extend(self.process_events(&[char_key(ch.encode_utf8(&mut buf))]));
-        }
-        all_msgs
-    }
-
-    fn press_key(&mut self, named: keyboard::key::Named) -> Vec<Message> {
-        self.process_events(&[named_key(named)])
-    }
-
-    /// Ctrl and a letter, the modifiers delivered first as the event loop
-    /// does.
-    fn press_ctrl(&mut self, c: &str) -> Vec<Message> {
-        let ctrl = keyboard::Modifiers::CTRL;
-        self.process_events(&[
-            Event::Keyboard(keyboard::Event::ModifiersChanged(ctrl)),
-            key_press(keyboard::Key::Character(c.into()), ctrl, None),
-        ])
-    }
-
-    fn release_key(&mut self, named: iced_core::keyboard::key::Named) -> Vec<Message> {
-        use iced_core::keyboard;
-        self.process_events(&[Event::Keyboard(keyboard::Event::KeyReleased {
-            key: keyboard::Key::Named(named),
-            modified_key: keyboard::Key::Named(named),
-            physical_key: keyboard::key::Physical::Unidentified(
-                keyboard::key::NativeCode::Unidentified,
-            ),
-            location: keyboard::Location::Standard,
-            modifiers: keyboard::Modifiers::empty(),
-        })])
-    }
-
-    fn scroll(&mut self, delta_x: f32, delta_y: f32) -> Vec<Message> {
-        self.process_events(&[Event::Mouse(mouse::Event::WheelScrolled {
-            delta: mouse::ScrollDelta::Lines { x: delta_x, y: delta_y },
-        })])
-    }
-
-    fn move_cursor(&mut self, pos: Point) -> Vec<Message> {
-        self.process_events(&[Event::Mouse(mouse::Event::CursorMoved { position: pos })])
-    }
-
-    /// Drive `Message::EditorAction`s through `on_message` and collect
-    /// the `Call` messages the editor publishes, one per edit.
-    fn process_editor_actions(&mut self, msgs: &[Message]) -> Vec<(CallableId, Value)> {
-        let mut out = Vec::new();
-        for m in msgs {
-            if let Message::EditorAction(_, _) = m {
-                let mut shell = MessageShell::default();
-                self.inner.root.w.on_message(m, &mut shell);
-                for emitted in shell.out.drain(..) {
-                    if let Message::Call(cid, args) = emitted {
-                        if let Some(v) = args.into_iter().next() {
-                            out.push((cid, v));
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    // CR claude for claude: [structure/low] [structure/low] This builds the same move,
-    // press, interpolated moves, release sequence as drag_live, differing only in
-    // whether each frame's messages are dispatched or collected. Build the events once
-    // (fn drag_events(from, to, steps) -> Vec<Event>) and have both helpers use it.
-    // Found by reading; not run. (tests-gui-a-07)
-    fn drag_horizontal(&mut self, from: Point, to_x: f32, steps: u32) -> Vec<Message> {
-        let mut all_msgs = Vec::new();
-        all_msgs.extend(self.process_events(&[Event::Mouse(
-            mouse::Event::CursorMoved { position: from },
-        )]));
-        all_msgs.extend(self.process_events(&[Event::Mouse(
-            mouse::Event::ButtonPressed(mouse::Button::Left),
-        )]));
-        let dx = (to_x - from.x) / steps as f32;
-        for i in 1..=steps {
-            let pos = Point::new(from.x + dx * i as f32, from.y);
-            all_msgs.extend(self.process_events(&[Event::Mouse(
-                mouse::Event::CursorMoved { position: pos },
-            )]));
-        }
-        all_msgs.extend(self.process_events(&[Event::Mouse(
-            mouse::Event::ButtonReleased(mouse::Button::Left),
-        )]));
-        all_msgs
     }
 }
 

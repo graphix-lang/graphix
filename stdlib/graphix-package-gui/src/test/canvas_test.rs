@@ -314,7 +314,7 @@ async fn canvas_overflowing_circle_is_skipped() -> Result<()> {
         "`Circle({center: {x: 300000000000000000000000000000000000000.0, y: 50.0}, \
          radius: 300000000000000000000000000000000000000.0, fill: color(#g: 1.0)$, stroke: null})",
     ).await?;
-    h.render()?;
+    h.render();
     assert!(invalid_geometry(&h));
     Ok(())
 }
@@ -341,7 +341,7 @@ async fn canvas_overflowing_filled_rectangle_is_skipped() -> Result<()> {
          fill: color(#g: 1.0)$, stroke: null})",
     )
     .await?;
-    h.render()?;
+    h.render();
     assert!(invalid_geometry(&h));
     Ok(())
 }
