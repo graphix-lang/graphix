@@ -2631,6 +2631,31 @@ const STRICT_SAMPLE_NO_BANK: &str = r#"
 
 run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, prints("[i64:2, i64:1]"); FuseExpect::Jit);
 
+// `~` banks a trigger that finds `v` bottom after a value as it banks one
+// that finds `v` never produced: the step-4 fire is paid with 60 when `v`
+// returns at step 6; `~!` drops it.
+const SAMPLE_BANKS_A_RETURNING_BOTTOM: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 12 => s + 1, _ => never() };
+  let v = select step { s if s >= 3 && s <= 5 => never(), s => s * 10 };
+  let t = select step { 1 | 4 | 8 => step, _ => never() };
+  let a = t ~ v;
+  let banked = [];
+  banked <- a ~ array::push(banked, (step, a));
+  let strict = 0;
+  strict <- (t ~! v) ~ (strict + 1);
+  select step { 12 => (banked, strict), _ => never() }
+}
+"#;
+
+run!(
+    sample_banks_a_returning_bottom,
+    SAMPLE_BANKS_A_RETURNING_BOTTOM,
+    prints("[[[i64:1, i64:10], [i64:6, i64:60], [i64:8, i64:80]], i64:2]");
+    FuseExpect::Jit
+);
+
 // A write arm under a scrutinee that starts as `never()` wakes on the
 // first delivery and the nested write fires.
 const ARM_WRITE_FROM_NEVER: &str = r#"

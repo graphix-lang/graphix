@@ -2736,10 +2736,48 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             }
         };
         let var = pay_id.and_then(|id| ctx.event.variables.get(&id).cloned());
+        // CR claude for eric: [bug/medium] Once the argument has had a value, a
+        // trigger that finds it bottom is answered here into a fresh bottom: the
+        // debt is consumed, nothing is banked and the held value is not ridden, so
+        // `~` behaves exactly like `~!` (the step-7 fire in the probe is lost).
+        // book/src/core/select.md contrasts `~!` (bottom, no bank when v is bottom)
+        // with `~` that "still banks", and dense_delivery.md R3 names `~`'s
+        // argument a designated Held ride ("sample the latest"); CLAUDE.md's
+        // "absent" fits either. Rule which is intended: bank (skip answering while
+        // arg.tag is bottom and pay at the next value), ride, or keep the code and
+        // say in CLAUDE.md, the book and R3 that `~` banks only before its
+        // argument's first value. probe:
+        // design/review-2026-10-26/repro/x-seq-sampling-sample-drops-trigger-on-bottom.gx
+        // (x-seq-sampling-05)
+        // 2026-10-27 claude: The bottom-answer branch is gone (c-node-mod-01): the probe
+        // now prints '~ at 10: 20', the bank. Pin
+        // lang::select::sample_banks_a_returning_bottom. Stands for Eric to confirm the
+        // rule (bank, as CLAUDE.md and the book say, over ride).
+        // CR claude for eric: [bug/medium] Once the argument has had a value, a
+        // trigger that finds it bottom takes this branch: the output is bottom and
+        // the debt is spent. So `~` behaves like `~!` and differs from it only
+        // before the argument's first value. The docs say otherwise: the book
+        // (core/select.md) says `~!` is bottom with no bank when v is bottom while
+        // `~` still banks, CLAUDE.md says a fire that finds v absent is banked, and
+        // dense_delivery R3 calls `~`'s argument a ride ("sample the latest"). Pick
+        // one rule: bank (leave the debt and pay when the argument returns), ride
+        // (answer from the held value), or document that "absent" means "never
+        // produced". Then pin it; no fixture covers an argument that goes bottom
+        // after a value. probe:
+        // design/review-2026-10-26/repro/x-engine-firing-bank-after-bottom.gx
+        // (x-engine-firing-01)
+        // 2026-10-27 claude: The code now banks (c-node-mod-01): a fire that finds
+        // the argument bottom after a value is paid when it returns, so the probe's
+        // step-4 fire is paid at step 6 (na 2 at cycle 7). Pin
+        // lang::select::sample_banks_a_returning_bottom. This CR stands for Eric to
+        // confirm bank over ride; ride or 'never produced only' would revert that
+        // change and the two byref fixtures it updated.
+
         // a banked trigger is answered from the held arg this cycle; the
-        // rest of the debt is paid through `pay`
-        let answered = match &self.arg.value {
-            // CR claude for claude: [bug/medium] A trigger that finds the argument
+        // rest of the debt is paid through `pay`; a bottom arg pays nothing
+        let live = self.arg.value.as_ref().filter(|_| !self.arg.tag.is_bottom());
+        let answered = match live {
+            // XCR claude for claude: [bug/medium] A trigger that finds the argument
             // bottom after it once had a value is answered here from the stale held
             // value: the debt is decremented, the next match turns it into a bottom,
             // and nothing is paid when the argument returns. A trigger that finds the
@@ -2753,6 +2791,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             // self.arg.tag.is_bottom()` arm. Pin both shapes. probe:
             // design/review-2026-10-26/repro/c-node-mod-bank-after-bottom.gx Also
             // reported as (tests-lang-rest-b-01). (c-node-mod-01)
+            // 2026-10-27 claude: Sample::update answers a debt only from a live
+            // argument (held and not bottom: `live`), so a trigger that finds the
+            // argument bottom after a value stays owed and is paid when it returns, as
+            // one that finds it never produced is; the bottom-answer arm is gone (the
+            // two for-eric CRs that sat on it moved above `answered`). Owed::Each takes
+            // the same gate; seqq's payload is held, so no source program reaches it
+            // bottom after a value, and there is no separate pin. Pin:
+            // lang::select::sample_banks_a_returning_bottom (the step-4 fire is paid 60
+            // at step 6; fails in all four modes with the fix undone).
+            // lang::byref::place_removed_element and place_through_bottom_deref pinned
+            // the drop ('a connect sampling it then writes nothing'); they now pin the
+            // bank: the read is paid with the place's next value (7, not its last 20;
+            // (9, 10) when the reference returns), never its last. This follows
+            // CLAUDE.md and book/src/core/select.md; x-engine-firing-01 and
+            // x-seq-sampling-05 still ask Eric to confirm the rule.
             Some(v) if owed > 0 && var.is_none() => {
                 owed -= 1;
                 Some(v)
@@ -2760,8 +2813,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             _ => None,
         };
         let mut paid = 0;
-        if let Some(v) = &self.arg.value
-            && !self.arg.tag.is_bottom()
+        if let Some(v) = live
             && let Some(id) = pay_id
         {
             paid = mem::take(&mut owed);
@@ -2778,33 +2830,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             }
         }
         match (answered, var) {
-            // CR claude for eric: [bug/medium] Once the argument has had a value, a
-            // trigger that finds it bottom is answered here into a fresh bottom: the
-            // debt is consumed, nothing is banked and the held value is not ridden, so
-            // `~` behaves exactly like `~!` (the step-7 fire in the probe is lost).
-            // book/src/core/select.md contrasts `~!` (bottom, no bank when v is bottom)
-            // with `~` that "still banks", and dense_delivery.md R3 names `~`'s
-            // argument a designated Held ride ("sample the latest"); CLAUDE.md's
-            // "absent" fits either. Rule which is intended: bank (skip answering while
-            // arg.tag is bottom and pay at the next value), ride, or keep the code and
-            // say in CLAUDE.md, the book and R3 that `~` banks only before its
-            // argument's first value. probe:
-            // design/review-2026-10-26/repro/x-seq-sampling-sample-drops-trigger-on-bottom.gx
-            // (x-seq-sampling-05)
-            // CR claude for eric: [bug/medium] Once the argument has had a value, a
-            // trigger that finds it bottom takes this branch: the output is bottom and
-            // the debt is spent. So `~` behaves like `~!` and differs from it only
-            // before the argument's first value. The docs say otherwise: the book
-            // (core/select.md) says `~!` is bottom with no bank when v is bottom while
-            // `~` still banks, CLAUDE.md says a fire that finds v absent is banked, and
-            // dense_delivery R3 calls `~`'s argument a ride ("sample the latest"). Pick
-            // one rule: bank (leave the debt and pay when the argument returns), ride
-            // (answer from the held value), or document that "absent" means "never
-            // produced". Then pin it; no fixture covers an argument that goes bottom
-            // after a value. probe:
-            // design/review-2026-10-26/repro/x-engine-firing-bank-after-bottom.gx
-            // (x-engine-firing-01)
-            (Some(_), _) if self.arg.tag.is_bottom() => self.resident.set_bottom(true),
             // paid in a cycle the trigger did not fire: the argument's
             // arrival is the event
             (Some(v), _) => self.resident.set(TagValue::fired(v.clone())),

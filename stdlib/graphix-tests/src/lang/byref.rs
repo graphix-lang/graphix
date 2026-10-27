@@ -438,7 +438,8 @@ const NATIVE_UNDER_REFERENCES: &str = r#"
 run!(native_under_references, NATIVE_UNDER_REFERENCES, prints("[[i64:7, i64:9], i64:20, i64:13, i64:20]"); FuseExpect::Jit);
 
 // A place the root no longer has is bottom, not its last value: a
-// connect sampling it then writes nothing.
+// connect sampling it banks the trigger and writes the place's next
+// value, never its last.
 const PLACE_REMOVED_ELEMENT: &str = r#"
 {
   let step = 0;
@@ -458,7 +459,7 @@ const PLACE_REMOVED_ELEMENT: &str = r#"
 }
 "#;
 
-run!(place_removed_element, PLACE_REMOVED_ELEMENT, prints("[[i64:20, i64:7], null]"); FuseExpect::Jit);
+run!(place_removed_element, PLACE_REMOVED_ELEMENT, prints("[[i64:20, i64:7], i64:7]"); FuseExpect::Jit);
 
 // The referent type is the container's element type: an Error-valued
 // field is referenced as such.
@@ -493,8 +494,9 @@ const PLACE_THROUGH_DEREF: &str = r#"
 run!(place_through_deref, PLACE_THROUGH_DEREF, prints("[i64:20, i64:20]"); FuseExpect::Jit);
 
 // A place through a dereference whose reference went bottom has no
-// address: it reads nothing and a write through it does not happen; when
-// the reference returns the place does, and a later write lands there.
+// address: it reads nothing (the step-5 read is paid when the reference
+// returns) and a write through it does not happen; when the reference
+// returns the place does, and a later write lands there.
 const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 {
   let step = 0;
@@ -506,8 +508,9 @@ const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
   r <- t1 ~ null;
   let t2 = select step { 5 => null, _ => never() };
   *s <- t2 ~ 99;
-  let obs: [i64, null] = null;
-  obs <- t2 ~ *s;
+  let read = t2 ~ *s;
+  let obs: [(i64, i64), null] = null;
+  obs <- read ~ (step, read);
   let t3 = select step { 8 => null, _ => never() };
   r <- t3 ~ &mut a;
   let tm = select step { 10 => null, _ => never() };
@@ -518,7 +521,7 @@ const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 }
 "#;
 
-run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, prints("[[i64:10, i64:20], [i64:10, i64:20], null, [i64:7, i64:20]]"); FuseExpect::Jit);
+run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, prints("[[i64:10, i64:20], [i64:10, i64:20], [i64:9, i64:10], [i64:7, i64:20]]"); FuseExpect::Jit);
 
 // A place indexed past i64::MAX addresses nothing, never from the end:
 // its read is bottom and the sample banks.
