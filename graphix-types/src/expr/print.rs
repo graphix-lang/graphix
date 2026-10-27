@@ -87,7 +87,8 @@ fn pretty_seq_head(buf: &mut PrettyBuf, s: &SeqExpr) -> fmt::Result {
             if parens {
                 write!(buf, "(")?;
             }
-            buf.nested(|buf| t.fmt_pretty(buf))?;
+            let tail = " {".len() + usize::from(parens);
+            buf.with_tail(tail, |buf| buf.nested(|buf| t.fmt_pretty(buf)))?;
             buf.kill_newline();
             if parens {
                 write!(buf, ")")?;
@@ -1518,22 +1519,7 @@ fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result 
 
 impl StructWithExpr {
     fn write_head(&self, f: &mut impl Write) -> fmt::Result {
-        // CR claude for claude: [structure/low] This copies with_source's
-        // `chain_on_name` in parser/mod.rs: what reads bare as a functional-update
-        // source. The two already differ in where they check decorations, and a change
-        // to the parser's rule must be repeated here by hand. Fix: make the parser's
-        // `chain_on_name` a pub(crate) free function, call it here, and keep only the
-        // `shows(&e.dec)` test local. Found by reading; not run. (t-print-04)
-        fn chain_on_name(e: &Expr) -> bool {
-            match &e.kind {
-                ExprKind::Ref { .. } => !shows(&e.dec),
-                ExprKind::Qop { arg: s, .. } | ExprKind::OrNever(s) => {
-                    !shows(&e.dec) && chain_on_name(s)
-                }
-                _ => false,
-            }
-        }
-        match chain_on_name(&self.source) {
+        match !decorated(&self.source) && parser::chain_on_name(&self.source) {
             true => write!(f, "{{ {} with", self.source),
             false => write!(f, "{{ ({}) with", self.source),
         }
@@ -1594,12 +1580,13 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 }
 
 /// Whether `e` can be the bare source of a postfix operator without parens:
-/// a name, a postfix chain (`?`/`$` included) or a bracketed primary, which
-/// the parser reads as a source bare, unless a seq head parenthesizes it. Anything else must be parenthesized
-/// (`(a+b).c`; `(42).0` would lex as a float; the editor grammar reads no
-/// select, block or cast as a source), and so is a decorated source, whose
-/// decorations would otherwise stand above the whole chain.
-// CR claude for claude: [readability/low] Any postfix source not listed here gets
+/// a name, a postfix chain (`?`/`$` included) or a primary that closes with
+/// its own bracket, which the parser reads as a source bare, unless a seq
+/// head parenthesizes it. Anything else must be parenthesized (`(a+b).c`;
+/// `(42).0` would lex as a float; a bare tag would take the `(` of a call as
+/// its payload), and so is a decorated source, whose decorations would
+/// otherwise stand above the whole chain.
+// XCR claude for claude: [readability/low] Any postfix source not listed here gets
 // parens. So `graphix fmt` rewrites `any(a, b).f`, `cast<T>(x).f`, `T(1).0`,
 // `never<T>().f` and `select x { .. }.f` as `(any(a, b)).f` and so on. The parser reads
 // each back bare to the same tree, because it drops parens around a postfix source.
@@ -1607,28 +1594,44 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 // `Construct`, `Live`, `Select`, and `Variant` with arguments), checking each against
 // `trigger_parens` for the seq-head context. probe:
 // design/review-2026-10-26/repro/tests-expr-fmt-postfix-parens.gx (tests-expr-08)
+// 2026-10-27 claude: prints_as_bare_postfix now takes every primary that closes with
+// its own bracket (select, cast, abstract construct, any, never, live, a tag with a
+// payload; a bare tag stays parenthesized), and its doc's editor-grammar claim is gone
+// (tree-sitter's _primary_expression holds all of them). The seq-head cases read back
+// (a_bracketed_postfix_source_prints_bare covers select/construct/live heads); gxfmt
+// over every .gx/.gxi here and in ../netidx round trips. Pins: format.rs
+// a_bracketed_postfix_source_prints_bare, parser test print_bare_chains_round_trip.
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     use ExprKind::*;
     !shows(&e.dec)
         && !std::ptr::eq(e, PAREN_SOURCE.get())
-        && matches!(
-            &e.kind,
-            Ref { .. }
-                | StructRef { .. }
-                | TupleRef { .. }
-                | ArrayRef { .. }
-                | ArraySlice { .. }
-                | MapRef { .. }
-                | Apply(_)
-                | Qop { .. }
-                | OrNever(_)
-                | Tuple { .. }
-                | Array { .. }
-                | List { .. }
-                | Map { .. }
-                | Struct(_)
-                | StructWith(_)
-        )
+        && match &e.kind {
+            Variant { args, .. } => !args.is_empty(),
+            k => matches!(
+                k,
+                Ref { .. }
+                    | StructRef { .. }
+                    | TupleRef { .. }
+                    | ArrayRef { .. }
+                    | ArraySlice { .. }
+                    | MapRef { .. }
+                    | Apply(_)
+                    | Qop { .. }
+                    | OrNever(_)
+                    | Tuple { .. }
+                    | Array { .. }
+                    | List { .. }
+                    | Map { .. }
+                    | Struct(_)
+                    | StructWith(_)
+                    | Select(_)
+                    | TypeCast { .. }
+                    | Construct { .. }
+                    | Any { .. }
+                    | Never { .. }
+                    | Live(_)
+            ),
+        }
 }
 
 impl fmt::Display for ApplyExpr {
@@ -1994,15 +1997,19 @@ fn ends_bodyless(e: &Expr) -> bool {
 /// `select` and its scrutinee, continuation lines nested under it; a
 /// scrutinee ending in a bodyless impl gets the impl's empty body, which
 /// the arms' `{` would otherwise be read as.
-// CR claude for claude: [bug/low] The scrutinee is laid out with no tail, but ` {`
+// XCR claude for claude: [bug/low] The scrutinee is laid out with no tail, but ` {`
 // follows it on its line. fmt_flat keeps one column for the newline and ` {` takes two.
 // So `select ffffffffffffffffffffffffff(1, 2) {` prints 41 columns at --width 40.
 // pretty_seq_head's trigger closure has the same gap, and head_fits already counts the
 // ` {` for a Select. Fix: run pretty_after under `buf.with_tail(" {".len(), ..)`, and
 // do the same around the trigger's `t.fmt_pretty` in pretty_seq_head. probe:
 // design/review-2026-10-26/repro/t-print-select-head-overflow.sh (t-print-01)
+// 2026-10-27 claude: pretty_scrutinee lays the scrutinee out under a tail of the ' {'
+// after it, and pretty_seq_head the trigger under ' {' plus its ')' when parenthesized.
+// Pin: format.rs a_head_fits_with_its_brace (the repro's select and seq at width 40),
+// which fails with either tail removed.
 fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
-    pretty_after(buf, "select", arg)?;
+    buf.with_tail(" {".len(), |buf| pretty_after(buf, "select", arg))?;
     buf.kill_newline();
     if ends_bodyless(arg) {
         write!(buf, " {{}}")?
@@ -2204,19 +2211,16 @@ impl PrettyDisplay for ExprKind {
             }
             Map { args } => {
                 writeln!(buf, "{{")?;
+                let below = args.last().map(|(_, v)| below_of(v)).unwrap_or(&[]);
                 buf.nested(|buf| {
-                    for (i, (k, v)) in args.iter().enumerate() {
-                        if i > 0 {
-                            buf.kill_newline();
-                            writeln!(buf, ",")?
-                        }
+                    let entry = |buf: &mut PrettyBuf, (k, v): &(Expr, Expr)| {
                         write_leading(buf, &k.dec)?;
                         Bare(k).fmt_pretty(buf)?;
                         buf.kill_newline();
                         write!(buf, " =>")?;
-                        pretty_tail(buf, v)?
-                    }
-                    Ok(())
+                        pretty_tail(buf, v)
+                    };
+                    pretty_separated(buf, args, ",", entry, |(_, v)| eol_of(v), below)
                 })?;
                 writeln!(buf, "}}")
             }

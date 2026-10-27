@@ -1758,7 +1758,9 @@ fn print_bare_chains_round_trip() {
         ("{ u$ with b: 5 }", "{ u$ with b: 5 }"),
         ("{ u? with b: 5 }", "{ u? with b: 5 }"),
         ("{ (u.a) with b: 5 }", "{ (u.a) with b: 5 }"),
-        ("(select v { _ => (1, 2) }).0", "(select v { _ => (1, 2) }).0"),
+        ("(select v { _ => (1, 2) }).0", "select v { _ => (1, 2) }.0"),
+        ("(`A(1)).0", "`A(1).0"),
+        ("(`A).0", "(`A).0"), // a bare tag would take a call's `(` as its payload
     ] {
         let e = parse_one(src).unwrap();
         let printed = format!("{e}");
@@ -2170,6 +2172,12 @@ fn separator_notes_only_where_an_item_follows() {
     let open = "the list is not closed before this `;`";
     assert!(note("[`A, `B;").is_some_and(|n| n.ends_with(open)));
     assert!(note("let y = (x + 1;\ny").is_some_and(|n| n.ends_with(open)));
+    assert!(note("let r = { a: 1; b: 2 };\nr").is_some_and(|n| n.ends_with(open)));
+    // a block is no list, though its first statement could be a field
+    let unclosed = "this `{` is not closed";
+    assert!(note("{ a;").is_some_and(|n| n.ends_with(unclosed)));
+    assert!(note("f({ a;").is_some_and(|n| n.ends_with(unclosed)));
+    assert_eq!(note("{ a;)"), None);
     assert_eq!(note("let m = {\"a\": 1};\nm"), None);
     for (src, col, why) in [
         ("let r = { a: 2, b c };\nr", 19, sep),

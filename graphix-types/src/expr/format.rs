@@ -1268,6 +1268,41 @@ mod tests {
         }
     }
 
+    // a source that closes with its own bracket prints bare before a
+    // postfix operator, in a seq head too
+    #[test]
+    fn a_bracketed_postfix_source_prints_bare() {
+        let src = "let a = any(a, b).f;\n\
+                   let b = cast<T>(x).f;\n\
+                   let c = `A(1).0;\n\
+                   let d = T(1).0;\n\
+                   let e = never<T>().f;\n\
+                   let f = select x { _ => y }.f;\n\
+                   let g = `A(1)(2);\n\
+                   let h = seq select x { _ => y }.f ~ z { 1; 2 };\n\
+                   let i = seqq let q = T(1).0 { 1; q };\n\
+                   let j = seq live(x).f { 1; 2 };\n\
+                   a\n";
+        formats_to(SourceKind::Program, src, src);
+    }
+
+    // the ` {` after a select's scrutinee or a seq's trigger counts
+    // against the width
+    #[test]
+    fn a_head_fits_with_its_brace() {
+        let cfg = FormatConfig { width: 40, ..FormatConfig::default() };
+        for src in [
+            "select ffffffffffffffffffffffffff(1, 2) {\n    3 => 4,\n    _ => 5\n}\n",
+            "seq fffffffffffffffffffffffffffff(1, 2) {\n    3;\n    4\n}\n",
+            "seq (ffffffffffffffffffffffffff(1, 2) ~ x) {\n    3;\n    4\n}\n",
+        ] {
+            let once = format_source(SourceKind::Program, src, &cfg).unwrap();
+            fits(&once, 40);
+            let twice = format_source(SourceKind::Program, &once, &cfg).unwrap();
+            assert_eq!(*once, *twice);
+        }
+    }
+
     #[test]
     fn a_use_binding_what_an_earlier_one_reads_stays_after_it() {
         use SourceKind::*;
@@ -1298,6 +1333,11 @@ mod tests {
             (Program, "f(\n    1, // one\n    2 // two\n    // below\n)\n"),
             (Program, "select x {\n    1 => 2, // a\n    _ => 3\n    // below\n}\n"),
             (Program, "{\n    a: 1, // a\n    b: 2\n    // below\n}\n"),
+            (Program, "{\n    a,\n    b\n    // below\n}\n"),
+            (Program, "f(\n    #b: 1,\n    #a\n    // below\n)\n"),
+            (Program, "{\n    1 => 2, // one\n    3 => 4 // four\n    // below\n}\n"),
+            (Program, "any(\n    1, // one\n    2\n    // below\n)\n"),
+            (Program, "never(\n    1, // one\n    2 // two\n)\n"),
             (
                 Program,
                 "trait T {\n    val f: fn(self) -> i64; // f\n    val g: fn(self) -> i64 // g\n    // below\n};\n\n1\n",

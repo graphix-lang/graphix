@@ -1171,8 +1171,10 @@ macro_rules! apply {
 
 macro_rules! any {
     ($inner:expr) => {
-        collection::vec($inner, (0, 10))
-            .prop_map(|args| ExprKind::Any { args: Arc::from(args) }.to_expr_nopos())
+        (collection::vec($inner, (0, 10)), trailers()).prop_map(|(mut args, trailers)| {
+            trailers.on(args.iter_mut());
+            ExprKind::Any { args: Arc::from(args) }.to_expr_nopos()
+        })
     };
 }
 
@@ -1403,10 +1405,13 @@ macro_rules! typecast {
 
 macro_rules! never {
     ($inner:expr) => {
-        (collection::vec($inner, 0..3), option::of(typexp())).prop_map(|(args, typ)| {
-            ExprKind::Never { typ: typ.map(Arc::new), args: Arc::from(args) }
-                .to_expr_nopos()
-        })
+        (collection::vec($inner, 0..3), option::of(typexp()), trailers()).prop_map(
+            |(mut args, typ, trailers)| {
+                trailers.on(args.iter_mut());
+                ExprKind::Never { typ: typ.map(Arc::new), args: Arc::from(args) }
+                    .to_expr_nopos()
+            },
+        )
     };
 }
 
@@ -1430,8 +1435,12 @@ macro_rules! list_lit {
 
 macro_rules! map {
     ($inner:expr) => {
-        collection::vec(($inner, $inner), (0, 10))
-            .prop_map(|a| { ExprKind::Map { args: Arc::from_iter(a) } }.to_expr_nopos())
+        (collection::vec(($inner, $inner), (0, 10)), trailers()).prop_map(
+            |(mut a, trailers)| {
+                trailers.on(a.iter_mut().map(|(_, v)| v));
+                ExprKind::Map { args: Arc::from_iter(a) }.to_expr_nopos()
+            },
+        )
     };
 }
 

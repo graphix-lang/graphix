@@ -273,7 +273,7 @@ where
                         None,
                         CompactString::const_new(
                             "a comment stands on a line of its own, above what it \
-                             describes",
+                             describes, or ends an item's line after its separator",
                         ),
                     );
                     unexpected_any("trailing comment").left()
@@ -827,45 +827,89 @@ where
     PF: Fn() -> EP,
     TF: Fn() -> TP,
 {
-    let slot = move || {
-        (
-            position(),
-            choice((
-                attempt(below_comments(docs).skip(ahead(term()))).map(Slot::End),
-                p().map(Slot::Item),
-            )),
-        )
-    };
+    (slot(p(), term(), docs), list_rest(slot(p(), term(), docs), sep, why, docs))
+        .map(|(first, rest)| rest.after(first))
+}
+
+/// A list's place before `term`: an item, or the end with the comments
+/// above it.
+fn slot<I, O, EP, TP>(
+    p: EP,
+    term: TP,
+    docs: bool,
+) -> impl Parser<I, Output = (SourcePosition, Slot<O>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    EP: Parser<I, Output = O>,
+    TP: Parser<I>,
+{
     (
-        slot(),
-        many::<LPooled<Vec<_>>, _, _>((separator_eol(sep, why), slot())),
+        position(),
+        choice((
+            attempt(below_comments(docs).skip(ahead(term))).map(Slot::End),
+            p.map(Slot::Item),
+        )),
+    )
+}
+
+/// What follows a [`commented`] list's first slot: each separator, with
+/// the comment ending the line it is on, and the slot after it; then the
+/// comment ending the last item's line and the own-line comments below.
+struct ListRest<O> {
+    rest: LPooled<Vec<(Option<ArcStr>, (SourcePosition, Slot<O>))>>,
+    eol: Option<ArcStr>,
+    below: LPooled<Vec<ArcStr>>,
+}
+
+fn list_rest<I, O, SP>(
+    slot: SP,
+    sep: char,
+    why: &'static str,
+    docs: bool,
+) -> impl Parser<I, Output = ListRest<O>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    SP: Parser<I, Output = (SourcePosition, Slot<O>)>,
+{
+    (
+        many::<LPooled<Vec<_>>, _, _>((separator_eol(sep, why), slot)),
         eol_comment(),
         below_comments(docs),
     )
-        .map(|(first, mut rest, eol, mut below)| {
-            let mut listed = Listed { slots: LPooled::take(), below: LPooled::take() };
-            // only an item stands before a separator: the empty slot ends the list
-            let take_eol = |slots: &mut LPooled<Vec<(SourcePosition, Option<O>)>>,
-                            eol: Option<ArcStr>| {
-                if let (Some(eol), Some((_, Some(o)))) = (eol, slots.last_mut()) {
-                    o.take_eol(eol)
-                }
-            };
-            for (eol, (pos, slot)) in std::iter::once((None, first)).chain(rest.drain(..))
-            {
-                take_eol(&mut listed.slots, eol);
-                match slot {
-                    Slot::Item(o) => listed.slots.push((pos, Some(o))),
-                    Slot::End(mut lines) => {
-                        listed.below.extend(lines.drain(..));
-                        listed.slots.push((pos, None))
-                    }
+        .map(|(rest, eol, below)| ListRest { rest, eol, below })
+}
+
+impl<O: Commentable> ListRest<O> {
+    /// The list whose first slot is `first`.
+    fn after(mut self, first: (SourcePosition, Slot<O>)) -> Listed<O> {
+        let mut listed = Listed { slots: LPooled::take(), below: LPooled::take() };
+        // only an item stands before a separator: the empty slot ends the list
+        let take_eol = |slots: &mut LPooled<Vec<(SourcePosition, Option<O>)>>,
+                        eol: Option<ArcStr>| {
+            if let (Some(eol), Some((_, Some(o)))) = (eol, slots.last_mut()) {
+                o.take_eol(eol)
+            }
+        };
+        for (eol, (pos, slot)) in
+            std::iter::once((None, first)).chain(self.rest.drain(..))
+        {
+            take_eol(&mut listed.slots, eol);
+            match slot {
+                Slot::Item(o) => listed.slots.push((pos, Some(o))),
+                Slot::End(mut lines) => {
+                    listed.below.extend(lines.drain(..));
+                    listed.slots.push((pos, None))
                 }
             }
-            take_eol(&mut listed.slots, eol);
-            listed.below.extend(below.drain(..));
-            listed
-        })
+        }
+        take_eol(&mut listed.slots, self.eol);
+        listed.below.extend(self.below.drain(..));
+        listed
+    }
 }
 
 /// [`commented`] statements: an empty slot is an empty statement, and
@@ -911,9 +955,7 @@ where
     })
 }
 
-/// [`commented`] `,` items, and whether the list ended in its separator;
-/// at least one unless `empty`. The last item keeps the comments below
-/// it.
+/// [`commented`] `,` items, read as [`comma_listed`] reads them.
 pub(super) fn comma_items<I, O, EP, TP, PF, TF>(
     p: PF,
     term: TF,
@@ -929,24 +971,29 @@ where
     PF: Fn() -> EP,
     TF: Fn() -> TP,
 {
-    commented(p, ',', COMMA_WHY, term, false).and_then(move |mut l: Listed<O>| {
-        let trailing = l.slots.len() > 1 && matches!(l.slots.last(), Some((_, None)));
-        if !empty && !matches!(l.slots.first(), Some((_, Some(_)))) {
-            return Err(<StreamErrorFor<I>>::message_static_message("expected an item"));
-        }
-        let mut res: LPooled<Vec<O>> = LPooled::take();
-        res.extend(l.slots.drain(..).filter_map(|(_, o)| o));
-        match res.last_mut() {
-            Some(o) => trail(o.last_expr(), None, &l.below),
-            None if l.below.is_empty() => (),
-            None => {
-                return Err(<StreamErrorFor<I>>::message_static_message(
-                    "a comment here has no item to describe",
-                ));
-            }
-        }
-        Ok((res, trailing))
+    commented(p, ',', COMMA_WHY, term, false).and_then(move |l: Listed<O>| {
+        comma_listed(l, empty).map_err(<StreamErrorFor<I>>::message_static_message)
     })
+}
+
+/// The items of a `,` list and whether it ended in its separator; at
+/// least one unless `empty`. The last item keeps the comments below it.
+fn comma_listed<O: ExprItem>(
+    mut l: Listed<O>,
+    empty: bool,
+) -> Result<(LPooled<Vec<O>>, bool), &'static str> {
+    let trailing = l.slots.len() > 1 && matches!(l.slots.last(), Some((_, None)));
+    if !empty && !matches!(l.slots.first(), Some((_, Some(_)))) {
+        return Err("expected an item");
+    }
+    let mut res: LPooled<Vec<O>> = LPooled::take();
+    res.extend(l.slots.drain(..).filter_map(|(_, o)| o));
+    match res.last_mut() {
+        Some(o) => trail(o.last_expr(), None, &l.below),
+        None if l.below.is_empty() => (),
+        None => return Err("a comment here has no item to describe"),
+    }
+    Ok((res, trailing))
 }
 
 /// [`commented`] `;` items of an interface or a trait, which has no empty
@@ -973,15 +1020,6 @@ where
     })
 }
 
-fn semisep<I>() -> impl Parser<I, Output = char>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    separator(';', SEMI_WHY)
-}
-
 fn sptoken<I>(t: char) -> impl Parser<I, Output = char>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -989,6 +1027,16 @@ where
     I::Range: Range,
 {
     spaces().with(token(t))
+}
+
+/// The arguments of `any(..)` or `never(..)`, none or more.
+fn call_args<I>() -> impl Parser<I, Output = LPooled<Vec<Expr>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    comma_items(expr, || attempt(sptoken(')')), true).map(|(args, _)| args)
 }
 
 /// `never<T>(args…)` / `never(args…)`: the value that never arrives.
@@ -1002,11 +1050,7 @@ where
         position(),
         attempt(string("never").skip(not_prefix())),
         optional(attempt(between(sptoken('<'), sptoken('>'), typ()))),
-        between(
-            sptoken('('),
-            sptoken(')'),
-            sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
-        ),
+        between(sptoken('('), sptoken(')'), call_args()),
     )
         .map(|(pos, _, typ, mut args): (_, _, Option<Type>, LPooled<Vec<Expr>>)| {
             ExprKind::Never {
@@ -1043,7 +1087,7 @@ where
         attempt(string("any").skip(not_prefix())).with(between(
             token('('),
             sptoken(')'),
-            sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
+            call_args(),
         )),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
@@ -1375,7 +1419,6 @@ where
         .map(|(pos, e)| ExprKind::Until(Arc::new(e)).to_expr(pos))
 }
 
-/// A seq statement: an expression, or `until e`, with what stands above it.
 /// A brace-delimited seq statement list (the body of `seq`, `try`
 /// and `with`). Empty positions come back as `NoOp`.
 fn seq_stmts<I>() -> impl Parser<I, Output = LPooled<Vec<Expr>>>
@@ -1582,15 +1625,6 @@ where
         position(),
         fldname(),
         position(),
-        // CR claude for claude: [bug/low] For a shorthand field this eats the newline
-        // after the name, so an own-line comment below a list's last shorthand field is
-        // read by `commented` as the comment ending that field's line. The formatter
-        // then prints `b // below` where the author wrote the comment under `b`.
-        // `applyarg`'s `.skip(spaces())` after `#name` does the same for a labeled
-        // shorthand. Only consume the space when a `:` follows:
-        // `optional(attempt(spaces().with(token(':'))).with(expr()))`. probe:
-        // design/review-2026-10-26/repro/t-parser-a-shorthand-below-comment.sh
-        // (t-parser-a-05)
         spaces().with(optional(token(':').with(expr()))),
     )
         .then(|(dec, pos, name, end, v): (Leading, _, ArcStr, _, Option<Expr>)| {
@@ -1625,6 +1659,19 @@ where
         )
 }
 
+/// A struct literal's start: its first field's name and what may follow
+/// a field's name.
+fn struct_head<I>() -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (token('{'), leading_decorations(), fldname(), spaces())
+        .with(satisfy(|c| matches!(c, ':' | ',' | '}')))
+        .map(|_| ())
+}
+
 fn structure<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1639,6 +1686,16 @@ where
     )
 }
 
+/// Whether `e` is a name or a `?`/`$` chain on one, which a functional
+/// update reads as its source without parentheses.
+pub(crate) fn chain_on_name(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ref { .. } => true,
+        ExprKind::Qop { arg: s, .. } | ExprKind::OrNever(s) => chain_on_name(s),
+        _ => false,
+    }
+}
+
 /// A struct literal, else a form that shares a first item parsed once: the
 /// empty map `{}`, a map literal, a functional update `{ s with f: v }`,
 /// or a block.
@@ -1650,7 +1707,7 @@ where
 {
     /// What follows the first item.
     enum Tail {
-        Map(Expr, LPooled<Vec<(Expr, Expr)>>),
+        Map(Expr, ListRest<(Expr, Expr)>),
         With(LPooled<Vec<(ArcStr, Expr)>>),
         /// The comment ending the first statement's line, and the rest.
         Block(Option<ArcStr>, LPooled<Vec<Expr>>),
@@ -1658,25 +1715,40 @@ where
     }
     let entry = || (expr(), spstring("=>").with(expr()));
     let tail = choice((
+        // XCR claude for claude: [bug/low] Map entries are read with the plain
+        // separator, so `1 => 2, // one` and a comment below the last entry are
+        // parse errors. Every other expression list takes them through
+        // `comma_items`. The same holds for `any(..)`/`never(..)`/attribute
+        // arguments and impl bodies (traitexp's `sep_by_tok(expr(), semisep(),
+        // ..)`). Parse these with `comma_items`/`statements`, and have
+        // `comment_line`'s note mention the after-separator form. probe:
+        // design/review-2026-10-26/repro/t-parser-a-list-eol-coverage.sh
+        // (t-parser-a-06)
+        // 2026-10-26 claude: Impl bodies now parse as `statements`
+        // (t-parser-b-03), and an attribute's arguments refuse every comment
+        // (tests-expr-03: they print on the attribute's line), so what remains
+        // here is map entries and `any(..)`/`never(..)` arguments.
+        // 2026-10-27 claude: Map entries after the first, and any(..)/never(..)
+        // arguments, parse as comma lists: commented is split into
+        // slot/list_rest/ListRest::after, so brace's map tail continues the
+        // list its first key started, and comma_items' checks are comma_listed,
+        // shared with it. The map printer goes through pretty_separated, so an
+        // entry's eol and the lines below the last print back; the note now
+        // names the after-separator form. The expression generator hangs
+        // Trailers on map entries and any/never arguments. Pins: format.rs
+        // comments_after_list_items_stay (map, any, never rows),
+        // expr_pp_round_trip via the generator.
         attempt(spstring("=>"))
             .with((
                 expr(),
-                // CR claude for claude: [bug/low] Map entries are read with the plain
-                // separator, so `1 => 2, // one` and a comment below the last entry are
-                // parse errors. Every other expression list takes them through
-                // `comma_items`. The same holds for `any(..)`/`never(..)`/attribute
-                // arguments and impl bodies (traitexp's `sep_by_tok(expr(), semisep(),
-                // ..)`). Parse these with `comma_items`/`statements`, and have
-                // `comment_line`'s note mention the after-separator form. probe:
-                // design/review-2026-10-26/repro/t-parser-a-list-eol-coverage.sh
-                // (t-parser-a-06)
-                // 2026-10-26 claude: Impl bodies now parse as `statements`
-                // (t-parser-b-03), and an attribute's arguments refuse every comment
-                // (tests-expr-03: they print on the attribute's line), so what remains
-                // here is map entries and `any(..)`/`never(..)` arguments.
-                optional(csep().with(sep_by_tok(entry(), csep(), attempt(sptoken('}'))))),
+                list_rest(
+                    slot(entry(), attempt(sptoken('}')), false),
+                    ',',
+                    COMMA_WHY,
+                    false,
+                ),
             ))
-            .map(|(v, rest)| Tail::Map(v, rest.unwrap_or_else(LPooled::take))),
+            .map(|(v, rest)| Tail::Map(v, rest)),
         attempt(spaces1().with(string("with")).skip(space()))
             .with(struct_fields())
             .map(Tail::With),
@@ -1687,13 +1759,6 @@ where
     /// The source of a functional update: a name, a `?`/`$` chain on one,
     /// or anything parenthesized.
     fn with_source(e: &Expr) -> Option<Expr> {
-        fn chain_on_name(e: &Expr) -> bool {
-            match &e.kind {
-                ExprKind::Ref { .. } => true,
-                ExprKind::Qop { arg: s, .. } | ExprKind::OrNever(s) => chain_on_name(s),
-                _ => false,
-            }
-        }
         match &e.kind {
             _ if e.dec.is_some() => None,
             ExprKind::ExplicitParens(e) => Some((**e).clone()),
@@ -1702,14 +1767,19 @@ where
         }
     }
     choice((
-        // CR claude for claude: [readability/low] For a block starting with a bare name
+        // XCR claude for claude: [readability/low] For a block starting with a bare name
         // (`{ a; ..`), this probe's field list meets the `;` and notes "the list is not
         // closed before this `;`". The note survives the backtrack, so `{ a;` at end of
         // input, `{ a;)` and `f({ a;` report it instead of the unclosed `{`. Start the
         // probe only when the first field name is followed by `:`, `,` or `}` (a
         // look_ahead before `structure()`). probe:
         // design/review-2026-10-26/repro/t-parser-a-block-note.sh (t-parser-a-07)
-        attempt(structure()),
+        // 2026-10-27 claude: brace starts the struct-literal probe only where
+        // struct_head sees a field name followed by ':', ',' or '}', so a block whose
+        // first statement is a bare name never meets the list's ';' note. Pin: parser
+        // test separator_notes_only_where_an_item_follows ('{ a;', 'f({ a;' name the
+        // unclosed brace, '{ a;)' has no note, '{ a: 1; b: 2 }' keeps the list note).
+        attempt(look_ahead(struct_head()).with(structure())),
         (
             position(),
             token('{').skip(spaces()).with(optional((expr(), tail))),
@@ -1719,11 +1789,15 @@ where
             .then(|(pos, body, end, _)| {
                 let kind = match body {
                     None => ExprKind::Map { args: Arc::from_iter([]) },
-                    Some((k, Tail::Map(v, mut rest))) => ExprKind::Map {
-                        args: Arc::from_iter(
-                            std::iter::once((k, v)).chain(rest.drain(..)),
-                        ),
-                    },
+                    Some((k, Tail::Map(v, rest))) => {
+                        let first = (k.pos, Slot::Item((k, v)));
+                        match comma_listed(rest.after(first), false) {
+                            Ok((mut args, _)) => {
+                                ExprKind::Map { args: Arc::from_iter(args.drain(..)) }
+                            }
+                            Err(why) => return grow::refuse(end, why).right(),
+                        }
+                    }
                     Some((source, Tail::With(mut fields))) => {
                         match with_source(&source) {
                             None => {
