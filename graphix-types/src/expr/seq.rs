@@ -957,6 +957,18 @@ impl Machine<'_> {
     // its chain, hashing every level's path, and a step at depth d still resolves its
     // generated names d levels deep. Remaining: the per-try lexical scopes, or a
     // (scope, name) memo, as above.
+    // 2026-10-27 codex: Reproduced the named nested-try shape with the worktree debug
+    // binary: --check depths 250/500/993 took 0.481/1.602/8.368 s. After t-seq-06's
+    // constant-size pc, they took 0.363/1.221/7.276 s: the scope-chain cost remains. No
+    // scope rewrite applied. Investigated qualifying generated cells at compile time,
+    // but CatchRole::Try captures and generated references both use lexical resolution,
+    // while user lets must retain their try scopes and shadowing; dropping or
+    // flattening the scope chain without rewriting those bindings would change lookup
+    // and IDE sites. A safe implementation still needs a scoped-name rewrite preserving
+    // those sites, or the general lookup memo owned by t-misc-02. No new pin; the
+    // existing nested_trys_check_in_time budget is too loose to distinguish this
+    // remaining cost. All 651 seq fixtures pass for the preceding pc change, which does
+    // not resolve this CR. Leaving open.
     fn lower_scoped(
         &mut self,
         stmts: &[&Expr],
