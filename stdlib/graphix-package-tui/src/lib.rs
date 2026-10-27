@@ -1098,6 +1098,14 @@ impl Live {
         // stderr_never_reaches_the_alternate_screen (a thread writes stderr nonstop
         // through 20 take/panic/recover cycles; no LEAK between 1049h and 1049l; fails
         // every run with take or recover reverted).
+        // 2026-10-27 claude: The pin was flaky in the campaign's gates (LEAK inside a
+        // screen, about 3 in 40 runs under taskset -c 0): a std stderr write that had
+        // looked up fd 2 before the hold's dup2 landed on the old stderr after the
+        // 1049h. stderr.rs swap_stderr now takes std's stderr lock across both dup2s,
+        // so no write through std's stderr straddles the swap (0 in 80 runs). Raw fd-2
+        // writers, which bypass that lock, can still straddle it. A panic on the
+        // tui-stderr reader thread while a writer blocks on a full pipe would now wait
+        // on that writer; serve has no panicking path.
         #[cfg(unix)]
         let stderr = hold_stderr();
         terminal::enable_raw_mode().context("raw mode")?;

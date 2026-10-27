@@ -179,8 +179,7 @@ impl Capture {
             bail!("stderr is already held");
         }
         self.tell(HOLD);
-        // writer owns the source descriptor, and fd 2 is the process's stderr.
-        if unsafe { libc::dup2(self.writer.as_raw_fd(), 2) } < 0 {
+        if swap_stderr(&self.writer) < 0 {
             self.tell(RELEASE);
             return Err(io::Error::last_os_error().into());
         }
@@ -190,11 +189,18 @@ impl Capture {
 
     fn release(&mut self) {
         if std::mem::take(&mut self.held) {
-            // saved owns the descriptor that the first hold cloned from stderr.
-            unsafe { libc::dup2(self.saved.as_raw_fd(), 2) };
+            swap_stderr(&self.saved);
             self.tell(RELEASE);
         }
     }
+}
+
+/// Put `fd` on fd 2 with std's stderr locked, so no write through it is
+/// in flight across the swap and lands on the stderr it replaced.
+fn swap_stderr(fd: &impl AsRawFd) -> libc::c_int {
+    let _writers = io::stderr().lock();
+    // fd is owned by the capture, and fd 2 is the process's stderr.
+    unsafe { libc::dup2(fd.as_raw_fd(), 2) }
 }
 
 static CAPTURE: Mutex<Option<Capture>> = Mutex::new(None);
