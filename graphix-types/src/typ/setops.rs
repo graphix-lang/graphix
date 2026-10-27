@@ -3,7 +3,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{Bound, FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef},
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
@@ -11,6 +11,11 @@ use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::iter;
 use triomphe::Arc;
+
+struct MatchingTypes {
+    memo: RefHist<AHashMap<RefPair, Type>>,
+    refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
+}
 
 fn is_empty_ty(t: &Type) -> bool {
     match t {
@@ -788,6 +793,130 @@ impl Type {
             | (_, Type::Primitive(_))
             | (Type::Bottom, _)
             | (Type::Map { .. }, _) => Ok(self.clone()),
+        }
+    }
+
+    pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
+        let mut walk = MatchingTypes { memo: RefHist::new(), refs: LPooled::take() };
+        self.matching_type_int(env, &mut walk, reaching)
+    }
+
+    fn matching_type_int(
+        &self,
+        env: &Env,
+        walk: &mut MatchingTypes,
+        reaching: &Self,
+    ) -> Result<Self> {
+        ensure_sufficient(|| {
+            let key = (walk.memo.ref_id(self, env), walk.memo.ref_id(reaching, env));
+            if let Some(t) = walk.memo.get(&key) {
+                return Ok(t.clone());
+            }
+            let typ = self.matching_type_inner(env, walk, reaching)?;
+            walk.memo.insert(key, typ.clone());
+            Ok(typ)
+        })
+    }
+
+    fn matching_type_inner(
+        &self,
+        env: &Env,
+        walk: &mut MatchingTypes,
+        reaching: &Self,
+    ) -> Result<Self> {
+        if strictly_identical(self, reaching) {
+            return Ok(self.clone());
+        }
+        match (self, reaching) {
+            (Self::TVar(tv), t) => match tv.binding() {
+                Some(p) => p.matching_type_int(env, walk, t),
+                None => Ok(t.clone()),
+            },
+            (p, Self::TVar(tv)) => match tv.binding() {
+                Some(t) => p.matching_type_int(env, walk, &t),
+                None if tv.cell_constraints().contains(&Self::Bound(Bound::NoError)) => {
+                    p.diff(env, &Self::Primitive(Typ::Error.into()))
+                }
+                None => Ok(p.clone()),
+            },
+            (p @ Self::Ref(_), t) | (p, t @ Self::Ref(_)) => {
+                let definition = |t: &Type| match t {
+                    Self::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),
+                    _ => None,
+                };
+                let key = (definition(p), definition(t));
+                if !walk.refs.insert(key) {
+                    return Ok(p.clone());
+                }
+                let r =
+                    p.lookup_ref(env)?.matching_type_int(env, walk, &t.lookup_ref(env)?);
+                walk.refs.remove(&key);
+                r
+            }
+
+            (Self::Any, t) | (t, Self::Any) => Ok(t.clone()),
+            (Self::Primitive(p), Self::Primitive(t)) => Ok(Self::Primitive(*p & *t)),
+            (Self::Set(ps), t) | (t, Self::Set(ps)) => {
+                let mut matched: LPooled<Vec<Type>> = LPooled::take();
+                for p in ps.iter() {
+                    let m = if matches!(self, Self::Set(_)) {
+                        p.matching_type_int(env, walk, t)?
+                    } else {
+                        t.matching_type_int(env, walk, p)?
+                    };
+                    if !m.is_uninhabited() {
+                        matched.push(m);
+                    }
+                }
+                Ok(Self::flatten_set(matched.drain(..)))
+            }
+            (p, t) => {
+                if !p.has_unbound() && p.contains_with_flags(BitFlags::empty(), env, t)? {
+                    return Ok(t.clone());
+                }
+                if !t.has_unbound() && t.contains_with_flags(BitFlags::empty(), env, p)? {
+                    return Ok(p.clone());
+                }
+                if !p.could_match(env, t)? {
+                    return Ok(Self::Bottom);
+                }
+                let same_shape = match (p, t) {
+                    (Self::Array(_), Self::Array(_))
+                    | (Self::List(_), Self::List(_))
+                    | (Self::Error(_), Self::Error(_))
+                    | (Self::Map { .. }, Self::Map { .. }) => true,
+                    (Self::Tuple(a), Self::Tuple(b)) => a.len() == b.len(),
+                    (Self::Variant(a, ats, _), Self::Variant(b, bts, _)) => {
+                        a == b && ats.len() == bts.len()
+                    }
+                    (Self::Struct(a), Self::Struct(b)) => {
+                        a.len() == b.len()
+                            && a.iter().zip(b.iter()).all(|((a, _, _), (b, _, _))| a == b)
+                    }
+                    _ => false,
+                };
+                if !same_shape {
+                    return Ok(p.clone());
+                }
+                let mut parts: LPooled<Vec<Type>> = LPooled::take();
+                t.for_each_child(&mut |c| parts.push(c.clone()));
+                let mut parts = parts.drain(..);
+                let mut error = None;
+                let narrowed = p.cow_children(&mut |c| {
+                    let t = parts.next().expect("matching shape");
+                    match c.matching_type_int(env, walk, &t) {
+                        Ok(n) => (!strictly_identical(c, &n)).then_some(n),
+                        Err(e) => {
+                            error = Some(e);
+                            None
+                        }
+                    }
+                });
+                match error {
+                    Some(e) => Err(e),
+                    None => Ok(narrowed.unwrap_or_else(|| p.clone())),
+                }
+            }
         }
     }
 

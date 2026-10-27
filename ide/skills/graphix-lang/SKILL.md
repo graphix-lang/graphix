@@ -320,6 +320,9 @@ across a bottom cycle).
   re-attached at the wake; a seq's run is aborted (a `seqq`'s queued
   requests stay and run). Only the inputs that fired
   while the arm slept are delivered at the wake, once each.
+- A written type test narrows its binds to the values reaching it:
+  `Number as n` over `[i64, string]` gives `n: i64`; `Array<Number> as ns`
+  over `Array<[i64, string]>` gives `ns: Array<i64>`.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   Everything else is told apart: a string from a bare variant, an array

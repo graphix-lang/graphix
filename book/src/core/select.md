@@ -59,6 +59,12 @@ value actually changes, wrap the argument (or the whole select) in `uniq`.
 
 ## Matching Types
 
+A type test binds only the part of the argument's type that reaches the arm
+and passes the test. For an argument of type `[i64, string]`, `Number as n`
+binds `n` as `i64`, so `n + 1` is valid. The same narrowing applies inside
+collections and structures: testing `Array<[i64, string]>` as
+`Array<Number>` binds an `Array<i64>`.
+
 Consider we want to select from a value of type `[Array<i64>, i64, null]`,
 
 ```graphix

@@ -4050,7 +4050,7 @@ run!(
             .eq(["1", "2"]),
         _ => false,
     };
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -4082,7 +4082,7 @@ run!(
     };
     f(`A(1))
 }"#,
-    refused("string does not contain Any")
+    refused("string does not contain i64")
 );
 
 run!(
@@ -4094,7 +4094,7 @@ run!(
     };
     f([1])
 }"#,
-    refused("string does not contain Any")
+    refused("string does not contain i64")
 );
 
 run!(
@@ -5001,3 +5001,54 @@ run!(select_discriminants_follow_instantiation, r#"{
     },
     _ => false,
 }; FuseExpect::Jit);
+
+run!(
+    written_test_narrows_number,
+    r#"{
+    let f = |x: [i64, string]| select x {
+        Number as n => n + 1,
+        string as _ => 0
+    };
+    [f(1), f("s")]
+}"#,
+    prints("[i64:2, i64:0]")
+);
+
+run!(
+    written_test_narrows_union,
+    r#"{
+    let g = |x: [i64, string, bool]| select x {
+        [i64, string, f64] as n => select n {
+            i64 as _ => "i",
+            string as _ => "s"
+        },
+        bool as _ => "b"
+    };
+    [g(1), g("x"), g(true)]
+}"#,
+    prints(r#"["i", "s", "b"]"#)
+);
+
+run!(
+    written_test_narrows_struct,
+    r#"{
+    let f = |x: [{v: i64}, null]| select x {
+        {v: Number} as {v} => v + 1,
+        null => 0
+    };
+    [f({v: 2}), f(null)]
+}"#,
+    prints("[i64:3, i64:0]")
+);
+
+run!(
+    written_test_narrows_array,
+    r#"{
+    let f = |x: Array<[i64, string]>| select x {
+        Array<Number> as ns => array::map(ns, |n| n + 1),
+        _ => [0]
+    };
+    [f([1, 2]), f(["s"])]
+}"#,
+    prints("[[i64:2, i64:3], [i64:0]]")
+);

@@ -1875,15 +1875,7 @@ impl<R: Rt> PatternNode<R> {
             && self.type_predicate.contains_with_flags(BitFlags::empty(), env, scrut)?)
     }
 
-    /// A written `error` test, whose capture is typed by the errors that
-    /// reach the arm ([`Self::error_capture`]), not by the bare predicate.
-    fn tests_error(&self) -> bool {
-        matches!(&self.type_predicate, Type::Primitive(p) if *p == Typ::Error)
-    }
-
-    /// The type this arm's binds are typed from: an `error` test's is the
-    /// `Error<..>` members of `reaching`, else the predicate.
-    // CR claude for claude: [bug/medium] Only an error test's bind is narrowed to what
+    // XCR claude for claude: [bug/medium] Only an error test's bind is narrowed to what
     // reaches the arm. Every other written test binds the full written type, contrary
     // to CLAUDE.md's rule that an arm's binds narrow to what reaches it. So `|x: [i64,
     // string]| select x { Number as n => n + 1, string as s => 0 }` is refused (n is
@@ -1896,21 +1888,28 @@ impl<R: Rt> PatternNode<R> {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q24, A type
     // test's bind narrows to what reaches it): yes, narrow (the recommendation: narrow,
     // as CLAUDE.md already says arm binds do.)
+    // 2026-10-27 codex: Implemented Eric's q24 ruling: an explicit test binds the
+    // intersection of its written predicate and the type reaching the arm. The runtime
+    // predicate remains written; explicit pattern leaves receive the narrowed type,
+    // including written slice element layouts. The non-mutating type intersection
+    // memoizes shared subproblems and cuts recursive definition expansion
+    // conservatively. Pins:
+    // lang::select::written_test_narrows_{number,union,struct,array}; all 16 mode cases
+    // failed without the fix and pass with it. Existing Any/slice refusal pins now name
+    // the narrowed i64; the written-union and growing-typedef tests caught regressions
+    // during development and pass after correction. Validation:
+    // CARGO_TARGET_DIR=$PWD/target, shared flock, cargo test -p graphix-tests --offline
+    // --lib lang::select:: (1371 passed) and lang::types:: (1113 passed). cargo fmt
+    // --all passed. Book select page and language skill updated. Combined final GUI
+    // checker timings will accompany the review report.
     pub(super) fn capture_type(&self, env: &Env, reaching: &Type) -> Result<Type> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());
         }
-        if !self.tests_error() {
-            return Ok(self.type_predicate.clone());
+        if self.type_predicate.has_unbound() {
+            reaching.narrow_pattern(env, &self.type_predicate)?;
         }
-        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        union_members(env, reaching, &mut members)?;
-        members.retain(|m| m.with_deref(|m| matches!(m, Some(Type::Error(_)))));
-        Ok(match members.len() {
-            0 => self.type_predicate.clone(),
-            1 => members.pop().unwrap(),
-            _ => Type::Set(Arc::from_iter(members)).normalize(),
-        })
+        self.type_predicate.matching_type(env, reaching)
     }
 
     /// Type the arm's binds from `narrowed`, the arm's predicate as the
@@ -1946,10 +1945,6 @@ impl<R: Rt> PatternNode<R> {
         reaching: &[Type],
         checking: bool,
     ) -> Result<()> {
-        let tests_error = self.explicit_type_predicate && self.tests_error();
-        if self.explicit_type_predicate && !tests_error {
-            return Ok(());
-        }
         // the members of what reaches the arm it can match; for its whole
         // captures, `Any` is each member of the predicate a value passing
         // the arm's test is of
@@ -1971,7 +1966,13 @@ impl<R: Rt> PatternNode<R> {
             self.structure_predicate.hold_slice_members(env, narrowed)?;
         }
         let mut leaves = SmallVec::new();
-        self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
+        self.structure_predicate.leaves(
+            env,
+            narrowed,
+            !self.explicit_type_predicate,
+            checking,
+            &mut leaves,
+        )?;
         if !wholes.is_empty() {
             self.wholes_by_member(env, &wholes, &mut leaves)?;
         }
@@ -1983,7 +1984,7 @@ impl<R: Rt> PatternNode<R> {
                 l.typ = scrut.clone()
             }
         }
-        for l in leaves.iter().filter(|l| l.fresh || tests_error) {
+        for l in leaves.iter().filter(|l| l.fresh || self.explicit_type_predicate) {
             if let Some(b) = env.by_id.get(&l.id) {
                 b.typ.check_contains(env, &l.typ)?;
             }
@@ -2077,17 +2078,11 @@ impl<R: Rt> PatternNode<R> {
             &type_predicate,
             &spec.structure_predicate,
         )?;
-        // Under an inferred predicate a capture's type is unknown until
-        // the select narrows the arm against its scrutinee
-        // (`bind_narrowed`); the guard and the arm body compile over the
-        // cell.
         let mut retype = |id| ctx.env.retype(id, Type::empty_tvar());
-        match &type_predicate {
-            Type::Primitive(p) if explicit && *p == Typ::Error => {
-                structure_predicate.ids(&mut retype)
-            }
-            _ if !explicit => structure_predicate.fresh_ids(&mut retype),
-            _ => (),
+        if explicit {
+            structure_predicate.ids(&mut retype);
+        } else {
+            structure_predicate.fresh_ids(&mut retype);
         }
         let guard = spec
             .guard
