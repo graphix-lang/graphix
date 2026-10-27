@@ -1040,15 +1040,30 @@ impl Drop for GiveBack {
     }
 }
 
+/// Hold stderr while the display runs, only when it is the display's own
+/// output: a redirected stderr (a debug log) is written straight through.
 #[cfg(unix)]
 fn hold_stderr() -> Option<StderrHeld> {
+    if !same_file(1, 2) {
+        return None;
+    }
     StderrHeld::hold().inspect_err(|e| error!("stderr stays on the terminal: {e:?}")).ok()
+}
+
+/// Whether descriptors `a` and `b` name one file.
+#[cfg(unix)]
+fn same_file(a: libc::c_int, b: libc::c_int) -> bool {
+    let stat = |fd| {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        (unsafe { libc::fstat(fd, &mut st) } == 0).then_some((st.st_dev, st.st_ino))
+    };
+    matches!((stat(a), stat(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// The terminal while the display holds it: raw mode, the alternate
 /// screen, bracketed paste, its events and stderr. Dropping it gives all
 /// of that back, the event reader first.
-// CR claude for claude: [bug/medium] Live holds stderr but not stdout. println, print and
+// XCR claude for claude: [bug/medium] Live holds stderr but not stdout. println, print and
 // log's default `Stdout destination write straight into the alternate screen between
 // frames, and ratatui never erases the text. Either draw through a dup of the original
 // stdout (or /dev/tty) and hold fd 1 the way StderrHeld holds fd 2, replaying it when
@@ -1058,6 +1073,15 @@ fn hold_stderr() -> Option<StderrHeld> {
 // document that stdout belongs to the display (no hold of fd 1). Hold stderr only when
 // fd 2 is a terminal: a redirected stderr (2>log, the usual TUI debug log) is written
 // straight through.
+// 2026-10-27 claude: Built as ruled. stdout belongs to the display:
+// book/src/ui/tui/overview.md, "Printing While a TUI Runs", says so and points debug
+// output at stderr. stderr is held only when it is the display's own output (fd 2 names
+// the same file as fd 1, same device and inode), so a redirected stderr (2>debug.log) is
+// written straight through and tail -f follows it live. Same file rather than
+// is_terminal, because the danger is stderr landing in the display:
+// stderr_never_reaches_the_alternate_screen (stderr dup'd onto the display's stream)
+// still holds. Pin: terminal_test::a_redirected_stderr_is_written_while_displaying (fails
+// with the hold unconditional).
 struct Live {
     events: Fuse<EventStream>,
     terminal: DefaultTerminal,

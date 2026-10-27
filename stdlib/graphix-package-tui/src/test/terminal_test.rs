@@ -321,3 +321,32 @@ async fn ctrl_c_is_read_while_work_waits() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// A stderr redirected away from the display (a debug log) is not held:
+/// what the program writes reaches the file while the display runs.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_redirected_stderr_is_written_while_displaying() -> anyhow::Result<()> {
+    use std::{io::Write, os::fd::AsRawFd};
+    if let Some(output) =
+        in_child("a_redirected_stderr_is_written_while_displaying", Some(b""), || {
+            let path = std::env::temp_dir()
+                .join(format!("graphix-tui-stderr-{}.log", std::process::id()));
+            let log = std::fs::File::create(&path)?;
+            if unsafe { libc::dup2(log.as_raw_fd(), 2) } < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let live = crate::Live::take(false)?;
+            std::io::stderr().write_all(b"LOGGED\n")?;
+            let seen = std::fs::read(&path)?;
+            drop(live);
+            let _ = std::fs::remove_file(&path);
+            anyhow::ensure!(seen == b"LOGGED\n", "held while displaying: {seen:?}");
+            Ok(())
+        })
+        .await?
+    {
+        assert!(output.status.success(), "{output:?}");
+    }
+    Ok(())
+}
