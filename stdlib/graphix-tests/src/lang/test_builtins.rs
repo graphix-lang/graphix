@@ -1,15 +1,19 @@
 // Fixtures over builtins only a test registers: Rust that panics, a
-// function value retyped past the checker, and a builtin's quantifier no
-// argument can carry a value of; and `test_note`, which other fixtures
-// register to watch what runs.
+// function value retyped past the checker, a builtin's quantifier no
+// argument can carry a value of, and an effect queued at every walk; and
+// `test_note`, which other fixtures register to watch what runs.
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
-use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
+use graphix_compiler::{
+    Apply, BindId, BuiltIn, CompileCtx, Effect, ExecCtx, Node, PruneMode, Rt, Scope,
+    TagValue, UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
+};
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_builtin,
     testing::{Mode, TestState},
 };
+use netidx_core::pack::PackError;
 use netidx_value::Value;
 use parking_lot::Mutex;
 use std::{
@@ -96,6 +100,63 @@ fn fc_last(args: &[Value]) -> Option<Value> {
 }
 
 fast_builtin!(Last, LastEv, "test_last", fc_last);
+
+/// `test_unmarked_effect(x)` is `x`, and queues a runtime call at every
+/// walk whether or not anything it reads was delivered: the shape of a
+/// node whose input forgot to mark its boundary.
+#[derive(Debug)]
+struct UnmarkedEffect {
+    id: BindId,
+    out: TagValue,
+}
+
+impl UnmarkedEffect {
+    fn new() -> Box<Self> {
+        Box::new(Self { id: BindId::new(), out: TagValue::phantom() })
+    }
+}
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for UnmarkedEffect {
+    const NAME: &str = "test_unmarked_effect";
+    const EFFECT: Effect = Effect::Sync;
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut CompileCtx<R, E>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Self::new())
+    }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<'_, R, E>,
+        _from: &[Node<R, E>],
+        _buf: &mut &[u8],
+    ) -> std::result::Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Self::new())
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for UnmarkedEffect {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        from: &mut [Node<R, E>],
+    ) -> &TagValue {
+        let tv = from[0].update(ctx).clone();
+        ctx.rt.cancel_timer(self.id);
+        self.out.set(tv)
+    }
+
+    fn image_encode(&self, _buf: &mut ImageBuf) -> std::result::Result<(), PackError> {
+        Ok(())
+    }
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+}
 
 async fn run(code: &str, mode: Mode) -> Result<Vec<Value>> {
     let setup = |ctx: &mut TestState| {
@@ -215,6 +276,33 @@ async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// The prune audit walks a boundary nothing marked and refuses what that
+// walk queues for the runtime, as it refuses a publication: a statement
+// whose effect a missed mark would drop under real pruning.
+#[tokio::test(flavor = "multi_thread")]
+async fn prune_audit_refuses_a_queued_effect() -> Result<()> {
+    let code = "{
+  let n = 0;
+  select n { x if x < 3 => n <- (x ~ n) + 1, _ => never() };
+  let leak = |x: i64| -> i64 'test_unmarked_effect;
+  leak(1);
+  n
+}";
+    let run = |prune: PruneMode| {
+        let setup = move |ctx: &mut TestState| {
+            ctx.register_builtin::<UnmarkedEffect>().unwrap();
+            ctx.control.set_prune_mode(prune);
+        };
+        run_delta_with(code, Mode::Interp, setup, Duration::from_millis(300))
+    };
+    let walked = run(PruneMode::Off).await?.values;
+    assert_eq!(walked, (0..=3).map(Value::I64).collect::<Vec<_>>());
+    match run(PruneMode::Audit).await {
+        Err(e) if e.to_string().contains("the runtime died") => Ok(()),
+        r => panic!("the audit passed a queued effect: {:?}", r.map(|d| d.values)),
+    }
 }
 
 modes!(

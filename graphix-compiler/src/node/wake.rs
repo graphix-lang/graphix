@@ -7,39 +7,55 @@ use crate::{
     BindId, Event, ExecCtx, Refs, Rt, TagValue, UserEvent, branch::Prior, env::Env,
 };
 use nohash::{IntMap, IntSet};
+use parking_lot::Mutex;
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::mem;
 use triomphe::Arc;
 
 /// What an evaluation catching up owes the inputs it learns only as it
 /// runs (a callee bound at its dispatch, a reference's new target): the
-/// fire of one written after `since`, the last cycle the evaluating arm
-/// was awake, unless an enclosing select tracks it, whose bits decide.
+/// fire of one written from `unseen` on, while the evaluating arm slept,
+/// unless the innermost enclosing select that tracks it has no fire bit
+/// for it.
 #[derive(Debug)]
 pub(crate) struct CatchUp {
-    since: u64,
+    /// The first cycle whose writes the evaluating arm did not see.
+    unseen: u64,
+    /// The inputs the arms of this scope's select read.
     tracked: Arc<IntSet<BindId>>,
+    /// Their fires no arm evaluation has read.
+    pending: Arc<IntSet<BindId>>,
+    /// The pending fires this evaluation was owed: it read them, so it
+    /// consumes their bits when it ends.
+    taken: Mutex<IntSet<BindId>>,
     outer: Option<Arc<CatchUp>>,
 }
 
 impl CatchUp {
-    fn tracks(&self, id: &BindId) -> bool {
+    /// Whether a fire of `id` no reader saw is this evaluation's: by the
+    /// bit of the innermost select that tracks `id`, which it takes.
+    fn owes(&self, id: &BindId) -> bool {
         let mut scope = Some(self);
         while let Some(s) = scope {
             if s.tracked.contains(id) {
-                return true;
+                let owed = s.pending.contains(id);
+                if owed {
+                    s.taken.lock().insert(*id);
+                }
+                return owed;
             }
             scope = s.outer.as_deref();
         }
-        false
+        true
     }
 }
 
-/// Whether the catch-up scope owes `id` a fire: it was written after the
-/// arm was last awake, untracked, and is not delivered this cycle.
+/// Whether the catch-up scope owes `id` a fire: it was written while the
+/// arm slept, is not delivered this cycle, and no reader saw its fire.
 pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) -> bool {
     let Some(scope) = &ctx.catch_up else { return false };
-    // CR claude for claude: [bug/medium] [bug/medium] This refuses every input any arm
+    // XCR claude for claude: [bug/medium] [bug/medium] This refuses every input any arm
     // of an enclosing select tracks, leaving it to that select's bits, but
     // TrackedFires::deliver injects only the bits the waking arm names itself (callees
     // left out). So an input the waking arm reads only through a callee bound fresh at
@@ -51,8 +67,17 @@ pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) ->
     // asks the tracker). probe:
     // design/review-2026-10-26/repro/c-prune-wake-tracked-elsewhere.gx
     // (c-prune-wake-03)
-    !scope.tracks(id)
-        && !ctx.event.variables.contains_key(id)
+    // 2026-10-27 claude: Fixed: a CatchUp scope carries its select's fire bits
+    // (TrackedFires::pending, now an Arc shared with the scope) and CatchUp::owes
+    // decides an input a select around it tracks by the innermost such select's bit:
+    // owed only while the bit is pending, and the evaluation records it in
+    // CatchUp::taken, which TrackedFires::ran removes from pending when the scope
+    // closes, so the fire is caught up once. The probe now ends [0:1] in both engines
+    // (graphix-fuzz check AGREE). Pin:
+    // lang::select::caught_up_once_through_a_fresh_callee ([105, -1, -2, -3, -4, 1, -6,
+    // -8]; without the bit the 1 is missing, without the consumption the arm entered
+    // after gets the fire again).
+    !ctx.event.variables.contains_key(id)
         && ctx
             .rt
             .store_get(id)
@@ -79,7 +104,8 @@ pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) ->
             // store_insert_standing. The probe's last cycle is [] in every engine. Pin:
             // lang::select::quiet_republish_is_owed_no_fire (interp, jit, par, jit_par;
             // fails without the fix with a last [1, 1]).
-            .is_some_and(|(tv, stamp)| *stamp > scope.since && !tv.tag().is_bottom())
+            .is_some_and(|(tv, stamp)| *stamp >= scope.unseen && !tv.tag().is_bottom())
+        && scope.owes(id)
 }
 
 /// Deliver, fired at its standing value, each input `fill` names that the
@@ -136,10 +162,10 @@ pub(crate) struct TrackedFires {
     /// of. Reading a facet consumes the input's fire; the facet itself
     /// is never delivered.
     consumes: Vec<IntSet<BindId>>,
-    /// The union of `per_arm`'s keys, each with how many arms read it.
-    all: IntMap<BindId, u32>,
+    /// The union of `per_arm`'s keys.
+    all: Inputs,
     /// Sound fires no arm evaluation has consumed yet.
-    pending: IntSet<BindId>,
+    pending: Arc<IntSet<BindId>>,
     /// A seq step's `let` fires, the entry of the first later step to
     /// read them: only an entered step takes them.
     carried: IntSet<BindId>,
@@ -147,27 +173,57 @@ pub(crate) struct TrackedFires {
     /// evaluation, which names what a node knows only once it ran (a
     /// `Deref`'s target).
     ran: Vec<bool>,
-    /// Per arm: the last cycle it was awake.
+    /// Per arm: where it stands in time.
     clock: Vec<ArmClock>,
-    /// `all`'s keys for a catch-up scope, built when one opens after
-    /// `all` changed.
-    keys: Option<Arc<IntSet<BindId>>>,
 }
 
-/// An arm's last cycle awake, as the arm stands.
+/// The inputs a tracker's arms read, each with how many arms read it,
+/// and the set of them a catch-up scope shares.
+#[derive(Debug, Default)]
+struct Inputs {
+    counts: IntMap<BindId, u32>,
+    keys: Arc<IntSet<BindId>>,
+}
+
+impl Inputs {
+    /// One more arm reads `id`.
+    fn add(&mut self, id: BindId) {
+        let n = self.counts.entry(id).or_default();
+        *n += 1;
+        if *n == 1 {
+            Arc::make_mut(&mut self.keys).insert(id);
+        }
+    }
+
+    /// One arm fewer reads `id`: whether no arm reads it now.
+    fn drop_one(&mut self, id: &BindId) -> bool {
+        let Some(n) = self.counts.get_mut(id) else { return false };
+        *n -= 1;
+        if *n > 0 {
+            return false;
+        }
+        self.counts.remove(id);
+        Arc::make_mut(&mut self.keys).remove(id);
+        true
+    }
+}
+
+/// An arm's place in time, as the arm stands.
 #[derive(Debug, Clone, Copy)]
 enum ArmClock {
     /// It ran in this cycle and has not fallen asleep since.
     Awake(u64),
-    /// It was last awake in this cycle, the tracker's build cycle if it
-    /// never ran.
+    /// Asleep, it saw no write from this cycle on: the tracker's build
+    /// cycle if it never ran.
     Asleep(u64),
 }
 
 impl ArmClock {
-    fn awake_until(self) -> u64 {
+    /// The first cycle whose writes the arm did not see.
+    fn unseen(self) -> u64 {
         match self {
-            ArmClock::Awake(c) | ArmClock::Asleep(c) => c,
+            ArmClock::Awake(c) => c + 1,
+            ArmClock::Asleep(c) => c,
         }
     }
 
@@ -175,7 +231,7 @@ impl ArmClock {
     /// until the cycle before.
     fn fell_asleep(&mut self, cycle: u64) {
         if let ArmClock::Awake(ran) = *self {
-            *self = ArmClock::Asleep(ran.max(cycle.saturating_sub(1)))
+            *self = ArmClock::Asleep((ran + 1).max(cycle))
         }
     }
 }
@@ -217,11 +273,11 @@ impl TrackedFires {
         let mut t = TrackedFires {
             per_arm: (0..n).map(|_| IntSet::default()).collect(),
             consumes: (0..n).map(|_| IntSet::default()).collect(),
-            all: IntMap::default(),
-            pending: IntSet::default(),
+            all: Inputs::default(),
+            pending: Arc::default(),
             carried: IntSet::default(),
             ran: vec![false; n],
-            // CR claude for claude: [bug/medium] A never-run arm's `since` is the build
+            // XCR claude for claude: [bug/medium] A never-run arm's `since` is the build
             // cycle, and `owed` needs `stamp > since`. So a variable written in the
             // cycle the select was first updated (a let's birth, or a write landing as
             // the select is born) is not owed. A callee bound through a function value
@@ -238,8 +294,22 @@ impl TrackedFires {
             // enclosing catch-up scope's since, so a nested arm's first entry inside a woken or
             // first-entered arm already counts from the enclosing arm's cycle; the top-level
             // build-cycle case this CR names is unchanged.
+            // 2026-10-27 claude: Fixed: ArmClock now holds the first cycle whose writes the arm did
+            // not see (Awake(c) -> c+1; Asleep(u) -> u; a never-run arm is Asleep(build cycle)),
+            // CatchUp::unseen is that cycle and owed tests stamp >= unseen, so a write in the
+            // tracker's build cycle is owed at a first entry through a fresh callee as the bits owe
+            // it to a static one. Applies to every TrackedFires (select, guards, seq machine,
+            // paused slots, Absent), which the x-refs-catchup-05 note on collection.rs named as the
+            // same question. The probe prints static 1 / dynamic 1 in both engines. Pins:
+            // lang::select::build_cycle_{static,dynamic}_callee_catches_up (the dynamic one fails
+            // in all four modes with the never-run clock at build cycle + 1).
+            // 2026-10-27 claude: The gate showed lang::collection::collection_refs_reach_its_slots
+            // encoded the old split: its slot callback is a function value, and it now catches up
+            // a's birth at the arm's first entry ([2], [2], [9] instead of [9]), which is what the
+            // same program prints with a static callee (checked: both print 2 [2], 3 [2], 9 [9]).
+            // Its expectation and comment were updated to the rule that static and dynamic callees
+            // agree.
             clock: vec![ArmClock::Asleep(cycle); n],
-            keys: None,
         };
         for i in 0..n {
             let mut r = Refs::default();
@@ -247,7 +317,7 @@ impl TrackedFires {
             Self::arm_refs(env, &r, &mut t.per_arm[i], &mut t.consumes[i]);
         }
         for id in t.per_arm.iter().flatten() {
-            *t.all.entry(*id).or_default() += 1;
+            t.all.add(*id);
         }
         t
     }
@@ -282,14 +352,23 @@ impl TrackedFires {
     // skipped refresh that misses a new input loses that input's catch-up, a semantics
     // change. Gating on rebuilds plus a per-arm count of the Deref retargets under it
     // would do; it wants a pin of a woken arm whose reference moved while it slept.
+    // 2026-10-27 claude: Looked at for L2-b07 and left. Gating refresh on
+    // Control::rebuilds alone would be sound only if every way an arm's refs grow bumps
+    // it: CallSite::bind and ExecCtx::apply_deferred do; Bind::address's moved target
+    // (a Deref retarget) does not and would have to; and every Update::refs or
+    // Apply::refs reading run-time state must be on that list (28 impls: callsite,
+    // collection slots, bind's Deref, array's group predicate, core's handler/queuefn,
+    // http::serve and sys::net per-request instances). A refs shrink skipped is
+    // harmless (a stale input only injects a fire no node reads). Wants that inventory
+    // plus a pin of a woken arm whose Deref moved while it slept before it is safe to
+    // land.
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
-        self.keys = None;
         let Self { per_arm, consumes, all, pending, carried, .. } = self;
         let mut r = Refs::default();
         fill(&mut r);
         let old = mem::take(&mut per_arm[i]);
         Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
-        // CR claude for claude: [perf/medium] refresh rebuilds `all` from every arm's
+        // XCR claude for claude: [perf/medium] refresh rebuilds `all` from every arm's
         // map and then retains `pending`, at every deselect. A seq machine deselects at
         // every step completion, so a run of S steps costs O(S^2). observe_except also
         // reads every tracked id with read_var on every update, whether or not anything
@@ -324,21 +403,25 @@ impl TrackedFires {
         // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
         // needed. Check whether walk pruning's marks now answer observe_except's
         // per-update reads; if they do, close.
+        // 2026-10-27 claude: The last listed item is done with c-prune-wake-05:
+        // observe_except builds the evaluated arms' inputs once per call (a pooled set)
+        // instead of testing each tracked input against every evaluated arm; at a
+        // same-cycle seq run of 1600 steps with 4 inputs each this scan went from 10 ms
+        // to 0.2 ms (debug). The counts, the bit drop and the label search were done
+        // 10-15. What stands is observe_except reading every tracked input on every
+        // update, which c-prune-wake-06 carries; I X this one so the two are not open
+        // for one cost. No pin (perf).
         for id in per_arm[i].iter() {
             if !old.contains(id) {
-                *all.entry(*id).or_default() += 1;
+                all.add(*id);
             }
         }
         for id in old.iter() {
-            if !per_arm[i].contains(id)
-                && let Some(n) = all.get_mut(id)
-            {
-                *n -= 1;
-                if *n == 0 {
-                    all.remove(id);
-                    pending.remove(id);
-                    carried.remove(id);
+            if !per_arm[i].contains(id) && all.drop_one(id) {
+                if pending.contains(id) {
+                    Arc::make_mut(pending).remove(id);
                 }
+                carried.remove(id);
             }
         }
     }
@@ -359,12 +442,13 @@ impl TrackedFires {
         fill(&mut r);
         let (mut inputs, mut consumed) = (IntSet::default(), IntSet::default());
         Self::arm_refs(env, &r, &mut inputs, &mut consumed);
-        self.keys = None;
         let Self { per_arm, consumes, all, pending, .. } = self;
         for id in inputs {
             if per_arm[i].insert(id) {
-                *all.entry(id).or_default() += 1;
-                pending.remove(&id);
+                all.add(id);
+                if pending.contains(&id) {
+                    Arc::make_mut(pending).remove(&id);
+                }
             }
         }
         consumes[i].extend(consumed);
@@ -408,14 +492,30 @@ impl TrackedFires {
         // belongs to no dirty arm, so GRAPHIX_PRUNE=audit and the fuzzer's Pair::Prune
         // check it. Gain to expect: x-perf-runtime-05.py (d) puts the scan at about
         // 0.22 ms a cycle for 1600 idle arms, nothing measurable at a handful.
-        for id in all.keys() {
+        // 2026-10-27 claude: Looked at again for L2-b07 and left. A further hole in the
+        // filter's soundness argument: catch-up injections are not confined to Wake or
+        // Step views. TrackedFires::deliver runs at every arm evaluation, a Cycle-view
+        // one included (a guard flip or a scrutinee routing to an arm with a pending
+        // bit), and wake::inject writes the event without marking any reader, so a
+        // select nested in that arm observes the injected input as fired in a Cycle
+        // view with no boundary of its arms marked; the filter would stop it recording
+        // that bit for its other arms, a semantics change. Making inject mark its
+        // readers would close that one (it only costs walks). With the scan's cost
+        // about 0.2 ms a cycle at 1600 idle arms, the Audit check suggested on 10-20 is
+        // still the way in.
+        let seen: LPooled<IntSet<BindId>> =
+            evaluated.iter().flat_map(|i| per_arm[*i].iter().copied()).collect();
+        for id in all.keys.iter() {
             let carry = carried.is_some_and(|c| c.contains(id));
-            if (carry || !evaluated.iter().any(|i| per_arm[*i].contains(id)))
+            if (carry || !seen.contains(id))
                 && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
                 && tv.tag().is_fired()
             {
-                let bits = if carry { &mut *carried_bits } else { &mut *pending };
-                bits.insert(*id);
+                if carry {
+                    carried_bits.insert(*id);
+                } else if !pending.contains(id) {
+                    Arc::make_mut(pending).insert(*id);
+                }
             }
         }
     }
@@ -430,8 +530,7 @@ impl TrackedFires {
         if !ctx.event.init() {
             return None;
         }
-        let all = &self.all;
-        // CR claude for claude: [perf/medium] [perf/medium] In a seq machine every step
+        // XCR claude for claude: [perf/medium] [perf/medium] In a seq machine every step
         // completion refreshes (keys = None), so each step entry, a Step view, rebuilds
         // here an IntSet of every input any step reads. deliver also scans the whole
         // pending set for the step's own bits. A run of N same-cycle steps costs O(N x
@@ -443,16 +542,31 @@ impl TrackedFires {
         // per_arm set. probe:
         // design/review-2026-10-26/repro/c-prune-wake-seq-step-inputs.py
         // (c-prune-wake-05)
-        let tracked = self
-            .keys
-            .get_or_insert_with(|| Arc::new(all.keys().copied().collect()))
-            .clone();
+        // 2026-10-27 claude: Fixed in wake.rs: the tracked-input set a scope shares is
+        // kept current (wake::Inputs: counts plus an Arc'd key set moved by
+        // Arc::make_mut as a count reaches 1 or 0), so open clones an Arc instead of
+        // building a set; deliver iterates the smaller of pending and the arm's inputs;
+        // and observe_except builds the evaluated arms' inputs once (a pooled set)
+        // instead of scanning every evaluated arm per input, which was O(N x inputs)
+        // after a same-cycle run of N steps. Probe (debug, N=1600 K=3, timed inside
+        // SeqMachine::update_serial): machine update 155 ms -> 78 ms, the tracker's
+        // deliver+open+evaluated 63 ms -> 2 ms, observe_except 10 ms -> 0.2 ms. The
+        // rest of the 78 ms is the steps' own nodes and still grows ~3x per doubling of
+        // N, independent of the tracker (likely the pc readers of x-perf-runtime-04).
+        // No pin (perf).
+
         // an arm sleeps whenever the arm around it does
-        let since = match &ctx.catch_up {
-            Some(outer) => self.clock[i].awake_until().min(outer.since),
-            None => self.clock[i].awake_until(),
+        let unseen = match &ctx.catch_up {
+            Some(outer) => self.clock[i].unseen().min(outer.unseen),
+            None => self.clock[i].unseen(),
         };
-        let scope = CatchUp { since, tracked, outer: ctx.catch_up.clone() };
+        let scope = CatchUp {
+            unseen,
+            tracked: self.all.keys.clone(),
+            pending: self.pending.clone(),
+            taken: Mutex::default(),
+            outer: ctx.catch_up.clone(),
+        };
         Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))))
     }
 
@@ -463,8 +577,17 @@ impl TrackedFires {
         i: usize,
         outer: Option<Option<Arc<CatchUp>>>,
     ) {
-        if let Some(outer) = outer {
-            ctx.catch_up = outer;
+        if let Some(outer) = outer
+            && let Some(scope) = mem::replace(&mut ctx.catch_up, outer)
+        {
+            let taken = mem::take(&mut *scope.taken.lock());
+            drop(scope);
+            if !taken.is_empty() {
+                let pending = Arc::make_mut(&mut self.pending);
+                for id in taken.iter() {
+                    pending.remove(id);
+                }
+            }
         }
         // XCR claude for claude: [bug/high] last_run records the last cycle a walk
         // evaluated the arm, and wake::owed treats anything written after it as a fire
@@ -532,7 +655,7 @@ impl TrackedFires {
         carried.retain(|id| {
             let read = set.contains(id);
             if read {
-                pending.insert(*id);
+                Arc::make_mut(pending).insert(*id);
             }
             !read
         });
@@ -553,14 +676,18 @@ impl TrackedFires {
             return injected;
         }
         let Self { per_arm, consumes, pending, .. } = self;
+        let pending = Arc::make_mut(pending);
         if let Some(consumed) = consumes.get(i) {
             for id in consumed.iter() {
                 pending.remove(id);
             }
         }
         let Some(set) = per_arm.get(i) else { return injected };
-        let read: SmallVec<[BindId; 8]> =
-            pending.iter().filter(|id| set.contains(id)).copied().collect();
+        let read: SmallVec<[BindId; 8]> = if pending.len() <= set.len() {
+            pending.iter().filter(|id| set.contains(id)).copied().collect()
+        } else {
+            set.iter().filter(|id| pending.contains(id)).copied().collect()
+        };
         for id in read {
             pending.remove(&id);
             inject(ctx, id, &mut injected);

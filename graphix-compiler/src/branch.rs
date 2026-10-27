@@ -76,6 +76,28 @@ enum RtOp {
     WatchVar(mpsc::Receiver<GPooled<Vec<(BindId, Value)>>>),
 }
 
+impl RtOp {
+    /// The runtime call this op makes, unless it only registers or
+    /// drops a reader.
+    fn effect(&self) -> Option<&'static str> {
+        Some(match self {
+            RtOp::RefVar(..) | RtOp::UnrefVar(..) => return None,
+            RtOp::SetVar(..) => "set_var",
+            RtOp::SetLevel(..) => "set_level",
+            RtOp::PatchVar(..) => "patch_var",
+            RtOp::PatchLevel(..) => "patch_level",
+            RtOp::NotifySet(..) => "notify_set",
+            RtOp::ForgetWrites(..) => "forget_writes",
+            RtOp::SetTimer(..) => "set_timer",
+            RtOp::CancelTimer(..) => "cancel_timer",
+            RtOp::Spawn(..) => "spawn",
+            RtOp::SpawnVar(..) => "spawn_var",
+            RtOp::Watch(..) => "watch",
+            RtOp::WatchVar(..) => "watch_var",
+        })
+    }
+}
+
 /// A forked branch's runtime: deltas over its parent's store and
 /// reference paths (`None` = removed), and the log of everything else.
 pub struct ForkRt<R: Rt> {
@@ -915,6 +937,25 @@ fn merge_in_order<R: Rt, E: UserEvent>(
         ctx.rt.merge(rt);
         ctx.event.merge(event);
     }
+}
+
+/// Run `f` on a branch of its own forked from `ctx`, on this thread, and
+/// merge it back: the event `f` sees holds as its own entries only what
+/// `f` published. With `f`'s result, every runtime call `f` queued that
+/// does more than register or drop a reader, by name.
+pub(crate) fn alone<R: Rt, E: UserEvent, T>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    f: impl FnOnce(&mut ExecCtx<'_, R, E>) -> T,
+) -> (T, SmallVec<[&'static str; 4]>) {
+    // SAFETY: `ctx` is borrowed for this call and used again only after
+    // the branch merged, below
+    let mut b = unsafe { Branch::new(ctx) };
+    // a branch alone is no fork level
+    let shared = Shared { fork_depth: ctx.fork_depth, ..Shared::of(ctx) };
+    let t = f(&mut shared.ctx(&mut b));
+    let effects = b.rt.log.iter().filter_map(RtOp::effect).collect();
+    merge_in_order(ctx, [b]);
+    (t, effects)
 }
 
 /// Run `f`, one part of a fork, on a thread of the pool: under the

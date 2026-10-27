@@ -6,7 +6,7 @@
 
 use crate::{
     CompileCtx, ExecCtx, Node, NodeView, PruneMode, Refs, Rt, TagValue, Update,
-    UserEvent, View,
+    UserEvent, View, branch,
     expr::Expr,
     fusion::emit::{BodyCx, CompiledExpr},
     image::{
@@ -20,7 +20,6 @@ use crate::{
 use anyhow::Result;
 use graphix_types::BindId;
 use netidx_core::pack::PackError;
-use nohash::IntSet;
 
 #[derive(Debug)]
 pub struct Prune<R: Rt, E: UserEvent> {
@@ -105,7 +104,8 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     }
 
     /// The walk of `child` in `boundary`, which pruning would have
-    /// skipped: it must deliver the ridden `resident` and publish nothing.
+    /// skipped: it must deliver the ridden `resident`, publish nothing and
+    /// queue no effect.
     fn audit(
         boundary: &BoundaryRef,
         child: &mut Node<R, E>,
@@ -114,7 +114,7 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     ) -> TagValue {
         let mut expected = resident.clone();
         expected.ride();
-        // CR claude for claude: [test-gap/medium] The audit checks only the skipped
+        // XCR claude for claude: [test-gap/medium] The audit checks only the skipped
         // walk's production and this cycle's publications. A connect returns phantom
         // and its effect is a set_var for the next cycle, so a missed mark on a `<-`
         // statement passes the audit and every run! fixture while PruneMode::On
@@ -122,37 +122,49 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
         // same way. Count the effect ops the audited walk queues through RtView (or the
         // root's queued writes) and panic when there are any, as for a publication.
         // Found by reading; not run. (x-prune-04)
-        let before: IntSet<BindId> = ctx.event.variables.own_ids().collect();
-        let tv = ctx.in_boundary(Some(boundary), |ctx| child.update(ctx).clone());
+        // 2026-10-27 claude: Prune::audit now runs the audited walk on a branch of its
+        // own (branch::alone: serial, same fork depth, merged back) and panics when the
+        // branch's runtime log holds any call beyond registering or dropping a reader
+        // (set_var, set_level, patch_*, notify_set, forget_writes, timers, spawns,
+        // watches), as it does for a publication; the branch's event also holds exactly
+        // what the walk published, so the before-set is gone. Pin:
+        // lang::test_builtins::prune_audit_refuses_a_queued_effect (a test builtin that
+        // queues cancel_timer at every walk; under Audit the runtime dies naming
+        // 'queued ["cancel_timer"]', and passes silently with the effect check undone).
+        // graphix-tests passes under it (Interp and JitPar audit every skip).
+        let ((tv, published), effects) = branch::alone(ctx, |ctx| {
+            let tv = ctx.in_boundary(Some(boundary), |ctx| child.update(ctx).clone());
+            // a stale publication of what the store holds reads as no
+            // publication in a plain cycle
+            let standing = |id: &BindId, tv: &TagValue| {
+                !tv.tag().triggers()
+                    && ctx.rt.store_get(id).is_some_and(|(s, _)| {
+                        s.tag().is_bottom() == tv.tag().is_bottom()
+                            && (tv.tag().is_bottom()
+                                || s.with_value(|a| tv.with_value(|b| a == b)))
+                    })
+            };
+            let published: Vec<(BindId, TagValue)> = ctx
+                .event
+                .variables
+                .own_ids()
+                .map(|id| (id, ctx.event.variables.get(&id).cloned().expect("own")))
+                .filter(|(id, tv)| !standing(id, tv))
+                .collect();
+            (tv, published)
+        });
         let quiet = !tv.tag().triggers()
             && tv.tag().is_bottom() == expected.tag().is_bottom()
             && (tv.tag().is_bottom()
                 || tv.with_value(|a| expected.with_value(|b| a == b)));
-        // a stale publication of what the store holds reads as no
-        // publication in a plain cycle
-        let standing = |id: &BindId, tv: &TagValue| {
-            !tv.tag().triggers()
-                && ctx.rt.store_get(id).is_some_and(|(s, _)| {
-                    s.tag().is_bottom() == tv.tag().is_bottom()
-                        && (tv.tag().is_bottom()
-                            || s.with_value(|a| tv.with_value(|b| a == b)))
-                })
-        };
-        let published: Vec<(BindId, TagValue)> = ctx
-            .event
-            .variables
-            .own_ids()
-            .filter(|id| !before.contains(id))
-            .map(|id| (id, ctx.event.variables.get(&id).cloned().expect("own")))
-            .filter(|(id, tv)| !standing(id, tv))
-            .collect();
-        if !quiet || !published.is_empty() {
+        if !quiet || !published.is_empty() || !effects.is_empty() {
             panic!(
                 "GRAPHIX_PRUNE=audit: a boundary nothing marked changed in a cycle: \
-                 {:?} -> {:?}, published {:?}, at {} `{}`",
+                 {:?} -> {:?}, published {:?}, queued {:?}, at {} `{}`",
                 expected,
                 tv,
                 published,
+                effects,
                 child.spec().pos,
                 child.spec()
             )

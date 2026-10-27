@@ -390,7 +390,8 @@ marks its pollers (error handlers: `ErrorHandler::polled_by`). `Prune`
 is transparent to analyses (view, children, spec, `downcast_*`);
 `fusion::fuse` fuses its child inside it. `GRAPHIX_PRUNE=off|on|audit`
 (on by default; `Control::set_prune_mode`): the audit walks everything
-and panics where a skip would have changed a production or published;
+and panics where a skip would have changed a production, published or
+queued a runtime call;
 the fuzzer's `Pair::Prune` compares against `Mode::Unpruned`; a test
 fixture audits every skip (`testing::Mode::fixture_prune`), and a test
 that measures pruning sets `Mode::prune` in its setup.
@@ -813,9 +814,11 @@ node graph IS the IR — there is no parallel typed IR
   an enclosing one, is a facet of its scrutinee's delivery: reading it
   consumes that input's bit, and it is never delivered; an arm a guard's
   flip selects binds stale). An input an arm learns as it runs (a callee
-  a function value binds, a reference's new target) that no enclosing
-  select tracks is caught up by its write stamp against the last cycle
-  the arm was awake, walked or not (`node::wake::CatchUp`); a standing
+  a function value binds, a reference's new target) is caught up by its
+  write stamp against the arm's falling asleep, walked or not, and, where
+  a select around it tracks the input, only while the innermost such
+  select holds its fire bit, which the evaluation then consumes
+  (`node::wake::CatchUp`); a standing
   entry keeps its stamp (`branch::standing_stamp`). An input that
   went bottom during the sleep is bottom at the wake: a bottom input
   SETS a node's resident (`TagValue::set_bottom`), never rides it, and

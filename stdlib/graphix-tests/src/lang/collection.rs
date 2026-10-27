@@ -490,7 +490,8 @@ async fn collection_fires_on_a_stale_resize(mode: Mode) -> Result<()> {
 }
 
 // What a slot's run-time callback reads is the collection's: a fire it
-// missed while its arm slept is raised at the wake.
+// missed while its arm slept is raised at the wake, and `a`'s birth, which
+// no reader saw, at the arm's first entry, as through a static callee.
 async fn collection_refs_reach_its_slots(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
@@ -507,7 +508,8 @@ async fn collection_refs_reach_its_slots(mode: Mode) -> Result<()> {
         mode,
     )
     .await?;
-    assert_eq!(values, vec![Value::Array([Value::I64(9)].into())]);
+    let arr = |n| Value::Array([Value::I64(n)].into());
+    assert_eq!(values, vec![arr(2), arr(2), arr(9)]);
     Ok(())
 }
 

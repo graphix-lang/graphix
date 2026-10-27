@@ -100,23 +100,28 @@ at its first dispatch, and a reference's new target. For those a write
 stamps its variable with the cycle it landed in (the store's stamp); a
 standing entry (a `let`'s quiet republication at its wake, a formal
 re-seeded standing) is no write and keeps the stamp it had
-(`branch::standing_stamp`). Each arm records the last cycle it was awake
-(`node::wake::ArmClock`): a run sets it, and the arm's falling
-asleep (its deselect, a guard the chain passes by, the select's or the
-machine's own sleep while it is selected) moves it to the cycle before,
-so walk pruning, which skips a selected arm nothing marked, changes
-nothing; it is the tracker's first cycle until the arm runs. An arm
+(`branch::standing_stamp`). Each arm records the first cycle whose
+writes it did not see (`node::wake::ArmClock`): a run makes it the
+next cycle, and the arm's falling asleep (its deselect, a guard the
+chain passes by, the select's or the machine's own sleep while it is
+selected) makes it the cycle it fell asleep in, so walk pruning, which
+skips a selected arm nothing marked, changes nothing; until the arm
+runs it is the tracker's first cycle, which the arm never saw. An arm
 evaluated under a wake or step view opens a catch-up scope
 (`node::wake::CatchUp`): that cycle, no later than the enclosing
 scope's (an arm sleeps whenever the arm around it does), the select's
-tracked inputs and the scopes around it. A callee bound fresh inside
-the scope is delivered, FIRED for its update, each input of its body
-written after that cycle; a `Deref` reads such a target FIRED.
-An input an enclosing select tracks is left to that select's bits, so a
-fire another arm consumed is not raised twice; consumption of an input
-no arm names is not tracked, so two arms reading one only through
-function values may each catch it up. Pins:
+tracked inputs and fire bits, and the scopes around it. A callee bound
+fresh inside the scope is delivered, FIRED for its update, each input
+of its body written from that cycle on; a `Deref` reads such a target
+FIRED. An input a select around it tracks is owed only while the
+innermost such select holds its fire bit, and the evaluation that is
+owed it consumes the bit when it ends, so a fire another arm consumed
+is not raised twice and one no arm read is raised once; consumption of
+an input no arm names is not tracked, so two arms reading one only
+through function values may each catch it up. Pins:
 `lang::select::first_entry_{static,dynamic}_callee_catches_up`,
+`lang::select::build_cycle_{static,dynamic}_callee_catches_up`,
+`lang::select::caught_up_once_through_a_fresh_callee`,
 `lang::select::quiet_republish_is_owed_no_fire`,
 `lang::prune::{catch_up_counts_from_the_deselect,
 catch_up_counts_from_the_enclosing_sleep, guard_catch_up_counts_from_the_pass,

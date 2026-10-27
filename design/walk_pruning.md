@@ -207,8 +207,11 @@ Pruning changes no output, so it has an exact oracle.
 - **`GRAPHIX_PRUNE=off|on|audit`** (`PruneMode` on `Control`, `on` by
   default): `off` walks every boundary; `audit` walks every boundary
   and panics where one it would have skipped delivered anything but its
-  ridden resident, or published an entry that fires or differs from the
-  store. A failure names the boundary's spec: a missing mark.
+  ridden resident, published an entry that fires or differs from the
+  store, or queued a runtime call (a write, a timer, a spawn: the walk
+  runs on a branch of its own, `branch::alone`, whose log names them).
+  A failure names the boundary's spec: a missing mark. Pin:
+  `lang::test_builtins::prune_audit_refuses_a_queued_effect`.
 - **The fuzzer**'s `Pair::Prune` compares the pruned node-walk with
   `Mode::Unpruned`, per-cycle trace, bit for bit; the other pairs run
   pruned.
@@ -309,8 +312,9 @@ have left the boundaries in between unmarked.)
 **Modes.** `PruneMode::{Off, On, Audit}` on `Control`, from
 `GRAPHIX_PRUNE` (default `on`); the audit walks every boundary and panics
 where one it would have skipped delivered anything but its ridden
-resident or published an entry that fires or differs from the store (a
-stale republication of the store's value reads as none). `Control::boundaries()` counts
+resident, published an entry that fires or differs from the store (a
+stale republication of the store's value reads as none) or queued a
+runtime call. `Control::boundaries()` counts
 boundaries walked and skipped. The fuzzer's `Pair::Prune` compares
 `Mode::Unpruned` (the node-walk walking every boundary) with the pruned
 node-walk.

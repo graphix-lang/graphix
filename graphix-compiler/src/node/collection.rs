@@ -1112,6 +1112,10 @@ fn woken_slots<R: Rt, E: UserEvent, T>(
     // with the fix undone). The scope's since is the tracker's build cycle, the cycle
     // the source went bottom, so a write stamped in that very cycle is still not owed
     // to such a callee (the build-cycle question of tests-select-03).
+    // 2026-10-27 claude: The build-cycle case is closed by tests-select-03: a never-run
+    // ArmClock now owes writes from the tracker's build cycle on (CatchUp::unseen,
+    // stamp >= unseen), so a write stamped in the cycle the source went bottom is owed
+    // to a callee bound fresh at the resume.
     let caught_up = missed.deliver(ctx, 0);
     // every slot runs under an init view: a standing one's wake, a fresh one's birth
     let scope = ctx.under(View::Wake, |ctx| missed.open(ctx, 0));

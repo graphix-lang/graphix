@@ -1657,6 +1657,45 @@ run!(first_entry_static_callee_catches_up, &FIRST_ENTRY_CALLEE.replace("CALL", "
 
 run!(first_entry_dynamic_callee_catches_up, &FIRST_ENTRY_CALLEE.replace("CALL", "gd"), prints("i64:6"); FuseExpect::Jit);
 
+// The same with the fire in the cycle the select is born: the arm never
+// saw it, so its first entry is owed it through either callee.
+const FIRST_ENTRY_CALLEE_BUILD_CYCLE: &str = r#"
+{
+  let a = 0;
+  let mode = 0;
+  let gs = |x| a ~ x;
+  let gd = select mode { 0 => |x| a ~ x, _ => |x| x };
+  let n = 0;
+  n <- select n { k if k < 3 => k + 1, _ => never() };
+  select n { 1 => CALL(n), _ => never() }
+}
+"#;
+
+run!(build_cycle_static_callee_catches_up, &FIRST_ENTRY_CALLEE_BUILD_CYCLE.replace("CALL", "gs"), prints("i64:1"); FuseExpect::Jit);
+
+run!(build_cycle_dynamic_callee_catches_up, &FIRST_ENTRY_CALLEE_BUILD_CYCLE.replace("CALL", "gd"), prints("i64:1"); FuseExpect::Jit);
+
+// x fires while no arm that reads it is selected. The arm that wakes
+// with a fresh callee reading x is owed that fire though another arm of
+// the select names x too, and takes it: the other arm, entered after,
+// is not caught up on it again.
+const CAUGHT_UP_ONCE_THROUGH_A_CALLEE: &str = r#"
+{
+  let n = 0;
+  n <- select n { k if k < 8 => k + 1, _ => never() };
+  let x = 0;
+  x <- select n { 2 => 5, _ => never() };
+  let g: fn(v: i64) -> i64 = |v| v + 100;
+  g <- select n { 3 => |v| count(x), _ => never() };
+  let s = select n { 0 | 5 => g(5), 7 => count(x), _ => 0 - n };
+  array::group(s, |_, v| v == -8)
+}
+"#;
+
+run!(caught_up_once_through_a_fresh_callee, CAUGHT_UP_ONCE_THROUGH_A_CALLEE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [105, -1, -2, -3, -4, 1, -6, -8])
+}; FuseExpect::Jit);
+
 // An arm-local `<-` target persists across the arm's sleep: a wake
 // resumes the arm, so the written 11 survives.
 // findings/arm-local-bind-aug2026/
