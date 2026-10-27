@@ -364,6 +364,7 @@ impl LocalKind {
 
 /// One in-scope kernel local: a two-register Value tagged by `kind`.
 /// The payload Variable's CLIF type follows `kind`.
+#[derive(Clone)]
 pub(super) struct Local {
     pub(super) name: ArcStr,
     pub(super) words: ValueVar,

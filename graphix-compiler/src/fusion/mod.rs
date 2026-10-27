@@ -547,7 +547,7 @@ impl FusionCtx {
     }
 
     /// Whether this context can fuse: its JIT builds.
-    pub(crate) fn available(&self) -> bool {
+    pub fn available(&self) -> bool {
         self.jit().is_ok()
     }
 

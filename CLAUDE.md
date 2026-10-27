@@ -222,7 +222,8 @@ records every place its module resolution looked, each file read and each
 found absent (`expr::Probes`), and a load re-verifies them). The
 runtime restores the first of the program entry and the registration
 entry that reads, else compiles; an entry that fails to read leaves the
-session untouched, and whatever was compiled is written. `--no-cache`
+session untouched, and whatever was compiled is written, except a
+program that asked for fusion where the JIT does not build. `--no-cache`
 disables the cache, `--warm` writes and exits (failing when it cannot);
 the header carries the ISA, the build's fingerprint (its helpers,
 libcalls and version, `build_fingerprint`), refused on a mismatch as the

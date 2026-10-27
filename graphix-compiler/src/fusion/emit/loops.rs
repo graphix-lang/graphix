@@ -124,14 +124,7 @@ fn is_unit_or_null(typ: &Type) -> bool {
     matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
 }
 
-/// Whether a frozen type admits `null`, filter_map's drop marker.
-/// An unknown shape answers true, so the caller keeps interpreting.
 /// Whether a filter_map callback's result type may be `Keep(..)`.
-// CR claude for claude: [readability/low] The first two doc lines above this function
-// belong to frozen_may_be_null below it. They say an unknown shape answers true, but
-// holds_keep answers false there. Move them onto frozen_may_be_null, which now has no
-// doc. Found by reading; not run. Also reported as (x-engine-collections-04),
-// (x-kind-markers-08). (f-call-flow-04)
 fn holds_keep(t: &Type) -> bool {
     t.with_deref(|t| match t {
         Some(Type::Variant(tag, _, _)) => &**tag == "Keep",
@@ -140,6 +133,8 @@ fn holds_keep(t: &Type) -> bool {
     })
 }
 
+/// Whether a frozen type admits `null`, filter_map's drop marker.
+/// An unknown shape answers true, so the caller keeps interpreting.
 fn frozen_may_be_null(t: &Type) -> bool {
     t.with_deref(|t| match t {
         Some(Type::Primitive(p)) => p.contains(Typ::Null),
@@ -361,8 +356,7 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
-    // a callback that may keep with `Keep node-walks: the loop unwraps nothing
-    // CR claude for claude: [perf/medium] Every derived Collection map and filter now
+    // XCR claude for claude: [perf/medium] Every derived Collection map and filter now
     // passes a callback returning `Keep (the trait defaults in core's mod.gxi, and
     // Map's filter_map wrapper). So this early return sends all of them to the
     // node-walk. A user collection's Collection::map and Collection::filter, and
@@ -375,15 +369,25 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     // reason in the refusal. probe:
     // design/review-2026-10-26/repro/f-call-flow-keep-derived-map-defuses.gx
     // (f-call-flow-01)
-    if holds_keep(&output_type) {
-        return Ok(None);
-    }
-    let Some(output_element) = kernel_abi::nullable_inner(&output_type) else {
+    // 2026-10-26 claude: emit_filter_map_kind now runs a callback whose frozen return
+    // may be `Keep through the filter_map loop (a never-null one too, not the map
+    // loop), and the loop pushes each kept result through
+    // graphix_value_buf_push_kept(_borrowed), which apply node::collection::kept, the
+    // one rule the node-walk's MapQ finish also uses. The trait's map and filter
+    // defaults over a program-defined collection, and `Keep callbacks over Array,
+    // List and Map, fuse. A callback mixing bare values and `Keep ([i64, null,
+    // `Keep(i64)], and Map's derived filter_map wrapper in core, whose f(v) carries
+    // the declared ['b, null, `Keep('b)]) still node-walks: that union has no kernel
+    // encoding (x-kind-markers-06). design/collection_intrinsics.md updated. Pin:
+    // graphix-tests lang::collection::filter_map_keep_fuses (#[native] on each; fails
+    // in jit/jit_par with the early return restored).
+    let keeps = holds_keep(&output_type);
+    let output_element = match kernel_abi::nullable_inner(&output_type) {
+        Some(element) => element,
+        None if keeps => output_type,
         // A callback that can never return null makes filter_map a map.
-        if frozen_may_be_null(&output_type) {
-            return Ok(None);
-        }
-        return emit_map_kind(cx, source, body, param, element_type, flavor);
+        None if frozen_may_be_null(&output_type) => return Ok(None),
+        None => return emit_map_kind(cx, source, body, param, element_type, flavor),
     };
     let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
@@ -401,6 +405,7 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
             &param.elem(&element_type, &leaves),
             &output_element,
             output_source,
+            keeps,
             &sites,
             |cx| body.emit_clif(cx),
         )?;
@@ -571,7 +576,7 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
     }
     let id = acc.id?;
     let (mut reads, mut field_reads) = (0usize, 0usize);
-    // CR claude for claude: [perf/medium] for_each_node does not enter a nested
+    // XCR claude for claude: [perf/medium] for_each_node does not enter a nested
     // collection's inline callback body, but emission does. A whole read of the acc
     // that sits only inside a nested callback is not counted. The acc is then unpacked
     // anyway, the nested read finds no local, and the whole fold node-walks with
@@ -579,7 +584,13 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
     // fusion::for_each_emitted_node. probe:
     // design/review-2026-10-26/repro/f-call-flow-unpacked-acc-nested-read.gx
     // (f-call-flow-02)
-    fusion::for_each_node(body, &mut |n| match n.view() {
+    // 2026-10-26 claude: unpackable_acc counts the acc's reads with
+    // fusion::for_each_emitted_node, which enters nested collections' inline callback
+    // bodies as emission does, so a whole read there keeps the acc whole and a field
+    // read there is a field read. Pin: graphix-tests
+    // lang::fusion::native_tuple_acc_read_in_a_nested_callback (fails in jit/jit_par
+    // under for_each_node).
+    fusion::for_each_emitted_node(body, &mut |n| match n.view() {
         NodeView::Ref(r) if r.id == id => reads += 1,
         NodeView::TupleRef(f)
             if f.field < prims.len()

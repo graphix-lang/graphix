@@ -31,7 +31,6 @@ nohash = { workspace = true }
 ahash = { workspace = true }
 graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
 immutable-chunkmap = { workspace = true }
-indexmap = { workspace = true }
 log = { workspace = true }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }

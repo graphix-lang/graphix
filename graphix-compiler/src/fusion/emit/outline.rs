@@ -77,20 +77,13 @@ pub(super) fn emit_outlined(
     // The loop's slot tables are made here, where every chunk finds them.
     let tables = cx.claim_slot_tables(&lp.facts.sites, lp.len, lp.src_disc)?;
     let site = cx.const_ptr(KernelConst::LoopSite(Arc::new(LoopSite::default())))?;
-    let (id, pending) = emit_chunk(cx, &lp, &tables, iteration)?;
+    let locals: SmallVec<[Local; 8]> = handed(cx.env, lp.facts).cloned().collect();
+    let (id, pending) = emit_chunk(cx, &lp, &tables, &locals, iteration)?;
     // The chain levels at the loop's own depth are sized before any
     // chunk runs, so a chunk's ensure of one only reads it.
     *cx.ctx.closed_frame.borrow_mut() =
         Some(ClosedFrame { depth: 1, len: lp.len, src_disc: lp.src_disc, pending });
     cx.emit_slot_truncates()?;
-    // CR claude for claude: [risk/low] The frame's local section is laid out here and
-    // again in emit_chunk, each by its own handed() call. They agree only because
-    // nothing between the two binds a local. Collect the handed locals once, before
-    // emit_chunk, and pass the same list to both. Otherwise a later change can make the
-    // chunk read other locals' words as pointers, with nothing to catch it. Found by
-    // reading; not run. (f-call-flow-05)
-    let locals: SmallVec<[ValueVar; 16]> =
-        handed(cx.env, lp.facts).map(|l| l.words).collect();
     let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
     let ctx_word =
         CtxWord { born: cx.ctx.born_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
@@ -108,9 +101,9 @@ pub(super) fn emit_outlined(
         cx.b.ins().store(MemFlagsData::trusted(), v, fbase, word(i));
     }
     let base = HEADER + tables.len();
-    for (i, vv) in locals.iter().enumerate() {
-        let disc = cx.b.use_var(vv.disc);
-        let payload = cx.b.use_var(vv.payload);
+    for (i, l) in locals.iter().enumerate() {
+        let disc = cx.b.use_var(l.words.disc);
+        let payload = cx.b.use_var(l.words.payload);
         cx.b.ins().store(MemFlagsData::trusted(), disc, fbase, word(base + 2 * i));
         cx.b.ins().store(MemFlagsData::trusted(), payload, fbase, word(base + 2 * i + 1));
     }
@@ -153,7 +146,7 @@ pub(super) fn emit_outlined(
     })
 }
 
-// CR claude for claude: [perf/medium] [perf/medium] Every outlined loop stores
+// XCR claude for claude: [perf/medium] [perf/medium] Every outlined loop stores
 // every local in scope into its frame record, and its chunk loads and binds all of
 // them back, though an iteration reads only its callback's free locals. A kernel
 // with M loops and L locals therefore emits M x L stores, executed at every kernel
@@ -180,6 +173,15 @@ pub(super) fn emit_outlined(
 // its formals variables every iteration (body.rs, the staged def_vars before the
 // jump to the head), so a spill slot must be written at every def_var of an owned
 // local, not only at bind_local, or a rung drops a stale value.
+// 2026-10-26 claude: Both halves are done. The frame half (864d616ce) had no pin:
+// graphix-shell/tests/kernel_ssa_growth.rs
+// map_chain_frames_hold_only_what_they_read now counts the CLIF stores of a 100-let
+// array::map chain (1298; 11396 with every local handed). The abort-rung half is
+// e061de34a's spill slots (the call.rs XCR of this id), pinned by
+// owned_fold_chain_has_no_alias_per_exit and long_owned_fold_chain_runs.
+// f-call-flow-05: emit_outlined now collects the handed locals once and passes the
+// list to emit_chunk. Link of one large kernel is still most of a long chain's
+// time.
 /// The locals a chunk is handed: those the iteration reads, and every
 /// synthetic one, which no read names by id.
 fn handed<'e>(env: &'e JitEnv, facts: &'e LoopBody) -> impl Iterator<Item = &'e Local> {
@@ -224,13 +226,15 @@ fn give_back(ch: &StateChannel, from: StateChannel) {
 }
 
 /// Build the chunk `(frame, lo, hi, out)` that runs slots `lo..hi` of
-/// `lp`, over the slot tables `tables` and the body's locals, and add
+/// `lp`, over the slot tables `tables` and the body's `locals` the frame
+/// hands it, and add
 /// it to the body's chunks. Returns its id and its nested sites' chain
 /// records, for the body to size.
 fn emit_chunk(
     cx: &mut BodyCx,
     lp: &Loop,
     tables: &[SlotTable],
+    locals: &[Local],
     iteration: impl Iteration,
 ) -> Result<(FuncId, Vec<TruncRec>)> {
     let p = cx.ctx;
@@ -269,7 +273,7 @@ fn emit_chunk(
     // The body's locals, borrowed: the body drops them.
     let mut env = JitEnv::new();
     let base = HEADER + tables.len();
-    for (i, l) in handed(cx.env, lp.facts).enumerate() {
+    for (i, l) in locals.iter().enumerate() {
         let disc = load(&mut b, types::I64, base + 2 * i);
         let payload = load(&mut b, local_payload_ty(l.kind), base + 2 * i + 1);
         let words = ValueVar::borrowed(&mut b, l.kind);

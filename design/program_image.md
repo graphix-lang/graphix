@@ -72,7 +72,9 @@ unused for 30 days and the least recently used past 512 MiB.
 
 **Correctness.** An entry is written only after the work it caches
 succeeded, and before any cycle runs, so a cache never masks a
-compile error and never captures live state. A hit must be
+compile error and never captures live state. A program whose flags ask
+for fusion where the JIT does not build has no kernels to cache, so it
+writes no program entry: the next run with a JIT compiles it fused. A hit must be
 indistinguishable from a cold compile: the cached path is the shipped
 path, so the test suite and the fuzzer run it (see IDs below for why
 that is possible), and a warm-versus-cold differential is the pin for

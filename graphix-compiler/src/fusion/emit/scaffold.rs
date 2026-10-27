@@ -964,6 +964,7 @@ pub(crate) fn emit_filter_map_loop<F>(
     elem: &HofElem,
     out_elem: &Type,
     out_src: CompositeSource,
+    keeps: bool,
     facts: &LoopBody,
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
@@ -992,10 +993,16 @@ where
             // The result is always the callback's 2-word Nullable-shaped
             // Value, never an unwrapped element (a `[T, Error]` result may
             // hold an Error where the arm expects T): push it as a value,
-            // bit-for-bit.
-            let helper = match out_src {
-                CompositeSource::Owned => "graphix_value_buf_push_value",
-                CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
+            // bit-for-bit, or, where it may be `Keep(v)`, its kept element.
+            let helper = match (out_src, keeps) {
+                (CompositeSource::Owned, false) => "graphix_value_buf_push_value",
+                (CompositeSource::Borrowed, false) => {
+                    "graphix_value_buf_push_value_borrowed"
+                }
+                (CompositeSource::Owned, true) => "graphix_value_buf_push_kept",
+                (CompositeSource::Borrowed, true) => {
+                    "graphix_value_buf_push_kept_borrowed"
+                }
             };
             cx.call_helper(helper, &[buf, value.disc, value.payload])?;
             cx.b.ins().jump(advance, &[]);

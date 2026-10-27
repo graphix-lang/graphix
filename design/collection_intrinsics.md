@@ -52,6 +52,9 @@ marked array, nil is [LMARK], and the representation lives in graphix-types/src/
 not node::list. The filter_map text below also misses that `Keep(v) keeps v, null
 included (MapQBase::finish), and that a callback that may return `Keep node-walks
 (loops.rs holds_keep). Found by reading; not run. (c-collection-04) -->
+<!-- 2026-10-26 claude: The filter_map half is fixed with f-call-flow-01: the paragraph
+on filter_map now states the `Keep rule (node::collection::kept) and that a `Keep
+callback fuses. The list-representation half stands. -->
 operations. The canonical List representation (cons = a two-element
 `ValArray`, nil = the static empty array) and iterator live in
 `node::list`, private to the compiler.
@@ -117,11 +120,15 @@ may be Value-shaped too (`FoldAcc::Value`): an owned two-word loop slot
 whose real disc is carried whole with TAINT|STALE riding the tag bits,
 so nullable max-by and map group-by folds fuse.
 
-A TOTAL `filter_map` callback (frozen return provably null-free,
-`frozen_may_be_null` conservative) can never produce the `Null` the
-intrinsic drops, so `emit_filter_map_kind` routes it to the map loop —
-which is what lets the trait's `map` default fuse at parity with the
-intrinsic.
+A `filter_map` callback's `null` drops its element and `` `Keep(v) ``
+keeps `v`, null included (`node::collection::kept`, which the kernel's
+push helpers share). A callback whose frozen return may be `` `Keep ``
+runs the filter_map loop even where it never returns null, which is
+what lets the trait's `map` and `filter` defaults (`` |x| `Keep(f(x)) ``)
+fuse at parity with the intrinsics. A TOTAL callback with no `` `Keep ``
+(frozen return provably null-free, `frozen_may_be_null` conservative)
+can never produce the `Null` the intrinsic drops, so
+`emit_filter_map_kind` routes it to the map loop.
 
 ## Rejected alternatives
 

@@ -2378,6 +2378,17 @@ run!(native_tuple_acc_folds, r#"{
 }"#, prints("[[i64:499500, f64:1.1051653926032188], [i64:7, i64:8], [i64:249503, i64:250004], [[i64:3, i64:2], [i64:12, i64:3]]]");
     FuseExpect::Jit);
 
+// A tuple acc read whole only inside a nested collection's callback is
+// carried whole, and one read field by field there is carried by field.
+run!(native_tuple_acc_read_in_a_nested_callback, r#"{
+    let ys = [10, 3, 1];
+    (
+        #[native] array::fold([1, 2, 3], (0, 0), |p, x| (p.0 + x, p.1 + array::len(array::filter(ys, |y| { let (u, v) = p; y > u + v })))),
+        #[native] array::fold([1, 2, 3], (0, 0), |p, x| (p.0 + x, p.1 + array::len(array::filter(ys, |y| y > p.0 + p.1))))
+    )
+}"#, prints("[[i64:6, i64:5], [i64:6, i64:5]]");
+    FuseExpect::Jit);
+
 // A tuple acc destructured into names carries each field in a register,
 // a name left out (`_`) included.
 run!(native_destructured_tuple_acc_folds, r#"{

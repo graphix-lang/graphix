@@ -3099,8 +3099,8 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Whether a compile under `flags` fuses.
-fn fusion_on(flags: BitFlags<CFlag>) -> bool {
+/// Whether a compile under `flags` asks for fusion.
+pub fn fusion_on(flags: BitFlags<CFlag>) -> bool {
     !flags.contains(CFlag::FusionDisabled)
 }
 

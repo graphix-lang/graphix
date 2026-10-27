@@ -199,6 +199,15 @@ impl MapCollection for ValArray {
 
 type ValueMap = CMap<Value, Value, 32>;
 
+/// filter_map's element for a result it keeps: `Keep(v)` is `v`, any
+/// other value itself.
+pub(crate) fn kept(v: &Value) -> &Value {
+    match crate::rep::variant(v) {
+        Some((tag, [kept])) if &**tag == "Keep" => kept,
+        _ => v,
+    }
+}
+
 /// The Map-HOF pair encoding: each `(k, v)` entry crosses the callback
 /// as the tuple `(k, v)`. Every encoder and decoder, interpreted or JIT,
 /// goes through `make_pair` / [`split_pair`].
@@ -838,7 +847,7 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
     /// The traversal's result once every slot holds a value.
     fn finish<C: MapCollection>(&self, slots: &[Slot<R, E>], source: &C) -> Value {
         let taken = |slot: &Slot<R, E>| matches!(slot.value(), Value::Bool(true));
-        let kept = |v: &&Value| !matches!(v, Value::Null);
+        let not_null = |v: &&Value| !matches!(v, Value::Null);
         let mut elems: LPooled<Vec<Value>> = match self.op {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
             MapOp::Filter => return source.kept(self.flavor, slots.iter().map(taken)),
@@ -859,11 +868,8 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
             MapOp::FilterMap => slots
                 .iter()
                 .map(Slot::value)
-                .filter(kept)
-                .map(|v| match crate::rep::variant(v) {
-                    Some((tag, [kept])) if &**tag == "Keep" => kept.clone(),
-                    _ => v.clone(),
-                })
+                .filter(not_null)
+                .map(|v| kept(v).clone())
                 .collect(),
             MapOp::FlatMap => {
                 let mut elems = LPooled::take();
@@ -877,7 +883,7 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
                 return found.map_or(Value::Null, |(_, v)| v);
             }
             MapOp::FindMap => {
-                let found = slots.iter().map(Slot::value).find(kept);
+                let found = slots.iter().map(Slot::value).find(not_null);
                 return found.cloned().unwrap_or(Value::Null);
             }
         };

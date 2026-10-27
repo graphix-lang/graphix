@@ -9,9 +9,9 @@ use std::{
     process::{Command, ExitStatus, Stdio},
 };
 
-/// Run `program` with fusion on: its exit status and, with `dump`, the
-/// number of value aliases in its CLIF.
-fn run(program: &str, dump: bool) -> (ExitStatus, usize) {
+/// Run `program` with fusion on: its exit status and, with `dump`, its
+/// CLIF.
+fn run(program: &str, dump: bool) -> (ExitStatus, String) {
     let dir = tempfile::tempdir().expect("a dir for the program");
     let file = dir.path().join("program.gx");
     fs::write(&file, program).expect("write the program");
@@ -26,8 +26,12 @@ fn run(program: &str, dump: bool) -> (ExitStatus, usize) {
         .stderr(Stdio::piped())
         .output()
         .expect("run the program");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    (out.status, stderr.lines().filter(|l| l.contains(" -> v")).count())
+    (out.status, String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// The lines of `clif` that hold `pat`: ` -> v` counts value aliases.
+fn count(clif: &str, pat: &str) -> usize {
+    clif.lines().filter(|l| l.contains(pat)).count()
 }
 
 /// `let f = |x: decl| { let a0 = x; let aI = step(aI-1); ..; aN-1 }`.
@@ -49,8 +53,9 @@ fn scalar_select_chain_has_no_alias_per_join() {
         |i| format!("select a{} {{ v if v > {i} => v - 1, v => v + 2 }}", i - 1),
         "1",
     );
-    let (status, aliases) = run(&program, true);
+    let (status, clif) = run(&program, true);
     assert!(status.success(), "{status}");
+    let aliases = count(&clif, " -> v");
     assert!(aliases <= 2 * N, "{aliases} aliases for {N} lets");
 }
 
@@ -63,9 +68,26 @@ fn owned_fold_chain_has_no_alias_per_exit() {
         |i| format!("array::fold(a{}, [], |acc, x| array::push(acc, x))", i - 1),
         "[1, 2, 3]",
     );
-    let (status, aliases) = run(&program, true);
+    let (status, clif) = run(&program, true);
     assert!(status.success(), "{status}");
+    let aliases = count(&clif, " -> v");
     assert!(aliases <= 40 * N, "{aliases} aliases for {N} lets");
+}
+
+/// An outlined loop's frame holds only the locals its iteration reads.
+#[test]
+fn map_chain_frames_hold_only_what_they_read() {
+    const N: usize = 100;
+    let program = let_chain(
+        N,
+        "Array<i64>",
+        |i| format!("array::map(a{}, |v| v + {i})", i - 1),
+        "[1, 2, 3]",
+    );
+    let (status, clif) = run(&program, true);
+    assert!(status.success(), "{status}");
+    let stores = count(&clif, "store");
+    assert!(stores <= 20 * N, "{stores} stores for {N} lets");
 }
 
 /// The kernel's frame fits the runtime's stack: a frame quadratic in the

@@ -20,7 +20,7 @@ use crate::{
     fusion::kernel_abi::{ActivationLayout, SiteLeaf},
     node::{
         array::{array_index, array_slice, value_index},
-        collection::Flavor,
+        collection::{self, Flavor},
         error::{QopSite, report_failure, report_ignored, unhandled_msg},
         list,
         map::map_get,
@@ -472,6 +472,20 @@ unsafe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v
 /// the tag is stripped here.
 unsafe fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
     unsafe { (*buf).push(tv.value()) }
+}
+
+/// Push a clone of a borrowed filter_map result's kept element.
+unsafe fn graphix_value_buf_push_kept_borrowed(buf: *mut LPooled<Vec<Value>>, v: ManuallyDrop<TagValue>) {
+    let dup = v.with_value(|v| collection::kept(v).clone());
+    unsafe { (*buf).push(dup) }
+}
+
+/// Push an owned filter_map result's kept element, consuming the result.
+unsafe fn graphix_value_buf_push_kept(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
+    let v = tv.value();
+    let k = collection::kept(&v);
+    let k = if std::ptr::eq(k, &v) { v } else { k.clone() };
+    unsafe { (*buf).push(k) }
 }
 
 /// Drop a buf that never reached `finalize`.

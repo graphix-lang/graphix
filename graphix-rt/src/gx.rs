@@ -11,6 +11,7 @@ use graphix_compiler::{
         self, Expr, ExprId, ExprKind, Load, ModPath, Origin, Probes, ResolverRef,
         Resolvers, RootFile, Sig, Source, join_in_order,
     },
+    fusion_on,
     ide::{Ide, IdeMode},
     image::ProgramRoot,
     node::{
@@ -20,17 +21,20 @@ use graphix_compiler::{
     },
     typ::{FnType, Type},
 };
-use indexmap::IndexMap;
 use log::{debug, error, info, warn};
 use netidx_value::{ValArray, Value};
-use nohash::{BuildNoHashHasher, IntMap};
+use nohash::IntMap;
 use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
 };
 use smallvec::{SmallVec, smallvec};
 use std::{
-    collections::VecDeque, future, mem, panic::AssertUnwindSafe, result, task::Poll,
+    collections::{BTreeMap, VecDeque, hash_map::Entry},
+    future, mem,
+    panic::AssertUnwindSafe,
+    result,
+    task::Poll,
     time::Duration,
 };
 use tokio::{
@@ -265,9 +269,61 @@ struct CallableInt {
     typ: FnType,
 }
 
+/// The roots in compile order, each under the sequence number its first
+/// insert drew, so removing one moves no other.
+struct Roots<N> {
+    by_seq: BTreeMap<u64, (ExprId, N)>,
+    seq: IntMap<ExprId, u64>,
+    next: u64,
+}
+
+impl<N> Default for Roots<N> {
+    fn default() -> Self {
+        Self { by_seq: BTreeMap::new(), seq: IntMap::default(), next: 0 }
+    }
+}
+
+impl<N> Roots<N> {
+    /// Add `id` last, or replace its node where it stands.
+    fn insert(&mut self, id: ExprId, n: N) {
+        match self.seq.entry(id) {
+            Entry::Occupied(e) => {
+                self.by_seq.get_mut(e.get()).expect("a sequenced root").1 = n
+            }
+            Entry::Vacant(e) => {
+                e.insert(self.next);
+                self.by_seq.insert(self.next, (id, n));
+                self.next += 1;
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &ExprId) -> Option<N> {
+        let seq = self.seq.remove(id)?;
+        self.by_seq.remove(&seq).map(|(_, n)| n)
+    }
+
+    fn get(&self, id: &ExprId) -> Option<&N> {
+        self.by_seq.get(self.seq.get(id)?).map(|(_, n)| n)
+    }
+
+    /// `id`'s place in compile order.
+    fn seq(&self, id: &ExprId) -> Option<u64> {
+        self.seq.get(id).copied()
+    }
+
+    fn at_mut(&mut self, seq: u64) -> Option<(ExprId, &mut N)> {
+        self.by_seq.get_mut(&seq).map(|(id, n)| (*id, n))
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (ExprId, &N)> {
+        self.by_seq.values().map(|(id, n)| (*id, n))
+    }
+}
+
 pub(super) struct GX<X: GXExt> {
     ctx: ExecState<GXRt<X>, X::UserEvent>,
-    // CR claude for claude: [perf/medium] Every root is removed with
+    // XCR claude for claude: [perf/medium] Every root is removed with
     // IndexMap::shift_remove (ToGX::Delete, delete_callable), which moves every later
     // root, so deleting k roots among n costs O(k·n). Every Ref is a root and the
     // GUI/TUI compile one per widget property, so a rebuild pays it: dropping 16000
@@ -276,7 +332,14 @@ pub(super) struct GX<X: GXExt> {
     // (ExprId, Node)> plus an IntMap<ExprId, u64>, with update_nodes scheduling by
     // sequence. Removal becomes O(log n). probe:
     // design/review-2026-10-26/repro/rt-delete-roots-quadratic.rs (rt-02)
-    nodes: IndexMap<ExprId, Node<GXRt<X>, X::UserEvent>, BuildNoHashHasher<ExprId>>,
+    // 2026-10-26 claude: GX::nodes is a Roots: a BTreeMap from a per-root sequence
+    // number to (ExprId, Node) and an IntMap from ExprId to its sequence number;
+    // update_nodes schedules by sequence and a removal moves nothing. The repro now
+    // drops 2000/4000/8000/16000 refs in 0.76/1.6/2.9/5.1 ms (was 9/34/128/534).
+    // graphix-rt no longer depends on indexmap. Pin: graphix-rt/tests/root_deletion.rs
+    // dropping_refs_is_not_quadratic (best of three; 16000 refs must take under 24x
+    // 2000; the IndexMap gave 62x).
+    nodes: Roots<Node<GXRt<X>, X::UserEvent>>,
     callables: IntMap<CallableId, CallableInt>,
     /// Calls whose arguments have not landed, oldest first: a call is
     /// made in the cycle its first argument is delivered, which a write
@@ -345,7 +408,7 @@ impl<X: GXExt> GX<X> {
         }
         let mut t = Self {
             ctx,
-            nodes: IndexMap::default(),
+            nodes: Roots::default(),
             callables: IntMap::default(),
             calls: VecDeque::new(),
             held_answers: Vec::new(),
@@ -405,7 +468,7 @@ impl<X: GXExt> GX<X> {
                 Ok(root) => {
                     t.program = Some(Ok(ProgramRoot { warnings, ..root }));
                     info!("program init time: {:?}", st.elapsed());
-                    // CR claude for claude: [bug/medium] When the flags ask for fusion
+                    // XCR claude for claude: [bug/medium] When the flags ask for fusion
                     // but the context's JIT is unavailable (the arena reservation
                     // failed under an address-space limit, or GRAPHIX_JIT_ARENA is out
                     // of range), the program compiles with no kernels. This still
@@ -418,8 +481,25 @@ impl<X: GXExt> GX<X> {
                     // by JIT availability. probe:
                     // design/review-2026-10-26/repro/c-image-unfused-entry-sticks.sh
                     // Also reported as (x-image-01). (c-image-01)
+                    // 2026-10-26 claude: GX::new sends an error instead of the program
+                    // entry when fusion_on(flags) and the context's JIT does not build
+                    // (FusionCtx::available, now pub, as is
+                    // graphix_compiler::fusion_on), so the shell writes nothing (logged
+                    // as image not taken; --warm fails) and the next run with a JIT
+                    // compiles fused. The warm-start fallback that cannot load kernels
+                    // goes through the same write, so it no longer overwrites a fused
+                    // entry. CLAUDE.md and design/program_image.md say so. Pin:
+                    // graphix-shell/tests/jit_unavailable.rs no_entry_without_kernels
+                    // (the unfused run writes no entry, the next one writes a fresh
+                    // one).
                     if let (Some(tx), Some(probes)) = (cfg.program_image, probes) {
-                        let image = t.registration_image();
+                        let image = if fusion_on(t.flags) && !t.ctx.fusion.available() {
+                            Err(anyhow!(
+                                "the JIT is unavailable, so the program has no kernels"
+                            ))
+                        } else {
+                            t.registration_image()
+                        };
                         let sources = probes.take();
                         let _ =
                             tx.send(image.map(|image| ProgramImage { image, sources }));
@@ -437,7 +517,7 @@ impl<X: GXExt> GX<X> {
 
     fn registration_image(&self) -> Result<Bytes> {
         let nodes: Vec<(ExprId, &Node<GXRt<X>, X::UserEvent>)> =
-            self.nodes.iter().map(|(id, n)| (*id, n)).collect();
+            self.nodes.iter().collect();
         self.ctx
             .write_registration(
                 &nodes,
@@ -470,13 +550,13 @@ impl<X: GXExt> GX<X> {
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
         // the scheduled roots past `after`, the next last; a root's update
         // may schedule a later one this cycle (`Rt::notify_set`)
-        let scheduled = |gx: &Self, after: Option<usize>| {
-            let mut due: LPooled<Vec<(usize, bool)>> = gx
+        let scheduled = |gx: &Self, after: Option<u64>| {
+            let mut due: LPooled<Vec<(u64, bool)>> = gx
                 .ctx
                 .rt
                 .updated
                 .iter()
-                .filter_map(|(id, init)| Some((gx.nodes.get_index_of(id)?, *init)))
+                .filter_map(|(id, init)| Some((gx.nodes.seq(id)?, *init)))
                 .filter(|(i, _)| after.is_none_or(|a| *i > a))
                 .collect();
             due.sort_unstable_by(|a, b| b.cmp(a));
@@ -485,23 +565,23 @@ impl<X: GXExt> GX<X> {
         let mut due = scheduled(self, None);
         let mut known = self.ctx.rt.updated.len();
         while let Some((i, init)) = due.pop() {
-            let (id, n) = self.nodes.get_index_mut(i).expect("scheduled root");
+            let (id, n) = self.nodes.at_mut(i).expect("scheduled root");
             self.ctx.event.view = if init { View::Birth } else { View::Cycle };
             // Only a FIRED production becomes an event.
             let tv = n.update(&mut self.ctx.view());
             if tv.is_fired() {
                 let v = tv.value_cloned();
                 let watched =
-                    matches!(self.result_watch.as_ref(), Some((wid, _)) if wid == id);
+                    matches!(self.result_watch.as_ref(), Some((wid, _)) if *wid == id);
                 if watched {
                     if let Some((_, tx)) = self.result_watch.take() {
                         let _ = tx.send(Some(v.clone()));
                     }
                 }
                 if let Some(tr) = self.trace.as_mut() {
-                    tr.record(self.ctx.rt.cycle, *id, &v);
+                    tr.record(self.ctx.rt.cycle, id, &v);
                 }
-                batch.push(GXEvent::Updated(*id, v))
+                batch.push(GXEvent::Updated(id, v))
             }
             if self.ctx.rt.updated.len() != known {
                 known = self.ctx.rt.updated.len();
@@ -710,6 +790,13 @@ impl<X: GXExt> GX<X> {
     // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
     // needed. Group readers by root so `updated` is touched once per root; drop the
     // per-step pc read if the lowering does not need it.
+    // 2026-10-26 claude: Not fixed in L4-b06. Re-measured on a loaded host:
+    // 106/87/160/369 us per step at S=400/800/1600/3200 (debug), noisy. Grouping
+    // by_ref's readers by root saves one updated entry per reader but leaves one
+    // boundary mark per reader, so a seq delivery stays O(S); the O(S) goes only if a
+    // step's sleeping arms stop reading pc (each step reads it in its snapshot and its
+    // value gate, --expand) or a mark skips a boundary whose arm sleeps, both changes
+    // to the seq lowering or the wake catch-up that want their own pass.
     fn wake_readers(&mut self, id: &BindId) {
         let cycle = self.ctx.rt.cycle;
         if let Some(readers) = self.ctx.rt.by_ref.get(id) {
@@ -878,7 +965,7 @@ impl<X: GXExt> GX<X> {
                     let _ = res.send(r);
                 }
                 ToGX::Delete { id } => {
-                    if let Some(mut n) = self.nodes.shift_remove(&id) {
+                    if let Some(mut n) = self.nodes.remove(&id) {
                         n.delete(&mut self.ctx.view());
                     }
                     debug!("delete {id:?}");
@@ -1459,7 +1546,7 @@ impl<X: GXExt> GX<X> {
                 self.ctx.rt.forget_writes(*a);
                 self.ctx.rt.store_remove(a);
             }
-            if let Some(mut n) = self.nodes.shift_remove(&c.expr) {
+            if let Some(mut n) = self.nodes.remove(&c.expr) {
                 n.delete(&mut self.ctx.view())
             }
         }

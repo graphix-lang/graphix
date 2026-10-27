@@ -357,6 +357,10 @@ run!(
 // collection_newtype_defaults, where only find's default fuses. Reword both. probe:
 // design/review-2026-10-26/repro/tests-lang-rest-b-keep-default-nodewalks.gx
 // (tests-lang-rest-b-05)
+// 2026-10-26 claude: f-call-flow-01 made a `Keep callback fuse, so the trait map
+// default's shape (`|x| `Keep(f(x))`) now fuses; the comment's claim holds for it, but
+// this fixture still tests a total callback, not that shape.
+// lang::collection::filter_map_keep_fuses pins the default's shape under #[native].
 const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
 {
   let a = array::init(10, |i| i);
@@ -633,6 +637,31 @@ run!(
             cast<Any>(Collection::len(Collection::filter(ln, |x| true)))$,
             cast<Any>(map::len(map::filter_map(m, |(k, v)| `Keep((k, v)))))$
         ]
+    "#;
+    FuseExpect::Jit
+);
+
+// A filter_map callback that keeps with `Keep fuses: the derived map and
+// filter of a program-defined collection, and `Keep over each flavor.
+run!(
+    filter_map_keep_fuses,
+    prints(r#"[[i64:1, i64:2, i64:4], [i64:10, i64:20, i64:30], [i64:3, i64:4], {"a" => i64:1, "b" => null}, [i64:1, null]]"#),
+    "/test.gx" => r#"
+        type Bag<'a> = Abstract<Array<'a>>;
+        impl Collection for Bag<'_> {
+            let fold = |b, init, f| array::fold(b.0, init, f);
+            let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+            let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+        };
+        let m: Map<string, [i64, null]> = {"a" => 1, "b" => null, "c" => 3};
+        let l: List<[i64, null]> = [<1, null, 3>];
+        let result = (
+            #[native] array::filter_map([1, 2, 3, 4], |x| select x { 3 => null, v => `Keep(v) }),
+            #[native] Collection::map(Bag([1, 2, 3]), |x| x * 10).0,
+            #[native] Collection::filter(Bag([1, 2, 3, 4]), |x| x > 2).0,
+            #[native] map::filter_map(m, |(k, v)| select v { 3 => null, v => `Keep((k, v)) }),
+            #[native] list::filter_map(l, |x| select x { 3 => null, v => `Keep(v) })
+        )
     "#;
     FuseExpect::Jit
 );
