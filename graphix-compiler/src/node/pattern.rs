@@ -1772,7 +1772,7 @@ impl StructPatternNode {
         }
     }
 
-    // CR claude for eric: [bug/high] Deleting a collection slot unbinds its parameters
+    // CR claude for claude: [bug/high] Deleting a collection slot unbinds its parameters
     // here even when a closure the slot made escaped and still captures them. A call
     // site that binds that closure after the deletion fails with 'binding the callee
     // failed: k not defined', and no value is produced; a site bound earlier keeps
@@ -1781,6 +1781,9 @@ impl StructPatternNode {
     // alive, enforced by pinning a closure's captured ids as Lives pins referenced
     // ones. probe: design/review-2026-10-26/repro/core-aux-closure-outlives-slot.gx
     // (core-aux-02)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q60, A closure
+    // that outlives its collection slot): yes, keep them alive (the recommendation:
+    // keep them alive.)
     pub fn delete<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
         self.ids(&mut |id| {
             // a reference that names it keeps its value
@@ -1880,7 +1883,7 @@ impl<R: Rt> PatternNode<R> {
 
     /// The type this arm's binds are typed from: an `error` test's is the
     /// `Error<..>` members of `reaching`, else the predicate.
-    // CR claude for eric: [bug/medium] Only an error test's bind is narrowed to what
+    // CR claude for claude: [bug/medium] Only an error test's bind is narrowed to what
     // reaches the arm. Every other written test binds the full written type, contrary
     // to CLAUDE.md's rule that an arm's binds narrow to what reaches it. So `|x: [i64,
     // string]| select x { Number as n => n + 1, string as s => 0 }` is refused (n is
@@ -1890,6 +1893,9 @@ impl<R: Rt> PatternNode<R> {
     // filter, generalized), or stay the written type with CLAUDE.md saying so. probe:
     // design/review-2026-10-26/repro/x-typecheck-patterns-typetest-bind-not-narrowed.gx
     // (x-typecheck-patterns-06)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q24, A type
+    // test's bind narrows to what reaches it): yes, narrow (the recommendation: narrow,
+    // as CLAUDE.md already says arm binds do.)
     pub(super) fn capture_type(&self, env: &Env, reaching: &Type) -> Result<Type> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());

@@ -635,42 +635,6 @@ impl Type {
     /// Whether the declared bound `self` implies the bound `c`: it is `c`,
     /// or holds it of every type it admits (a predicate only where none of
     /// those has an unknown part), and `Ordered` implies `Discernible`.
-    // XCR claude for eric: [bug/medium] implies leaves the declaring side's own
-    // variables open. `self == c` uses Type's PartialEq, which treats two unbound cells
-    // as equal. The empty-flag probe `c ⊇ self` admits an open cell as anything. So an
-    // interface bound `'a: Array<'b>` (the caller picks 'b) implies the
-    // implementation's `'a: Array<i64>`, and also `'a: Array<'q>` with 'q tied to
-    // another parameter. --check and the LSP accept the interface, and the build then
-    // refuses the call's instance with the internal "an instance at .. of a definition
-    // typed .." error. Fix: compare with strict cell identity (strictly_identical), and
-    // run the probe with RigidCheck while rigid gates are open on self's open cells, so
-    // the bound must hold for every instance of the signature's variables. probe:
-    // design/review-2026-10-26/repro/t-contains-implies-open-cell.sh (t-contains-01)
-    // 2026-10-27 claude: Type::implies compares by strict cell identity and probes c ⊇
-    // self under RigidCheck with self's open cells held rigid (hold_rigid), so a bound
-    // holds for every instance of the declaring side's variables; sig_bounds' declared
-    // translates the implementation's conjunct into the signature's terms (swap_cells
-    // through the SigPairs map, so 'q tied to y: i64 reads Array<i64>) and holds the
-    // whole signature's open cells rigid. Pin: graphix-shell tests/script_interface.rs
-    // bounds_hold_for_every_instance_of_the_signature (Array<i64>, 'q tied to i64, 'q
-    // tied to another variable 'c; Array<'b> with y: 'b still checks); its verdicts
-    // helper now bounds a run at 30 s so an accepted program fails the test instead of
-    // hanging it.
-    // 2026-10-27 claude: L1-b08 found the change had also made
-    // FnType::open_quantifier_gates hold a signature's open quantifiers rank-2 rigid
-    // (open_quantifier_rigid), extending the rank-2 rule to quantified function types
-    // in let annotations and struct fields (pins rank2_let_annotation_keeps_its_bound,
-    // rank2_typedef_struct_field_keeps_its_bound); that broke
-    // lang::collection::collection_returns_a_generic_function (check accepts, build
-    // refuses) and was no part of this finding, so it is reverted with those two pins,
-    // and trait_any_bound_does_not_imply_ordered expects its original refusal again.
-    // Whether a written quantified fn type outside a formal is rank-2 is a semantics
-    // question for Eric.
-    // 2026-10-27 claude: reviewed: the implies fix holds (strict identity, RigidCheck
-    // probe, pinned by script_interface
-    // bounds_hold_for_every_instance_of_the_signature). Readdressed for the open
-    // question above: is a written quantified fn type outside a formal (a let
-    // annotation, a struct field) rank-2?
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
         if strictly_identical(self, c)
             || matches!(
@@ -719,7 +683,7 @@ impl OpenPair {
             return OpenPair::Distinct;
         }
         // a rigid cell survives only a merge
-        // CR claude for eric: [bug/medium] When an open cell meets a rigid one this
+        // CR claude for claude: [bug/medium] When an open cell meets a rigid one this
         // returns Merge, and `TVar::merge_into` then adds the other cell's conjuncts to
         // the rigid cell without checking that the rigid cell's declared bound implies
         // them. That absorption is right for a definition's own declared variables
@@ -797,6 +761,10 @@ impl OpenPair {
         // cell per binding instead of re-expanding S at each s.f, which the Ref form
         // cannot hold today. (A) matches the comment in FnType::contains_int ('wherever
         // the type stands') and the formal rule; (B) is what a let does today.
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q22,
+        // discussed): (A). A written fn<'b: C>(..) means the same wherever it is written:
+        // a let annotation, a struct field, a typedef and a return type hold a value to
+        // every 'b the bound admits, as a formal does.
         if t0.is_rigid() || t1.is_rigid() {
             return OpenPair::Merge;
         }
@@ -1987,7 +1955,7 @@ impl Type {
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
-            // CR claude for eric: [bug/medium] filter_map's ['b, null, `Keep('b)]
+            // CR claude for claude: [bug/medium] filter_map's ['b, null, `Keep('b)]
             // refuses a callback returning [i64, `Keep(null)]. Both placement orders
             // here bind the bare 'b from one member and then refuse the other:
             // `Keep(null) fixes 'b to null and i64 no longer fits, or the reverse.
@@ -1999,6 +1967,8 @@ impl Type {
             // keeping a null forces `Keep on every kept value. probe:
             // design/review-2026-10-26/repro/gx-stdlib-keep-null-mixed.gx Also reported
             // as (x-engine-collections-03). (gx-stdlib-01)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The
+            // `Keep marker is in-band):
             (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
                 if !commit || !shares_bare_cell(s0) {
                     return Self::place_members(flags, env, hist, t0, s0, s1);

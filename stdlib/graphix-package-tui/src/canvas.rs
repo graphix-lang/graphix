@@ -114,7 +114,7 @@ enum ShapeV {
 
 impl ShapeV {
     /// Whether the shape's coordinates are numbers ratatui can place.
-    // CR claude for eric: [bug/medium] This check, and DatasetW's breaks in chart.rs,
+    // CR claude for claude: [bug/medium] This check, and DatasetW's breaks in chart.rs,
     // guards only x2 - x1 and y2 - y1. ratatui's clipper (line-clipping
     // cohen_sutherland) still computes (x_min - x1) * dy / dx, which overflows. Its
     // inf/inf NaN counts as inside and lands at column 0, so `Line{x1: -1e300, y1:
@@ -135,6 +135,9 @@ impl ShapeV {
     // the top-left corner through (4.5,5), lines no data names. Breaking where (dx *
     // dy) overflows would stop it, since the clipper's products are bounded by
     // |dx|*|dy|.
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q53, TUI lines
+    // that overflow the clipper): yes, clip and add upstream entry (the recommendation:
+    // clip in Graphix; add an UPSTREAM.md entry.)
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {

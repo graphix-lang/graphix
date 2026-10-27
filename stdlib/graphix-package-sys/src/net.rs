@@ -438,7 +438,7 @@ impl<R: Rt> Apply<R> for RpcCall {
         if (path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {
-            // CR claude for eric: [bug/medium] This remint, and the one in
+            // CR claude for claude: [bug/medium] This remint, and the one in
             // RpcCall::sleep, abort a call in flight that the server has already run: a
             // new call drops the previous reply (latest-wins), and a sleep drops the
             // reply for good. By EvalCachedAsync::CANCEL_SAFE's own definition an rpc
@@ -450,6 +450,14 @@ impl<R: Rt> Apply<R> for RpcCall {
             // CachedArgsAsync with CANCEL_SAFE = false. probe:
             // design/review-2026-10-26/repro/sys-net-rpc-dropped-at-sleep.gx,
             // design/review-2026-10-26/repro/sys-net-rpc-latest-aborts.gx (sys-net-04)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18,
+            // discussed): nothing delivers after a sleep. A call site that sleeps opens
+            // a fresh reply slot and drops any reply to the old one; work is cancelled
+            // where it can be, and the book documents what cannot be (a write still
+            // happens, its result is not seen). A stream read whose reply is dropped
+            // returns its bytes to the stream's buffer, so no data is lost. This
+            // replaces the CANCEL_SAFE split (a call not cancel-safe finishing and
+            // answering at the wake).
             self.remint(ctx);
             let args = match write_data(ctx, args) {
                 Ok(args) => args,

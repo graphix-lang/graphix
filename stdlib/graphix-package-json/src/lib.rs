@@ -83,7 +83,7 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 /// the f64 does not read back as the text and a decimal holds it, so an
 /// integer target refuses what does not fit and a decimal target reads it
 /// whole. `None` past f64's range.
-// CR claude for eric: [bug/medium] Text with more digits than a decimal holds fails
+// CR claude for claude: [bug/medium] Text with more digits than a decimal holds fails
 // from_str_exact and from_scientific and goes through the f64, so a decimal target
 // keeps about 16 digits where 28 fit: "12345678901234567890.123456789123" reads as
 // 12345678901234567168. cast.rs `parse` (Typ::Decimal) does the same for cast<decimal>
@@ -91,6 +91,9 @@ const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 // Decimal::from_str, which rounds) and refusing with InvalidCast, and apply the rule in
 // both places. probe:
 // design/review-2026-10-26/repro/small-pkgs-json-decimal-past-scale.gx (small-pkgs-06)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q44, A decimal with
+// more digits than it holds): yes, round (the recommendation: round, as float parsing
+// rounds.)
 fn number(n: &serde_json::Number, exact: bool) -> Option<Value> {
     let f = n.as_f64()?;
     let text = n.as_str();
@@ -273,7 +276,7 @@ fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error>
         Value::F64(n) => {
             Err(S::Error::custom(format_args!("cannot represent {n} as JSON")))
         }
-        // CR claude for eric: [bug/low] A decimal is written as a JSON string. Other
+        // CR claude for claude: [bug/low] A decimal is written as a JSON string. Other
         // consumers get "1.5" where a number belongs, and a [decimal, string] value
         // reads back as the string member, so the round trip changes the value.
         // arbitrary_precision is already on, so a decimal can be written as an exact
@@ -282,6 +285,9 @@ fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error>
         // probe:
         // design/review-2026-10-26/repro/small-pkgs-json-decimal-writes-string.gx
         // (small-pkgs-08)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q45, How
+        // json writes a decimal): yes, exact number (the recommendation: exact
+        // number.)
         Value::Decimal(d) => s.collect_str(d),
         Value::String(st) => s.serialize_str(st),
         Value::Bytes(b) => s.collect_seq(b.iter()),

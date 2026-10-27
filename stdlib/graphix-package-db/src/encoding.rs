@@ -51,7 +51,7 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // self-delimiting, its tuples, structs, variants and lists by their
 // markers (the abstract tag and the kind), a list's elements in one run.
 
-// CR claude for eric: [bug/medium] A key of an abstract type that implements core Eq or
+// CR claude for claude: [bug/medium] A key of an abstract type that implements core Eq or
 // Ord reaches this function as its Cast data, so a tree stores, matches and orders it
 // by the representation's bytes, while the language uses its Ord::cmp and Eq::eq. With
 // a reversing Ord, db::first returns Rev(1) where `<` and array::sort put Rev(2) first.
@@ -62,6 +62,10 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // design/review-2026-10-26/repro/http-sqlite-db1-abstract-ord-key.gx and
 // design/review-2026-10-26/repro/http-sqlite-db1-abstract-eq-key.gx
 // (http-sqlite-db1-03)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q57, discussed):
+// document that a db tree orders its keys by their data bytes. An abstract key crosses
+// through its Cast impl, so a user who cares about the stored order shapes it there. No
+// refusal.
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {

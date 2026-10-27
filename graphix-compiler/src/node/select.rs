@@ -182,7 +182,7 @@ impl LazyArmFacts {
                 .map(|(i, _)| i)
                 .collect(),
             missed: vec![false; arms.len()],
-            // CR claude for eric: [bug/medium] The guards get a catch-up tracker of
+            // CR claude for claude: [bug/medium] The guards get a catch-up tracker of
             // their own, separate from the arms', so neither side consumes the other's
             // bits. A fire a selected arm body read is caught up again by a woken guard
             // (`n if count(b) > 1` gives "guard 2" where the body twin `n => count(b)`
@@ -193,6 +193,8 @@ impl LazyArmFacts {
             // CLAUDE.md's guard rule and pin it. probe:
             // design/review-2026-10-26/repro/tests-select-guard-and-arm-catch-up-the-same-fire.gx
             // (tests-select-04)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q5, Do a guard and
+            // an arm spend one fire?): yes, one tracker (the recommendation: one tracker.)
             guards: arms.iter().any(|(pat, _)| pat.guard.is_some()).then(|| {
                 let fires =
                     TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
@@ -1742,7 +1744,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
-                // CR claude for eric: [bug/high] An arm's `entered` bit is never reset,
+                // CR claude for claude: [bug/high] An arm's `entered` bit is never reset,
                 // so a select inside a seq step enters its arms as a Wake from the
                 // second run on whenever the scrutinee arrives after the step's entry
                 // cycle (an async call, a timer). A constant write or constant-argument
@@ -1756,6 +1758,9 @@ impl<R: Rt> Update<R> for Select<R> {
                 // step is born; add a seq_steps pin either way. probe:
                 // design/review-2026-10-26/repro/c-select-seq-step-arm-write-once.gx
                 // (c-select-seq-01)
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q7,
+                // An arm entered in a reborn seq step): yes, born (the recommendation:
+                // born, consistent with your round-1 "always birth".)
                 let view = match std::mem::replace(&mut entered[i], true) {
                     true => {
                         if !sleep_on_deselect[i] {
@@ -1766,7 +1771,7 @@ impl<R: Rt> Update<R> for Select<R> {
                             false => View::Wake,
                         }
                     }
-                    // CR claude for eric: [bug/medium] An arm's first entry under a
+                    // CR claude for claude: [bug/medium] An arm's first entry under a
                     // Birth (a fresh collection slot, a callee instance bound at run
                     // time, a REPL input) runs as Birth join Step = Step, so it reads
                     // standing values stale while the rest of the same born subtree
@@ -1778,6 +1783,10 @@ impl<R: Rt> Update<R> for Select<R> {
                     // ruling: which does an arm born with its subtree see? probe:
                     // design/review-2026-10-26/repro/c-select-seq-arm-in-birth-reads-stale.gx
                     // (and c-select-seq-arm-in-birth-instance.gx) (c-select-seq-02)
+                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q8, An
+                    // arm first entered inside a born subtree): yes, arm takes birth from
+                    // enclosing view (the recommendation: the arm takes Birth (local, no
+                    // change to join).)
                     false => View::Step,
                 };
                 let (t, v) =

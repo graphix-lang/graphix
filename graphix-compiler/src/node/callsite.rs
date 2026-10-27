@@ -2814,7 +2814,7 @@ impl<R: Rt> CallSite<R> {
             }
             _ => false,
         };
-        // CR claude for eric: [bug/low] When the function variable fires with the
+        // CR claude for claude: [bug/low] When the function variable fires with the
         // definition already bound, the site keeps its instance and, with no argument
         // fired, rides: the call does not fire. A dereference whose reference variable
         // is rewritten with the same reference does fire. In the probe, `*r` fires at
@@ -2825,6 +2825,9 @@ impl<R: Rt> CallSite<R> {
         // pin it. probe:
         // design/review-2026-10-26/repro/x-engine-firing-same-fn-write-no-fire.gx
         // (x-engine-firing-06)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q6, Writing
+        // the same function to a function variable): yes, a write is a fire (the
+        // recommendation: a write is a fire, as for every variable.)
         if same {
             return false;
         }
@@ -3344,7 +3347,7 @@ impl<R: Rt> CallSite<R> {
         self.slept.set();
         // A recursive edge deselected by a shrink is deleted, so
         // re-reaching this depth binds a fresh activation.
-        // CR claude for eric: [perf/medium] Deleting the callee here (shrink = delete)
+        // CR claude for claude: [perf/medium] Deleting the callee here (shrink = delete)
         // makes a recursion whose depth swings rebuild every activation between the two
         // depths every cycle, as fresh run-time binds that cost ~15x an update.
         // Node-walked fib(14 - i % 2) costs 860 ms per 100 cycles against 80 for
@@ -3355,6 +3358,8 @@ impl<R: Rt> CallSite<R> {
         // Apply::reborn, which cannot be told from a fresh bind. probe:
         // design/review-2026-10-26/repro/x-perf-runtime-depth-churn.sh
         // (x-perf-runtime-03)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68,
+        // Activation memory and depth churn):
         if super::in_deselected_arm() && self.is_recursive_edge() {
             if let Some(mut f) = self.callee.take_apply() {
                 f.delete(ctx)
@@ -3474,7 +3479,7 @@ impl<R: Rt> CallSite<R> {
             let mut carriers = SmallVec::new();
             self.defaults_open =
                 !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
-            // CR claude for eric: [bug/low] Only a builtin's unread Concrete quantifier
+            // CR claude for claude: [bug/low] Only a builtin's unread Concrete quantifier
             // settles. So a lambda that forwards publish's optional handler,
             // `|#on_write: [fn(v: 'a) -> _, null] = null, p: string|
             // sys::net::publish(#on_write: on_write, p, 1)`, refuses `w("/a")`, though
@@ -3488,6 +3493,9 @@ impl<R: Rt> CallSite<R> {
             // typed null settles it. probe:
             // design/review-2026-10-26/repro/tests-lang-rest-a-wrapped-publish-unread-quantifier.gx
             // (tests-lang-rest-a-05)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q29, A quantifier
+            // used only through a forwarded function): yes, the message (the recommendation: the
+            // message.)
             if !self.defaults_open && static_builtin(ctx, self).is_some() {
                 self.settle_unread(&ctx.env, ftype, &carriers);
             }

@@ -826,7 +826,7 @@ pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 /// `eval` should delegate to the same fn (`graphix_package_core::
 /// fast_eval`). `Typed` also receives the site's resolved function type.
 #[derive(Debug, Clone, Copy)]
-// CR claude for eric: [perf/high] fast_dispatch calls the fn even when every argument
+// CR claude for claude: [perf/high] fast_dispatch calls the fn even when every argument
 // is stale, so a fused fast call reruns at each kernel invocation, whichever input
 // fired. The node-walk's CachedArgs evaluates it only when one of its own arguments
 // fires. The stdlib registers fast fns whose cost scales with their data (str::parse
@@ -838,6 +838,9 @@ pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 // data, or documenting the cliff in the #[native] chapter. probe:
 // design/review-2026-10-26/repro/x-builtin-effects-fastcall-recompute.gx
 // (x-builtin-effects-02)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q64, A fused fast
+// call reruns on any input): yes, take it off those builtins (the recommendation: take
+// it off those builtins.)
 pub enum FastCall {
     Plain(FastFn),
     Typed(TypedFastFn),
@@ -2595,7 +2598,7 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
         })
     }
     let mut own: LPooled<AHashSet<usize>> = LPooled::take();
-    // CR claude for eric: [bug/high] This exemption waives every cell the test merely
+    // CR claude for claude: [bug/high] This exemption waives every cell the test merely
     // mentions, not only a slice pattern's element cells. So `|y: 'b, x: ['b,
     // `Keep('b)]| select x { `Keep(r) => r, r => r }` passes, although an instance may
     // bind 'b to a `Keep variant. `g(`Keep(6), `Keep(5))` then returns 5 typed
@@ -2606,6 +2609,8 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     // filter_map select is the same shape and will need the keep-marker fix. probe:
     // design/review-2026-10-26/repro/x-engine-collections-own-cell-told.gx
     // (x-engine-collections-02)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The `Keep
+    // marker is in-band):
     cells(test, &mut own);
     let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
     if let Indiscernible::Pair(a, b) = &why
@@ -3471,7 +3476,7 @@ fn compile_top<R: Rt>(
             let dispatched = ctx.attr_dispatched.lock();
             let absorbed = ctx.attr_absorbed.lock();
             for spec in census.iter() {
-                // CR claude for eric: [bug/medium] [bug/medium] An attribute inside a
+                // CR claude for claude: [bug/medium] [bug/medium] An attribute inside a
                 // function body is censused when the definition compiles, but only a
                 // static instance fused in this same compile dispatches it. A function
                 // that is never called, is called only dynamically, or is called in a
@@ -3485,6 +3490,9 @@ fn compile_top<R: Rt>(
                 // the message to analysis::BUILD_ONLY_REFUSALS. probe:
                 // design/review-2026-10-26/repro/c-lib-native-uncalled-body.gx
                 // (c-lib-01)
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q38,
+                // `#[native]` in a body no instance fuses): yes, pending (the
+                // recommendation: pending.)
                 if !dispatched.contains(&spec.id) && !absorbed.contains(&spec.id) {
                     let e = ::anyhow::anyhow!(
                         "attribute in a position the fusion pass cannot check — \

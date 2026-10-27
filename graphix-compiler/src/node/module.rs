@@ -1375,7 +1375,7 @@ impl<R: Rt> Update<R> for Module<R> {
             // runs on
             match v {
                 Value::String(s) => {
-                    // CR claude for eric: [bug/low] The body is cleared before the new
+                    // CR claude for claude: [bug/low] The body is cleared before the new
                     // source compiles, so a source string that fails to parse or check
                     // unloads the working module. After `source` becomes "let x = ;", a
                     // write to foo::x prints "5 0", not "5 50". That contradicts the
@@ -1385,6 +1385,10 @@ impl<R: Rt> Update<R> for Module<R> {
                     // typo keeps running), or document the teardown. probe:
                     // design/review-2026-10-26/repro/x-rerun-5-dyn-module-bad-source.gx
                     // (x-rerun-5-09)
+                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
+                    // q59, A dynamic module whose new source does not compile): yes,
+                    // compile first (the recommendation: compile first (the comment
+                    // already promises it).)
                     self.clear_compiled(ctx);
                     let res = self.compile_source(ctx, s);
                     ctx.apply_deferred();

@@ -430,7 +430,7 @@ fn run_events(
     let flush_var = queue.as_ref().and_then(|q| q.flush);
     let push_flush = |out: &mut Vec<Expr>, events: &mut SmallVec<[Expr; 2]>| {
         if let Some(e) = flush {
-            // CR claude for eric: [bug/high] A seqq's flush reaches the queue only
+            // CR claude for claude: [bug/high] A seqq's flush reaches the queue only
             // through run_event, which passes a fire only after the current run's entry
             // cycle. A run that completes in its entry cycle leaves no such cycle, and
             // neither do the handoff cycles between queued runs (a queued request takes
@@ -444,6 +444,9 @@ fn run_events(
             // clauses (x-engine-seq-errors-01). probe:
             // design/review-2026-10-26/repro/x-engine-seq-errors-flush-lost-between-runs.gx
             // (x-engine-seq-errors-01)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q10, `flush`
+            // between short runs): yes, ungated (the recommendation: ungated for the
+            // queue.)
             let event = run_event(&rewrite(e, visible), &edge, &armed);
             out.push(let_bind(e.pos, &flushed, None, event));
             if let Some((v, count)) = flush_var {
@@ -781,7 +784,7 @@ impl Machine<'_> {
                 vars.insert(ArcStr::from(key), read);
             }
         };
-        // CR claude for eric: [bug/medium] [bug/medium] The entry snapshot takes every
+        // CR claude for claude: [bug/medium] [bug/medium] The entry snapshot takes every
         // free variable of the step's text, arm bodies and callbacks included, into one
         // strict tuple. A variable that only an untaken arm or an uncalled lambda reads
         // therefore holds the whole step. `seq t { select mode { `A => a_val, `B =>
@@ -792,13 +795,17 @@ impl Machine<'_> {
         // that a step waits for every variable it names, or make a read wait only where
         // its node runs. probe:
         // design/review-2026-10-26/repro/t-seq-untaken-arm-stalls.gx (t-seq-05)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q11, The
+        // step snapshot is one strict tuple): yes, document (the recommendation:
+        // document; it is the "snapshot everything" rule you ruled, stated honestly.
+        // See D4 if you want to talk about it.)
         captured(e, false, &mut |r| {
             let (ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. }) =
                 &r.kind
             else {
                 return;
             };
-            // CR claude for eric: [risk/medium] A seq-local let is left out of the
+            // CR claude for claude: [risk/medium] A seq-local let is left out of the
             // entry snapshot. A later step gets the let's fire only through the one
             // catch-up bit, which the first later-cycle reader consumes. So `seq go {
             // let v = go + 1; a <- v ~ 5; b <- v ~ 6; v ~ 9 }` yields 9, but the same
@@ -812,6 +819,9 @@ impl Machine<'_> {
             // to match. probe:
             // design/review-2026-10-26/repro/lang-skill-let-fire-cycle-placement.gx
             // (lang-skill-01)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q12, A
+            // step-local let read by a later step): yes, snapshot (the recommendation:
+            // snapshot them, as outer variables are.)
             read(name, r)
         });
         for w in sink {
@@ -856,7 +866,7 @@ impl Machine<'_> {
         let (pc, id) = (self.issue.pc, self.id);
         let input = format_compact!("#seqsin{id}_{n}");
         let snap = format_compact!("#seqs{id}_{n}");
-        // CR claude for eric: [doc-drift/low] The snapshot is one strict tuple of every
+        // CR claude for claude: [doc-drift/low] The snapshot is one strict tuple of every
         // variable the step reads, so when one is absent at entry, the ones present
         // then are read in the cycle the last arrives, not at entry: x = 0 at entry and
         // y arriving when x is 5 gives 5100, where CLAUDE.md and seq_blocks.md §5
@@ -866,6 +876,10 @@ impl Machine<'_> {
         // as an issued call's arguments are. probe:
         // design/review-2026-10-26/repro/x-seq-sampling-partial-absent-snapshot.gx
         // (x-seq-sampling-08)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q11, The
+        // step snapshot is one strict tuple): yes, document (the recommendation:
+        // document; it is the "snapshot everything" rule you ruled, stated honestly.
+        // See D4 if you want to talk about it.)
         let tuple = ExprKind::Tuple {
             args: Arc::from_iter(
                 std::iter::once(r#ref(pos, pc))
@@ -1514,7 +1528,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // the request rides field 0; a capture of the trigger's own name is
     // the request
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
-    // CR claude for eric: [bug/high] Field 0 is hold(request) inside the BankedSample
+    // CR claude for claude: [bug/high] Field 0 is hold(request) inside the BankedSample
     // payload. When a capture has not produced yet, every banked trigger is paid with
     // the tuple as it stands once the capture lands, so all requests queued before it
     // run with the LAST request's value. Requests `A then `B before `ready` arrives
@@ -1525,6 +1539,9 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // seqq.rs::delayed_capture should read the request too, so it pins this. probe:
     // design/review-2026-10-26/repro/tests-seq-seqq-request-before-capture.gx
     // (tests-seq-01)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q13, seqq
+    // requests that queue before a capture arrives): yes, each request keeps it's own
+    // (the recommendation: each keeps its own.)
     args.push(r#ref(pos, &request));
     for (name, (expr, _, _)) in captures.iter() {
         if !is_trigger(name) {
@@ -1582,7 +1599,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     }
     // every queued request is paid its captures, however many find one
     // absent
-    // CR claude for eric: [bug/medium] A request banked while a capture is absent is
+    // CR claude for claude: [bug/medium] A request banked while a capture is absent is
     // paid with the payload as it stands at payment, and the payload holds
     // hold(request), so every banked request runs with the latest request's value: t =
     // 2, 3, 4 queued before the capture arrives run as x = 4 three times. seq_blocks.md
@@ -1594,6 +1611,9 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // alone. probe:
     // design/review-2026-10-26/repro/x-seq-sampling-seqq-banked-requests-lose-values.gx
     // (x-seq-sampling-02)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q13, seqq
+    // requests that queue before a capture arrives): yes, each request keeps it's own
+    // (the recommendation: each keeps its own.)
     queue_args.push((
         None,
         ExprKind::BinOp {
@@ -1963,7 +1983,7 @@ fn inline_lambda(mut e: &Expr) -> bool {
 /// One call issued per entry over a snapshot of the arguments taken on
 /// the entry event; only the call's own fired production is this
 /// invocation's answer. A nullary call is a level read at entry.
-// CR claude for eric: [bug/medium] A `live(..)` inside an issued call's argument is
+// CR claude for claude: [bug/medium] A `live(..)` inside an issued call's argument is
 // silently dropped. The argument goes into the `once((pc, args..))` snapshot and
 // strip_live removes the `live`. So in a step, `select big(live(x)) {..}` and the guard
 // `v if big(v)` under `select live(x)` issue `big` once over the entry value and stall
@@ -1973,9 +1993,13 @@ fn inline_lambda(mut e: &Expr) -> bool {
 // choice: (a) lower a call whose arguments read a live variable as if the whole call
 // were under `live`; or (b) refuse or warn at such a `live` and name `live(f(x))`.
 // probe: design/review-2026-10-26/repro/x-rerun-1-seq-live-call-arg.gx (x-rerun-1-01)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q14, discussed):
+// big(live(x)) is legal and means what it reads: a call whose argument reads a live
+// variable is issued again at each fire of that argument, and the step completes on the
+// call's first value after entry. Implement that; no refusal.
 fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Expr {
     let pc = issue.pc;
-    // CR claude for eric: [bug/medium] [bug/medium] A nullary call is lowered as a
+    // CR claude for claude: [bug/medium] [bug/medium] A nullary call is lowered as a
     // level read at entry, so the step completes on the callee's cell as it stands,
     // against seq_blocks.md §5 (a lambda instance's cell standing from the previous run
     // is no completion). A `|| timer(..) ~ runs` callee gives 1, 1, 1 over three runs
@@ -1986,6 +2010,9 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     // guard(f()) }`), accepting the `|v| k` stall for a body over standing levels; or
     // document the level reading and its failure modes in §5 and §6.3. probe:
     // design/review-2026-10-26/repro/t-seq-nullary-call-level.gx (t-seq-03)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q15, A nullary
+    // call in a step): yes, issue it on entry clock, just like a no argument function
+    // call in a normal language. (the recommendation: issue it on the entry clock.)
     if call.args.is_empty() {
         let mut expr = spec.clone();
         expr.kind = ExprKind::Apply(call);

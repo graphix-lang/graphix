@@ -37,7 +37,7 @@ pub(super) fn labeled_first(labeled: impl IntoIterator<Item = bool>) -> bool {
 
 pub(super) const LABELED_FIRST: &str = "labeled arguments come before positional ones";
 
-// CR claude for eric: [bug/low] Several lists that the formatter lays out one item per
+// CR claude for claude: [bug/low] Several lists that the formatter lays out one item per
 // line refuse comments, although CLAUDE.md allows them on any list item. Refused: a
 // comment above a labeled argument (`#width:` takes no `leading_decorations` here), an
 // above or end-of-line comment on a lambda formal, an end-of-line or below comment on a
@@ -47,6 +47,8 @@ pub(super) const LABELED_FIRST: &str = "labeled arguments come before positional
 // or narrow the rule in CLAUDE.md. probe:
 // design/review-2026-10-26/repro/t-format-resolver-comment-gaps.sh
 // (t-format-resolver-02)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
+// every list (built)): yes, keep and extend (the recommendation: keep and extend.)
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

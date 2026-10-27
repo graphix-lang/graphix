@@ -1340,13 +1340,15 @@ enum PatElt<'a> {
 }
 
 /// A bracketed pattern, one element to a line.
-// CR claude for eric: [readability/low] A pattern's lone bracketed element never hugs.
+// CR claude for claude: [readability/low] A pattern's lone bracketed element never hugs.
 // `` `Beta({ first, second: s }) `` prints as `` `Beta( ``, `{`, the fields, `}`, `)`,
 // while the same shape as a type or a value hugs (`` `Beta({ ``), per the Formatter
 // rule for expressions and types. Decide whether patterns follow the hug rule. If they
 // do, give a single bracketed PatElt::Pat the hug_parens treatment here. If they do
 // not, the Formatter rules in CLAUDE.md should say so. probe:
 // design/review-2026-10-26/repro/t-print-pattern-no-hug.gx (t-print-03)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q77, Do patterns
+// hug?): yes, follow it (the recommendation: follow it.)
 fn pretty_pattern_elts(
     buf: &mut PrettyBuf,
     open: &str,

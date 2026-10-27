@@ -2645,7 +2645,7 @@ impl<R: Rt> Update<R> for Sample<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
-        // CR claude for eric: [bug/low] A bottom trigger is not `is_fired`, so both `~`
+        // CR claude for claude: [bug/low] A bottom trigger is not `is_fired`, so both `~`
         // and `~!` ride their resident while the trigger is bottom. The sample keeps
         // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
         // design/dense_delivery.md R3 has a consumed bottom bottom the production. Its
@@ -2670,6 +2670,8 @@ impl<R: Rt> Update<R> for Sample<R> {
         // idiom: either a bottom trigger keeps the ride (named as R3's fourth designated
         // ride), or events are written some other way than never() arms. Readdressed to
         // eric.
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q2, `~` with a
+        // bottom trigger (round-1 q2, follow-up)): yes, a (the recommendation: (a).)
         let fired = self.trigger.update(ctx).tag().is_fired();
         self.arg.update(ctx);
         let (mut owed, pay_id) = match &mut self.banking {
@@ -2688,7 +2690,7 @@ impl<R: Rt> Update<R> for Sample<R> {
             }
         };
         let var = pay_id.and_then(|id| ctx.event.variables.get(&id).cloned());
-        // CR claude for eric: [bug/medium] Once the argument has had a value, a
+        // CR claude for claude: [bug/medium] Once the argument has had a value, a
         // trigger that finds it bottom is answered here into a fresh bottom: the
         // debt is consumed, nothing is banked and the held value is not ridden, so
         // `~` behaves exactly like `~!` (the step-7 fire in the probe is lost).
@@ -2705,7 +2707,10 @@ impl<R: Rt> Update<R> for Sample<R> {
         // now prints '~ at 10: 20', the bank. Pin
         // lang::select::sample_banks_a_returning_bottom. Stands for Eric to confirm the
         // rule (bank, as CLAUDE.md and the book say, over ride).
-        // CR claude for eric: [bug/medium] Once the argument has had a value, a
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q1, `~` when
+        // its argument goes bottom after a value): Agree (the recommendation: bank, as
+        // built.)
+        // CR claude for claude: [bug/medium] Once the argument has had a value, a
         // trigger that finds it bottom takes this branch: the output is bottom and
         // the debt is spent. So `~` behaves like `~!` and differs from it only
         // before the argument's first value. The docs say otherwise: the book
@@ -2724,44 +2729,14 @@ impl<R: Rt> Update<R> for Sample<R> {
         // lang::select::sample_banks_a_returning_bottom. This CR stands for Eric to
         // confirm bank over ride; ride or 'never produced only' would revert that
         // change and the two byref fixtures it updated.
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q1, `~`
+        // when its argument goes bottom after a value): Agree (the recommendation:
+        // bank, as built.)
 
         // a banked trigger is answered from the held arg this cycle; the
         // rest of the debt is paid through `pay`; a bottom arg pays nothing
         let live = self.arg.value.as_ref().filter(|_| !self.arg.tag.is_bottom());
         let answered = match live {
-            // XCR claude for eric: [bug/medium] A trigger that finds the argument
-            // bottom after it once had a value is answered here from the stale held
-            // value: the debt is decremented, the next match turns it into a bottom,
-            // and nothing is paid when the argument returns. A trigger that finds the
-            // argument never produced is banked and paid. CLAUDE.md ("banking one
-            // trigger however many find v absent") and book/src/core/select.md ("`~!`
-            // ... bottom with no bank when v is bottom. `~` still banks") both say `~`
-            // banks a bottom. Under Owed::Each only the first owed trigger is lost this
-            // way; the payment loop keeps the rest. Fix: add
-            // `!self.arg.tag.is_bottom()` to this guard, so the payment loop pays the
-            // debt when the argument returns, and delete the `(Some(_), _) if
-            // self.arg.tag.is_bottom()` arm. Pin both shapes. probe:
-            // design/review-2026-10-26/repro/c-node-mod-bank-after-bottom.gx Also
-            // reported as (tests-lang-rest-b-01). (c-node-mod-01)
-            // 2026-10-27 claude: Sample::update answers a debt only from a live
-            // argument (held and not bottom: `live`), so a trigger that finds the
-            // argument bottom after a value stays owed and is paid when it returns, as
-            // one that finds it never produced is; the bottom-answer arm is gone (the
-            // two for-eric CRs that sat on it moved above `answered`). Owed::Each takes
-            // the same gate; seqq's payload is held, so no source program reaches it
-            // bottom after a value, and there is no separate pin. Pin:
-            // lang::select::sample_banks_a_returning_bottom (the step-4 fire is paid 60
-            // at step 6; fails in all four modes with the fix undone).
-            // lang::byref::place_removed_element and place_through_bottom_deref pinned
-            // the drop ('a connect sampling it then writes nothing'); they now pin the
-            // bank: the read is paid with the place's next value (7, not its last 20;
-            // (9, 10) when the reference returns), never its last. This follows
-            // CLAUDE.md and book/src/core/select.md; x-engine-firing-01 and
-            // x-seq-sampling-05 still ask Eric to confirm the rule.
-            // 2026-10-27 claude: reviewed: the code banks cleanly and the pins hold; it
-            // decides the rule x-engine-firing-01 and x-seq-sampling-05 ask you to rule
-            // on (bank vs ride vs never-produced only). If you rule bank, delete this
-            // with them; otherwise revert 265c6bcd2.
             Some(v) if owed > 0 && var.is_none() => {
                 owed -= 1;
                 Some(v)
@@ -2802,7 +2777,7 @@ impl<R: Rt> Update<R> for Sample<R> {
         self.trigger.delete(ctx);
     }
 
-    // CR claude for eric: [bug/medium] A `~`'s debt survives its step's sleep and the
+    // CR claude for claude: [bug/medium] A `~`'s debt survives its step's sleep and the
     // step's next entry, which is a birth for the run (View::Step). A trigger banked in
     // an aborted seq run is paid in the next run when the argument arrives, completing
     // that run's step on an event of the dead run ("result 100 at 12" with no ev in run
@@ -2812,6 +2787,9 @@ impl<R: Rt> Update<R> for Sample<R> {
     // that a banked trigger outlives its run and document it. probe:
     // design/review-2026-10-26/repro/x-seq-sampling-bank-survives-run.gx
     // (x-seq-sampling-04)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q3, A banked
+    // trigger across a seq run): yes, clear it (the recommendation: clear it, which
+    // follows "entering a step is its birth".)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         // what was paid and not yet received is owed again under a fresh
         // id, so a payment landing while asleep is not lost

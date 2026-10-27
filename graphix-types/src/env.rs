@@ -990,24 +990,6 @@ impl Env {
             // (`use gui::text::{self, *}`).
         }
         let mut found: Option<(&str, T)> = None;
-        // XCR claude for eric: [bug/medium] Two globs that reach the same binding are
-        // refused as ambiguous here. From a submodule declared in a block, `use
-        // super::*; use package::*` both reach a top-level `let x`, and `x` is refused
-        // with "both `#do4611686018427395233` and `` provide it". Rust's rule, which
-        // design/module_system.md cites, accepts that, and the message leaks a lowered
-        // block scope and prints the root as an empty string. Fix: have Glob::find
-        // return the level it hit at, bail only when two hits are at different levels,
-        // and print the sources the way written_scope does. probe:
-        // design/review-2026-10-26/repro/t-env-glob-same-item-ambiguous.sh (t-env-03)
-        // 2026-10-26 claude: Glob::find returns the level it hit at; lookup_at refuses
-        // only two hits at different levels, and names them as the source does
-        // (written_level: a module, or a block in one, by written_scope). Docs:
-        // design/module_system.md, book/src/core/use.md (book not rebuilt). Pins:
-        // lang::modules::globs_reaching_one_binding_agree (fails with the old
-        // any-two-hits rule), globs_reaching_two_bindings_are_ambiguous (the message).
-        // 2026-10-27 claude: reviewed: the fix matches the CR and Rust (two globs
-        // reaching one binding agree), pinned by globs_reaching_one_binding_agree. It
-        // changes a language rule, so it waits for your confirmation.
         for g in sn.globs.iter() {
             if let Some((at, t)) = g.find(n, f) {
                 match &found {
@@ -2031,7 +2013,7 @@ impl Env {
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
         let r = self.abstract_reps.get(&id)?;
-        // CR claude for eric: [bug/medium] under_some_instance matches any `#`
+        // CR claude for claude: [bug/medium] under_some_instance matches any `#`
         // component against any other, so a sibling block or a lambda body in the same
         // module counts as an instance of the block that declared the abstract type.
         // `let v = { type T = Abstract<i64>; let x = T(5); x }; let w = { let k = 1;
@@ -2041,6 +2023,9 @@ impl Env {
         // AbstractId::declared already uses, store it in AbstractRep, and match only
         // components of that body. probe:
         // design/review-2026-10-26/repro/t-env-abstract-rep-sibling-block.gx (t-env-04)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q37, Which
+        // bodies see an abstract's representation): yes, record (the recommendation:
+        // record the place.)
         (r.public || under_some_instance(from, &r.scope)).then_some(&**r)
     }
 

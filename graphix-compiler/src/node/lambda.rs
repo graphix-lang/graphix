@@ -1117,7 +1117,7 @@ impl<R: Rt> GXLambda<R> {
         )
     }
 
-    // CR claude for eric: [perf/medium] Every node-walked call is a retained activation
+    // CR claude for claude: [perf/medium] Every node-walked call is a retained activation
     // built here, and each one still holds about 10-12 KB after runtime-heap-01. A
     // node-walked binary recursion therefore grows by GBs at modest depth. fib(20)
     // under --no-fusion peaks at 273 MB against 58 MB fused. fib(25), about 243k calls,
@@ -1136,6 +1136,8 @@ impl<R: Rt> GXLambda<R> {
     // design/review-2026-10-26/repro/tests-shell-compiler-activation-cost.py), so a few
     // hundred more bytes per activation fail the plain gate. Choose that ceiling with
     // this decision (tests-shell-compiler-04).
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68, Activation
+    // memory and depth churn):
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
@@ -1980,7 +1982,7 @@ fn check_defaults<R: Rt>(
                     .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
                 // a variable inside the type is checked as any instance of
                 // it: each omitting call checks the default again
-                // CR claude for eric: [bug/medium] A default that reads an enclosing
+                // CR claude for claude: [bug/medium] A default that reads an enclosing
                 // definition's open cell is tied to its parameter only when the
                 // parameter type is a bare variable (the arm above). Under a written
                 // type holding one (`#d: Array<'q> = [z]`, `{v: 'q}`, `[null, 'q]`) it
@@ -2016,6 +2018,9 @@ fn check_defaults<R: Rt>(
                 // an enclosing open cell unless the parameter's type is closed, asking to annotate the
                 // factory's parameter; (c) carry the default's type in the callee's FnType so an
                 // instance's copy holds it.
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q23, A default that
+                // reads an enclosing open cell): yes, b (the recommendation: (b) now, small and sound;
+                // (c) later if it bites.)
                 t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
                 t => t.check_contains(&ctx.env, &typ),
             }

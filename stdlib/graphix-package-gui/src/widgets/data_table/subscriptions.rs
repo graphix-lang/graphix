@@ -520,7 +520,7 @@ impl<X: GXExt> DataTableW<X> {
         let mut shown: LPooled<AHashMap<ArcStr, Option<f64>>> = LPooled::take();
         match self.mode {
             DisplayMode::Table => {
-                // CR claude for eric: [perf/medium] Every netidx column of every row in
+                // CR claude for claude: [perf/medium] Every netidx column of every row in
                 // the window is subscribed: `shown` holds all columns, and
                 // handle_scroll reconciles only when the row window moves. Only rows
                 // are virtualized for subscriptions. A 500-column table in a 40-row
@@ -530,6 +530,9 @@ impl<X: GXExt> DataTableW<X> {
                 // first_col changes in handle_scroll), or rule that whole rows stay
                 // subscribed so on_update stays complete per row, and say so in the
                 // book. Found by reading; not run. (gui-datatable-01)
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q51,
+                // Data-table column subscriptions): yes, window the columns (the
+                // recommendation: window the columns.)
                 for (name, c) in self.columns.iter().filter(|(_, c)| c.is_subscribed()) {
                     let hs = match &c.spec.typ {
                         ColumnType::Sparkline { history_seconds, .. } => {

@@ -479,7 +479,7 @@ fn tokio_main(
             .await
     });
     // a blocking task (a stdin read) must not hold the exit
-    // CR claude for eric: [bug/high] The process exits without waiting for the
+    // CR claude for claude: [bug/high] The process exits without waiting for the
     // runtime's teardown. Teardown only aborts the runtime task, and
     // shutdown_background abandons both GX's drop and the blocking thread where Reaped
     // flushes the database. So a db insert followed by sys::exit is lost in most runs:
@@ -490,6 +490,9 @@ fn tokio_main(
     // so a stdin read still cannot hold the exit. probe:
     // design/review-2026-10-26/repro/x-concurrency-db-write-lost-at-exit.sh
     // (x-concurrency-01)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q21, Exit waits
+    // for teardown): yes, await (the recommendation: await with a bound (a few
+    // seconds).)
     rt.shutdown_background();
     res
 }

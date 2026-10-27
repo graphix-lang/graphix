@@ -434,7 +434,7 @@ pub use memo::FastMemo;
 /// RFC3339, a duration in seconds, any other value in its naked form. A
 /// reader's cast reads back a key whose data is a string, a number, a
 /// bool, a datetime or a duration; the text of any other key's does not.
-// CR claude for eric: [bug/medium] The doc says a reader's cast reads this text back,
+// CR claude for claude: [bug/medium] The doc says a reader's cast reads this text back,
 // but it does not for a bare variant or a composite key. Map<`A, i64> writes
 // {"\"A\"":2} (the data string printed with its quotes) and Map<(i64, i64), i64> writes
 // {"[1, 2]":3`}; json::read into the same types gives InvalidCast for both, so the json
@@ -446,7 +446,10 @@ pub use memo::FastMemo;
 // bare-variant key is written as its tag and reads back, pinned by
 // lib_tests::json::string_data_map_keys_read_back. The composite-key decision still
 // stands.
-// CR claude for eric: [bug/medium] The text this writes for a tuple, struct, variant or
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
+// are not strings or scalars, in json and toml): yes, the pairs array (the
+// recommendation: the pairs array.)
+// CR claude for claude: [bug/medium] The text this writes for a tuple, struct, variant or
 // list key, for a null key ("null") and for a bytes key (base64) does not read back.
 // The reader casts the object key string to the key type, and a cast parses a string
 // only into a scalar. So json/toml write {(1, 2) => "q"} as {"[1, 2]":"q"}, and reading
@@ -456,7 +459,10 @@ pub use memo::FastMemo;
 // value) pairs, which the cast already reads as a map, or refuse it at the writer.
 // probe: design/review-2026-10-26/repro/core-lib-composite-map-key-no-roundtrip.gx
 // (core-lib-02)
-// CR claude for eric: [bug/high] A bare-variant or composite map key is written as
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
+// are not strings or scalars, in json and toml): yes, the pairs array (the
+// recommendation: the pairs array.)
+// CR claude for claude: [bug/high] A bare-variant or composite map key is written as
 // the quoted Naked text of its data: `A becomes the JSON key "\"A\"" (TOML '"A"', hbs
 // &quot;A&quot;), and (1, "a") becomes "[1, \"a\"]". No reader casts those back, so
 // json::read/toml::read into the same Map type fail with InvalidCast, and an enum-keyed
@@ -476,6 +482,9 @@ pub use memo::FastMemo;
 // (this CR's suggestion), write such a map as its (key, value) pairs, or refuse it at
 // the writer. That is the choice core-lib-02 and x-rerun-5-04 already ask Eric to make,
 // so this is readdressed rather than decided here.
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q41, Map keys that
+// are not strings or scalars, in json and toml): yes, the pairs array (the
+// recommendation: the pairs array.)
 pub fn map_key(k: &Value) -> Result<ArcStr> {
     Ok(match graphix_compiler::abstract_value::to_data(k)? {
         Value::String(s) => s,
@@ -1819,7 +1828,7 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     /// stream, work on a blocking thread, a spawned child) is let finish when
     /// its site sleeps, and its reply answers at the wake. Never `false`
     /// under [`Calls::Latest`], which aborts.
-    // CR claude for eric: [bug/high] The default makes a sleep throw away the reply of
+    // CR claude for claude: [bug/high] The default makes a sleep throw away the reply of
     // evals whose work no abort stops. The db and sqlite ops run under spawn_blocking,
     // process spawn completes on its first poll, and a tcp accept may have completed
     // before the sleep. Their reply is the only copy of what they did: a popped or
@@ -1837,6 +1846,13 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     // ops, spawn, open, tcp connect/listen are CANCEL_SAFE = false, pinned by
     // lib_tests::*::*answer*_at_the_wake). The root fix (keep every completed reply
     // across a sleep) and tcp accept under Latest remain for this decision.
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18,
+    // discussed): nothing delivers after a sleep. A call site that sleeps opens a fresh
+    // reply slot and drops any reply to the old one; work is cancelled where it can be,
+    // and the book documents what cannot be (a write still happens, its result is not
+    // seen). A stream read whose reply is dropped returns its bytes to the stream's
+    // buffer, so no data is lost. This replaces the CANCEL_SAFE split (a call not
+    // cancel-safe finishing and answering at the wake).
     const CANCEL_SAFE: bool = true;
 
     /// The arguments that leave as data (a store's keys and values):
@@ -2379,7 +2395,7 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
     /// is not cancel-safe: then those in flight finish and answer at the
     /// wake.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // CR claude for eric: [bug/high] CachedArgsAsync has no `reborn`, so a seq step
+        // CR claude for claude: [bug/high] CachedArgsAsync has no `reborn`, so a seq step
         // entered for a new run inherits the calls of the run before. A call that is
         // not CANCEL_SAFE and was in flight when the run was aborted (by abort(e) or
         // its arm's sleep) finishes asleep. At the new run's first update its kept
@@ -2392,6 +2408,13 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
         // them. probe:
         // design/review-2026-10-26/repro/core-lib-kept-reply-crosses-rebirth.gx Also
         // reported as (x-async-io-02). (core-lib-01)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18,
+        // discussed): nothing delivers after a sleep. A call site that sleeps opens a
+        // fresh reply slot and drops any reply to the old one; work is cancelled where
+        // it can be, and the book documents what cannot be (a write still happens, its
+        // result is not seen). A stream read whose reply is dropped returns its bytes
+        // to the stream's buffer, so no data is lost. This replaces the CANCEL_SAFE
+        // split (a call not cancel-safe finishing and answering at the wake).
         match self.kept {
             None => self.renew(ctx),
             Some(_) => {

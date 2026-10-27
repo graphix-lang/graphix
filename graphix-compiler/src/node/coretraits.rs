@@ -565,7 +565,7 @@ fn dispatch_eq<R: Rt>(state: *mut u8, a: &GxAbstract, b: &GxAbstract) -> Option<
                 (true, true) => true,
                 (true, false) | (false, true) => false,
                 (false, false) => {
-                    // CR claude for eric: [bug/low] This logs "answering Equal" and
+                    // CR claude for claude: [bug/low] This logs "answering Equal" and
                     // then returns false: an inconsistent Eq pair compares unequal on
                     // both engines. design/traits.md says such a pair is answered Equal
                     // and that eq follows the same shape. Decide which answer an
@@ -575,6 +575,9 @@ fn dispatch_eq<R: Rt>(state: *mut u8, a: &GxAbstract, b: &GxAbstract) -> Option<
                     // probe:
                     // design/review-2026-10-26/repro/tests-fusion-traits-eq-inconsistent-pair.gx
                     // (tests-fusion-traits-06)
+                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q35, An
+                    // inconsistent Eq pair): yes, fix the doc (the recommendation: unequal:
+                    // nothing merges on an inconsistent impl. Fix the doc.)
                     warn_pair_bottom(CoreTrait::Eq, a);
                     false
                 }

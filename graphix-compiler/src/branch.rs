@@ -1069,7 +1069,7 @@ where
         let calls: LPooled<Vec<&Node<R>>> = items.iter_mut().map(|i| &*call(i)).collect();
         siblings.decide(ctx, calls.len(), calls.iter().copied(), Sites::Slots);
     }
-    // CR claude for eric: [perf/medium] Every update forks all running instances, with
+    // CR claude for claude: [perf/medium] Every update forks all running instances, with
     // no cost estimate and no saturated() check. An instance's first update is costly,
     // but a waiting instance's later updates are a few nodes each, and each one still
     // pays a fork of every instance and wakes the whole pool. A server whose N
@@ -1079,6 +1079,9 @@ where
     // collections do, and update the 'whatever their cost' rule in CLAUDE.md. probe:
     // design/review-2026-10-26/repro/x-parallel-serve-fork-every-update.sh
     // (x-parallel-01)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q66, A server
+    // forks every instance on every update): yes, plan them (the recommendation: plan
+    // them.)
     let fork =
         items.len() >= 2 && ctx.fork_mode() != ParMode::Off && siblings.independent();
     match fork {

@@ -317,7 +317,7 @@ fn comment_above_impl_method() {
 }
 
 #[test]
-// CR claude for eric: [bug/medium] [bug/medium] This pins a refusal that the documented
+// CR claude for claude: [bug/medium] [bug/medium] This pins a refusal that the documented
 // comment rule does not make. A comment at the end of a list item's line, or below a
 // list's last item or a file's, is legal everywhere `commented` parses. `impl_decl`,
 // `trait_decl` and interface items use `sep_by_tok` instead, so impl and trait method
@@ -334,6 +334,8 @@ fn comment_above_impl_method() {
 // parses; CLAUDE.md and the book's comment section say so. If you rule the rule
 // narrower, those XCRs come back to CR. tests-parser-01's test is now
 // a_comment_below_the_last_impl_method_rides_it.
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
+// every list (built)): yes, keep and extend (the recommendation: keep and extend.)
 fn a_comment_below_the_last_impl_method_rides_it() {
     for src in [
         "impl Show for Counter { let show = |c| \"c\"\n// below\n}",

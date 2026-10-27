@@ -121,7 +121,7 @@ graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort);
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => {
-            // CR claude for eric: [perf/medium] Under the hook loan, every abstract
+            // CR claude for claude: [perf/medium] Under the hook loan, every abstract
             // value whose type implements Eq hashes to its id alone (GxAbstract::hash,
             // eq_applies), so this set compares each element with every kept one
             // through the Eq hook. That is quadratic: 4000 elements take 7 s in debug
@@ -130,6 +130,11 @@ fn fc_dedup(args: &[Value]) -> Option<Value> {
             // cost. probe:
             // design/review-2026-10-26/repro/c-module-traits-dedup-quadratic.sh Also
             // reported as (tests-fusion-traits-04). (c-module-traits-05)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q58,
+            // discussed): add a hash method to the core Eq trait that returns the part
+            // of the value to be hashed (what the implementer's eq compares). The
+            // runtime hashes that, so hashing and dedup over such values stop degrading
+            // to the type id.
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
             let mut kept: LPooled<Vec<Value>> = LPooled::take();
             for v in a.iter() {

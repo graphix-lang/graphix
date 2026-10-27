@@ -1067,7 +1067,7 @@ pub(super) fn emit_select_arms<R: Rt>(
         g.node.refs(&mut reads);
         retain_read(&mut binds, &reads);
         install_arm_binds(cx, &binds, scrut, Some(mask))?;
-        // CR claude for eric: [bug/medium] The prologue runs this guard on every
+        // CR claude for claude: [bug/medium] The prologue runs this guard on every
         // invocation, also where an earlier arm claimed the value. A `$` or
         // handler-less `?` here whose operand ignores the binds then logs a swallowed
         // failure the node-walk never had, because the node-walk runs only the guards
@@ -1078,6 +1078,10 @@ pub(super) fn emit_select_arms<R: Rt>(
         // lowering::unfollowed_guard refuse such Qops as it refuses handler-ful raises.
         // probe: design/review-2026-10-26/repro/f-select-unreached-guard-logs.sh
         // (f-select-02)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q63,
+        // Swallowed failures in fused code (round-1 q1, follow-up)): yes, keep fusion
+        // (the recommendation: keep fusion: predictable fusion matters more than the
+        // duplicate log.)
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm_u(gcv.disc, STALE);
         let gbot = is_tainted(cx.b, gcv.disc);

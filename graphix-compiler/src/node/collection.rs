@@ -750,7 +750,7 @@ struct Slot<R: Rt> {
 }
 
 impl<R: Rt> Slot<R> {
-    // CR claude for eric: [perf/medium] Every slot is a full run-time bind: an env
+    // CR claude for claude: [perf/medium] Every slot is a full run-time bind: an env
     // binding for the synthetic `collection_element` argument, a fresh instantiate of
     // the callback type, and at first dispatch build_bound (compile, typecheck0/1,
     // analysis::analyze_bound_callee and share::fuse_slot). The analysis gives the same
@@ -779,6 +779,8 @@ impl<R: Rt> Slot<R> {
     // its own variables, so going further means slots sharing their prototype's graph,
     // the node-graph sharing question left open (not ruled out, not advocated).
     // Readdressed for that decision.
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68, Activation
+    // memory and depth churn):
     fn new(
         ctx: &mut CompileCtx<R>,
         callback: &Callback,
@@ -873,7 +875,7 @@ impl<R: Rt> MapQBase<R> {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
             MapOp::Filter => return source.kept(self.flavor, slots.iter().map(taken)),
             // null drops an element, `Keep(v) keeps v, null included
-            // CR claude for eric: [bug/high] The `Keep marker is in-band for 'b:
+            // CR claude for claude: [bug/high] The `Keep marker is in-band for 'b:
             // nothing stops 'b from holding a `Keep variant, so a generic callback that
             // returns its own 'b-typed `Keep(1) is unwrapped here. The result then
             // holds values outside its static type. `let f = |a: Array<'x>| ->
@@ -886,6 +888,8 @@ impl<R: Rt> MapQBase<R> {
             // Rust-registered abstract like the kind markers). probe:
             // design/review-2026-10-26/repro/c-collection-keep-unsound.gx Also reported
             // as (x-engine-collections-01). (c-collection-01)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q30, The
+            // `Keep marker is in-band):
             MapOp::FilterMap => slots
                 .iter()
                 .map(Slot::value)
@@ -1191,7 +1195,7 @@ fn update_slots_in_order<R: Rt>(
         if ctx.interrupted() {
             return None;
         }
-        // CR claude for eric: [perf/medium] Every standing slot is called here whenever
+        // CR claude for claude: [perf/medium] Every standing slot is called here whenever
         // the collection walks, even when no element moved, the callback was not
         // rebound, and the slot's instance body boundary is unmarked. A clean slot
         // still pays CallSite::update_call, GXLambda formal publication, the Prune
@@ -1203,6 +1207,8 @@ fn update_slots_in_order<R: Rt>(
         // without calling it. Wake and Step views keep the full walk. probe:
         // design/review-2026-10-26/repro/x-perf-runtime-idle-slots.sh
         // (x-perf-runtime-01)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q65, Idle
+        // collection slots): yes, skip (the recommendation: skip.)
         let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx));
         let tag = tv.tag();
         if gxdbg_slot() {

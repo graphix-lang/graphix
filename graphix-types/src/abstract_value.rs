@@ -331,7 +331,7 @@ impl PartialEq for GxAbstract {
         if let Some(b) = hooked(|h| (h.eq)(h.state, self, other)) {
             return b;
         }
-        // CR claude for eric: [bug/medium] The structural case ignores params, but a
+        // CR claude for claude: [bug/medium] The structural case ignores params, but a
         // type test does not. Box<i64>(1) and Box<[i64, null]>(1) are told apart by a
         // select, yet compare == and merge into one map key (coretraits::pair also
         // sends two instantiations here). Either compare params after the id in eq, cmp
@@ -339,6 +339,9 @@ impl PartialEq for GxAbstract {
         // is not Discernible. probe:
         // design/review-2026-10-26/repro/c-module-traits-abstract-instantiations-equal.gx
         // (c-module-traits-04)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q31, Two
+        // instantiations of one abstract compare equal): yes, compare params (the
+        // recommendation: compare params.)
         crate::stack::ensure_sufficient(|| self.payload == other.payload)
     }
 }

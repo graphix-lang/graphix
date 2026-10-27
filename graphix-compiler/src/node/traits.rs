@@ -776,7 +776,7 @@ impl<R: Rt> Impl<R> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
-    // CR claude for eric: [bug/medium] Only core traits get prototype call sites, so a
+    // CR claude for claude: [bug/medium] Only core traits get prototype call sites, so a
     // user trait's declared #[pure]/#[sync] is checked of an impl only when some
     // build-time call reaches it. An uncalled violating impl compiles. A dynamic
     // module's impure impl of a sig-declared `#[pure]` method loads with status null:
@@ -788,6 +788,9 @@ impl<R: Rt> Impl<R> {
     // pin both the static and the dynamic case. probe:
     // design/review-2026-10-26/repro/tests-fusion-traits-trait-requirement-unchecked.gx
     // (tests-fusion-traits-01)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q36, A trait
+    // method's `#[pure]` is a contract on every impl): yes, every impl (the
+    // recommendation: every impl, as CLAUDE.md says.)
     fn build_prototypes(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());

@@ -265,7 +265,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
     }
 }
 
-// CR claude for eric: [bug/medium] A shape is tessellated whole, with no clipping to
+// CR claude for claude: [bug/medium] A shape is tessellated whole, with no clipping to
 // the canvas, at a fixed tolerance, so its cost grows with its size, not with what is
 // visible. A filled circle of radius 1e12 in a 300x200 canvas takes about 1 s and 1 GB
 // per draw (1e8: 10 ms, 1e10: 94 ms), and each 100x of radius costs 10x. A radius of
@@ -275,6 +275,9 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
 // and log it, as a non-finite shape is skipped, or clip the geometry to the frame
 // before tessellating. probe:
 // design/review-2026-10-26/repro/gui-widgets-a-canvas-huge-radius.rs (gui-widgets-a-01)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q48, Canvas shapes
+// much larger than the canvas): yes, refuse past a bound (the recommendation: refuse
+// past a bound (simple, predictable); clipping later if needed.)
 fn draw_shape(
     frame: &mut iced_widget::canvas::Frame<Renderer>,
     shape: &CanvasShape,

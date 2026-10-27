@@ -2034,7 +2034,7 @@ run!(
 
 // Nor one a reference holds: the callee could write the wider type
 // through it.
-// CR claude for eric: [bug/medium] This pins a refusal for read-only `&'a` formals, and
+// CR claude for claude: [bug/medium] This pins a refusal for read-only `&'a` formals, and
 // its reason is wrong: nothing can write through a `&'a`, only through `&mut`. The
 // refusal also depends on argument order: `f(r, n)` is refused, but `f(n, r)` is
 // accepted and yields 0, because callsite.rs `holds_invariantly`/`data_positions` treat
@@ -2044,6 +2044,9 @@ run!(
 // refused. Then rewrite this fixture: with `&mut 'a` it says what its comment says.
 // probe: design/review-2026-10-26/repro/tests-functions-readonly-ref-order.gx
 // (tests-functions-02)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q26, Read-only `&'a`
+// formals and argument order): yes, covariant (the recommendation: covariant, as `&T`
+// already is.)
 run!(
     reference_variable_does_not_widen,
     r#"{

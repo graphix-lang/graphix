@@ -210,7 +210,7 @@ fn arm_raise_blocker<R: Rt>(
     selects: &[&Node<R>],
     ctx: &CompileCtx<R>,
 ) -> Option<FusionBlocker> {
-    // CR claude for eric: [bug/medium] Only handler-ful raises count here and in
+    // CR claude for claude: [bug/medium] Only handler-ful raises count here and in
     // `claims_no_site_memory`. A handler-less `?` or a `$` over a constant error also
     // owes its report to a birth or Step view a kernel lacks: a fused select arm never
     // reports `e?` at the arm's first entry, and a native tail loop reports it at its
@@ -247,6 +247,9 @@ fn arm_raise_blocker<R: Rt>(
     // idiom this hits. Back to eric: accept that cost, or keep fusion and let a
     // kernel's report be owed only on a fired operand (CLAUDE.md then says a constant
     // swallow in a fused arm may go unreported).
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q63, Swallowed failures in fused code (round-1 q1,
+    // follow-up)): yes, keep fusion (the recommendation: keep fusion: predictable fusion matters more than the duplicate
+    // log.)
     for s in selects {
         if let NodeView::Select(sel) = s.view()
             && let Some(g) =

@@ -458,7 +458,7 @@ raised `E`: the raised value is `e.0.error` (`e.0` also holds the site,
 `NotFound(s) => .. } ``; `` select e { `NotFound(s) => .. } `` is refused
 as never matching.
 
-<!-- CR claude for eric: [doc-drift/medium] A handler that does not read its binder runs
+<!-- CR claude for claude: [doc-drift/medium] A handler that does not read its binder runs
 at birth, not when an error arrives. `{ catch(e) failed <- true; x? }` sets failed with
 no error ever raised, and the check gives no warning, though it warns about the same
 shape in a select arm (warn_birth_only). Say here that a handler must read `e` (`failed
@@ -466,6 +466,8 @@ shape in a select arm (warn_birth_only). Say here that a handler must read `e` (
 never reads its binder. probe:
 design/review-2026-10-26/repro/lang-skill-catch-handler-fires-at-birth.gx
 (lang-skill-02) -->
+<!-- 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q17, A catch
+handler that never reads its binder): yes, warn (the recommendation: warn.) -->
 `catch` is not control flow: the handler is a reactive expression that
 runs when an error arrives; connect it to state you read. A second
 catch shadows the first below it; a handler's own `?` rethrows outward.

@@ -245,7 +245,7 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }
-        // CR claude for eric: [bug/low] A null legend_position leaves ratatui's default
+        // CR claude for claude: [bug/low] A null legend_position leaves ratatui's default
         // (TopRight), so no Graphix value can hide the legend of a chart whose datasets
         // are named: `#legend_position: &null` still draws the box. Decide what null
         // means. If it should hide, pass
@@ -254,6 +254,9 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         // hidden. probe:
         // design/review-2026-10-26/repro/tui-widgets-chart-legend-null.sh
         // (tui-widgets-06)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q54, A TUI
+        // chart's null legend position): yes, null hides (the recommendation: null
+        // hides.)
         if let Some(Some(lp)) = p.legend_position.t {
             chart = chart.legend_position(Some(lp.0));
         }

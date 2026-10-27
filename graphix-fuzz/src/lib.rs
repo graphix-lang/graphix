@@ -251,7 +251,7 @@ impl Outcome {
             (RuntimeErr(_), RuntimeErr(_)) => true,
             // a node-walk budget beside a JIT deadline is settled by
             // `Oracle::settle`, which knows the engines
-            // CR claude for eric: [risk/medium] Two timeouts agree here whatever
+            // CR claude for claude: [risk/medium] Two timeouts agree here whatever
             // stopped each side, a Containment::Compile included. A construction
             // timeout is no race between descents: on the JIT side it is fusion or the
             // link hanging or going superlinear, on a warm run a restore that never
@@ -262,6 +262,9 @@ impl Outcome {
             // agrees only with Compile, and a Compile beside a run-time containment
             // takes the one-sided slow retry. Found by reading; not run.
             // (fuzz-lib-a-02)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q72, A
+            // construction timeout in the fuzzer): yes, compile only with compile (the
+            // recommendation: Compile only with Compile.)
             (Timeout(_), Timeout(_)) => true,
             _ => false,
         }

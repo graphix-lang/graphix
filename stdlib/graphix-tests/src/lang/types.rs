@@ -672,7 +672,7 @@ run!(
 // Unmarked data reads back as the member that reads it exactly: a tuple of
 // its length, then a struct, before an array, so what pack and json write
 // of a tuple or a struct reads back as it.
-// CR claude for eric: [bug/medium] Only the members that win the tie-break round-trip.
+// CR claude for claude: [bug/medium] Only the members that win the tie-break round-trip.
 // An Array<i64> of length 2 in [(i64, i64), Array<i64>] reads back from json or pack as
 // the tuple (1, 2). A bare `A in [string, `A] reads back as the string "A". Both are
 // silent member changes after a save and reload. The writer refuses keys that collide
@@ -682,6 +682,9 @@ run!(
 // here. probe:
 // design/review-2026-10-26/repro/tests-types-data-roundtrip-member-change.gx
 // (tests-types-01)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union members
+// that share a data form): yes a for json/toml, b for pack and db (the recommendation:
+// (a) for json/toml targets; (b) for pack and db.)
 const DATA_READS_BACK_AS_WRITTEN: &str = r#"
 {
   type U = [(i64, i64), Array<f64>];
@@ -3979,7 +3982,7 @@ run!(ref_test_over_any_in_a_second_pair, r#"{
 // A string casts to a decimal or a float exactly: digits past f64 stay,
 // a float reads anything Rust's float parse reads, and a pre-epoch
 // datetime truncates toward zero as a float does.
-// CR claude for eric: [bug/low] This pins "12345678901234567890." as the plain print of
+// CR claude for claude: [bug/low] This pins "12345678901234567890." as the plain print of
 // a scale-0 decimal. A float prints plainly with no trailing dot (f64 5.0 -> "5"), but
 // Value::fmt_naked routes a decimal through DecimalFmt (netidx-value print.rs), which
 // appends the literal syntax's '.'. That holds for cast<string> and interpolation
@@ -3987,6 +3990,8 @@ run!(ref_test_over_any_in_a_second_pair, r#"{
 // arm (an upstream change in netidx-value) and this expectation changes; if not, say so
 // in CLAUDE.md's cast rule. probe:
 // design/review-2026-10-26/repro/tests-types-decimal-plain-print.gx (tests-types-06)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q46, A decimal's
+// plain print): yes, unadorned (the recommendation: unadorned.)
 run!(string_casts_to_decimal_and_float_exactly, r#"{
   let d1 = cast<decimal>("1.23456789012345678901234567")$;
   let d2 = cast<decimal>("12345678901234567890")$;

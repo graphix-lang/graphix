@@ -912,7 +912,7 @@ pub(crate) fn struct_field_types<R: Rt>(
         }
         return Ok((index, ts));
     }
-    // CR claude for eric: [bug/low] A union of structs whose names differ lands here,
+    // CR claude for claude: [bug/low] A union of structs whose names differ lands here,
     // and the read is refused with "expected struct not [..]" even when every member
     // has the field. In [{a: i64, b: i64}, {a: i64, c: i64}], `a` sits at the same
     // sorted index in both. tuple_field_types does the same for tuples of different
@@ -920,6 +920,11 @@ pub(crate) fn struct_field_types<R: Rt>(
     // and the JIT read by index already), or keep the refusal and say the members'
     // field names (arities) differ. probe:
     // design/review-2026-10-26/repro/c-data-map-union-field-read.gx (c-data-map-05)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q27, A field
+    // read over a union of structs): I'm in favor of reading it, but I point out that
+    // fast struct reads depend on the type being sorted by key at compile time and
+    // baking in the index at runtime. In [T0, T1] if T0 has a common field with T1 it
+    // is not guaranteed that that field appears at the same index.
     deref_typ!("struct", ctx, source,
         Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (i, LPooled::from_iter([t])))
     )

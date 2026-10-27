@@ -241,13 +241,17 @@ This is useful for organizing projects where you want both a runnable program (`
 
 ### Running from Netidx
 
-<!-- CR claude for eric: [doc-drift/low] This section and the GRAPHIX_MODPATH section
+<!-- CR claude for claude: [doc-drift/low] This section and the GRAPHIX_MODPATH section
 never say what loading modules from netidx trusts. NetidxResolver compiles whatever is
 published at the path, so under anonymous auth any host can supply code, and a netidx
 entry listed before file entries shadows the user's own modules. Add a note: netidx
 modules are code from whoever may publish at that path; use authenticated netidx with
 restricted publish permissions, and put file entries first when local modules must win.
 Found by reading; not run. (x-security-08) -->
+<!-- 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q69, What loading
+modules from netidx trusts): yes. Add to the book: netidx modules are code from whoever
+may publish at the path; use authenticated netidx, and list file entries first when
+local modules must win. -->
 A program run from netidx finds its modules beside it, as a file's do
 on disk: the directory of its netidx path is the module search path.
 

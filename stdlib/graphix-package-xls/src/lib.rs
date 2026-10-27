@@ -321,7 +321,7 @@ fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(),
 }
 
 fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
-    // CR claude for eric: [bug/high] Only ods is guarded against calamine's dense open.
+    // CR claude for claude: [bug/high] Only ods is guarded against calamine's dense open.
     // The BIFF .xls reader also builds every sheet over its cells' bounding box when
     // the workbook opens, so a 5.6 KB .xls with cells at A1 and at (65535, 65535)
     // OOM-kills the runtime through xls::sheets alone. MAX_CELLS is checked only after
@@ -330,6 +330,8 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // cannot be vouched for. The UPSTREAM.md calamine entry should name the xls reader
     // too. probe: design/review-2026-10-26/repro/small-pkgs-xls-dense-oom.sh
     // (small-pkgs-03)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q56, A dense
+    // .xls): document and add an UPSTREAM bug
     if let Ok(mut zip) = ZipArchive::new(rs.clone())
         && let Err(e) = check_ods(&mut zip).and_then(|()| check_shared_strings(&mut zip))
     {

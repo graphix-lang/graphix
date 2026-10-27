@@ -57,13 +57,16 @@ mutually exclusive.
 
 - **Wrapper invocation**: if `pop_count > 0`, decrement and invoke `f`;
   otherwise push the invocation and emit nothing this cycle.
-<!-- CR claude for eric: [doc-drift/low] Credit banks without bound: after N idle
+<!-- CR claude for claude: [doc-drift/low] Credit banks without bound: after N idle
 trigger fires, N later calls dispatch at once. This contradicts the API example above
 ('at most one release per tick'), and queuefn is no rate limit. Decide: cap `pop_count`
 (at 1, if a trigger is meant to pace calls) or fix the example and say credit
 accumulates. probe:
 design/review-2026-10-26/repro/x-async-io-queuefn-unbounded-credit.gx (x-async-io-06)
 -->
+<!-- 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q19, queuefn's
+banked credit): yes, accumulate, fix the doc (the recommendation: accumulate (a
+semaphore), fix the doc.) -->
 - **`#trigger` update**: dequeue the oldest invocation of a site awake
   and invoke `f` with it; with none, `pop_count += 1`. A fire born with
   the queuefn (its first cycle, or a seq step's next run) is no credit:

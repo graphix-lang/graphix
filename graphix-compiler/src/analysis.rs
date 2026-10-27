@@ -1554,7 +1554,7 @@ fn own_access<R: Rt>(
                 }
                 Some(ApplyView::BuiltIn(name)) if current || cs.bound_statically() => {
                     s.ordered |= ctx.builtin_ordered(name);
-                    // CR claude for eric: [bug/medium] A builtin handed any function
+                    // CR claude for claude: [bug/medium] A builtin handed any function
                     // makes the step opaque, and an opaque step marks every seqq
                     // capture live. So `let a = x; let c = filter(3, |v| v > 0)` in a
                     // seqq body reads x live, not as it stood at enqueue: the probe
@@ -1582,6 +1582,9 @@ fn own_access<R: Rt>(
                     // the variable at its own entry (2: give seqq captures a redirect
                     // of their own that rewrite_with_inner drops at a nested seq, as it
                     // drops Entry)?
+                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
+                    // q9, A nested seq inside a seqq): yes, own entry (the
+                    // recommendation: own entry, as CLAUDE.md says.)
                     let reach = builtin_reach(cs, ctx);
                     if reach != Reach::Nothing && gxdbg_seqplan() {
                         let what = match reach {

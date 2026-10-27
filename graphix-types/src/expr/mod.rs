@@ -1400,7 +1400,7 @@ impl Expr {
 
     /// The value this expression writes when it is a literal: a constant,
     /// or an array, list, map, tuple, struct or variant of literals.
-    // CR claude for eric: [bug/medium] str::parse (fc_parse) promises to read what
+    // CR claude for claude: [bug/medium] str::parse (fc_parse) promises to read what
     // Graphix prints, but several values print as text that is no Graphix literal. A
     // datetime prints `2020-01-01 00:00:00 UTC` (refused even alone), bytes print
     // `AQI=`, a string holding brackets prints `"a[b]"` (the parser reads an
@@ -1410,6 +1410,10 @@ impl Expr {
     // forms, then pin `str::parse("[v]") == v` per primitive. probe:
     // design/review-2026-10-26/repro/t-expr-core-parse-printed-collections.gx
     // (t-expr-core-01)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q43, What
+    // `str::parse` reads back): yes, a (the recommendation: (a) for strings and
+    // numbers inside composites (escape brackets, type-prefix a number that is not
+    // i64/f64), (b) for datetime and duration. Bytes: print as a bytes literal.)
     pub fn literal_value(&self) -> Option<Value> {
         fn all(args: &[Expr]) -> Option<LPooled<Vec<Value>>> {
             let mut vals: LPooled<Vec<Value>> = LPooled::take();

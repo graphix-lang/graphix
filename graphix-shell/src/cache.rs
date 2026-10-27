@@ -295,7 +295,7 @@ impl RegistrationCache {
     /// never rewritten in place (written to a temporary file and renamed),
     /// so the mapping stays valid. A program entry whose sources changed
     /// is a miss.
-    // CR claude for eric: [risk/medium] An entry's integrity rests on the cache
+    // CR claude for claude: [risk/medium] An entry's integrity rests on the cache
     // directory's permissions alone, and nothing checks them. load restores any entry
     // at the keyed path whatever its owner or mode, store applies 0700 only to
     // directories it creates itself, and the crc32 seal can be recomputed by anyone.
@@ -305,6 +305,9 @@ impl RegistrationCache {
     // ran the modified program. Proposal: on Unix, refuse an entry or directory not
     // owned by the euid or writable by group/other. probe:
     // design/review-2026-10-26/repro/x-security-cache-trust.sh (x-security-05)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q70, Trusting
+    // the image cache directory): yes, and set the permissions correctly when
+    // creating it (the recommendation: refuse.)
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = match fs::File::open(&path) {

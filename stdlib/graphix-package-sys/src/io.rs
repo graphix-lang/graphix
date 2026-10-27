@@ -37,7 +37,7 @@ impl EvalCachedAsync for IoReadEv {
     type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_io_read";
-    // CR claude for eric: [bug/medium] `read` is one `read_buf`, which is cancel-safe:
+    // CR claude for claude: [bug/medium] `read` is one `read_buf`, which is cancel-safe:
     // dropped before it completes, it has read nothing. Declaring it not cancel-safe
     // lets a read in a sleeping arm keep the reader lock and take the next chunk. Only
     // that arm's wake answers it, while the selected arm's read of the same stream
@@ -48,6 +48,13 @@ impl EvalCachedAsync for IoReadEv {
     // EvalCachedAsync::CANCEL_SAFE). probe:
     // design/review-2026-10-26/repro/x-async-io-read-diverted-to-sleeping-arm.gx
     // (x-async-io-05)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18,
+    // discussed): nothing delivers after a sleep. A call site that sleeps opens a fresh
+    // reply slot and drops any reply to the old one; work is cancelled where it can be,
+    // and the book documents what cannot be (a write still happens, its result is not
+    // seen). A stream read whose reply is dropped returns its bytes to the stream's
+    // buffer, so no data is lost. This replaces the CANCEL_SAFE split (a call not
+    // cancel-safe finishing and answering at the wake).
     const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -308,7 +315,7 @@ impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
         // One reader per stream: a re-delivery of the same handle is
         // ignored (the reader consumes it); another stream replaces the
         // reader, under a fresh id so the old one's lines land nowhere.
-        // CR claude for eric: [bug/medium] A re-delivered handle is ignored even when
+        // CR claude for claude: [bug/medium] A re-delivered handle is ignored even when
         // the reader that held it has finished: at EOF, on an error, or stopped by a
         // seek or a TLS upgrade (stop_lines). So a site can never read lines from that
         // handle again. Seeking a file back to 0 and re-delivering it, or re-triggering
@@ -317,6 +324,12 @@ impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
         // the old task is finished (test the AbortHandle's is_finished and remint the
         // var), or document in io.gxi that a site reads a handle once. probe:
         // design/review-2026-10-26/repro/sys-io-lines-dead-after-seek.gx (sys-io-03)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q20, Reading
+        // lines from a re-delivered handle): When a handle is at EOF we should not
+        // automatically seek to the beginning. The programmer must call seek on it. It
+        // should be possible to do that. An error should not make the handle
+        // permanently unusable. Nor should a seek. Discuss if you want more
+        // clarification.
         if let Some(tv) = seam_value(from[0].update(ctx))
             && tv.is_fired()
             && let Some(stream) = stream_of(&tv.value_cloned())

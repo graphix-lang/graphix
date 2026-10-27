@@ -543,7 +543,7 @@ impl<R: Rt> Update<R> for Bind<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke {
-            // CR claude for eric: [bug/low] At a wake the write that landed during the
+            // CR claude for claude: [bug/low] At a wake the write that landed during the
             // sleep is re-raised here. The initializer then updates with its input's
             // catch-up fire and publishes over it, even when that input fired before
             // the write. Catch-up loses the order inside the sleep, so the let ends on
@@ -554,6 +554,9 @@ impl<R: Rt> Update<R> for Bind<R> {
             // keeps a connect target. probe:
             // design/review-2026-10-26/repro/x-engine-firing-init-catchup-beats-later-write.gx
             // (x-engine-firing-05)
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q4, A caught-up
+            // initializer against a later write): yes, later wins (the recommendation: the
+            // later write wins.)
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);
@@ -562,7 +565,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        // CR claude for eric: [bug/medium] Two events missed during a sleep are applied
+        // CR claude for claude: [bug/medium] Two events missed during a sleep are applied
         // in the wrong order. The initializer input fired at c=4 and a write to this
         // target landed at c=5. At the wake the re-raised write is published first,
         // then the initializer's caught-up fire overwrites it, so x is 100 where an arm
@@ -570,6 +573,9 @@ impl<R: Rt> Update<R> for Bind<R> {
         // target when its write stamp is after every initializer input's), or always
         // the initializer? probe: design/review-2026-10-26/repro/c-bind-wake-order.gx
         // (c-bind-06)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q4, A
+        // caught-up initializer against a later write): yes, later wins (the
+        // recommendation: the later write wins.)
         if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =
@@ -683,7 +689,7 @@ impl<R: Rt> Update<R> for Bind<R> {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec)?;
             // an abstract type's parameters are invariant: the annotation,
             // not the payload, decides a constructed value's
-            // CR claude for eric: [bug/medium] With invariant abstract parameters,
+            // CR claude for claude: [bug/medium] With invariant abstract parameters,
             // `Box(1)` is typed `Box<i64>` eagerly. A wider annotation can only decide
             // the parameter here (a let whose initializer is itself the construction)
             // and at call arguments (`pre_unify_arg`, which does not look inside an
@@ -722,6 +728,11 @@ impl<R: Rt> Update<R> for Bind<R> {
             // still open to it. That is a change to the cell core (copies, merges,
             // aliases and images carry it), so it is reverted and back to eric to
             // confirm before building it.
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, D3,
+            // discussed): option A. Add a lower-bound field to the type cell (every
+            // bind must contain it; the settle binds a still-open cell to it), carried
+            // by copies, merges, aliases and images, so T(v) leaves its parameters open
+            // with the payload's type as their lower bound.
             if let Some(Type::Abstract { .. }) = self.node.typ().deref_cloned() {
                 wrap!(
                     self.node,
@@ -2131,7 +2142,7 @@ impl<R: Rt> ByRef<R> {
 }
 
 impl<R: Rt> Deref<R> {
-    // CR claude for eric: [bug/low] A read through a union of writable references is
+    // CR claude for claude: [bug/low] A read through a union of writable references is
     // refused where a write through the same union is accepted. With `x: i64`, `y:
     // f64` and `let r = select b { true => &mut x, false => &mut y }`, `*r <- ..` is
     // checked against every member (ConnectDeref::typecheck0_with) but `*r` fails
@@ -2144,6 +2155,9 @@ impl<R: Rt> Deref<R> {
     // (typedefs included) and take the union here; if not, the write should be
     // refused too. Found by the fuzz generator's arm-minted references
     // (fuzz-gen-a-06), which now mint only named targets. (deref-union-01)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q25, Reading
+    // through a union of references): yes, read the union (the recommendation: read
+    // the union.)
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,

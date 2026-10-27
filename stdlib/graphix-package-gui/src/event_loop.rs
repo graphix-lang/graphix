@@ -556,7 +556,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                     return;
                 }
-                // CR claude for eric: [perf/low] Each ToGui::Update walks every widget
+                // CR claude for claude: [perf/low] Each ToGui::Update walks every widget
                 // of every window: each widget compares the id with each of its refs
                 // and recurses into its children, through Child::update and
                 // Children::update. A cycle costs updates x widgets x props comparisons
@@ -588,6 +588,9 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 // 1.5 ms. Quadratic as stated, and visible at the frame budget only when
                 // most of a 1000-widget UI updates at once. Back to eric to decide:
                 // build the index, or accept.
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q47,
+                // GUI update routing (round-1 q49, measured)): yes, accept it (the
+                // recommendation: accept.)
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!(target: FAILURE_TARGET, "handle_update: {e:?}");

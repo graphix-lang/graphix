@@ -69,7 +69,7 @@ parser! {
         }
         // a splice prints on its string's line, where no comment can stand
         let spliced = |(e, end): (Expr, SourcePosition)| {
-            // CR claude for eric: [bug/medium] This checks only `dec.comments`, so a
+            // CR claude for claude: [bug/medium] This checks only `dec.comments`, so a
             // comment ending a line inside a splice (`"[{ let x = 1; // hi\n x }]"`) or
             // standing below a list in one parses. The formatter then refuses the file
             // as its own bug. An attribute in a splice also gets through, and the
@@ -88,6 +88,9 @@ parser! {
             // splice printer write attributes on the expression's line (`#[pure] let y
             // = x` parses on one line), departing from 'a tree holding an attribute has
             // no single-line form' for splices only?
+            // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q75,
+            // Attributes inside a string splice): yes, refuse (the recommendation:
+            // refuse.)
             match holds_comment(&e) {
                 true => refuse(end, "a comment cannot stand inside a string's splice")
                     .right(),

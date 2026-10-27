@@ -184,7 +184,7 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 (Tag::STALE, Tag::FIRED, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::STALE, Tag::STALE, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::FIRED, Tag::STALE, 11, Tag::FIRED, 11),
-                // CR claude for eric: [bug/medium] This row pins `~` (and `~!`) keeping
+                // CR claude for claude: [bug/medium] This row pins `~` (and `~!`) keeping
                 // its last value when its trigger goes bottom: Sample::update rides on
                 // a trigger that is not fired, and a bottom trigger counts as not
                 // fired. Everywhere else bottom in is bottom out (dense_delivery.md
@@ -205,6 +205,9 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 // 2026-10-25 claude: Tried with x-engine-firing-04: a sample bottomed by its
                 // trigger breaks the never()-armed event idiom and the seq lowering (48
                 // fixtures); reverted, see the note there. Readdressed to eric with it.
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q2, `~`
+                // with a bottom trigger (round-1 q2, follow-up)): yes, a (the
+                // recommendation: (a).)
                 (Tag::FRESH_BOTTOM, Tag::FIRED, 13, Tag::STALE, 11),
                 (Tag::FIRED, Tag::STALE, 13, Tag::FIRED, 13),
             ]

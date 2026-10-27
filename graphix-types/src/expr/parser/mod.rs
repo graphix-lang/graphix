@@ -2108,7 +2108,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 }
 
 /// Parse the items of an interface file, which may have none.
-// CR claude for eric: [bug/low] An interface takes no comment at the end of an item's
+// CR claude for claude: [bug/low] An interface takes no comment at the end of an item's
 // line and none below its last item. A comment-only file does not parse at all: a .gxi
 // holding only a license header is "Unexpected end of input", and a .gx stub holding
 // only comments fails `commented` with "a comment here has no item to describe",
@@ -2125,7 +2125,9 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 // comment-only .gx or .gxi parses; CLAUDE.md and the book's comment section say so. If
 // you rule the rule narrower, those XCRs come back to CR. tests-parser-01's test is
 // now a_comment_below_the_last_impl_method_rides_it.
-// CR claude for eric: [bug/medium] Interface items are parsed with `sep_by_tok`, not
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
+// every list (built)): yes, keep and extend (the recommendation: keep and extend.)
+// CR claude for claude: [bug/medium] Interface items are parsed with `sep_by_tok`, not
 // `commented`, so an interface file ending in a comment, or a `val` followed by an
 // end-of-line comment, is a parse error: the module's interface fails to load.
 // CLAUDE.md allows a comment below a file's last item and after a list item's
@@ -2142,6 +2144,8 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 // parses; CLAUDE.md and the book's comment section say so. If you rule the rule
 // narrower, those XCRs come back to CR. tests-parser-01's test is now
 // a_comment_below_the_last_impl_method_rides_it.
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q74, Comments on
+// every list (built)): yes, keep and extend (the recommendation: keep and extend.)
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());

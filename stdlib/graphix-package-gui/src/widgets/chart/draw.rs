@@ -856,7 +856,7 @@ fn draw_bar_chart<DB: DrawingBackend, X: GXExt>(
     for (i, ds) in w.datasets.iter().enumerate() {
         let DatasetEntry::Bar { style, .. } = ds else { continue };
         let fill = ShapeStyle::from(series_color(cs, style.color, i)).filled();
-        // CR claude for eric: [bug/low] Each bar series is a separate Histogram over
+        // CR claude for claude: [bug/low] Each bar series is a separate Histogram over
         // the same category segments, so series overlap full-width at a shared
         // category, and a later series hides every earlier one it is at least as tall
         // as. nearest gives every series at a slot the same distance and keeps the
@@ -864,6 +864,8 @@ fn draw_bar_chart<DB: DrawingBackend, X: GXExt>(
         // decision on the multi-series layout: grouped (each series takes 1/n of the
         // slot, nearest picks by sub-slot) or stacked. Found by reading; not run.
         // (gui-chart-05)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q49, Bar
+        // charts with several series): yes, grouped (the recommendation: grouped.)
         let hist = Histogram::vertical(&chart)
             .style(fill)
             .margin(pixels(style.margin.unwrap_or(5.0)))

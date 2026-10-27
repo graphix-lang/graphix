@@ -153,7 +153,7 @@ module.exports = grammar({
     // interface item or a trait method, on a line of its own), and
     // anywhere else it is `//` and then an error, as the graphix parser
     // refuses it.
-    // CR claude for eric: [bug/low] graphix takes `///` ending a list item's line (`1,
+    // CR claude for claude: [bug/low] graphix takes `///` ending a list item's line (`1,
     // /// first`) as a plain end-of-line comment: eol_comment takes `//` and any text.
     // It refuses the same `///` on a line of its own in a .gx (comment_line notes it is
     // a doc comment). This token refuses a third `/`, and the doc_comment scanner
@@ -163,6 +163,8 @@ module.exports = grammar({
     // any text (the scanner runs first, so doc_comment still wins where a doc is
     // legal). probe: design/review-2026-10-26/repro/ide-tooling-eol-triple-slash.gx
     // (ide-tooling-05)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q76, `///` at
+    // the end of a line): yes, refuse (the recommendation: refuse it.)
     line_comment: $ => token(choice(
       '//',
       seq('//', /[^\/\n]/, optional(/[^\n]*/)),

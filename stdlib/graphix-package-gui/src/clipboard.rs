@@ -60,7 +60,7 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 /// each call would lose the text unless a clipboard manager took it.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
-// CR claude for eric: [bug/medium] Every clipboard use goes through this one arboard
+// CR claude for claude: [bug/medium] Every clipboard use goes through this one arboard
 // instance: the gui::clipboard builtins and each text input's copy/paste via the event
 // loop's iced Clipboard. arboard is built with default features, which on Linux is X11
 // only. On a Wayland session the window is a Wayland client while the clipboard goes
@@ -70,6 +70,9 @@ static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(N
 // `wayland-data-control` feature (it falls back to X11 where the compositor lacks the
 // protocol, e.g. GNOME), and log the error in the iced Clipboard's read and write.
 // probe: design/review-2026-10-26/repro/gui-core-clipboard-x11-only.gx (gui-core-02)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q52, The clipboard
+// on Wayland): We need a solution for wayland, is wayland-data-control that solution?
+// lets discuss.
 pub(crate) fn clipboard<T>(
     f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
 ) -> Result<T, arboard::Error> {

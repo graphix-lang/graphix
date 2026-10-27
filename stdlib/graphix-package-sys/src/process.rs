@@ -253,7 +253,7 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
 #[derive(Debug, Default)]
 pub(crate) struct ProcessSpawnEv;
 
-// CR claude for eric: [bug/medium] spawn takes the CANCEL_SAFE default. When an arm
+// CR claude for claude: [bug/medium] spawn takes the CANCEL_SAFE default. When an arm
 // sleeps before the spawn's reply lands, CachedArgsAsync::sleep remints the reply id
 // and GX::deliver drops the Child: the process runs, but the program never gets its
 // handle. It is orphaned with kill_on_drop false (the default) and killed unseen with
@@ -270,6 +270,13 @@ pub(crate) struct ProcessSpawnEv;
 // call whose dropped reply loses what it did finishes and answers at the wake); pin
 // lib_tests::process::spawn_answers_at_the_wake. tcp accept is Calls::Latest, which
 // cannot be non-cancel-safe, so its loss stands until (x-async-io-01) is decided.
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q16/q18, discussed):
+// nothing delivers after a sleep. A call site that sleeps opens a fresh reply slot and
+// drops any reply to the old one; work is cancelled where it can be, and the book
+// documents what cannot be (a write still happens, its result is not seen). A stream
+// read whose reply is dropped returns its bytes to the stream's buffer, so no data is
+// lost. This replaces the CANCEL_SAFE split (a call not cancel-safe finishing and
+// answering at the wake).
 impl EvalCachedAsync for ProcessSpawnEv {
     const NAME: &str = "sys_process_spawn";
     const CANCEL_SAFE: bool = false;

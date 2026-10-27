@@ -1048,12 +1048,16 @@ fn hold_stderr() -> Option<StderrHeld> {
 /// The terminal while the display holds it: raw mode, the alternate
 /// screen, bracketed paste, its events and stderr. Dropping it gives all
 /// of that back, the event reader first.
-// CR claude for eric: [bug/medium] Live holds stderr but not stdout. println, print and
+// CR claude for claude: [bug/medium] Live holds stderr but not stdout. println, print and
 // log's default `Stdout destination write straight into the alternate screen between
 // frames, and ratatui never erases the text. Either draw through a dup of the original
 // stdout (or /dev/tty) and hold fd 1 the way StderrHeld holds fd 2, replaying it when
 // the display ends, or document that stdout belongs to the display. probe:
 // design/review-2026-10-26/repro/tui-core-stdout-into-alt-screen.py (tui-core-02)
+// 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q55, discussed):
+// document that stdout belongs to the display (no hold of fd 1). Hold stderr only when
+// fd 2 is a terminal: a redirected stderr (2>log, the usual TUI debug log) is written
+// straight through.
 struct Live {
     events: Fuse<EventStream>,
     terminal: DefaultTerminal,

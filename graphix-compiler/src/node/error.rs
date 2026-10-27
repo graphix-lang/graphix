@@ -1394,7 +1394,7 @@ impl<R: Rt> Catch<R> {
     ) -> Result<()> {
         // siblings typecheck first, so the region's throws are already
         // unioned into the bind: snapshot them, then ascribe `T`
-        // CR claude for eric: [bug/medium] An open raise (r? over Result<i64, 'e>, or a
+        // CR claude for claude: [bug/medium] An open raise (r? over Result<i64, 'e>, or a
         // callback's throws 'e) into an ascribed catch is judged only by the Contains
         // pushed below. That push ignores def_gate_depth, unlike defer_settle, so it
         // drains at the statement's typecheck1 and narrows the definition's 'e only
@@ -1409,6 +1409,9 @@ impl<R: Rt> Catch<R> {
         // is T plus open raises. probe:
         // design/review-2026-10-26/repro/c-error-op-ascribed-catch-open-throws.gx
         // (c-error-op-01)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q28, An open
+        // raise into an ascribed catch): yes, judge at join (the recommendation: judge
+        // at the join; refuse a rigid `'e`.)
         if let Some(t) = self.constraint.clone() {
             let tv = {
                 let bind = ctx
@@ -1604,7 +1607,7 @@ impl Receipts {
 
     /// Acknowledge every raise not taken yet, so no enclosing handler
     /// waits on them; their deliveries are passed over.
-    // CR claude for eric: [bug/high] give_up acks raises whose deliveries have not
+    // CR claude for claude: [bug/high] give_up acks raises whose deliveries have not
     // landed yet. A delivery that then lands while the catch is asleep is never seen by
     // take, so `arrived` lags `acked` after the wake. The next real raises are then
     // passed over as given up, and handled() is never called for them. The ancestors'
@@ -1634,6 +1637,9 @@ impl Receipts {
     // delivery that landed (arrived catches up to acked), the handler's run on it
     // passed over; Receipts then agree, but the handler does not hear those errors.
     // Readdressed to eric for the choice.
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q28, An open
+    // raise into an ascribed catch): yes, judge at join (the recommendation: judge at
+    // the join; refuse a rigid `'e`.)
     fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
         while self.acked < handler.raised() {
             self.acked += 1;

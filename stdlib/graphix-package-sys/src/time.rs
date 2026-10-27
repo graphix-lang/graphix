@@ -290,7 +290,7 @@ impl<R: Rt> Apply<R> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // CR claude for eric: [bug/medium] Clearing the output here, as every event
+        // CR claude for claude: [bug/medium] Clearing the output here, as every event
         // source's sleep does, makes the source bottom at the wake. A bottomed argument
         // bottoms its consumer, so state built on the event is hidden until the next
         // event. In the probe, count(timer) in a woken arm shows nothing for three
@@ -324,6 +324,11 @@ impl<R: Rt> Apply<R> for Timer {
         // it), and gives a select nothing to emit at the re-entry, in the TagValue tags
         // and the JIT's discs alike. Back to eric: build that state, or accept the
         // re-emission (and rewrite those six pins), or keep the clear.
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, D2,
+        // discussed): option B. Keep today's clear (a woken event source is bottom until
+        // its next event) and document in design/async_sleep_outputs.md and the book
+        // that state built on an event blanks until the event fires again (hold(..)
+        // keeps it).
         self.out = TagValue::phantom();
         self.slept.set();
         self.stop(ctx)

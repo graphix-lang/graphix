@@ -505,7 +505,7 @@ impl<'a> Meter<'a> {
                     m.prefix[i + 1] = m.prefix[i] + est;
                 }
                 m.settled |= m.hist.iter().all(|h| h.n == 0 || h.n >= SETTLE);
-                // CR claude for eric: [perf/medium] A settled site resets its sampling
+                // CR claude for claude: [perf/medium] A settled site resets its sampling
                 // period only when a p75 bucket moves. After its children turn cheap,
                 // each sample (1 in 256 updates) lands far below the p75 without moving
                 // it until cheap samples are about 3x the heavy ones, so the site forks
@@ -518,6 +518,9 @@ impl<'a> Meter<'a> {
                 // design/review-2026-10-26/repro/c-cost-misc-fork-fade.gx (cheap window
                 // 0.15 s after a heavy phase against 0.055 s without one or under Off;
                 // 0.048 s with forking disabled). (c-cost-misc-01)
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q67,
+                // Auto forks that cost more than they save): yes, all three (the
+                // recommendation: all three.)
                 m.sampler.sampled(m.settled, changed);
                 let pays = Splits::Weighted { prefix: &m.prefix, t: cal.t }
                     .split(0, n)
@@ -721,7 +724,7 @@ impl SlotSite {
                 } else if saturated() {
                     SlotPlan::Serial
                 } else {
-                    // CR claude for eric: [perf/medium] This fork is taken for any loop
+                    // CR claude for claude: [perf/medium] This fork is taken for any loop
                     // whose slots cost over T, and T counts only a worker's wake
                     // latency. It leaves out each branch's fork and merge, the slower
                     // slot updates inside a branch, and the CPU the woken workers spin
@@ -733,6 +736,9 @@ impl SlotSite {
                     // range cost. probe:
                     // design/review-2026-10-26/repro/x-perf-runtime-auto-cpu.sh
                     // (x-perf-runtime-02)
+                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2,
+                    // q67, Auto forks that cost more than they save): yes, all three
+                    // (the recommendation: all three.)
                     SlotPlan::Fork { grain: grain(cal, *est, n, RANGES_PER_WORKER) }
                 }
             }

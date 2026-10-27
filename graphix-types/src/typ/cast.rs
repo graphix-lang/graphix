@@ -1093,7 +1093,7 @@ impl Type {
                         })
                     }
                     // a payload written without its tag, as json may carry it
-                    // CR claude for eric: [bug/medium] This tagless read takes any
+                    // CR claude for claude: [bug/medium] This tagless read takes any
                     // array of the payload's length, including another variant's
                     // written form. json::write_str(`B(2)) is ["B",2], and reading it
                     // into `A(string, i64) gives `A("B", 2) instead of InvalidCast. An
@@ -1105,6 +1105,10 @@ impl Type {
                     // not open with a string. probe:
                     // design/review-2026-10-26/repro/x-kind-markers-tagless-variant-read.gx
                     // (x-kind-markers-03)
+                    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42,
+                    // Union members that share a data form): yes a for json/toml, b for
+                    // pack and db (the recommendation: (a) for json/toml targets; (b) for
+                    // pack and db.)
                     (_, Some(elts)) if elts.len() == ts.len() => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for (i, el) in elts.iter().enumerate() {
@@ -1216,7 +1220,7 @@ impl Type {
         }
         // a member whose tag the value carries is its reading, whatever a
         // tagless reading of an earlier member says
-        // CR claude for eric: [bug/medium] The data a writer emits does not say which
+        // CR claude for claude: [bug/medium] The data a writer emits does not say which
         // union member it came from, and this order reads it back as the wrong one. A
         // tuple ("B", 7) of [(string, i64), `B(i64)] comes back from pack, json and db
         // as `B(7), against the stated rule that unmarked data reads as a tuple of its
@@ -1228,6 +1232,9 @@ impl Type {
         // have pack and db keep kinds, since only Graphix reads them back. probe:
         // design/review-2026-10-26/repro/x-kind-markers-tuple-reads-back-as-variant.gx
         // (x-kind-markers-02)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
+        // members that share a data form): yes a for json/toml, b for pack and db (the
+        // recommendation: (a) for json/toml targets; (b) for pack and db.)
         let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
         if tagged.peek().is_some() {
             let mut read = Err(None);
@@ -1246,7 +1253,7 @@ impl Type {
             };
         }
         // a writer wrote the tuple or the struct the data reads back as
-        // CR claude for eric: [bug/medium] The rank pass takes the first same-length
+        // CR claude for claude: [bug/medium] The rank pass takes the first same-length
         // tuple (then struct) that casts at all, including by printing a number into a
         // string, ahead of a member the data reads without leaving its class. With T =
         // [List<i64>, (i64, string), Array<[i64, f64]>], json::write_str of [[<1, 2>],
@@ -1257,6 +1264,9 @@ impl Type {
         // with the comments updated to the order chosen? probe:
         // design/review-2026-10-26/repro/t-cast-setops-tuple-rank-cross-class.gx
         // (t-cast-setops-06)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
+        // members that share a data form): yes a for json/toml, b for pack and db (the
+        // recommendation: (a) for json/toml targets; (b) for pack and db.)
         let mut ranked: SmallVec<[bool; 8]> = SmallVec::from_elem(false, ts.len());
         if let Value::Array(a) = v
             && rep::kind(v).is_none()
@@ -2045,7 +2055,7 @@ fn abstract_at(t: &Type) -> Option<At<Type>> {
 /// abstract has none to look into, and one with an implementation is
 /// what the implementation says.
 fn compared_rep(env: &Env, id: AbstractId, params: &[Type]) -> Option<Type> {
-    // CR claude for eric: [bug/medium] Either impl excuses the representation from both
+    // CR claude for claude: [bug/medium] Either impl excuses the representation from both
     // judgments, but an Eq impl says nothing about order. type B = Abstract<[i64, f64]>
     // with only `impl Eq for B` passes Ordered, and array::sort([B(2), B(1.5), B(1)])
     // returns [B(1), B(2), B(1.5)], the mixed-numeric order Ordered refuses when the
@@ -2055,6 +2065,8 @@ fn compared_rep(env: &Env, id: AbstractId, params: &[Type]) -> Option<Type> {
     // sentence 'no Eq or Ord implementation' would need the same change. probe:
     // design/review-2026-10-26/repro/t-cast-setops-eq-only-ordered.gx
     // (t-cast-setops-05)
+    // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q32, An Eq-only
+    // abstract and Ordered): yes, per trait (the recommendation: per trait.)
     if env.implements(CoreTrait::Eq, id) || env.implements(CoreTrait::Ord, id) {
         return None;
     }
@@ -2333,7 +2345,7 @@ fn rep_ambiguity(
             };
             let ordered = refs && !keys_only;
             match &t {
-                // CR claude for eric: [bug/medium] This check refuses an order over two
+                // CR claude for claude: [bug/medium] This check refuses an order over two
                 // numeric types only where the type shows them. Any reaches the `_ =>
                 // None` arm and passes Ordered, and the run-time order then puts every
                 // i64 below every f64. json::read(r"[3, 2.5, 1, 0.5]") read as
@@ -2347,6 +2359,10 @@ fn rep_ambiguity(
                 // probe:
                 // design/review-2026-10-26/repro/x-rerun-6-any-mixed-numeric-order.gx
                 // (x-rerun-6-01)
+                // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q33,
+                // Mixed numerics under Any order by class): yes, by value. implement in
+                // netidx-value? (the recommendation: by value; it closes every route at
+                // once.)
                 Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
                     Some(Indiscernible::Numbers(t.clone()))
                 }
@@ -2583,7 +2599,7 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         Some(Type::Primitive(s)) => rep::kind(v).is_none() && s.intersects(own_class(v)),
         Some(Type::Set(ts)) => ts.iter().any(|t| in_own_class(env, t, v)),
         Some(Type::Array(_)) => rep::array_elems(v).is_some(),
-        // CR claude for eric: [bug/medium] Unmarked array data never counts as a List
+        // CR claude for claude: [bug/medium] Unmarked array data never counts as a List
         // member's class, while any Array member counts however its elements must
         // convert. Data from a list writer therefore reads back as another member:
         // cast<[List<i64>, Array<string>]> of [1, 2] is ["1", "2"], a pack round trip
@@ -2592,6 +2608,9 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         // and structs only. Decide whether data counts as a List's (and an object's as
         // a Map's) own class, or whether the class test looks at elements. probe:
         // design/review-2026-10-26/repro/x-rerun-5-list-member-cast.gx (x-rerun-5-03)
+        // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q42, Union
+        // members that share a data form): yes a for json/toml, b for pack and db (the
+        // recommendation: (a) for json/toml targets; (b) for pack and db.)
         Some(Type::List(_)) => list::is_list(v),
         Some(Type::Tuple(_)) => rep::tuple_elems(v).is_some(),
         Some(Type::Struct(_)) => rep::struct_fields(v).is_some(),
