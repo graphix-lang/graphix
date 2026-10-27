@@ -21,7 +21,7 @@ use crate::{
     env::{Env, Glob, ImplDef, Map, TraitDef, TraitMethodRef, TraitMethodSig},
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
-        ImplExpr, LambdaExpr, ModPath, Name, Origin, Pattern, SelectExpr,
+        ImplExpr, ImplHead, LambdaExpr, ModPath, Name, Origin, Pattern, SelectExpr,
         StructurePattern, TraitExpr, TraitMethod, WrittenAt,
     },
     ide::ModuleRefSite,
@@ -578,12 +578,12 @@ pub(crate) fn impl_head(
     env: &Env,
     scope: &ModPath,
     trait_def: &TraitDef,
-    im: &ImplExpr,
+    head: &ImplHead,
     declared: bool,
 ) -> Result<(Type, Arc<[TVar]>)> {
-    let target = im.target.scope_refs(scope);
+    let target = head.target.scope_refs(scope);
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    let params: Arc<[TVar]> = Arc::from_iter(im.params.iter().map(|tv| {
+    let params: Arc<[TVar]> = Arc::from_iter(head.params.iter().map(|tv| {
         let tv = TVar::empty_generic(tv.name.clone());
         known.insert(tv.name.clone(), tv.clone());
         tv
@@ -600,7 +600,7 @@ pub(crate) fn impl_head(
             bail!("undeclared type variable '{name} in impl target {target}")
         }
     }
-    for (tv, tc) in im.constraints.iter() {
+    for (tv, tc) in head.constraints.iter() {
         in_target.clear();
         tc.collect_tvars(&mut in_target);
         for (name, _) in in_target.iter() {
@@ -612,7 +612,7 @@ pub(crate) fn impl_head(
     target.alias_tvars(&mut known);
     seed_conjuncts(
         &mut known,
-        im.constraints.iter().map(|(tv, tc)| (tv, tc.scope_refs(scope))),
+        head.constraints.iter().map(|(tv, tc)| (tv, tc.scope_refs(scope))),
     );
     let holes = target.holes();
     if trait_def.hole {
@@ -646,27 +646,27 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         im: &ImplExpr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        impl_outside_functions(&scope.lexical, &im.trait_name).at(&spec)?;
+        impl_outside_functions(&scope.lexical, &im.head.trait_name).at(&spec)?;
         let trait_id =
-            match ctx.env.lookup_trait(&scope.lexical, &im.trait_name).at(&spec)? {
+            match ctx.env.lookup_trait(&scope.lexical, &im.head.trait_name).at(&spec)? {
                 Some(id) => id,
-                None => bailat!(spec, "no trait `{}` in scope", im.trait_name),
+                None => bailat!(spec, "no trait `{}` in scope", im.head.trait_name),
             };
         let trait_def = ctx.env.trait_def(trait_id).cloned().ok_or_else(|| {
-            anyhow!("trait {} has no definition", im.trait_name).at(&spec)
+            anyhow!("trait {} has no definition", im.head.trait_name).at(&spec)
         })?;
         if ctx.env.ide.is_lsp() {
             ctx.env.push_module_reference(ModuleRefSite {
-                pos: im.trait_at.0.first().copied().unwrap_or(spec.pos),
+                pos: im.head.trait_at.0.first().copied().unwrap_or(spec.pos),
                 ori: spec.ori.clone(),
-                name: im.trait_name.clone(),
+                name: im.head.trait_name.clone(),
                 canonical: trait_def.path.clone(),
                 def_ori: None,
-                segments: Some(im.trait_at.clone()),
+                segments: Some(im.head.trait_at.clone()),
             });
         }
         let (target, params) =
-            impl_head(&ctx.env, &scope.lexical, &trait_def, im, false).at(&spec)?;
+            impl_head(&ctx.env, &scope.lexical, &trait_def, &im.head, false).at(&spec)?;
         let bscope = scope.append_block("impl", spec.id.inner());
         ctx.env.import_glob(&bscope.lexical, Glob::Module(trait_def.path.clone()));
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();

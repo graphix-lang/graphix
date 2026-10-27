@@ -10,15 +10,26 @@ use crate::{
 use arcstr::literal;
 use netidx_value::Typ;
 
-// CR claude for claude: [structure/low] [structure/low] Seven tests build single-name
-// refs by hand instead of calling this helper (interpolated0, interpolated2,
-// nested_apply, select0, select1, connect, doexpr). The literal ASTs also repeat
-// `Constant(Value::I64(n)).to_expr_nopos()`, the one-argument `Apply { .. }` and
-// `Type::Ref(TypeRef::synthetic(ModPath::root(), ..))` many times. Use `refx` at those
-// sites and add `int`, `call` and `tref` helpers beside it, so each test reads as what
-// it pins. Found by reading; not run. (tests-parser-06)
 fn refx(name: &str) -> Expr {
-    ExprKind::Ref { name: [name].into() }.to_expr_nopos()
+    ExprKind::Ref { name: ModPath::from_iter(name.split("::")) }.to_expr_nopos()
+}
+
+fn int(n: i64) -> Expr {
+    ExprKind::Constant(Value::I64(n)).to_expr_nopos()
+}
+
+/// `function(args..)`, every argument positional.
+fn call(function: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
+    let args = Arc::from_iter(args.into_iter().map(|a| (None, a)));
+    ExprKind::Apply(ApplyExpr { args, function: Arc::new(function) }).to_expr_nopos()
+}
+
+fn tref(name: &str) -> Type {
+    Type::Ref(Arc::new(TypeRef::synthetic(
+        ModPath::root(),
+        [name].into(),
+        Arc::from_iter([]),
+    )))
 }
 
 fn parse_doc(s: &str) -> anyhow::Result<Doc> {
@@ -34,11 +45,7 @@ fn escaped_string() {
     let p = Value::String(literal!(r#"/foo bar baz/"zam"/)_ xyz+ "#));
     let s = r#"load("/foo bar baz/\"zam\"/)_ xyz+ ")"#;
     assert_eq!(
-        ExprKind::Apply(ApplyExpr {
-            args: Arc::from_iter([(None, ExprKind::Constant(p).to_expr_nopos())]),
-            function: Arc::new(refx("load")),
-        })
-        .to_expr_nopos(),
+        call(refx("load"), [ExprKind::Constant(p).to_expr_nopos()]),
         parse_one(s).unwrap()
     );
 }
@@ -173,16 +180,10 @@ fn no_space_before_a_body_or_operand() {
     }
 }
 
-// A comment is legal only on its own line directly above an expression,
-// where it is captured into that expression's `dec`.
+// A comment above an expression, at the end of a list item's line, or below
+// a list's last item is captured into that expression's `dec`.
 
 #[test]
-// CR claude for claude: [readability/low] [readability/low] The section comment above
-// says a comment is legal only on its own line directly above an expression. The eol
-// and below tests later in this file contradict it. Delete it or name all three
-// placements. Also, the "reserved word in a name position" comment sits above
-// `a_slash_banner_is_a_comment`; move it onto `reserved_word_as_a_name_is_named`. Found
-// by reading; not run. (tests-parser-05)
 fn comment_above_expr_captured() {
     let e = parse_one("// hello\n42").unwrap();
     let dec = e.dec.as_ref().expect("comment should attach to the expr below");
@@ -508,36 +509,26 @@ fn interior_attr_is_error() {
 
 #[test]
 fn interpolated0() {
-    let p = ExprKind::Apply(ApplyExpr {
-        args: Arc::from_iter([(
-            None,
-            ExprKind::StringInterpolate {
-                args: Arc::from_iter([
-                    ExprKind::Constant(Value::from("/foo/")).to_expr_nopos(),
-                    ExprKind::Apply(ApplyExpr {
-                        args: Arc::from_iter([(
-                            None,
-                            ExprKind::StringInterpolate {
-                                args: Arc::from_iter([
-                                    ExprKind::Ref { name: ["sid"].into() }
-                                        .to_expr_nopos(),
-                                    ExprKind::Constant(Value::from("_var"))
-                                        .to_expr_nopos(),
-                                ]),
-                            }
-                            .to_expr_nopos(),
-                        )]),
-                        function: Arc::new(refx("get")),
-                    })
-                    .to_expr_nopos(),
-                    ExprKind::Constant(Value::from("/baz")).to_expr_nopos(),
-                ]),
-            }
-            .to_expr_nopos(),
-        )]),
-        function: Arc::new(refx("load")),
-    })
-    .to_expr_nopos();
+    let p = call(
+        refx("load"),
+        [ExprKind::StringInterpolate {
+            args: Arc::from_iter([
+                ExprKind::Constant(Value::from("/foo/")).to_expr_nopos(),
+                call(
+                    refx("get"),
+                    [ExprKind::StringInterpolate {
+                        args: Arc::from_iter([
+                            refx("sid"),
+                            ExprKind::Constant(Value::from("_var")).to_expr_nopos(),
+                        ]),
+                    }
+                    .to_expr_nopos()],
+                ),
+                ExprKind::Constant(Value::from("/baz")).to_expr_nopos(),
+            ]),
+        }
+        .to_expr_nopos()],
+    );
     let s = r#"load("/foo/[get("[sid]_var")]/baz")"#;
     assert_eq!(p, parse_one(s).unwrap());
 }
@@ -555,79 +546,34 @@ fn interpolated1() {
 #[test]
 fn interpolated2() {
     let s = r#"a(a(a(get("[true]"))))"#;
-    let p = ExprKind::Apply(ApplyExpr {
-        args: Arc::from_iter([(
-            None,
-            ExprKind::Apply(ApplyExpr {
-                args: Arc::from_iter([(
-                    None,
-                    ExprKind::Apply(ApplyExpr {
-                        args: Arc::from_iter([(
-                            None,
-                            ExprKind::Apply(ApplyExpr {
-                                args: Arc::from_iter([(
-                                    None,
-                                    ExprKind::StringInterpolate {
-                                        args: Arc::from_iter([ExprKind::Constant(
-                                            Value::Bool(true),
-                                        )
-                                        .to_expr_nopos()]),
-                                    }
-                                    .to_expr_nopos(),
-                                )]),
-                                function: Arc::new(
-                                    ExprKind::Ref { name: ["get"].into() }
-                                        .to_expr_nopos(),
-                                ),
-                            })
-                            .to_expr_nopos(),
-                        )]),
-                        function: Arc::new(refx("a")),
-                    })
-                    .to_expr_nopos(),
-                )]),
-                function: Arc::new(refx("a")),
-            })
-            .to_expr_nopos(),
-        )]),
-        function: Arc::new(refx("a")),
-    })
-    .to_expr_nopos();
+    let p = call(
+        refx("a"),
+        [call(
+            refx("a"),
+            [call(
+                refx("a"),
+                [call(
+                    refx("get"),
+                    [ExprKind::StringInterpolate {
+                        args: Arc::from_iter([
+                            ExprKind::Constant(Value::Bool(true)).to_expr_nopos()
+                        ]),
+                    }
+                    .to_expr_nopos()],
+                )],
+            )],
+        )],
+    );
     assert_eq!(p, parse_one(s).unwrap());
 }
 
 #[test]
 fn apply_path() {
     let s = r#"load(path::concat("foo", "bar", baz))"#;
-    assert_eq!(
-        ExprKind::Apply(ApplyExpr {
-            args: Arc::from_iter([(
-                None,
-                ExprKind::Apply(ApplyExpr {
-                    args: Arc::from_iter([
-                        (
-                            None,
-                            ExprKind::Constant(Value::String(literal!("foo")))
-                                .to_expr_nopos()
-                        ),
-                        (
-                            None,
-                            ExprKind::Constant(Value::String(literal!("bar")))
-                                .to_expr_nopos()
-                        ),
-                        (None, refx("baz"))
-                    ]),
-                    function: Arc::new(
-                        ExprKind::Ref { name: ["path", "concat"].into() }.to_expr_nopos()
-                    ),
-                })
-                .to_expr_nopos()
-            )]),
-            function: Arc::new(refx("load"))
-        })
-        .to_expr_nopos(),
-        parse_one(s).unwrap()
-    );
+    let foo = ExprKind::Constant(Value::from("foo")).to_expr_nopos();
+    let bar = ExprKind::Constant(Value::from("bar")).to_expr_nopos();
+    let concat = call(refx("path::concat"), [foo, bar, refx("baz")]);
+    assert_eq!(call(refx("load"), [concat]), parse_one(s).unwrap());
 }
 
 #[test]
@@ -642,7 +588,7 @@ fn letbind() {
             rec: false,
             typ: None,
             pattern: StructurePattern::Bind(literal!("foo").into()),
-            value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
+            value: int(42)
         }))
         .to_expr_nopos(),
         parse_one("let foo = 42").unwrap()
@@ -656,7 +602,7 @@ fn letrecbind() {
             rec: true,
             typ: None,
             pattern: StructurePattern::Bind(literal!("foo").into()),
-            value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
+            value: int(42)
         }))
         .to_expr_nopos(),
         parse_one("let rec foo = 42").unwrap()
@@ -687,7 +633,7 @@ fn typed_letbind() {
             rec: false,
             typ: Some(Type::Primitive(Typ::I64.into())),
             pattern: StructurePattern::Bind(literal!("foo").into()),
-            value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
+            value: int(42)
         }))
         .to_expr_nopos(),
         parse_one("let foo: i64 = 42").unwrap()
@@ -711,60 +657,29 @@ fn keyword_rooted_typath() {
 
 #[test]
 fn nested_apply() {
-    let src = ExprKind::Apply(ApplyExpr {
-        args: Arc::from_iter([
-            (None, ExprKind::Constant(Value::F32(1.)).to_expr_nopos()),
-            (
-                None,
-                ExprKind::Apply(ApplyExpr {
-                    args: Arc::from_iter([(
-                        None,
-                        ExprKind::Constant(Value::String(literal!("/foo/bar",)))
-                            .to_expr_nopos(),
-                    )]),
-                    function: Arc::new(refx("load")),
-                })
-                .to_expr_nopos(),
+    let src = call(
+        refx("sum"),
+        [
+            ExprKind::Constant(Value::F32(1.)).to_expr_nopos(),
+            call(
+                refx("load"),
+                [ExprKind::Constant(Value::String(literal!("/foo/bar",)))
+                    .to_expr_nopos()],
             ),
-            (
-                None,
-                ExprKind::Apply(ApplyExpr {
-                    args: Arc::from_iter([
-                        (None, ExprKind::Constant(Value::F32(675.6)).to_expr_nopos()),
-                        (
-                            None,
-                            ExprKind::Apply(ApplyExpr {
-                                args: Arc::from_iter([(
-                                    None,
-                                    ExprKind::Constant(Value::String(literal!(
-                                        "/foo/baz"
-                                    )))
-                                    .to_expr_nopos(),
-                                )]),
-                                function: Arc::new(
-                                    ExprKind::Ref { name: ["load"].into() }
-                                        .to_expr_nopos(),
-                                ),
-                            })
-                            .to_expr_nopos(),
-                        ),
-                    ]),
-                    function: Arc::new(refx("max")),
-                })
-                .to_expr_nopos(),
+            call(
+                refx("max"),
+                [
+                    ExprKind::Constant(Value::F32(675.6)).to_expr_nopos(),
+                    call(
+                        refx("load"),
+                        [ExprKind::Constant(Value::String(literal!("/foo/baz")))
+                            .to_expr_nopos()],
+                    ),
+                ],
             ),
-            (
-                None,
-                ExprKind::Apply(ApplyExpr {
-                    args: Arc::from_iter([]),
-                    function: Arc::new(refx("rand")),
-                })
-                .to_expr_nopos(),
-            ),
-        ]),
-        function: Arc::new(refx("sum")),
-    })
-    .to_expr_nopos();
+            call(refx("rand"), []),
+        ],
+    );
     let s = r#"sum(f32:1., load("/foo/bar"), max(f32:675.6, load("/foo/baz")), rand())"#;
     assert_eq!(src, parse_one(s).unwrap());
 }
@@ -872,7 +787,7 @@ fn select0() {
                     ExprKind::BinOp {
                         op: BinOp::Lt,
                         lhs: Arc::new(refx("a")),
-                        rhs: Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos()),
+                        rhs: Arc::new(int(10)),
                     }
                     .to_expr_nopos(),
                 ),
@@ -882,7 +797,7 @@ fn select0() {
             ExprKind::BinOp {
                 op: BinOp::Mul,
                 lhs: Arc::new(refx("a")),
-                rhs: Arc::new(ExprKind::Constant(Value::I64(2)).to_expr_nopos()),
+                rhs: Arc::new(int(2)),
             }
             .to_expr_nopos(),
         ),
@@ -894,16 +809,10 @@ fn select0() {
                 pos: WrittenAt::NOWHERE,
                 end: WrittenAt::NOWHERE,
             },
-            ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos(),
+            refx("a"),
         ),
     ]);
-    let arg = Arc::new(
-        ExprKind::Apply(ApplyExpr {
-            args: Arc::from_iter([(None, refx("b"))]),
-            function: Arc::new(refx("foo")),
-        })
-        .to_expr_nopos(),
-    );
+    let arg = Arc::new(call(refx("foo"), [refx("b")]));
     let exp = ExprKind::Select(SelectExpr { arg, arms }).to_expr_nopos();
     let s = r#"select foo(b) { i64 as a if a < 10 => a * 2, a => a }"#;
     assert_eq!(exp, parse_one(s).unwrap());
@@ -930,7 +839,7 @@ fn select1() {
                     ExprKind::BinOp {
                         op: BinOp::Lt,
                         lhs: Arc::new(refx("a")),
-                        rhs: Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos()),
+                        rhs: Arc::new(int(10)),
                     }
                     .to_expr_nopos(),
                 ),
@@ -940,7 +849,7 @@ fn select1() {
             ExprKind::BinOp {
                 op: BinOp::Mul,
                 lhs: Arc::new(refx("a")),
-                rhs: Arc::new(ExprKind::Constant(Value::I64(2)).to_expr_nopos()),
+                rhs: Arc::new(int(2)),
             }
             .to_expr_nopos(),
         ),
@@ -1004,11 +913,7 @@ fn select1() {
         ),
         (
             Pattern {
-                type_predicate: Some(Type::Ref(Arc::new(TypeRef::synthetic(
-                    ModPath::root(),
-                    ["Foo"].into(),
-                    Arc::from_iter([]),
-                )))),
+                type_predicate: Some(tref("Foo")),
                 structure_predicate: StructurePattern::Struct {
                     all: None,
                     exhaustive: false,
@@ -1045,16 +950,10 @@ fn select1() {
                 pos: WrittenAt::NOWHERE,
                 end: WrittenAt::NOWHERE,
             },
-            ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos(),
+            refx("a"),
         ),
     ]);
-    let arg = Arc::new(
-        ExprKind::Apply(ApplyExpr {
-            args: Arc::from_iter([(None, refx("b"))]),
-            function: Arc::new(refx("foo")),
-        })
-        .to_expr_nopos(),
-    );
+    let arg = Arc::new(call(refx("foo"), [refx("b")]));
     let exp = ExprKind::Select(SelectExpr { arg, arms }).to_expr_nopos();
     let s = r#"
 select foo(b) {
@@ -1087,10 +986,8 @@ fn connect() {
         value: Arc::new(
             ExprKind::BinOp {
                 op: BinOp::Add,
-                lhs: Arc::new(
-                    ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos(),
-                ),
-                rhs: Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos()),
+                lhs: Arc::new(refx("a")),
+                rhs: Arc::new(int(1)),
             }
             .to_expr_nopos(),
         ),
@@ -1130,14 +1027,14 @@ fn array() {
             ExprKind::Array {
                 args: Arc::from_iter([
                     ExprKind::Constant(Value::from("foo")).to_expr_nopos(),
-                    ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
+                    int(42),
                 ]),
             }
             .to_expr_nopos(),
             ExprKind::Array {
                 args: Arc::from_iter([
                     ExprKind::Constant(Value::from("bar")).to_expr_nopos(),
-                    ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
+                    int(42),
                 ]),
             }
             .to_expr_nopos(),
@@ -1157,10 +1054,10 @@ fn doexpr() {
                 rec: false,
                 typ: None,
                 pattern: StructurePattern::Bind(literal!("baz").into()),
-                value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
+                value: int(42),
             }))
             .to_expr_nopos(),
-            ExprKind::Ref { name: ModPath::from(["baz"]) }.to_expr_nopos(),
+            refx("baz"),
         ]),
     }
     .to_expr_nopos();
@@ -1250,27 +1147,23 @@ fn nested_lambda() {
 
 #[test]
 fn apply_lambda() {
-    let e = ExprKind::Apply(ApplyExpr {
-        args: Arc::from_iter([(
-            None,
-            ExprKind::Lambda(Arc::new(LambdaExpr {
-                args: Arc::from_iter([Arg {
-                    kind: ArgKind::Positional,
-                    pattern: StructurePattern::Bind("a".into()),
-                    constraint: None,
-                    pos: Default::default(),
-                }]),
-                vargs: Some(None),
-                rtype: None,
-                constraints: Arc::from_iter([]),
-                throws: None,
-                body: LambdaBody::Builtin("a".into()),
-            }))
-            .to_expr_nopos(),
-        )]),
-        function: Arc::new(refx("a")),
-    })
-    .to_expr_nopos();
+    let e = call(
+        refx("a"),
+        [ExprKind::Lambda(Arc::new(LambdaExpr {
+            args: Arc::from_iter([Arg {
+                kind: ArgKind::Positional,
+                pattern: StructurePattern::Bind("a".into()),
+                constraint: None,
+                pos: Default::default(),
+            }]),
+            vargs: Some(None),
+            rtype: None,
+            constraints: Arc::from_iter([]),
+            throws: None,
+            body: LambdaBody::Builtin("a".into()),
+        }))
+        .to_expr_nopos()],
+    );
     let s = "a(|a, @args| 'a)";
     let pe = parse_one(s).unwrap();
     assert_eq!(e, pe)
@@ -1278,42 +1171,34 @@ fn apply_lambda() {
 
 #[test]
 fn apply_typed_lambda() {
-    let e = ExprKind::Apply(ApplyExpr {
-        args: Arc::from_iter([(
-            None,
-            ExprKind::Lambda(Arc::new(LambdaExpr {
-                args: Arc::from_iter([
-                    Arg {
-                        kind: ArgKind::Positional,
-                        pattern: StructurePattern::Bind("a".into()),
-                        constraint: None,
-                        pos: Default::default(),
-                    },
-                    Arg {
-                        kind: ArgKind::Positional,
-                        pattern: StructurePattern::Bind("b".into()),
-                        constraint: Some(Type::Set(Arc::from_iter([
-                            Type::Primitive(Typ::Null.into()),
-                            Type::Ref(Arc::new(TypeRef::synthetic(
-                                ModPath::root(),
-                                ["Number"].into(),
-                                Arc::from_iter([]),
-                            ))),
-                        ]))),
-                        pos: Default::default(),
-                    },
-                ]),
-                vargs: Some(Some(Type::Primitive(Typ::String.into()))),
-                rtype: Some(Type::Bottom),
-                constraints: Arc::from_iter([]),
-                throws: None,
-                body: LambdaBody::Builtin("a".into()),
-            }))
-            .to_expr_nopos(),
-        )]),
-        function: Arc::new(refx("a")),
-    })
-    .to_expr_nopos();
+    let e = call(
+        refx("a"),
+        [ExprKind::Lambda(Arc::new(LambdaExpr {
+            args: Arc::from_iter([
+                Arg {
+                    kind: ArgKind::Positional,
+                    pattern: StructurePattern::Bind("a".into()),
+                    constraint: None,
+                    pos: Default::default(),
+                },
+                Arg {
+                    kind: ArgKind::Positional,
+                    pattern: StructurePattern::Bind("b".into()),
+                    constraint: Some(Type::Set(Arc::from_iter([
+                        Type::Primitive(Typ::Null.into()),
+                        tref("Number"),
+                    ]))),
+                    pos: Default::default(),
+                },
+            ]),
+            vargs: Some(Some(Type::Primitive(Typ::String.into()))),
+            rtype: Some(Type::Bottom),
+            constraints: Arc::from_iter([]),
+            throws: None,
+            body: LambdaBody::Builtin("a".into()),
+        }))
+        .to_expr_nopos()],
+    );
     let s = "a(|a, b: [null, Number], @args: string| -> _ 'a)";
     let pe = parse_one(s).unwrap();
     assert_eq!(e, pe)
@@ -1357,11 +1242,7 @@ fn labeled_argument_lambda() {
             args: Arc::from_iter([
                 FnArgType {
                     kind: FnArgKind::Labeled { name: "foo".into(), has_default: true },
-                    typ: Type::Ref(Arc::new(TypeRef::synthetic(
-                        ModPath::root(),
-                        ["Number"].into(),
-                        Arc::from_iter([]),
-                    ))),
+                    typ: tref("Number"),
                 },
                 FnArgType {
                     kind: FnArgKind::Labeled { name: "bar".into(), has_default: true },
@@ -1386,14 +1267,8 @@ fn labeled_argument_lambda() {
             args: Arc::from_iter([
                 Arg {
                     pattern: StructurePattern::Bind("foo".into()),
-                    kind: ArgKind::Defaulted(
-                        ExprKind::Constant(Value::I64(3)).to_expr_nopos(),
-                    ),
-                    constraint: Some(Type::Ref(Arc::new(TypeRef::synthetic(
-                        ModPath::root(),
-                        ["Number"].into(),
-                        Arc::from_iter([]),
-                    )))),
+                    kind: ArgKind::Defaulted(int(3)),
+                    constraint: Some(tref("Number")),
                     pos: Default::default(),
                 },
                 Arg {
@@ -1436,11 +1311,8 @@ let a: fn(?#foo: Number, ?#bar: string, #a: Any, baz: Any) -> string =
 
 #[test]
 fn arrayref0() {
-    let e = ExprKind::ArrayRef {
-        source: Arc::new(refx("foo")),
-        i: Arc::new(ExprKind::Constant(Value::I64(3)).to_expr_nopos()),
-    }
-    .to_expr_nopos();
+    let e = ExprKind::ArrayRef { source: Arc::new(refx("foo")), i: Arc::new(int(3)) }
+        .to_expr_nopos();
     let s = "foo[3]";
     let pe = parse_one(s).unwrap();
     assert_eq!(e, pe)
@@ -1453,8 +1325,8 @@ fn qop() {
         arg: Arc::new(
             ExprKind::ArraySlice {
                 source: Arc::new(refx("foo")),
-                start: Some(Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos())),
-                end: Some(Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos())),
+                start: Some(Arc::new(int(1))),
+                end: Some(Arc::new(int(10))),
             }
             .to_expr_nopos(),
         ),
@@ -1468,15 +1340,7 @@ fn qop() {
 #[test]
 fn tuple0() {
     let e = ExprKind::Tuple {
-        args: Arc::from_iter([
-            ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-            refx("a"),
-            ExprKind::Apply(ApplyExpr {
-                args: Arc::from_iter([(None, refx("b"))]),
-                function: Arc::new(refx("f")),
-            })
-            .to_expr_nopos(),
-        ]),
+        args: Arc::from_iter([int(42), refx("a"), call(refx("f"), [refx("b")])]),
     }
     .to_expr_nopos();
     let s = "(42, a, f(b))";
@@ -1498,15 +1362,7 @@ fn tuple1() {
         },
         typ: None,
         value: ExprKind::Tuple {
-            args: Arc::from_iter([
-                ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-                refx("a"),
-                ExprKind::Apply(ApplyExpr {
-                    args: Arc::from_iter([(None, refx("b"))]),
-                    function: Arc::new(refx("f")),
-                })
-                .to_expr_nopos(),
-            ]),
+            args: Arc::from_iter([int(42), refx("a"), call(refx("f"), [refx("b")])]),
         }
         .to_expr_nopos(),
     }))
@@ -1525,15 +1381,8 @@ fn struct0() {
         value: ExprKind::Struct(StructExpr {
             args: Arc::from_iter([
                 ("bar".into(), refx("a")),
-                (
-                    "baz".into(),
-                    ExprKind::Apply(ApplyExpr {
-                        args: Arc::from_iter([(None, refx("b"))]),
-                        function: Arc::new(refx("f")),
-                    })
-                    .to_expr_nopos(),
-                ),
-                ("foo".into(), ExprKind::Constant(Value::I64(42)).to_expr_nopos()),
+                ("baz".into(), call(refx("f"), [refx("b")])),
+                ("foo".into(), int(42)),
                 ("test".into(), refx("test")),
             ]),
         })
@@ -1570,15 +1419,8 @@ fn bindstruct() {
         value: ExprKind::Struct(StructExpr {
             args: Arc::from_iter([
                 ("bar".into(), refx("a")),
-                (
-                    "baz".into(),
-                    ExprKind::Apply(ApplyExpr {
-                        args: Arc::from_iter([(None, refx("b"))]),
-                        function: Arc::new(refx("f")),
-                    })
-                    .to_expr_nopos(),
-                ),
-                ("foo".into(), ExprKind::Constant(Value::I64(42)).to_expr_nopos()),
+                ("baz".into(), call(refx("f"), [refx("b")])),
+                ("foo".into(), int(42)),
             ]),
         })
         .to_expr_nopos(),
@@ -1631,16 +1473,8 @@ fn tuple_ref_chain() {
 
 #[test]
 fn apply_chain() {
-    let fx = ExprKind::Apply(ApplyExpr {
-        function: Arc::new(refx("f")),
-        args: Arc::from_iter([(None, refx("x"))]),
-    })
-    .to_expr_nopos();
-    let fxy = ExprKind::Apply(ApplyExpr {
-        function: Arc::new(fx),
-        args: Arc::from_iter([(None, refx("y"))]),
-    })
-    .to_expr_nopos();
+    let fx = call(refx("f"), [refx("x")]);
+    let fxy = call(fx, [refx("y")]);
     assert_eq!(fxy, parse_one("f(x)(y)").unwrap());
 }
 
@@ -1664,11 +1498,7 @@ fn map_then_struct_chain() {
 
 #[test]
 fn apply_then_struct_ref() {
-    let fx = ExprKind::Apply(ApplyExpr {
-        function: Arc::new(refx("f")),
-        args: Arc::from_iter([(None, refx("x"))]),
-    })
-    .to_expr_nopos();
+    let fx = call(refx("f"), [refx("x")]);
     let fxb = ExprKind::StructRef { source: Arc::new(fx), field: literal!("b").into() }
         .to_expr_nopos();
     assert_eq!(fxb, parse_one("f(x).b").unwrap());
@@ -1691,7 +1521,7 @@ fn paren_no_postfix_is_explicit() {
 
 #[test]
 fn nested_parens() {
-    let mut e = ExprKind::Constant(Value::I64(1)).to_expr_nopos();
+    let mut e = int(1);
     for _ in 0..4 {
         e = ExprKind::ExplicitParens(Arc::new(e)).to_expr_nopos();
     }
@@ -2029,6 +1859,12 @@ fn use_new_grammar() {
     assert!(parse_one("use super::{self}").is_err(), "keyword-only via group self");
     assert!(parse_one("use a::* as b").is_err(), "renamed glob");
     assert!(parse_one("use a::{b, c} as d").is_err(), "renamed group");
+    for src in
+        ["use m::T as t", "use m::v as V", "use m::{self as M}", "use m::{T as u, v}"]
+    {
+        let msg = parse_program(src);
+        assert!(msg.contains("a rename keeps its name's case"), "{src}: {msg}");
+    }
     assert!(parse_one("let package = 5").is_err(), "package binds");
     assert!(parse_one("let super = 5").is_err(), "super binds");
     assert!(parse_one("let pub = 5").is_err(), "pub binds");
@@ -2081,20 +1917,17 @@ fn or_patterns_parse() {
     // Top-level or-patterns are select-arm-only.
     assert!(parse_one("let a | b = x").is_err());
     assert!(parse_one("let rec a | b = x").is_err());
-    // CR claude for claude: [test-gap/low] [test-gap/low] This assertion cannot fail.
-    // The parameter list ends at the first `|`, so `|a |` is a lambda with body `b`,
-    // and the refusal is the trailing `| e` at column 7, not an or-pattern in a
-    // parameter. Delete it, or test an or-pattern that reaches the parameter-pattern
-    // parser and assert the refusal's message. Probe: `graphix fmt --stdout` on this
-    // text reports "Unexpected `|`" at column 7. (tests-parser-04)
-    assert!(parse_one("|a | b| e").is_err());
     // A nested or in an irrefutable position parses; refutability is
-    // checked at compile time.
+    // checked at compile time. A parameter list ends at its first `|`, so
+    // a parameter's or is always nested.
     parse_one("let (a | b, c) = x").unwrap();
+    let e = parse_one("|(a | b, c)| e").unwrap();
+    let ExprKind::Lambda(l) = &e.kind else { panic!("not a lambda: {e}") };
+    let StructurePattern::Tuple { binds, .. } = &l.args[0].pattern else {
+        panic!("not a tuple: {e}")
+    };
+    assert!(matches!(&binds[0], StructurePattern::Or(alts) if alts.len() == 2), "{e}");
 }
-
-// A reserved word in a name position is named in the error when the
-// failure lies on its line or before it.
 
 // Four slashes or more are a plain comment, as in Rust.
 #[test]
@@ -2108,6 +1941,8 @@ fn ok_is_a_name() {
     assert!(parse_one("{ let ok = 1; ok }").is_ok());
 }
 
+// A reserved word in a name position is named in the error when the
+// failure lies on its line or before it.
 #[test]
 fn reserved_word_as_a_name_is_named() {
     let msg = parse_program("let x = 1;\nlet any = 2");
@@ -2326,14 +2161,8 @@ fn try_with_parses() {
         let e = parse_one(s).unwrap();
         let printed = e.to_string();
         let again = parse_one(&printed).unwrap();
-        // CR claude for claude: [test-gap/low] [test-gap/low] This only checks that
-        // printing is idempotent. A printer that dropped `with(e: T)`'s type, or
-        // anything else in the construct, would print the same text twice and pass.
-        // Compare ASTs as `seq_parses` does: `assert_eq!(again, e)`, and the same for
-        // `to_string_pretty(0)`. The formatter already round-trips these cases, so the
-        // stronger check passes today. Found by reading; fmt run on the cases.
-        // (tests-parser-03)
-        assert_eq!(again.to_string(), printed, "{s}");
+        assert_eq!(again, e, "{s}");
+        assert_eq!(parse_one(&e.to_string_pretty(0)).unwrap(), e, "{s}");
         let tries = e.fold(0usize, &mut |n, x| {
             n + usize::from(matches!(x.kind, ExprKind::TryWith(_)))
         });
@@ -2631,7 +2460,7 @@ fn a_fn_type_names_each_argument_once() {
 fn an_impl_records_where_each_trait_segment_was_written() {
     let e = parse_one("impl super::m::Show for i64").unwrap();
     let ExprKind::Impl(i) = &e.kind else { panic!("{e:?}") };
-    let cols: Vec<i32> = i.trait_at.0.iter().map(|p| p.column).collect();
+    let cols: Vec<i32> = i.head.trait_at.0.iter().map(|p| p.column).collect();
     assert_eq!(cols, [6, 13, 16]);
 }
 
@@ -2768,6 +2597,26 @@ fn a_doc_comment_stands_on_a_line_of_its_own() {
     assert_eq!(sig.items[1].doc.0.as_deref(), Some(" d"));
 }
 
+#[test]
+fn an_interface_impl_is_its_head_alone() {
+    for (src, col) in [
+        ("impl T for i64 { let m = |x| x }", 16),
+        ("val x: i64;\nimpl<'a: C> T for Array<'a>\n{ }", 1),
+        ("impl T for i64 {}", 16),
+    ] {
+        let msg = format!("{:#}", parse_sig(Origin::unspecified(src)).unwrap_err());
+        assert!(
+            msg.contains("an interface declares an impl without a body"),
+            "{src}: {msg}"
+        );
+        assert!(msg.contains(&format!("column: {col}")), "{src}: {msg}");
+    }
+    let sig = parse_sig(Origin::unspecified("impl<'a: C> T for Array<'a>;\nval x: i64"))
+        .unwrap();
+    let SigKind::Impl(h) = &sig.items[0].kind else { panic!("not an impl") };
+    assert_eq!(h.to_string(), "impl<'a: C> T for Array<'a>");
+}
+
 // one level of `(1 + …)` costs four of the limit
 #[test]
 fn a_parenthesized_sum_costs_four_levels() {
@@ -2844,14 +2693,22 @@ fn editor_keyword_lists_name_every_keyword() {
         ("graphix.tmLanguage.json", vscode_words),
         ("graphix-highlight.js", book_words("KEYWORDS")),
     ];
-    // CR claude for claude: [test-gap/low] [test-gap/low] This hand-written list misses
-    // the contextual keywords of the dynamic-module grammar (modexp.rs): dynamic,
-    // sandbox, whitelist, blacklist, unrestricted, sig, source. None of the three
-    // editor lists names them either, so the test passes while breaking the contract
-    // its doc comment states. Add them here and to the editors. Better, keep the
-    // contextual words in one table beside `KEYWORDS` that both the grammar and this
-    // test read. Found by grepping the editor files and modexp.rs. (tests-parser-02)
-    let contextual = ["val", "with", "as", "throws", "for", "abort", "flush"];
+    let contextual = [
+        "val",
+        "with",
+        "as",
+        "throws",
+        "for",
+        "abort",
+        "flush",
+        "dynamic",
+        "sandbox",
+        "whitelist",
+        "blacklist",
+        "unrestricted",
+        "sig",
+        "source",
+    ];
     let construct = KEYWORDS
         .iter()
         .filter_map(|(w, k)| matches!(k, Keyword::Construct).then_some(*w));

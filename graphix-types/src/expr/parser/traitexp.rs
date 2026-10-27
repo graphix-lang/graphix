@@ -7,8 +7,8 @@ use super::{
 };
 use crate::{
     expr::{
-        Attr, Comments, Doc, Eol, Expr, ExprKind, ImplExpr, Name, StructurePattern,
-        TraitExpr, TraitMethod,
+        Attr, Comments, Doc, Eol, Expr, ExprKind, ImplExpr, ImplHead, Name,
+        StructurePattern, TraitExpr, TraitMethod,
     },
     typ::{FnArgKind, TVar, Type},
 };
@@ -123,10 +123,8 @@ where
         )
 }
 
-/// `impl<'a: C, ..> Trait for Target { let m = ..; .. }` — the body is
-/// optional (`impl Trait for Target;` declares the implementation in an
-/// interface, or implements a trait whose methods all have defaults).
-pub(super) fn impl_decl<I>() -> impl Parser<I, Output = ImplExpr>
+/// `impl<'a: C, ..> Trait for Target`.
+fn impl_head<I>() -> impl Parser<I, Output = ImplHead>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -143,6 +141,69 @@ where
         spaces().with(position()),
         typath(),
         spaces1().with(string("for")).with(spaces1()).with(typ()),
+    )
+        .then(
+            |(params, at_params, (trait_name, trait_at), target): (
+                Option<LPooled<Vec<(TVar, Option<LPooled<Vec<Type>>>)>>>,
+                _,
+                _,
+                _,
+            )| {
+                let mut params = params.unwrap_or_else(LPooled::take);
+                let tvs: Arc<[TVar]> =
+                    Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));
+                if tvs
+                    .iter()
+                    .enumerate()
+                    .any(|(i, tv)| tvs[..i].iter().any(|p| p.name == tv.name))
+                {
+                    return refuse(at_params, "duplicate impl type variable").right();
+                }
+                let mut constraints = flatten_bounds(
+                    params.drain(..).filter_map(|(tv, b)| b.map(|b| (tv, b))),
+                );
+                value(ImplHead {
+                    trait_name,
+                    trait_at,
+                    params: tvs,
+                    constraints: Arc::from_iter(constraints.drain(..)),
+                    target,
+                })
+                .left()
+            },
+        )
+}
+
+/// An interface's `impl` item: the head alone, since the module's body
+/// supplies the implementation.
+pub(super) fn impl_sig<I>() -> impl Parser<I, Output = ImplHead>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        impl_head(),
+        optional(attempt(spaces().with(position()).skip(look_ahead(token('{'))))),
+    )
+        .then(|(head, body)| match body {
+            None => value(head).left(),
+            Some(at) => {
+                refuse(at, "an interface declares an impl without a body").right()
+            }
+        })
+}
+
+/// `impl<'a: C, ..> Trait for Target { let m = ..; .. }` — the body is
+/// optional, implementing a trait whose methods all have defaults.
+pub(super) fn impl_decl<I>() -> impl Parser<I, Output = ImplExpr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        impl_head(),
         optional(attempt(spaces().skip(look_ahead(token('{')))).with(between(
             token('{'),
             sptoken('}'),
@@ -170,64 +231,28 @@ where
         ))),
         position(),
     )
-        .then(
-            |(params, at_params, (trait_name, trait_at), target, methods, end): (
-                Option<LPooled<Vec<(TVar, Option<LPooled<Vec<Type>>>)>>>,
-                _,
-                _,
-                _,
-                Option<LPooled<Vec<Expr>>>,
-                _,
-            )| {
-                let mut params = params.unwrap_or_else(LPooled::take);
-                let tvs: Arc<[TVar]> =
-                    Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));
-                if tvs
-                    .iter()
-                    .enumerate()
-                    .any(|(i, tv)| tvs[..i].iter().any(|p| p.name == tv.name))
-                {
-                    return refuse(at_params, "duplicate impl type variable").right();
-                }
-                let mut constraints = flatten_bounds(
-                    params.drain(..).filter_map(|(tv, b)| b.map(|b| (tv, b))),
-                );
-                let mut ms: LPooled<Vec<Expr>> = methods.unwrap_or_else(LPooled::take);
-                // a trailing `;` leaves an empty statement holding the lines below it
-                if let Some(empty) = ms.pop_if(|e| matches!(e.kind, ExprKind::NoOp)) {
-                    let below = empty.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[]);
-                    match ms.last_mut() {
-                        Some(m) => trail(m, None, below),
-                        None if below.is_empty() => (),
-                        None => {
-                            return refuse(
-                                end,
-                                "a comment here has no method to describe",
-                            )
+        .then(|(head, methods, end): (ImplHead, Option<LPooled<Vec<Expr>>>, _)| {
+            let mut ms: LPooled<Vec<Expr>> = methods.unwrap_or_else(LPooled::take);
+            // a trailing `;` leaves an empty statement holding the lines below it
+            if let Some(empty) = ms.pop_if(|e| matches!(e.kind, ExprKind::NoOp)) {
+                let below = empty.dec.as_ref().map(|d| &d.below[..]).unwrap_or(&[]);
+                match ms.last_mut() {
+                    Some(m) => trail(m, None, below),
+                    None if below.is_empty() => (),
+                    None => {
+                        return refuse(end, "a comment here has no method to describe")
                             .right();
-                        }
                     }
                 }
-                let simple = |m: &Expr| {
-                    matches!(&m.kind, ExprKind::Bind(b)
+            }
+            let simple = |m: &Expr| {
+                matches!(&m.kind, ExprKind::Bind(b)
                         if matches!(b.pattern, StructurePattern::Bind(_)))
-                };
-                if !ms.iter().all(simple) {
-                    return refuse(
-                        end,
-                        "an impl body holds only `let name = ..` methods",
-                    )
+            };
+            if !ms.iter().all(simple) {
+                return refuse(end, "an impl body holds only `let name = ..` methods")
                     .right();
-                }
-                value(ImplExpr {
-                    trait_name,
-                    trait_at,
-                    params: tvs,
-                    constraints: Arc::from_iter(constraints.drain(..)),
-                    target,
-                    methods: Arc::from_iter(ms.drain(..)),
-                })
-                .left()
-            },
-        )
+            }
+            value(ImplExpr { head, methods: Arc::from_iter(ms.drain(..)) }).left()
+        })
 }

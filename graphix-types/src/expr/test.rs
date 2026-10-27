@@ -873,17 +873,20 @@ fn use_item() -> impl Strategy<Value = UseItem> {
         1 => (1..3usize).prop_map(|n| vec![ArcStr::from("super"); n]),
     ];
     let glob = prop_oneof![4 => Just(false), 1 => Just(true)];
-    // The terminal segment and a rename target may be uppercase; interior
-    // segments are modules.
+    // The terminal segment may be uppercase; interior segments are modules.
     let upper = prop_oneof![
         Just(ArcStr::from("Client")),
         Just(ArcStr::from("T0")),
         Just(ArcStr::from("StyleSheet")),
     ];
     let leaf = prop_oneof![3 => random_fname(), 1 => upper.clone()];
-    let rename = prop_oneof![3 => random_fname(), 1 => upper];
+    // a rename keeps its leaf's case
+    let rename = (random_fname(), upper);
     (lead, collection::vec(random_fname(), 0..3), leaf, glob, option::of(rename))
         .prop_map(|(lead, segs, leaf, glob, rename)| {
+            let capitalized = leaf.starts_with(char::is_uppercase);
+            let rename =
+                rename.map(|(lower, upper)| if capitalized { upper } else { lower });
             let mut parts = lead;
             parts.extend(segs);
             parts.push(leaf);
@@ -1051,11 +1054,13 @@ macro_rules! impl_decl {
                     .collect();
                 trailers.on(methods.iter_mut());
                 ExprKind::Impl(Arc::new(ImplExpr {
-                    trait_name,
-                    trait_at: WrittenPath::default(),
-                    constraints: Arc::from_iter(constraints),
-                    params: Arc::from_iter(params.iter().map(|(tv, _)| tv.clone())),
-                    target,
+                    head: ImplHead {
+                        trait_name,
+                        trait_at: WrittenPath::default(),
+                        constraints: Arc::from_iter(constraints),
+                        params: Arc::from_iter(params.iter().map(|(tv, _)| tv.clone())),
+                        target,
+                    },
                     methods: Arc::from_iter(methods),
                 }))
                 .to_expr_nopos()
@@ -1577,10 +1582,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
         (impl_decl!(constant()), option::of(doc_text())).prop_map(|(mut i, doc)| {
             match std::mem::replace(&mut i.kind, ExprKind::NoOp) {
                 ExprKind::Impl(i) => SigItem {
-                    kind: SigKind::Impl(Arc::new(ImplExpr {
-                        methods: Arc::from_iter([]),
-                        ..(*i).clone()
-                    })),
+                    kind: SigKind::Impl(Arc::new(i.head.clone())),
                     comments: Comments::default(),
                     eol: Eol::default(),
                     doc: Doc(doc),
@@ -1613,6 +1615,12 @@ fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
 }
 
 fn check_impl(i0: &ImplExpr, i1: &ImplExpr) -> bool {
+    check_impl_head(&i0.head, &i1.head)
+        && (i0.methods.len() == i1.methods.len())
+        && i0.methods.iter().zip(i1.methods.iter()).all(|(a, b)| check(a, b))
+}
+
+fn check_impl_head(i0: &ImplHead, i1: &ImplHead) -> bool {
     (i0.trait_name == i1.trait_name)
         && (i0.params.len() == i1.params.len())
         && i0.params.iter().zip(i1.params.iter()).all(|(a, b)| a.name == b.name)
@@ -1623,8 +1631,6 @@ fn check_impl(i0: &ImplExpr, i1: &ImplExpr) -> bool {
             .zip(i1.constraints.iter())
             .all(|((a, ta), (b, tb))| a.name == b.name && check_type(ta, tb))
         && (check_type(&i0.target, &i1.target))
-        && (i0.methods.len() == i1.methods.len())
-        && i0.methods.iter().zip(i1.methods.iter()).all(|(a, b)| check(a, b))
 }
 
 fn module_sandbox() -> impl Strategy<Value = Sandbox> {
@@ -2189,7 +2195,7 @@ fn check_module_sig(sig0: &Sig, sig1: &Sig) -> bool {
             (
                 SigItem { kind: SigKind::Impl(i0), doc: d0, .. },
                 SigItem { kind: SigKind::Impl(i1), doc: d1, .. },
-            ) => check_impl(i0, i1) && d0 == d1,
+            ) => check_impl_head(i0, i1) && d0 == d1,
             (_, _) => false,
         })
 }

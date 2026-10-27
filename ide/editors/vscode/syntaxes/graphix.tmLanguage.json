@@ -43,7 +43,7 @@
                 },
                 {
                     "name": "keyword.other.graphix",
-                    "match": "\\b(let|rec|mod|use|type|fn|cast|never|any|with|throws|as|pub|trait|impl|mut|val|for|self|super|package)\\b"
+                    "match": "\\b(let|rec|mod|use|type|fn|cast|never|any|with|throws|as|pub|trait|impl|mut|val|for|dynamic|sandbox|whitelist|blacklist|unrestricted|sig|source|self|super|package)\\b"
                 }
             ]
         },

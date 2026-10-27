@@ -2,10 +2,11 @@ use crate::{
     Restore,
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comments, Decorations,
-        Doc, Expr, ExprKind, ImplExpr, LambdaBody, LambdaExpr, ModuleKind, Sandbox,
-        SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem, SigKind, StrForm, StructExpr,
-        StructWithExpr, StructurePattern, TraitExpr, TraitMethod, TypeDefBody,
-        TypeDefExpr, UseItem, format::FormatConfig, parser, pattern::printed_fields,
+        Doc, Expr, ExprKind, ImplExpr, ImplHead, LambdaBody, LambdaExpr, ModuleKind,
+        Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem, SigKind, StrForm,
+        StructExpr, StructWithExpr, StructurePattern, TraitExpr, TraitMethod,
+        TypeDefBody, TypeDefExpr, UseItem, format::FormatConfig, parser,
+        pattern::printed_fields,
     },
     print_as_written,
     stack::ensure_sufficient,
@@ -1113,8 +1114,8 @@ impl PrettyDisplay for TraitExpr {
     }
 }
 
-impl ImplExpr {
-    fn write_head(&self, f: &mut impl fmt::Write) -> fmt::Result {
+impl fmt::Display for ImplHead {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "impl")?;
         if !self.params.is_empty() {
             write!(f, "<")?;
@@ -1137,9 +1138,15 @@ impl ImplExpr {
     }
 }
 
+impl PrettyDisplay for ImplHead {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        writeln!(buf, "{self}")
+    }
+}
+
 impl fmt::Display for ImplExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.write_head(f)?;
+        write!(f, "{}", self.head)?;
         if self.methods.is_empty() {
             return Ok(());
         }
@@ -1160,11 +1167,10 @@ impl PrettyDisplay for ImplExpr {
     }
 
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        self.write_head(buf)?;
         if self.methods.is_empty() {
-            return writeln!(buf);
+            return self.head.fmt_pretty_inner(buf);
         }
-        writeln!(buf, " {{")?;
+        writeln!(buf, "{} {{", self.head)?;
         buf.nested(|buf| pretty_items(buf, &self.methods, ";"))?;
         writeln!(buf, "}}")
     }

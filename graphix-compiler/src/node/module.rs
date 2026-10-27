@@ -323,12 +323,6 @@ fn bind_sig_item(
             let trait_def = env.trait_def(trait_id).cloned().expect("trait def");
             let (target, params) =
                 traits::impl_head(env, &scope.lexical, &trait_def, im, true)?;
-            if !im.methods.is_empty() {
-                bail!(
-                    "an interface declares `impl {} for {target};` without a body",
-                    im.trait_name
-                )
-            }
             // named by its place in the interface, which every load of
             // the module, an image's included, gives it alike
             let bscope = scope.append_block("impl", item as u64);

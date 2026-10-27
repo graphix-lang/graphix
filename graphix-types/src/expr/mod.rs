@@ -298,21 +298,28 @@ pub struct TraitMethod {
     pub default: Option<Expr>,
 }
 
-/// `impl<'a: C, ..> Trait for Target { let m = ..; .. }`. `params` are
-/// the head's declared type variables (every one must occur in
-/// `target`), `constraints` their bounds (a tvar may repeat under
-/// `'a: A + B`), and `methods` the `let` bindings supplying the
-/// trait's methods — empty for an interface declaration
-/// (`impl Trait for Target;`).
+/// `impl<'a: C, ..> Trait for Target`, which alone is an interface's
+/// declaration of an implementation. `params` are the declared type
+/// variables (every one must occur in `target`), `constraints` their
+/// bounds (a tvar may repeat under `'a: A + B`).
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
-pub struct ImplExpr {
+pub struct ImplHead {
     pub trait_name: ModPath,
     /// Where each segment of `trait_name` was written.
     pub trait_at: WrittenPath,
     pub params: Arc<[TVar]>,
     pub constraints: Arc<[(TVar, Type)]>,
     pub target: Type,
+}
+
+/// `impl<'a: C, ..> Trait for Target { let m = ..; .. }`: `methods` are
+/// the `let` bindings supplying the trait's methods, none where the
+/// body is left off (every method has a default).
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct ImplExpr {
+    pub head: ImplHead,
     pub methods: Arc<[Expr]>,
 }
 
@@ -382,7 +389,7 @@ impl fmt::Display for UseItem {
 pub enum SigKind {
     TypeDef(TypeDefExpr),
     Trait(Arc<TraitExpr>),
-    Impl(Arc<ImplExpr>),
+    Impl(Arc<ImplHead>),
     Bind(BindSig),
     Module(Name),
     Use { reexport: bool, names: Arc<[UseItem]> },
@@ -1737,11 +1744,7 @@ impl Expr {
                 below: t.below.clone(),
             })),
             Impl(im) => Impl(Arc::new(ImplExpr {
-                trait_name: im.trait_name.clone(),
-                trait_at: im.trait_at.clone(),
-                params: im.params.clone(),
-                constraints: im.constraints.clone(),
-                target: im.target.clone(),
+                head: im.head.clone(),
                 methods: xs(f, &im.methods),
             })),
             Select(SelectExpr { arg, arms }) => Select(SelectExpr {
