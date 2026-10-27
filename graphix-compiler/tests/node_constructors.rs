@@ -29,3 +29,4 @@ constructor!(variant, "Variant", "../src/node/data.rs");
 constructor!(construct, "Construct", "../src/node/data.rs");
 constructor!(tuple_ref, "TupleRef", "../src/node/data.rs");
 constructor!(qop, "Qop", "../src/node/error.rs");
+constructor!(seq_guard, "SeqGuard", "../src/node/error.rs");

@@ -1137,6 +1137,25 @@ pub struct SeqGuard<R: Rt> {
 }
 
 impl<R: Rt> SeqGuard<R> {
+    fn with(
+        spec: Arc<Expr>,
+        n: Node<R>,
+        handler: ErrorHandler,
+        machine: ErrorHandler,
+        polled: Option<BoundaryRef>,
+    ) -> Node<R> {
+        handler.polled_by(&polled);
+        Node::new(Self {
+            spec,
+            n,
+            handler,
+            machine,
+            state: GuardState::Sleeping,
+            resident: TagValue::phantom(),
+            polled,
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -1146,16 +1165,7 @@ impl<R: Rt> SeqGuard<R> {
         let handler = image::handler_decode(buf)?;
         let machine = image::handler_decode(buf)?;
         let polled = ctx.boundary.clone();
-        handler.polled_by(&polled);
-        Ok(Node::new(Self {
-            spec,
-            n,
-            handler,
-            machine,
-            state: GuardState::Sleeping,
-            resident: TagValue::phantom(),
-            polled,
-        }))
+        Ok(Self::with(spec, n, handler, machine, polled))
     }
 
     pub(crate) fn compile(
@@ -1171,16 +1181,7 @@ impl<R: Rt> SeqGuard<R> {
         let machine = handler.machine().ok_or_else(|| anyhow!("BUG: seq machine"))?;
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let polled = ctx.boundary.clone();
-        handler.polled_by(&polled);
-        Ok(Node::new(Self {
-            spec,
-            n,
-            handler,
-            machine,
-            state: GuardState::Sleeping,
-            resident: TagValue::phantom(),
-            polled,
-        }))
+        Ok(Self::with(spec, n, handler, machine, polled))
     }
 }
 
