@@ -278,7 +278,7 @@ fn comments() -> impl Strategy<Value = Comments> {
 // comments_after_list_items_stay. Removing the eol write from `item_sep` fails
 // expr_pp_round_trip and comments_after_list_items_stay; removing the below write from
 // `item_end` fails those and an_empty_statement_is_its_semicolon.
-// CR claude for claude: [test-gap/medium] No strategy makes `Decorations::eol` or
+// XCR claude for claude: [test-gap/medium] No strategy makes `Decorations::eol` or
 // `below`, and `check_dec` ignores both. So the round-trip, pack and tree-sitter
 // proptests never print or parse an end-of-line comment or one below a list's last
 // item. `item_sep`, `item_end`, `trail` and `commented` are pinned only by a few parser
@@ -294,9 +294,16 @@ fn comments() -> impl Strategy<Value = Comments> {
 // 2026-10-26 claude: x-formatter-02's fix covers the eol/below generation (`Trailers`,
 // before a trailing NoOp too) and their comparison in `check_dec`; what remains here is
 // weighting `None` up in `decorations()` so flat layouts run.
+// 2026-10-26 claude: decorations() is now prop_oneof![4 => Just(None), 1 => decorated],
+// so a generated tree is often undecorated and the flat layouts run in
+// expr_pp_round_trip; all expr proptests pass. Pin:
+// expr::test::generated_trees_are_often_undecorated (deterministic runner: 229 of 400
+// trees bare now, 35 with the old weighting, threshold 120).
+/// Mostly none: one decoration anywhere below a node makes it unprintable
+/// flat, so a tree must often have none for the flat layouts to run.
 fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
-    (collection::vec(comment(), 0..3), collection::vec(attr(), 0..2)).prop_map(
-        |(comments, attrs)| {
+    let some = (collection::vec(comment(), 0..3), collection::vec(attr(), 0..2))
+        .prop_map(|(comments, attrs)| {
             if comments.is_empty() && attrs.is_empty() {
                 None
             } else {
@@ -306,8 +313,8 @@ fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
                     ..Decorations::default()
                 }))
             }
-        },
-    )
+        });
+    prop_oneof![4 => Just(None), 1 => some]
 }
 
 /// `inner` with decorations above it. Legal only where the parser captures
@@ -509,16 +516,22 @@ fn modpath() -> impl Strategy<Value = ModPath> {
     prop_oneof![random_modpath(), valid_modpath()]
 }
 
+/// The delimiters string `v` is written between, `form` where it can be:
+/// a line ending in source reads as LF, so no raw string holds a CRLF.
+/// None for a value that is no string.
+fn written_form(v: &Value, form: StrForm) -> Option<StrForm> {
+    match v {
+        Value::String(s) if form == StrForm::Raw && s.contains("\r\n") => {
+            Some(StrForm::Quoted)
+        }
+        Value::String(_) => Some(form),
+        _ => None,
+    }
+}
+
 fn constant() -> impl Strategy<Value = Expr> {
     (value(), str_form()).prop_map(|(v, form)| {
-        // a line ending in source reads as LF, so no raw string holds a CRLF
-        let form = match &v {
-            Value::String(s) if form == StrForm::Raw && s.contains("\r\n") => {
-                Some(StrForm::Quoted)
-            }
-            Value::String(_) => Some(form),
-            _ => None,
-        };
+        let form = written_form(&v, form);
         let mut e = ExprKind::Constant(v).to_expr_nopos();
         if let Some(form) = form {
             e.str_form = form;
@@ -531,9 +544,7 @@ fn str_form() -> impl Strategy<Value = StrForm> {
     prop_oneof![Just(StrForm::Quoted), Just(StrForm::Raw), Just(StrForm::Template)]
 }
 
-/// The delimiters of every string in `e`, in order: what printing as
-/// written must keep, an interpolation's text told from its splices.
-// CR claude for claude: [test-gap/low] Only expression strings are collected here, and
+// XCR claude for claude: [test-gap/low] Only expression strings are collected here, and
 // `check_structure_pattern` ignores a `Literal`'s `WrittenForm`. So the round-trip
 // proptests pass even if the pattern printer ignores a string pattern's written
 // delimiters, for example if `StructurePattern`'s Display wrote `Literal(v)` for
@@ -541,21 +552,16 @@ fn str_form() -> impl Strategy<Value = StrForm> {
 // arms and a seq `let` trigger's pattern, as `format::Ornaments::pattern` does), and
 // apply `constant`'s CRLF rule in `structure_pattern`'s literal leaf. Found by reading;
 // not run. (tests-expr-07)
-fn str_forms(e: &Expr, out: &mut Vec<StrForm>) {
-    if let ExprKind::Constant(Value::String(_)) | ExprKind::StringInterpolate { .. } =
-        &e.kind
-    {
-        out.push(e.str_form)
-    }
-    e.for_each_child(&mut |c| str_forms(c, out))
-}
-
-/// `e0` and `e1` write their strings between the same delimiters.
+// 2026-10-26 claude: same_str_forms now compares format::str_forms, the formatter
+// guard's own ornament walk (Ornaments) filtered to Delimiters, so pattern string
+// literals (binds, lambda args, select arms, a seq let trigger) count; the test's own
+// walk is gone. The CRLF rule is written_form, shared by constant() and
+// structure_pattern's literal leaf. Pin: expr_round_trip fails at once when
+// StructurePattern's Display ignores the WrittenForm.
+/// `e0` and `e1` write their strings, expressions' and patterns', between
+/// the same delimiters.
 fn same_str_forms(e0: &Expr, e1: &Expr) -> bool {
-    let (mut f0, mut f1) = (Vec::new(), Vec::new());
-    str_forms(e0, &mut f0);
-    str_forms(e1, &mut f1);
-    f0 == f1
+    *format::str_forms(e0) == *format::str_forms(e1)
 }
 
 fn reference() -> impl Strategy<Value = Expr> {
@@ -715,8 +721,10 @@ fn random_name() -> impl Strategy<Value = Name> {
 
 fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
     let leaf = prop_oneof![
-        (value(), str_form())
-            .prop_map(|(v, form)| StructurePattern::Literal(v, WrittenForm(form))),
+        (value(), str_form()).prop_map(|(v, form)| {
+            let form = written_form(&v, form).unwrap_or_default();
+            StructurePattern::Literal(v, WrittenForm(form))
+        }),
         option::of(random_name()).prop_map(|name| match name {
             None => StructurePattern::Ignore,
             Some(name) => StructurePattern::Bind(name),
@@ -1664,13 +1672,12 @@ fn paren(child: Expr) -> Expr {
 }
 
 /// Children that need parens regardless of position: a statement form
-/// (`let`, a declaration, `catch`, a connect) or a lambda under any
-/// operator. `None` defers to binary-operator precedence.
+/// (`let`, a declaration, `catch`, a connect). `None` defers to
+/// binary-operator precedence and, for a lambda, to the position.
 fn loose_needs_parens(child: &ExprKind) -> Option<bool> {
     match child {
         ExprKind::Connect { .. }
         | ExprKind::Bind(_)
-        | ExprKind::Lambda(_)
         | ExprKind::Use { .. }
         | ExprKind::TypeDef(_)
         | ExprKind::Module { .. }
@@ -1682,16 +1689,29 @@ fn loose_needs_parens(child: &ExprKind) -> Option<bool> {
     }
 }
 
-/// Parenthesize a left child of lower precedence than the parent.
+/// Whether `e` reads ending in a bare lambda, whose body takes whatever
+/// follows: a lambda, or an operator whose last operand is one.
+fn trails_lambda(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Lambda(_) => true,
+        ExprKind::BinOp { rhs: x, .. } | ExprKind::ByRef(_, x) => trails_lambda(x),
+        _ => false,
+    }
+}
+
+/// Parenthesize a left child of lower precedence than the parent, or one
+/// ending in a lambda, which something follows.
 fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
     let needs = loose_needs_parens(&child.kind).unwrap_or_else(|| {
         binop_precedence(&child.kind).is_some_and(|p| p < parent_prec)
+            || trails_lambda(&child)
     });
     if needs { paren(child) } else { child }
 }
 
 /// Parenthesize a right child of lower or equal precedence than the parent;
-/// all operators are left-associative.
+/// all operators are left-associative. A lambda may stand bare: it is the
+/// operator's last operand.
 fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
     let needs = loose_needs_parens(&child.kind).unwrap_or_else(|| {
         binop_precedence(&child.kind).is_some_and(|p| p <= parent_prec)
@@ -1699,30 +1719,54 @@ fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
     if needs { paren(child) } else { child }
 }
 
-/// `e` with the written parens around operator expressions taken out, the
-/// trees the compiler builds without them (error messages, --expand,
-/// hover); a declaration or a lambda as an operand is written only in
-/// parens, so those stay.
+/// Parenthesize the operand of `?` or `$` where the suffix would bind
+/// tighter: an operator, a prefix form or a lambda.
+fn maybe_paren_suffixed(child: Expr) -> Expr {
+    use ExprKind::*;
+    let needs = loose_needs_parens(&child.kind).unwrap_or(matches!(
+        child.kind,
+        BinOp { .. } | Not { .. } | Neg(_) | Deref(_) | ByRef(..) | Lambda(_)
+    ));
+    if needs { paren(child) } else { child }
+}
+
+/// `e` with the written parens around operator expressions, and around a
+/// lambda an operator takes, taken out: the trees the compiler builds
+/// without them (error messages, --expand, hover). A declaration as an
+/// operand is written only in parens, so those stay.
 fn strip_parens(e: &Expr) -> Expr {
     use ExprKind::*;
-    match &e.kind {
-        ExplicitParens(inner)
-            if e.dec.is_none()
-                && inner.dec.is_none()
-                && (matches!(
-                    inner.kind,
-                    ExprKind::BinOp { .. }
-                        | Not { .. }
-                        | Neg(_)
-                        | Deref(_)
-                        | ByRef(..)
-                        | Qop { .. }
-                        | OrNever(_)
-                )) =>
-        {
-            strip_parens(inner)
+    let bare = |p: &Expr, lambda: bool| match &p.kind {
+        ExplicitParens(inner) if p.dec.is_none() && inner.dec.is_none() => {
+            matches!(
+                inner.kind,
+                BinOp { .. }
+                    | Not { .. }
+                    | Neg(_)
+                    | Deref(_)
+                    | ByRef(..)
+                    | Qop { .. }
+                    | OrNever(_)
+            ) || (lambda && matches!(inner.kind, Lambda(_)))
         }
-        _ => e.map_children(&mut |c| strip_parens(c)),
+        _ => false,
+    };
+    let operator = matches!(
+        e.kind,
+        BinOp { .. }
+            | Not { .. }
+            | Neg(_)
+            | Deref(_)
+            | ByRef(..)
+            | Qop { .. }
+            | OrNever(_)
+    );
+    match &e.kind {
+        ExplicitParens(inner) if bare(e, false) => strip_parens(inner),
+        _ => e.map_children(&mut |c| match &c.kind {
+            ExplicitParens(inner) if operator && bare(c, true) => strip_parens(inner),
+            _ => strip_parens(c),
+        }),
     }
 }
 
@@ -1751,6 +1795,13 @@ fn add_parens(mut e: Expr) -> Expr {
         ExprKind::Neg(e) => {
             ExprKind::Neg(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), UNARY_PREC)))
         }
+        ExprKind::Qop { written, arg } => ExprKind::Qop {
+            written,
+            arg: Arc::new(maybe_paren_suffixed(Arc::unwrap_or_clone(arg))),
+        },
+        ExprKind::OrNever(e) => {
+            ExprKind::OrNever(Arc::new(maybe_paren_suffixed(Arc::unwrap_or_clone(e))))
+        }
         other => other,
     };
     Expr {
@@ -1764,7 +1815,7 @@ fn add_parens(mut e: Expr) -> Expr {
     }
 }
 
-// CR claude for claude: [test-gap/low] Binary operators are generated only here, over
+// XCR claude for claude: [test-gap/low] Binary operators are generated only here, over
 // operands from this strategy alone. So no generated tree has `?`/`$` over an operator
 // or prefix form, or a lambda (or an operator ending in one) as an operand.
 // `printer_parenthesizes_unparenthesized_trees` therefore never tests `print::suffixed`
@@ -1774,8 +1825,22 @@ fn add_parens(mut e: Expr) -> Expr {
 // `qop!` arm and a lambda leaf here; have `add_parens` parenthesize what those need;
 // and make `under` parenthesize an operand that ends in a lambda unless it is the
 // operator's last. Found by reading; not run. (tests-expr-05)
+// 2026-10-26 claude: print.rs: under parenthesizes a left operand that ends in a bare
+// lambda (ends_in_lambda: a lambda, a BinOp whose bare right operand ends in one, an &
+// over one); suffixed takes a lambda; prefixed takes a lambda except under & (the
+// parser refuses -|x| x, !|x| x, *|x| x and takes &|x| x). arithexpr has a lambda leaf
+// and a ?/$ arm over any operand; add_parens parenthesizes a suffixed operand and a
+// left operand ending in a lambda, a right-operand lambda stays bare; strip_parens also
+// takes the parens off a lambda an operator holds. Pins:
+// expr::test::operands_ending_in_a_lambda_print_in_parens (each of the four printer
+// changes fails it when undone) and printer_parenthesizes_unparenthesized_trees (fails
+// on the under and suffixed undos). gxfmt corpus over both repos: clean.
 fn arithexpr() -> impl Strategy<Value = Expr> {
-    let leaf = prop_oneof![constant(), reference()];
+    let leaf = prop_oneof![
+        4 => constant(),
+        4 => reference(),
+        1 => lambda!(prop_oneof![constant(), reference()]),
+    ];
     leaf.prop_recursive(5, 20, 10, |inner| {
         prop_oneof![
             1 => select!(inner.clone().prop_map(add_parens)),
@@ -1797,6 +1862,14 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             1 => byref!(inner.clone().prop_map(add_parens)),
             1 => deref!(inner.clone().prop_map(add_parens)),
             1 => neg!(inner.clone().prop_map(add_parens)),
+            1 => (inner.clone(), any::<bool>()).prop_map(|(e, qop)| {
+                let arg = Arc::new(e);
+                let kind = match qop {
+                    true => ExprKind::Qop { written: None, arg },
+                    false => ExprKind::OrNever(arg),
+                };
+                add_parens(kind.to_expr_nopos())
+            }),
             20 => (
                 sample::select(&BinOp::ALL[..]),
                 inner.clone().prop_map(add_parens),
@@ -2446,6 +2519,51 @@ fn same_positions(a: &Expr, b: &Expr) -> bool {
         && ac.iter().zip(bc.iter()).all(|(a, b)| same_positions(a, b))
 }
 
+/// An operand that ends in a lambda prints in parens wherever something
+/// would follow it, and a lambda under `?`, `$` or a prefix operator in
+/// parens, so each reads back as itself, flat and laid out.
+#[test]
+fn operands_ending_in_a_lambda_print_in_parens() {
+    let e = |kind: ExprKind| kind.to_expr_nopos();
+    let lambda = || parse_one("|x| x").unwrap();
+    let r = |n: &str| e(ExprKind::Ref { name: ModPath::from([n]) });
+    let bin = |lhs: Expr, rhs: Expr| {
+        e(ExprKind::BinOp { op: BinOp::Add, lhs: Arc::new(lhs), rhs: Arc::new(rhs) })
+    };
+    for tree in [
+        bin(bin(r("a"), lambda()), r("b")),
+        bin(lambda(), r("b")),
+        e(ExprKind::Qop { written: None, arg: Arc::new(lambda()) }),
+        e(ExprKind::OrNever(Arc::new(lambda()))),
+        e(ExprKind::Neg(Arc::new(lambda()))),
+        e(ExprKind::Not { expr: Arc::new(lambda()) }),
+        e(ExprKind::Deref(Arc::new(lambda()))),
+        e(ExprKind::ByRef(Mutability::Shared, Arc::new(lambda()))),
+        bin(e(ExprKind::ByRef(Mutability::Shared, Arc::new(lambda()))), r("b")),
+    ] {
+        for printed in [tree.to_string(), tree.to_string_pretty(0).to_string()] {
+            let read = parse_one(&printed).unwrap_or_else(|e| panic!("{printed}: {e}"));
+            assert!(check(&tree, &strip_parens(&read)), "{printed}\n{tree:?}\n{read:?}");
+        }
+    }
+}
+
+/// A decoration anywhere below a node makes it unprintable flat, so the
+/// pretty round trip runs flat layouts only over trees with none: the
+/// generator makes enough of those.
+#[test]
+fn generated_trees_are_often_undecorated() {
+    use proptest::{strategy::ValueTree, test_runner::TestRunner};
+    let (strategy, mut runner) = (expr(), TestRunner::deterministic());
+    let bare = (0..400)
+        .filter(|_| {
+            let e = strategy.new_tree(&mut runner).expect("a tree").current();
+            e.fold(true, &mut |bare, e| bare && e.dec.is_none())
+        })
+        .count();
+    assert!(bare >= 120, "{bare} of 400 trees undecorated");
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2048))]
 
@@ -2929,13 +3047,20 @@ fn ts_list_closer_parses() {
 /// What the parser takes at a file's head, between its tokens and in a
 /// pattern, tree-sitter takes too.
 #[test]
-// CR claude for claude: [test-gap/low] These sources are asserted against tree-sitter
+// XCR claude for claude: [test-gap/low] These sources are asserted against tree-sitter
 // only, so the claim in the test's name is never checked. `val x: i64; // c\n/// d\nval
 // y: i64` is refused by the parser ("a comment stands on a line of its own"; an
 // interface takes no end-of-line comment), yet it stays in this list. Fix: parse each
 // source with `parser::parse` or `parse_sig` too, assert the parser's refusals in
 // `ts_refuses_what_the_parser_does`, and drop or move that entry. probe:
 // design/review-2026-10-26/repro/tests-expr-gxi-eol-comment.gxi (tests-expr-06)
+// 2026-10-26 claude: Both lists now check the parser too (parser_takes: parse or
+// parse_sig after without_shebang): ts_accepts asserts the parser takes each source,
+// ts_refuses that it refuses each. The eol-comment entry stays: the parser takes it
+// since the comment-rule fixes on cr26-staging (interface items take an Eol comment),
+// so the repro no longer reproduces. Pin: an entry the parser refuses fails
+// ts_accepts_what_the_parser_does on 'the parser refuses' (checked with a val with no
+// separator).
 fn ts_accepts_what_the_parser_does() {
     use tree_sitter_compat::find_probe_error;
     const SRCS: &[&str] = &[
@@ -2957,10 +3082,19 @@ fn ts_accepts_what_the_parser_does() {
         "let (x, y,) = t",
     ];
     for s in SRCS {
+        assert!(parser_takes(s), "the parser refuses {s:?}");
         if let Some(e) = find_probe_error(s) {
             panic!("{s:?} failed: {e}");
         }
     }
+}
+
+/// Whether the parser takes `s` as a program or as an interface, past
+/// the byte-order mark and `#!` line every reader skips.
+fn parser_takes(s: &str) -> bool {
+    let text = parser::without_shebang(&ArcStr::from(s));
+    let ori = || Origin { parent: None, source: Source::Unspecified, text: text.clone() };
+    parser::parse(ori()).is_ok() || parser::parse_sig(ori()).is_ok()
 }
 
 /// What the parser refuses for its shape alone, tree-sitter refuses too.
@@ -2979,6 +3113,7 @@ fn ts_refuses_what_the_parser_does() {
         "x;\n#!/usr/bin/env graphix",
     ];
     for s in SRCS {
+        assert!(!parser_takes(s), "the parser takes {s:?}");
         assert!(find_probe_error(s).is_some(), "tree-sitter accepts {s:?}");
     }
 }

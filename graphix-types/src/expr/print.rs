@@ -2305,12 +2305,12 @@ impl PrettyDisplay for ExprKind {
             Lambda(l) => l.fmt_pretty_inner(buf),
             Not { expr } => match &expr.kind {
                 Block { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";", false),
-                _ => pretty_prefixed(buf, "!", expr),
+                _ => pretty_prefixed(buf, "!", expr, false),
             },
-            ByRef(m, e) => pretty_prefixed(buf, m.prefix(), e),
-            Deref(e) => pretty_prefixed(buf, "*", e),
+            ByRef(m, e) => pretty_prefixed(buf, m.prefix(), e, true),
+            Deref(e) => pretty_prefixed(buf, "*", e, false),
             Neg(e) if matches!(e.kind, Constant(_)) => writeln!(buf, "{self}"),
-            Neg(e) => pretty_prefixed(buf, "-", e),
+            Neg(e) => pretty_prefixed(buf, "-", e, false),
             Select(se) => se.fmt_pretty_inner(buf),
         }
     }
@@ -2904,50 +2904,80 @@ impl ExprKind {
             ExprKind::Apply(ap) => write!(f, "{ap}"),
             ExprKind::Select(se) => write!(f, "{se}"),
             ExprKind::ByRef(m, e) => {
-                write!(f, "{}{}", m.prefix(), Operand(e, prefixed(e)))
+                write!(f, "{}{}", m.prefix(), Operand(e, prefixed(e, true)))
             }
-            ExprKind::Deref(e) => write!(f, "*{}", Operand(e, prefixed(e))),
+            ExprKind::Deref(e) => write!(f, "*{}", Operand(e, prefixed(e, false))),
             // `-1` reads back as the literal: a negated one keeps the space
             ExprKind::Neg(e) => match &e.kind {
                 ExprKind::Constant(_) if !shows(&e.dec) => write!(f, "- {}", Bare(e)),
-                _ => write!(f, "-{}", Operand(e, prefixed(e))),
+                _ => write!(f, "-{}", Operand(e, prefixed(e, false))),
             },
-            ExprKind::Not { expr } => write!(f, "!{}", Operand(expr, prefixed(expr))),
+            ExprKind::Not { expr } => {
+                write!(f, "!{}", Operand(expr, prefixed(expr, false)))
+            }
         }
     }
 }
 
 /// Whether `e`, an operand of `op` on the `right` or the left, needs
 /// parens: of lower precedence, or of equal on the right, since every
-/// operator is left-associative. A parsed tree holds its parens; a tree
-/// the compiler built does not.
+/// operator is left-associative, or ending in a lambda on the left, whose
+/// body would take the rest. A parsed tree holds its parens; a tree the
+/// compiler built does not.
 fn under(e: &Expr, op: BinOp, right: bool) -> bool {
     match &e.kind {
-        ExprKind::BinOp { op: c, .. } => {
-            c.precedence() < op.precedence()
-                || (right && c.precedence() == op.precedence())
+        ExprKind::BinOp { op: c, .. }
+            if c.precedence() < op.precedence()
+                || (right && c.precedence() == op.precedence()) =>
+        {
+            true
         }
+        _ => !right && ends_in_lambda(e),
+    }
+}
+
+/// Whether `e` prints ending in a bare lambda: a lambda, or an operator
+/// whose last operand prints bare and ends in one.
+fn ends_in_lambda(e: &Expr) -> bool {
+    ensure_sufficient(|| match &e.kind {
+        ExprKind::Lambda(_) => true,
+        ExprKind::BinOp { op, rhs, .. } => !under(rhs, *op, true) && ends_in_lambda(rhs),
+        ExprKind::ByRef(_, x) => !prefixed(x, true) && ends_in_lambda(x),
+        _ => false,
+    })
+}
+
+/// Whether `e`, the operand of `?` or `$`, needs parens: it is an
+/// operator's, which binds looser than a postfix form, or a lambda's,
+/// whose body would take the suffix.
+fn suffixed(e: &Expr) -> bool {
+    use ExprKind::*;
+    matches!(
+        &e.kind,
+        BinOp { .. } | Deref(_) | Not { .. } | Neg(_) | ByRef(..) | Lambda(_)
+    )
+}
+
+/// Whether `e`, the operand of a prefix operator (`!`, `-`, `*`, `&`),
+/// needs parens: an operator's binds looser, and a lambda stands bare
+/// only where the operator `takes_lambda` (`&`).
+fn prefixed(e: &Expr, takes_lambda: bool) -> bool {
+    match e.kind {
+        ExprKind::BinOp { .. } => true,
+        ExprKind::Lambda(_) => !takes_lambda,
         _ => false,
     }
 }
 
-/// Whether `e`, the operand of `?` or `$`, needs parens: it is an
-/// operator's, which binds looser than a postfix form.
-fn suffixed(e: &Expr) -> bool {
-    use ExprKind::*;
-    matches!(&e.kind, ExprKind::BinOp { .. } | Deref(_) | Not { .. } | Neg(_) | ByRef(..))
-}
-
-/// Whether `e`, the operand of a prefix operator (`!`, `-`, `*`, `&`),
-/// needs parens: an operator's binds looser.
-fn prefixed(e: &Expr) -> bool {
-    matches!(e.kind, ExprKind::BinOp { .. })
-}
-
 /// `op e`, laid out, `e` in parens when it needs them.
-fn pretty_prefixed(buf: &mut PrettyBuf, op: &str, e: &Expr) -> fmt::Result {
+fn pretty_prefixed(
+    buf: &mut PrettyBuf,
+    op: &str,
+    e: &Expr,
+    takes_lambda: bool,
+) -> fmt::Result {
     write!(buf, "{op}")?;
-    match prefixed(e) {
+    match prefixed(e, takes_lambda) {
         true => pretty_parens(buf, e),
         false => e.fmt_pretty(buf),
     }

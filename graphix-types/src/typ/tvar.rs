@@ -2339,7 +2339,7 @@ impl Type {
         } else {
             self.contains(env, pred)?
         };
-        if narrowed {
+        if narrowed && pred.has_unbound() {
             self.open_over_any(env, pred)?
         }
         Ok(narrowed)

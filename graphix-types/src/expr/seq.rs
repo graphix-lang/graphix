@@ -912,16 +912,7 @@ impl Machine<'_> {
             ),
         }
         .to_expr(pos);
-        let ready = apply_core(pos, "once", [(None, r#ref(pos, &input))]);
-        let sampled = ExprKind::BinOp {
-            op: BinOp::StrictSample,
-            lhs: Arc::new(
-                ExprKind::Any { args: Arc::from_iter([r#ref(pos, pc), ready]) }
-                    .to_expr(pos),
-            ),
-            rhs: Arc::new(r#ref(pos, &input)),
-        }
-        .to_expr(pos);
+        let sampled = entry_snapshot(pos, pc, &input);
         let fields = taken.iter().enumerate().map(|(i, (c, _))| {
             let field =
                 ExprKind::TupleRef { source: Arc::new(r#ref(pos, &snap)), field: i + 1 }
@@ -1788,6 +1779,7 @@ fn pc_type(labels: &[ArcStr]) -> Type {
             .chain(labels)
             .map(|l| Type::Variant(l.clone(), Arc::from_iter([]), WrittenAt::NOWHERE)),
     ))
+    .normalize()
 }
 
 fn idle_of(pos: SourcePosition, pc: &str) -> Expr {
@@ -1977,8 +1969,10 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
 }
 
 /// The `until`s of the seq `spec`'s own body (a nested seq's are its own)
-/// whose condition has no `live` part and calls nothing: read from the
-/// step's snapshot, it cannot change after the step's entry.
+/// whose condition has no `live` part, reads through no reference and
+/// calls nothing: read from the step's snapshot, it cannot change after
+/// the step's entry. A `seqq let` has none of its own: it lowers to a
+/// `seqq` over its body, whose untils they are.
 pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
     fn walk(e: &Expr, out: &mut SmallVec<[Expr; 1]>) {
         ensure_sufficient(|| match &e.kind {
@@ -1986,7 +1980,7 @@ pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
             ExprKind::Until(c) => {
                 let mut moves = false;
                 c.fold((), &mut |(), x| {
-                    // CR claude for claude: [bug/low] A dereference reads its referent
+                    // XCR claude for claude: [bug/low] A dereference reads its referent
                     // live in a step (the snapshot holds the reference, not the
                     // target), so `until *r > 5` gets this warning that it cannot
                     // change and then completes when the referent changes. Count
@@ -1995,7 +1989,11 @@ pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
                     // for the world to change". probe:
                     // design/review-2026-10-26/repro/x-seq-sampling-until-deref-false-warning.gx
                     // (x-seq-sampling-06)
-                    // CR claude for claude: [bug/low] A dereference reads its referent
+                    // 2026-10-26 claude: fixed_untils counts ExprKind::Deref as moving, and
+                    // CLAUDE.md says a read through a reference reads its target live. Pins: lsp
+                    // a_fixed_until_warns_once (no warning at until *r > 3) and graphix-tests
+                    // seq_snapshot::a_fixed_until_warns (compiles it under WarningsAreErrors).
+                    // XCR claude for claude: [bug/low] A dereference reads its referent
                     // live, not from the step snapshot. So `until *r > 3` gets the
                     // "cannot change after the step is entered" warning and then passes
                     // when k reaches 4. Count ExprKind::Deref as moving here. The
@@ -2005,7 +2003,16 @@ pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
                     // trigger is a lowered (`#seqbind`) name. probe:
                     // design/review-2026-10-26/repro/x-engine-seq-errors-until-deref-warning.gx
                     // (x-engine-seq-errors-03)
-                    moves |= matches!(x.kind, ExprKind::Live(_) | ExprKind::Apply(_))
+                    // 2026-10-26 claude: fixed_untils counts ExprKind::Deref as moving, and
+                    // returns nothing for a seqq let, whose lowered seqq over the same body
+                    // warns instead (chosen by shape, Queued with a Bind trigger, over the
+                    // #seqbind name). Pins: graphix-types
+                    // seq::test::a_seqq_let_names_a_fixed_until_once (2 without the skip), lsp
+                    // a_fixed_until_warns_once, seq_snapshot::a_fixed_until_warns.
+                    moves |= matches!(
+                        x.kind,
+                        ExprKind::Live(_) | ExprKind::Apply(_) | ExprKind::Deref(_)
+                    )
                 });
                 if !moves {
                     out.push(e.clone())
@@ -2015,7 +2022,12 @@ pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
         })
     }
     let mut out = SmallVec::new();
-    if let ExprKind::Seq(s) = &spec.kind {
+    if let ExprKind::Seq(s) = &spec.kind
+        && !matches!(
+            (&s.kind, &s.trigger),
+            (SeqKind::Queued { .. }, Some(SeqTrigger::Bind(_)))
+        )
+    {
         s.body.iter().for_each(|e| walk(e, &mut out));
     }
     out
@@ -2136,6 +2148,20 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     // of pc's union.
     // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
     // needed. Find a cheaper check of pc's union that keeps plain pc (and the fusion).
+    // 2026-10-26 claude: Measured on the lane's debug build before any change:
+    // 250/500/1000 call steps checked in 2.8/16.5/99 s, 14x the 2026-10-19 figures.
+    // Two causes fixed, plain pc kept. Type::narrow_member ran open_over_any over
+    // every pattern (c-pattern-03's walk), N^2 per issue select over pc's union; it
+    // now runs only when pred.has_unbound(), since a pattern type with no open cell
+    // has nothing to bind. And pc_type built its union unnormalized, so a check of it
+    // against its normal form missed the identity walk and took the member-wise
+    // pre-pass (N^2); it now normalizes. Now 250/500/1000/2000 steps check in
+    // 0.18/0.35/1.9/7.0 s (consts: 0.08 s at 1000). Pins: deep_nesting
+    // a_long_seq_of_calls_checks_in_time (1000 steps in 15 s; 15 s+ without the guard)
+    // and graphix-types seq::test::the_pc_type_is_normal. What remains is O(steps) per
+    // call site, as the CR says: normalize, lower, ContainsHist::closed, holds_fn and
+    // union_of_alternatives each walk pc's union at every issue site. Keeping fusion
+    // with constant-size types still needs an entry clock that is not pc.
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a
@@ -2167,21 +2193,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     let mut expr = spec.clone();
     expr.id = ExprId::new();
     expr.kind = ExprKind::Apply(call);
-    // CR claude for claude: [structure/low] [structure/low] This `any(pc, once(input))
-    // ~! input` is built by hand here and again in Machine::snapshot. It is the one
-    // rule for reading at entry or at first arrival, and the pending changes to that
-    // rule (x-seq-sampling's per-variable snapshot, t-seq-06's entry clock) must land
-    // in both places. Fix: one `entry_snapshot(pos, pc, input) -> Expr` called from
-    // both. Found by reading; not run. (t-seq-08)
-    let ready = apply_core(pos, "once", [(None, r#ref(pos, &input))]);
-    let snapshot = ExprKind::BinOp {
-        op: BinOp::StrictSample,
-        lhs: Arc::new(
-            ExprKind::Any { args: Arc::from_iter([r#ref(pos, pc), ready]) }.to_expr(pos),
-        ),
-        rhs: Arc::new(r#ref(pos, &input)),
-    }
-    .to_expr(pos);
+    let snapshot = entry_snapshot(pos, pc, &input);
     block(
         pos,
         [
@@ -2189,6 +2201,21 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
             select(pos, snapshot, [(pat_bind(&issued), guard(expr))]),
         ],
     )
+}
+
+/// `input` as it stands at the entry clock `pc`, or at its first arrival
+/// if it was absent then, held until the next entry: `any(pc,
+/// once(input)) ~! input`.
+fn entry_snapshot(pos: SourcePosition, pc: &str, input: &str) -> Expr {
+    let ready = apply_core(pos, "once", [(None, r#ref(pos, input))]);
+    ExprKind::BinOp {
+        op: BinOp::StrictSample,
+        lhs: Arc::new(
+            ExprKind::Any { args: Arc::from_iter([r#ref(pos, pc), ready]) }.to_expr(pos),
+        ),
+        rhs: Arc::new(r#ref(pos, input)),
+    }
+    .to_expr(pos)
 }
 
 /// Drop from `map` the names statement `e` binds for the statements
@@ -2589,6 +2616,31 @@ mod test {
             n + (e.ori.source != Source::Vfs(ArcStr::from("seq"))) as usize
         });
         assert_eq!(foreign, 0);
+    }
+
+    /// The compiler asks each seq it compiles for its fixed untils, the
+    /// source seq and every seq its lowering builds: a `seqq let`'s until
+    /// is named once over both.
+    #[test]
+    fn a_seqq_let_names_a_fixed_until_once() {
+        let seq = parse_one("seqq let c = t { until flag; c }").expect("parses");
+        let lowered = desugar(&seq, &Env::default(), &ModPath::root()).expect("lowers");
+        let named = lowered.fold(fixed_untils(&seq).len(), &mut |n, e| match &e.kind {
+            ExprKind::Seq(_) => n + fixed_untils(e).len(),
+            _ => n,
+        });
+        assert_eq!(named, 1, "{lowered}");
+    }
+
+    /// `pc`'s type is a normal union, members in canonical order, so a
+    /// type built over it is identical to its normal form and a check of
+    /// one against the other takes the identity walk, not one per member.
+    #[test]
+    fn the_pc_type_is_normal() {
+        let labels: SmallVec<[ArcStr; 8]> = (0..12).map(label).collect();
+        let pc = pc_type(&labels);
+        let Type::Set(members) = &pc else { panic!("pc's type is a union") };
+        assert!(members.windows(2).all(|w| w[0] < w[1]), "{members:?}");
     }
 
     /// A seq lowers to a flat list of steps however long it is: no

@@ -1053,6 +1053,21 @@ fn birth_only_arm_actions_are_warnings() {
     }
 }
 
+/// An until with no live part, no dereference and no call warns once, a
+/// `seqq let`'s included; a read through a reference follows its target.
+#[test]
+fn a_fixed_until_warns_once() {
+    let src = "let k = 0;\nlet r = &k;\nlet flag = false;\n\
+               let a = seq k { until *r > 3; 1 };\n\
+               let b = seqq let c = k { until flag; c };\n(a, b)\n";
+    let mut c = Client::start(&[("a.gx", src)]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let w = c.warnings("a.gx");
+    let texts: Vec<&str> = w.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(texts, ["until flag"], "{w:?}");
+}
+
 /// A call to a function whose body performs Io, over constants, acts only
 /// at the arm's first entry as an Io builtin's call does.
 #[test]

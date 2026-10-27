@@ -142,8 +142,8 @@ async fn a_callback_that_writes_nothing_keeps_the_captures(mode: Mode) -> Result
 }
 
 // An until that reads only the snapshot and calls nothing cannot change
-// after its entry, and the check warns of it; one with a live part is
-// quiet.
+// after its entry, and the check warns of it; one with a live part, or
+// one reading through a reference, is quiet.
 async fn a_fixed_until_warns(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let flags = mode.flags() | CFlag::WarningsAreErrors;
@@ -155,6 +155,9 @@ async fn a_fixed_until_warns(mode: Mode) -> Result<()> {
     )
     .await?;
     ctx.rt.compile(literal!("{ let r = false; seq { until live(r); 1 } }")).await?;
+    ctx.rt
+        .compile(literal!("{ let x = 0; let r = &x; seq { until *r > 3; 1 } }"))
+        .await?;
     let error = ctx
         .rt
         .compile(literal!("{ let r = false; seq { until r; 1 } }"))

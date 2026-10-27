@@ -533,6 +533,20 @@ fn wrapped_let_chains_check_in_linear_time() {
     }
 }
 
+/// A seq of call steps checks in time near linear in its length, though
+/// every call's issue select carries `pc`, whose type has a member per
+/// step: a pattern over a type with no open cell leaves nothing to bind
+/// over an `Any` part, and `pc`'s type is in normal form.
+#[test]
+fn a_long_seq_of_calls_checks_in_time() {
+    const STEPS: usize = 1000;
+    let body = vec!["a <- str::len(\"x\")"; STEPS].join("; ");
+    checks_within(
+        &format!("let a = 0;\nlet r = seq {{ {body}; a }};\nr"),
+        std::time::Duration::from_secs(15),
+    )
+}
+
 /// A chain of typedefs each naming the next, written before it is
 /// defined, checks in time near linear in its length: a typedef with no
 /// parameters rechecks nothing pending.

@@ -400,6 +400,21 @@ enum Ornament<'a> {
     Delimiters(StrForm),
 }
 
+/// The delimiters of every string literal in `e`, an expression's or a
+/// pattern's, in source order: what printing as written must keep.
+#[cfg(test)]
+pub(super) fn str_forms(e: &Expr) -> LPooled<Vec<StrForm>> {
+    let mut w = Ornaments { node: 0, acc: LPooled::take() };
+    w.expr(e);
+    w.acc
+        .drain(..)
+        .filter_map(|(_, o)| match o {
+            Ornament::Delimiters(form) => Some(form),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The ornaments of a tree in preorder, each beside its node's ordinal.
 struct Ornaments<'a> {
     node: usize,
