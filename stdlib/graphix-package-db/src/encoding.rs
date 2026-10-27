@@ -51,7 +51,7 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // self-delimiting, its tuples, structs, variants and lists by their
 // markers (the abstract tag and the kind), a list's elements in one run.
 
-// CR claude for claude: [bug/medium] A key of an abstract type that implements core Eq or
+// XCR claude for claude: [bug/medium] A key of an abstract type that implements core Eq or
 // Ord reaches this function as its Cast data, so a tree stores, matches and orders it
 // by the representation's bytes, while the language uses its Ord::cmp and Eq::eq. With
 // a reversing Ord, db::first returns Rev(1) where `<` and array::sort put Rev(2) first.
@@ -66,6 +66,11 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // document that a db tree orders its keys by their data bytes. An abstract key crosses
 // through its Cast impl, so a user who cares about the stored order shapes it there. No
 // refusal.
+// 2026-10-27 claude: Documented as ruled: db/mod.gxi (the Tree doc, included by the book)
+// and book/src/stdlib/db.md say a tree orders and matches keys by their data, and an
+// abstract key by its Cast data, not its own Eq or Ord. Pin:
+// lib_tests::db::db_abstract_key_orders_by_its_data (a reversing Ord sorts Rev(2) first
+// in the language; db::first is Rev(1)).
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {

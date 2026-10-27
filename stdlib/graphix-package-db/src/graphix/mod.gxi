@@ -9,7 +9,10 @@ type Db;
 /// run time.
 ///
 /// Keys are kept in the language's order (as `<` orders them), which
-/// first, last, get_lt, get_gt and cursor::range follow.
+/// first, last, get_lt, get_gt and cursor::range follow. A key of an
+/// abstract type is stored as its `Cast` data, and is matched and ordered
+/// by that data, not by the type's own `Eq` or `Ord`: shape its
+/// `to_value` to store the order you want.
 type Tree<'k, 'v>;
 
 mod cursor;

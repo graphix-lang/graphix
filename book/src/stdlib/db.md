@@ -7,6 +7,11 @@ A transaction's commit is on disk when it answers.
 Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, `db::tree` returns a `DbErr`.
 
+A tree orders and matches its keys by their data. For the primitive and
+structural types that is the language's own order; a key of an abstract
+type is stored as its `Cast` data, so a custom `Eq` or `Ord` on it does not
+reach the tree, and its `to_value` decides the stored order.
+
 ## Interface
 
 ```graphix

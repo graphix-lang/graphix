@@ -1460,6 +1460,35 @@ run_with_tempdir!(
 // in, so the timer-polled wake no longer races it. Passed in the full gate; X'd for a
 // few more gates under load before deleting.
 
+// A tree orders an abstract key by its Cast data, not by the type's own
+// Ord: a reversing Ord sorts Rev(2) first in the language, and the tree
+// still holds Rev(1) first.
+run_with_tempdir!(
+    name: db_abstract_key_orders_by_its_data,
+    code: r#"{{
+        type Rev = Abstract<i64>;
+        impl Cast for Rev {{}};
+        impl Ord for Rev {{
+            let cmp = |a, b| select (a.0, b.0) {{
+                (x, y) if x > y => `Less,
+                (x, y) if x < y => `Greater,
+                _ => `Equal
+            }}
+        }};
+        let d = db::open("{}")?;
+        let t: db::Tree<Rev, string> = db::tree(d, "t")?;
+        let ins = db::batch(t, [`Insert(Rev(1), "one"), `Insert(Rev(2), "two")])?;
+        let f = db::first(ins ~ t)?;
+        let (k, v) = f$;
+        (array::map(array::sort([Rev(1), Rev(2)]), |r: Rev| r.0), k.0, v)
+    }}"#,
+    setup: |td| { td.path().join("rev.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"[[i64:2, i64:1], i64:1, "one"]"#);
+        Ok(())
+    }
+);
+
 // The insert finishes while its arm sleeps and nothing answers it; the
 // wake catches up a value whose Cast writes a function, and the call
 // answers its not-data error, the first reply its site sees.
