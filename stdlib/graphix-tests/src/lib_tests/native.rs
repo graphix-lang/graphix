@@ -203,7 +203,7 @@ async fn native_blocker_list_is_filtered() {
         "should report the real call blocker, got: {err}"
     );
     assert!(
-        !err.contains("does not emit CLIF"),
+        !err.contains("the node-walk computes `let"),
         "structural `let` noise (whose values fused) must be filtered out, got: {err}"
     );
 }

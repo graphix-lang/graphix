@@ -777,12 +777,7 @@ pub trait Update<R: Rt>: Debug + Send + Sync + Any + 'static {
     fn emit_clif(&self, _cx: &mut BodyCx) -> Result<fusion::emit::CompiledExpr> {
         Err(fusion::blocker(
             self.spec(),
-            format_compact!(
-                "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
-                 node-walks",
-                self.spec().id,
-                self.spec()
-            ),
+            format_compact!("the node-walk computes `{}`", self.spec()),
         ))
     }
 

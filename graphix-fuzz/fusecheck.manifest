@@ -184,7 +184,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	framed-formal-seed-aug2026/02_found_form_min_element.gx
 0	function-bound-oct2026/00_queuefn_non_function.gx
 0	function-bound-oct2026/01_queuefn_defaulted_label.gx
-2	function-scheme-arg-oct2026/00_seq_trigger_builtin.gx
+1	function-scheme-arg-oct2026/00_seq_trigger_builtin.gx
 1	fusion-flips-display-backend-aug2026/00_tui_backend_selection.gx
 0	fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx
 1	guard-bind-store-tag-aug2026/00_refwrite_guard_livelock.gx
@@ -386,7 +386,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	slice-pattern-tuple-type-aug2026/01_prefix_pattern_tuple.gx
 2	slice-pattern-tuple-type-aug2026/02_abstract_in_tuple_still_matches.gx
 1	slot-constant-init-oct2026/00_constant_error_per_slot.gx
-4	slot-raise-count-sep2026/00_seq_step_over_slot_catches.gx
+3	slot-raise-count-sep2026/00_seq_step_over_slot_catches.gx
 1	slot-shrink-truncate-aug2026/00_shrink_to_zero_dyncall_pairs.gx
 2	slot-shrink-truncate-aug2026/01_outer_shrink_kills_inner.gx
 1	slot-shrink-truncate-aug2026/02_shrink_callee_site_blocks.gx
@@ -538,13 +538,13 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 0	wake-catchup-sep2026/05_noarm_window.gx
 0	wake-catchup-sep2026/06_nested_composition.gx
 0	wake-catchup-sep2026/07_fold_hof_qop_missed_emission.gx
-11	wake-connect-target-sep2026/00_seq.gx
+10	wake-connect-target-sep2026/00_seq.gx
 4	wake-connect-target-sep2026/01_never_let.gx
 3	wake-connect-target-sep2026/02_arm_value.gx
-9	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
-12	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
+8	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
+11	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
 2	wake-stale-bottom-sep2026/00_plain_select.gx
-24	wake-stale-bottom-sep2026/01_seq_step.gx
+23	wake-stale-bottom-sep2026/01_seq_step.gx
 2	wake-stale-bottom-sep2026/02_let.gx
 2	wake-stale-bottom-sep2026/03_call.gx
 3	wake-stale-bottom-sep2026/04_map_source.gx

@@ -6231,7 +6231,7 @@ mod tests {
         /// when the whole program is expected to fuse.
         Some,
         /// `fused > 0` and no real blocker: the only tolerated failed
-        /// entries are the ancestor noise ("node does not emit CLIF" for
+        /// entries are the ancestor noise ("the node-walk computes" for
         /// the Module/Bind wrappers above the fused region).
         Clean,
     }
@@ -6275,7 +6275,7 @@ mod tests {
                 // wrappers, a `mod` statement, a function-valued let, and
                 // a fn-typed call site whose instance body fuses.
                 assert!(
-                    reason.contains("node does not emit CLIF")
+                    reason.contains("the node-walk computes")
                         || reason.contains("module statement is structure")
                         || reason.contains("function-valued let")
                         || reason.contains("not discovered")
