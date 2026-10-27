@@ -58,6 +58,7 @@ use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
+    collections::hash_map::Entry,
     fmt, mem,
     sync::{
         OnceLock,
@@ -397,6 +398,10 @@ fn holds_defaulted<R: Rt, E: UserEvent>(
 /// recursive one ends.
 const MAX_EXPANSIONS: u8 = 16;
 
+/// The pairs of shared nodes a hidden-default walk has walked, each
+/// held for the walk so an address stays its node's.
+type Visited = AHashMap<(usize, usize), (Type, Type)>;
+
 /// `expanded` counts the typedefs expanded on the way here; `visited`
 /// holds the pairs of shared nodes walked already, so a type that shares
 /// a part is walked once per part.
@@ -409,7 +414,7 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     declared: &Type,
     value: &Type,
     expanded: u8,
-    visited: &mut AHashSet<(usize, usize)>,
+    visited: &mut Visited,
 ) -> Result<()> {
     let Some(v) = value.deref_cloned() else { return Ok(()) };
     if let Type::Ref(_) = &v {
@@ -432,10 +437,11 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     }
     let mut expanded = expanded;
     let Some(d) = opened(&ctx.env, declared, &mut expanded) else { return Ok(()) };
-    if let (Some(a), Some(b)) = (d.shared_identity(), v.shared_identity())
-        && !visited.insert((a, b))
-    {
-        return Ok(());
+    if let (Some(a), Some(b)) = (d.shared_identity(), v.shared_identity()) {
+        match visited.entry((a, b)) {
+            Entry::Occupied(_) => return Ok(()),
+            Entry::Vacant(e) => e.insert((d.clone(), v.clone())),
+        };
     }
     let mut at = |ctx: &mut CompileCtx<R, E>, d: &Type, v: &Type| {
         hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded, visited)
