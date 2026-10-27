@@ -1,12 +1,9 @@
 # Recursive Types
 
-<!-- CR claude for claude: [doc-drift/low] The `Tui` type is not in `graphix-shell`. It
-is declared in the tui package's interface,
-stdlib/graphix-package-tui/src/graphix/mod.gxi. Point there, as `tui::Tui`. Found by
-reading; not run. (book-modules-udt-13) -->
 Type aliases can be used to define recursive types, and this is a very powerful
 modeling tool for repeating structure. If you want to see an advanced example
-look no further than the `Tui` type in `graphix-shell`. Tui's are a set of
+look no further than the `tui::Tui` type, declared in the tui package's
+interface (`stdlib/graphix-package-tui/src/graphix/mod.gxi`). Tui's are a set of
 mutually recursive types that define the tree structure of a UI. For a less
 overwhelming example consider a classic, the cons list. Graphix ships this
 exact structure as the built-in [`List`](../core/fundamental_types.md#list)

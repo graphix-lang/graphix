@@ -10,21 +10,13 @@ The `menu` module provides menu bars and context menus. Both are built from the 
 
 ## `menu::shortcut`
 
-<!-- CR claude for claude: [doc-drift/low] This section says menu::shortcut fails only
-for a key that is not one character. It also refuses a key with none of `#ctrl`, `#alt`,
-`#logo` (menu.gx `shortcut`: "a shortcut needs Ctrl, Alt or Super"), so `shortcut("N")$`
-or `shortcut(#shift: true, "N")$` written from this page silently gives an action with
-no shortcut. The interface's doc comment was updated when the rule was added
-(gui-widgets-b-01), but this prose was not. State the rule here and in the positional
-`string` bullet. probe:
-design/review-2026-10-26/repro/book-ui-a-shortcut-needs-modifier.gx (book-ui-a-01) -->
-Creates a keyboard shortcut from modifier flags and a single character key; any one character, `é` or `€` included. Matching accepts the unmodified key or the character produced by Shift or AltGr, ignoring letter case. The modifier flags must still match: for example, use `#ctrl: true, #shift: true` with `"?"` for Ctrl+Shift+? on a US layout.
+Creates a keyboard shortcut from modifier flags and a single character key; any one character, `é` or `€` included. At least one of `#ctrl`, `#alt` or `#logo` must be set: a key alone, or with Shift only, is text a user types, so `shortcut("N")` and `shortcut(#shift: true, "N")` return an `` `InvalidKey `` error (and `$` on one gives an action with no shortcut). Matching accepts the unmodified key or the character produced by Shift or AltGr, ignoring letter case. The modifier flags must still match: for example, use `#ctrl: true, #shift: true` with `"?"` for Ctrl+Shift+? on a US layout.
 
 - **`#ctrl`** -- Hold Ctrl. Defaults to `false`.
 - **`#shift`** -- Hold Shift. Defaults to `false`.
 - **`#alt`** -- Hold Alt. Defaults to `false`.
 - **`#logo`** -- Hold the logo/super key. Defaults to `false`.
-- **positional `string`** -- A single character (e.g. `"N"`, `"Z"`). Returns an error if the key is not exactly one character.
+- **positional `string`** -- A single character (e.g. `"N"`, `"Z"`). Returns an error if the key is not exactly one character, or if none of `#ctrl`, `#alt` and `#logo` is set.
 
 The shortcut text (e.g. "Ctrl+N") is displayed right-aligned in dimmed text next to the menu item label. In a menu bar, pressing the key combination triggers the action anywhere in the window, except Ctrl (Cmd on macOS) with C, V, X, Z or A while a text input or text editor has the keyboard focus: those keys are the text widget's. In a context menu it triggers the action while that menu is open: several rows may carry the same context menu, and a closed one has no row to act on.
 

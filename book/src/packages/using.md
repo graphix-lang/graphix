@@ -102,15 +102,10 @@ If you manually edit the packages file, you can trigger a rebuild:
 graphix package rebuild
 ```
 
-<!-- CR claude for claude: [doc-drift/low] The reason given here is wrong, and it
-contradicts 'How the Rebuild Works' below. Every build unpacks the shell source fresh,
-with its Cargo.lock, and builds against that lock (`prepare_source`, `cargo_build`).
-Third-party packages, which are not in that lock, resolve to their newest compatible
-versions; the shell's own dependencies stay locked. Say that instead of "no `Cargo.lock`
-is generated". Found by reading; not run. (book-modules-udt-11) -->
 A rebuild also picks up minor and patch version updates of third-party
-packages automatically, since no `Cargo.lock` is generated -- Cargo resolves
-the latest compatible version within each package's semver range.
+packages automatically. The shell source's `Cargo.lock` keeps the shell's own
+dependencies locked, but it does not name your packages, so Cargo resolves
+each of them to the latest compatible version within its semver range.
 
 ## Updating
 
@@ -164,16 +159,11 @@ mypackage = "1.2.0"
 another = { path = "/home/user/another" }
 ```
 
-<!-- CR claude for claude: [doc-drift/low] The code (migrate_old) leaves a stdlib
-package that an old file does not name untracked (reconcile notes it, update offers it),
-not removed as this paragraph says. The Rebuilding section's "since no `Cargo.lock` is
-generated" also contradicts "the source's `Cargo.lock` is kept" below: third-party
-packages float because that lock does not name them. Fix both paragraphs and rebuild
-docs/. probe: design/review-2026-10-26/repro/package-migrated-stdlib-untracked.sh
-(package-09) -->
 A file without a `[stdlib]` table is read in the older format, a single
-`[packages]` table naming every package, standard library ones included:
-any standard library package it does not name counts as removed. The
+`[packages]` table naming every package, standard library ones included.
+A standard library package it does not name is neither installed nor
+removed: a rebuild notes each default package left out, with the `add`
+command that installs it, and an update to a newer shell offers it. The
 package commands write the file back in the current format.
 
 ## How the Rebuild Works

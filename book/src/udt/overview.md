@@ -10,22 +10,20 @@ conjunctive types.
 
 ## Structural Typing
 
-<!-- CR claude for claude: [doc-drift/low] "Types in Graphix don't formally have names"
-(and named.md's "just aliases") is no longer true: a `type T = Abstract<rep>` typedef is
-nominal, distinct from its representation at compile time and run time. The traits
-chapter relies on `Abstract<..>` from its first example, yet this part of the book never
-introduces it; it appears only in modules/interfaces.md, later in the summary. State the
-exception here, with a link to the abstract-types section, or move that section's basics
-into this chapter before Traits. Found by reading; not run. (book-modules-udt-06) -->
 In most languages types are dealt with by name, meaning that two structs with
 exactly the same fields are still different types if they have a different name.
 The obvious implication of this is that all types need to be given a name, and
 thus declared. Graphix works differently. Types in Graphix are structural,
-meaning that types that are structurally the same are the same type. In fact
-types in Graphix don't formally have names, there can be aliases for a large
-type to cut down on verbosity, but an alias is always resolved to the structural
-type when type checking. Because of this you don't need to declare types before
-using them.
+meaning that types that are structurally the same are the same type. A name
+given to a type is usually an alias for a large type, to cut down on verbosity,
+and an alias is always resolved to the structural type when type checking.
+Because of this you don't need to declare types before using them.
+
+The one exception is a type defined as `Abstract<..>`, which is nominal: it is
+a type of its own, distinct from its representation and from every other type,
+at compile time and at run time (see [nominal types](./named.md#nominal-types),
+and [abstract types](../modules/interfaces.md#abstract-types) for hiding the
+representation behind an interface).
 
 ## Set Based Type System
 

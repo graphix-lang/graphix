@@ -61,15 +61,12 @@ in one synthesized column. Its “value” header does not invoke `on_header_cli
   Set `false` for tables where the row identity is already carried
   by a regular column.
 
-<!-- CR claude for claude: [doc-drift/low] Not every click fires on_select.
-DataTableW::handle_cell_click calls on_activate and returns, skipping fire_on_select,
-for a click on the row-name column whenever an on_activate is set. So a row-name click
-reaches on_select (with "row_path") only in a table without on_activate. Say so here.
-Found by reading; not run. (book-ui-b-03) -->
-- **`#on_select`** -- Fired whenever a cell is clicked or keyboard
+- **`#on_select`** -- Fired when a cell is clicked or keyboard
   navigation lands on a cell. The callback receives the full cell
   path (`"row_path/col_name"` for data cells, `"row_path"` for the
-  row-name column).
+  row-name column). A click on a row-name cell fires `#on_activate`
+  instead when the table has one, so it reaches `#on_select` only in
+  a table without `#on_activate`.
 
 - **`#on_activate`** -- Fired when the user clicks a row-name cell,
   or presses Enter: for the selected cell's row whatever its column,
