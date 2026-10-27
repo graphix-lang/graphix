@@ -521,7 +521,9 @@ impl Callback {
         kind: CallKind,
     ) -> Node<R, E> {
         match kind {
-            CallKind::Prototype => self.build_call(ctx, args, CallKind::Prototype),
+            CallKind::Prototype(id) => {
+                self.build_call(ctx, args, CallKind::Prototype(id))
+            }
             CallKind::Slot(Some(def))
                 if def
                     .downcast_ref::<LambdaDef<R, E>>()
