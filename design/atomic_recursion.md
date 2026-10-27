@@ -78,15 +78,12 @@ semantics:
 - `GXHandle::interrupt()` sets a flag (`CtlFlag::Interrupt` on the
   runtime's `Control`); in-flight loops abort and the runtime keeps
   running. `abort()` additionally shuts down.
-<!-- CR claude for claude: [doc-drift/low] There is no tail driver: the node-walk polls
-the interrupt at each lambda dispatch (an interrupted dispatch rides its last result)
-and per collection slot. The 'Abort is not a retry ... the result is lost' bullet below
-also misses GX::redeliver_unseen_replies: a reply an interrupted cycle kept from every
-reader is delivered again the next cycle. Update both bullets. Found by reading; not
-run. (x-doc-drift-04) -->
-- It is polled by the interp's tail driver (`node/lambda.rs`, once per
-  pass) and at every emitted loop head (`emit_interrupt_check`: the
-  tail rebind-and-jump head and every HOF scaffold loop).
+- The node-walk polls it at each lambda dispatch (`node/lambda.rs`: an
+  interrupted dispatch rides its last result, it is not a bottom) and
+  before each collection slot (`node/collection.rs`); a kernel polls it
+  every 64th iteration of each emitted loop (`emit_interrupt_check_every`:
+  the tail rebind-and-jump head and every HOF scaffold loop) and takes
+  its abort path.
 - No program can observe it, because nothing arms it except a human or
   an embedder. Credits change what CORRECT programs observe; an
   interrupt only changes what BROKEN programs experience, loudly. It is
@@ -94,7 +91,11 @@ run. (x-doc-drift-04) -->
 - Abort is not bottom, and not a retry: the aborted cycle's values keep
   their last results and recompute only when an input fires again, so
   the result the interrupted event would have produced is lost (a
-  re-fire would re-wedge an infinite loop on every cycle).
+  re-fire would re-wedge an infinite loop on every cycle). The one
+  exception is a reply no reader reached: a reply the interrupted cycle
+  kept from every reader, their boundaries unvisited, is delivered again
+  the next cycle (`GX::redeliver_unseen_replies`), so the builtin
+  waiting on it is not left waiting forever.
 
 The shell arms Ctrl-C before the first cycle (a top-level infinite loop
 wedges inside `load_env`, before the input loop exists) and `abort()`s

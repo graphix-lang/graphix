@@ -134,23 +134,14 @@ disagreement falls through to the expansion arms.
   compare by their params) and `contains`' arm for two instances of one
   definition whose params contain each other (one type, no expansion).
 
-<!-- CR claude for claude: [doc-drift/low] This paragraph describes ResolvedRef::same_as
-and TypeDef::link_same, which no longer exist. Interface typedefs are now spliced into
-the implementation, a .gx redefinition is refused (module.rs::check_redefinition), and
-def_key is just the params allocation. Replace the link description with that rule.
-Found by reading; not run. (x-doc-drift-03) -->
-<!-- CR claude for claude: [doc-drift/low] ResolvedRef::same_as and TypeDef::link_same
-no longer exist: the commit making a .gx unable to define a type its .gxi defines
-removed them, and def_key is now only the params allocation of one TypeDef. Rewrite this
-paragraph to say that. Also drop the parenthetical in Type::named_defs' doc comment,
-which says an interface's and an implementation's definitions share a def_key. Found by
-reading; not run. (t-typ-mod-04) -->
-`ResolvedRef::def_key` is the params allocation every cell filled from
-one `TypeDef` shares, unless the definition is linked to another
-(`ResolvedRef::same_as`, set by `link_same`, which `def_key` follows).
-A module's signature check links an interface's typedef to its
-implementation's (`node/module.rs`, `TypeDef::link_same`), so a
-reference to either is one definition wherever identity decides.
+`ResolvedRef::def_key` is the params allocation of one `TypeDef`,
+which every cell filled from it shares. A type a module's interface
+declares has one definition: the types the interface alone defines are
+spliced into the implementation (`expr::resolver::add_interface_modules`),
+and the implementation's own definition of one is refused
+(`node/module.rs::check_redefinition`), except for a type the interface
+hides (`type T;`), which the implementation alone defines, as an abstract
+with the declared parameters.
 
 `RefHist::ref_id` fills the cell first and derives a ref's identity
 from the resolution's definition (`ResolvedRef::def_key`, the params

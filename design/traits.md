@@ -273,7 +273,8 @@ keyed `(trait, AbstractId)`) holds hook CALL SITES — a `genn::apply` of
 the impl's method binding over synthesized argument bindings, delivered
 through `event.variables` like a collection slot's callback; resolved
 per (trait, tag, instantiation) on first sight (`SiteEntry::by_type`),
-the entry checked against the trait's `impls_version` at every dispatch
+the entry checked against its `coretraits::Version` (the trait's impl
+list and the registry's reload generation) at every dispatch
 and rebuilt when the implementation list changed, so an impl a dynamic
 module loads later is consulted; a POOL per key so a re-entrant
 comparison (an impl whose body compares its own

@@ -493,9 +493,9 @@ referenced afterwards. A decoded node is rebuilt through imhm's checked
 constructors, which recompute every hash and refuse a node the map
 could not have built, so an image hashed differently fails the read.
 A snapshot whose maps are unchanged costs one reference per field.
-The node tables belong to the caller — an `EncodeTable` per image
-write; a decoded node is an object of the runtime's decoder, so an
-instance decoded later resolves into nodes decoded earlier — installed
-for a call by a session guard. `encoded_len` is exact: `tree_len` goes
+A node is an image object of the session (`image::object_encode`): the
+encoder holds the nodes seen for one image write, and a decoded node is
+an object of the runtime's decoder, so an instance decoded later
+resolves into nodes decoded earlier. `encoded_len` is exact: `tree_len` goes
 through `image::object_len`, so every occurrence costs its reference,
 and a derived `Pack` may frame a shared map.

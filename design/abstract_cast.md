@@ -53,7 +53,7 @@ order is `Ord`'s. A `from_value` reports its refusal through its
 `'a: Data` (`Type::Data`, a bound like `Concrete`): whatever binds the
 cell holds no reference, no function and no abstract type without a
 `Cast` impl (`Type::data_holds`). An open cell holds, and the binding
-hands the conjunct to its open cells (`require_data`). Unlike
+hands the conjunct to its open cells (`tvar::require_bounds`). Unlike
 `Concrete`, a cell that settles open is fine, so `json::write([])`
 checks. The writers declare it on their value parameter. A writer whose
 parameter was `Any` (`pack::write_bytes`, `sys::net::write`/`publish`)

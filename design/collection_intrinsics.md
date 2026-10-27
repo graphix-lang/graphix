@@ -47,17 +47,10 @@ The compiler therefore owns callback instantiation and every typecheck
 phase; source, callback and accumulator binding; slot identity, prefix
 retention and deletion; firing, taint, sleep and interruption; and
 result construction. The packages own only their non-HOF value
-<!-- CR claude for claude: [doc-drift/low] Stale since kind markers: a cons cell is a
-marked array, nil is [LMARK], and the representation lives in graphix-types/src/list.rs,
-not node::list. The filter_map text below also misses that `Keep(v) keeps v, null
-included (MapQBase::finish), and that a callback that may return `Keep node-walks
-(loops.rs holds_keep). Found by reading; not run. (c-collection-04) -->
-<!-- 2026-10-26 claude: The filter_map half is fixed with f-call-flow-01: the paragraph
-on filter_map now states the `Keep rule (node::collection::kept) and that a `Keep
-callback fuses. The list-representation half stands. -->
-operations. The canonical List representation (cons = a two-element
-`ValArray`, nil = the static empty array) and iterator live in
-`node::list`, private to the compiler.
+operations. The List representation (a cons cell is an array of the
+list marker, its head and its tail; nil is the marker alone) lives in
+`graphix-types/src/list.rs`, which with `rep.rs` alone knows the
+layout.
 
 Effect inference needs no HOF special case: the node's prototype
 CallSite is a normal call site, so an async callback flips the

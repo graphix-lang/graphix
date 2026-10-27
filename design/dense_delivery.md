@@ -92,8 +92,8 @@ payload unchanged since the last recompute" holds: an awake node. The
 first update after a sleep recomputes (`design/wake_catchup.md`). The
 uniform gate is `dense_gate!` (`node/mod.rs`): bottom in ⇒ bottom out
 (FreshBottom iff a delivery triggered); otherwise ride unless `trig ∨
-bottom-resident ∨ woke`. `read_prod!`/`node::gather`
-are the per-child join accumulators every computing node uses.
+bottom-resident ∨ woke`. `node::gather` is the per-child join
+accumulator every composite uses.
 
 **R2 — read-side init.** There are no FIRED backfills. One rule at the
 store read: a reader under a birth (`event.view`, `View::Birth`)

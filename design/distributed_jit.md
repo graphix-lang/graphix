@@ -82,7 +82,7 @@ happens in the analysis phase, before the builder opens.
 `pub b: &mut FunctionBuilder` (the raw CLIF escape hatch) plus the
 private `JitEnv` and `LowerCtx` — behind a small method set: `helper`/
 `call_helper`, the scope `mark`/`truncate`, the `bind_*` family, the
-context words (`init_flag`, `state_ptr`, `claim_state_word`), and the interners (`interned_str`,
+context words (`born_flag`, `state_ptr`, `claim_word`), and the interners (`interned_str`,
 `interned_value`, `interned_type`, `interned_qop_site`). Interning is
 lazy at the emit site: a prewalk mirroring emission coverage would be a
 silent-drift dangling-pointer hazard. graphix-compiler re-exports

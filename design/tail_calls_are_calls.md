@@ -91,10 +91,10 @@ embedder, and the fuzzer's interp engine are the whole cost.
      its callers (`emit_tail_rebind_jump`). Pin:
      `lang::fusion::nested_tail_select_keeps_outer_binds`; leak witness
      `nested-tail-select-payload`. The rest, built: a nullable's
-     non-scalar payload binds as an owned local (`NullableValue`); a
+     non-scalar payload binds as an owned local (`SelectArmBind::Value`); a
      slice's rest, head or whole binds as an owned subslice
      (`Subslice`), and a non-scalar element of an array, tuple or struct
-     pattern as an owned element (`ElemValue`), each read total, so a
+     pattern as an owned element (`SelectArmBind::Elem`), each read total, so a
      guard's masked install of a short or mismatched scrutinee holds a
      drop-safe default, which also lets an untested bind over a result
      union read its payload; a union of several primitives and every

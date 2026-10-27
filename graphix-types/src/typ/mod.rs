@@ -1975,9 +1975,7 @@ impl Type {
     }
 
     /// The definitions this type's filled cells name, and theirs, each
-    /// allocation once (an interface's definition and its
-    /// implementation's share a [`ResolvedRef::def_key`] but are two):
-    /// through bindings and conjuncts.
+    /// once: through bindings and conjuncts.
     #[doc(hidden)]
     pub fn named_defs(
         &self,

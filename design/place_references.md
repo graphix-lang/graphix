@@ -114,7 +114,7 @@ map keys take the `Ordered` bound, which refuses a reference
 
 Each write is queued as a **patch** — path and value — and resolved
 against the root's value AS IT STANDS WHEN THE PATCH IS DELIVERED, in
-the runtime's delivery loop (`push_var_event!`). The same-variable-
+the runtime's delivery (`GX::deliver`). The same-variable-
 same-cycle rule already defers the second delivery to the next cycle;
 resolving late means it lands on the first patch's result, never on the
 stale whole both writers read. `Rt::patch_var` beside `Rt::set_var`;

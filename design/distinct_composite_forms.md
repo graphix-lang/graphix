@@ -81,17 +81,17 @@ their own kind; `read_tuple`/`read_struct`/`read_variant` also take data
 and report `Parts::Data`, which a cast rebuilds; `GraphixShape` (the
 derives) builds marked and reads leniently.
 
-<!-- CR claude for claude: [doc-drift/low] This paragraph says to_data strips, then
-converts abstracts. abstract_value::rewrite does both in one walk, refuses a map whose
-keys write alike, and has a to_marked_data twin that keeps forms for store keys. The
-'FLAT_LISTS and cast_data are gone' sentence is history. Rewrite it to say what the code
-does. Found by reading; not run. (x-kind-markers-09) -->
 **Data.** `rep::strip` writes a value as data: a tuple as an array, a
 struct as its pairs, a bare variant as its tag string, a payload variant
 as `[tag, payload..]`, a list as a flat array. `abstract_value::to_data`
-strips once, then converts abstracts. Every reader casts, so `FLAT_LISTS`
-and `cast_data` are gone, and db reads every stored value back through
-its cast (`data_target`).
+writes a value in one walk (`rewrite`): each level's markers go
+(`rep::strip_with`) and each abstract value writes as its `Cast`
+implementation's data, and a map two of whose keys write as the same data
+(`"A"` and `` `A ``) is refused. Its twin `to_marked_data` converts the
+abstracts and keeps every form (`rep::map_parts`), so what differs or
+orders apart as a value still does: a store's keys and values
+(`write_marked_data`). Every reader casts, and db reads every stored value
+back through its cast (`data_target`).
 
 **Casts.** A union target tries the members of the value's own class
 first, a marked value's own class being its kind and a data string's
@@ -109,8 +109,8 @@ value has a primitive form, and the primitive `array` holds arrays only
 (`contains`, `is_a`, `setops`). A list casts to an array element by
 element, and an untyped array to a list likewise.
 
-**Types.** `rep_overlaps`/`arr_overlaps` compare kinds first, then arity,
-names, tag and parts; `MemberFacts` keys the shallow discriminant by
+**Types.** `rep_collision` (`typ/cast.rs`) compares kinds first, then arity,
+names, tag and parts, and `rep_overlaps` decides the heads its arms do not; `MemberFacts` keys the shallow discriminant by
 kind. What still shares a form: two references (under a select arm; `==`
 compares them by what they name), two function types, a Rust-backed
 abstract at two instantiations. `Discernible` therefore refuses only

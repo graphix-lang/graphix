@@ -544,9 +544,9 @@ their own types, unless a body binds a target's name where that step
 sees it (a `let` of either body or of a try nested in one, or the with
 body's `e`): then the join cell, written in the try statement's scope. Each try-body
 step carries a generated `Catch` whose handler body is `never()` and
-whose `seq_abort` action is a JUMP (`pc <- \`W` to the with body's
-first step instead of the machine's `pc <- \`Idle`); its `seq_capture`
-names the `e` cell. At runtime the capture writes the first delivery of each failure
+whose role is `CatchRole::Try`: its `action` is a JUMP (`pc <- \`W` to
+the with body's first step instead of the machine's `pc <- \`Idle`) and
+its `capture` names the `e` cell. At runtime the capture writes the first delivery of each failure
 to the cell; at typecheck it unions its bind's inferred throws into the
 cell's type after its siblings, so the union is exact and a step that
 cannot throw contributes ⊥. (A handler-side write `e_c <- once(e)` was
@@ -617,7 +617,7 @@ the same cycle): the rethrow runs for every error that reaches the
 machine's handler, and the abort action runs ONCE, after the failed
 step's errors have all been delivered — the catch counts fresh
 deliveries (standing values and activation replay are not deliveries),
-marks an abort pending on the first, and fires `seq_abort` under a
+marks an abort pending on the first, and fires the role's `action` under a
 forced init view when the received count matches the handler's
 generation and no nested errors are outstanding. The counters span the
 handler's lifetime, so sleeping does not turn old deliveries into a
