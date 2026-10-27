@@ -8,9 +8,9 @@ use super::{
 };
 use crate::SourcePosition;
 use crate::{
-    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, HandlerKind, InitFn,
-    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
-    UserEvent, dbgenv,
+    AddrSet, Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, HandlerKind,
+    InitFn, LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue,
+    Update, UserEvent, dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
@@ -185,7 +185,7 @@ impl DefTable {
             table.lambdas.remove(&id);
             table.aux.remove(&id);
         }
-        let mut seen: LPooled<IntSet<usize>> = LPooled::take();
+        let mut seen: LPooled<AddrSet> = LPooled::take();
         table.for_each_type(&mut |t, _| {
             t.seed_refs_seen(env, &mut seen);
         });

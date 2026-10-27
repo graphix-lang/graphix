@@ -3,7 +3,7 @@
 //! what nothing produced or bounded to ⊥.
 
 use crate::{
-    PrintFlag,
+    AddrSet, PrintFlag,
     dbgenv::{graphix_dbg_bind, graphix_dbg_bind_bt_id},
     env::Env,
     format_with_flags,
@@ -17,7 +17,6 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt::Write;
@@ -337,7 +336,7 @@ fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
 }
 
 /// `reached_cells`, each shared composite walked once (`nodes`).
-fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut IntSet<usize>) {
+fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             if out.insert(tv.cell_addr(), tv.clone()).is_none() {

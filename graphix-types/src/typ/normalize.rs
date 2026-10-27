@@ -1,4 +1,5 @@
 use crate::{
+    AddrMap, AddrSet,
     expr::WrittenAt,
     stack::ensure_sufficient,
     typ::{AbstractId, Mutability, TVar, Type, setops::union_identical},
@@ -23,7 +24,7 @@ use triomphe::Arc;
 /// Each entry pins the keyed type: an in-place rebinding frees the old
 /// binding, and its address must not be reused under its key.
 pub(super) struct NormCx {
-    pub(super) cells: LPooled<nohash::IntSet<usize>>,
+    pub(super) cells: LPooled<AddrSet>,
     memo: LPooled<AHashMap<NormKey, (Type, Option<Type>)>>,
 }
 
@@ -41,16 +42,16 @@ impl NormCx {
 /// source cell (preserving alias topology), `in_progress` the cycle
 /// guard, `memo` a pointer-identity cache of composite results.
 pub(super) struct ResolveTvarsCx {
-    done: LPooled<nohash::IntMap<usize, Type>>,
-    fresh: LPooled<nohash::IntMap<usize, TVar>>,
-    in_progress: LPooled<nohash::IntSet<usize>>,
+    done: LPooled<AddrMap<Type>>,
+    fresh: LPooled<AddrMap<TVar>>,
+    in_progress: LPooled<AddrSet>,
     memo: LPooled<AHashMap<NormKey, Option<Type>>>,
     /// An open cell's copy keeps its predicate conjuncts (`Concrete`,
     /// `Function`), which name no cell.
     predicates: bool,
     /// The open quantifiers of the function types met: their bounds are
     /// part of the type (`fn<'a: Function>(..)`), so a copy keeps them all.
-    pub(super) quantifiers: LPooled<nohash::IntSet<usize>>,
+    pub(super) quantifiers: LPooled<AddrSet>,
 }
 
 impl ResolveTvarsCx {

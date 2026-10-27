@@ -8,7 +8,7 @@
 //! `fusion::lowering::tail_loop_blocker`.
 
 use crate::{
-    ApplyView, BindId, CompileCtx, DefAssertion, DefAssertionKind, LambdaId,
+    AddrMap, ApplyView, BindId, CompileCtx, DefAssertion, DefAssertionKind, LambdaId,
     LambdaInstanceId, Node, NodeView, Refs, Rt, Update, UserEvent,
     cost::{ForkSite, Siblings},
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
@@ -1918,7 +1918,7 @@ struct ForkCx<'g, 'a, R: Rt, E: UserEvent> {
     ctx: &'g CompileCtx<R, E>,
     ids: Option<LPooled<IntMap<LambdaInstanceId, Summary>>>,
     flags: Option<LPooled<IntMap<LambdaInstanceId, Summary>>>,
-    shallow: LPooled<IntMap<usize, Shallow>>,
+    shallow: LPooled<AddrMap<Shallow>>,
 }
 
 impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {

@@ -1,5 +1,5 @@
 use crate::{
-    PRINT_FLAGS, PrintFlag, SourcePosition,
+    AddrMap, AddrSet, PRINT_FLAGS, PrintFlag, SourcePosition,
     dbgenv::{graphix_dbg_bind, gxdbg_typeref},
     env::Env,
     expr::{ModPath, Origin, Source, WrittenAt},
@@ -18,7 +18,7 @@ use netidx_core::{
     path::Path,
 };
 use netidx_value::Typ;
-use nohash::{IntMap, IntSet};
+use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::{IsoPoolable, local::LPooled};
 use smallvec::SmallVec;
@@ -198,9 +198,7 @@ struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
     /// Definition key → (the resolution it came from, pinned so the key
     /// is not reused; the param lists seen with their ids).
-    ref_ids: Lazy<
-        IntMap<usize, (sync::Arc<ResolvedRef>, SmallVec<[(Arc<[Type]>, usize); 2]>)>,
-    >,
+    ref_ids: Lazy<AddrMap<(sync::Arc<ResolvedRef>, SmallVec<[(Arc<[Type]>, usize); 2]>)>>,
     /// Content identity → id for non-Ref types, so the cycle memo does
     /// not conflate distinct finite sub-problems.
     content_ids: Lazy<AHashMap<NormKey, usize>>,
@@ -220,7 +218,7 @@ fn shape_hash(t: &Type) -> u64 {
 }
 
 /// [`shape_hash`], each shared node hashed once (`memo`, by identity).
-fn shape_hash_memo(t: &Type, memo: &mut IntMap<usize, u64>) -> u64 {
+fn shape_hash_memo(t: &Type, memo: &mut AddrMap<u64>) -> u64 {
     let key = t.shared_identity();
     if let Some(h) = key.and_then(|k| memo.get(&k)) {
         return *h;
@@ -232,7 +230,7 @@ fn shape_hash_memo(t: &Type, memo: &mut IntMap<usize, u64>) -> u64 {
     h
 }
 
-fn shape_hash_node(t: &Type, memo: &mut IntMap<usize, u64>) -> u64 {
+fn shape_hash_node(t: &Type, memo: &mut AddrMap<u64>) -> u64 {
     ensure_sufficient(|| {
         let mut h = ahash::AHasher::default();
         match t {
@@ -2593,7 +2591,7 @@ impl Type {
     }
 
     fn for_each_written_name(&self, f: &mut impl FnMut(&TypeRef)) {
-        fn go(t: &Type, seen: &mut IntSet<usize>, f: &mut impl FnMut(&TypeRef)) {
+        fn go(t: &Type, seen: &mut AddrSet, f: &mut impl FnMut(&TypeRef)) {
             ensure_sufficient(|| match t {
                 Type::Ref(tr) => {
                     f(tr);
@@ -2623,8 +2621,8 @@ impl Type {
     /// [`Self::seed_refs`] over types that share `seen`, the cells and
     /// nodes already walked.
     #[doc(hidden)]
-    pub fn seed_refs_seen(&self, env: &Env, seen: &mut IntSet<usize>) -> bool {
-        fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>) -> bool {
+    pub fn seed_refs_seen(&self, env: &Env, seen: &mut AddrSet) -> bool {
+        fn go(t: &Type, env: &Env, seen: &mut AddrSet) -> bool {
             ensure_sufficient(|| {
                 if let Some(node) = node_addr(t)
                     && !seen.insert(node)

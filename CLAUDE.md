@@ -1174,7 +1174,10 @@ cycle, across workers; the compiler never pins threads.
   error (`design/tvar_constraints.md`). An interface declares every bound its
   implementation's variables carry, a typedef parameter's bound counting
   (`FnType::sig_matches`); the implementation may leave off a bound the
-  interface declares.
+  interface declares. A quantifier of a function the implementation is
+  handed (under an odd number of arguments) is the other way round: the
+  implementation uses it at any type its own bound admits, so that bound
+  implies each one the interface declares (`FnType::sig_bounds`).
 
 ## Stack discipline
 

@@ -17,6 +17,36 @@ pub const MINT_BASE: u64 = 1 << 62;
 /// its offset from [`MINT_BASE`] shifted up a bit.
 const MINT_LIMIT: u64 = 1 << 63;
 
+/// The one write an identity key hashes to. Minted ids share their high
+/// bits and addresses their high and low bits, which a hash table's tag
+/// and bucket index read: the multiply spreads them over both.
+pub const fn mix(n: u64) -> u64 {
+    n.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// The hasher of a map keyed by an address: one [`mix`]ed write.
+#[derive(Default)]
+pub struct AddrHasher(u64);
+
+impl std::hash::Hasher for AddrHasher {
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("an address key is written as a usize")
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.0 = mix(n as u64)
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type AddrMap<V> =
+    std::collections::HashMap<usize, V, std::hash::BuildHasherDefault<AddrHasher>>;
+pub type AddrSet =
+    std::collections::HashSet<usize, std::hash::BuildHasherDefault<AddrHasher>>;
+
 /// The ids of one region an image holds: `floor` is the smallest,
 /// `extent` one past the largest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,11 +202,10 @@ macro_rules! image_id {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $name(u64);
 
-        /// One mixed write, so `nohash` maps take it as is: every minted
-        /// id shares its high bits, which a hash table's tag reads.
+        /// One mixed write (`ids::mix`), so `nohash` maps take it as is.
         impl std::hash::Hash for $name {
             fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
-                h.write_u64(self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+                h.write_u64($crate::ids::mix(self.0))
             }
         }
 
@@ -308,5 +337,18 @@ mod tests {
         assert!(Stray::decode(&mut &buf[..]).is_err());
         super::set_in_session(prev);
         assert_eq!(Stray::decode(&mut &buf[..]).unwrap(), id);
+    }
+
+    /// Heap addresses share their high bits and their aligned low bits:
+    /// an address key's hash spreads them over the 7 top bits a hash
+    /// table's tag reads.
+    #[test]
+    fn address_keys_spread_over_the_tag() {
+        use std::hash::BuildHasher;
+        let build = std::hash::BuildHasherDefault::<super::AddrHasher>::default();
+        let tags: std::collections::HashSet<u64> = (0..1024usize)
+            .map(|i| build.hash_one(0x5555_5555_0000 + i * 48) >> 57)
+            .collect();
+        assert!(tags.len() > 100, "{} tags", tags.len());
     }
 }

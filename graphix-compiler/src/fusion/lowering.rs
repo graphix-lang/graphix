@@ -4,8 +4,8 @@
 //! emitters consume.
 
 use crate::{
-    ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, Rt,
-    UserEvent,
+    AddrSet, ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag,
+    Refs, Rt, UserEvent,
     effects::NoLoop,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
@@ -270,7 +270,7 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
     if !any {
         return None;
     }
-    let mut nested: LPooled<nohash::IntSet<usize>> = LPooled::take();
+    let mut nested: LPooled<AddrSet> = LPooled::take();
     let mut found: Option<&Node<R, E>> = None;
     for s in selects {
         let NodeView::Select(sel) = s.view() else { continue };

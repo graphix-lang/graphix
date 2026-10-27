@@ -20,8 +20,8 @@ pub(crate) mod share;
 pub use kernel::FusedKernel;
 
 use crate::{
-    ApplyView, BindId, CompileCtx, LambdaId, Node, NodeView, PrintFlag, Refs, Rt, Update,
-    UserEvent,
+    AddrSet, ApplyView, BindId, CompileCtx, LambdaId, Node, NodeView, PrintFlag, Refs,
+    Rt, Update, UserEvent,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
@@ -838,7 +838,7 @@ pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
     f: &mut dyn FnMut(&'a Node<R, E>),
 ) {
-    let mut seen: LPooled<nohash::IntSet<usize>> = LPooled::take();
+    let mut seen: LPooled<AddrSet> = LPooled::take();
     let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
     stack.push(node);
     while let Some(body) = stack.pop() {

@@ -1,5 +1,5 @@
 use crate::{
-    LambdaId,
+    AddrSet, LambdaId,
     dbgenv::graphix_dbg_bind,
     env::Env,
     expr::{ModPath, TypeDefBody},
@@ -37,11 +37,11 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
 
 // Conjunct graphs can be cyclic; a revisited cell adds no
 // reachability, so it answers false.
-fn would_cycle_seen(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bool {
+fn would_cycle_seen(addr: usize, t: &Type, seen: &mut AddrSet) -> bool {
     ensure_sufficient(|| would_cycle_seen_inner(addr, t, seen))
 }
 
-fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bool {
+fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut AddrSet) -> bool {
     // `seen` is a true visited set holding both cell and composite
     // node addresses; the answer depends only on reachable leaves.
     if let Some(node) = node_addr(t)
@@ -698,7 +698,7 @@ impl Drop for TVar {
 impl fmt::Debug for TVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         thread_local! {
-            static DEBUGGING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+            static DEBUGGING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
         }
         let addr = self.cell_addr();
         if !DEBUGGING.with_borrow_mut(|s| s.insert(addr)) {
@@ -756,7 +756,7 @@ impl fmt::Display for TVar {
             // revisit on the print stack elides. Contents are cloned
             // out before recursing (never recurse under the cell guard).
             thread_local! {
-                static PRINTING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+                static PRINTING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
             }
             let addr = self.cell_addr();
             if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
@@ -2535,7 +2535,7 @@ impl Type {
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
-        fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
+        fn open(t: &Type, seen: &mut AddrSet, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
                     if seen.insert(tv.cell_addr()) {

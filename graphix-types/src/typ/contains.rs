@@ -1,5 +1,5 @@
 use crate::{
-    PrintFlag, SourcePosition,
+    AddrMap, AddrSet, PrintFlag, SourcePosition,
     dbgenv::{graphix_dbg_bind, graphix_dbg_cycle_bt},
     env::{Env, ImplDef},
     expr::ModPath,
@@ -19,7 +19,7 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::{BitFlags, bitflags};
 use netidx_value::Typ;
-use nohash::{IntMap, IntSet};
+use nohash::IntMap;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
@@ -102,7 +102,7 @@ pub(super) struct ContainsHist {
     grew: Option<ModPath>,
     /// [`Self::closed`]'s verdicts by node and cell identity, each node
     /// pinned so its address is not recycled under its key.
-    closed: Lazy<IntMap<usize, bool>>,
+    closed: Lazy<AddrMap<bool>>,
     closed_pins: Lazy<Vec<Type>>,
     /// How many function types hold quantifier cells rigid on this path
     /// (`FnType::contains_int`): a verdict reached under one depends on
@@ -367,7 +367,7 @@ fn open_cell_reaches(a: &Type, b: &Type) -> bool {
 /// Does `t` reach a cell that is open, unconstrained and
 /// `cycle_refused`? Pure read through bindings and constraints.
 fn type_has_refused_open_cell(t: &Type) -> bool {
-    fn walk(t: &Type, visited: &mut IntSet<usize>) -> bool {
+    fn walk(t: &Type, visited: &mut AddrSet) -> bool {
         ensure_sufficient(|| {
             if let Some(node) = node_addr(t)
                 && !visited.insert(node)
@@ -1215,7 +1215,7 @@ pub(super) fn find_open_cell(
         t: &Type,
         into_fns: bool,
         pick: &mut dyn FnMut(&TVar) -> bool,
-        seen: &mut IntSet<usize>,
+        seen: &mut AddrSet,
     ) -> Option<TVar> {
         ensure_sufficient(|| match t {
             Type::TVar(tv) => match tv.binding() {

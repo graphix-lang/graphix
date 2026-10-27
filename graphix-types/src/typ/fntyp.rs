@@ -1,5 +1,5 @@
 use crate::{
-    LambdaId, PrintFlag,
+    AddrMap, AddrSet, LambdaId, PRINT_FLAGS, PrintFlag,
     env::Env,
     expr::{
         ModPath,
@@ -21,7 +21,7 @@ use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_derive::Pack;
-use nohash::{IntMap, IntSet};
+use nohash::IntSet;
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -158,7 +158,7 @@ impl FnArgType {
 #[derive(Debug, Clone)]
 struct Link(Weak<RwLock<LambdaIdsInner>>);
 
-// CR claude for claude: [perf/low] This hashes a raw pointer into a nohash set, the
+// XCR claude for claude: [perf/low] This hashes a raw pointer into a nohash set, the
 // shape x-perf-runtime-02 fixed only for image_id! ids. A user-space pointer is below
 // 2^47, so hashbrown's 7-bit control tag is 0 for every key and alignment zeroes the
 // index bits. A bench over real heap pointers shows 2.6-5.7 ns per lookup against
@@ -166,9 +166,16 @@ struct Link(Weak<RwLock<LambdaIdsInner>>);
 // (shape_hash_memo, RefHist.ref_ids). Hash pointer keys with the one multiplicative
 // write image_id! uses. probe:
 // design/review-2026-10-26/repro/x-rerun-5-ptr-idhash-bench.rs (x-rerun-5-11)
+// 2026-10-27 claude: ids::mix is the one multiplicative write: image_id! ids and Link
+// hash through it, and every address-keyed map in graphix-types and graphix-compiler
+// (formerly IntMap<usize>/IntSet<usize>: settle, tvar, matches, RefHist.ref_ids,
+// shape_hash_memo, normalize, contains.closed, fntyp's walk sets, analysis.shallow,
+// fusion seen sets) is an AddrMap/AddrSet over AddrHasher. Left on identity:
+// contains' expansions (keyed by sequential ref ids) and profile.rs (indices). Pin:
+// ids::tests::address_keys_spread_over_the_tag.
 impl Hash for Link {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (Weak::as_ptr(&self.0) as usize).hash(state)
+        state.write_u64(crate::ids::mix(self.addr() as u64))
     }
 }
 
@@ -230,7 +237,7 @@ impl LambdaIds {
     /// Every live linked id; dead links are pruned as the walk meets
     /// them. Locks one node at a time. O(live linked nodes).
     pub fn ids(&self) -> LPooled<IntSet<LambdaId>> {
-        let mut visited: LPooled<IntSet<usize>> = LPooled::take();
+        let mut visited: LPooled<AddrSet> = LPooled::take();
         let mut ids: LPooled<IntSet<LambdaId>> = LPooled::take();
         let mut work: LPooled<Vec<LambdaIds>> = LPooled::take();
         visited.insert(SArc::as_ptr(&self.0) as usize);
@@ -298,18 +305,18 @@ pub(super) fn sorted_tvars(
 }
 
 thread_local! {
-    static VIEWING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
-    static CONSTRAINING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+    static VIEWING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
+    static CONSTRAINING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
     /// The cells whose conjuncts a walk is visiting: a normalized copy of a
     /// signature is a new FnType but holds the same cells.
-    static CONJUNCTS: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+    static CONJUNCTS: RefCell<AddrSet> = RefCell::new(AddrSet::default());
     /// How deep `for_each_part` calls nest on this thread.
     static PARTS_DEPTH: Cell<usize> = const { Cell::new(0) };
     /// For the outermost `for_each_part` call: each nested signature's
     /// position cells, keyed by the signature it pins, so a walk collects
     /// each signature's once rather than once per signature above it.
-    static POSITIONS: RefCell<IntMap<usize, (Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
-        RefCell::new(IntMap::default());
+    static POSITIONS: RefCell<AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
+        RefCell::new(AddrMap::default());
 }
 
 /// One `for_each_part` call's depth; the outermost forgets the positions
@@ -364,22 +371,16 @@ pub(super) fn position_cells(ft: &Arc<FnType>, out: &mut AHashMap<ArcStr, TVar>)
 /// One walk's reentrancy guard on a signature: a conjunct can reach the
 /// signature it constrains. The key is released on drop, unwind too.
 struct Walking {
-    set: &'static LocalKey<RefCell<IntSet<usize>>>,
+    set: &'static LocalKey<RefCell<AddrSet>>,
     key: usize,
 }
 
 impl Walking {
-    fn enter(
-        set: &'static LocalKey<RefCell<IntSet<usize>>>,
-        ft: &FnType,
-    ) -> Option<Self> {
+    fn enter(set: &'static LocalKey<RefCell<AddrSet>>, ft: &FnType) -> Option<Self> {
         Self::enter_key(set, ft as *const FnType as usize)
     }
 
-    fn enter_key(
-        set: &'static LocalKey<RefCell<IntSet<usize>>>,
-        key: usize,
-    ) -> Option<Self> {
+    fn enter_key(set: &'static LocalKey<RefCell<AddrSet>>, key: usize) -> Option<Self> {
         set.with_borrow_mut(|s| s.insert(key)).then_some(Walking { set, key })
     }
 }
@@ -895,18 +896,21 @@ impl FnType {
     }
 
     /// Map each open quantifier of a function type the signature holds
-    /// (a rank-2 formal's `fn<'b: C>`) that a call copies to a fresh
-    /// generic cell, its conjuncts copied through `walk`: the formal's
-    /// callers pick it, never the site that passes the argument.
+    /// (a rank-2 formal's `fn<'b: C>`) that `copied` says a call copies
+    /// to a fresh generic cell, its conjuncts copied through `walk`: the
+    /// formal's callers pick it, never the site that passes the argument.
+    /// A rank-2 formal's quantifier is copied whatever gate owns it.
     fn generic_inner_quantifiers(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        open: &IntSet<LambdaId>,
+        copied: impl Fn(&TVar) -> bool,
         walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
     ) {
         let mut inner: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.inner_quantifiers(&mut inner);
-        inner.retain(|addr, tv| !known.contains_key(addr) && tv.level().copied_by(open));
+        inner.retain(|addr, tv| {
+            !known.contains_key(addr) && (tv.is_formal_quantifier() || copied(tv))
+        });
         for (addr, tv) in inner.iter() {
             known.insert(*addr, TVar::empty_generic(tv.name.clone()));
         }
@@ -935,9 +939,10 @@ impl FnType {
     }
 
     /// A call's copy of a signature whose cells it shares (a parameter
-    /// called in its definition's body): only the quantifiers are fresh.
+    /// called in its definition's body): only the quantifiers are fresh,
+    /// its own and its rank-2 formals'.
     #[doc(hidden)]
-    // CR claude for claude: [bug/medium] A call through a parameter copies only the
+    // XCR claude for claude: [bug/medium] A call through a parameter copies only the
     // signature's own quantifiers, never the quantifier of a rank-2 function type the
     // parameter takes. instantiate skips it too while its owner's gate is open
     // (generic_inner_quantifiers keeps only copied_by cells). `|k: fn(f: fn<'c: Any>(x:
@@ -948,12 +953,21 @@ impl FnType {
     // gate owns them, as fresh_quantifiers does for own quantifiers. probe:
     // design/review-2026-10-26/repro/t-fntyp-rank3-param-call.gx Also reported as
     // (x-typecheck-generics-06). (t-fntyp-04)
+    // 2026-10-27 claude: generic_inner_quantifiers copies a rank-2 formal's quantifier
+    // (FormalQuantifier) whatever gate owns it, and shared_call calls it too, so a call
+    // through a parameter picks its formals' quantifiers anew in the body and in a
+    // nested lambda. The repro prints (1, "s"). Pin:
+    // lang::functions::rank2_quantifier_of_a_parameter_copied_at_each_call.
     pub fn shared_call(&self) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let image = |known: &AHashMap<usize, TVar>, a| {
             known.get(&a).map(|f| Type::TVar(f.clone()))
         };
-        self.fresh_quantifiers(&mut known, |c, known| c.swap_cells(&|a| image(known, a)));
+        let walk = |c: &Type, known: &mut AHashMap<usize, TVar>| {
+            c.swap_cells(&|a| image(known, a))
+        };
+        self.fresh_quantifiers(&mut known, walk);
+        self.generic_inner_quantifiers(&mut known, |_| false, walk);
         if known.is_empty() {
             return self.clone();
         }
@@ -972,7 +986,7 @@ impl FnType {
             c.reset_tvars_int(known, how).unwrap_or_else(|| c.clone())
         };
         self.fresh_quantifiers(&mut known, walk);
-        self.generic_inner_quantifiers(&mut known, open, walk);
+        self.generic_inner_quantifiers(&mut known, |tv| tv.level().copied_by(open), walk);
         let fresh = self.reset_tvars_int(&mut known, how);
         let copies: LPooled<AHashSet<usize>> =
             known.values().map(|tv| tv.cell_addr()).collect();
@@ -1012,6 +1026,15 @@ impl FnType {
     // and it is built by struct literal at about 33 sites, and code clones one and then
     // edits a field, so a cached fact goes stale unless it lives behind a constructor;
     // that refactor is the work.
+    // 2026-10-27 claude: Still quadratic (debug --check: 1000 lets 1.6 s, 2000 lets 6.7
+    // s). Not done in batch L1-b07. One more constraint for the fix: reset_tvars_int /
+    // instantiate_how give every nested FnType a fresh lambda_ids node
+    // (LambdaIds::instantiate), so letting a copy share a TVar-free nested fn type also
+    // shares its lambda_ids node with the definition, and a later link through the
+    // instance would land on the definition's node; the share needs lambda_ids copied
+    // lazily (or a rule that a nested fn type's ids need no copy) before it is sound.
+    // generalize and claim (reached_cells) could stop at a TVar-free nested fn type
+    // without that question, which removes part of the walk but not reset_tvars_int's.
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
@@ -1272,54 +1295,51 @@ impl FnType {
         if !aligned {
             bail!("the signature's and the implementation's labeled arguments differ")
         }
-        for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
-            if sig_arg.kind != impl_arg.kind {
+        // the arguments are the implementation's to use: what pairs there
+        // stands under one more contravariant position
+        tvar_map.contra = !tvar_map.contra;
+        let args = (|| -> Result<()> {
+            let first_positional = self.first_positional();
+            for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
                 use FnArgKind::Labeled;
-                match (&sig_arg.kind, &impl_arg.kind) {
-                    (
-                        Labeled { name: n0, has_default: d0 },
-                        Labeled { name: n1, has_default: _ },
-                    ) if n0 == n1 => {
-                        let (s, i) = if *d0 { ("a", "no") } else { ("no", "a") };
-                        bail!(
-                            "argument #{n0}: the signature gives it {s} default, the \
-                             implementation {i} default"
-                        )
-                    }
-                    // CR claude for claude: [dead/low] This arm cannot run. Once align
-                    // succeeds, every pair is two Labeled args with the same name or
-                    // two Positional args, and two Positional kinds always compare
-                    // equal, so only the default-mismatch arm above is reachable.
-                    // ArgKindText is used only here. Fix: delete the arm, and use
-                    // ArgKindText in the `in argument {i}` context below, which
-                    // currently names a label by its pair index ("in argument 0" for
-                    // #a). Found by reading; not run. (t-fntyp-07)
-                    (k0, k1) => bail!(
-                        "argument {i}: the signature has {}, the implementation {}",
-                        ArgKindText(k0),
-                        ArgKindText(k1)
-                    ),
+                if let (
+                    Labeled { name, has_default: d0 },
+                    Labeled { has_default: d1, .. },
+                ) = (&sig_arg.kind, &impl_arg.kind)
+                    && d0 != d1
+                {
+                    let (s, i) = if *d0 { ("a", "no") } else { ("no", "a") };
+                    bail!(
+                        "argument #{name}: the signature gives it {s} default, the \
+                         implementation {i} default"
+                    )
+                }
+                sig_arg
+                    .typ
+                    .sig_matches_int(env, &impl_arg.typ, tvar_map, hist)
+                    .with_context(|| match sig_arg.kind.label() {
+                        Some(l) => format!("in argument #{l}"),
+                        None => format!("in argument {}", i - first_positional),
+                    })?;
+            }
+            match (sig_vargs, impl_vargs) {
+                (None, None) => (),
+                (Some(sig_va), Some(impl_va)) => {
+                    sig_va
+                        .sig_matches_int(env, impl_va, tvar_map, hist)
+                        .context("in variadic argument")?;
+                }
+                (None, Some(_)) => {
+                    bail!("signature has no variadic args but implementation does")
+                }
+                (Some(_), None) => {
+                    bail!("signature has variadic args but implementation does not")
                 }
             }
-            sig_arg
-                .typ
-                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist)
-                .with_context(|| format!("in argument {i}"))?;
-        }
-        match (sig_vargs, impl_vargs) {
-            (None, None) => (),
-            (Some(sig_va), Some(impl_va)) => {
-                sig_va
-                    .sig_matches_int(env, impl_va, tvar_map, hist)
-                    .context("in variadic argument")?;
-            }
-            (None, Some(_)) => {
-                bail!("signature has no variadic args but implementation does")
-            }
-            (Some(_), None) => {
-                bail!("signature has variadic args but implementation does not")
-            }
-        }
+            Ok(())
+        })();
+        tvar_map.contra = !tvar_map.contra;
+        args?;
         sig_rtype
             .sig_matches_int(env, impl_rtype, tvar_map, hist)
             .context("in return type")?;
@@ -1342,7 +1362,7 @@ impl FnType {
                 })
             })
             .context("in throws clause")?;
-        tvar_map.fns.push((self.clone(), impl_fn.clone()));
+        tvar_map.fns.push((self.clone(), impl_fn.clone(), tvar_map.contra));
         Ok(())
     }
 
@@ -1352,6 +1372,7 @@ impl FnType {
         &self,
         env: &Env,
         impl_fn: &Self,
+        contra: bool,
         tvar_map: &mut SigPairs,
         hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
@@ -1365,7 +1386,6 @@ impl FnType {
                 .for_each_part(&mut |t, _| super::settle::position_cells(t, &mut cells));
             sorted_tvars(cells.drain().map(|(_, tv)| (tv.name.clone(), tv)))
         };
-        let probe = BitFlags::empty();
         // An implementation may be more general than its signature: a bound
         // the signature declares need not be the implementation's. One the
         // implementation does carry pairs the variables inside it with the
@@ -1408,7 +1428,7 @@ impl FnType {
         // variable it stands for.
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
         // or a bound of the typedef parameter it fills, implies it
-        // CR claude for claude: [bug/medium] `'a: Any`, the usual way to declare a
+        // XCR claude for claude: [bug/medium] `'a: Any`, the usual way to declare a
         // variable on a lambda, gives the cell the conjunct Any. A signature that
         // writes the plain variable has no conjunct to imply it, so `let id = 'a: Any
         // |x: 'a| -> 'a x` under `val id: fn(x: 'a) -> 'a` is refused ("the
@@ -1417,7 +1437,13 @@ impl FnType {
         // same: return Ok here for impl_tc == Type::Any. Alternatively, make
         // Type::implies hold for c == Any. probe:
         // design/review-2026-10-26/repro/t-contains-sig-any-bound.sh (t-contains-05)
+        // 2026-10-27 claude: sig_bounds' declared check takes an implementation
+        // conjunct Any as vacuous, as the signature side already did. Pin:
+        // lang::interfaces::interface_plain_variable_takes_an_any_bound.
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
+            if *impl_tc == Type::Any {
+                return Ok(());
+            }
             let mut sig_tcs = sig_tv.cell_constraints();
             if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
                 sig_tcs.extend(bounds.iter().cloned());
@@ -1447,9 +1473,50 @@ impl FnType {
             q
         };
         let (impl_q, sig_q) = (arg_quantifiers(impl_fn), arg_quantifiers(self));
+        // a quantifier of a function type inside this one is judged at that
+        // function type's own pair, under its polarity
+        let mut nested_q: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        impl_fn.inner_quantifiers(&mut nested_q);
+        // under a contravariant position the function is the one the
+        // implementation is handed: it uses it at any type its own bound
+        // admits, so that bound must imply each of the signature's
+        let mut handed_q: LPooled<AHashSet<usize>> = LPooled::take();
+        if contra {
+            impl_fn.open_quantifiers(|_, open| {
+                handed_q.insert(open.cell_addr());
+            });
+        }
+        let held_to = |sig_tv: &TVar, impl_tv: &TVar| -> Result<()> {
+            let impl_tcs: LPooled<Vec<Type>> = impl_tv
+                .cell_constraints()
+                .iter()
+                .map(|c| c.swap_cells(&|a| tvar_map.cells.get(&a).cloned()))
+                .collect();
+            for sig_tc in sig_tv.cell_constraints().iter() {
+                if *sig_tc == Type::Any {
+                    continue;
+                }
+                let mut held = false;
+                for c in impl_tcs.iter() {
+                    if c.implies(env, sig_tc)? {
+                        held = true;
+                        break;
+                    }
+                }
+                if !held {
+                    bail!(
+                        "the implementation uses the function it is handed at any \
+                         {impl_tv}, where the signature hands it one at {sig_tv}: \
+                         {sig_tc} only"
+                    )
+                }
+            }
+            Ok(())
+        };
         for (_, tv) in impl_cells.iter() {
-            if impl_q.contains_key(&tv.cell_addr()) {
-                match tvar_map.cells.get(&tv.cell_addr()) {
+            let addr = tv.cell_addr();
+            if impl_q.contains_key(&addr) {
+                match tvar_map.cells.get(&addr) {
                     Some(Type::TVar(s)) if sig_q.contains_key(&s.cell_addr()) => (),
                     None => (),
                     Some(t) => bail!(
@@ -1458,9 +1525,15 @@ impl FnType {
                     ),
                 }
             }
-            match tvar_map.cells.get(&tv.cell_addr()) {
+            if nested_q.contains_key(&addr) {
+                continue;
+            }
+            match tvar_map.cells.get(&addr) {
                 None => (),
-                // CR claude for claude: [bug/medium] A rank-2 parameter's own
+                Some(Type::TVar(sig_tv)) if handed_q.contains(&addr) => {
+                    held_to(sig_tv, tv)?
+                }
+                // XCR claude for claude: [bug/medium] A rank-2 parameter's own
                 // quantifier is checked in the wrong direction here. Interface `g:
                 // fn<'b: Number + Singleton>` paired with implementation `g: fn<'c:
                 // Any>` that calls g("s") passes the check, and the build then refuses
@@ -1475,6 +1548,17 @@ impl FnType {
                 // probe:
                 // design/review-2026-10-26/repro/t-fntyp-rank2-sig-bound-polarity.sh
                 // (t-fntyp-01)
+                // 2026-10-27 claude: SigPairs carries the polarity (contra, flipped
+                // around FnType::sig_matches_int's arguments; deferred unions keep
+                // theirs) and each paired fn type records it. sig_bounds judges an
+                // implementation quantifier only at its own fn type's pair (nested
+                // quantifiers are skipped at the outer pair), and under a contravariant
+                // pair requires each signature conjunct to follow from the
+                // implementation quantifier's conjuncts (held_to). Case A is refused at
+                // the module check, case B runs (1, 2.5). CLAUDE.md states the
+                // exception. Pins:
+                // lang::interfaces::interface_rank2_argument_narrower_than_its_use_refused,
+                // interface_rank2_argument_wider_than_its_use.
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
                         declared(sig_tv, &impl_tc)?
@@ -1500,7 +1584,7 @@ impl FnType {
                         }
                     }
                     for impl_tc in tv.cell_constraints() {
-                        // CR claude for claude: [bug/medium] This probe runs with the
+                        // XCR claude for claude: [bug/medium] This probe runs with the
                         // signature's open variables free to bind, so `[Number, null]`
                         // admits `['b, null]` even though the signature leaves 'b to
                         // every caller. `val f: fn(x: ['b, null]) -> string` over `'a:
@@ -1510,9 +1594,23 @@ impl FnType {
                         // so 'b fits only through its own conjuncts. probe:
                         // design/review-2026-10-26/repro/t-fntyp-sig-open-var-probe.sh
                         // (t-fntyp-03)
+                        // 2026-10-27 claude: The probe holds sig_type's open cells
+                        // rigid and runs under RigidCheck, so a signature variable fits
+                        // an implementation bound only through its own conjuncts. Pins:
+                        // lang::interfaces::interface_unbounded_variable_under_a_bounded_implementation_refused
+                        // (and the bounded companion that checks).
+                        let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+                        // the signature's variables are every caller's to
+                        // pick: they fit only through their own conjuncts
+                        super::contains::hold_rigid(sig_type, &mut gates);
                         let ok = impl_tc
-                            .contains_with_flags(probe, env, sig_type)
+                            .contains_with_flags(
+                                ContainsFlags::RigidCheck.into(),
+                                env,
+                                sig_type,
+                            )
                             .unwrap_or(false);
+                        drop(gates);
                         if !ok {
                             bail!(
                                 "signature has concrete type {sig_type}, which the \
@@ -1574,20 +1672,6 @@ fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     v
 }
 
-/// An argument's kind as a message names it: `#a`, `?#a`, positional.
-struct ArgKindText<'a>(&'a FnArgKind);
-
-impl fmt::Display for ArgKindText<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            FnArgKind::Labeled { name, has_default: true } => write!(f, "?#{name}"),
-            FnArgKind::Labeled { name, has_default: false } => write!(f, "#{name}"),
-            FnArgKind::Positional { name: Some(n) } => write!(f, "positional {n}"),
-            FnArgKind::Positional { name: None } => write!(f, "a positional argument"),
-        }
-    }
-}
-
 /// How an argument's name is written before its type.
 struct ArgPrefix<'a>(&'a FnArgKind);
 
@@ -1602,8 +1686,21 @@ impl fmt::Display for ArgPrefix<'_> {
     }
 }
 
-/// A return type as written after `->`: a function type, bare or behind
-/// a reference, is parenthesized where a `throws` follows, which would
+/// Does `t` print as a function type, a variable printing its binding
+/// included?
+fn prints_as_fn(t: &Type) -> bool {
+    match t {
+        Type::Fn(_) => true,
+        Type::ByRef(_, t) => prints_as_fn(t),
+        Type::TVar(tv) if PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) => {
+            tv.binding().is_some_and(|t| prints_as_fn(&t))
+        }
+        _ => false,
+    }
+}
+
+/// A return type as written after `->`: a function type (or a variable
+/// printing one), bare or behind a reference, is parenthesized where a `throws` follows, which would
 /// otherwise read as its own.
 pub(crate) struct Ret<'a> {
     pub(crate) open: &'static str,
@@ -1612,25 +1709,28 @@ pub(crate) struct Ret<'a> {
 }
 
 impl<'a> Ret<'a> {
-    // CR claude for claude: [bug/low] An inferred return type is a TVar bound to the
+    // XCR claude for claude: [bug/low] An inferred return type is a TVar bound to the
     // function, not a Type::Fn, so it gets no parentheses here. The outer function's
     // throws then prints as the inner one's: "fn(x: i64) -> fn(y: i64) -> i64 throws
     // Error<ErrChain<`E>>", where the outer function is the one that throws. Fix:
     // decide on the dereferenced type (through a bound TVar's binding). probe:
     // design/review-2026-10-26/repro/t-fntyp-ret-throws-ambiguous.gx (t-fntyp-05)
+    // 2026-10-27 claude: Ret::of decides the parentheses on the type as it prints: a
+    // variable printing its binding (DerefTVars) bound to a function type, bare or
+    // behind a reference, is parenthesized too (prints_as_fn). The repro prints
+    // 'fn(x: i64) -> (fn(y: i64) -> i64) throws Error<ErrChain<`E>>'. Pin:
+    // lang::functions::returned_function_type_parenthesized_before_the_throws.
     pub(crate) fn of(t: &'a Type, throws_follows: bool) -> Self {
-        let (open, typ, close): (_, &dyn PrettyDisplay, _) = match t {
-            Type::Fn(ft) if throws_follows => ("(", &**ft, ")"),
-            Type::ByRef(m, t) => match (&**t, m) {
-                (Type::Fn(ft), Mutability::Shared) if throws_follows => {
-                    ("&(", &**ft, ")")
-                }
-                (Type::Fn(ft), Mutability::Mut) if throws_follows => {
-                    ("&mut (", &**ft, ")")
-                }
-                (t, m) => (m.prefix(), t, ""),
-            },
-            t => ("", t, ""),
+        let (by_ref, typ) = match t {
+            Type::ByRef(m, t) => (Some(*m), &**t),
+            t => (None, t),
+        };
+        let (open, close) = match (by_ref, throws_follows && prints_as_fn(typ)) {
+            (None, false) => ("", ""),
+            (None, true) => ("(", ")"),
+            (Some(m), false) => (m.prefix(), ""),
+            (Some(Mutability::Shared), true) => ("&(", ")"),
+            (Some(Mutability::Mut), true) => ("&mut (", ")"),
         };
         Ret { open, typ, close }
     }
@@ -1904,7 +2004,7 @@ impl Pack for FnType {
 /// The bounds the type references in `t` give the open variables passed
 /// as their parameters, by cell: a call checks them where it expands the
 /// reference, as it checks a variable's own conjuncts.
-fn param_bounds_of(env: &Env, t: &Type, out: &mut IntMap<usize, SmallVec<[Type; 1]>>) {
+fn param_bounds_of(env: &Env, t: &Type, out: &mut AddrMap<SmallVec<[Type; 1]>>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::Ref(tr) => {
             if let Some(resolved) = tr.resolve_in(env)

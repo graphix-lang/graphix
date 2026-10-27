@@ -1504,3 +1504,59 @@ run!(
     "/test/inner.gxi" => "use super::other::T; type U = T; val v: U",
     "/test/inner.gx" => "let v: U = 1"
 ; FuseExpect::None);
+
+// A mismatch in a labeled argument names the argument by its label.
+run!(
+    interface_labeled_argument_mismatch_names_the_label,
+    refused("in argument #b"),
+    "/test.gx" => "mod inner; let result = inner::f(#b: 1, 2)",
+    "/test/inner.gxi" => "val f: fn(#b: i64, x: i64) -> i64",
+    "/test/inner.gx" => "let f = |#b: string, x: i64| -> i64 x"
+);
+
+// `'a: Any` declares the variable and bounds nothing: the plain
+// variable in the interface declares it.
+run!(
+    interface_plain_variable_takes_an_any_bound,
+    is(Value::I64(1)),
+    "/test.gx" => "mod inner; let result = inner::id(1)",
+    "/test/inner.gxi" => "val id: fn(x: 'a) -> 'a",
+    "/test/inner.gx" => "let id = 'a: Any |x: 'a| -> 'a x"
+; FuseExpect::Jit);
+
+// A function the implementation is handed is used at any type the
+// implementation's own quantifier admits: the interface must hand it
+// one at least that polymorphic.
+run!(
+    interface_rank2_argument_narrower_than_its_use_refused,
+    refused("the implementation uses the function it is handed at any 'c, where the signature hands it one at 'b: Number only"),
+    "/test.gx" => "mod inner; let result = inner::f(|x| x + x)",
+    "/test/inner.gxi" => "val f: fn(g: fn<'b: Number + Singleton>(x: 'b) -> 'b) -> (i64, string)",
+    "/test/inner.gx" => "let f = |g: fn<'c: Any>(x: 'c) -> 'c| (g(1), g(\"s\"))"
+);
+
+run!(
+    interface_rank2_argument_wider_than_its_use,
+    prints("[i64:1, f64:2.5]"),
+    "/test.gx" => "mod inner; let result = inner::f(|x| x)",
+    "/test/inner.gxi" => "val f: fn(g: fn<'b: Any>(x: 'b) -> 'b) -> (i64, f64)",
+    "/test/inner.gx" => "let f = |g: fn<'c: Number + Singleton>(x: 'c) -> 'c| (g(1), g(2.5))"
+; FuseExpect::Jit);
+
+// A signature's variable is every caller's to pick: it meets an
+// implementation bound only through its own.
+run!(
+    interface_unbounded_variable_under_a_bounded_implementation_refused,
+    refused("signature has concrete type [null, 'b], which the implementation constraint [null, Number] does not admit"),
+    "/test.gx" => "mod inner; let result = inner::f(\"hello\")",
+    "/test/inner.gxi" => "val f: fn(x: ['b, null]) -> string",
+    "/test/inner.gx" => "let f = 'a: [Number, null] |x: 'a| -> string \"[x]\""
+);
+
+run!(
+    interface_bounded_variable_under_a_bounded_implementation,
+    prints("\"3\""),
+    "/test.gx" => "mod inner; let result = inner::f(3)",
+    "/test/inner.gxi" => "val f: fn<'b: Number>(x: ['b, null]) -> string",
+    "/test/inner.gx" => "let f = 'a: [Number, null] |x: 'a| -> string \"[x]\""
+; FuseExpect::Jit);

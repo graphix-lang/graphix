@@ -13,7 +13,9 @@ pub use graphix_types::{
     expr, format_with_flags, ide, is_block_component, is_do_block, is_fn_block,
     is_lowered, list, mod_root, reference, rep, shared_map, tracked, typ, valarray_of,
 };
-pub(crate) use graphix_types::{CAST_ERR, CAST_ERR_TAG, Restore, profile, stack};
+pub(crate) use graphix_types::{
+    AddrMap, AddrSet, CAST_ERR, CAST_ERR_TAG, Restore, profile, stack,
+};
 
 pub mod analysis;
 pub mod branch;

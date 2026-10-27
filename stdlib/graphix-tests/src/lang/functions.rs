@@ -3177,3 +3177,21 @@ run!(builtin_binding_needs_a_typed_variadic, r#"{
   let s = |@args| -> i64 'core_sum;
   s(1, 2)
 }"#, refused("builtin function core_sum requires all arguments to have type annotations"); FuseExpect::None);
+
+// A returned function's type is parenthesized where its function's
+// throws follows, an inferred one (a variable bound to it) included.
+run!(returned_function_type_parenthesized_before_the_throws, r#"{
+  let f = |x: i64| { let g = |y: i64| y + 1; let e = select x { 0 => error(`E)?, n => n }; g };
+  let h: i64 = f;
+  h
+}"#, refused("does not contain fn(x: i64) -> (fn(y: i64) -> i64) throws Error<ErrChain<`E>>"); FuseExpect::None);
+
+// A parameter whose own parameter is rank-2 takes a polymorphic
+// argument at each call: the call copies the inner quantifier, in the
+// body and in a lambda nested in it alike.
+run!(rank2_quantifier_of_a_parameter_copied_at_each_call, r#"{
+  let use_it = |k: fn(f: fn<'c: Any>(x: 'c) -> 'c) -> (i64, string)| k(|z| z);
+  let nested = |k: fn(f: fn<'c: Any>(x: 'c) -> 'c) -> (i64, string)| { let g = |u: i64| k(|z| z); g(1) };
+  let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+  (use_it(apply), nested(apply))
+}"#, prints(r#"[[i64:1, "s"], [i64:1, "s"]]"#); FuseExpect::Jit);

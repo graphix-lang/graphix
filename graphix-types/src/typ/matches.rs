@@ -1,5 +1,5 @@
 use crate::{
-    PrintFlag,
+    AddrMap, AddrSet, PrintFlag,
     env::Env,
     format_with_flags,
     stack::ensure_sufficient,
@@ -13,7 +13,6 @@ use ahash::AHashSet;
 use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
-use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
 use std::{
     mem,
@@ -25,11 +24,15 @@ use std::{
 /// waits until the rest of the signature has paired what it can.
 #[derive(Debug, Default, Clone)]
 pub(super) struct SigPairs {
-    pub(super) cells: IntMap<usize, Type>,
-    deferred: Vec<(Type, Type)>,
+    pub(super) cells: AddrMap<Type>,
+    /// The unions whose pairing waits, each with its polarity.
+    deferred: Vec<(Type, Type, bool)>,
     /// Each function type paired, signature and implementation, whose
-    /// bounds are judged once every variable has paired.
-    pub(super) fns: Vec<(FnType, FnType)>,
+    /// bounds are judged once every variable has paired, and whether it
+    /// stands in a contravariant position.
+    pub(super) fns: Vec<(FnType, FnType, bool)>,
+    /// The walk is under an odd number of function arguments.
+    pub(super) contra: bool,
 }
 
 /// The most members an open union's pairing searches over; a larger one
@@ -47,8 +50,8 @@ impl SigPairs {
         self.settle(env, hist)?;
         let mut i = 0;
         while i < self.fns.len() {
-            let (sig, imp) = self.fns[i].clone();
-            sig.sig_bounds(env, &imp, self, hist)?;
+            let (sig, imp, contra) = self.fns[i].clone();
+            sig.sig_bounds(env, &imp, contra, self, hist)?;
             i += 1;
         }
         self.settle(env, hist)
@@ -92,12 +95,12 @@ impl SigPairs {
     /// Keep in `deferred` the last union and every union linked to it
     /// through an open implementation cell no pairing has decided; return
     /// the others, in order.
-    fn split_group(&mut self) -> Vec<(Type, Type)> {
-        let cells: LPooled<Vec<LPooled<IntSet<usize>>>> = self
+    fn split_group(&mut self) -> Vec<(Type, Type, bool)> {
+        let cells: LPooled<Vec<LPooled<AddrSet>>> = self
             .deferred
             .iter()
-            .map(|(_, imp)| {
-                let mut free: LPooled<IntSet<usize>> = LPooled::take();
+            .map(|(_, imp, _)| {
+                let mut free: LPooled<AddrSet> = LPooled::take();
                 find_open_cell(imp, true, &mut |tv| {
                     if !self.cells.contains_key(&tv.cell_addr()) {
                         free.insert(tv.cell_addr());
@@ -109,7 +112,7 @@ impl SigPairs {
             .collect();
         let n = cells.len();
         let mut grouped: LPooled<Vec<bool>> = (0..n).map(|i| i + 1 == n).collect();
-        let mut linked: LPooled<IntSet<usize>> = LPooled::take();
+        let mut linked: LPooled<AddrSet> = LPooled::take();
         linked.extend(cells[n - 1].iter().copied());
         let mut grew = true;
         while grew {
@@ -137,20 +140,19 @@ impl SigPairs {
     /// Pair the last deferred union by the first assignment of its
     /// members under which the rest settle.
     fn search(&mut self, env: &Env, hist: &mut RefHist<AHashSet<RefPair>>) -> Result<()> {
-        let Some((s0, s1)) = self.deferred.pop() else { return Ok(()) };
+        let Some((s0, s1, contra)) = self.deferred.pop() else { return Ok(()) };
         let (Type::Set(m0), Type::Set(m1)) = (&s0, &s1) else { unreachable!() };
         let n = m0.len();
         let mut order: LPooled<Vec<usize>> = (0..n).collect();
         let mut first_err = None;
         loop {
             let mut scratch = self.clone();
-            let r = m0
-                .iter()
-                .zip(order.iter())
-                .try_for_each(|(t0, i)| {
-                    t0.sig_matches_int(env, &m1[*i], &mut scratch, hist)
-                })
-                .and_then(|()| scratch.settle(env, hist));
+            scratch.contra = contra;
+            let r = m0.iter().zip(order.iter()).try_for_each(|(t0, i)| {
+                t0.sig_matches_int(env, &m1[*i], &mut scratch, hist)
+            });
+            scratch.contra = self.contra;
+            let r = r.and_then(|()| scratch.settle(env, hist));
             match r {
                 Ok(()) => {
                     *self = scratch;
@@ -541,7 +543,11 @@ impl Type {
             // a union is sorted as it was built, while its cells were open,
             // so its members pair in whichever order the rest accepts
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
-                tvar_map.deferred.push((self.clone(), impl_type.clone()));
+                tvar_map.deferred.push((
+                    self.clone(),
+                    impl_type.clone(),
+                    tvar_map.contra,
+                ));
                 Ok(())
             }
             (Self::Error(e0), Self::Error(e1)) => {
