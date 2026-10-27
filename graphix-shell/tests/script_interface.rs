@@ -8,7 +8,7 @@ use graphix_compiler::expr::Load;
 use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
-use std::fs;
+use std::{fs, time::Duration};
 
 async fn verdicts(gx: &str, gxi: &str) -> Result<[Option<String>; 2]> {
     let dir = tempfile::tempdir()?;
@@ -18,10 +18,13 @@ async fn verdicts(gx: &str, gxi: &str) -> Result<[Option<String>; 2]> {
     let shell =
         |mode| ShellBuilder::<NoExt>::default().cache(CacheMode::Off).mode(mode).build();
     let check = shell(Mode::Check(Load::File(file.clone())))?.check().await;
-    let run = shell(Mode::Script(Load::File(file.clone())))?
-        .run(MainThreadHandle::new().0)
-        .await
-        .map(|_| ());
+    // a run still going is one the interface accepted
+    let run =
+        shell(Mode::Script(Load::File(file.clone())))?.run(MainThreadHandle::new().0);
+    let run = match tokio::time::timeout(Duration::from_secs(30), run).await {
+        Ok(r) => r.map(|_| ()),
+        Err(_) => Ok(()),
+    };
     Ok([check, run].map(|r| r.err().map(|e| format!("{e:#}"))))
 }
 
@@ -98,6 +101,53 @@ async fn contradicting_definitions_are_refused() -> Result<()> {
         }
     }
     Ok(())
+}
+
+// A declared bound holds for every type the signature's variables take:
+// one the implementation needs of a variable the caller picks, or of one
+// the signature fixes, is not declared.
+#[tokio::test(flavor = "multi_thread")]
+async fn bounds_hold_for_every_instance_of_the_signature() -> Result<()> {
+    let cases = [
+        (
+            "let f = 'a: Array<i64> |x: 'a| -> i64 x[0]$ + 1;\nf([1])\n",
+            "val f: fn<'a: Array<'b>>(x: 'a) -> i64;\n",
+            "the implementation requires 'a: Array<i64>, which the signature does not declare",
+        ),
+        (
+            "let f = 'a: Array<'q> |x: 'a, y: 'q| -> i64 1;\nf([1], 1)\n",
+            "val f: fn<'a: Array<'b>>(x: 'a, y: i64) -> i64;\n",
+            "the implementation requires 'a: Array<'q>, which the signature does not declare",
+        ),
+        (
+            "let f = 'a: Array<'q> |x: 'a, y: 'q| -> i64 1;\nf([1], 1)\n",
+            "val f: fn<'a: Array<'b>>(x: 'a, y: 'c) -> i64;\n",
+            "the implementation requires 'a: Array<'q>, which the signature does not declare",
+        ),
+    ];
+    for (gx, gxi, refusal) in cases {
+        let [check, run] = verdicts(gx, gxi).await?;
+        for e in [check, run] {
+            let e = e.expect("an undeclared bound was accepted");
+            assert!(e.contains(refusal), "{e}");
+        }
+    }
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("prog.gx");
+    fs::write(
+        &file,
+        "let f = 'a: Array<'q> |x: 'a, y: 'q| -> i64 1;\nf([\"s\"], \"t\")\n",
+    )?;
+    fs::write(
+        dir.path().join("prog.gxi"),
+        "val f: fn<'a: Array<'b>>(x: 'a, y: 'b) -> i64;\n",
+    )?;
+    ShellBuilder::<NoExt>::default()
+        .cache(CacheMode::Off)
+        .mode(Mode::Check(Load::File(file)))
+        .build()?
+        .check()
+        .await
 }
 
 // A script's interface names only what it imports or declares itself,

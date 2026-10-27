@@ -10,7 +10,7 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     fusion::{
-        self, Brief, FusionBlocker,
+        self, FusionBlocker,
         kernel_abi::{
             self, AbiKind, FreezeError, KernelParam, KernelSig, ParamKind, Seen,
             abi_kind, expand_key_fp, freeze_for_abi_normalized, key_closed, scalar_prim,
@@ -19,7 +19,7 @@ use crate::{
     },
     node::{callsite::CallSite, lambda::GXLambda},
     profile::{self, Phase},
-    typ::{FnArgKind, FnArgType, FnType, Type, TypeRef},
+    typ::{Brief, FnArgKind, FnArgType, FnType, Type, TypeRef},
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
@@ -1873,27 +1873,5 @@ mod tests {
         }
         assert!(unfolds_past(&typ, FUSION_SIZE_CAP));
         assert!(unfolds_past(&typ, u32::MAX));
-    }
-
-    /// A refusal renders a type that shares its parts in time bounded by
-    /// its prefix, not 2^depth.
-    #[test]
-    fn shared_type_reason_is_bounded() {
-        let mut variant = Type::Primitive(Typ::I64.into());
-        let mut tuple = variant.clone();
-        for _ in 1..=60 {
-            variant = Type::Variant(
-                arcstr::literal!("A"),
-                Arc::from_iter([variant.clone(), variant]),
-                Default::default(),
-            );
-            tuple = Type::Tuple(Arc::from_iter([tuple.clone(), tuple]));
-        }
-        for typ in [&variant, &tuple] {
-            let s = format_compact!("{}", Brief(typ));
-            assert!(s.len() <= Brief::BYTES + '…'.len_utf8() && s.ends_with('…'), "{s}");
-        }
-        let small = Type::Primitive(Typ::I64.into());
-        assert_eq!(format_compact!("{}", Brief(&small)), "i64");
     }
 }

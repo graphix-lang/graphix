@@ -11,7 +11,7 @@ use crate::{
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::{MatchHist, SigPairs},
-        tvar::{self, Fresh, Level},
+        tvar::{self, Fresh, Level, RigidGate},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -950,11 +950,15 @@ impl FnType {
     // (x-typecheck-generics-06). (t-fntyp-04)
     pub fn shared_call(&self) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.fresh_quantifiers(&mut known, |c, known| c.swap_cells(known));
+        let image = |known: &AHashMap<usize, TVar>, a| {
+            known.get(&a).map(|f| Type::TVar(f.clone()))
+        };
+        self.fresh_quantifiers(&mut known, |c, known| c.swap_cells(&|a| image(known, a)));
         if known.is_empty() {
             return self.clone();
         }
-        self.cow_walk(|t| Some(t.swap_cells(&known))).unwrap_or_else(|| self.clone())
+        self.cow_walk(|t| Some(t.swap_cells(&|a| image(&known, a))))
+            .unwrap_or_else(|| self.clone())
     }
 
     /// A call's copy of the signature under the open gates `open`
@@ -1178,7 +1182,7 @@ impl FnType {
     /// Rigid gates on the quantifiers no call has picked.
     fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.open_quantifiers(|tv, _| gates.push(tv.open_rigid()));
+        self.open_quantifiers(|tv, _| gates.push(tv.open_quantifier_rigid()));
         gates
     }
 
@@ -1418,8 +1422,13 @@ impl FnType {
             if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
                 sig_tcs.extend(bounds.iter().cloned());
             }
+            // the conjunct in the signature's terms, whose variables are
+            // each caller's to pick
+            let in_sig = impl_tc.swap_cells(&|a| tvar_map.cells.get(&a).cloned());
+            let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+            self.for_each_part(&mut |t, _| super::contains::hold_rigid(t, &mut gates));
             for s in sig_tcs.iter() {
-                if s.implies(env, impl_tc)? {
+                if s.implies(env, &in_sig)? {
                     return Ok(());
                 }
             }

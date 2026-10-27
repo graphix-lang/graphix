@@ -28,7 +28,7 @@ use crate::{
     fusion::kernel_abi::{KernelParam, KernelSig, ParamKind},
     node::{self, callsite::CallNode, genn},
     profile::{self, Phase},
-    typ::{FnType, Type},
+    typ::{Brief, FnType, Type},
 };
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
@@ -43,47 +43,6 @@ use std::{
     sync::LazyLock,
 };
 use triomphe::Arc;
-
-/// A type in a refusal's reason: its first [`Brief::BYTES`] as printed,
-/// tvars dereferenced. A type that shares its parts prints as a tree,
-/// 2^depth long, and the printer stops at the first write refused.
-pub(crate) struct Brief<'a>(pub(crate) &'a Type);
-
-impl Brief<'_> {
-    pub(crate) const BYTES: usize = 512;
-}
-
-impl std::fmt::Display for Brief<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        struct Capped<'a, 'b> {
-            f: &'a mut std::fmt::Formatter<'b>,
-            left: usize,
-        }
-        impl std::fmt::Write for Capped<'_, '_> {
-            fn write_str(&mut self, s: &str) -> std::fmt::Result {
-                if s.len() <= self.left {
-                    self.left -= s.len();
-                    return self.f.write_str(s);
-                }
-                let mut end = self.left;
-                while !s.is_char_boundary(end) {
-                    end -= 1;
-                }
-                self.left = 0;
-                self.f.write_str(&s[..end])?;
-                Err(std::fmt::Error)
-            }
-        }
-        let mut capped = Capped { f, left: Self::BYTES };
-        let typ = self.0;
-        match format_with_flags(PrintFlag::DerefTVars, || {
-            std::fmt::Write::write_fmt(&mut capped, format_args!("{typ}"))
-        }) {
-            Err(_) if capped.left == 0 => capped.f.write_str("…"),
-            r => r,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 struct FusionSource {

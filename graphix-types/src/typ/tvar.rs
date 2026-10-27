@@ -2679,22 +2679,19 @@ impl Type {
         self.rename_int(known).unwrap_or_else(|| self.clone())
     }
 
-    /// Self with each open cell `known` maps replaced by its image;
-    /// every other cell, bound or open, is kept.
-    pub(crate) fn swap_cells(&self, known: &AHashMap<usize, TVar>) -> Type {
-        self.swap_int(known).unwrap_or_else(|| self.clone())
+    /// Self with each open cell `image` maps, by its address, replaced by
+    /// its image; every other cell, bound or open, is kept.
+    pub(crate) fn swap_cells(&self, image: &dyn Fn(usize) -> Option<Type>) -> Type {
+        self.swap_int(image).unwrap_or_else(|| self.clone())
     }
 
-    fn swap_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
+    fn swap_int(&self, image: &dyn Fn(usize) -> Option<Type>) -> Option<Type> {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => tv
-                .open_cell()
-                .and_then(|o| known.get(&o.cell_addr()))
-                .map(|f| Type::TVar(f.clone())),
+            Type::TVar(tv) => tv.open_cell().and_then(|o| image(o.cell_addr())),
             Type::Fn(ft) => {
-                ft.cow_walk(|t| t.swap_int(known)).map(|f| Type::Fn(Arc::new(f)))
+                ft.cow_walk(|t| t.swap_int(image)).map(|f| Type::Fn(Arc::new(f)))
             }
-            t => t.cow_children(&mut |c| c.swap_int(known)),
+            t => t.cow_children(&mut |c| c.swap_int(image)),
         })
     }
 

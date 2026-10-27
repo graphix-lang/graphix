@@ -1530,8 +1530,10 @@ impl Env {
     /// The abstract type an impl head names, through its typedef: two
     /// heads of different abstract types never overlap.
     fn head_abstract(&self, t: &Type) -> Option<AbstractId> {
+        if let Some(id) = t.resolved_abstract() {
+            return Some(id);
+        }
         match t {
-            Type::Abstract { id, .. } => Some(*id),
             Type::Ref(_) => match t.lookup_ref(self).ok()? {
                 Type::Abstract { id, .. } => Some(id),
                 _ => None,
@@ -1592,10 +1594,9 @@ impl Env {
         Ok(None)
     }
 
-    /// The implementation of `trait_id` for `t`, which must already be
-    /// dereferenced and expanded to a structural type. An abstract
-    /// target matches by identity; any other head by unification
-    /// against a fresh instantiation, then equivalence.
+    /// The implementation of `trait_id` for `t`. An abstract head, written
+    /// or named by its typedef, matches by identity; any other head by
+    /// unification against a fresh instantiation, then equivalence.
     pub fn find_impl(&self, trait_id: TraitId, t: &Type) -> Result<Option<Arc<ImplDef>>> {
         crate::typ::find_impl(self, trait_id, t)
     }

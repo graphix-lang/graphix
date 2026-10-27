@@ -3658,6 +3658,23 @@ run!(
     }
 );
 
+// A quantified function type written anywhere, not only as a formal, keeps
+// exactly its declared bounds: whoever holds the value may call it at any
+// type they admit, so a function that needs more is refused where it is
+// given.
+run!(rank2_let_annotation_keeps_its_bound, r#"{
+    let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
+    let g: fn<'b: Number>(x: 'b, y: 'b) -> 'b = add;
+    g(1.5, 2.5)
+}"#, refused("does not contain fn<'a: Int + Singleton>"); FuseExpect::None);
+
+run!(rank2_typedef_struct_field_keeps_its_bound, r#"{
+    type S = {f: fn<'b: Number>(x: 'b, y: 'b) -> 'b};
+    let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
+    let s: S = {f: add};
+    s.f(1.5, 2.5)
+}"#, refused("type mismatch S does not contain"); FuseExpect::None);
+
 // A quantified function type at a data position of a formal (a field, an
 // element, a member) holds its argument as the formal itself would: the
 // callee may call it at any type the bound admits.
@@ -4153,6 +4170,48 @@ run!(
 }"#,
     refused("does not contain");
     FuseExpect::None
+);
+
+// A Data cell under a formal's argument judges what the function is
+// called with: a handler refused for its result is a type mismatch.
+run!(
+    data_argument_cell_does_not_blame_the_handler,
+    r#"{
+  let apply = 'a: Data |f: [fn(v: 'a) -> _, null], v: 'a| v;
+  let h = |v: i64| v;
+  apply(h, 1)
+}"#,
+    refused("does not contain fn(v: i64) -> i64");
+    FuseExpect::None
+);
+
+// What no member of a union covers goes to an open member that takes it,
+// whatever the order the union is written in: a rigid one takes only
+// itself.
+run!(
+    union_residue_skips_a_rigid_member_primitives,
+    r#"{
+  let f = 'r: Any |x: 'r, b: bool| -> i64 {
+    let v: ['r, 'q] = select b { true => 1, false => "s" };
+    0
+  };
+  f(true, false)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
+run!(
+    union_residue_skips_a_rigid_member,
+    r#"{
+  let f = 'r: Any |x: 'r, b: bool| -> i64 {
+    let v: ['r, 'q] = select b { true => 1, false => ["s"] };
+    0
+  };
+  f(true, false)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
 );
 
 // A type name means one thing throughout its statement list: a name a

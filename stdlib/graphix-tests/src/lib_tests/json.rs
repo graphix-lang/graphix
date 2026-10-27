@@ -288,7 +288,7 @@ run!(f32_written_as_held, r#"{
 run!(writers_refuse_a_typed_reference, r#"{
     let x = 5;
     json::write_str({a: &x, b: 1})
-}"#, refused("is not data: a writer writes no function and no reference"); FuseExpect::None);
+}"#, refused("{ a: &i64, b: i64 } is not data: data holds no function and no reference"); FuseExpect::None);
 
 run!(writers_refuse_references, r#"{
     let x = 5;

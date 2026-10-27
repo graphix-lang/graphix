@@ -888,6 +888,20 @@ run!(net_on_write_function_refused, r#"{
     got
 }"#, testing::refused("is not data"); FuseExpect::None);
 
+// A handler refused for its result is a type mismatch: the Data cell it
+// is called with meets an i64, never the handler.
+run!(net_on_write_handler_result_is_a_mismatch, r#"{
+    let h: fn(v: i64) -> i64 = |v: i64| 0;
+    sys::net::publish(#on_write: h, "/local/ow_ret", 1)
+}"#, testing::refused("does not contain fn(v: i64) -> i64"); FuseExpect::None);
+
+// A refusal names the part a Data cell meets, here the handler's argument.
+run!(net_on_write_reference_argument_named, r#"{
+    let seen = 0;
+    sys::net::publish(#on_write: |v: &i64| seen <- v ~ seen + 1, "/local/ow_ref", 0);
+    seen
+}"#, testing::refused("&i64 is not data: data holds no function and no reference"); FuseExpect::None);
+
 run!(net_rpc_reference_argument_refused, r#"{
     let rpc = sys::net::rpc(#path: "/local/rpc_ref", #doc: "", #spec: null, #f: |a: &i64| *a + 1);
     rpc

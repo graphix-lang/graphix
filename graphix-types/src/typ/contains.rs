@@ -6,14 +6,15 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, AndAc, CoreTrait, Indiscernible, Lazy, Mutability, NormKey, Open,
+        AbstractId, AndAc, Brief, CoreTrait, FnType, Indiscernible, Lazy, Mutability, NormKey, Open,
         RefHist, RefPair, TVar, TraitId, Type, node_addr, params_size, probe_key,
-        setops::union_identical,
-        tvar::{CellFact, Fresh, would_cycle_inner},
+        setops::{strictly_identical, union_identical},
+        tvar::{CellFact, Fresh, RigidGate, would_cycle_inner},
     },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
+use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::{BitFlags, bitflags};
 use netidx_value::Typ;
@@ -325,7 +326,7 @@ fn shares_bare_cell(s0: &[Type]) -> bool {
         })
         .any(|cell| {
             s0.iter().filter(|m| !is_unbound_tvar(m)).any(|m| {
-                let mut tvs: LPooled<AHashMap<arcstr::ArcStr, TVar>> = LPooled::take();
+                let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                 m.collect_tvars(&mut tvs);
                 tvs.values().any(|tv| open(tv) == Some(cell))
             })
@@ -633,7 +634,7 @@ impl Type {
     /// Whether the declared bound `self` implies the bound `c`: it is `c`,
     /// or holds it of every type it admits (a predicate only where none of
     /// those has an unknown part), and `Ordered` implies `Discernible`.
-    // CR claude for claude: [bug/medium] implies leaves the declaring side's own
+    // XCR claude for claude: [bug/medium] implies leaves the declaring side's own
     // variables open. `self == c` uses Type's PartialEq, which treats two unbound cells
     // as equal. The empty-flag probe `c ⊇ self` admits an open cell as anything. So an
     // interface bound `'a: Array<'b>` (the caller picks 'b) implies the
@@ -644,13 +645,37 @@ impl Type {
     // run the probe with RigidCheck while rigid gates are open on self's open cells, so
     // the bound must hold for every instance of the signature's variables. probe:
     // design/review-2026-10-26/repro/t-contains-implies-open-cell.sh (t-contains-01)
+    // 2026-10-27 claude: Type::implies compares by strict cell identity and probes c ⊇
+    // self under RigidCheck with self's open cells held rigid (hold_rigid), so a bound
+    // holds for every instance of the declaring side's variables; sig_bounds' declared
+    // translates the implementation's conjunct into the signature's terms (swap_cells
+    // through the SigPairs map, so 'q tied to y: i64 reads Array<i64>) and holds the
+    // whole signature's open cells rigid. Pin: graphix-shell tests/script_interface.rs
+    // bounds_hold_for_every_instance_of_the_signature (Array<i64>, 'q tied to i64, 'q
+    // tied to another variable 'c; Array<'b> with y: 'b still checks); its verdicts
+    // helper now bounds a run at 30 s so an accepted program fails the test instead of
+    // hanging it.
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
-        Ok(self == c
-            || matches!((self, c), (Type::Ordered, Type::Discernible))
-            || (!self.is_predicate()
-                && (!c.is_predicate() || !self.holds_unknown(env))
-                && c.contains_with_flags(BitFlags::empty(), env, self)?))
+        if strictly_identical(self, c) || matches!((self, c), (Type::Ordered, Type::Discernible))
+        {
+            return Ok(true);
+        }
+        if self.is_predicate() || (c.is_predicate() && self.holds_unknown(env)) {
+            return Ok(false);
+        }
+        // the bound holds whatever types the declaring side's variables take
+        let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+        hold_rigid(self, &mut gates);
+        c.contains_with_flags(ContainsFlags::RigidCheck.into(), env, self)
     }
+}
+
+/// Hold every open cell of `t` rigid while `gates` lives.
+pub(super) fn hold_rigid(t: &Type, gates: &mut Vec<RigidGate>) {
+    find_open_cell(t, true, &mut |tv| {
+        gates.push(tv.open_rigid());
+        false
+    });
 }
 
 /// How two distinct open cells unify.
@@ -884,7 +909,7 @@ impl std::fmt::Display for TypeMismatch {
                     s(passed)
                 )?;
             }
-            // CR claude for claude: [bug/medium] This renders both types in full. A
+            // XCR claude for claude: [bug/medium] This renders both types in full. A
             // type that shares its parts prints 2^depth long, so a 32-line program
             // (`let x_i = `A(x_{i-1}, x_{i-1})` 30 times, then `let y: i64 = x30`)
             // makes --check run out of memory past 6 GB. At 28 levels the error is 2.4
@@ -894,9 +919,18 @@ impl std::fmt::Display for TypeMismatch {
             // `val .. is declared .. but implemented ..` messages in node/module.rs.
             // probe: design/review-2026-10-26/repro/x-rerun-4-dag-type-mismatch-oom.gx
             // (x-rerun-4-02)
+            // 2026-10-27 claude: typ::Brief (moved from fusion) caps a printed type at
+            // 512 bytes; TypeMismatch renders both sides through it and compares the
+            // capped texts, the module.rs sig-mismatch messages print the
+            // implementation through it, and the walks contains_mismatch runs
+            // (discernible_cell, uncastable_refusal's open-cell search via
+            // find_open_cell, same_name_apart) visit each shared node once. The
+            // 30-level repro checks in under a second. Pins: graphix-types
+            // typ::contains::tests::mismatch_message_is_bounded (a 60-level shared type
+            // each side), brief_is_bounded.
             let (expected, actual) = (
-                format_compact!("{}", self.expected),
-                format_compact!("{}", self.actual),
+                format_compact!("{}", Brief(&self.expected)),
+                format_compact!("{}", Brief(&self.actual)),
             );
             write!(f, "type mismatch {expected} does not contain {actual}")?;
             // sides that print alike name two definitions of one name
@@ -913,6 +947,125 @@ impl std::fmt::Display for TypeMismatch {
     }
 }
 
+/// The walk that finds where an open cell bounded `Data` meets a function
+/// or a reference, pairing the parts of two types as `contains` does.
+struct DataMeet<'a> {
+    env: &'a Env,
+    /// Each side's enclosing function types' own quantifiers: such a cell
+    /// judges what its function is called with, never the function.
+    own: [SmallVec<[ArcStr; 2]>; 2],
+    seen: LPooled<AHashSet<(usize, usize)>>,
+}
+
+impl<'a> DataMeet<'a> {
+    fn new(env: &'a Env) -> Self {
+        Self { env, own: Default::default(), seen: LPooled::take() }
+    }
+
+    /// The part of one side that an open `Data` cell of the other meets
+    /// and that holds a function or a reference.
+    fn walk(&mut self, t: [&Type; 2]) -> Option<Type> {
+        ensure_sufficient(|| self.walk_inner(t))
+    }
+
+    fn walk_inner(&mut self, t: [&Type; 2]) -> Option<Type> {
+        for i in 0..2 {
+            let Type::TVar(tv) = t[i] else { continue };
+            let other = t[1 - i];
+            return match tv.binding() {
+                Some(b) => {
+                    let mut t = t;
+                    t[i] = &b;
+                    self.walk(t)
+                }
+                None => (tv.requires_data()
+                    && !self.own[i].contains(&tv.name)
+                    && (other.holds_fn(self.env) || other.holds_ref(self.env)))
+                .then(|| other.clone()),
+            };
+        }
+        if let (Some(a), Some(b)) = (node_addr(t[0]), node_addr(t[1]))
+            && !self.seen.insert((a, b))
+        {
+            return None;
+        }
+        let expand = |i: usize| t[i].lookup_ref_probe(self.env).map(|(_, x)| x);
+        match t {
+            [Type::Ref(r0), Type::Ref(r1)] if r0.same_definition(r1) => {
+                self.zip(&r0.params, &r1.params)
+            }
+            [Type::Ref(_), _] => {
+                let x = expand(0)?;
+                self.walk([&x, t[1]])
+            }
+            [_, Type::Ref(_)] => {
+                let x = expand(1)?;
+                self.walk([t[0], &x])
+            }
+            [Type::Set(s), o] => s.iter().find_map(|m| self.walk([m, o])),
+            [o, Type::Set(s)] => s.iter().find_map(|m| self.walk([o, m])),
+            [Type::Fn(f0), Type::Fn(f1)] => {
+                let lens = [self.own[0].len(), self.own[1].len()];
+                self.own[0].extend(f0.quantifiers.iter().cloned());
+                self.own[1].extend(f1.quantifiers.iter().cloned());
+                let found = self.fn_parts(f0, f1);
+                self.own[0].truncate(lens[0]);
+                self.own[1].truncate(lens[1]);
+                found
+            }
+            [Type::Tuple(a), Type::Tuple(b)]
+            | [Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }] => {
+                self.zip(a, b)
+            }
+            [Type::Variant(n0, a, _), Type::Variant(n1, b, _)] if n0 == n1 => {
+                self.zip(a, b)
+            }
+            [Type::Struct(a), Type::Struct(b)] => a.iter().find_map(|(n, x, _)| {
+                let (_, y, _) = b.iter().find(|(m, _, _)| m == n)?;
+                self.walk([x, y])
+            }),
+            [Type::Array(a), Type::Array(b)]
+            | [Type::List(a), Type::List(b)]
+            | [Type::Error(a), Type::Error(b)]
+            | [Type::ByRef(_, a), Type::ByRef(_, b)] => self.walk([a, b]),
+            [Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }] => {
+                self.walk([k0, k1]).or_else(|| self.walk([v0, v1]))
+            }
+            [Type::App(c0, a0), Type::App(c1, a1)] => {
+                self.walk([c0, c1]).or_else(|| self.walk([a0, a1]))
+            }
+            _ => None,
+        }
+    }
+
+    fn zip(&mut self, a: &[Type], b: &[Type]) -> Option<Type> {
+        a.iter().zip(b.iter()).find_map(|(x, y)| self.walk([x, y]))
+    }
+
+    /// A function's arguments, positional ones by position and labeled
+    /// ones by label, then its variadic argument, result and throws.
+    fn fn_parts(&mut self, f0: &FnType, f1: &FnType) -> Option<Type> {
+        f0.args
+            .iter()
+            .filter(|a| a.is_positional())
+            .zip(f1.args.iter().filter(|a| a.is_positional()))
+            .find_map(|(x, y)| self.walk([&x.typ, &y.typ]))
+            .or_else(|| {
+                f0.args.iter().find_map(|x| {
+                    let l = x.label()?;
+                    let y = f1.args.iter().find(|y| y.label() == Some(l))?;
+                    self.walk([&x.typ, &y.typ])
+                })
+            })
+            .or_else(|| match (&f0.vargs, &f1.vargs) {
+                (Some(a), Some(b)) => self.walk([a, b]),
+                _ => None,
+            })
+            .or_else(|| self.walk([&f0.rtype, &f1.rtype]))
+            .or_else(|| self.walk([&f0.throws, &f1.throws]))
+    }
+}
+
 /// The first two references, at one place in `t0` and `t1`, that write one
 /// name and resolve to different definitions: the name and where each
 /// definition is written.
@@ -920,34 +1073,46 @@ fn same_name_apart(
     t0: &Type,
     t1: &Type,
 ) -> Option<(ModPath, SourcePosition, SourcePosition)> {
-    ensure_sufficient(|| match (t0, t1) {
-        (Type::TVar(tv), _) | (_, Type::TVar(tv)) => {
-            let b = tv.binding()?;
-            match t0 {
-                Type::TVar(_) => same_name_apart(&b, t1),
-                _ => same_name_apart(t0, &b),
-            }
-        }
-        (Type::Ref(r0), Type::Ref(r1)) if r0.name == r1.name => {
-            match (r0.resolved(), r1.resolved()) {
-                (Some(d0), Some(d1)) if r0.def_key() != r1.def_key() => {
-                    Some((r0.name.clone(), d0.pos(), d1.pos()))
+    fn walk(
+        t0: &Type,
+        t1: &Type,
+        seen: &mut AHashSet<(usize, usize)>,
+    ) -> Option<(ModPath, SourcePosition, SourcePosition)> {
+        ensure_sufficient(|| match (t0, t1) {
+            (Type::TVar(tv), _) | (_, Type::TVar(tv)) => {
+                let b = tv.binding()?;
+                match t0 {
+                    Type::TVar(_) => walk(&b, t1, seen),
+                    _ => walk(t0, &b, seen),
                 }
-                _ => r0
-                    .params
-                    .iter()
-                    .zip(r1.params.iter())
-                    .find_map(|(a, b)| same_name_apart(a, b)),
             }
-        }
-        _ => {
-            let mut c0: LPooled<Vec<Type>> = LPooled::take();
-            let mut c1: LPooled<Vec<Type>> = LPooled::take();
-            t0.for_each_child(&mut |c| c0.push(c.clone()));
-            t1.for_each_child(&mut |c| c1.push(c.clone()));
-            c0.iter().zip(c1.iter()).find_map(|(a, b)| same_name_apart(a, b))
-        }
-    })
+            (Type::Ref(r0), Type::Ref(r1)) if r0.name == r1.name => {
+                match (r0.resolved(), r1.resolved()) {
+                    (Some(d0), Some(d1)) if r0.def_key() != r1.def_key() => {
+                        Some((r0.name.clone(), d0.pos(), d1.pos()))
+                    }
+                    _ => r0
+                        .params
+                        .iter()
+                        .zip(r1.params.iter())
+                        .find_map(|(a, b)| walk(a, b, seen)),
+                }
+            }
+            _ => {
+                if let (Some(a), Some(b)) = (node_addr(t0), node_addr(t1))
+                    && !seen.insert((a, b))
+                {
+                    return None;
+                }
+                let mut c0: LPooled<Vec<Type>> = LPooled::take();
+                let mut c1: LPooled<Vec<Type>> = LPooled::take();
+                t0.for_each_child(&mut |c| c0.push(c.clone()));
+                t1.for_each_child(&mut |c| c1.push(c.clone()));
+                c0.iter().zip(c1.iter()).find_map(|(a, b)| walk(a, b, seen))
+            }
+        })
+    }
+    walk(t0, t1, &mut LPooled::take())
 }
 
 impl std::error::Error for TypeMismatch {}
@@ -981,31 +1146,54 @@ fn same_content(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// The first open cell in `t` that `pick` takes, each shared node walked
+/// once; a function type's parts only `into_fns`.
+fn find_open_cell(
+    t: &Type,
+    into_fns: bool,
+    pick: &mut dyn FnMut(&TVar) -> bool,
+) -> Option<TVar> {
+    fn walk(
+        t: &Type,
+        into_fns: bool,
+        pick: &mut dyn FnMut(&TVar) -> bool,
+        seen: &mut IntSet<usize>,
+    ) -> Option<TVar> {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => walk(&b, into_fns, pick, seen),
+                None => pick(tv).then(|| tv.clone()),
+            },
+            Type::Fn(_) if !into_fns => None,
+            t => {
+                if let Some(a) = node_addr(t)
+                    && !seen.insert(a)
+                {
+                    return None;
+                }
+                let mut found = None;
+                t.for_each_child(&mut |c| {
+                    if found.is_none() {
+                        found = walk(c, into_fns, pick, seen)
+                    }
+                });
+                found
+            }
+        })
+    }
+    walk(t, into_fns, pick, &mut LPooled::take())
+}
+
 /// An open cell in `t` with the `Discernible` or `Ordered` conjunct, and
 /// the stronger of the two it holds.
 fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) => match tv.binding() {
-            Some(b) => discernible_cell(&b),
-            None => {
-                let cons = tv.cell_constraints();
-                let has = |b: Type| cons.contains(&b).then_some(b);
-                has(Type::Ordered)
-                    .or_else(|| has(Type::Discernible))
-                    .map(|b| (tv.clone(), b))
-            }
-        },
-        Type::Fn(_) => None,
-        t => {
-            let mut found = None;
-            t.for_each_child(&mut |c| {
-                if found.is_none() {
-                    found = discernible_cell(c)
-                }
-            });
-            found
-        }
-    })
+    let bound = |tv: &TVar| {
+        let cons = tv.cell_constraints();
+        [Type::Ordered, Type::Discernible].into_iter().find(|b| cons.contains(b))
+    };
+    let tv = find_open_cell(t, false, &mut |tv| bound(tv).is_some())?;
+    let b = bound(&tv)?;
+    Some((tv, b))
 }
 
 /// The refusal of a comparison of two instances of `name` whose
@@ -1065,19 +1253,8 @@ impl Type {
     /// bounded by `Concrete` or `Data`, refuses a type holding an abstract
     /// type that crosses no data: name it.
     fn uncastable_refusal(&self, env: &Env, t: &Self) -> Option<anyhow::Error> {
-        fn bounded(t: &Type, by: &dyn Fn(&TVar) -> bool) -> bool {
-            ensure_sufficient(|| match t {
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => bounded(&b, by),
-                    None => by(tv),
-                },
-                t => {
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found |= bounded(c, by));
-                    found
-                }
-            })
-        }
+        let bounded =
+            |t: &Type, by: &dyn Fn(&TVar) -> bool| find_open_cell(t, true, &mut |tv| by(tv)).is_some();
         let either = |by: &dyn Fn(&TVar) -> bool| bounded(self, by) || bounded(t, by);
         if !either(&|tv| tv.requires_concrete() || tv.requires_data()) {
             return None;
@@ -1095,33 +1272,7 @@ impl Type {
                  it: implement Cast for it where it is defined"
             ));
         }
-        // a function type's own Data quantifier (a rank-2 formal's
-        // fn<'a: Data>) judges what that function is called with, not the
-        // function: only another Data cell makes the type data
-        fn data_cell(t: &Type, own: &mut SmallVec<[arcstr::ArcStr; 2]>) -> bool {
-            ensure_sufficient(|| match t {
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => data_cell(&b, own),
-                    None => tv.requires_data() && !own.contains(&tv.name),
-                },
-                Type::Fn(ft) => {
-                    let n = own.len();
-                    own.extend(ft.quantifiers.iter().cloned());
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found |= data_cell(c, own));
-                    own.truncate(n);
-                    found
-                }
-                t => {
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found |= data_cell(c, own));
-                    found
-                }
-            })
-        }
-        let data = |t: &Type| data_cell(t, &mut SmallVec::new());
-        let code = |t: &Type| t.holds_fn(env) || t.holds_ref(env);
-        // CR claude for claude: [bug/medium] This blames Data whenever either side
+        // XCR claude for claude: [bug/medium] This blames Data whenever either side
         // holds an unbound Data cell anywhere and either side holds a function or
         // reference. It never checks that the cell sits where the code is. So a
         // function refused for its return type is reported as data. `publish(#on_write:
@@ -1133,7 +1284,13 @@ impl Type {
         // Otherwise fall through to the TypeMismatch. probe:
         // design/review-2026-10-26/repro/tests-lib-b2-not-data-misattributed.gx
         // (tests-lib-b2-01)
-        // CR claude for claude: [bug/medium] This explains any failed contains as a
+        // 2026-10-27 claude: uncastable_refusal now walks the two types together
+        // (DataMeet, pairing parts as contains does, a function's own quantifiers
+        // excluded) and blames Data only where an open Data cell meets a function or
+        // reference; else the plain TypeMismatch. Pins:
+        // lang::types::data_argument_cell_does_not_blame_the_handler,
+        // lib_tests::net::net_on_write_handler_result_is_a_mismatch.
+        // XCR claude for claude: [bug/medium] This explains any failed contains as a
         // Data refusal when a Data cell sits anywhere in either side, including inside
         // a function's parameter list. So a publish handler `h: fn(v: i64) -> i64`
         // (wrong return: the formal wants `-> _`) is told 'fn(v: i64) -> i64 is not
@@ -1144,27 +1301,32 @@ impl Type {
         // what the function is called with, never the function. probe:
         // design/review-2026-10-26/repro/tests-lang-rest-a-handler-mismatch-says-not-data.gx
         // (tests-lang-rest-a-04)
-        if (data(self) || data(t)) && (code(self) || code(t)) {
-            // CR claude for claude: [readability/low] When the refused pair is a whole
-            // function type (an `#on_write` or rpc `#f` handler against `fn(v: 'a) ->
-            // _`), `code(t)` is true of the handler itself, so the message names the
-            // handler: "fn(v: &i64) -> '_7759: unbound is not data: a writer writes no
-            // function and no reference". The user wrote `v: &i64`. The message calls
-            // the callback not data, prints an inference variable, and speaks of a
-            // writer where the value is read. Fix: report the part the Data cell meets
-            // (walk the pair to the cell bounded Data and print what it is matched
-            // with, `&i64`), and word it for both directions. probe:
-            // design/review-2026-10-26/repro/x-rerun-3-not-data-names-handler.gx
-            // (x-rerun-3-08)
-            let t = if code(t) { t } else { self };
-            return Some(anyhow::anyhow!(
-                "{}",
-                format_with_flags(PrintFlag::DerefTVars, || format_compact!(
-                    "{t} is not data: a writer writes no function and no reference"
-                ))
-            ));
-        }
-        None
+        // 2026-10-27 claude: Fixed with tests-lib-b2-01: a Data cell inside a function's
+        // parameters meets the parameter it is paired with, never the function. Pin:
+        // lib_tests::net::net_on_write_handler_result_is_a_mismatch (publish #on_write h:
+        // fn(v: i64) -> i64 is a type mismatch).
+        // XCR claude for claude: [readability/low] When the refused pair is a whole
+        // function type (an `#on_write` or rpc `#f` handler against `fn(v: 'a) ->
+        // _`), `code(t)` is true of the handler itself, so the message names the
+        // handler: "fn(v: &i64) -> '_7759: unbound is not data: a writer writes no
+        // function and no reference". The user wrote `v: &i64`. The message calls
+        // the callback not data, prints an inference variable, and speaks of a
+        // writer where the value is read. Fix: report the part the Data cell meets
+        // (walk the pair to the cell bounded Data and print what it is matched
+        // with, `&i64`), and word it for both directions. probe:
+        // design/review-2026-10-26/repro/x-rerun-3-not-data-names-handler.gx
+        // (x-rerun-3-08)
+        // 2026-10-27 claude: The refusal names the part the Data cell meets and is
+        // worded for both directions: '&i64 is not data: data holds no function
+        // and no reference'. Pin:
+        // lib_tests::net::net_on_write_reference_argument_named; the wording pins
+        // json writers_refuse_a_typed_reference and cast_trait
+        // write_of_a_function_refused changed with it.
+        let part = DataMeet::new(env).walk([self, t])?;
+        Some(anyhow::anyhow!(
+            "{} is not data: data holds no function and no reference",
+            Brief(&part)
+        ))
     }
 
     /// An open cell bounded by a trait refuses a type with a member that
@@ -1936,7 +2098,6 @@ impl Type {
                     Self::Primitive(p) if p.len() > 1 => {
                         let concrete: SmallVec<[Type; 8]> =
                             s.iter().filter(|m| !is_unbound_tvar(m)).cloned().collect();
-                        let bare = s.iter().find(|m| is_unbound_tvar(m));
                         let mut uncovered = BitFlags::empty();
                         for b in p.iter() {
                             let bit = Self::Primitive(b.into());
@@ -1944,6 +2105,13 @@ impl Type {
                                 uncovered |= b
                             }
                         }
+                        let bare = Self::residue_member(
+                            s.iter().filter(|m| is_unbound_tvar(m)),
+                            flags,
+                            env,
+                            hist,
+                            &Self::Primitive(uncovered),
+                        )?;
                         if uncovered.is_empty() || bare.is_some() {
                             for b in (*p & !uncovered).iter() {
                                 let bit = Self::Primitive(b.into());
@@ -2489,7 +2657,7 @@ impl Type {
             Type::Set(Arc::from_iter(residue.drain(..)))
         };
         let target = target.normalize();
-        // CR claude for claude: [bug/medium] The residue goes to the first unbound
+        // XCR claude for claude: [bug/medium] The residue goes to the first unbound
         // member, and is_unbound_tvar counts a rigid declared variable as unbound. With
         // ['r, 'q] ⊇ [i64, Array<string>] inside 'r's definition, the residue goes to
         // the rigid 'r, the committing walk refuses it, and the containment fails
@@ -2500,11 +2668,35 @@ impl Type {
         // none does. probe:
         // design/review-2026-10-26/repro/t-contains-rigid-bare-member.gx
         // (t-contains-02)
-        let bare = s0.iter().zip(&free).find(|(_, free)| **free);
-        match bare {
-            Some((tv_m, _)) => tv_m.contains_int(flags, env, hist, &target),
+        // 2026-10-27 claude: place_members and the Primitive arm of Set ⊇ t both give
+        // the residue to Type::residue_member: the first open member a guide(flags)
+        // probe admits it into (a rigid one admits only itself), else the first as
+        // before. ['r, 'q] now checks as ['q, 'r] does. Pins:
+        // lang::types::union_residue_skips_a_rigid_member (place_members) and
+        // union_residue_skips_a_rigid_member_primitives.
+        let free = s0.iter().zip(&free).filter_map(|(m, free)| free.then_some(m));
+        match Self::residue_member(free, flags, env, hist, &target)? {
+            Some(m) => m.contains_int(flags, env, hist, &target),
             None => Ok(false),
         }
+    }
+
+    /// The member of a union's open `members` that takes the `residue` no
+    /// other member covers: the first a probe admits it into (a rigid
+    /// member admits only itself), else the first.
+    fn residue_member<'a>(
+        mut members: impl Iterator<Item = &'a Type> + Clone,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        residue: &Type,
+    ) -> Result<Option<&'a Type>> {
+        for m in members.clone() {
+            if m.contains_int(guide(flags), env, hist, residue)? {
+                return Ok(Some(m));
+            }
+        }
+        Ok(members.next())
     }
 
     /// Containment both ways: an invariant position.
@@ -2757,6 +2949,46 @@ mod tests {
         t
     }
 
+    /// A type that shares its parts: 2^60 nodes as a tree.
+    fn shared(tuple: bool) -> Type {
+        let mut t = Type::Primitive(Typ::I64.into());
+        for _ in 0..60 {
+            t = match tuple {
+                true => Type::Tuple(Arc::from_iter([t.clone(), t])),
+                false => Type::Variant(
+                    literal!("A"),
+                    Arc::from_iter([t.clone(), t]),
+                    Default::default(),
+                ),
+            };
+        }
+        t
+    }
+
+    /// A diagnostic renders a type that shares its parts in time bounded
+    /// by its prefix, not 2^depth.
+    #[test]
+    fn brief_is_bounded() {
+        for t in [shared(true), shared(false)] {
+            let s = format_compact!("{}", Brief(&t));
+            assert!(s.len() <= Brief::BYTES + '…'.len_utf8() && s.ends_with('…'), "{s}");
+        }
+        let small = Type::Primitive(Typ::I64.into());
+        assert_eq!(format_compact!("{}", Brief(&small)), "i64");
+    }
+
+    #[test]
+    fn mismatch_message_is_bounded() {
+        let env = Env::default();
+        let small = Type::Primitive(Typ::I64.into());
+        for (expected, actual) in [(&small, &shared(false)), (&shared(true), &small)] {
+            let e = expected.check_contains(&env, actual).unwrap_err();
+            let s = format_compact!("{e}");
+            assert!(s.len() < 3 * Brief::BYTES, "{s}");
+            assert!(s.starts_with("type mismatch "), "{s}");
+        }
+    }
+
     fn binding(t: &Type, i: usize) -> Option<Type> {
         match t {
             Type::Set(s) => s[i].deref_cloned(),
@@ -2830,8 +3062,9 @@ pub(super) fn find_impl_with(
     if t.has_free() {
         return Ok(None);
     }
+    let wanted = t.with_deref(|t| t.and_then(Type::resolved_abstract));
     for im in list.iter().filter(|im| !env.impl_hidden(im)) {
-        // CR claude for claude: [perf/medium] [perf/medium] This skip never fires. An
+        // XCR claude for claude: [perf/medium] [perf/medium] This skip never fires. An
         // impl's target is stored as the typedef reference it was written as (`impl
         // Show for C` gives a Type::Ref), and an abstract type can only be named that
         // way. So every lookup contains-checks the query against every impl of the
@@ -2844,8 +3077,15 @@ pub(super) fn find_impl_with(
         // dereferenced `t` here. probe:
         // design/review-2026-10-26/repro/x-perf-compile-find-impl-scan.sh
         // (x-perf-compile-03)
-        if let (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) =
-            (&im.target, t)
+        // 2026-10-27 claude: find_impl_with skips an impl whose head names another
+        // abstract type, both read without a lookup by Type::resolved_abstract (an
+        // Abstract, or a Ref whose filled resolution cell holds an Abstract body;
+        // register_impl fills the impl's), so a Ref query from lower_trait_union is
+        // skipped the same way; Env::head_abstract takes the same fast path. The repro
+        // measures 1.20 / 1.26 / 1.67 s at N = 800 / 1600 / 3200 (debug), against 1.70
+        // / 2.97 / 7.12 s with the skip undone. No pin: a timing test would be flaky;
+        // the repro is the measure.
+        if let (Some(a), Some(b)) = (im.target.resolved_abstract(), wanted)
             && a != b
         {
             continue;

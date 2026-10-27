@@ -2280,7 +2280,7 @@ run!(trait_any_bound_does_not_imply_ordered, r#"{
     impl Cmp for W { let lt = 'a: Any |s: W, x: 'a, y: 'a| -> bool x < y };
     let a = 1;
     Cmp::lt(W(1), &a, &a)
-}"#, refused("the implementation requires 'a: Ordered"); FuseExpect::None);
+}"#, refused("does not contain fn<'a: Any + Ordered>"); FuseExpect::None);
 
 // A select over an open constructor application: a wildcard, a capture,
 // a null test beside it and a tuple pattern around it each match what

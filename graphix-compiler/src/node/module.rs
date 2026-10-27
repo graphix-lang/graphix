@@ -19,7 +19,7 @@ use crate::{
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
-        FnArgKind, FnArgType, FnType, TVar, Type,
+        Brief, FnArgKind, FnArgType, FnType, TVar, Type,
         tvar::{AtLevel, ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
@@ -424,7 +424,9 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 /// declared `declared`.
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     declared.sig_matches(env, typ).map_err(|e| {
-        let typ = format_with_flags(PrintFlag::DerefTVars, || format_compact!("{typ}"));
+        let typ = format_with_flags(PrintFlag::DerefTVars, || {
+            format_compact!("{}", Brief(typ))
+        });
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}")
     })
 }

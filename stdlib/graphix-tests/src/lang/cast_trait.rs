@@ -95,7 +95,7 @@ run!(db_tree_of_a_handle_refused, r#"{
 
 // A writer writes data: a function or a reference is refused.
 run!(write_of_a_function_refused, r#"json::write_str(|x: i64| x)"#,
-    refused("fn(x: i64) -> i64 is not data: a writer writes no function and no reference"); FuseExpect::None);
+    refused("fn(x: i64) -> i64 is not data: data holds no function and no reference"); FuseExpect::None);
 
 // Casts and writers call the methods, a program never does.
 run!(cast_method_not_called_directly, r#"{

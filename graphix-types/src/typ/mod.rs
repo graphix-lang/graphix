@@ -45,6 +45,7 @@ mod matches;
 mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
+pub use print::Brief;
 mod setops;
 #[doc(hidden)]
 pub mod settle;
@@ -2639,6 +2640,19 @@ impl Type {
             })
         }
         go(self, env, def, &mut SmallVec::new())
+    }
+
+    /// The abstract type this names without a lookup: itself, or the
+    /// body of the typedef its filled resolution cell holds.
+    pub(crate) fn resolved_abstract(&self) -> Option<AbstractId> {
+        match self {
+            Type::Abstract { id, .. } => Some(*id),
+            Type::Ref(tr) => match tr.resolved()?.typ {
+                Type::Abstract { id, .. } => Some(id),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     pub fn lookup_ref(&self, env: &Env) -> Result<Type> {
