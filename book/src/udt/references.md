@@ -25,6 +25,11 @@ deref operator *.
 1
 ```
 
+A union of reference types can be read: `*r` for `r: [&mut i64, &mut f64]`
+has type `[i64, f64]`. A write through a union requires every member to be
+writable and the new value to fit every referent type. A union containing a
+non-reference cannot be dereferenced.
+
 ## But Why
 
 Now that we've got the basic semantics out of the way, what is this good for?

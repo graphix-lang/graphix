@@ -1147,3 +1147,32 @@ run!(
     prints("[[i64:8, i64:10, i64:20, i64:30, i64:40], i64:0]");
     FuseExpect::Jit
 );
+
+run!(deref_union_reads_every_referent, r#"{
+    let x = 1;
+    let y = 2.5;
+    let read = |b: bool| {
+        let r = select b { true => &mut x, false => &mut y };
+        select *r { i64 as i => "int [i]", f64 as f => "float [f]" }
+    };
+    [read(true), read(false)]
+}"#, prints(r#"["int 1", "float 2.5"]"#); FuseExpect::Jit);
+
+run!(deref_union_alias_members, r#"{
+    type IntRef = &mut i64;
+    type FloatRef = &mut f64;
+    type Both = [IntRef, FloatRef];
+    let read = |r: Both| -> [i64, f64] *r;
+    let x = 3;
+    let y = 4.5;
+    (read(&mut x), read(&mut y))
+}"#, prints("[i64:3, f64:4.5]"); FuseExpect::None);
+
+run!(deref_union_fresh_cell, r#"{
+    let x = 1;
+    let read = |b: bool| {
+        let r = select b { true => &mut x, false => &mut (i64:2) };
+        *r
+    };
+    [read(true), read(false)]
+}"#, prints("[i64:1, i64:2]"); FuseExpect::None);

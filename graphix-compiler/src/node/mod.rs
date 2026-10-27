@@ -2943,6 +2943,39 @@ impl<R: Rt> Connect<R> {
     }
 }
 
+fn reference_targets(
+    env: &env::Env,
+    typ: &Type,
+) -> Result<Option<LPooled<Vec<(Mutability, Type)>>>> {
+    fn collect(
+        env: &env::Env,
+        typ: &Type,
+        out: &mut Vec<(Mutability, Type)>,
+    ) -> Result<bool> {
+        crate::stack::ensure_sufficient(|| match typ.deref_cloned().as_ref() {
+            None => Ok(false),
+            Some(t @ Type::Ref(_)) => collect(env, &t.lookup_ref(env)?, out),
+            Some(Type::Set(ts)) => {
+                for t in ts.iter() {
+                    if !collect(env, t, out)? {
+                        bail!("expected a reference not {t}");
+                    }
+                }
+                Ok(true)
+            }
+            Some(Type::ByRef(m, t)) => {
+                out.push((*m, (**t).clone()));
+                Ok(true)
+            }
+            Some(t) => format_with_flags(PrintFlag::DerefTVars, || {
+                bail!("expected a reference not {t}")
+            }),
+        })
+    }
+    let mut targets = LPooled::take();
+    Ok(collect(env, typ, &mut targets)?.then_some(targets))
+}
+
 impl<R: Rt> ConnectDeref<R> {
     fn typecheck0_with(
         &mut self,
@@ -2959,28 +2992,7 @@ impl<R: Rt> ConnectDeref<R> {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
         };
-        // a typedef naming a reference, alone or as a union member, is that
-        // reference
-        let expand = |t: &Type| -> Result<Option<Type>> {
-            let mut t = t.with_deref(|t| t.cloned());
-            while let Some(r @ Type::Ref(_)) = &t {
-                t = Some(r.lookup_ref(&ctx.env)?);
-            }
-            Ok(t)
-        };
-        let targets = expand(&btyp).and_then(|t| match &t {
-            None => Ok(None),
-            Some(Type::ByRef(m, t)) => Ok(Some(vec![(*m, (**t).clone())])),
-            Some(Type::Set(ts)) => ts
-                .iter()
-                .map(|t| match &expand(t)? {
-                    Some(Type::ByRef(m, t)) => Ok((*m, (**t).clone())),
-                    _ => bail!("can't write through {btyp}: not a reference"),
-                })
-                .collect::<Result<Vec<_>>>()
-                .map(Some),
-            Some(t) => bail!("can't write through {t}: not a reference"),
-        });
+        let targets = reference_targets(&ctx.env, &btyp);
         match wrap!(self, targets)? {
             // an unbound reference is inferred writable at the written type
             None => {
@@ -2988,8 +3000,8 @@ impl<R: Rt> ConnectDeref<R> {
                 wrap!(self, btyp.check_contains(&ctx.env, &typ))
             }
             // a write must fit every reference the binding may hold
-            Some(targets) => {
-                for (m, t) in targets {
+            Some(mut targets) => {
+                for (m, t) in targets.drain(..) {
                     if m == Mutability::Shared {
                         bail!(
                             "can't write through a read-only reference ({btyp}): take it with `&mut`"

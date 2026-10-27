@@ -1261,7 +1261,10 @@ cycle, across workers; the compiler never pins threads.
   included: a call copies it.
 - **References** (`design/place_references.md`): `&e` is read-only
   (`&T`, covariant); `&mut e` is writable (`&mut T`, invariant) and
-  `*r <- v` requires it of every reference `r` may hold. `&mut` of a
+  `*r <- v` requires it of every reference `r` may hold. A read through a
+  union of references has the union of their referent types; a write must
+  fit every referent. Reads and writes expand typedefs through the same
+  `node::reference_targets` walk. `&mut` of a
   non-place expression is a fresh cell its uses type; an optional
   writable argument is `[&mut T, null]`. `&a[i]`, `&s.f`, `&t.0`,
   `&m{k}` are root + path; writes patch the root at delivery; a dynamic

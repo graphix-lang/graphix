@@ -2134,7 +2134,7 @@ impl<R: Rt> ByRef<R> {
 }
 
 impl<R: Rt> Deref<R> {
-    // CR claude for claude: [bug/low] A read through a union of writable references is
+    // XCR claude for claude: [bug/low] A read through a union of writable references is
     // refused where a write through the same union is accepted. With `x: i64`, `y:
     // f64` and `let r = select b { true => &mut x, false => &mut y }`, `*r <- ..` is
     // checked against every member (ConnectDeref::typecheck0_with) but `*r` fails
@@ -2150,6 +2150,17 @@ impl<R: Rt> Deref<R> {
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q25, Reading
     // through a union of references): yes, read the union (the recommendation: read
     // the union.)
+    // 2026-10-27 codex: Implemented Eric's q25 ruling. Deref and ConnectDeref share a
+    // pooled reference-target traversal that expands aliases and union members; reads
+    // union every referent, writes retain the requirement that every target be
+    // writable and accept the value. Pins
+    // lang::byref::deref_union_{reads_every_referent,alias_members,fresh_cell}: all 12
+    // mode cases failed without the fix with expected-reference diagnostics. With the
+    // fix the complete lang::byref:: module passes (250 tests); the read pin also
+    // asserts its observed JIT fusion. Validation: shared flock,
+    // CARGO_TARGET_DIR=$PWD/target, cargo test -p graphix-tests --offline --lib
+    // lang::byref::. Rules, book references page and language skill updated. No netidx
+    // public signature changed.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -2160,24 +2171,15 @@ impl<R: Rt> Deref<R> {
         if !check {
             return Ok(());
         }
-        // A container read's type is a TVar bound to `&T`, not a bare
-        // `Type::ByRef`.
-        let typ = self.child.typ().with_deref(|t| match t {
-            Some(Type::ByRef(_, t)) => Some((**t).clone()),
-            _ => None,
-        });
-        let typ = match typ {
-            Some(t) => t,
-            None => match self.child.typ().deref_cloned() {
-                None => bail!(
-                    "dereferencing needs the reference's type known here: annotate \
-                     the binding"
-                ),
-                Some(t) => format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!("expected a reference not {t}")
-                })?,
-            },
+        let targets = super::reference_targets(&ctx.env, self.child.typ())?;
+        let Some(targets) = targets else {
+            bail!(
+                "dereferencing needs the reference's type known here: annotate \
+                 the binding"
+            );
         };
+        let types: LPooled<Vec<&Type>> = targets.iter().map(|(_, t)| t).collect();
+        let typ = Type::union(&ctx.env, &types)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
         Ok(())
     }

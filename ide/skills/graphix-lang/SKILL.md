@@ -518,7 +518,9 @@ with `x: i64`, and takes a `&mut`); `&mut T` is invariant. An optional
 writable argument is `[&mut T, null]`, never `&mut [T, null]`. Widgets
 take `&` parameters so updates propagate without rebuilding the tree. `&a[i]`, `&s.f`, `&t.0`, `&m{k}`
 are places: reading follows the path, writing patches the root at
-delivery; a dynamic key (`&vals[focus]`) is a moving reference.
+delivery; a dynamic key (`&vals[focus]`) is a moving reference. Reading a union of references returns the union of the referent
+types: `*r` over `[&mut i64, &mut f64]` is `[i64, f64]`. Writing through
+one must fit every referent and requires every member to be writable.
 
 ## Modules, interfaces, traits
 
