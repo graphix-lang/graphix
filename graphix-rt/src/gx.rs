@@ -215,6 +215,17 @@ async fn idle_grace(armed: bool) {
     }
 }
 
+/// Room in the subscriber's channel, when `armed`.
+async fn reserve_or_never<T>(
+    sub: &tmpsc::Sender<T>,
+    armed: bool,
+) -> result::Result<tmpsc::Permit<'_, T>, tmpsc::error::SendError<()>> {
+    match armed {
+        true => sub.reserve().await,
+        false => future::pending().await,
+    }
+}
+
 async fn join_or_wait<T: 'static>(
     js: &mut JoinSet<(BindId, T)>,
 ) -> result::Result<(BindId, T), JoinError> {
@@ -237,6 +248,17 @@ fn next_or_ended<S: Stream + Unpin>(
             p => p,
         }
     })
+}
+
+/// Every update `s` has ready now, polling only the streams woken since
+/// the last poll and dropping those that ended.
+fn drain_ready<T, S>(s: &mut SelectAll<S>, out: &mut Vec<T>)
+where
+    S: Stream<Item = GPooled<Vec<T>>> + Unpin,
+{
+    while let Some(Some(mut up)) = s.next().now_or_never() {
+        out.extend(up.drain(..))
+    }
 }
 
 /// The most input messages the runtime takes at once.
@@ -858,7 +880,7 @@ impl<X: GXExt> GX<X> {
         let cycle = self.ctx.rt.cycle;
         let interrupted = self.ctx.control.interrupted();
         for id in self.replied.drain(..) {
-            // CR claude for claude: [bug/medium] A visited boundary is not a reader
+            // XCR claude for claude: [bug/medium] A visited boundary is not a reader
             // reached. A builtin passed directly as a collection callback has no
             // boundary of its own: its reply reader registers under the enclosing
             // statement, which the cycle visits before the slot loop stops on
@@ -868,6 +890,21 @@ impl<X: GXExt> GX<X> {
             // Prune boundary, or have readers mark their own replies consumed. probe:
             // design/review-2026-10-26/repro/x-refs-catchup-interrupt-builtin-slot-reply.sh
             // (x-refs-catchup-07)
+            // 2026-10-26 claude: The reported scenario no longer loses the reply: the
+            // fold's own call (a GXLambda) stops at the interrupt before its body, whose
+            // boundary the reply's reader sits in, so the reply is redelivered
+            // (stdlib/graphix-tests
+            // lib_tests::interrupt::interrupted_slot_reply_is_delivered_again drives it
+            // deterministically: two wedges, both timers landing in the second; it passes
+            // with and without the change below, and the REPL repro printed the fold in 16
+            // of 16 runs at HEAD and with the review binary). The gap the CR names is still
+            // there for an interrupt that lands inside the slot loop: a slot that may call
+            // a builtin had no boundary of its own. Callback::call now puts every such slot
+            // (a builtin definition, or a dynamic callee) in a boundary no cycle skips
+            // (Prune::fence; Prune's ride state is an Option, None for a fence), so every
+            // interrupt cut point sits at a boundary edge. No pin fails without it: that
+            // window needs an interrupt landing mid-loop, which no test drives
+            // deterministically. Review whether the fence is worth its per-slot boundary.
             let seen = self.ctx.rt.by_ref.get(&id).is_none_or(|readers| {
                 readers
                     .iter()
@@ -1588,7 +1625,7 @@ impl<X: GXExt> GX<X> {
                         custom_tasks.extend(joined(r));
                     }
                 };
-                // CR claude for claude: [perf/medium] This sweep, and the var_watches
+                // XCR claude for claude: [perf/medium] This sweep, and the var_watches
                 // one below it, try_recv's every registered channel, at the top of
                 // every loop pass and again in the arm that woke it. A cycle therefore
                 // costs O(channels) even when all are idle, and every db subscription,
@@ -1599,19 +1636,17 @@ impl<X: GXExt> GX<X> {
                 // still removes ended ones, and delete both per-receiver loops. probe:
                 // design/review-2026-10-26/repro/x-concurrency-watch-sweep-per-cycle.sh
                 // (x-concurrency-03)
+                // 2026-10-26 claude: Both sweeps now drain through the SelectAll
+                // (drain_ready: next().now_or_never() until it is pending), which polls
+                // only woken receivers and drops ended ones; the per-receiver try_recv
+                // loops are gone. The repro (debug build) went from 2.18 s to 26 ms for
+                // 20000 idle db subscriptions (plain 20000: 15 to 33 ms, noise). No
+                // timing pin; the repro script measures it.
                 (watches) => {
-                    for rx in self.ctx.rt.watches.iter_mut() {
-                        while let Ok(mut up) = rx.try_recv() {
-                            custom_tasks.extend(up.drain(..))
-                        }
-                    }
+                    drain_ready(&mut self.ctx.rt.watches, &mut custom_tasks)
                 };
                 (var_watches) => {
-                    for rx in self.ctx.rt.var_watches.iter_mut() {
-                        while let Ok(mut up) = rx.try_recv() {
-                            tasks.extend(up.drain(..))
-                        }
-                    }
+                    drain_ready(&mut self.ctx.rt.var_watches, &mut tasks)
                 };
                 (input) => {
                     while let Ok(m) = to_rt.try_recv() {
@@ -1635,6 +1670,7 @@ impl<X: GXExt> GX<X> {
             // An idle waiter resolves once the runtime is idle, confirmed on
             // a second consecutive pass: the first may race an in-flight
             // spawned task.
+            let mut idle_owed = false;
             if !ready {
                 // a settle waiter waits out what is outstanding without
                 // the grace loop: a finished task or a fire wakes it
@@ -1651,8 +1687,7 @@ impl<X: GXExt> GX<X> {
                     if let Some((_, tx)) = self.result_watch.take() {
                         let _ = tx.send(None);
                     }
-                    // a full channel leaves it pending for the next verdict
-                    // CR claude for claude: [risk/low] When try_reserve finds the
+                    // XCR claude for claude: [risk/low] When try_reserve finds the
                     // channel full, notify_idle stays set, but idle_passes goes back to
                     // 0. The select! below then has no grace timer and no arm that
                     // fires when the subscriber frees room, so the Idle waits for an
@@ -1661,7 +1696,11 @@ impl<X: GXExt> GX<X> {
                     // While notify_idle is pending, keep the grace armed or wait on
                     // `self.sub.reserve()` in the select. Found by reading; not run.
                     // (x-concurrency-04)
-                    // CR claude for claude: [bug/medium] When the subscriber's channel
+                    // 2026-10-26 claude: Fixed with (rt-01): an owed Idle waits on the
+                    // subscriber's reserve() in the run loop's select. Pin:
+                    // graphix-rt/tests/send_loop.rs
+                    // an_idle_owed_to_a_full_channel_arrives_when_it_drains.
+                    // XCR claude for claude: [bug/medium] When the subscriber's channel
                     // is full at the idle check, notify_idle stays pending, but the
                     // select below arms nothing that waits for room. When the
                     // subscriber drains, nothing wakes the runtime, so GXEvent::Idle
@@ -1673,14 +1712,15 @@ impl<X: GXExt> GX<X> {
                     // sends the Idle batch, and pin it with a 1-slot channel. probe:
                     // design/review-2026-10-26/repro/rt-notify-idle-full-channel.rs
                     // (rt-01)
-                    if self.notify_idle
-                        && let Ok(permit) = self.sub.try_reserve()
-                    {
-                        let mut batch = self.batch_pool.take();
-                        batch.push(GXEvent::Idle);
-                        permit.send(batch);
-                        self.notify_idle = false;
-                    }
+                    // 2026-10-26 claude: The idle verdict no longer sends the Idle
+                    // itself: it marks it owed, and the run loop's select waits on room
+                    // in the subscriber's channel (reserve_or_never) and sends it
+                    // there, then loops without a cycle, so a full channel delays the
+                    // Idle until the subscriber drains instead of losing it; a closed
+                    // channel drops the request. Pin: graphix-rt/tests/send_loop.rs
+                    // an_idle_owed_to_a_full_channel_arrives_when_it_drains (fails 5 of
+                    // 6 runs without the fix).
+                    idle_owed = self.notify_idle;
                     for tx in self.idle_waiters.drain(..) {
                         let _ = tx.send(());
                     }
@@ -1729,6 +1769,15 @@ impl<X: GXExt> GX<X> {
                 },
                 _ = or_never(ready) => {
                     peek!(watches, tasks, var_watches, custom_tasks, input)
+                },
+                permit = reserve_or_never(&self.sub, idle_owed) => {
+                    if let Ok(permit) = permit {
+                        let mut batch = self.batch_pool.take();
+                        batch.push(GXEvent::Idle);
+                        permit.send(batch);
+                    }
+                    self.notify_idle = false;
+                    continue 'main
                 },
                 _ = aborted.notified() => (),
                 n = to_rt.recv_many(&mut input, INPUT_BATCH) => {
@@ -1793,6 +1842,14 @@ impl<X: GXExt> GX<X> {
             // 2026-10-25 claude: 640 more runs of a_stopped_runtime_says_why's binary, 16
             // at a time at load average 40 to 60, each under XDG_CACHE_HOME of its own:
             // all passed, no hang, and the 120 s trap has caught nothing in today's gates.
+            // 2026-10-26 claude: Not reproduced or changed in L4-b07. Re-read the run
+            // loop's abort paths: a budget abort is raised only under with_control inside
+            // a cycle (activation_born, budget_abort), the send loop breaks on
+            // control.aborted() and the loop's top check returns, so the loop cannot miss
+            // it; the new idle arm (reserve_or_never, rt-01) is also left by
+            // aborted.notified() or the next pass's check. Unchecked: whether Shell::run's
+            // load_env (Output::from_expr, Output::chosen through run_on_main) can wait on
+            // the main thread while the main thread joins graphix-tokio.
             if self.ctx.control.aborted() {
                 return Ok(());
             }

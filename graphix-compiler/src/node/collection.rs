@@ -4,9 +4,10 @@ use super::{
     callsite::{CallNode, CallSite},
     coretraits::with_hooks,
     genn,
-    lambda::GXLambda,
+    lambda::{GXLambda, LambdaDef},
     list,
     pattern::StructPatternNode,
+    prune::Prune,
     wake::TrackedFires,
 };
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
@@ -507,8 +508,31 @@ impl Callback {
 
     /// A call of the callback over `args`: the prototype, whose dispatch
     /// the typecheck resolves, or a slot, which calls the definition the
-    /// prototype resolved to when it resolved one.
+    /// prototype resolved to when it resolved one. A slot that may call
+    /// a builtin stands in a boundary of its own ([`Prune::fence`]), as
+    /// a lambda's instance body does: an interrupt stops the slot loop
+    /// between slots, and a reply to a slot it kept the walk from is
+    /// delivered again.
     fn call<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut CompileCtx<R, E>,
+        args: SmallVec<[Node<R, E>; 2]>,
+        kind: CallKind,
+    ) -> Node<R, E> {
+        match kind {
+            CallKind::Prototype => self.build_call(ctx, args, CallKind::Prototype),
+            CallKind::Slot(Some(def))
+                if def
+                    .downcast_ref::<LambdaDef<R, E>>()
+                    .is_some_and(|d| !d.is_builtin()) =>
+            {
+                self.build_call(ctx, args, CallKind::Slot(Some(def)))
+            }
+            slot => Prune::fence(ctx, |ctx| self.build_call(ctx, args, slot)),
+        }
+    }
+
+    fn build_call<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut CompileCtx<R, E>,
         args: SmallVec<[Node<R, E>; 2]>,
@@ -1125,12 +1149,19 @@ fn build_fresh<R: Rt, E: UserEvent, S: Send>(
     if fresh.is_empty() {
         return;
     }
+    let prebind_call = |ctx: &mut CompileCtx<R, E>, call: &mut Node<R, E>| {
+        if let Some(cs) =
+            call.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+        {
+            cs.prebind(ctx)
+        }
+    };
     let prebind = |ctx: &mut CompileCtx<R, E>, slots: &mut [S]| {
         for slot in slots {
-            if let Some(cs) =
-                call(slot).downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
-            {
-                cs.prebind(ctx)
+            let call = call(slot);
+            match call.as_prune_mut() {
+                Some(fence) => fence.within(ctx, prebind_call),
+                None => prebind_call(ctx, call),
             }
         }
     };

@@ -579,22 +579,6 @@ impl Splits<'_> {
             None => out.push((lo, hi)),
         }
     }
-
-    /// Whether a fork within `lo..hi` may still be taken by a context at
-    /// `ctx`'s depth.
-    #[inline]
-    pub fn fork<R: Rt, E: UserEvent>(
-        &self,
-        ctx: &ExecCtx<'_, R, E>,
-        lo: usize,
-        hi: usize,
-    ) -> Option<usize> {
-        match (ctx.fork_mode(), self) {
-            (ParMode::Off, _) => None,
-            (_, Splits::Weighted { .. }) if saturated() => None,
-            _ => self.split(lo, hi),
-        }
-    }
 }
 
 /// A fork point over slots that run one body (a collection's slots):

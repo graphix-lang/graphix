@@ -1144,17 +1144,10 @@ fn audit<R: Rt, E: UserEvent>(
     }
 }
 
-/// The process's evaluation pool: `GRAPHIX_EVAL_THREADS` threads (default
-/// one per core), shared by every runtime in the process.
 /// Whether every worker of the running cycle's evaluation pool has a
 /// part to run. A fork made then only queues behind them, and a fork
 /// costs its branches and merge whether or not another worker takes a
 /// part.
-// CR claude for claude: [doc-drift/low] The first two doc lines above this fn describe
-// an item that no longer exists: a process-wide evaluation pool 'shared by every
-// runtime in the process'. The pool is per runtime (Control::eval_pool), and saturation
-// counts the runtime's own parts. Delete those two lines. Found by reading; not run.
-// Also reported as (x-parallel-05). (c-analysis-branch-07)
 pub(crate) fn saturated() -> bool {
     with_current_control(|c| c.is_some_and(Control::eval_saturated))
 }
@@ -1253,17 +1246,7 @@ where
             m.done(2);
             (ra, rb)
         }
-        // CR claude for claude: [structure/low] A Plan::Fork reaches here only after
-        // ForkSite::plan has checked fork_mode() and (under Auto) saturated(), and only
-        // for a site whose last Meter::done found split(0, n) paying over the same
-        // prefix. So Splits::fork repeats those checks, always returns Some, and the
-        // `None` arm is dead. Its doc also promises a depth check it does not make.
-        // Delete Splits::fork and call fork_join directly in this arm. Found by
-        // reading; not run. (c-cost-misc-03)
-        Plan::Fork(s) => match s.fork(ctx, 0, 2) {
-            Some(_) => fork_join(ctx, a, b),
-            None => (a(ctx), b(ctx)),
-        },
+        Plan::Fork(_) => fork_join(ctx, a, b),
     }
 }
 

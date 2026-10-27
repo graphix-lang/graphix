@@ -185,3 +185,28 @@ async fn a_call_in_the_send_loop_lands_unprompted() -> Result<()> {
     assert_eq!(rig.values(c.expr), [Value::I64(6)]);
     Ok(())
 }
+
+/// A `NotifyIdle` whose verdict finds the subscriber's channel full is
+/// answered once the subscriber makes room, with nothing else to wake
+/// the runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_owed_to_a_full_channel_arrives_when_it_drains() -> Result<()> {
+    let ctx = GXRt::<NoExt>::new_state()?;
+    let (tx, mut rx) = mpsc::channel::<Batch>(1);
+    let gx = GXConfig::builder(ctx, tx).build()?.start().await?;
+    let _c = gx.compile(literal!("1")).await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    gx.notify_idle()?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let idle = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(mut b) = rx.recv().await {
+            if b.drain(..).any(|e| matches!(e, GXEvent::Idle)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(idle.ok(), Some(true), "GXEvent::Idle never arrived");
+    Ok(())
+}

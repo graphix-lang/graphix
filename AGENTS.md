@@ -375,7 +375,9 @@ shell shows that target on stderr.
 **Walk pruning** (`design/walk_pruning.md`): a block statement, a select
 arm body and an instance body each sit in a `Prune` boundary
 (`prune::BoundaryRef`, parent-linked), which rides its resident in a
-`Cycle` view when nothing marked it this cycle. A registration names its
+`Cycle` view when nothing marked it this cycle; a collection slot that
+may call a builtin sits in a fence, a boundary no cycle skips
+(`Prune::fence`). A registration names its
 root and the boundary around the reader (`prune::Reader`), taken from the
 traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
 copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a

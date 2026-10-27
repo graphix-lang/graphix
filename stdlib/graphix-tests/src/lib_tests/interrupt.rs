@@ -248,3 +248,46 @@ async fn interrupted_reply_is_delivered_again() -> Result<()> {
     }
     Ok(())
 }
+
+/// Wait until the runtime stops answering: a cycle is wedged.
+async fn wedged(ctx: &TestCtx) {
+    while tokio::time::timeout(Duration::from_millis(100), ctx.rt.get_env()).await.is_ok()
+    {
+    }
+}
+
+/// A reply to a collection slot the interrupt kept the walk from, here a
+/// builtin called directly as the fold's callback, is delivered again
+/// the next cycle. The first cycle spins in `w` while the timers of `go`
+/// and of the slot expire, so both replies land in the second, which
+/// spins in `r`, before the fold, until the interrupt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupted_slot_reply_is_delivered_again() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = init_flags(tx, BitFlags::empty()).await?;
+    let mut held = Vec::new();
+    for stmt in [
+        "let rec spin = |n: i64| -> i64 select n < 0 { true => n, false => spin(n + 1) }",
+        "let go = sys::time::after_idle(duration:50.ms, 0); let r = spin(go); \
+         let v = array::fold([duration:1.s], duration:50.ms, sys::time::after_idle); \
+         let w = spin(0)",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(stmt)).await?);
+    }
+    for _ in 0..2 {
+        wedged(&ctx).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        ctx.rt.interrupt();
+    }
+    held.push(ctx.rt.compile(ArcStr::from("v")).await?);
+    let v = held.last().unwrap().exprs[0].id;
+    let got = value_of(&mut rx, v, Duration::from_secs(5)).await;
+    drop(held);
+    ctx.shutdown().await;
+    match got {
+        Some(netidx::publisher::Value::Duration(d)) if *d == Duration::from_secs(1) => {
+            Ok(())
+        }
+        got => bail!("the fold's slot reply was lost at the interrupt: v is {got:?}"),
+    }
+}
