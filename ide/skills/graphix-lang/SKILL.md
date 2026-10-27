@@ -94,8 +94,8 @@ constant argument to `exit` runs at init — always gate it).
   never() }`: a second `run` of another variant while `remove` is in
   flight puts the arm to sleep and the call is aborted: the op may or may
   not have happened, and the toast and the reload never come (a call whose
-  work cannot be dropped, a stream read or a handshake, finishes instead
-  and answers at the wake). Select the EVENT, call outside the arm:
+  work cannot be dropped, a db op or a handshake, finishes instead, and
+  is not answered either; a stream read's bytes go back to the stream). Select the EVENT, call outside the arm:
   `{ let n = select run { `Remove(n) => n, _ => never() }; remove(n, n ~
   target) }`. A call that is a seq step is safe (a step does not sleep
   mid-run).
@@ -307,8 +307,9 @@ across a bottom cycle).
   pause and a wake a resume: `count`, `once`, `take`, `skip`, `uniq`,
   `hold` and queues keep their state; an async call in flight is
   aborted, and may or may not have happened, unless its work cannot be
-  dropped (a stream read or write, a db cursor read, a tls handshake, a
-  file seek), which finishes and answers at the wake; none is made again
+  dropped (a stream read or write, a db op, a tls handshake, a file
+  seek), which finishes unanswered (a read's bytes return to the stream);
+  nothing answers a call after its arm's sleep; none is made again
   unless an argument fires (its last result stays); a timer's run
   resumes; a net subscription or publication is torn down and
   re-attached at the wake; a seq's run is aborted (a `seqq`'s queued

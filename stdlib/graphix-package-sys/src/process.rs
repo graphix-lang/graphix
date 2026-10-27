@@ -253,7 +253,7 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
 #[derive(Debug, Default)]
 pub(crate) struct ProcessSpawnEv;
 
-// CR claude for claude: [bug/medium] spawn takes the CANCEL_SAFE default. When an arm
+// XCR claude for claude: [bug/medium] spawn takes the CANCEL_SAFE default. When an arm
 // sleeps before the spawn's reply lands, CachedArgsAsync::sleep remints the reply id
 // and GX::deliver drops the Child: the process runs, but the program never gets its
 // handle. It is orphaned with kill_on_drop false (the default) and killed unseen with
@@ -277,6 +277,24 @@ pub(crate) struct ProcessSpawnEv;
 // read whose reply is dropped returns its bytes to the stream's buffer, so no data is
 // lost. This replaces the CANCEL_SAFE split (a call not cancel-safe finishing and
 // answering at the wake).
+// 2026-10-27 claude: Built Eric's q16/q18 ruling: nothing answers a call after its
+// site's sleep. A sleep counts a generation in the site's KeptReplies, and a reply of
+// an older generation, kept or arriving later, is settled by the new
+// EvalCachedAsync::reclaim (stream reads give their bytes back to the stream through a
+// ReadTicket; later reads of that stream wait until every earlier read settles) or
+// dropped. Calls not cancel-safe still finish their work (a pop, a commit, a spawn, a
+// connect happen) and are not answered; cancel-safe ones abort as before. Docs:
+// CLAUDE.md, design/async_sleep_outputs.md, book core/select.md and
+// embedding/builtins.md, the graphix-lang skill. Pins:
+// lib_tests::{db::db_pop_is_not_answered_after_a_sleep,
+// db::db_txn_commit_is_not_answered_after_a_sleep,
+// fs::file_handle::test_open_is_not_answered_after_a_sleep,
+// sqlite::sqlite_exec_is_not_answered_after_a_sleep,
+// process::spawn_is_not_answered_after_a_sleep,
+// tcp::tcp_connect_is_not_answered_after_a_sleep, tcp::tcp_read_across_sleep (bytes
+// returned in order), db::db_not_data_answers_after_a_sleep}, sys
+// io::test::a_dropped_read_lets_the_next_read. The repro now prints only len after=1,
+// the ruled behaviour. Semantics change: needs a soak.
 impl EvalCachedAsync for ProcessSpawnEv {
     const NAME: &str = "sys_process_spawn";
     const CANCEL_SAFE: bool = false;

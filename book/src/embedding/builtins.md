@@ -173,7 +173,9 @@ resumes from them when the arm wakes, and a wake starts nothing an
 argument did not ask for. A builtin aborts an operation in flight that
 it cannot pause and keeps its last result: the wake does not issue the
 call again (a call that is not cancel-safe, a stream read for one,
-finishes instead and answers at the wake). Only an event source clears
+finishes instead, and nothing answers it: a reply made after a sleep is
+dropped, or handed to `EvalCachedAsync::reclaim`, which gives a read's
+bytes back to the stream). Only an event source clears
 its output to `TagValue::phantom()`, since its output is its last
 event. `reborn` is called before an update that follows a sleep and is
 a birth, a seq step entered for its next run: that is where `once`

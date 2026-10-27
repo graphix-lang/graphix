@@ -127,16 +127,20 @@ run!(sqlite_duplicate_columns_refused, r#"{
 }; FuseExpect::Jit);
 
 // A statement runs on a blocking thread no abort stops, so an exec whose
-// arm sleeps while it runs finishes asleep and answers at the wake, once.
-run!(sqlite_exec_answers_at_the_wake, r#"{
+// arm sleeps while it runs still inserts, and nothing answers it.
+run!(sqlite_exec_is_not_answered_after_a_sleep, r#"{
     let db = sqlite::open(":memory:")$;
     let made = sqlite::exec_batch(db, "CREATE TABLE t(x INTEGER)")$;
     let on = true;
     let n = select on { true => sqlite::exec(db, made ~ "INSERT INTO t VALUES (?)", [1])$, false => never() };
     on <- made ~ false;
     on <- on ~ select on { false => true, true => never() };
-    let rows: Array<{c: i64}> = sqlite::query(n ~ db, "SELECT count(*) AS c FROM t", [])$;
-    (n, (rows[0]$).c)
+    let answered = false;
+    answered <- n ~ true;
+    let rows: Array<{c: i64}> =
+        sqlite::query(sys::time::timer(duration: 10.ms, true) ~ db, "SELECT count(*) AS c FROM t", [])$;
+    let inserted = select (rows[0]$).c { 1 => 1, _ => never() };
+    skip(#n: 4, inserted) ~ answered
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(v) if v.to_string() == "[u64:1, i64:1]")
+    matches!(v, Ok(Value::Bool(false)))
 }; FuseExpect::Jit);

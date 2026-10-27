@@ -18,7 +18,7 @@ use graphix_compiler::{
     err, errf,
     expr::{Expr, ExprId},
     image::{self, ImageBuf},
-    node::{WakeBit, coretraits, genn},
+    node::{coretraits, genn},
     rep,
     typ::{FnType, TVal, Type},
 };
@@ -1822,13 +1822,13 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
 
     const CALLS: Calls = Calls::Fifo;
 
-    /// Whether an `eval` dropped before it completes, or whose reply is
-    /// dropped, loses nothing a later call cannot get again. One that would
-    /// (a read that consumed input, a partial write, a handshake holding the
-    /// stream, work on a blocking thread, a spawned child) is let finish when
-    /// its site sleeps, and its reply answers at the wake. Never `false`
-    /// under [`Calls::Latest`], which aborts.
-    // CR claude for claude: [bug/high] The default makes a sleep throw away the reply of
+    /// Whether an `eval` may be dropped before it completes. One that may
+    /// not (a write cut off mid-way, a read that accumulates, a handshake,
+    /// work on a blocking thread, a spawned child) is let finish when its
+    /// site sleeps. Either way nothing answers after a sleep: a reply to a
+    /// call made before it is dropped, or handed to [`Self::reclaim`]'s
+    /// closure. Never `false` under [`Calls::Latest`], which aborts.
+    // XCR claude for claude: [bug/high] The default makes a sleep throw away the reply of
     // evals whose work no abort stops. The db and sqlite ops run under spawn_blocking,
     // process spawn completes on its first poll, and a tcp accept may have completed
     // before the sleep. Their reply is the only copy of what they did: a popped or
@@ -1853,7 +1853,33 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     // seen). A stream read whose reply is dropped returns its bytes to the stream's
     // buffer, so no data is lost. This replaces the CANCEL_SAFE split (a call not
     // cancel-safe finishing and answering at the wake).
+    // 2026-10-27 claude: Built Eric's q16/q18 ruling: nothing answers a call after its
+    // site's sleep. A sleep counts a generation in the site's KeptReplies, and a reply
+    // of an older generation, kept or arriving later, is settled by the new
+    // EvalCachedAsync::reclaim (stream reads give their bytes back to the stream through
+    // a ReadTicket; later reads of that stream wait until every earlier read settles) or
+    // dropped. Calls not cancel-safe still finish their work (a pop, a commit, a spawn,
+    // a connect happen) and are not answered; cancel-safe ones abort as before. Docs:
+    // CLAUDE.md, design/async_sleep_outputs.md, book core/select.md and
+    // embedding/builtins.md, the graphix-lang skill. Pins:
+    // lib_tests::{db::db_pop_is_not_answered_after_a_sleep,
+    // db::db_txn_commit_is_not_answered_after_a_sleep,
+    // fs::file_handle::test_open_is_not_answered_after_a_sleep,
+    // sqlite::sqlite_exec_is_not_answered_after_a_sleep,
+    // process::spawn_is_not_answered_after_a_sleep,
+    // tcp::tcp_connect_is_not_answered_after_a_sleep, tcp::tcp_read_across_sleep (bytes
+    // returned in order), db::db_not_data_answers_after_a_sleep}, sys
+    // io::test::a_dropped_read_lets_the_next_read. The repro now prints only len
+    // after=1, the ruled behaviour. Semantics change: needs a soak.
     const CANCEL_SAFE: bool = true;
+
+    /// What settles the reply of a call `args` made, for an eval not
+    /// cancel-safe: called once, with the reply when its site slept before
+    /// answering it (a stream read returns its bytes to the stream), or
+    /// with `None` when the site answers it. `None` here: nothing to settle.
+    fn reclaim(_args: &Self::Args) -> Option<Reclaim> {
+        None
+    }
 
     /// The arguments that leave as data (a store's keys and values):
     /// each abstract value in them is written as its `Cast`
@@ -1979,7 +2005,38 @@ pub enum Calls {
     Concurrent,
 }
 
-type Kept = triomphe::Arc<parking_lot::Mutex<VecDeque<Value>>>;
+/// Settles a reply: takes it back when it will not be answered
+/// ([`EvalCachedAsync::reclaim`]).
+pub type Reclaim = Box<dyn FnOnce(Option<Value>) + Send>;
+
+/// The replies of a site whose evals finish across a sleep, oldest first,
+/// and the sleeps it has had: a reply to a call made before the latest
+/// sleep is reclaimed, never answered.
+#[derive(Default)]
+struct KeptReplies {
+    sleeps: u64,
+    replies: VecDeque<(Value, Option<Reclaim>)>,
+}
+
+impl KeptReplies {
+    /// Take back every reply waiting, for a sleep.
+    fn reclaim_all(&mut self) {
+        self.sleeps += 1;
+        for (v, reclaim) in self.replies.drain(..) {
+            if let Some(reclaim) = reclaim {
+                reclaim(Some(v))
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for KeptReplies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeptReplies").field("replies", &self.replies.len()).finish()
+    }
+}
+
+type Kept = triomphe::Arc<parking_lot::Mutex<KeptReplies>>;
 
 /// The abort for every call a site has in flight: dropping it resolves
 /// each call's receiver.
@@ -2009,10 +2066,8 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     abort: Option<Abort>,
     /// the replies of an eval not [`EvalCachedAsync::CANCEL_SAFE`], oldest
     /// first: they wait here, and the reply variable only wakes the site,
-    /// so one landing while it sleeps answers at the wake
+    /// so a sleep can take back those it will not answer
     kept: Option<Kept>,
-    /// asleep since the last update
-    slept: WakeBit,
     /// the error tag a panicking eval answers under, from the call's
     /// declared return type; none when it declares no such error
     panic_tag: Option<ArcStr>,
@@ -2126,7 +2181,7 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         self.inflight = 0;
         self.queued.clear();
         if let Some(kept) = &self.kept {
-            kept.lock().clear()
+            kept.lock().reclaim_all()
         }
         for id in self.replaced.drain(..) {
             ctx.release_var(id, self.var.top_id());
@@ -2150,7 +2205,7 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         match &self.kept {
             None => ctx.rt.set_var(self.var.id, v),
             Some(kept) => {
-                kept.lock().push_front(v);
+                kept.lock().replies.push_front((v, None));
                 ctx.rt.set_var(self.var.id, Value::Null)
             }
         }
@@ -2209,7 +2264,6 @@ impl<R: Rt, T: EvalCachedAsync> BuiltIn<R> for CachedArgsAsync<T> {
             replaced: SmallVec::new(),
             abort: None,
             kept: (!T::CANCEL_SAFE).then(Kept::default),
-            slept: WakeBit::default(),
             panic_tag,
             data_result,
             out: TagValue::phantom(),
@@ -2236,7 +2290,6 @@ impl<R: Rt, T: EvalCachedAsync> BuiltIn<R> for CachedArgsAsync<T> {
             replaced: SmallVec::new(),
             abort: None,
             kept: (!T::CANCEL_SAFE).then(Kept::default),
-            slept: WakeBit::default(),
             panic_tag,
             data_result,
             out: TagValue::phantom(),
@@ -2263,15 +2316,19 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
         self.t.attach(ctx);
         let invocation = self.cached.update(ctx, from);
         let start = invocation == Invocation::Fired;
-        let woke = self.slept.take();
         let event = ctx.event.variables.remove(&self.var.id);
         let mut reply = match &self.kept {
             None => event.map(|tv| tv.value()),
-            Some(kept) if event.is_some() || woke => {
+            Some(kept) if event.is_some() => {
                 let mut kept = kept.lock();
-                let v = kept.pop_front();
+                let v = kept.replies.pop_front().map(|(v, reclaim)| {
+                    if let Some(reclaim) = reclaim {
+                        reclaim(None)
+                    }
+                    v
+                });
                 // one answer a cycle: the next wakes the site again
-                if !kept.is_empty() {
+                if !kept.replies.is_empty() {
                     ctx.rt.set_var(self.var.id, Value::Null);
                 }
                 v
@@ -2325,8 +2382,11 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
             && let Some(args) = self.queued.pop_front()
         {
             self.inflight += 1;
-            let (id, panic_tag, kept) =
-                (self.var.id, self.panic_tag.clone(), self.kept.clone());
+            let (id, panic_tag) = (self.var.id, self.panic_tag.clone());
+            let kept = self.kept.clone().map(|k| {
+                let sleeps = k.lock().sleeps;
+                (k, sleeps, T::reclaim(&args))
+            });
             let aborted = self.abort.get_or_insert_with(Abort::new).rx.clone();
             let eval = std::panic::AssertUnwindSafe(T::eval(args)).catch_unwind();
             ctx.rt.spawn_var(async move {
@@ -2344,8 +2404,13 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
                 };
                 match kept {
                     None => (id, v),
-                    Some(kept) => {
-                        kept.lock().push_back(v);
+                    Some((kept, sleeps, reclaim)) => {
+                        let mut kept = kept.lock();
+                        if kept.sleeps == sleeps {
+                            kept.replies.push_back((v, reclaim));
+                        } else if let Some(reclaim) = reclaim {
+                            reclaim(Some(v))
+                        }
                         (id, Value::Null)
                     }
                 }
@@ -2391,11 +2456,12 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
         self.cached.clear();
     }
 
-    /// Aborts the calls in flight and drops those queued, unless the eval
-    /// is not cancel-safe: then those in flight finish and answer at the
-    /// wake.
+    /// Nothing made before a sleep answers after it: the calls in flight
+    /// are aborted and those queued dropped, under a fresh reply id. An
+    /// eval not cancel-safe is let finish instead, its replies taken back
+    /// ([`EvalCachedAsync::reclaim`]).
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // CR claude for claude: [bug/high] CachedArgsAsync has no `reborn`, so a seq step
+        // XCR claude for claude: [bug/high] CachedArgsAsync has no `reborn`, so a seq step
         // entered for a new run inherits the calls of the run before. A call that is
         // not CANCEL_SAFE and was in flight when the run was aborted (by abort(e) or
         // its arm's sleep) finishes asleep. At the new run's first update its kept
@@ -2415,11 +2481,19 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
         // result is not seen). A stream read whose reply is dropped returns its bytes
         // to the stream's buffer, so no data is lost. This replaces the CANCEL_SAFE
         // split (a call not cancel-safe finishing and answering at the wake).
-        match self.kept {
+        // 2026-10-27 claude: Fixed by the ruling built under x-async-io-01: a sleep
+        // (which a seq abort also brings the step) advances the site's reply generation,
+        // so the aborted run's read is never answered and its bytes go back to the
+        // stream; the next run reads its own stream. The repro now prints "run 2: BBBB"
+        // and run 3 stalls, as expected. Pins: the *_is_not_answered_after_a_sleep
+        // fixtures and lib_tests::tcp::tcp_read_across_sleep; no seq-specific pin yet.
+        match &self.kept {
             None => self.renew(ctx),
-            Some(_) => {
+            Some(kept) => {
+                kept.lock().reclaim_all();
                 self.queued.clear();
-                self.slept.set();
+                self.inflight = 0;
+                self.var.remint(ctx);
             }
         }
     }

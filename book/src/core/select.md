@@ -40,6 +40,14 @@ is not made again, and the only events it sees are the ones that fired
 while it slept, each once, at its current value. The first time an arm
 is selected is its birth: its constants fire then, and only then.
 
+A call still running when its arm falls asleep is never answered. It is
+cancelled where it can be; one that cannot be stopped part way (a
+database operation, a file open, a process spawn, a connect) still
+happens, but its result is not delivered, at the wake or later. A
+stream read's bytes are not lost: they go back to the stream, and the
+next read gets them. When the outcome matters, make the call outside the
+arm, selecting only the event that asks for it, or make it a `seq` step.
+
 Like every other expression, a select updates whenever any of its inputs
 update: a new value of the argument, a new value read by a guard it
 consults, or a new value produced by the selected arm's body all cause the

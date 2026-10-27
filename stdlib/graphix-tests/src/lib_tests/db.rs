@@ -1448,19 +1448,23 @@ run_with_tempdir!(
     }
 );
 
-// CR claude for claude: [test-gap/low] Failed once (jit mode) in a full cargo test
+// XCR claude for claude: [test-gap/low] Failed once (jit mode) in a full cargo test
 // gate on 2026-10-27 (assertion at the expect's assert_eq), and passed 5 runs alone
 // and 10 runs under taskset -c 0. The program ends its arm's sleep when db::get, polled
 // on a 10 ms timer, sees the insert landed, so the wake's position against the insert's
 // reply depends on the timer. Find the failing value (loop the full gate's
 // graphix-tests run under load), then derive the wake from the insert's completion
 // rather than a polling timer. (flake-db-notdata-01)
-// A call whose arguments are not data answers its error without losing
-// a reply that lands in the same cycle: the insert finishes while its arm
-// sleeps, and the wake both answers it and catches up a value whose Cast
-// writes a function. The reply comes first, the error next cycle.
+// 2026-10-27 claude: The pin is now lib_tests::db::db_not_data_answers_after_a_sleep
+// and expects []: the insert's reply is dropped by the sleep whatever cycle it lands
+// in, so the timer-polled wake no longer races it. Passed in the full gate; X'd for a
+// few more gates under load before deleting.
+
+// The insert finishes while its arm sleeps and nothing answers it; the
+// wake catches up a value whose Cast writes a function, and the call
+// answers its not-data error, the first reply its site sees.
 run_with_tempdir!(
-    name: db_not_data_keeps_the_reply_of_its_cycle,
+    name: db_not_data_answers_after_a_sleep,
     code: r#"{{
         type V = Abstract<i64>;
         impl Cast for V {{
@@ -1482,16 +1486,16 @@ run_with_tempdir!(
     }}"#,
     setup: |td| { td.path().join("not_data_wake.db") },
     expect: |v: Value| -> Result<()> {
-        assert_eq!(v.to_string(), r#"["null"]"#);
+        assert_eq!(v.to_string(), "[]");
         Ok(())
     }
 );
 
 // A db op runs on a blocking thread no abort stops, so an op whose arm
-// sleeps while it runs finishes asleep and answers at the wake: the
-// popped entry, and a commit's outcome, are not lost.
+// sleeps while it runs still happens, and nothing answers it: the pop
+// and the commit land, and neither reply is seen, at the wake or after.
 run_with_tempdir!(
-    name: db_pop_answers_at_the_wake,
+    name: db_pop_is_not_answered_after_a_sleep,
     code: r#"{{
         let d = db::open("{}")?;
         let t: db::Tree<i64, string> = db::tree(d, null)?;
@@ -1500,17 +1504,21 @@ run_with_tempdir!(
         let popped = select on {{ true => db::pop_min(ins ~ t)?, false => never() }};
         on <- ins ~ false;
         on <- on ~ select on {{ false => true, true => never() }};
-        (popped, db::len(popped ~ t)?)
+        let answered = false;
+        answered <- popped ~ true;
+        let n = db::len(sys::time::timer(duration: 10.ms, true) ~ t)?;
+        let gone = select n {{ u64:0 => n, _ => never() }};
+        skip(#n: 4, gone) ~ answered
     }}"#,
     setup: |td| { td.path().join("pop_asleep.db") },
     expect: |v: Value| -> Result<()> {
-        assert_eq!(v.to_string(), r#"[[i64:1, "one"], u64:0]"#);
+        assert_eq!(v.to_string(), "false");
         Ok(())
     }
 );
 
 run_with_tempdir!(
-    name: db_txn_commit_answers_at_the_wake,
+    name: db_txn_commit_is_not_answered_after_a_sleep,
     code: r#"{{
         let d = db::open("{}")?;
         let t: db::Tree<string, i64> = db::tree(d, "txn")?;
@@ -1521,11 +1529,15 @@ run_with_tempdir!(
         let committed = select on {{ true => db::txn::commit(ins ~ txn), false => never() }};
         on <- ins ~ false;
         on <- on ~ select on {{ false => true, true => never() }};
-        (committed, db::get(t, committed ~ "k1")?)
+        let answered = false;
+        answered <- committed ~ true;
+        let v = db::get(t, sys::time::timer(duration: 10.ms, true) ~ "k1")?;
+        let landed = select v {{ null as _ => never(), v => v }};
+        skip(#n: 4, landed) ~ (answered, landed)
     }}"#,
     setup: |td| { td.path().join("commit_asleep.db") },
     expect: |v: Value| -> Result<()> {
-        assert_eq!(v.to_string(), r#"[null, i64:42]"#);
+        assert_eq!(v.to_string(), r#"[false, i64:42]"#);
         Ok(())
     }
 );

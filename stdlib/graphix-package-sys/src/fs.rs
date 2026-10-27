@@ -382,7 +382,9 @@ mod test {
             FileSeekEv::eval((stream.clone(), SeekFrom::Current(0))).await,
             Value::U64(0)
         );
-        assert!(matches!(crate::io::IoReadEv::eval((stream, 5)).await,
-            Value::Bytes(ref bytes) if &bytes[..] == b"hello"));
+        assert!(
+            matches!(crate::io::IoReadEv::eval((stream.clone(), 5, stream.ticket())).await,
+            Value::Bytes(ref bytes) if &bytes[..] == b"hello")
+        );
     }
 }

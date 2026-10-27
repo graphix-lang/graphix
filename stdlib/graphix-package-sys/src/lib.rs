@@ -75,6 +75,12 @@ impl<S> BufferedRead<S> {
         self.consumed = 0;
     }
 
+    /// Put `bytes` back in front of what has not been read.
+    fn unread(&mut self, bytes: &[u8]) {
+        self.compact();
+        self.pending.splice(0..0, bytes.iter().copied());
+    }
+
     fn into_parts(mut self) -> (S, GPooled<Vec<u8>>) {
         self.compact();
         (self.stream, self.pending)
@@ -280,6 +286,13 @@ pub struct Halves {
     closing: AtomicBool,
     closed: Notify,
     r: Mutex<Option<BufferedRead<ReadHalf<StreamKind>>>>,
+    /// Bytes a read took that its site never answered, oldest first: the
+    /// next taker of the read half reads them before the stream.
+    unread: parking_lot::Mutex<GPooled<Vec<u8>>>,
+    /// Reads that took bytes whose fate (answered, or given back to
+    /// `unread`) is not settled yet: the next taker waits for them.
+    unsettled: std::sync::atomic::AtomicUsize,
+    settled: Notify,
     stop_lines: OnceLock<tokio_watch::Sender<()>>,
     w: Mutex<Option<WriteHalf<StreamKind>>>,
     /// A socket's (peer, local) addresses, read when it was made.
@@ -353,6 +366,9 @@ impl Halves {
             closing: AtomicBool::new(false),
             closed: Notify::new(),
             r: Mutex::new(Some(BufferedRead::new(r, GPooled::take()))),
+            unread: parking_lot::Mutex::new(GPooled::take()),
+            unsettled: std::sync::atomic::AtomicUsize::new(0),
+            settled: Notify::new(),
             stop_lines: OnceLock::new(),
             w: Mutex::new(Some(w)),
             addrs,
@@ -385,7 +401,7 @@ impl Halves {
         what: &str,
         op: impl AsyncFnOnce(&mut BufferedRead<ReadHalf<StreamKind>>) -> IoResult<T>,
     ) -> Result<T, Value> {
-        self.on_half(&self.r, tag, what, op).await
+        self.on_half(self.reader().await, tag, what, op).await
     }
 
     /// [`Self::on_reader`] over the write half.
@@ -395,27 +411,51 @@ impl Halves {
         what: &str,
         op: impl AsyncFnOnce(&mut WriteHalf<StreamKind>) -> IoResult<T>,
     ) -> Result<T, Value> {
-        self.on_half(&self.w, tag, what, op).await
+        self.on_half(self.w.lock().await, tag, what, op).await
     }
 
     async fn on_half<H, T>(
         &self,
-        half: &Mutex<Option<H>>,
+        mut guard: MutexGuard<'_, Option<H>>,
         tag: &'static str,
         what: &str,
         op: impl AsyncFnOnce(&mut H) -> IoResult<T>,
     ) -> Result<T, Value> {
-        let mut guard = half.lock().await;
         let Some(h) = guard.as_mut() else {
             return Err(errf!(tag, "stream unavailable"));
         };
         self.until_closed(op(h)).await.map_err(|e| errf!(tag, "{what} failed: {e}"))
     }
 
+    /// The read half, once every earlier read has settled, with the bytes
+    /// given back to the stream in front.
     pub(crate) async fn reader(
         &self,
     ) -> MutexGuard<'_, Option<BufferedRead<ReadHalf<StreamKind>>>> {
-        self.r.lock().await
+        let mut r = self.r.lock().await;
+        loop {
+            let settled = self.settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            if self.unsettled.load(AtomicOrdering::Acquire) == 0 {
+                break;
+            }
+            settled.await
+        }
+        if let Some(r) = r.as_mut() {
+            let mut unread = self.unread.lock();
+            if !unread.is_empty() {
+                r.unread(&unread);
+                unread.clear();
+            }
+        }
+        r
+    }
+
+    /// A ticket for a read whose reply its site settles
+    /// ([`graphix_package_core::EvalCachedAsync::reclaim`]).
+    pub(crate) fn ticket(self: &Arc<Self>) -> Arc<ReadTicket> {
+        Arc::new(ReadTicket { stream: self.clone(), entered: AtomicBool::new(false) })
     }
 
     #[cfg(test)]
@@ -441,7 +481,7 @@ impl Halves {
 
     /// Borrow the whole stream under both locks; `None` if it is closed.
     pub(crate) async fn take(&self) -> Option<Whole<'_>> {
-        let mut r = self.r.lock().await;
+        let mut r = self.reader().await;
         let mut w = self.w.lock().await;
         match (r.take(), w.take()) {
             (Some(rh), Some(wh)) => {
@@ -472,6 +512,43 @@ impl Halves {
         };
         r.take();
         res
+    }
+}
+
+/// One read, from the moment it holds the read half until its site
+/// answers its bytes or gives them back: readers after it wait.
+#[derive(Debug)]
+pub(crate) struct ReadTicket {
+    stream: Arc<Halves>,
+    entered: AtomicBool,
+}
+
+impl ReadTicket {
+    /// The read holds the read half.
+    pub(crate) fn enter(&self) {
+        if !self.entered.swap(true, AtomicOrdering::AcqRel) {
+            self.stream.unsettled.fetch_add(1, AtomicOrdering::AcqRel);
+        }
+    }
+
+    /// The read's reply is answered (`None`), or given back to the stream.
+    pub(crate) fn settle(&self, reply: Option<Value>) {
+        if !self.entered.swap(false, AtomicOrdering::AcqRel) {
+            return;
+        }
+        if let Some(Value::Bytes(b)) = reply {
+            self.stream.unread.lock().extend_from_slice(&b)
+        }
+        self.stream.unsettled.fetch_sub(1, AtomicOrdering::AcqRel);
+        self.stream.settled.notify_waiters()
+    }
+}
+
+/// A read dropped unsettled (its site deleted, the read aborted) settles
+/// with nothing to give back.
+impl Drop for ReadTicket {
+    fn drop(&mut self) {
+        self.settle(None)
     }
 }
 

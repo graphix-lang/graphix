@@ -10,7 +10,7 @@ use graphix_compiler::{
     typ::FnType,
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, RtVar,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, Reclaim, RtVar,
     seam_value,
 };
 use netidx_core::pack::PackError;
@@ -27,17 +27,18 @@ use tokio::{
 };
 
 use crate::{
-    Halves, StreamKind, get_stream, stream_of, wrap_stderr, wrap_stdin, wrap_stdout,
+    Halves, ReadTicket, StreamKind, get_stream, stream_of, wrap_stderr, wrap_stdin,
+    wrap_stdout,
 };
 
 #[derive(Debug, Default)]
 pub(crate) struct IoReadEv;
 
 impl EvalCachedAsync for IoReadEv {
-    type Args = (Arc<Halves>, u64);
+    type Args = (Arc<Halves>, u64, Arc<ReadTicket>);
 
     const NAME: &str = "sys_io_read";
-    // CR claude for claude: [bug/medium] `read` is one `read_buf`, which is cancel-safe:
+    // XCR claude for claude: [bug/medium] `read` is one `read_buf`, which is cancel-safe:
     // dropped before it completes, it has read nothing. Declaring it not cancel-safe
     // lets a read in a sleeping arm keep the reader lock and take the next chunk. Only
     // that arm's wake answers it, while the selected arm's read of the same stream
@@ -55,20 +56,42 @@ impl EvalCachedAsync for IoReadEv {
     // seen). A stream read whose reply is dropped returns its bytes to the stream's
     // buffer, so no data is lost. This replaces the CANCEL_SAFE split (a call not
     // cancel-safe finishing and answering at the wake).
+    // 2026-10-27 claude: Under the ruling built here (see x-async-io-01's note), the
+    // sleeping arm's read still takes the bytes, but nothing answers it: its bytes go
+    // back to the stream (ReadTicket::settle), and the selected arm's read, waiting for
+    // that read to settle, gets them. The repro now prints ("B", "one"). Pin:
+    // lib_tests::tcp::tcp_read_across_sleep (a slept read_exact's bytes reach the read
+    // issued at the wake, in order); sys io::test::a_dropped_read_lets_the_next_read.
     const CANCEL_SAFE: bool = false;
 
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))
+    fn reclaim((_, _, ticket): &Self::Args) -> Option<Reclaim> {
+        settle(ticket)
     }
 
-    fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let stream = get_stream(cached, 0)?;
+        let ticket = stream.ticket();
+        Some((stream, cached.get::<u64>(1)?, ticket))
+    }
+
+    fn eval((stream, n, ticket): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             stream
-                .on_reader("IOError", "read", async |s| read_chunk(s, n).await)
+                .on_reader("IOError", "read", async |s| {
+                    ticket.enter();
+                    read_chunk(s, n).await
+                })
                 .await
                 .map_or_else(|e| e, |bytes| Value::Bytes(PBytes::new(bytes)))
         }
     }
+}
+
+/// Settle a read's reply through its ticket: answered, or its bytes given
+/// back to the stream.
+fn settle(ticket: &Arc<ReadTicket>) -> Option<Reclaim> {
+    let ticket = ticket.clone();
+    Some(Box::new(move |reply| ticket.settle(reply)))
 }
 
 async fn read_chunk(
@@ -371,21 +394,28 @@ impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
 pub(crate) struct IoReadExactEv;
 
 impl EvalCachedAsync for IoReadExactEv {
-    type Args = (Arc<Halves>, u64);
+    type Args = (Arc<Halves>, u64, Arc<ReadTicket>);
 
     const NAME: &str = "sys_io_read_exact";
     const CANCEL_SAFE: bool = false;
 
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))
+    fn reclaim((_, _, ticket): &Self::Args) -> Option<Reclaim> {
+        settle(ticket)
     }
 
-    fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let stream = get_stream(cached, 0)?;
+        let ticket = stream.ticket();
+        Some((stream, cached.get::<u64>(1)?, ticket))
+    }
+
+    fn eval((stream, n, ticket): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             // the buffer grows as bytes arrive, not to n
             let mut buf = Vec::new();
             stream
                 .on_reader("IOError", "read_exact", async |s| {
+                    ticket.enter();
                     s.take(n).read_to_end(&mut buf).await
                 })
                 .await
@@ -400,20 +430,29 @@ pub(crate) type IoReadExact = CachedArgsAsync<IoReadExactEv>;
 pub(crate) struct IoReadAllEv;
 
 impl EvalCachedAsync for IoReadAllEv {
-    type Args = Arc<Halves>;
+    type Args = (Arc<Halves>, Arc<ReadTicket>);
 
     const NAME: &str = "sys_io_read_all";
     const CANCEL_SAFE: bool = false;
 
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_stream(cached, 0)
+    fn reclaim((_, ticket): &Self::Args) -> Option<Reclaim> {
+        settle(ticket)
     }
 
-    fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let stream = get_stream(cached, 0)?;
+        let ticket = stream.ticket();
+        Some((stream, ticket))
+    }
+
+    fn eval((stream, ticket): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let mut buf = Vec::new();
             stream
-                .on_reader("IOError", "read_all", async |s| s.read_to_end(&mut buf).await)
+                .on_reader("IOError", "read_all", async |s| {
+                    ticket.enter();
+                    s.read_to_end(&mut buf).await
+                })
                 .await
                 .map_or_else(|e| e, |_| Value::Bytes(PBytes::new(Bytes::from(buf))))
         }
@@ -654,22 +693,66 @@ mod test {
         child.kill().await.unwrap();
     }
 
+    /// A read dropped while it holds the read half (its site deleted)
+    /// does not hold up the reads after it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dropped_read_lets_the_next_read() {
+        use futures::poll;
+        use std::time::Duration;
+        use std::{pin::pin, process::Stdio};
+        use tokio::{process::Command, time::timeout};
+
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "sleep 0.2; printf ab; sleep 30"])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stream =
+            Arc::new(Halves::new(StreamKind::ChildStdout(child.stdout.take().unwrap())));
+        {
+            let mut read = pin!(IoReadEv::eval((stream.clone(), 10, stream.ticket())));
+            assert!(poll!(read.as_mut()).is_pending());
+        }
+        let value = timeout(
+            Duration::from_secs(5),
+            IoReadEv::eval((stream.clone(), 10, stream.ticket())),
+        )
+        .await
+        .expect("the dropped read held up the next one");
+        assert!(matches!(value, Value::Bytes(ref b) if &b[..] == b"ab"));
+        child.kill().await.unwrap();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn close_cancels_read() {
-        close_pending_read(|stream| IoReadEv::eval((stream, 10))).await;
+        close_pending_read(|stream| {
+            let ticket = stream.ticket();
+            IoReadEv::eval((stream, 10, ticket))
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn close_cancels_read_exact() {
-        close_pending_read(|stream| IoReadExactEv::eval((stream, 10))).await;
+        close_pending_read(|stream| {
+            let ticket = stream.ticket();
+            IoReadExactEv::eval((stream, 10, ticket))
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn close_cancels_read_all() {
-        close_pending_read(IoReadAllEv::eval).await;
+        close_pending_read(|stream| {
+            let ticket = stream.ticket();
+            IoReadAllEv::eval((stream, ticket))
+        })
+        .await;
     }
 
     /// A write blocked on a child that never reads its stdin fails at the
@@ -766,13 +849,20 @@ mod test {
             .expect("take stayed behind the line reader")
             .unwrap();
         drop(whole);
-        let value = timeout(Duration::from_secs(1), IoReadEv::eval((stream.clone(), 2)))
-            .await
-            .expect("the line reader lost its partial bytes");
+        let value = timeout(
+            Duration::from_secs(1),
+            IoReadEv::eval((stream.clone(), 2, stream.ticket())),
+        )
+        .await
+        .expect("the line reader lost its partial bytes");
         assert!(matches!(value, Value::Bytes(ref b) if &b[..] == b"pa"));
         drop(stream.take().await.unwrap());
-        let value =
-            timeout(Duration::from_secs(1), IoReadEv::eval((stream, 5))).await.unwrap();
+        let value = timeout(
+            Duration::from_secs(1),
+            IoReadEv::eval((stream.clone(), 5, stream.ticket())),
+        )
+        .await
+        .unwrap();
         assert!(matches!(value, Value::Bytes(ref b) if &b[..] == b"rtial"));
         timeout(Duration::from_secs(1), reader).await.unwrap().unwrap();
         child.kill().await.unwrap();

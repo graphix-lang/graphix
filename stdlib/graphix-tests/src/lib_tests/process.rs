@@ -417,22 +417,27 @@ run!(
     FuseExpect::None
 );
 
-// A spawn has started its child by the time its arm can sleep, so it
-// finishes asleep and its Child answers at the wake: never a child the
-// program cannot reach.
+// A spawn whose arm sleeps while it runs still starts its child, and
+// nothing answers it: the child runs, its Child is never seen.
 #[cfg(unix)]
 run!(
-    spawn_answers_at_the_wake,
+    spawn_is_not_answered_after_a_sleep,
     r#"{
+  let temp = sys::fs::tempdir::create(null)?;
+  let path = sys::join_path(sys::fs::tempdir::path(temp), "ran");
   let on = true;
-  on <- false;
+  on <- path ~ false;
   on <- on ~ select on { false => true, true => never() };
   let c = select on {
-    true => sys::process::spawn(sys::process::options(#kill_on_drop: true, "/bin/true"))$,
+    true => sys::process::spawn(sys::process::options(#args: ["-c", "touch '[path]'"], "/bin/sh"))$,
     false => never()
   };
-  c ~ true
+  let answered = false;
+  answered <- c ~ true;
+  let ran = sys::fs::is_file(sys::time::timer(duration: 10.ms, true) ~ path);
+  let there = select ran { error as _ => never(), p => p };
+  skip(#n: 4, there) ~ answered
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)));
     FuseExpect::Jit
 );

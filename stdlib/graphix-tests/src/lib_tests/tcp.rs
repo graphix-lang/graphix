@@ -42,8 +42,9 @@ run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
 
-// A read whose arm sleeps finishes asleep and answers at the wake: the
-// bytes it took before the sleep are not lost (x-builtin-effects-03,
+// A read whose arm sleeps finishes asleep and is never answered, and the
+// bytes it took go back to the stream: the read the wake issues gets them,
+// so nothing taken before the sleep is lost (x-builtin-effects-03,
 // sys-io-07).
 const TCP_READ_ACROSS_SLEEP: &str = r#"
 {
@@ -58,7 +59,7 @@ const TCP_READ_ACROSS_SLEEP: &str = r#"
   let later = select on { false => on ~ server, true => never() };
   let w2 = Write::write_exact(later, buffer::from_string("0123456789"))?;
   on <- w2 ~ true;
-  let got = select on { true => Read::read_exact(client, u64:10)?, false => never() };
+  let got = select on { true => Read::read_exact(on ~ client, u64:10)?, false => never() };
   buffer::to_string(got)?
 }
 "#;
@@ -253,27 +254,30 @@ run!(tcp_accept_busy_trigger, TCP_ACCEPT_BUSY_TRIGGER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(50), Value::I64(0)])
 });
 
-// A listen or a connect whose arm sleeps while it runs finishes asleep
-// and answers at the wake: the bound listener and the connection the
-// server already saw are not lost.
-const TCP_LISTEN_CONNECT_ANSWER_AT_THE_WAKE: &str = r#"
+// A connect whose arm sleeps while it runs still connects, and nothing
+// answers it: the server accepts, the client's stream is never seen.
+const TCP_CONNECT_IS_NOT_ANSWERED_AFTER_A_SLEEP: &str = r#"
 {
-  let on = true;
-  on <- false;
-  on <- on ~ select on { false => true, true => never() };
-  let listener = select on { true => sys::tcp::listen("127.0.0.1:0")?, false => never() };
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
-  let again = true;
-  again <- addr ~ false;
-  again <- again ~ select again { false => true, true => never() };
-  let client = select again { true => sys::tcp::connect(addr)?, false => never() };
-  client ~ true
+  let on = true;
+  on <- addr ~ false;
+  on <- on ~ select on { false => true, true => never() };
+  let client = select on { true => sys::tcp::connect(addr)?, false => never() };
+  let answered = false;
+  answered <- client ~ true;
+  let server = sys::tcp::accept(listener, addr)?;
+  let accepted = false;
+  accepted <- server ~ true;
+  let tick = sys::time::timer(duration: 10.ms, true)?;
+  let after = select accepted { true => tick, false => never() };
+  skip(#n: 4, after) ~ answered
 }
 "#;
 
 run!(
-    tcp_listen_connect_answer_at_the_wake,
-    TCP_LISTEN_CONNECT_ANSWER_AT_THE_WAKE,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    tcp_connect_is_not_answered_after_a_sleep,
+    TCP_CONNECT_IS_NOT_ANSWERED_AFTER_A_SLEEP,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)));
     FuseExpect::Jit
 );
