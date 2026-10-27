@@ -756,6 +756,25 @@ fn a_symlinked_module_is_in_its_project() {
     assert_eq!(c.diagnostics("main.gx").len(), 1, "main.gx was not checked again");
 }
 
+/// A module under a linked directory is in its project: editing it
+/// checks the file that loads it.
+#[cfg(unix)]
+#[test]
+fn a_module_under_a_linked_directory_is_in_its_project() {
+    let mut c = Client::start(&[
+        ("main.gx", "mod util;\nutil::v + 1\n"),
+        ("shared/util/mod.gx", "let v = 1;\n"),
+    ]);
+    std::os::unix::fs::symlink("shared/util", c.path("util")).unwrap();
+    c.open("main.gx");
+    // the scan that sees the link
+    c.save("main.gx");
+    c.open("util/mod.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    c.edit("util/mod.gx", "let v = \"s\";\n");
+    assert_eq!(c.diagnostics("main.gx").len(), 1, "main.gx was not checked again");
+}
+
 #[test]
 fn closing_a_file_clears_its_diagnostics() {
     let mut c = Client::start(&[("a.gx", "let a = 1"), ("b.gx", "let b = 1")]);

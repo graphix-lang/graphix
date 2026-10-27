@@ -68,7 +68,7 @@ pub struct WorkspaceModel {
     pub file_to_projects: AHashMap<PathBuf, Vec<usize>>,
 }
 
-// CR claude for claude: [perf/medium] The scan walks and parses hidden directories, and
+// XCR claude for claude: [perf/medium] The scan walks and parses hidden directories, and
 // ServerState::new runs it before the server answers anything. With this repository as
 // the workspace root, the 40953 .gx files under `.claude/worktrees` hold off the first
 // answer for 27 s (debug build), and every didSave re-stats them all (0.38 s). Skip
@@ -76,7 +76,22 @@ pub struct WorkspaceModel {
 // module layout lives in one. probe:
 // design/review-2026-10-26/repro/x-lsp-probe-scan-hidden-dirs.py Also reported as
 // (lsp-05). (x-lsp-probe-04)
-const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor"];
+// 2026-10-27 claude: scan skips every directory below a root whose name starts with a
+// dot (workspace::skipped), beside target/node_modules/vendor; the root itself is never
+// skipped. Pin: graphix-lsp
+// workspace::tests::dot_directories_below_a_root_are_not_scanned (fails with the dot
+// rule or the depth guard undone).
+const SKIP_DIRS: &[&str] = &["target", "node_modules", "vendor"];
+
+/// A directory below a root that holds no modules: a build or vendor
+/// tree, or any dot-directory.
+fn skipped(e: &walkdir::DirEntry) -> bool {
+    e.depth() > 0
+        && e.file_type().is_dir()
+        && e.file_name()
+            .to_str()
+            .is_some_and(|s| s.starts_with('.') || SKIP_DIRS.contains(&s))
+}
 
 /// Walk each root and collect the project graph. A file unchanged since
 /// `known` saw it is not parsed again. Per-file errors are recorded as
@@ -85,14 +100,22 @@ const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor
 pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
     let mut files: AHashMap<PathBuf, WorkspaceFile> = AHashMap::default();
     for root in roots {
-        // CR claude for claude: [bug/medium] A link to a directory is not descended,
+        // XCR claude for claude: [bug/medium] A link to a directory is not descended,
         // but the resolver reads `mod util;` through one, so a module under a symlinked
         // directory is a lone root: an edit to proj/util/mod.gx (proj/util ->
         // ../shared/util) leaves main.gx unchecked until it is reopened. This is the
         // lsp-02 failure for directories. Walk with follow_links(true); walkdir yields
         // a loop as an error entry, which is skipped below. probe:
         // design/review-2026-10-26/repro/x-rerun-5-lsp-symlinked-dir.py (x-rerun-5-07)
-        // CR claude for claude: [bug/medium] The scan does not descend a symlinked
+        // 2026-10-27 claude: scan walks with follow_links(true) and reads type and
+        // metadata from the entry, so a module under a linked directory is in its
+        // project under the linked path; a loop is an error entry and skipped. Pins:
+        // graphix-lsp
+        // workspace::tests::a_module_under_a_linked_directory_is_in_its_project (with a
+        // loop link), graphix-shell tests/lsp
+        // a_module_under_a_linked_directory_is_in_its_project (editing util/mod.gx
+        // rechecks main.gx); both fail without follow_links.
+        // XCR claude for claude: [bug/medium] The scan does not descend a symlinked
         // directory, but the resolver reads modules through one (resolve_from_files). A
         // module under a linked directory is therefore missing from its project.
         // Opened, it is checked as a lone script: false errors such as "`super` goes
@@ -102,17 +125,19 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
         // already skips. Then drop the metadata special case and add an LSP test with a
         // linked directory. probe:
         // design/review-2026-10-26/repro/lsp-symlinked-module-dir.py (lsp-01)
-        for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
-            !e.file_name().to_str().map(|s| SKIP_DIRS.contains(&s)).unwrap_or(false)
-        }) {
+        // 2026-10-27 claude: Fixed with x-rerun-5-07: follow_links(true), the
+        // std::fs::metadata special case dropped (entry.file_type/metadata follow the
+        // link), and the LSP test graphix-shell tests/lsp
+        // a_module_under_a_linked_directory_is_in_its_project added; it fails without
+        // follow_links.
+        let walk = WalkDir::new(root).follow_links(true).into_iter();
+        for entry in walk.filter_entry(|e| !skipped(e)) {
             let Ok(entry) = entry else { continue };
-            // a link to a file is the file, as the resolver reads it; a link
-            // to a directory is not descended
-            let Ok(meta) = std::fs::metadata(entry.path()) else { continue };
-            if !meta.is_file() {
+            if !entry.file_type().is_file() {
                 continue;
             }
             let Some(kind) = FileKind::of(entry.path()) else { continue };
+            let Ok(meta) = entry.metadata() else { continue };
             let path = entry.path().to_path_buf();
             let modified = meta.modified().ok();
             let file = match known.files.get(&path) {
@@ -416,6 +441,34 @@ mod tests {
             .expect("main is a root");
         assert!(main_project.files.contains(&root.join("sub.gx")));
         assert!(main_project.files.contains(&root.join("sub").join("inner.gx")));
+    }
+
+    #[test]
+    fn dot_directories_below_a_root_are_not_scanned() {
+        let dir = make_dir();
+        let root = dir.path().join(".proj");
+        write(&root.join("main.gx"), "1\n");
+        write(&root.join(".claude").join("worktrees").join("a.gx"), "1\n");
+        write(&root.join("vendor").join("b.gx"), "1\n");
+        let m = scan(&[root.clone()], &WorkspaceModel::default());
+        assert_eq!(m.files.keys().collect::<Vec<_>>(), [&root.join("main.gx")]);
+    }
+
+    /// The resolver reads `mod util;` through a linked directory, so the
+    /// module is in its project under the linked path.
+    #[cfg(unix)]
+    #[test]
+    fn a_module_under_a_linked_directory_is_in_its_project() {
+        let dir = make_dir();
+        let root = dir.path().join("proj");
+        write(&root.join("main.gx"), "mod util;\nutil::v\n");
+        write(&dir.path().join("shared").join("util").join("mod.gx"), "let v = 1;\n");
+        std::os::unix::fs::symlink("../shared/util", root.join("util")).unwrap();
+        std::os::unix::fs::symlink("../../proj", root.join("util").join("loop")).unwrap();
+        let m = scan(&[root.clone()], &WorkspaceModel::default());
+        let roots: Vec<_> = m.projects.iter().map(|p| &p.root).collect();
+        assert_eq!(roots, [&root.join("main.gx")]);
+        assert!(m.projects[0].files.contains(&root.join("util").join("mod.gx")));
     }
 
     #[test]
