@@ -2872,8 +2872,6 @@ run!(builtin_variadic_trait, BUILTIN_VARIADIC_TRAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 }; FuseExpect::None);
 
-// A labeled default is checked against its parameter's bounds by
-// narrowing its cells, never by deciding them.
 const DEFAULT_OF_A_BOUNDED_PARAMETER: &str = r#"
 {
     let scale = |k| {
@@ -2884,9 +2882,16 @@ const DEFAULT_OF_A_BOUNDED_PARAMETER: &str = r#"
 }
 "#;
 
-run!(default_of_a_bounded_parameter, DEFAULT_OF_A_BOUNDED_PARAMETER, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(6)))
-}; FuseExpect::Jit);
+run!(default_of_a_bounded_parameter, DEFAULT_OF_A_BOUNDED_PARAMETER,
+    refused("default reads an enclosing open type"); FuseExpect::None);
+
+run!(default_of_a_closed_bounded_parameter, r#"{
+    let scale = |k: i64| {
+        let mul = |#by = k, x| x * by;
+        mul(3)
+    };
+    scale(2)
+}"#, is(Value::I64(6)); FuseExpect::Jit);
 
 const DEFAULT_FROM_THE_ENVIRONMENT: &str = r#"
 {

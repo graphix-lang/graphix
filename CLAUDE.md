@@ -716,7 +716,9 @@ node graph IS the IR — there is no parallel typed IR
   type the instance runs with, and only where a fn type hides the
   label against the callee's parameter as that type instantiates it
   (arguments, result and throws) and the label of the function value it
-  hides, which the default narrows; a call's type variable that only data positions hold (never a
+  hides, which the default narrows. A default whose type holds an enclosing
+  definition's open cell requires a closed parameter type (annotate the
+  factory's parameter or the defaulted parameter). A call's type variable that only data positions hold (never a
   function or a reference) settles to the widest argument whatever
   the order, one a callback holds to the first, and one an abstract
   type, a type application or a reference holds is fixed there, those

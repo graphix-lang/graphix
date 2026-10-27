@@ -30,6 +30,14 @@ argument's type, and when that type is a declared type variable, the
 variable's constraint. So `'a: [Int, Float] |#start: 'a = 0.0, x: 'a|`
 is fine; a call that omits `start` takes `'a` from the default, and a
 call that passes `#start: 1` takes it from the call.
+
+A default that returns an enclosing function's open type requires a closed
+parameter type. Annotate the enclosing parameter (`|z: i64|`) or the
+defaulted parameter (`|#d: i64 = z, x|`). An unannotated factory such as
+`|z| { let g = |#d = z, x| (d, x); g }` is refused, as is a default
+like `#d: Array<'q> = [z]`: a call cannot safely infer the enclosing
+function's type from an omitted argument.
+
 The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 `foo`, you can pass any function that has a labeled argument `foo`, even if it

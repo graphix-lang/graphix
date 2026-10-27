@@ -1343,15 +1343,42 @@ run!(
     prints(r#"[[["a", i64:5], ["b", i64:9]], i64:12]"#)
 );
 
-// A returned closure's default that reads the factory's parameter ties
-// the closure's parameter to it, so the factory's check reaches the cell
-// and the check agrees with the build.
 run!(
     default_reads_the_factorys_parameter,
     "{ let mk = |z| { let g = |#d = z, x| [d, x]; g }; let f = mk(1); \
        [f(2), f(#d: 5, 3)] }",
-    prints("[[i64:1, i64:2], [i64:5, i64:3]]");
+    refused("default reads an enclosing open type");
     FuseExpect::None
+);
+run!(
+    default_factory_open_array,
+    "{ let mk = |z| { let g = |#d: Array<'q> = [z], x| [d, [x]]; g }; \
+       let f = mk(1); f(2) }",
+    refused("default reads an enclosing open type"); FuseExpect::None
+);
+run!(
+    default_factory_open_struct,
+    "{ let mk = |z| { let g = |#d: {v: 'q} = {v: z}, x| (d, x); g }; \
+       let f = mk(1); f(2) }",
+    refused("default reads an enclosing open type"); FuseExpect::None
+);
+run!(
+    default_factory_open_union,
+    "{ let mk = |z| { let g = |#d: [null, 'q] = z, x| (d, x); g }; \
+       let f = mk(1); f(2) }",
+    refused("default reads an enclosing open type"); FuseExpect::None
+);
+run!(
+    default_factory_closed_parameter,
+    "{ let mk = |z| { let g = |#d: i64 = z, x| [d, x]; g }; let f = mk(1); \
+       [f(2), f(#d: 5, 3)] }",
+    prints("[[i64:1, i64:2], [i64:5, i64:3]]"); FuseExpect::None
+);
+run!(
+    default_factory_closed_capture,
+    "{ let mk = |z: i64| { let g = |#d = z, x| [d, x]; g }; let f = mk(1); \
+       [f(2), f(#d: 5, 3)] }",
+    prints("[[i64:1, i64:2], [i64:5, i64:3]]"); FuseExpect::None
 );
 
 const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"

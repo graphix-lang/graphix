@@ -242,6 +242,11 @@ let f = |@args: i64| args         // variadic (builtins only)
 Calls dispatch statically. A HOF nested under its own callback is a
 fresh instance, not recursion.
 
+A labeled default returning an enclosing function's open type requires a
+closed defaulted parameter type. Annotate the factory's parameter
+(`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =
+|#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused.
+
 A function is more than a computation: each call is a live piece of
 graph that stays. It can hold state (`let x = ..; x <- ..`), run seqs
 and own effects, its arguments are streams and so is its result. What

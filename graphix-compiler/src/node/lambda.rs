@@ -1994,17 +1994,13 @@ fn check_defaults<R: Rt>(
         })?;
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
+            if at.typ.has_unbound() && holds_enclosing_cell(&typ, def.level.depth()) {
+                bail!(
+                    "default reads an enclosing open type: annotate the factory's \
+                     parameter or give the defaulted parameter a closed type"
+                );
+            }
             match &at.typ {
-                // a default reading an enclosing definition's open cell
-                // gives the parameter that cell's type: nothing else would
-                // reach the cell, and its definition would settle it to ⊥
-                Type::TVar(tv)
-                    if !tv.is_bound()
-                        && !tv.is_rigid()
-                        && holds_enclosing_cell(&typ, def.level.depth()) =>
-                {
-                    at.typ.check_contains(&ctx.env, &typ)
-                }
                 // each conjunct narrows the default's open cells, which
                 // may be the environment's, rather than deciding them
                 Type::TVar(tv) if !tv.is_bound() => tv
@@ -2013,7 +2009,7 @@ fn check_defaults<R: Rt>(
                     .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
                 // a variable inside the type is checked as any instance of
                 // it: each omitting call checks the default again
-                // CR claude for claude: [bug/medium] A default that reads an enclosing
+                // XCR claude for claude: [bug/medium] A default that reads an enclosing
                 // definition's open cell is tied to its parameter only when the
                 // parameter type is a bare variable (the arm above). Under a written
                 // type holding one (`#d: Array<'q> = [z]`, `{v: 'q}`, `[null, 'q]`) it
@@ -2052,6 +2048,16 @@ fn check_defaults<R: Rt>(
                 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q23, A default that
                 // reads an enclosing open cell): yes, b (the recommendation: (b) now, small and sound;
                 // (c) later if it bites.)
+                // 2026-10-27 codex: Implemented Eric's q23 ruling in check_defaults: a default whose
+                // type reaches an enclosing definition's open cell is refused unless its parameter type
+                // is closed, with a diagnostic asking for a factory or defaulted-parameter annotation.
+                // Removed the special bare-variable tie. Pins:
+                // lang::types::default_reads_the_factorys_parameter and
+                // default_factory_open_{array,struct,union}; all four failed in all four modes without
+                // the fix (16 failures). default_factory_closed_{parameter,capture} pin both annotation
+                // routes (8 passes before and after). The full lang::types module passes: 1113 tests.
+                // Updated CLAUDE.md, regenerated AGENTS.md, and updated the labeled-arguments book page
+                // and graphix-lang skill. Further verification is recorded with the commit report.
                 t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
                 t => t.check_contains(&ctx.env, &typ),
             }
