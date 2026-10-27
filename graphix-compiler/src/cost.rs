@@ -398,7 +398,9 @@ impl ForkSite {
     pub fn plan<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, n: usize) -> Plan<'_> {
         match ctx.fork_mode() {
             ParMode::Off => Plan::Serial,
-            _ if n < 2 || !self.1.independent() => Plan::Serial,
+            _ if n < 2 || !self.1.independent() || ctx.control.eval_unavailable() => {
+                Plan::Serial
+            }
             ParMode::Force => Plan::Fork(Splits::Halves),
             ParMode::Auto => self.plan_auto(n),
         }
@@ -692,7 +694,12 @@ impl SlotSite {
     pub fn plan<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, n: usize) -> SlotPlan {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
-            _ if n < 2 || !self.siblings.independent() => SlotPlan::Serial,
+            _ if n < 2
+                || !self.siblings.independent()
+                || ctx.control.eval_unavailable() =>
+            {
+                SlotPlan::Serial
+            }
             ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
             ParMode::Auto => self.plan_auto(n),
         }

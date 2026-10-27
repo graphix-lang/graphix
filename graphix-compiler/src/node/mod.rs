@@ -1269,15 +1269,17 @@ fn check_in_tasks<R: Rt>(
 ) -> Result<()> {
     let cx = TaskContext::current();
     let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
-    ctx.control.eval_pool().install(|| {
-        work.par_iter_mut()
-            .map(|(n, task, id)| {
-                let _cx = cx.with_task(*id).enter();
-                let r = task.run_task(|task| check(n, task));
-                statement_result(r, n, module)
-            })
-            .collect_into_vec(&mut results)
-    });
+    let check_task = |(n, task, id): &mut (&mut Node<R>, CompileCtx<R>, TaskId)| {
+        let _cx = cx.with_task(*id).enter();
+        let r = task.run_task(|task| check(n, task));
+        statement_result(r, n, module)
+    };
+    match ctx.control.eval_pool() {
+        Some(pool) => pool.install(|| {
+            work.par_iter_mut().map(check_task).collect_into_vec(&mut results)
+        }),
+        None => results.extend(work.iter_mut().map(check_task)),
+    }
     for (_, task, _) in work.drain(..) {
         ctx.join(task);
     }

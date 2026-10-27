@@ -1252,7 +1252,7 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a>(
         Some((_, e)) => Err(e),
         None => Ok(()),
     };
-    if heavy.len() < 2 {
+    if heavy.len() < 2 || ctx.control.eval_pool().is_none() {
         return first(
             heavy
                 .drain(..)
@@ -1277,7 +1277,7 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a>(
     drop(emission);
     let cx = crate::typ::tvar::TaskContext::current();
     let mut results: Vec<(usize, anyhow::Result<()>)> =
-        ctx.control.eval_pool().install(|| {
+        ctx.control.eval_pool().expect("a pool before forking").install(|| {
             work.par_iter_mut()
                 .map(|(i, n, task)| {
                     let _cx = cx.enter();

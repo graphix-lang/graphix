@@ -186,6 +186,14 @@ pub(crate) unsafe fn run(
         }
         None => (),
         Some(g) => {
+            // SAFETY: the loan's runtime outlives this kernel run.
+            let control = unsafe { &*loan.control };
+            if control.eval_pool().is_none() {
+                let mut r = Run::new(at, len, find);
+                unsafe { run_here(chunk, frame, &mut r) };
+                runs.push(r);
+                return unsafe { finish(&mut runs, find, out) };
+            }
             let g = g.max(1);
             let first = runs.len();
             let mut lo = at;
@@ -201,8 +209,6 @@ pub(crate) unsafe fn run(
                     forked.len()
                 );
             }
-            // SAFETY: the loan's runtime outlives this kernel run.
-            let control = unsafe { &*loan.control };
             control.forked();
             let env = KERNEL_ENV.with(|c| c.get()) as usize;
             let generation = SELF_BLOCK_GEN.with(|c| c.get());

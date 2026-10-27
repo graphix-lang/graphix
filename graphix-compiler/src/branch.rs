@@ -998,6 +998,9 @@ where
     T: Send,
     F: Fn(&mut ExecCtx<'_, R>, P) -> T + Sync,
 {
+    if ctx.control.eval_pool().is_none() {
+        return parts.into_iter().map(|p| f(ctx, p)).collect();
+    }
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
     let mut branches: Vec<Part<R, P, T>> = parts
         .into_iter()
@@ -1111,13 +1114,17 @@ pub(crate) fn compile_each<R, P, F>(
     control.build_forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(control, tasks.len());
-    on_pool(control, || {
-        tasks.par_iter_mut().with_max_len(1).for_each(|(task, p)| {
-            as_part(control, tokio.as_ref(), &live, || {
-                task.run_task(|task| f(task, p.take().expect("a part")));
-            })
+    let run = |(task, p): &mut (CompileCtx<R>, Option<P>)| {
+        as_part(control, tokio.as_ref(), &live, || {
+            task.run_task(|task| f(task, p.take().expect("a part")));
         })
-    });
+    };
+    match control.eval_pool() {
+        Some(_) => {
+            on_pool(control, || tasks.par_iter_mut().with_max_len(1).for_each(run))
+        }
+        None => tasks.iter_mut().for_each(run),
+    }
     for (task, _) in tasks.drain(..) {
         ctx.cx.join(task)
     }
@@ -1134,6 +1141,9 @@ where
     RA: Send,
     RB: Send,
 {
+    if ctx.control.eval_pool().is_none() {
+        return (a(ctx), b(ctx));
+    }
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
     // SAFETY: `ctx` is borrowed for this call and used again only after
     // both branches merged, in order, below
@@ -1241,7 +1251,7 @@ impl Drop for Live<'_> {
 /// from the runtime's own thread, so a cycle's serial work stays there,
 /// and joined in place by a fork already on the pool.
 pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
-    let pool = control.eval_pool();
+    let pool = control.eval_pool().expect("a pool before forking");
     if pool.current_thread_index().is_some() {
         return f();
     }
