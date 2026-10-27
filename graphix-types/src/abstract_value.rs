@@ -220,8 +220,8 @@ pub enum Written<'a> {
 }
 
 /// The abstract value `v`, `depth` implementations into a write, as its
-/// `Cast` implementation writes it. A reference, a value of a type backed
-/// by Rust, a type with no implementation, an implementation that
+/// `Cast` implementation writes it. A reference, a function, a value of a
+/// type backed by Rust, a type with no implementation, an implementation that
 /// produced nothing and a write through more implementations than a
 /// reader could read are refused.
 pub fn written_as(v: &Value, depth: usize) -> Result<Written<'_>> {
@@ -229,18 +229,9 @@ pub fn written_as(v: &Value, depth: usize) -> Result<Written<'_>> {
         return Err(anyhow!("a reference is not data"));
     }
     let Some(g) = get(v) else {
-        // CR claude for claude: [readability/low] A function value is also an
-        // abstract that is neither a reference nor a GxAbstract, so a writer
-        // handed `let v: Any = {a: |x: i64| x + 1}` reports "a value of a type
-        // backed by Rust is not data" (json, pack and toml alike), which names
-        // the wrong cause. Word it to cover both, e.g. "a function or a value
-        // of a type backed by Rust is not data", here and in
-        // graphix-package-core's `written`. Probe run from a scratch program;
-        // not saved. (t-rep-03)
-        // 2026-10-26 claude: t-rep-04 moved these refusals into
-        // abstract_value::written_as, which graphix-package-core's written now
-        // calls, so the message lives in one place.
-        return Err(anyhow!("a value of a type backed by Rust is not data"));
+        return Err(anyhow!(
+            "a function or a value of a type backed by Rust is not data"
+        ));
     };
     if depth >= MAX_DEPTH {
         return Err(anyhow!(

@@ -1,7 +1,7 @@
 use crate::{
     env::Env,
     stack::ensure_sufficient,
-    typ::{FnType, RefHist, RefPair, TVar, Type, TypeRef},
+    typ::{FnType, NodePairs, RefHist, RefPair, TVar, Type, TypeRef},
 };
 use ahash::AHashMap;
 use anyhow::Result;
@@ -62,23 +62,37 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// binding, and inside a function type the cells pair consistently
 /// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    Identity { strict: false, pairs: None }.same(t0, t1)
+    Identity::new(false).same(t0, t1)
 }
 
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
 pub(super) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
-    Identity { strict: true, pairs: None }.same(t0, t1)
+    Identity::new(true).same(t0, t1)
 }
 
 struct Identity {
     strict: bool,
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
+    /// The nodes found identical outside a function type.
+    found: NodePairs,
+    /// Those found inside the function type being compared, which hold
+    /// only under its pairing of cells.
+    found_in_fn: NodePairs,
 }
 
 impl Identity {
-    // CR claude for claude: [perf/medium] Two equal DAGs in different allocations are
+    fn new(strict: bool) -> Self {
+        Self {
+            strict,
+            pairs: None,
+            found: NodePairs::default(),
+            found_in_fn: NodePairs::default(),
+        }
+    }
+
+    // XCR claude for claude: [perf/medium] Two equal DAGs in different allocations are
     // compared here path by path: only one node shared by both sides short-cuts. `type
     // R<'a, 'b> = ('a, 'b); let mk = |x: 'a| -> R<'a, 'a> (x, x)` with 24 nested mk
     // lets in a definition checks in 40 ms but builds in 12.5 s, x4 per two levels. gdb
@@ -88,12 +102,37 @@ impl Identity {
     // then pin the shape in deep_nesting.rs. probe:
     // design/review-2026-10-26/repro/t-typ-mod-ref-dag-identity-exponential.sh
     // (t-typ-mod-03)
+    // 2026-10-27 claude: Identity::same and contains' link_equal (now struct Link, the
+    // second walk identical_linked runs, which kept the probe exponential after the
+    // first fix) remember the pairs of shared nodes found to agree (typ::NodePairs,
+    // keyed by shared_identity, TVars excluded) and answer a repeat from the set; both
+    // walks are conjunctive, so a pair found once agrees for the rest of the walk.
+    // Pairs found inside a function type hold only under its cell pairing and are
+    // cleared when the outermost Fn ends. A walk memoizes only past its first 64 nodes:
+    // always-on hashing cost about 7% on the GUI examples' --check, the threshold about
+    // 1% (noise). Probe n=24: 12.5 s -> 0.1 s. Pin: graphix-shell deep_nesting
+    // a_typedef_named_type_dag_builds_in_linear_time (depth 60; times out at 15 s with
+    // NodePairs::key returning None).
     fn same(&mut self, t0: &Type, t1: &Type) -> bool {
         // one shared node is identical to itself, however large
         if t0.shared_identity().is_some_and(|a| t1.shared_identity() == Some(a)) {
             return true;
         }
-        ensure_sufficient(|| self.same_inner(t0, t1))
+        let pair = self.found.key(t0, t1);
+        if let Some(pair) = pair
+            && (self.found.contains(pair)
+                || (self.pairs.is_some() && self.found_in_fn.contains(pair)))
+        {
+            return true;
+        }
+        let same = ensure_sufficient(|| self.same_inner(t0, t1));
+        if let Some(pair) = pair.filter(|_| same) {
+            match self.pairs {
+                None => self.found.insert(pair),
+                Some(_) => self.found_in_fn.insert(pair),
+            }
+        }
+        same
     }
 
     fn all(&mut self, a: &[Type], b: &[Type]) -> bool {
@@ -187,6 +226,7 @@ impl Identity {
                     && self.same(&f0.throws, &f1.throws);
                 if outer {
                     self.pairs = None;
+                    self.found_in_fn.clear();
                 }
                 r
             }

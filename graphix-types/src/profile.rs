@@ -65,11 +65,11 @@ struct Instance {
     check_calls: u64,
     signature: usize,
     callbacks: usize,
-    /// The instance whose elaboration built this one.
+    /// The instance whose check or elaboration built this one.
     parent: Option<LambdaInstanceId>,
-    /// Wall time of this instance's elaboration, the instances it built
-    /// included.
-    elaboration_ns: u64,
+    /// Wall time while this instance was open, its check and its
+    /// elaboration, the instances built and checked meanwhile included.
+    open_ns: u64,
 }
 
 #[derive(Default)]
@@ -77,8 +77,28 @@ struct Census {
     instances: LPooled<IntMap<LambdaInstanceId, Instance>>,
     signatures: LPooled<AHashMap<Arc<FnType>, usize>>,
     callbacks: LPooled<AHashMap<u64, usize>>,
-    /// The instances whose elaboration is running, innermost last.
-    elaborating: Vec<LambdaInstanceId>,
+    /// The instances whose check or elaboration is running, innermost
+    /// last.
+    open: Vec<LambdaInstanceId>,
+}
+
+impl Census {
+    /// Open `id`; whether this is its outermost opening, the one whose
+    /// time counts.
+    fn open(&mut self, id: LambdaInstanceId) -> bool {
+        let outermost = !self.open.contains(&id);
+        self.open.push(id);
+        outermost
+    }
+
+    /// Close the innermost opening of `id`, `elapsed` after it opened.
+    fn close(&mut self, id: LambdaInstanceId, outermost: bool, elapsed: u64) {
+        debug_assert_eq!(self.open.last(), Some(&id), "instance closed out of order");
+        self.open.pop();
+        if outermost {
+            self.instances.entry(id).or_default().open_ns += elapsed;
+        }
+    }
 }
 
 struct Profile {
@@ -128,7 +148,7 @@ impl Profile {
 #[derive(Clone, Copy)]
 enum InstanceCost {
     Graph,
-    Check,
+    Check { outermost: bool },
 }
 
 pub struct Span {
@@ -205,8 +225,8 @@ impl Task {
             let fork = p.current.map(|phase| {
                 let module = p.module.map(|m| p.modules[m].0.clone());
                 let census = p.census.as_ref();
-                let elaborating = census.and_then(|c| c.elaborating.last().copied());
-                (phase, module, elaborating, census.is_some())
+                let open = census.and_then(|c| c.open.last().copied());
+                (phase, module, open, census.is_some())
             });
             Self { fork, done: None }
         })
@@ -214,7 +234,7 @@ impl Task {
 
     /// Run `f`, the task, on this thread under the profile it forked.
     pub fn run<T>(&mut self, f: impl FnOnce() -> T) -> T {
-        let Some((phase, module, elaborating, census)) = self.fork.clone() else {
+        let Some((phase, module, open, census)) = self.fork.clone() else {
             return f();
         };
         let now = Instant::now();
@@ -226,7 +246,7 @@ impl Task {
             metrics: [Metric::default(); PHASES.len()],
             tasks: [Metric::default(); PHASES.len()],
             census: census.then(|| Census {
-                elaborating: elaborating.into_iter().collect(),
+                open: open.into_iter().collect(),
                 ..Census::default()
             }),
             module: module.is_some().then_some(0),
@@ -301,7 +321,7 @@ impl Task {
                     row.check_ns += t.check_ns;
                     row.graph_calls += t.graph_calls;
                     row.check_calls += t.check_calls;
-                    row.elaboration_ns += t.elaboration_ns;
+                    row.open_ns += t.open_ns;
                     if let Some(s) = sig.get(&t.signature) {
                         row.signature = *s;
                     }
@@ -360,16 +380,13 @@ pub fn instance(
     let Some(span) = span.as_mut().filter(|_| graphix_profile_instances()) else {
         return;
     };
-    let cost = match span.phase {
-        Phase::InstanceGraph => InstanceCost::Graph,
-        Phase::InstanceCheck => InstanceCost::Check,
-        _ => return,
-    };
+    if !matches!(span.phase, Phase::InstanceGraph | Phase::InstanceCheck) {
+        return;
+    }
     let _p = phase(Phase::InstanceCensus);
-    span.instance = Some((id, cost));
-    PROFILE.with_borrow_mut(|p| {
+    span.instance = PROFILE.with_borrow_mut(|p| {
         let c = p.census.as_mut().unwrap();
-        // CR claude for claude: [bug/low] `elaborating` is pushed only by
+        // XCR claude for claude: [bug/low] `elaborating` is pushed only by
         // profile::elaboration (GXLambda::typecheck1), but a row is created here by the
         // instance's InstanceGraph/InstanceCheck span, when no elaboration guard is
         // open. Every INSTANCE line prints parent=0 (267 of 267 for table_basic.gx
@@ -380,20 +397,35 @@ pub fn instance(
         // tree(), parent, elaboration_ns and the Elaboration guard. probe:
         // design/review-2026-10-26/repro/ide-tooling-instances-flat-tree.sh
         // (ide-tooling-07)
-        let parent = c.elaborating.last().copied();
+        // 2026-10-27 claude: Census::open replaces elaborating: an instance is open
+        // while its InstanceCheck span (profile::instance pushes, Span::drop pops) or
+        // its Elaboration guard lives, and a new row's parent is the innermost open
+        // instance. elaboration_ns became open_ns, the outermost opening's wall time
+        // (check and elaboration, the instances built meanwhile included);
+        // bench/instances.py's tree() reads graph_ns + open_ns. table_basic --expand:
+        // 45 of 267 rows now have a parent (0 before). Pin:
+        // graphix-shell/tests/profile_instances.rs (a HOF callback's instance names the
+        // instance of the function whose check built it; fails on the old profile.rs).
+        let parent = c.open.last().copied();
         let row = c.instances.entry(id).or_default();
         if row.definition.is_none() {
             row.definition = Some(definition);
             row.label = format_compact!("{:?}:{}", body.ori.source, body.pos);
             row.parent = parent;
         }
+        // the id exists only once the graph is built, so nothing opens under it
+        let cost = match span.phase {
+            Phase::InstanceCheck => InstanceCost::Check { outermost: c.open(id) },
+            _ => InstanceCost::Graph,
+        };
+        Some((id, cost))
     });
 }
 
 /// An instance's elaboration (its `typecheck1`, which builds the
 /// instances its call sites reach), open while the guard lives.
 #[doc(hidden)]
-pub struct Elaboration(Option<(LambdaInstanceId, Instant)>);
+pub struct Elaboration(Option<(LambdaInstanceId, bool, Instant)>);
 
 #[doc(hidden)]
 pub fn elaboration(id: LambdaInstanceId) -> Elaboration {
@@ -401,22 +433,18 @@ pub fn elaboration(id: LambdaInstanceId) -> Elaboration {
         return Elaboration(None);
     }
     PROFILE.with_borrow_mut(|p| match p.census.as_mut() {
-        Some(c) => {
-            c.elaborating.push(id);
-            Elaboration(Some((id, Instant::now())))
-        }
+        Some(c) => Elaboration(Some((id, c.open(id), Instant::now()))),
         None => Elaboration(None),
     })
 }
 
 impl Drop for Elaboration {
     fn drop(&mut self) {
-        let Some((id, start)) = self.0 else { return };
+        let Some((id, outermost, start)) = self.0 else { return };
         let elapsed = start.elapsed().as_nanos() as u64;
         PROFILE.with_borrow_mut(|p| {
             if let Some(c) = p.census.as_mut() {
-                c.elaborating.pop();
-                c.instances.entry(id).or_default().elaboration_ns += elapsed;
+                c.close(id, outermost, elapsed)
             }
         });
     }
@@ -477,15 +505,17 @@ impl Drop for Span {
                 metric.failed_ns += elapsed;
             }
             if let Some((id, cost)) = self.instance {
-                let row = p.census.as_mut().unwrap().instances.entry(id).or_default();
+                let c = p.census.as_mut().unwrap();
+                let row = c.instances.entry(id).or_default();
                 match cost {
                     InstanceCost::Graph => {
                         row.graph_ns += self_ns;
                         row.graph_calls += 1;
                     }
-                    InstanceCost::Check => {
+                    InstanceCost::Check { outermost } => {
                         row.check_ns += self_ns;
                         row.check_calls += 1;
+                        c.close(id, outermost, elapsed);
                     }
                 }
             }
@@ -523,11 +553,11 @@ impl Drop for Span {
                 if let Some(c) = &p.census {
                     for (id, i) in c.instances.iter() {
                         eprintln!(
-                            "INSTANCE thread={thread:?} root_ns={} id={} definition={} signature={} callbacks={} graph_calls={} check_calls={} graph_ns={} check_ns={} parent={} elaboration_ns={} label={:?}",
+                            "INSTANCE thread={thread:?} root_ns={} id={} definition={} signature={} callbacks={} graph_calls={} check_calls={} graph_ns={} check_ns={} parent={} open_ns={} label={:?}",
                             p.epoch_ns, id.inner(), i.definition.map_or(0, |d| d.inner()),
                             i.signature, i.callbacks, i.graph_calls, i.check_calls,
                             i.graph_ns, i.check_ns, i.parent.map_or(0, |d| d.inner()),
-                            i.elaboration_ns, i.label,
+                            i.open_ns, i.label,
                         );
                     }
                 }

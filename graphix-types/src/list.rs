@@ -1,22 +1,18 @@
 //! The native `List` rep: a cell is an array of the list marker, its
-//! head and its tail; nil is the marker alone, one static value (not
+//! head and its tail; nil is the marker alone, one value per thread (not
 //! `Null`: `[List, null]` must not collapse, and not the empty array: an
 //! empty list is no array). Only this module and `rep.rs` know the
 //! layout; a list's data form is a flat array.
 use crate::rep::{self, Kind};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
-use std::sync::LazyLock;
 
-// CR claude for claude: [perf/low] Every list built clones this one global Value, so
-// lists built in forked slots all write its single refcount. That is the contention
-// rep.rs removed for the kind markers by making MARKS thread-local. Make NIL a
-// thread_local the same way (nil compares by content, as markers do). Found by reading;
-// not run. (x-kind-markers-07)
-static NIL: LazyLock<Value> = LazyLock::new(|| rep::build(Kind::List, []));
+thread_local! {
+    static NIL: Value = rep::build(Kind::List, []);
+}
 
 pub fn nil() -> Value {
-    NIL.clone()
+    NIL.with(Value::clone)
 }
 
 pub fn cons(head: Value, tail: Value) -> Value {
@@ -119,27 +115,6 @@ impl Iterator for Iter {
     }
 }
 
-// CR claude for claude: [structure/low] The local Counted iterator duplicates
-// crate::valarray_of, the exact-size wrapper the array and map packages already use.
-// Write the body as Some(crate::valarray_of(len(value)?, Iter::new(value.clone()))) and
-// delete Counted. Found by reading; not run. (collections-str-04)
 pub fn to_array(value: &Value) -> Option<ValArray> {
-    /// A list's `left` elements, the count known.
-    struct Counted {
-        iter: Iter,
-        left: usize,
-    }
-    impl Iterator for Counted {
-        type Item = Value;
-        fn next(&mut self) -> Option<Value> {
-            self.left = self.left.checked_sub(1)?;
-            self.iter.next()
-        }
-        fn size_hint(&self) -> (usize, Option<usize>) {
-            (self.left, Some(self.left))
-        }
-    }
-    impl ExactSizeIterator for Counted {}
-    let left = len(value)?;
-    Some(ValArray::from_iter_exact(Counted { iter: Iter::new(value.clone()), left }))
+    Some(crate::valarray_of(len(value)?, Iter::new(value.clone())))
 }

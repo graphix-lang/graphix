@@ -70,12 +70,13 @@ definition, as `==` refuses it today.
 ## As built
 
 **Forms** (`graphix-types/src/rep.rs`, `list.rs`). One registered abstract,
-`Marker(Kind)`, `Kind` one of `Tuple`, `Struct`, `Variant`, `List`; a static
-`Value` per kind (`rep::marker`), so pushing one is a refcount bump. A
+`Marker(Kind)`, `Kind` one of `Tuple`, `Struct`, `Variant`, `List`; a
+`Value` per kind per thread (`rep::marker`), so pushing one is a refcount
+bump no other thread contends. A
 marker packs as its kind byte and decodes only under an image session
-(`ids::in_session`). `rep::kind` reads a value's marker; `TUPLE_BASE`,
-`STRUCT_BASE` and `VARIANT_TAG` are 1. A list cell is `[LMARK, h, t]` and
-nil is `[LMARK]`, one static value, so `[]` and `[<>]` differ. The strict
+(`ids::in_session`). `rep::kind` reads a value's marker; `TUPLE_BASE` and
+`STRUCT_BASE` are 1. A list cell is `[LMARK, h, t]` and
+nil is `[LMARK]`, one value per thread, so `[]` and `[<>]` differ. The strict
 readers (`tuple_elems`, `struct_fields`, `variant`, `array_elems`) see only
 their own kind; `read_tuple`/`read_struct`/`read_variant` also take data
 and report `Parts::Data`, which a cast rebuilds; `GraphixShape` (the

@@ -346,8 +346,9 @@ order (`typecheck0`), while elaboration forks each into a task
 - A builtin call site resolves its function by its `Ref`'s bind id,
   not by looking its name up (fusion discovery and analysis).
 - A compile task's join wrote back each key it touched, once per
-  write; the keys are deduplicated and each written back once
-  (`merged_keys`, `graphix-types/src/tracked.rs`), and a join whose
+  write; a key whose value already agrees with the parent's is skipped,
+  so each is written back once (`TrackedMap::join`,
+  `graphix-types/src/tracked.rs`), and a join whose
   parent has not moved since the fork takes the fork's map whole.
 - poolshark's pool registry hashed discriminants to their raw bits, so
   the table's tag bits were all equal and every lookup scanned its

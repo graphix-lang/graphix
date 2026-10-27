@@ -3,26 +3,8 @@
 //! values as the fork left them, or their absence, back.
 
 use crate::env::{Map, Set};
-use ahash::AHashSet;
 use poolshark::local::LPooled;
 use std::{fmt::Debug, hash::Hash, ops::Deref};
-
-/// The keys a joined fork wrote, each once, recorded as writes of the
-/// container it joins; `None` when it wrote none.
-fn merged_keys<K: Hash + Eq + Clone>(
-    generation: &mut u64,
-    mine: &mut Option<LPooled<Vec<K>>>,
-    theirs: Option<LPooled<Vec<K>>>,
-) -> Option<LPooled<Vec<K>>> {
-    let mut keys = theirs.filter(|t| !t.is_empty())?;
-    let mut seen: LPooled<AHashSet<K>> = LPooled::take();
-    keys.retain(|k| seen.insert(k.clone()));
-    *generation += 1;
-    if let Some(mine) = mine {
-        mine.extend(keys.iter().cloned());
-    }
-    Some(keys)
-}
 
 /// Add a joined fork's touched keys to the parent's, whose order does
 /// not matter: the larger list is kept and the smaller copied in, so a
@@ -199,7 +181,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             }
             return;
         }
-        // CR claude for claude: [perf/low] Only the fast path above moves the fork's
+        // XCR claude for claude: [perf/low] Only the fast path above moves the fork's
         // touched keys with `absorb`. This path goes through merged_keys, which clones
         // every key into the parent's list (`mine.extend(keys.iter().cloned())`) before
         // draining them here, so nested slow-path joins still copy each key once per
@@ -207,34 +189,45 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
         // the merge, then `absorb(mine, &mut touched)` when the parent records, and
         // leave merged_keys to dedup and bump the generation. Found by reading; not
         // run. (t-misc-03)
-        let Some(mut touched) =
-            merged_keys(&mut self.generation, &mut self.touched, touched)
-        else {
+        // 2026-10-27 claude: The slow path no longer goes through merged_keys
+        // (deleted): it walks the fork's keys by reference, skips a key whose value
+        // already agrees with the parent's (a duplicate key included, which replaces
+        // the seen-set dedup and its key clones), clones a key only for an insert, and
+        // hands the list to the parent with absorb as the fast path does. The conflict
+        // assert is unchanged for every key it reaches. No timing pin; the tracked.rs
+        // tests (join_into_a_written_parent, join_a_fork_of_a_fork, join_siblings, the
+        // two conflict panics) cover the slow path's results.
+        let Some(mut touched) = touched.filter(|t| !t.is_empty()) else {
             return;
         };
-        for k in touched.drain(..) {
-            let same = |a: Option<&V>, b: Option<&V>| match (a, b) {
-                (None, None) => true,
-                (Some(a), Some(b)) => a.same_value(b),
-                _ => false,
-            };
+        self.generation += 1;
+        let same = |a: Option<&V>, b: Option<&V>| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same_value(b),
+            _ => false,
+        };
+        for k in touched.iter() {
+            let theirs = map.get(k);
+            if same(theirs, self.map.get(k)) {
+                continue;
+            }
             // a write since the fork is replaced only by a different one: in
             // a release build too, where the loss would otherwise be silent
             assert!(
-                same(map.get(&k), self.map.get(&k))
-                    || base
-                        .as_ref()
-                        .is_none_or(|base| same(self.map.get(&k), base.get(&k))),
+                base.as_ref().is_none_or(|base| same(self.map.get(k), base.get(k))),
                 "a fork's write to {k:?} would replace a write made since the fork"
             );
-            match map.get(&k) {
+            match theirs {
                 Some(v) => {
-                    self.map.insert_cow(k, v.clone());
+                    self.map.insert_cow(k.clone(), v.clone());
                 }
                 None => {
-                    self.map.remove_cow(&k);
+                    self.map.remove_cow(k);
                 }
             }
+        }
+        if let Some(mine) = &mut self.touched {
+            absorb(mine, &mut touched)
         }
     }
 }

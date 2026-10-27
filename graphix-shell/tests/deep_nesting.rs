@@ -739,6 +739,22 @@ fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
     completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
 }
 
+/// A pair DAG named through a typedef builds in time linear in its depth:
+/// a call's argument checked against its formal compares and welds two
+/// equal DAGs, in different allocations, once per pair of nodes.
+#[test]
+fn a_typedef_named_type_dag_builds_in_linear_time() {
+    const DEPTH: usize = 60;
+    let mut program = String::from(
+        "type R<'a, 'b> = ('a, 'b);\nlet mk = |x: 'a| -> R<'a, 'a> (x, x);\nlet f = |a| {\n  let x0 = a;\n",
+    );
+    for i in 1..=DEPTH {
+        program.push_str(&format!("  let x{i} = mk(x{});\n", i - 1));
+    }
+    program.push_str(&format!("  x{DEPTH}\n}};\nlet r = f(1);\nsys::exit(0)\n"));
+    completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
+}
+
 /// A pair DAG built through a generic constructor, and one reached
 /// through generic callers, a monomorphic one and a collection's
 /// callback, builds in time linear in its depth: the position and

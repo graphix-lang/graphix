@@ -301,6 +301,16 @@ run!(writers_refuse_references, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == r#"error:`JsonErr("a reference is not data")|error:`TomlErr("a reference is not data")|error:`HbsErr("a reference is not data")"#)
 }; FuseExpect::Jit);
 
+run!(writers_refuse_functions, r#"{
+    let v: Any = {a: |x: i64| x + 1, b: 1};
+    let j = select json::write_str(v) { error as e => "[e]", s => s };
+    let t = select toml::write_str(v) { error as e => "[e]", s => s };
+    let h = select hbs::render("{{a}}", v) { error as e => "[e]", s => s };
+    "[j]|[t]|[h]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:`JsonErr("a function or a value of a type backed by Rust is not data")|error:`TomlErr("a function or a value of a type backed by Rust is not data")|error:`HbsErr("a function or a value of a type backed by Rust is not data")"#)
+}; FuseExpect::Jit);
+
 // A composite map key is written as println shows it, naked at every
 // depth.
 run!(json_composite_key_is_naked, r#"json::write_str({[1, 2] => 3})$"#, |v: Result<&Value>| {

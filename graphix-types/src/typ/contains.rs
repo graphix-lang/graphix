@@ -7,8 +7,8 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, AndAc, Brief, CoreTrait, FnType, Indiscernible, Lazy, Mutability,
-        NormKey, Open, RefHist, RefPair, TVar, TraitId, Type, node_addr, params_size,
-        probe_key,
+        NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type, node_addr,
+        params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{CellFact, Fresh, RigidGate, would_cycle_inner},
     },
@@ -807,73 +807,93 @@ impl OpenPair {
 /// apart): two open cells that compared equal must share fate, or the
 /// discarded side's later binding never reaches the survivor. `false`
 /// when two distinct rigid cells meet; only `commit` links.
-fn link_equal(t0: &Type, t1: &Type, commit: bool) -> bool {
-    ensure_sufficient(|| link_equal_inner(t0, t1, commit))
+struct Link {
+    commit: bool,
+    found: NodePairs,
 }
 
-fn link_equal_inner(t0: &Type, t1: &Type, commit: bool) -> bool {
-    let all = |a: &[Type], b: &[Type]| {
-        a.iter().zip(b.iter()).all(|(x, y)| link_equal(x, y, commit))
-    };
-    match (t0, t1) {
-        (Type::TVar(a), Type::TVar(b)) => {
-            if a.same_cell(b) {
-                return true;
-            }
-            match (a.binding(), b.binding()) {
-                (None, None) => match OpenPair::of(a, b) {
-                    OpenPair::Distinct => false,
-                    act => !commit || act.apply(a, b),
-                },
-                (Some(x), Some(y)) => link_equal(&x, &y, commit),
-                // Unreachable under an eq-true verdict.
-                _ => true,
-            }
+impl Link {
+    fn equal(&mut self, t0: &Type, t1: &Type) -> bool {
+        let pair = self.found.key(t0, t1);
+        if pair.is_some_and(|pair| self.found.contains(pair)) {
+            return true;
         }
-        (Type::Fn(f0), Type::Fn(f1)) => {
-            f0.args
-                .iter()
-                .zip(f1.args.iter())
-                .all(|(a, b)| link_equal(&a.typ, &b.typ, commit))
-                && match (&f0.vargs, &f1.vargs) {
-                    (Some(a), Some(b)) => link_equal(a, b, commit),
+        let equal = ensure_sufficient(|| self.equal_inner(t0, t1));
+        if let Some(pair) = pair.filter(|_| equal) {
+            self.found.insert(pair)
+        }
+        equal
+    }
+
+    fn all(&mut self, a: &[Type], b: &[Type]) -> bool {
+        a.iter().zip(b.iter()).all(|(x, y)| self.equal(x, y))
+    }
+
+    fn equal_inner(&mut self, t0: &Type, t1: &Type) -> bool {
+        match (t0, t1) {
+            (Type::TVar(a), Type::TVar(b)) => {
+                if a.same_cell(b) {
+                    return true;
+                }
+                match (a.binding(), b.binding()) {
+                    (None, None) => match OpenPair::of(a, b) {
+                        OpenPair::Distinct => false,
+                        act => !self.commit || act.apply(a, b),
+                    },
+                    (Some(x), Some(y)) => self.equal(&x, &y),
+                    // Unreachable under an eq-true verdict.
                     _ => true,
                 }
-                && link_equal(&f0.rtype, &f1.rtype, commit)
-                && link_equal(&f0.throws, &f1.throws, commit)
+            }
+            (Type::Fn(f0), Type::Fn(f1)) => {
+                f0.args
+                    .iter()
+                    .zip(f1.args.iter())
+                    .all(|(a, b)| self.equal(&a.typ, &b.typ))
+                    && match (&f0.vargs, &f1.vargs) {
+                        (Some(a), Some(b)) => self.equal(a, b),
+                        _ => true,
+                    }
+                    && self.equal(&f0.rtype, &f1.rtype)
+                    && self.equal(&f0.throws, &f1.throws)
+            }
+            (Type::Ref(r0), Type::Ref(r1)) => self.all(&r0.params, &r1.params),
+            (Type::Set(a), Type::Set(b))
+            | (Type::Tuple(a), Type::Tuple(b))
+            | (Type::Variant(_, a, _), Type::Variant(_, b, _))
+            | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => {
+                self.all(a, b)
+            }
+            (Type::Struct(a), Type::Struct(b)) => {
+                a.iter().zip(b.iter()).all(|((_, x, _), (_, y, _))| self.equal(x, y))
+            }
+            (Type::Array(a), Type::Array(b))
+            | (Type::List(a), Type::List(b))
+            | (Type::Error(a), Type::Error(b)) => self.equal(a, b),
+            (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && self.equal(a, b),
+            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+                self.equal(k0, k1) && self.equal(v0, v1)
+            }
+            (Type::App(c0, a0), Type::App(c1, a1)) => {
+                self.equal(c0, c1) && self.equal(a0, a1)
+            }
+            // a bound variable compares through its binding, as union_identical
+            // does, so the cells under it weld
+            (Type::TVar(a), t) => match a.binding() {
+                Some(x) => self.equal(&x, t),
+                None => true,
+            },
+            (t, Type::TVar(b)) => match b.binding() {
+                Some(y) => self.equal(t, &y),
+                None => true,
+            },
+            _ => true,
         }
-        (Type::Ref(r0), Type::Ref(r1)) => all(&r0.params, &r1.params),
-        (Type::Set(a), Type::Set(b))
-        | (Type::Tuple(a), Type::Tuple(b))
-        | (Type::Variant(_, a, _), Type::Variant(_, b, _))
-        | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => {
-            all(a, b)
-        }
-        (Type::Struct(a), Type::Struct(b)) => {
-            a.iter().zip(b.iter()).all(|((_, x, _), (_, y, _))| link_equal(x, y, commit))
-        }
-        (Type::Array(a), Type::Array(b))
-        | (Type::List(a), Type::List(b))
-        | (Type::Error(a), Type::Error(b)) => link_equal(a, b, commit),
-        (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && link_equal(a, b, commit),
-        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-            link_equal(k0, k1, commit) && link_equal(v0, v1, commit)
-        }
-        (Type::App(c0, a0), Type::App(c1, a1)) => {
-            link_equal(c0, c1, commit) && link_equal(a0, a1, commit)
-        }
-        // a bound variable compares through its binding, as union_identical
-        // does, so the cells under it weld
-        (Type::TVar(a), t) => match a.binding() {
-            Some(x) => link_equal(&x, t, commit),
-            None => true,
-        },
-        (t, Type::TVar(b)) => match b.binding() {
-            Some(y) => link_equal(t, &y, commit),
-            None => true,
-        },
-        _ => true,
     }
+}
+
+fn link_equal(t0: &Type, t1: &Type, commit: bool) -> bool {
+    Link { commit, found: NodePairs::default() }.equal(t0, t1)
 }
 
 /// How many positional arguments a function type takes, when it takes a

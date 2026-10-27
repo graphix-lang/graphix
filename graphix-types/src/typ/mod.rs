@@ -79,6 +79,48 @@ impl Type {
     }
 }
 
+/// The pairs of shared composites a conjunctive walk over two types
+/// found to agree, so a DAG is walked once per pair of nodes rather than
+/// once per path; a pair found once agrees for the rest of the walk.
+/// A walk remembers nothing for its first `NodePairs::EAGER` nodes,
+/// which is every walk of a small type.
+#[derive(Default)]
+pub(super) struct NodePairs {
+    seen: u32,
+    found: Option<LPooled<AHashSet<(usize, usize)>>>,
+}
+
+impl NodePairs {
+    const EAGER: u32 = 64;
+
+    /// The key of the node pair `t0`, `t1`, when both are shared
+    /// composites and the walk has grown past `EAGER`.
+    pub(super) fn key(&mut self, t0: &Type, t1: &Type) -> Option<(usize, usize)> {
+        if self.seen < Self::EAGER {
+            self.seen += 1;
+            return None;
+        }
+        match (t0, t1) {
+            (Type::TVar(_), _) | (_, Type::TVar(_)) => None,
+            _ => Some((t0.shared_identity()?, t1.shared_identity()?)),
+        }
+    }
+
+    pub(super) fn contains(&self, key: (usize, usize)) -> bool {
+        self.found.as_ref().is_some_and(|f| f.contains(&key))
+    }
+
+    pub(super) fn insert(&mut self, key: (usize, usize)) {
+        self.found.get_or_insert_with(LPooled::take).insert(key);
+    }
+
+    pub(super) fn clear(&mut self) {
+        if let Some(f) = &mut self.found {
+            f.clear()
+        }
+    }
+}
+
 /// The address of a composite's content allocation, its low bits telling
 /// apart the kinds (and a reference's mutability) that can wrap one
 /// allocation, for walks that visit each shared node once; `None` for

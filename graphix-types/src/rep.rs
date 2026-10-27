@@ -138,13 +138,6 @@ pub const TUPLE_BASE: usize = 1;
 /// Where a struct's first field sits in its array.
 pub const STRUCT_BASE: usize = 1;
 
-/// Where a variant's tag sits in its array; its payload follows.
-// CR claude for claude: [dead/low] Nothing in this repository or ../netidx reads
-// VARIANT_TAG. Every variant read goes through rep::variant and rep::payload, which is
-// the rule. Delete it, and drop it from design/distinct_composite_forms.md. Found by
-// reading (grep); not run. (t-rep-05)
-pub const VARIANT_TAG: usize = 1;
-
 /// The tuple of `elems`.
 pub fn tuple(
     elems: impl IntoIterator<Item = Value, IntoIter: ExactSizeIterator>,

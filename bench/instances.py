@@ -87,14 +87,15 @@ def summarize(rows, level):
 
 
 def tree(rows):
-    """The elaboration tree: an instance's own serial work is its
+    """The instance tree (a parent is the instance whose check or
+    elaboration built its children): an instance's own serial work is its
     inclusive time less its children's, and the critical path is the
     longest chain of own work from a tree root down."""
     by_id = {r["id"]: r for r in rows}
     children = defaultdict(list)
     for r in rows:
         children[r.get("parent", 0) if r.get("parent", 0) in by_id else 0].append(r["id"])
-    incl = {i: r["graph_ns"] + r["check_ns"] + r.get("elaboration_ns", 0) for i, r in by_id.items()}
+    incl = {i: r["graph_ns"] + r["open_ns"] for i, r in by_id.items()}
     own = {i: max(0, incl[i] - sum(incl[c] for c in children[i])) for i in by_id}
     path, depth = {}, {}
     order = []
