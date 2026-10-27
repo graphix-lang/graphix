@@ -579,6 +579,24 @@ pub struct Variant<R: Rt> {
 }
 
 impl<R: Rt> Variant<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        tag: ArcStr,
+        n: Box<[Node<R>]>,
+        fork: ForkSite,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            typ,
+            tag,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+            fork,
+        })
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -595,15 +613,7 @@ impl<R: Rt> Variant<R> {
         let typs = Arc::from_iter(n.iter().map(|n| n.typ().clone()));
         let typ = Type::Variant(tag.clone(), typs, WrittenAt::NOWHERE);
         let tag = ctx.tag(tag);
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            tag,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-            fork: Default::default(),
-        }))
+        Ok(Self::with(spec, typ, tag, n, Default::default()))
     }
 }
 
@@ -616,15 +626,7 @@ impl<R: Rt> Variant<R> {
         let typ = Type::decode(buf)?;
         let tag = ctx.tag(&ArcStr::decode(buf)?);
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            tag,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-            fork: ForkSite::image_decode(buf)?,
-        }))
+        Ok(Self::with(spec, typ, tag, n, ForkSite::image_decode(buf)?))
     }
 }
 
