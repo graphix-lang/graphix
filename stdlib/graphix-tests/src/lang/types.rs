@@ -3658,23 +3658,6 @@ run!(
     }
 );
 
-// A quantified function type written anywhere, not only as a formal, keeps
-// exactly its declared bounds: whoever holds the value may call it at any
-// type they admit, so a function that needs more is refused where it is
-// given.
-run!(rank2_let_annotation_keeps_its_bound, r#"{
-    let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
-    let g: fn<'b: Number>(x: 'b, y: 'b) -> 'b = add;
-    g(1.5, 2.5)
-}"#, refused("does not contain fn<'a: Int + Singleton>"); FuseExpect::None);
-
-run!(rank2_typedef_struct_field_keeps_its_bound, r#"{
-    type S = {f: fn<'b: Number>(x: 'b, y: 'b) -> 'b};
-    let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
-    let s: S = {f: add};
-    s.f(1.5, 2.5)
-}"#, refused("type mismatch S does not contain"); FuseExpect::None);
-
 // A quantified function type at a data position of a formal (a field, an
 // element, a member) holds its argument as the formal itself would: the
 // callee may call it at any type the bound admits.

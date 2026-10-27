@@ -1182,7 +1182,7 @@ impl FnType {
     /// Rigid gates on the quantifiers no call has picked.
     fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.open_quantifiers(|tv, _| gates.push(tv.open_quantifier_rigid()));
+        self.open_quantifiers(|tv, _| gates.push(tv.open_rigid()));
         gates
     }
 
