@@ -928,6 +928,18 @@ pub(crate) struct Discovery<'n, R: Rt> {
 // region tree, and later regions splice kernels into callee bodies), so the cache
 // would key by kernel and hold what build_lambda_kernel and the sites walk produce,
 // not node borrows.
+// 2026-10-27 codex: Reproduced a static chain over once(x), using --no-cache --expand
+// to measure compilation without the probe's exit timer: 750 functions took 27.605 s
+// and 1500 exceeded a 90 s timeout on the shared host while another build was active.
+// No discovery cache applied. In addition to Discovery's borrowed bodies,
+// Emission::forget_attempt removes every signature created by a failed region: those
+// signatures name the failed instance's slots, so retaining them alone can make
+// another instance emit against the wrong slots. A reusable cache needs owned
+// discovery/site data, instance/formal rebinding, and a rule for callee bodies changed
+// by later fusion, including task forks and joins. Definition-wide effect flags are
+// not a safe shortcut: inference joins facts from different instances into the
+// definition, so a stateful specialization must not de-fuse another. No new pin or
+// fix-specific test; leaving open.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
     ctx: &CompileCtx<R>,
