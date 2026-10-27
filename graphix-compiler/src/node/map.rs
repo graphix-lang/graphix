@@ -261,6 +261,24 @@ pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
 }
 
 impl<R: Rt> MapRef<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        vtyp: Type,
+        source: Node<R>,
+        key: Node<R>,
+    ) -> Node<R> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            source,
+            key,
+            spec,
+            typ,
+            vtyp,
+            resident: TagValue::phantom(),
+        })
+    }
+
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -289,15 +307,7 @@ impl<R: Rt> MapRef<R> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let vtyp = Type::decode(buf)?;
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            source,
-            key,
-            spec,
-            typ,
-            vtyp,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, vtyp, source, key))
     }
 
     pub(crate) fn compile(
@@ -316,15 +326,7 @@ impl<R: Rt> MapRef<R> {
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            source,
-            key,
-            spec,
-            typ,
-            vtyp,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, vtyp, source, key))
     }
 }
 
