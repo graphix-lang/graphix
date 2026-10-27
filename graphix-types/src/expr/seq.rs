@@ -928,6 +928,13 @@ impl Machine<'_> {
     // machine's scope; that is a larger change to lower_try and touches IDE sites
     // (x-lsp-probe-01). The other is t-misc-02's (scope, name) memo in
     // Env::chain_lookup, which belongs to that CR's lane.
+    // 2026-10-27 claude: seq-try-depth-01's fix (eb9bf67e5) took the cubic factor out:
+    // Env::chain_lookup no longer recomputes mod_root per level, so the nested-try
+    // check went from 5.95 to 1.02 s at depth 500, and to 6.4 s at 993 (debug; 45 s at
+    // 990 when this CR was written). What remains is quadratic. Each lookup still walks
+    // its chain, hashing every level's path, and a step at depth d still resolves its
+    // generated names d levels deep. Remaining: the per-try lexical scopes, or a
+    // (scope, name) memo, as above.
     fn lower_scoped(
         &mut self,
         stmts: &[&Expr],

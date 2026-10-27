@@ -2,7 +2,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, PrintFlag, Refs, Rt, Saved,
     Scope, Tag, TagValue, Update, View,
     compiler::compile,
-    env::{Env, Glob, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
+    env::{Env, Glob, ImplDef, ImportEntry, Lexical, Map, UseAnchor, scope_params},
     errf,
     expr::{
         At, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext,
@@ -208,11 +208,11 @@ fn bind_sig(
     scope: &Scope,
     sig: &Sig,
 ) -> Result<()> {
-    env.modules.insert_cow(scope.lexical.clone());
+    env.lexical.modules.insert_cow(scope.lexical.clone());
     // a sig `use self::sub::…` may precede `mod sub;`
     for si in sig.items.iter() {
         if let SigKind::Module(name) = &si.kind {
-            env.modules.insert_cow(scope.append(name).lexical);
+            env.lexical.modules.insert_cow(scope.append(name).lexical);
         }
     }
     for (i, si) in sig.items.iter().enumerate() {
@@ -233,7 +233,7 @@ fn bind_sig_item(
     match &si.kind {
         SigKind::Module(name) => {
             let scope = scope.append(name);
-            env.modules.insert_cow(scope.lexical.clone());
+            env.lexical.modules.insert_cow(scope.lexical.clone());
             if env.ide.is_lsp() {
                 env.push_module_reference(ModuleRefSite {
                     pos: name.pos_or(si.pos),
@@ -356,7 +356,7 @@ fn bind_sig_item(
     Ok(())
 }
 
-fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
+fn export_sig(env: &mut Env, inner_env: &Lexical, scope: &Scope, sig: &Sig) {
     let mut sub: LPooled<String> = LPooled::take();
     for si in sig.items.iter() {
         if let SigKind::Module(name) = &si.kind {
@@ -365,15 +365,15 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             sub.clear();
             write!(sub, "{}/", at.0).unwrap();
             let under = |path: &ModPath| path == at || path.starts_with(sub.as_str());
-            env.modules.insert_cow(at.clone());
+            env.lexical.modules.insert_cow(at.clone());
             for m in inner_env.modules.iter().filter(|m| under(m)) {
-                env.modules.insert_cow(m.clone());
+                env.lexical.modules.insert_cow(m.clone());
             }
             macro_rules! copy_sig {
                 ($kind:ident) => {
                     for (path, inner) in inner_env.$kind.iter().filter(|(p, _)| under(p))
                     {
-                        env.$kind.insert_cow(path.clone(), inner.clone());
+                        env.lexical.$kind.insert_cow(path.clone(), inner.clone());
                     }
                 };
             }
@@ -588,7 +588,7 @@ fn check_interface_names(
         SigKind::Bind(_) => val.map_or(Ok(()), |t| t.resolve_names_only_in(view)),
         SigKind::TypeDef(td) => {
             let Some(def) =
-                view.typedefs.get(scope).and_then(|m| m.get(td.name.as_str()))
+                view.lexical.typedefs.get(scope).and_then(|m| m.get(td.name.as_str()))
             else {
                 return Ok(());
             };
@@ -602,7 +602,8 @@ fn check_interface_names(
             }
         }
         SigKind::Trait(t) => {
-            let Some(id) = view.traits.get(scope).and_then(|m| m.get(t.name.as_str()))
+            let Some(id) =
+                view.lexical.traits.get(scope).and_then(|m| m.get(t.name.as_str()))
             else {
                 return Ok(());
             };
@@ -626,7 +627,7 @@ fn check_interface_names(
 
 /// The bindings `bind_sig` made at the module's own scope.
 fn sig_binds(env: &Env, scope: &Scope) -> Map<CompactString, BindId> {
-    env.binds.get(&scope.lexical).cloned().unwrap_or_default()
+    env.lexical.binds.get(&scope.lexical).cloned().unwrap_or_default()
 }
 
 /// Check the implementation against `sig`, adding the proxies it links;
@@ -825,6 +826,7 @@ pub fn check_script_sig<R: Rt>(
             SigKind::Bind(BindSig { name, typ: declared }) => {
                 let bind = ctx
                     .env
+                    .lexical
                     .binds
                     .get(scope)
                     .and_then(|m| m.get(name.name.as_str()))
@@ -912,7 +914,7 @@ enum Body<R: Rt> {
     /// Loaded at run time from the text `source` produces. The load's
     /// signature check runs in `sig_env`: a dynamic module not exported
     /// from its parent would otherwise lose its bound signature.
-    Dynamic { source: Node<R>, sig_env: Env },
+    Dynamic { source: Node<R>, sig_env: Lexical },
 }
 
 #[derive(Debug)]
@@ -920,7 +922,7 @@ pub struct Module<R: Rt> {
     spec: Arc<Expr>,
     flags: BitFlags<CFlag>,
     body: Body<R>,
-    env: Env,
+    env: Lexical,
     /// The signature's bindings at the module's scope, which the check
     /// pairs with the body's: the env a statement checks under may not
     /// hold them (a lambda instance's holds only the binds from before
@@ -1023,7 +1025,7 @@ impl<R: Rt> Module<R> {
         ctx.env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
         env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
-        env.modules.insert_cow(scope.lexical.clone());
+        env.lexical.modules.insert_cow(scope.lexical.clone());
         bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
         // the interface grants the traits it declares impls of, wherever
@@ -1495,7 +1497,7 @@ impl<R: Rt> Update<R> for Module<R> {
             Body::Dynamic { source, .. } => {
                 wrap!(source, source.typecheck0(ctx))?;
                 let t = Type::Primitive(Typ::String | Typ::Error);
-                wrap!(source, t.check_contains(&self.env, source.typ()))?;
+                wrap!(source, t.check_contains(&ctx.env, source.typ()))?;
             }
             Body::Static => {
                 let _task = InTask::enter(self.task);

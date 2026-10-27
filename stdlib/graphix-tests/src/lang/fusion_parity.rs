@@ -48,7 +48,7 @@ async fn first_refusal(name: &str, text: &str, mode: Mode) -> Result<(String, St
     let (ctx, _rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let root = ModPath::root();
     let registered = ctx.rt.get_env().await?;
-    let registered = registered.binds.get(&root);
+    let registered = registered.lexical.binds.get(&root);
     let mut held = Vec::new();
     for stmt in stmts.iter() {
         match ctx.rt.compile(ArcStr::from(stmt.to_string())).await {
@@ -56,6 +56,7 @@ async fn first_refusal(name: &str, text: &str, mode: Mode) -> Result<(String, St
             Err(e) => {
                 let env = ctx.rt.get_env().await?;
                 let mut types: Vec<String> = env
+                    .lexical
                     .binds
                     .get(&root)
                     .into_iter()

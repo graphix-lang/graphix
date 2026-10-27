@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     BindId,
-    env::{Bind, Env, ImplDef, ImportEntry, Map, TraitDef, TypeDef},
+    env::{Bind, Env, ImplDef, ImportEntry, Lexical, Map, TraitDef, TypeDef},
     expr::ModPath,
     shared_map::{self, RelocatedMap, RelocatedSet, SharedMap, SharedSet},
 };
@@ -239,24 +239,26 @@ where
 
 /// A definition's or a module's snapshot: only the lexical fields are
 /// ever read from it (`Env::swap_lexical`), so only they travel.
-pub(crate) fn lexical_len(env: &Env) -> usize {
-    shared_map::map_len(&env.binds)
-        + SharedSet(env.modules.clone()).encoded_len()
-        + shared_map::map_len(&env.typedefs)
-        + shared_map::map_len(&env.traits)
+pub(crate) fn lexical_len(lex: &Lexical) -> usize {
+    let Lexical { binds, modules, typedefs, traits } = lex;
+    shared_map::map_len(binds)
+        + SharedSet(modules.clone()).encoded_len()
+        + shared_map::map_len(typedefs)
+        + shared_map::map_len(traits)
 }
 
 #[doc(hidden)]
-pub fn lexical_encode(env: &Env, buf: &mut impl BufMut) -> Result<(), PackError> {
-    nested_encode(&env.binds, buf)?;
-    SharedSet(env.modules.clone()).encode(buf)?;
-    nested_encode(&env.typedefs, buf)?;
-    nested_encode(&env.traits, buf)
+pub fn lexical_encode(lex: &Lexical, buf: &mut impl BufMut) -> Result<(), PackError> {
+    let Lexical { binds, modules, typedefs, traits } = lex;
+    nested_encode(binds, buf)?;
+    SharedSet(modules.clone()).encode(buf)?;
+    nested_encode(typedefs, buf)?;
+    nested_encode(traits, buf)
 }
 
 #[doc(hidden)]
-pub fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
-    let env = Env {
+pub fn lexical_decode(buf: &mut impl Buf) -> Result<Lexical, PackError> {
+    Ok(Lexical {
         binds: nested_decode(buf, &|_, _| ())?,
         modules: SharedSet::decode(buf)?.0,
         typedefs: nested_decode(buf, &|name, td: &TypeDef| {
@@ -265,9 +267,7 @@ pub fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
             }
         })?,
         traits: nested_decode(buf, &|_, _| ())?,
-        ..Env::default()
-    };
-    Ok(env)
+    })
 }
 
 /// The lexical part, then the global registries. The IDE mode is runtime
@@ -278,12 +278,9 @@ impl Pack for Env {
         let Env {
             by_id,
             byref_chain,
-            binds: _,
-            modules: _,
-            typedefs: _,
+            lexical,
             names,
             abstract_reps,
-            traits: _,
             trait_defs,
             trait_methods,
             impls,
@@ -293,7 +290,7 @@ impl Pack for Env {
             hidden_impls: _,
             recorded: _,
         } = self;
-        lexical_len(self)
+        lexical_len(lexical)
             + RelocatedMap((**by_id).clone()).encoded_len()
             + RelocatedMap((**byref_chain).clone()).encoded_len()
             + SharedMap((**names).clone()).encoded_len()
@@ -309,12 +306,9 @@ impl Pack for Env {
         let Env {
             by_id,
             byref_chain,
-            binds: _,
-            modules: _,
-            typedefs: _,
+            lexical,
             names,
             abstract_reps,
-            traits: _,
             trait_defs,
             trait_methods,
             impls,
@@ -324,7 +318,7 @@ impl Pack for Env {
             hidden_impls: _,
             recorded: _,
         } = self;
-        lexical_encode(self, buf)?;
+        lexical_encode(lexical, buf)?;
         RelocatedMap((**by_id).clone()).encode(buf)?;
         RelocatedMap((**byref_chain).clone()).encode(buf)?;
         SharedMap((**names).clone()).encode(buf)?;
@@ -348,7 +342,8 @@ impl Pack for Env {
             impls: SharedMap::decode(buf)?.0.into(),
             poly_binds: RelocatedSet::decode(buf)?.0.into(),
             package_roots: SharedSet::decode(buf)?.0.into(),
-            ..lexical
+            lexical,
+            ..Env::default()
         })
     }
 }

@@ -2767,7 +2767,7 @@ impl Type {
                         eprintln!(
                             "TYPEREF-MISS {name} in {scope}; typedef scopes with the name:"
                         );
-                        for (s, m) in env.typedefs.into_iter() {
+                        for (s, m) in env.lexical.typedefs.into_iter() {
                             if m.into_iter().any(|(n, _)| name.ends_with(n.as_str())) {
                                 eprintln!("  {s}");
                             }

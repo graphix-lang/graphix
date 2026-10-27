@@ -450,7 +450,7 @@ pub fn find_bind_id(env: &Env, name: &str) -> Result<BindId> {
         bail!("expected module::var, got {name}")
     };
     let suffix = format_compact!("/{module}");
-    for (scope, vars) in &env.binds {
+    for (scope, vars) in &env.lexical.binds {
         if Path::as_ref(&scope.0).ends_with(suffix.as_str())
             && let Some(bid) = vars.get(var)
         {

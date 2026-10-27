@@ -186,13 +186,13 @@ impl<'a> Query<'a> {
     }
 
     fn typedef(&self, scope: &ModPath, name: &str) -> Option<&'a TypeDef> {
-        self.checked.env.typedefs.get(scope).and_then(|defs| defs.get(name))
+        self.checked.env.lexical.typedefs.get(scope).and_then(|defs| defs.get(name))
     }
 
     /// The trait whose module-like scope is `path`, if one is.
     fn trait_at(&self, path: &ModPath) -> Option<&'a TraitDef> {
         let env = &self.checked.env;
-        let id = env.traits.get(&truncated(path, 1))?.get(basename(path))?;
+        let id = env.lexical.traits.get(&truncated(path, 1))?.get(basename(path))?;
         env.trait_def(*id).map(|d| &**d)
     }
 
@@ -206,13 +206,13 @@ impl<'a> Query<'a> {
         let env = &self.checked.env;
         let scope = truncated(canonical, 1);
         let name = basename(canonical);
-        if let Some(id) = env.binds.get(&scope).and_then(|b| b.get(name)) {
+        if let Some(id) = env.lexical.binds.get(&scope).and_then(|b| b.get(name)) {
             return Some(Target::Bind(*id));
         }
         if self.typedef(&scope, name).is_some() {
             return Some(Target::Type(scope, name.into()));
         }
-        env.modules.contains(canonical).then(|| Target::Module(canonical.clone()))
+        env.lexical.modules.contains(canonical).then(|| Target::Module(canonical.clone()))
     }
 
     /// The target under the cursor and the name it is written by.
@@ -280,7 +280,7 @@ impl<'a> Query<'a> {
             }
         }
         // a trait is the module its methods are in
-        for (_, defs) in &env.traits {
+        for (_, defs) in &env.lexical.traits {
             if let Some(id) = defs.get(&*self.ident)
                 && let Some(def) = env.trait_def(*id)
                 && in_file(&def.ori, self.file)
@@ -292,7 +292,7 @@ impl<'a> Query<'a> {
                 ));
             }
         }
-        for (scope, defs) in &env.typedefs {
+        for (scope, defs) in &env.lexical.typedefs {
             if let Some(td) = defs.get(&*self.ident)
                 && in_file(td.ori(), self.file)
                 && here(zero_based(td.pos()))

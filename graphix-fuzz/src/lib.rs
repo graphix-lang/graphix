@@ -1467,7 +1467,7 @@ pub fn session_routes(code: &str) -> &'static [Route] {
 /// run).
 fn input_scope(env: &Env, name: &str) -> Scope {
     let mut scope = Scope::root();
-    for (path, names) in &env.binds {
+    for (path, names) in &env.lexical.binds {
         if Path::basename(&path.0) == Some("inputs") && names.get(name).is_some() {
             scope.lexical = path.clone();
             break;
@@ -1480,7 +1480,7 @@ fn input_scope(env: &Env, name: &str) -> Scope {
 /// parent, where the aux modules (a callable's handler among them) are.
 fn program_scope(env: &Env) -> Scope {
     let mut scope = Scope::root();
-    for (path, _) in &env.binds {
+    for (path, _) in &env.lexical.binds {
         if Path::basename(&path.0) == Some("inputs") {
             let dir = Path::dirname(&path.0).unwrap_or("/");
             scope.lexical = graphix_compiler::expr::ModPath::from(

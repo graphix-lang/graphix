@@ -2040,7 +2040,7 @@ mod tests {
             .unwrap();
         }
         env.seed_typedef_refs();
-        let defs = env.typedefs.get(&scope).unwrap();
+        let defs = env.lexical.typedefs.get(&scope).unwrap();
         let tds: Vec<TypeDef> =
             ["L", "A", "B"].iter().map(|n| defs.get(*n).unwrap().clone()).collect();
         let mut enc = ImageEncoder::new();

@@ -521,13 +521,22 @@ fn retain_set<K: Hash + Eq + Clone>(
     if gone.is_empty() { s.clone() } else { s.remove_many(gone.iter().cloned()) }
 }
 
+/// What a name means where it is written: the bindings, modules, types
+/// and traits each scope declares. A definition and a module keep a
+/// snapshot, which [`Env::swap_lexical`] puts in place to compile under.
+#[derive(Clone, Debug, Default)]
+pub struct Lexical {
+    pub binds: Map<ModPath, Map<CompactString, BindId>>,
+    pub modules: Set<ModPath>,
+    pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
+    pub traits: Map<ModPath, Map<CompactString, TraitId>>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: TrackedMap<BindId, Arc<Bind>>,
     pub byref_chain: TrackedMap<BindId, BindId>,
-    pub binds: Map<ModPath, Map<CompactString, BindId>>,
-    pub modules: Set<ModPath>,
-    pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
+    pub lexical: Lexical,
     /// Every scope's explicit namespace (imports + globs), keyed by
     /// scope path. A global registry, not lexical state: it survives
     /// `swap_lexical`, so deferred resolution can consult the
@@ -536,8 +545,6 @@ pub struct Env {
     /// Every Graphix-minted abstract type's representation, global;
     /// visibility is decided at lookup.
     pub abstract_reps: TrackedMap<AbstractId, Arc<AbstractRep>>,
-    /// Trait names by declaring scope; lexical, like `typedefs`.
-    pub traits: Map<ModPath, Map<CompactString, TraitId>>,
     /// Every trait's definition by identity; global.
     pub trait_defs: TrackedMap<TraitId, Arc<TraitDef>>,
     /// Dispatcher binding → the trait method it names; global.
@@ -585,10 +592,7 @@ impl Env {
             poly_binds: self.poly_binds.fork(),
             package_roots: self.package_roots.fork(),
             ide: self.ide.fork(),
-            binds: self.binds.clone(),
-            modules: self.modules.clone(),
-            typedefs: self.typedefs.clone(),
-            traits: self.traits.clone(),
+            lexical: self.lexical.clone(),
             hidden_impls: self.hidden_impls.clone(),
             recorded: self.recorded.clone(),
         }
@@ -600,12 +604,9 @@ impl Env {
         let Self {
             by_id,
             byref_chain,
-            binds: _,
-            modules: _,
-            typedefs: _,
+            lexical: _,
             names,
             abstract_reps,
-            traits: _,
             trait_defs,
             trait_methods,
             impls,
@@ -627,12 +628,9 @@ impl Env {
         self.ide.join(ide, &self.recorded);
     }
 
-    /// A snapshot of the lexical fields alone, the only ones
-    /// [`Self::swap_lexical`] exchanges: a definition keeps one,
-    /// and holding the global tables too would make every later write
-    /// to them copy what the snapshot shares.
+    /// A snapshot of the lexical environment, which a definition keeps.
     #[doc(hidden)]
-    // CR claude for claude: [structure/low] This is the only constructor of the lexical
+    // XCR claude for claude: [structure/low] This is the only constructor of the lexical
     // set that is not exhaustive: it fills everything but the four maps with
     // `..Self::default()`, as image::env::lexical_decode does. A new lexical field is
     // silently left out of every definition and module snapshot. Each snapshot is also
@@ -642,42 +640,25 @@ impl Env {
     // and with_restored take a `Lexical`. Found by reading; not run. (t-env-08)
     // 2026-10-27 claude: Readdressed: a structure refactor with no rule to decide; do
     // it as written.
-    pub fn lexical(&self) -> Self {
-        Self {
-            binds: self.binds.clone(),
-            modules: self.modules.clone(),
-            typedefs: self.typedefs.clone(),
-            traits: self.traits.clone(),
-            ..Self::default()
-        }
+    // 2026-10-27 claude: Env's lexical maps are one field, env.lexical: Lexical {
+    // binds, modules, typedefs, traits }. lexical() clones it, swap_lexical is one
+    // mem::swap, fork/join and the image codec take the field (bytes unchanged: same
+    // fields, same order), and a snapshot (LambdaDef, an instance's def env, make_init,
+    // Module and a dynamic module's sig_env, with_restored) holds a Lexical, not an Env
+    // with default globals. One site builds an Env around a snapshot: DefTable::record
+    // seeds its table's type refs in the definition's env, as it did with the old
+    // lexical-only Env. queuefn's wrapper def kept a whole ctx.env clone and now keeps
+    // the snapshot. A Dynamic module's source type is checked in ctx.env (it was the
+    // lexical-only snapshot). Whole gate green.
+    pub fn lexical(&self) -> Lexical {
+        self.lexical.clone()
     }
 
-    /// Exchange the lexical environment with `other`'s; the global
-    /// registries and IDE sinks stay as they are on `self`.
+    /// Exchange the lexical environment with `other`; the global
+    /// registries and IDE sinks stay as they are.
     #[doc(hidden)]
-    pub fn swap_lexical(&mut self, other: &mut Self) {
-        let Self {
-            binds,
-            modules,
-            typedefs,
-            traits,
-            by_id: _,
-            byref_chain: _,
-            names: _,
-            abstract_reps: _,
-            trait_defs: _,
-            trait_methods: _,
-            impls: _,
-            poly_binds: _,
-            package_roots: _,
-            ide: _,
-            hidden_impls: _,
-            recorded: _,
-        } = other;
-        mem::swap(&mut self.binds, binds);
-        mem::swap(&mut self.modules, modules);
-        mem::swap(&mut self.typedefs, typedefs);
-        mem::swap(&mut self.traits, traits);
+    pub fn swap_lexical(&mut self, other: &mut Lexical) {
+        mem::swap(&mut self.lexical, other)
     }
 
     /// Run `f` on the active IDE sink, if any.
@@ -813,7 +794,7 @@ impl Env {
         if let Some(d) = self.trait_defs.get(&tid) {
             let (scope, name) = (d.scope.clone(), CompactString::from(d.name.as_str()));
             self.keep_module_path(&scope, true);
-            self.traits.get_or_default_cow(scope).insert_cow(name, tid);
+            self.lexical.traits.get_or_default_cow(scope).insert_cow(name, tid);
         }
     }
 
@@ -828,7 +809,7 @@ impl Env {
         while let Some(p) = cur
             && p != "/"
         {
-            self.modules.insert_cow(ModPath(Path::from(ArcStr::from(p))));
+            self.lexical.modules.insert_cow(ModPath(Path::from(ArcStr::from(p))));
             cur = Path::dirname(p);
         }
     }
@@ -844,16 +825,20 @@ impl Env {
             Sandbox::Blacklist(bl) => {
                 let mut t = self.clone();
                 for n in bl.iter() {
-                    if self.modules.contains(n) {
+                    if self.lexical.modules.contains(n) {
                         t.unbind_lexical_under(n);
                     } else {
                         let (dir, k) = get_bind_name(n)?;
                         let k = CompactString::from(k);
-                        if !self.binds.get(dir).is_some_and(|vals| vals.contains_key(&k))
+                        if !self
+                            .lexical
+                            .binds
+                            .get(dir)
+                            .is_some_and(|vals| vals.contains_key(&k))
                         {
                             bail!("no value {k} in module {dir} and no module {n}")
                         }
-                        if let Some(vals) = t.binds.get_mut_cow(dir) {
+                        if let Some(vals) = t.lexical.binds.get_mut_cow(dir) {
                             vals.remove_cow(&k);
                         }
                     }
@@ -866,13 +851,13 @@ impl Env {
                     AHashMap<ModPath, LPooled<AHashSet<CompactString>>>,
                 > = LPooled::take();
                 for w in wl.iter() {
-                    if self.modules.contains(w) {
+                    if self.lexical.modules.contains(w) {
                         modules.insert(w.clone());
                     } else {
                         let (dir, n) = get_bind_name(w)?;
                         let dir = ModPath(Path::from(ArcStr::from(dir)));
                         let n = CompactString::from(n);
-                        self.binds.get(&dir).and_then(|v| v.get(&n)).ok_or_else(
+                        self.lexical.binds.get(&dir).and_then(|v| v.get(&n)).ok_or_else(
                             || anyhow!("no value {n} in module {dir} and no module {w}"),
                         )?;
                         names.entry(dir).or_default().insert(n);
@@ -884,12 +869,12 @@ impl Env {
                     |k: &ModPath| modules.iter().any(|m| scope_is_under(&k.0, &m.0));
                 let kept = |k: &ModPath| under_listed(k) || names.contains_key(k);
                 let mut t = self.clone();
-                t.typedefs = retain(&self.typedefs, |k, _| kept(k));
-                t.modules = retain_set(&self.modules, kept);
-                t.binds = retain(&self.binds, |k, _| kept(k));
-                t.traits = retain(&self.traits, |k, _| kept(k));
+                t.lexical.typedefs = retain(&self.lexical.typedefs, |k, _| kept(k));
+                t.lexical.modules = retain_set(&self.lexical.modules, kept);
+                t.lexical.binds = retain(&self.lexical.binds, |k, _| kept(k));
+                t.lexical.traits = retain(&self.lexical.traits, |k, _| kept(k));
                 for (dir, ns) in names.iter().filter(|(dir, _)| !under_listed(dir)) {
-                    if let Some(vals) = t.binds.get_mut_cow(dir) {
+                    if let Some(vals) = t.lexical.binds.get_mut_cow(dir) {
                         *vals = retain(vals, |n, _| ns.contains(n));
                     }
                 }
@@ -1069,7 +1054,7 @@ impl Env {
             }
             p.push_str(n);
         }
-        self.modules.get(p.as_str()).cloned()
+        self.lexical.modules.get(p.as_str()).cloned()
     }
 
     /// Resolve the single segment `seg` as a module from `scope`: the
@@ -1187,7 +1172,7 @@ impl Env {
         name: &ModPath,
     ) -> Result<Option<(&ModPath, &Bind)>> {
         self.resolve_visible(scope, name, NameNs::Value, |scope, name| {
-            self.binds.get_full(scope).and_then(|(scope, vars)| {
+            self.lexical.binds.get_full(scope).and_then(|(scope, vars)| {
                 vars.get(name)
                     .and_then(|bid| self.by_id.get(bid).map(|bind| (scope, &**bind)))
             })
@@ -1200,7 +1185,7 @@ impl Env {
         name: &ModPath,
     ) -> Result<Option<&TypeDef>> {
         self.resolve_visible(scope, name, NameNs::Type, |scope, name| {
-            self.typedefs.get(scope).and_then(|m| m.get(name))
+            self.lexical.typedefs.get(scope).and_then(|m| m.get(name))
         })
     }
 
@@ -1212,7 +1197,7 @@ impl Env {
         name: &ModPath,
     ) -> Result<Option<TraitId>> {
         self.resolve_visible(scope, name, NameNs::Type, |scope, name| {
-            self.traits.get(scope).and_then(|m| m.get(name)).copied()
+            self.lexical.traits.get(scope).and_then(|m| m.get(name)).copied()
         })
     }
 
@@ -1221,7 +1206,8 @@ impl Env {
     pub(crate) fn is_core_errchain(&self, r: &ResolvedRef) -> bool {
         static CORE: std::sync::LazyLock<ModPath> =
             std::sync::LazyLock::new(|| ModPath::from(["core"]));
-        self.typedefs
+        self.lexical
+            .typedefs
             .get(&*CORE)
             .and_then(|defs| defs.get("ErrChain"))
             .is_some_and(|td| td.def.def_key() == r.def_key())
@@ -1251,9 +1237,10 @@ impl Env {
         name: &ModPath,
     ) -> Result<Option<TypeName>> {
         self.resolve_visible(scope, name, NameNs::Type, |s, n| {
-            match self.typedefs.get(s).and_then(|m| m.get(n)) {
+            match self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
                 Some(d) => Some(TypeName::Def(d.def.clone())),
                 None => self
+                    .lexical
                     .traits
                     .get(s)
                     .and_then(|m| m.get(n))
@@ -1275,18 +1262,18 @@ impl Env {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Arc<TraitDef>> {
-        if self.traits.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
+        if self.lexical.traits.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
             bail!("trait {name} is already defined {}", in_scope(scope))
         }
-        if self.typedefs.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
+        if self.lexical.typedefs.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
             bail!("{name} is already defined as a type {}", in_scope(scope))
         }
         let id = TraitId::of(scope, name);
         let path = ModPath(scope.append(name));
-        if self.modules.contains(&path) {
+        if self.lexical.modules.contains(&path) {
             bail!("{name} is already defined as a module {}", in_scope(scope))
         }
-        self.modules.insert_cow(path.clone());
+        self.lexical.modules.insert_cow(path.clone());
         let mut defs: LPooled<Vec<TraitMethodDef>> = LPooled::take();
         let (mut applied, mut bare) = (false, false);
         for TraitMethodSig { name: mname, pos: mpos, typ, self_index, requires } in
@@ -1331,7 +1318,8 @@ impl Env {
             pos,
             ori,
         });
-        self.traits
+        self.lexical
+            .traits
             .get_or_default_cow(scope.clone())
             .insert_cow(name.as_str().into(), id);
         // A re-declaration contributes only its default bodies.
@@ -1365,10 +1353,10 @@ impl Env {
     }
 
     pub fn undeftrait(&mut self, def: &Arc<TraitDef>) {
-        if let Some(m) = self.traits.get_mut_cow(&def.scope) {
+        if let Some(m) = self.lexical.traits.get_mut_cow(&def.scope) {
             m.remove_cow(&CompactString::from(def.name.as_str()));
             if m.len() == 0 {
-                self.traits.remove_cow(&def.scope);
+                self.lexical.traits.remove_cow(&def.scope);
             }
         }
         for m in def.methods.iter() {
@@ -1376,7 +1364,7 @@ impl Env {
             self.poly_binds.remove(&m.dispatcher);
             self.unbind_variable(m.dispatcher);
         }
-        self.modules.remove_cow(&def.path);
+        self.lexical.modules.remove_cow(&def.path);
         if self.trait_defs.get(&def.id).is_some_and(|d| d.same_definition(def)) {
             self.trait_defs.remove(&def.id);
         }
@@ -1619,7 +1607,7 @@ impl Env {
     ) -> Vec<(CompactString, BindId)> {
         let mut res = vec![];
         let scan = |res: &mut Vec<(CompactString, BindId)>, level: &str, part: &str| {
-            if let Some(vars) = self.binds.get(level) {
+            if let Some(vars) = self.lexical.binds.get(level) {
                 let at = res.len();
                 res.extend(
                     vars.iter()
@@ -1636,7 +1624,11 @@ impl Env {
                     Visit::Level(level) => scan(&mut res, level, part),
                     Visit::Import(name, e) if name.starts_with(part) => {
                         let find = |lvl: &str| {
-                            self.binds.get(lvl).and_then(|v| v.get(&e.name)).copied()
+                            self.lexical
+                                .binds
+                                .get(lvl)
+                                .and_then(|v| v.get(&e.name))
+                                .copied()
                         };
                         if let Some(id) = Self::import_target(e, find) {
                             res.push((name.clone(), id));
@@ -1667,7 +1659,7 @@ impl Env {
         let scan = |res: &mut Vec<ModPath>, level: &str, part: &str| {
             let p = ModPath(Path::from(ArcStr::from(level)).append(part));
             let mut found: LPooled<Vec<&ModPath>> =
-                self.modules.iter().filter(|m| m.0.starts_with(&*p.0)).collect();
+                self.lexical.modules.iter().filter(|m| m.0.starts_with(&*p.0)).collect();
             found.sort_unstable();
             for m in found.drain(..) {
                 let rel = m.strip_prefix(level).map(|m| m.trim_start_matches('/'));
@@ -1776,10 +1768,10 @@ impl Env {
             };
             view.names.insert(scope.clone(), sn);
         }
-        if let Some(defs) = view.typedefs.get_mut_cow(scope) {
+        if let Some(defs) = view.lexical.typedefs.get_mut_cow(scope) {
             *defs = retain(defs, |k, _| declared(k));
         }
-        if let Some(traits) = view.traits.get_mut_cow(scope) {
+        if let Some(traits) = view.lexical.traits.get_mut_cow(scope) {
             *traits = retain(traits, |k, _| declared(k));
         }
         view
@@ -1828,9 +1820,9 @@ impl Env {
     /// Whether `level` itself declares `name`: a binding, a type or a
     /// trait.
     fn declares(&self, level: &str, name: &str) -> bool {
-        self.binds.get(level).is_some_and(|v| v.get(name).is_some())
-            || self.typedefs.get(level).is_some_and(|v| v.get(name).is_some())
-            || self.traits.get(level).is_some_and(|v| v.get(name).is_some())
+        self.lexical.binds.get(level).is_some_and(|v| v.get(name).is_some())
+            || self.lexical.typedefs.get(level).is_some_and(|v| v.get(name).is_some())
+            || self.lexical.traits.get(level).is_some_and(|v| v.get(name).is_some())
     }
 
     /// True iff an import target currently names something (any
@@ -1863,10 +1855,10 @@ impl Env {
         decl: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Unguarded> {
-        if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
+        if self.lexical.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined {}", in_scope(scope))
         }
-        if self.traits.get(scope).and_then(|m| m.get(name)).is_some() {
+        if self.lexical.traits.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined as a trait {}", in_scope(scope))
         }
         let (typ, rep) = match body {
@@ -1983,7 +1975,7 @@ impl Env {
             typ.clone(),
         ));
         let key = def.def_key();
-        let defs = self.typedefs.get_or_default_cow(scope.clone());
+        let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(
             name.into(),
             TypeDef { def, rep, doc, seeded: Arc::new(AtomicBool::new(false)) },
@@ -2025,7 +2017,7 @@ impl Env {
     /// every name it reaches is. `Unknown` while a name it reaches is
     /// still undefined.
     pub fn check_contractive(&self, scope: &ModPath, name: &str) -> Result<Unguarded> {
-        let Some(td) = self.typedefs.get(scope).and_then(|m| m.get(name)) else {
+        let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
             return Ok(Unguarded::Guarded);
         };
         match td.typ().reaches_unguarded(self, td.def.def_key()) {
@@ -2066,7 +2058,8 @@ impl Env {
     /// a module's own, in the module's env.
     pub fn seed_typedef_refs_under(&self, scope: &ModPath) {
         let _profile = profile::phase(Phase::SeedTypes);
-        let under = self.typedefs.into_iter().filter(|(s, _)| scope_is_under(s, scope));
+        let under =
+            self.lexical.typedefs.into_iter().filter(|(s, _)| scope_is_under(s, scope));
         for (_, defs) in under {
             for (_, td) in defs.into_iter() {
                 if td.seeded.load(Ordering::Relaxed) {
@@ -2095,7 +2088,7 @@ impl Env {
     /// Mark exported the representation of every abstract type defined
     /// at `scope` itself.
     pub fn publish_abstract_reps_at(&mut self, scope: &ModPath) {
-        let ids: LPooled<Vec<AbstractId>> = match self.typedefs.get(scope) {
+        let ids: LPooled<Vec<AbstractId>> = match self.lexical.typedefs.get(scope) {
             None => LPooled::take(),
             Some(defs) => defs
                 .into_iter()
@@ -2119,10 +2112,10 @@ impl Env {
     /// representation stays: every compile of one source typedef
     /// registers the same one, and a live compile still constructs it.
     pub fn undeftype(&mut self, scope: &ModPath, name: &str) {
-        if let Some(defs) = self.typedefs.get_mut_cow(scope) {
+        if let Some(defs) = self.lexical.typedefs.get_mut_cow(scope) {
             defs.remove_cow(&CompactString::from(name));
             if defs.len() == 0 {
-                self.typedefs.remove_cow(scope);
+                self.lexical.typedefs.remove_cow(scope);
             }
         }
     }
@@ -2144,10 +2137,11 @@ impl Env {
             });
             n
         }
-        self.modules = retain_set(&self.modules, |s| !scope_is_under(s, scope));
-        drop_scopes(&mut self.binds, scope)
-            + drop_scopes(&mut self.typedefs, scope)
-            + drop_scopes(&mut self.traits, scope)
+        self.lexical.modules =
+            retain_set(&self.lexical.modules, |s| !scope_is_under(s, scope));
+        drop_scopes(&mut self.lexical.binds, scope)
+            + drop_scopes(&mut self.lexical.typedefs, scope)
+            + drop_scopes(&mut self.lexical.traits, scope)
     }
 
     /// Drop everything registered at `scope` or any descendant, so a
@@ -2164,10 +2158,7 @@ impl Env {
             by_id,
             byref_chain,
             // the lexical maps, which unbind_lexical_under cleared
-            binds: _,
-            modules: _,
-            typedefs: _,
-            traits: _,
+            lexical: _,
             names,
             abstract_reps,
             trait_defs,
@@ -2220,7 +2211,8 @@ impl Env {
         ori: Arc<Origin>,
     ) -> &mut Bind {
         let id = BindId::new();
-        self.binds
+        self.lexical
+            .binds
             .get_or_default_cow(scope.clone())
             .insert_cow(CompactString::from(name), id);
         let bind = Bind {
@@ -2285,12 +2277,12 @@ impl Env {
     pub fn unbind_variable(&mut self, id: BindId) {
         self.poly_binds.remove(&id);
         if let Some(b) = self.by_id.remove(&id) {
-            if let Some(binds) = self.binds.get_mut_cow(&b.scope) {
+            if let Some(binds) = self.lexical.binds.get_mut_cow(&b.scope) {
                 if binds.get(&b.name) == Some(&id) {
                     binds.remove_cow(&b.name);
                 }
                 if binds.len() == 0 {
-                    self.binds.remove_cow(&b.scope);
+                    self.lexical.binds.remove_cow(&b.scope);
                 }
             }
         }
@@ -2362,7 +2354,7 @@ mod test {
             .unwrap();
         }
         env.seed_typedef_refs();
-        let defs = env.typedefs.get(&scope).unwrap();
+        let defs = env.lexical.typedefs.get(&scope).unwrap();
         fn names_itself(t: &Type, def: &std::sync::Arc<ResolvedRef>) -> bool {
             let mut found = matches!(t, Type::Ref(tr)
                 if tr.resolved().is_some_and(|r| std::sync::Arc::ptr_eq(&r, def)));
@@ -2421,13 +2413,13 @@ mod test {
     fn blacklist_removes_the_subtree() {
         let mut env = Env::default();
         let (sys, net) = (ModPath::from(["sys"]), ModPath::from(["sys", "net"]));
-        env.modules.insert_cow(sys.clone());
-        env.modules.insert_cow(net.clone());
+        env.lexical.modules.insert_cow(sys.clone());
+        env.lexical.modules.insert_cow(net.clone());
         at(&mut env, &net, "publish");
         let t = env.apply_sandbox(&Sandbox::Blacklist(Arc::from_iter([sys]))).unwrap();
-        assert!(!t.modules.contains(&net));
-        assert!(t.binds.get(&net).is_none());
-        assert!(env.modules.contains(&net), "the original is untouched");
+        assert!(!t.lexical.modules.contains(&net));
+        assert!(t.lexical.binds.get(&net).is_none());
+        assert!(env.lexical.modules.contains(&net), "the original is untouched");
     }
 
     /// A blacklist's entries name the unsandboxed env, so an entry under
@@ -2437,8 +2429,8 @@ mod test {
     fn blacklist_entries_are_independent_of_order() {
         let mut env = Env::default();
         let (sys, net) = (ModPath::from(["sys"]), ModPath::from(["sys", "net"]));
-        env.modules.insert_cow(sys.clone());
-        env.modules.insert_cow(net.clone());
+        env.lexical.modules.insert_cow(sys.clone());
+        env.lexical.modules.insert_cow(net.clone());
         at(&mut env, &net, "publish");
         let publish = ModPath::from(["sys", "net", "publish"]);
         for bl in [
@@ -2448,8 +2440,8 @@ mod test {
             [publish.clone(), sys.clone()],
         ] {
             let t = env.apply_sandbox(&Sandbox::Blacklist(Arc::from_iter(bl))).unwrap();
-            assert!(!t.modules.contains(&net));
-            assert!(t.binds.get(&net).is_none());
+            assert!(!t.lexical.modules.contains(&net));
+            assert!(t.lexical.binds.get(&net).is_none());
         }
         let nowhere = ModPath::from(["sys", "net", "nowhere"]);
         assert!(
@@ -2468,7 +2460,7 @@ mod test {
         let live = at(&mut env, &pkg, "x");
         let body = ModPath::from(["pkg", "#fn7"]);
         let local = at(&mut env, &body, "y");
-        env.binds.remove_cow(&body);
+        env.lexical.binds.remove_cow(&body);
         env.poly_binds.insert(local);
         let other = at(&mut env, &ModPath::from(["other"]), "z");
         let ori = Arc::new(Origin::default());
@@ -2530,7 +2522,7 @@ mod test {
         let old = at(&mut env, &m, "x");
         let new = at(&mut env, &m, "x");
         env.unbind_variable(old);
-        assert_eq!(env.binds.get(&m).and_then(|b| b.get("x")), Some(&new));
+        assert_eq!(env.lexical.binds.get(&m).and_then(|b| b.get("x")), Some(&new));
     }
 
     /// Module completion offers an import only when it names a module.
@@ -2538,8 +2530,8 @@ mod test {
     fn module_completion_skips_value_imports() {
         let mut env = Env::default();
         let (m, sub) = (ModPath::from(["m"]), ModPath::from(["m", "sub"]));
-        env.modules.insert_cow(m.clone());
-        env.modules.insert_cow(sub);
+        env.lexical.modules.insert_cow(m.clone());
+        env.lexical.modules.insert_cow(sub);
         at(&mut env, &m, "val");
         let import = |name: &str| ImportEntry {
             scope: m.clone(),

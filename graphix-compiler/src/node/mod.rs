@@ -876,10 +876,10 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     for e in exprs.iter() {
         if let ExprKind::Module { name, .. } = &e.kind {
             let p = ModPath(scope.lexical.append(name));
-            if ctx.env.modules.contains(&p) {
+            if ctx.env.lexical.modules.contains(&p) {
                 return Err(anyhow!("duplicate module definition {p}").at(&(*e)));
             }
-            ctx.env.modules.insert_cow(p);
+            ctx.env.lexical.modules.insert_cow(p);
         }
     }
     let n = exprs.len();
@@ -934,7 +934,7 @@ pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
     let key = CompactString::from(name);
     let declared = |scope: &str| {
         let scope = ModPath(Path::from(ArcStr::from(scope)));
-        ctx.env.typedefs.get(&scope).is_some_and(|m| m.get(&key).is_some())
+        ctx.env.lexical.typedefs.get(&scope).is_some_and(|m| m.get(&key).is_some())
     };
     ctx.block_typedefs.iter().any(|(block, names)| {
         names.iter().any(|n| n.as_str() == name)
@@ -1097,6 +1097,7 @@ pub(crate) fn defer_typedef_names<R: Rt>(
     let NodeView::TypeDef(td) = n.view() else { return Ok(()) };
     let Some(def) = ctx
         .env
+        .lexical
         .typedefs
         .get(&td.scope)
         .and_then(|m| m.get(&CompactString::from(td.name.as_str())))

@@ -54,16 +54,16 @@ async fn environment_round_trips() -> Result<()> {
         Ok::<_, anyhow::Error>(env)
     })?;
     assert_eq!(env.by_id.len(), restored.by_id.len());
-    assert_eq!(env.modules.len(), restored.modules.len());
-    assert!(env.modules.into_iter().eq(restored.modules.into_iter()));
+    assert_eq!(env.lexical.modules.len(), restored.lexical.modules.len());
+    assert!(env.lexical.modules.into_iter().eq(restored.lexical.modules.into_iter()));
     assert!(env.package_roots.iter().eq(restored.package_roots.iter()));
     assert_eq!(env.poly_binds.len(), restored.poly_binds.len());
     assert_eq!(env.trait_defs.len(), restored.trait_defs.len());
     assert_eq!(env.impls.len(), restored.impls.len());
     // every binding by name: same shape, relocated id, same type
     let mut checked = 0;
-    for (scope, names) in &env.binds {
-        let rnames = restored.binds.get(scope).expect("scope survives");
+    for (scope, names) in &env.lexical.binds {
+        let rnames = restored.lexical.binds.get(scope).expect("scope survives");
         assert_eq!(names.len(), rnames.len(), "{scope}");
         for (name, id) in names {
             let rid = rnames.get(name).expect("name survives");
@@ -88,8 +88,8 @@ async fn environment_round_trips() -> Result<()> {
         }
     }
     assert!(checked > 100, "{checked}");
-    for (scope, defs) in &env.typedefs {
-        let rdefs = restored.typedefs.get(scope).expect("typedef scope survives");
+    for (scope, defs) in &env.lexical.typedefs {
+        let rdefs = restored.lexical.typedefs.get(scope).expect("typedef scope survives");
         for (name, td) in defs {
             let rtd = rdefs.get(name).expect("typedef survives");
             assert_eq!(show(td.typ()), show(rtd.typ()), "{scope}::{name}");

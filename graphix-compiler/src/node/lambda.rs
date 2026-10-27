@@ -12,7 +12,7 @@ use crate::{
     InitFn, LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue,
     Update, dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
-    env::{Bind, Env},
+    env::{Bind, Env, Lexical},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
     fusion::{
         self,
@@ -142,7 +142,7 @@ impl DefTable {
     /// binds are in `checked`, the check's environment.
     fn record<R: Rt>(
         body: &Node<R>,
-        env: &Env,
+        def_env: &Lexical,
         checked: &Env,
         facts: LambdaFacts,
         calls_own: bool,
@@ -186,8 +186,9 @@ impl DefTable {
             table.aux.remove(&id);
         }
         let mut seen: LPooled<AddrSet> = LPooled::take();
+        let env = Env { lexical: def_env.clone(), ..Env::default() };
         table.for_each_type(&mut |t, _| {
-            t.seed_refs_seen(env, &mut seen);
+            t.seed_refs_seen(&env, &mut seen);
         });
         table.own_typedefs();
         table
@@ -579,7 +580,7 @@ impl BodyShared {
 
 pub struct LambdaDef<R: Rt> {
     pub id: LambdaId,
-    pub env: Env,
+    pub env: Lexical,
     pub scope: Scope,
     pub argspec: Arc<[Arg]>,
     pub typ: Arc<FnType>,
@@ -761,7 +762,7 @@ pub struct GXLambda<R: Rt> {
     /// The def-side lexical env the body was compiled under. The body
     /// typechecks under it too: the caller's env, which drives the
     /// checks, may lack the defining module's private typedefs.
-    env: Env,
+    env: Lexical,
     typing: Typing,
     /// The runtime this activation counts against, when a cycle bound it
     /// (`stack::activation_born`).
@@ -1160,7 +1161,7 @@ impl<R: Rt> GXLambda<R> {
         }
         // the instance's env is read for type names alone: the binds from
         // before the formals are the definition's, shared by every instance
-        let binds = ctx.env.binds.clone();
+        let binds = ctx.env.lexical.binds.clone();
         let mut argpats: LPooled<Vec<StructPatternNode>> = LPooled::take();
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
             let pattern = StructPatternNode::compile(
@@ -1194,7 +1195,7 @@ impl<R: Rt> GXLambda<R> {
             self_call: Mutex::new(None),
             resident: TagValue::phantom(),
             first_dispatch: true,
-            env: Env { binds, ..ctx.env.lexical() },
+            env: Lexical { binds, ..ctx.env.lexical() },
             typing,
             charged: crate::stack::activation_born(),
         })
@@ -1407,7 +1408,7 @@ impl Lambda {
 pub(crate) fn make_init<R: Rt>(
     id: LambdaId,
     flags: BitFlags<CFlag>,
-    def_env: Env,
+    def_env: Lexical,
     scope: &Scope,
     def_typ: Arc<FnType>,
     def_argspec: Arc<[Arg]>,

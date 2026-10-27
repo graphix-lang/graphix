@@ -435,10 +435,9 @@ impl<R: Rt> QueueFn<R> {
                 )
             },
         );
-        let env = ctx.env.clone();
         let def = LambdaDef {
             id,
-            env,
+            env: ctx.env.lexical(),
             scope: self.scope.clone(),
             argspec,
             typ: ftyp,

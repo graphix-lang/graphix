@@ -312,7 +312,7 @@ fn compile_module_inner<R: Rt>(
 ) -> Result<Node<R>> {
     let enclosing = scope;
     let scope = scope.append(name);
-    if !predeclared && ctx.env.modules.contains(&scope.lexical) {
+    if !predeclared && ctx.env.lexical.modules.contains(&scope.lexical) {
         bailat!(spec, "duplicate module definition {}", scope.lexical)
     }
     // the module's own file, where its body's errors are
@@ -332,7 +332,7 @@ fn compile_module_inner<R: Rt>(
             bailat!(spec, "external modules are not allowed in this context")
         }
         ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
-            ctx.env.modules.insert_cow(scope.lexical.clone());
+            ctx.env.lexical.modules.insert_cow(scope.lexical.clone());
             let res = Block::compile(ctx, flags, spec, &scope, top_id, true, exprs);
             // no interface hides anything, an abstract type's representation
             // included

@@ -261,7 +261,8 @@ impl<'a> Completer<'a> {
             Err(_) => return vec![],
         };
         let env = self.env;
-        let binds = env.binds.get(&module).into_iter().flat_map(|b| b.into_iter());
+        let binds =
+            env.lexical.binds.get(&module).into_iter().flat_map(|b| b.into_iter());
         for (name, id) in binds {
             if let Some(b) = env.by_id.get(id)
                 && seen.insert(name)
@@ -273,20 +274,22 @@ impl<'a> Completer<'a> {
                 items.push(item(name, kind, Some(display_type(&b.typ))));
             }
         }
-        let types = env.typedefs.get(&module).into_iter().flat_map(|t| t.into_iter());
+        let types =
+            env.lexical.typedefs.get(&module).into_iter().flat_map(|t| t.into_iter());
         for (name, td) in types {
             if seen.insert(name) {
                 let detail = typedef_decl(name, td);
                 items.push(item(name, CompletionItemKind::STRUCT, Some(detail)));
             }
         }
-        let traits = env.traits.get(&module).into_iter().flat_map(|t| t.into_iter());
+        let traits =
+            env.lexical.traits.get(&module).into_iter().flat_map(|t| t.into_iter());
         for (name, _) in traits {
             if seen.insert(name) {
                 items.push(item(name, CompletionItemKind::INTERFACE, None));
             }
         }
-        for m in env.modules.into_iter() {
+        for m in env.lexical.modules.into_iter() {
             let child = NPath::dirname(&m.0) == Some(&*module.0)
                 || (&*module.0 == "/" && NPath::levels(&m.0) == 1);
             if let Some(name) = NPath::basename(&m.0).filter(|_| child)

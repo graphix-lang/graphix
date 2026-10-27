@@ -45,7 +45,7 @@ pub use fusion::FusionStats;
 pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
-    env::Env,
+    env::{Env, Lexical},
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
@@ -1335,7 +1335,7 @@ macro_rules! env_restore_methods {
         /// the current one back. Bindings `f` creates are retained.
         pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(
             &mut self,
-            mut env: Env,
+            mut env: Lexical,
             f: F,
         ) -> T {
             self.with_restored_mut(&mut env, f)
@@ -1345,7 +1345,7 @@ macro_rules! env_restore_methods {
         /// built in `env`, so two envs keep continuity across invocations.
         pub fn with_restored_mut<T, F: FnOnce(&mut Self) -> T>(
             &mut self,
-            env: &mut Env,
+            env: &mut Lexical,
             f: F,
         ) -> T {
             self.env.swap_lexical(env);

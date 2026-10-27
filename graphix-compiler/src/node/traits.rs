@@ -328,7 +328,7 @@ impl<R: Rt> Trait<R> {
             Block::compile(ctx, flags, spec.clone(), &dscope, top_id, true, &exprs)
                 .with_context(|| format!("in the default methods of trait {}", t.name))?;
         let mut defaults_by_name: LPooled<Vec<(CompactString, BindId)>> = LPooled::take();
-        if let Some(binds) = ctx.env.binds.get(&dscope.lexical) {
+        if let Some(binds) = ctx.env.lexical.binds.get(&dscope.lexical) {
             for (n, id) in binds.into_iter() {
                 let n = n.strip_prefix('#').unwrap_or(n);
                 defaults_by_name.push((CompactString::from(n), *id));
@@ -741,7 +741,7 @@ impl<R: Rt> Impl<R> {
             Block::compile(ctx, flags, spec.clone(), &bscope, top_id, true, &exprs)
                 .with_context(|| format!("in impl {} for {target}", trait_def.name))?;
         let mut methods: Map<CompactString, BindId> = Map::new();
-        if let Some(binds) = ctx.env.binds.get(&bscope.lexical) {
+        if let Some(binds) = ctx.env.lexical.binds.get(&bscope.lexical) {
             for (n, id) in binds.into_iter() {
                 methods.insert_cow(n.clone(), *id);
             }
