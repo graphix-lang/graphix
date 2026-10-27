@@ -512,6 +512,9 @@ key and `sel$` apart.
 
 ## References and places
 
+Read-only reference arguments `&'a` infer the widest referent across arguments,
+in either order; writable `&mut 'a` arguments require exactly the same referent.
+
 `&v`, `*r`; writing is `*r <- new` and needs `r: &mut T`, made with
 `&mut v`. `&T` is read-only and covariant (`&[i64, null]` takes `&x`
 with `x: i64`, and takes a `&mut`); `&mut T` is invariant. An optional

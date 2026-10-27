@@ -2066,9 +2066,7 @@ run!(
     FuseExpect::None
 );
 
-// Nor one a reference holds: the callee could write the wider type
-// through it.
-// CR claude for claude: [bug/medium] This pins a refusal for read-only `&'a` formals, and
+// XCR claude for claude: [bug/medium] This pins a refusal for read-only `&'a` formals, and
 // its reason is wrong: nothing can write through a `&'a`, only through `&mut`. The
 // refusal also depends on argument order: `f(r, n)` is refused, but `f(n, r)` is
 // accepted and yields 0, because callsite.rs `holds_invariantly`/`data_positions` treat
@@ -2081,15 +2079,25 @@ run!(
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q26, Read-only `&'a`
 // formals and argument order): yes, covariant (the recommendation: covariant, as `&T`
 // already is.)
+// 2026-10-27 codex: Implemented Eric's q26 ruling. Call-site widening treats read-only
+// references covariantly; only writable references fix their referent invariantly.
+// Updated the existing pin to use writable references and added both argument orders for
+// each case. Pins lang::functions::readonly_reference_variable_widens{,_reversed} and
+// writable_reference_variable_does_not_widen{,_reversed}. Before the fix, narrow-first
+// readonly failed in all four modes and reversed passed; after the fix all pass. Complete
+// lang::functions:: passes: 962 tests, via shared flock and cargo test -p graphix-tests
+// --offline --lib lang::functions:: with CARGO_TARGET_DIR=$PWD/target. This also verifies
+// q23's updated default fixtures. Rules, book references page and language skill describe
+// the inference behavior.
 run!(
-    reference_variable_does_not_widen,
+    writable_reference_variable_does_not_widen,
     r#"{
-  let r: &u64 = &u64:0;
-  let n: &[u64, null] = &null;
-  let f = |x: &'a, y: &'a| -> &'a y;
+  let r: &mut u64 = &mut u64:0;
+  let n: &mut [u64, null] = &mut null;
+  let f = |x: &mut 'a, y: &mut 'a| -> &mut 'a y;
   f(r, n)
 }"#,
-    refused(r#"&'a: u64 does not contain &[u64, null]"#);
+    refused(r#"&mut 'a: u64 does not contain &mut [u64, null]"#);
     FuseExpect::None
 );
 
@@ -3237,3 +3245,24 @@ run!(rank2_quantifier_of_a_parameter_copied_at_each_call, r#"{
   let apply = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
   (use_it(apply), nested(apply))
 }"#, prints(r#"[[i64:1, "s"], [i64:1, "s"]]"#); FuseExpect::Jit);
+
+run!(readonly_reference_variable_widens, r#"{
+    let r: &u64 = &u64:0;
+    let n: &[u64, null] = &null;
+    let f = |x: &'a, y: &'a| -> &'a y;
+    *f(r, n)
+}"#, is(Value::Null); FuseExpect::None);
+
+run!(readonly_reference_variable_widens_reversed, r#"{
+    let r: &u64 = &u64:0;
+    let n: &[u64, null] = &null;
+    let f = |x: &'a, y: &'a| -> &'a y;
+    *f(n, r)
+}"#, is(Value::U64(0)); FuseExpect::None);
+
+run!(writable_reference_variable_does_not_widen_reversed, r#"{
+    let r: &mut u64 = &mut u64:0;
+    let n: &mut [u64, null] = &mut null;
+    let f = |x: &mut 'a, y: &mut 'a| -> &mut 'a y;
+    f(n, r)
+}"#, refused("does not contain"); FuseExpect::None);

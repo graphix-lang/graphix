@@ -35,7 +35,7 @@ use crate::{
     profile::{self, Phase},
     stack::ensure_sufficient,
     typ::{
-        ContainsFlags, FnArgKind, FnArgType, FnType, TVar, Type,
+        ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
         tvar::{Level, RigidGate},
     },
     wrap,
@@ -987,7 +987,7 @@ pub(crate) fn carried_out(
 type DataSeen = AHashMap<(usize, bool), Type>;
 
 /// Every type variable under `t` by name, with whether each occurrence
-/// is data: never under a function, a reference, a typedef application,
+/// is data: never under a function, a writable reference, a typedef application,
 /// a nominal type or a constructor application. Bindings are walked.
 fn data_positions(
     env: &Env,
@@ -1016,7 +1016,7 @@ fn data_positions(
             expanding.pop();
         }
         Type::Fn(_)
-        | Type::ByRef(..)
+        | Type::ByRef(Mutability::Mut, _)
         | Type::Ref(_)
         | Type::Abstract { .. }
         | Type::App(..) => {
@@ -1029,7 +1029,7 @@ fn data_positions(
 }
 
 /// Whether `t` holds a type variable under an abstract type, a type
-/// application or a reference, outside any function type: such a position
+/// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the
 /// order a call writes its arguments in decides nothing. A function's
 /// positions stay in order: an earlier argument types a callback's.
@@ -1059,7 +1059,10 @@ fn holds_invariantly(
             }
             r
         }
-        Type::Abstract { .. } | Type::App(..) | Type::Ref(_) | Type::ByRef(..) => {
+        Type::Abstract { .. }
+        | Type::App(..)
+        | Type::Ref(_)
+        | Type::ByRef(Mutability::Mut, _) => {
             let mut tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             t.collect_tvars(&mut tvars);
             !tvars.is_empty()

@@ -109,7 +109,9 @@ even though the original bind of `v` isn't even in a scope that `f` can see.
 `&T` can only be read, so it may refer to anything that is a `T`: `&[i64,
 null]` accepts `&x` where `x: i64`, and a `&mut T` can be passed where a `&T` is
 expected. This is what lets a widget take an optional `&[string, null]` that
-you hand `&title`.
+you hand `&title`. A function parameter `&'a` can therefore infer the widest
+referent type across its arguments, in either argument order. A parameter
+`&mut 'a` requires all referents to agree exactly.
 
 `&mut T` can also be written, so it must refer to exactly a `T`. If `&mut
 [i64, null]` accepted `&mut x` with `x: i64`, writing `null` through it would
