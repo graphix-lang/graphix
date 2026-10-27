@@ -1830,6 +1830,18 @@ impl<X: GXExt> GX<X> {
             // aborted.notified() or the next pass's check. Unchecked: whether Shell::run's
             // load_env (Output::from_expr, Output::chosen through run_on_main) can wait on
             // the main thread while the main thread joins graphix-tokio.
+            // 2026-10-27 claude: L4-b07 rerun: the run_on_main hypothesis is closed for
+            // this program: its output is an i64, so every package's is_custom (gui, tui:
+            // shows_as) refuses it before init_custom, and nothing reaches the main
+            // thread; the one awaited package hook, tui's output_chosen, goes through
+            // gx.with_ctx, whose request fails once the run loop returns and drops to_rt.
+            // Also checked: the image receivers Shell::store awaits are all sent or
+            // dropped inside GX::new, before start returns. 1240 more warm runs (40
+            // serial, then 2 loops of 600 under the lane's capped wrapper, debug build at
+            // cr26-staging 9022bfe18): all exited with the stopped message, none hung.
+            // Still open: a deadlock on a lock inside the aborted cycle's unwind or the
+            // GX's drop would look the same (every thread in futex_wait), and only a core
+            // from the 120 s trap would tell.
             if self.ctx.control.aborted() {
                 return Ok(());
             }
