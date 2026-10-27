@@ -398,6 +398,45 @@ const WRITE_BEFORE_REFERENCE_ARRIVES: &str = r#"
 
 run!(write_before_reference_arrives, WRITE_BEFORE_REFERENCE_ARRIVES, prints("[i64:42, i64:1]"); FuseExpect::Jit);
 
+// A write before the reference arrives keeps its value: an event RHS,
+// bottom again when the reference arrives, still lands then.
+const EVENT_WRITE_BEFORE_REFERENCE_ARRIVES: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let z = 0;
+  let rr = never<&mut i64>();
+  rr <- select step { s if s == 3 => s ~ &mut z, _ => never() };
+  *rr <- select step { s if s == 1 => s * 10, _ => never() };
+  select z { 10 => step, _ => never() }
+}
+"#;
+
+run!(event_write_before_reference_arrives, EVENT_WRITE_BEFORE_REFERENCE_ARRIVES, prints("i64:5"); FuseExpect::Jit);
+
+// A pure call under a reference fuses as it does under `<-`: the right
+// side of `*r <-`, a place's key, a `&mut` cell's initializer and the
+// child of `*`.
+const NATIVE_UNDER_REFERENCES: &str = r#"
+{
+  let f = |x| array::map(x, |e| e * 2 + 1);
+  let g = |i| i * 3 - 2;
+  let v = [0];
+  let a = [10, 20, 30];
+  let t = array::iter([[1, 2], [3, 4]]);
+  let r = &mut v;
+  *r <- #[native] f(t);
+  let i = 1;
+  let ra = &mut a[#[native] g(i)];
+  let w = &mut (#[native] g(5));
+  let sel = *(select #[native] g(i) > 0 { true => ra, false => ra });
+  let done = select v { [7, 9] => null, _ => never() };
+  done ~ (v, *ra, *w, sel)
+}
+"#;
+
+run!(native_under_references, NATIVE_UNDER_REFERENCES, prints("[[i64:7, i64:9], i64:20, i64:13, i64:20]"); FuseExpect::Jit);
+
 // A place the root no longer has is bottom, not its last value: a
 // connect sampling it then writes nothing.
 const PLACE_REMOVED_ELEMENT: &str = r#"

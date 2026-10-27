@@ -309,7 +309,27 @@ async fn aborted_run_returns_its_credit(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// Requests banked while a capture is absent are each paid when it
+// arrives; payments in flight when the arm sleeps are paid at the wake.
+async fn banked_requests_survive_a_sleep(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 20 => n + 1, _ => never() };
+        let request = select step { 1 | 2 | 3 | 4 => step, _ => never() };
+        let late: i64 = never();
+        late <- select step { 6 => 100, _ => never() };
+        let on = true;
+        on <- late ~ false;
+        on <- select step { 10 => true, _ => never() };
+        select on { true => seqq request { late }, false => never() }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [100, 100, 100, 100]);
+    Ok(())
+}
+
 modes!(aborted_run_returns_its_credit);
+modes!(banked_requests_survive_a_sleep);
 modes!(burst_captures);
 modes!(repeated_outputs);
 modes!(delayed_capture);

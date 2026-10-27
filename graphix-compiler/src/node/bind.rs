@@ -16,8 +16,9 @@ use crate::{
     expr::{self, At, Expr, ExprId, ExprKind, ModPath, PlaceAccess},
     format_with_flags,
     fusion::{
+        descend,
         emit::{BodyCx, CompiledExpr, emit_ref_node},
-        fuse,
+        fuse, fuse_parts,
     },
     ide::{FieldRefSite, ReferenceSite},
     image::{
@@ -1429,6 +1430,17 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         }
     }
 
+    /// The keys fuse as parts; the root only descends, so it stays the
+    /// variable or dereference `root_place` reads.
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        descend(&mut self.root, ctx)?;
+        let keys = self.steps.iter_mut().filter_map(|s| match s {
+            PlaceStep::Index(n) | PlaceStep::Key(n) => Some(n),
+            PlaceStep::Tuple(_) | PlaceStep::Field(_) => None,
+        });
+        fuse_parts(keys, ctx).map(|_| ())
+    }
+
     /// The element type: each step's accessor rule over the root's type,
     /// without the access's failure (a place handles that at runtime). A
     /// writable field step over a union needs every member's field to be
@@ -1923,6 +1935,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         &self.typ
     }
 
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        match &mut self.referent {
+            Referent::Channel(n) => fuse_parts([n], ctx),
+            Referent::Place(p) => p.fuse(ctx).map(|()| None),
+        }
+    }
+
     super::typed_by_row!();
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -2195,6 +2214,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             refs.read(a.id);
             refs.read(a.cell);
         }
+    }
+
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fuse_parts([&mut self.child], ctx)
     }
 
     super::typed_by_row!();

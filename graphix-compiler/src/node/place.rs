@@ -9,6 +9,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{ValError, Value};
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
 use triomphe::Arc;
@@ -145,34 +146,109 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
 // bottom-up (or guard each level with ensure_sufficient), and share path prefixes
 // instead of copying them. probe:
 // design/review-2026-10-26/repro/x-stack-place-path-chain.py (x-stack-03)
+// 2026-10-27 claude: The stack half is fixed: write_path walks the path in a loop,
+// recording a Hole per step (the container and the position it takes), and rebuilds
+// bottom-up by folding the holes; the probe at n = 10000 prints 1 and exits 0. Pin:
+// node::place::tests::deep_write_keeps_a_flat_stack (a 50000-step write on a 512 KB
+// stack; aborts on overflow with the recursive version). Still open: the O(n^2)
+// paths. Place::update clears and rebuilds its whole path from root_place's prefix at
+// every update, so each place of a chain holds a copy of its prefix. Sharing prefixes
+// needs a persistent path (an Arc'd parent link per place) that every reader
+// (read_path, write_path, the RefPath equality in Deref's registration, branch
+// patch_level) walks root-first, and Place::update would then allocate a node per
+// step per update unless it reuses an unchanged one; left for a later batch.
 pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
-    let Some((step, rest)) = path.split_first() else { return Ok(v) };
-    if let (Step::Index(0), Some(g)) = (step, abstract_value::get(root)) {
-        let payload = write_path(&g.payload, rest, v)?;
-        return Ok(abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), payload));
+    let mut spine: LPooled<Vec<Hole>> = LPooled::take();
+    let mut cur = root;
+    for (i, step) in path.iter().enumerate() {
+        if let (Step::Index(0), Some(g)) = (step, abstract_value::get(cur)) {
+            spine.push(Hole::Payload(cur));
+            cur = &g.payload;
+            continue;
+        }
+        cur = match (step, cur) {
+            (Step::Index(i), c) if let Some(a) = rep::indexed(c) => {
+                let j = index_of(a.len(), *i)?;
+                spine.push(Hole::Indexed(c, j));
+                &a[j]
+            }
+            (Step::Index(0), Value::Error(e)) => {
+                spine.push(Hole::Error);
+                e
+            }
+            (Step::Field(name), c) => {
+                let (j, f) = field_of(c, name)?;
+                spine.push(Hole::Field(c, j));
+                f
+            }
+            (Step::Key(k), Value::Map(m)) => {
+                spine.push(Hole::Key(m, k));
+                match m.get(k) {
+                    Some(c) => c,
+                    None if i + 1 == path.len() => break,
+                    None => bail!("no key {k}"),
+                }
+            }
+            (step, v) => bail!("cannot apply {step:?} to {}", crate::typ::Naked(v)),
+        };
     }
-    match (step, root) {
-        (Step::Index(i), root) if let Some(a) = rep::indexed(root) => {
-            let j = index_of(a.len(), *i)?;
-            let inner = write_path(&a[j], rest, v)?;
-            Ok(rep::replace_indexed(root, j, inner).expect("indexed"))
+    Ok(spine.drain(..).rev().fold(v, |inner, hole| hole.fill(inner)))
+}
+
+/// Where one step of a write took its value from, which the write
+/// rebuilds around the new value.
+enum Hole<'a> {
+    /// An abstract value's payload.
+    Payload(&'a Value),
+    /// An array or tuple element.
+    Indexed(&'a Value, usize),
+    /// An error's payload.
+    Error,
+    /// A struct field.
+    Field(&'a Value, usize),
+    /// A map entry, present or not.
+    Key(&'a netidx_value::Map, &'a Value),
+}
+
+impl Hole<'_> {
+    fn fill(self, inner: Value) -> Value {
+        match self {
+            Hole::Payload(c) => {
+                let g = abstract_value::get(c).expect("an abstract value");
+                abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), inner)
+            }
+            Hole::Indexed(c, j) => rep::replace_indexed(c, j, inner).expect("indexed"),
+            Hole::Error => Value::Error(ValError::new(inner)),
+            Hole::Field(c, j) => rep::replace_field(c, j, inner).expect("a struct"),
+            Hole::Key(m, k) => Value::Map(m.insert(k.clone(), inner).0),
         }
-        (Step::Index(0), Value::Error(e)) => {
-            Ok(Value::Error(ValError::new(write_path(e, rest, v)?)))
-        }
-        (Step::Field(name), root) => {
-            let (j, cur) = field_of(root, name)?;
-            let inner = write_path(cur, rest, v)?;
-            Ok(rep::replace_field(root, j, inner).expect("a struct"))
-        }
-        (Step::Key(k), Value::Map(m)) => {
-            let inner = match m.get(k) {
-                Some(cur) => write_path(cur, rest, v)?,
-                None if rest.is_empty() => v,
-                None => bail!("no key {k}"),
-            };
-            Ok(Value::Map(m.insert(k.clone(), inner).0))
-        }
-        (step, v) => bail!("cannot apply {step:?} to {}", crate::typ::Naked(v)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use netidx_value::ValArray;
+
+    /// A path is as long as a chain of place references, so a write
+    /// along it must not take a frame per step.
+    #[test]
+    fn deep_write_keeps_a_flat_stack() {
+        const DEPTH: usize = 50_000;
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let mut root =
+                    Value::Array(ValArray::from_iter_exact(std::iter::empty()));
+                for _ in 0..DEPTH {
+                    root = Value::Array(ValArray::from_iter_exact(std::iter::once(root)));
+                }
+                let path: Path = vec![Step::Index(0); DEPTH].as_slice().into();
+                let written = write_path(&root, &path, Value::I64(7)).unwrap();
+                assert_eq!(read_path(&written, &path).unwrap(), Value::I64(7));
+            })
+            .expect("spawn")
+            .join()
+            .expect("the write panicked");
     }
 }

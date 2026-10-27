@@ -756,15 +756,32 @@ impl Runs {
         Ok(runs)
     }
 
-    /// Update `children` run by run, each forked where its site says, then
-    /// the catches in reverse syntactic order: the last child's
-    /// production, unless it is a catch.
+    /// Whether a block of `len` statements updates run by run.
+    fn forks<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, len: usize) -> bool {
+        len > 1 && ctx.fork_mode() != ParMode::Off
+    }
+
+    /// Update a block's `children`: run by run, each forked where its
+    /// site says, when the runtime forks, else in order; the catches last,
+    /// in reverse syntactic order. The last child's production (a block
+    /// never ends in a catch); `None` when there are no children.
     pub(crate) fn update<R: Rt, E: UserEvent>(
         &mut self,
         ctx: &mut ExecCtx<'_, R, E>,
         children: &mut [Node<R, E>],
         catches: &[usize],
     ) -> Option<TagValue> {
+        let last = children.len();
+        if !Self::forks(ctx, last) {
+            let mut res = None;
+            for i in evaluation_order(last, catches) {
+                let tv = children[i].update(ctx);
+                if i + 1 == last {
+                    res = Some(tv.clone());
+                }
+            }
+            return res;
+        }
         let Self { planned, sites } = self;
         let sites = sites.get_or_insert_with(|| {
             planned
@@ -773,7 +790,6 @@ impl Runs {
                 .map(|&(a, b)| (a, b, ForkSite::planned()))
                 .collect()
         });
-        let last = children.len();
         let mut res: Option<TagValue> = None;
         for (a, b, site) in sites.iter_mut() {
             let (a, b) = (*a, *b);
@@ -790,17 +806,6 @@ impl Runs {
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
-    /// [`Update::update`] forking each run of its plan.
-    fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let res = self.runs.update(ctx, &mut self.children, &self.catches);
-        self.take_back_reraised(ctx);
-        match res {
-            _ if self.module => TagValue::phantom_ref(),
-            Some(tv) => self.resident.set(tv),
-            None => self.resident.ride(),
-        }
-    }
-
     fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for i in self.lets.iter() {
             if let Some(b) = self.children[*i as usize].downcast_mut::<bind::Bind<R, E>>()
@@ -1447,9 +1452,6 @@ pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
     }
 }
 
-/// Defer a judgment that only reads types to the check's settle of the
-/// current frame, a definition's body included: its open cells read as
-/// any type, and a later instance's types are its definition's.
 /// A map type written in `t`, which makes values of it out of others (a
 /// cast's target, a type test), takes keys of distinct runtime forms, as
 /// a literal's do: judged at the statement's settle. Every other map
@@ -1467,12 +1469,9 @@ pub(crate) fn defer_written_map_keys<R: Rt, E: UserEvent>(
     }
 }
 
-// CR claude for claude: [readability/low] This function has no doc. Its doc is the
-// first paragraph of defer_written_map_keys's above ("Defer a judgment that only reads
-// types ... a definition's body included"). That paragraph holds the rule that
-// separates it from defer_settle, which defers nothing in a definition's body. Move the
-// paragraph here, and leave only the map-key paragraph on defer_written_map_keys. Found
-// by reading; not run. (c-node-mod-04)
+/// Defer a judgment that only reads types to the check's settle of the
+/// current frame, a definition's body included: its open cells read as
+/// any type, and a later instance's types are its definition's.
 pub(crate) fn defer_judgment<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     judgment: PendingSettle,
@@ -1521,7 +1520,7 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
 impl<R: Rt, E: UserEvent> Block<R, E> {
     /// Whether a `catch` covers the block's value, its last child.
     pub(crate) fn value_is_caught(&self) -> bool {
-        self.catches.first().is_some_and(|i| i + 1 < self.children.len())
+        !self.catches.is_empty()
     }
 
     pub(crate) fn image_decode(
@@ -1564,55 +1563,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        if self.children.len() > 1 && ctx.fork_mode() != ParMode::Off {
-            return self.update_forking(ctx);
-        }
-        // CR claude for claude: [structure/low] The three serial paths here and
-        // update_forking (through Runs::update) each repeat the block's tail: the last
-        // child's production, the catches in reverse order, take_back_reraised, phantom
-        // for a module. The catch path's `self.catches.last() != Some(&last)` test and
-        // its `_ => self.resident.ride()` arm handle a block that ends in a catch,
-        // which compile_statement refuses. value_is_caught tests the same impossible
-        // case, so it is `!self.catches.is_empty()`. Delete the dead branches and let
-        // the catch path and update_forking share one ending; keep the fast path. Found
-        // by reading; not run. (c-node-mod-03)
-        if self.catches.is_empty() && self.lets.is_empty() {
+        if self.catches.is_empty()
+            && self.lets.is_empty()
+            && !Runs::forks(ctx, self.children.len())
+        {
             let res = self
                 .children
                 .iter_mut()
                 .fold(TagValue::phantom_ref(), |_, n| n.update(ctx));
             return if self.module { TagValue::phantom_ref() } else { res };
         }
-        if self.catches.is_empty() {
-            let Some((last, rest)) = self.children.split_last_mut() else {
-                return TagValue::phantom_ref();
-            };
-            for n in rest {
-                n.update(ctx);
-            }
-            if self.module {
-                last.update(ctx);
-                self.take_back_reraised(ctx);
-                return TagValue::phantom_ref();
-            }
-            let res = last.update(ctx).clone();
-            self.take_back_reraised(ctx);
-            return self.resident.set(res);
-        }
-        // the value is the last syntactic child's (absent if it is a catch)
-        let last = self.children.len() - 1;
-        let mut res: Option<TagValue> = None;
-        for i in evaluation_order(self.children.len(), &self.catches) {
-            let r = self.children[i].update(ctx);
-            if i == last && self.catches.last() != Some(&last) {
-                res = Some(r.clone());
-            }
-        }
+        let res = self.runs.update(ctx, &mut self.children, &self.catches);
         self.take_back_reraised(ctx);
         match res {
             Some(tv) if !self.module => self.resident.set(tv),
-            _ if self.module => TagValue::phantom_ref(),
-            _ => self.resident.ride(),
+            _ => TagValue::phantom_ref(),
         }
     }
 
@@ -1981,10 +1946,11 @@ pub struct ConnectDeref<R: Rt, E: UserEvent> {
     /// so a moving place writes where its key names then.
     pub(super) cell: Option<BindId>,
     pub(super) top_id: ExprId,
-    /// The RHS fired before the reference arrived: its first target lands
-    /// it. A reference that arrived naming no place (a key that is bottom)
-    /// drops the write, as any operation drops a bottom input.
-    pending: bool,
+    /// The value the RHS wrote before the reference arrived: its first
+    /// target lands it. A reference that arrived naming no place (a key
+    /// that is bottom) drops the write, as any operation drops a bottom
+    /// input.
+    pending: Option<Value>,
     slept: WakeBit,
 }
 
@@ -2004,7 +1970,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             src_id,
             cell: None,
             top_id,
-            pending: false,
+            pending: None,
             slept: WakeBit::default(),
         }))
     }
@@ -2040,7 +2006,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             src_id,
             cell: None,
             top_id,
-            pending: false,
+            pending: None,
             slept: WakeBit::default(),
         }))
     }
@@ -2052,7 +2018,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     }
 }
 
-// CR claude for claude: [perf/medium] ConnectDeref has no `fuse`, and neither do Deref
+// XCR claude for claude: [perf/medium] ConnectDeref has no `fuse`, and neither do Deref
 // and ByRef, so the right side of `*r <- e`, the child of `*e` and a place key never
 // get a region pass: a pure call there stays in the node-walk, where `v <- e`
 // (Connect::fuse) fuses it. A `#[native]` in those positions is refused as "a position
@@ -2061,6 +2027,13 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
 // ByRef), as Connect does. probe:
 // design/review-2026-10-26/repro/x-node-contract-connectderef-no-fuse.gx
 // (x-node-contract-02)
+// 2026-10-27 claude: ConnectDeref::fuse fuses its RHS, Deref::fuse its child and
+// ByRef::fuse its referent through fusion::fuse_parts; a place's keys fuse as parts
+// and its root only descends (Place::fuse), so root_place still finds the Ref or Deref
+// it downcasts. Pin: lang::byref::native_under_references (#[native] on a pure call in
+// each of the four positions; without the fuse methods each position is refused as 'a
+// position the fusion pass cannot check'). fusecheck counts may rise for pins writing
+// *r <- f(..).
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         f(&self.rhs)
@@ -2072,7 +2045,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
 
     /// `target` is resolved at update: a resolved one is runtime state.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if self.cell.is_some() || self.pending {
+        if self.cell.is_some() || self.pending.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         put_tag(NodeTag::ConnectDeref, buf);
@@ -2086,10 +2059,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         // a fired RHS writes; a write before the reference arrived lands at
         // its first target; a bottom RHS or address never writes
         let woke = self.slept.take();
-        let (rhs_fired, rhs_val) = {
+        let written = {
             let tv = self.rhs.update(ctx);
             let t = tv.tag();
-            (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
+            (t.is_fired() && !t.is_bottom()).then(|| tv.value_cloned())
         };
         if let crate::branch::RtView::Fork(f) = &ctx.rt {
             f.note_read(self.src_id);
@@ -2111,7 +2084,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 addressless = self.cell.is_none();
             }
         }
-        // CR claude for claude: [bug/medium] A write made before the reference first
+        // XCR claude for claude: [bug/medium] A write made before the reference first
         // arrives is kept only as a flag. It is then landed with the RHS's value in the
         // arrival cycle, if that value is not bottom. An event RHS is bottom by then,
         // so the write never lands, though CLAUDE.md and design/place_references.md say
@@ -2120,10 +2093,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         // whatever the RHS is then. Pin the event-RHS case in lang::byref. probe:
         // design/review-2026-10-26/repro/x-engine-firing-prearrival-write-dropped.gx
         // (x-engine-firing-04)
-        self.pending = !addressless && (self.pending || rhs_fired);
-        if self.pending
-            && let Some(v) = rhs_val
-            && let Some(cell) = self.cell
+        // 2026-10-27 claude: ConnectDeref::pending now holds the written value
+        // (Option<Value>): a fired, non-bottom RHS replaces it, a reference arriving
+        // addressless drops it, and the first cell lands it whatever the RHS is then. A
+        // RHS that fired bottom no longer leaves a flag that a later stale value would
+        // land. Pin: lang::byref::event_write_before_reference_arrives (the probe's
+        // shape; times out in all four modes with the flag restored).
+        if addressless {
+            self.pending = None;
+        } else if written.is_some() {
+            self.pending = written;
+        }
+        if let Some(cell) = self.cell
+            && let Some(v) = self.pending.take()
         {
             match ctx.write_target(cell) {
                 Some(WriteTarget::Bind(id)) => ctx.rt.set_var(id, v),
@@ -2132,7 +2114,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 }
                 None => (),
             }
-            self.pending = false;
         }
         TagValue::phantom_ref()
     }
@@ -2158,6 +2139,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.rhs.sleep(ctx);
+    }
+
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.rhs], ctx)
     }
 
     // The target's type is its binding's row: the write was judged in
@@ -2569,18 +2554,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 enum Banking {
     /// `~!`: the trigger produces bottom and banks nothing.
     Strict,
-    /// `~`: a trigger that finds the RHS absent is banked, and what is
-    /// owed is paid through the private `id` at the RHS's value.
-    // CR claude for claude: [dead/low] Under Owed::One the payment variable is dead:
-    // `owed` is at most 1 and is answered from the held argument in the cycle the
-    // argument arrives, so set_var(id) never runs and `var` is never Some. Yet every
-    // `~` mints this BindId, records and registers a read of it (record_ref,
-    // Refs::read, release_var) and images it. Give One a `pending: bool` with no id and
-    // keep the id for Owed::Each alone. lang::fusion::deleted_sample_releases_store
-    // still says "one is answered, the other is paid", but nothing is paid through the
-    // variable now, so its store check covers only `v` and `t`: move it to a seqq body
-    // or drop the Sample claim. Found by reading; not run. (x-seq-sampling-07)
-    Debt { owed: u64, each: Owed, id: BindId },
+    /// `~`: one answer is owed however many triggers found the RHS
+    /// absent, given from the held RHS in the cycle it arrives.
+    One { owed: bool },
+    /// `BinOp::BankedSample` (the `seqq` request queue): an answer per
+    /// trigger. The first is given from the held RHS; the rest are paid
+    /// through `pay`, one a cycle.
+    Each { owed: u64, pay: Payments },
+}
+
+/// The private variable a [`Banking::Each`] sample pays through.
+#[derive(Debug)]
+struct Payments {
+    id: BindId,
+    /// Paid through `id` and not yet received.
+    sent: u64,
 }
 
 /// What a banking sample owes the triggers that found its argument absent.
@@ -2612,15 +2600,12 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let each = match bool::decode(buf)? {
-            true => Owed::Each,
-            false => Owed::One,
-        };
-        let banking = match Option::<BindId>::decode(buf)? {
+        let banking = match Option::<Option<BindId>>::decode(buf)? {
             None => Banking::Strict,
-            Some(id) => {
+            Some(None) => Banking::One { owed: false },
+            Some(Some(id)) => {
                 ctx.record_ref(id, top_id);
-                Banking::Debt { owed: 0, each, id }
+                Banking::Each { owed: 0, pay: Payments { id, sent: 0 } }
             }
         };
         let trigger = decode_node(ctx, buf)?;
@@ -2648,10 +2633,11 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
     ) -> Result<Node<R, E>> {
         let banking = match owed {
             None => Banking::Strict,
-            Some(each) => {
+            Some(Owed::One) => Banking::One { owed: false },
+            Some(Owed::Each) => {
                 let id = BindId::new();
                 ctx.record_ref(id, top_id);
-                Banking::Debt { owed: 0, each, id }
+                Banking::Each { owed: 0, pay: Payments { id, sent: 0 } }
             }
         };
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
@@ -2668,11 +2654,11 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         }))
     }
 
-    /// The debt's payment variable; `None` under `~!`.
-    fn debt_id(&self) -> Option<BindId> {
+    /// The payment variable of a [`Banking::Each`] sample.
+    fn pay_id(&self) -> Option<BindId> {
         match &self.banking {
-            Banking::Strict => None,
-            Banking::Debt { id, .. } => Some(*id),
+            Banking::Strict | Banking::One { .. } => None,
+            Banking::Each { pay, .. } => Some(pay.id),
         }
     }
 }
@@ -2693,8 +2679,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         self.top_id.encode(buf)?;
-        matches!(self.banking, Banking::Debt { each: Owed::Each, .. }).encode(buf)?;
-        self.debt_id().encode(buf)?;
+        let banking = match &self.banking {
+            Banking::Strict => None,
+            Banking::One { owed: false } => Some(None),
+            Banking::Each { owed: 0, pay } if pay.sent == 0 => Some(Some(pay.id)),
+            Banking::One { .. } | Banking::Each { .. } => {
+                return Err(PackError::Application(image::NOT_QUIESCENT));
+            }
+        };
+        banking.encode(buf)?;
         self.trigger.image_encode(buf)?;
         self.arg.image_encode(buf)
     }
@@ -2727,7 +2720,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // eric.
         let fired = self.trigger.update(ctx).tag().is_fired();
         self.arg.update(ctx);
-        let (triggered, id) = match &mut self.banking {
+        let (mut owed, pay_id) = match &mut self.banking {
             Banking::Strict => {
                 return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
                     (true, Some(v), false) => {
@@ -2737,21 +2730,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
                     (false, _, _) => self.resident.ride(),
                 };
             }
-            Banking::Debt { owed, each, id } => match (fired, each) {
-                (true, Owed::One) => {
-                    *owed = 1;
-                    (owed, *id)
-                }
-                (true, Owed::Each) => {
-                    *owed += 1;
-                    (owed, *id)
-                }
-                (false, _) => (owed, *id),
-            },
+            Banking::One { owed } => (u64::from(mem::take(owed) || fired), None),
+            Banking::Each { owed, pay } => {
+                (mem::take(owed) + u64::from(fired), Some(pay.id))
+            }
         };
-        let var = ctx.event.variables.get(&id).cloned();
+        let var = pay_id.and_then(|id| ctx.event.variables.get(&id).cloned());
         // a banked trigger is answered from the held arg this cycle; the
-        // rest of the debt is paid through `id`
+        // rest of the debt is paid through `pay`
         let answered = match &self.arg.value {
             // CR claude for claude: [bug/medium] A trigger that finds the argument
             // bottom after it once had a value is answered here from the stale held
@@ -2767,17 +2753,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             // self.arg.tag.is_bottom()` arm. Pin both shapes. probe:
             // design/review-2026-10-26/repro/c-node-mod-bank-after-bottom.gx Also
             // reported as (tests-lang-rest-b-01). (c-node-mod-01)
-            Some(v) if *triggered > 0 && var.is_none() => {
-                *triggered -= 1;
+            Some(v) if owed > 0 && var.is_none() => {
+                owed -= 1;
                 Some(v)
             }
             _ => None,
         };
+        let mut paid = 0;
         if let Some(v) = &self.arg.value
             && !self.arg.tag.is_bottom()
+            && let Some(id) = pay_id
         {
-            for _ in 0..mem::take(triggered) {
+            paid = mem::take(&mut owed);
+            for _ in 0..paid {
                 ctx.rt.set_var(id, v.clone());
+            }
+        }
+        match &mut self.banking {
+            Banking::Strict => (),
+            Banking::One { owed: o } => *o = owed > 0,
+            Banking::Each { owed: o, pay } => {
+                *o = owed;
+                pay.sent = pay.sent + paid - u64::from(var.is_some());
             }
         }
         match (answered, var) {
@@ -2817,7 +2814,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(id) = self.debt_id() {
+        if let Some(id) = self.pay_id() {
             ctx.release_var(id, self.top_id);
         }
         self.arg.node.delete(ctx);
@@ -2834,7 +2831,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     // that a banked trigger outlives its run and document it. probe:
     // design/review-2026-10-26/repro/x-seq-sampling-bank-survives-run.gx
     // (x-seq-sampling-04)
-    // CR claude for claude: [bug/medium] A banked sample under Owed::Each (seqq's
+    // XCR claude for claude: [bug/medium] A banked sample under Owed::Each (seqq's
     // request queue) sends all but one payment of a backlog through `id` with set_var,
     // one per cycle. This sleep takes none of them back: payments that land while the
     // arm sleeps are missed, and the wake's catch-up re-raises the variable once. A
@@ -2844,7 +2841,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     // InFlight::take_back. probe:
     // design/review-2026-10-26/repro/x-node-contract-banked-sample-sleep.gx
     // (x-node-contract-01)
+    // 2026-10-27 claude: Banking::Each's Payments counts what it paid through its id
+    // and has not received; Sample::sleep re-mints the id (release, ref a fresh one)
+    // and adds that count back to owed, so the wake answers one from the held argument
+    // and pays the rest again. Pin: lang::seqq::banked_requests_survive_a_sleep (the
+    // probe's shape on a step counter: four runs; two with the sleep's take-back
+    // removed, all four modes). Image format 90 (Sample's banking encoding changed with
+    // x-seq-sampling-07).
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // what was paid and not yet received is owed again under a fresh
+        // id, so a payment landing while asleep is not lost
+        if let Banking::Each { owed, pay } = &mut self.banking
+            && pay.sent > 0
+        {
+            ctx.release_var(pay.id, self.top_id);
+            pay.id = BindId::new();
+            ctx.ref_var(pay.id, self.top_id);
+            *owed += mem::take(&mut pay.sent);
+        }
         self.arg.sleep(ctx);
         self.trigger.sleep(ctx);
     }
@@ -2862,7 +2876,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        if let Some(id) = self.debt_id() {
+        if let Some(id) = self.pay_id() {
             refs.read(id);
         }
         refs.banked += 1;

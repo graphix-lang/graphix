@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, ParMode, PendingImport, PrintFlag, Refs,
-    Rt, Saved, Scope, Tag, TagValue, Update, UserEvent, View,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, PrintFlag, Refs, Rt, Saved,
+    Scope, Tag, TagValue, Update, UserEvent, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -1452,13 +1452,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     ctx.event.variables.insert(*inner, tv);
                 }
             }
-            if self.nodes.len() > 1 && ctx.fork_mode() != ParMode::Off {
-                self.runs.update(ctx, &mut self.nodes, &self.catches);
-            } else {
-                for i in super::evaluation_order(self.nodes.len(), &self.catches) {
-                    let _ = self.nodes[i].update(ctx);
-                }
-            }
+            self.runs.update(ctx, &mut self.nodes, &self.catches);
         });
         // a prime is for the fresh body alone: left, it would fire readers
         // later in the cycle, and a forked merge would requeue it

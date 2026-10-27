@@ -905,14 +905,15 @@ async fn failed_statement_releases_refs() -> Result<()> {
     Ok(())
 }
 
-// A `~` that paid banked debt through its private variable takes that
-// variable's store entry with it when its slot is deleted: two triggers
-// bank before `v` arrives, one is answered, the other is paid.
+// A seqq's request queue that paid banked requests through its private
+// variable takes that variable's store entry with it when its slot is
+// deleted: two requests bank before `v` arrives, one is answered, the
+// other is paid.
 #[tokio::test(flavor = "current_thread")]
 async fn deleted_sample_releases_store() -> Result<()> {
     let (bottoms, peak) = churn(
         "array::map(arr, |x| { let v = never(); v <- x; let t = never(); \
-         t <- x; any(x, t) ~ v })",
+         t <- x; seqq any(x, t) { v } })",
         4,
         3,
         Duration::from_millis(50),
