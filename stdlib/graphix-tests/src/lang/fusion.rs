@@ -2268,6 +2268,14 @@ run!(native_names_the_blocker_over_a_fused_argument, r#"{
     #[native] f({a: g(x), b: g(x)})
 }"#, refused("builtin `uniq` has no fast-call entry"); FuseExpect::None; jit_only);
 
+// A call whose function is a run-time value is refused as one, printed
+// without its attributes.
+run!(native_names_a_call_with_no_static_callee, r#"{
+    let f: fn(x: i64) -> i64 = |x| x + 1;
+    f <- |x| x * 2;
+    #[native] f(2)
+}"#, refused("call `f(2)` has no static callee"); FuseExpect::None; jit_only);
+
 // `#[native]` on a `<-` right side makes it a region of its own, as on a
 // let initializer, whatever it calls.
 run!(native_on_a_connect_right_side, r#"{

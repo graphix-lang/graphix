@@ -95,14 +95,30 @@ pub(crate) fn deliver_owed<R: Rt, E: UserEvent>(
     let mut r = Refs::default();
     fill(&mut r);
     for id in r.refed.difference(&r.bound) {
-        if owed(ctx, id)
-            && let Some((tv, _)) = ctx.rt.store_get(id)
-        {
-            let fired = TagValue::fired(tv.value_cloned());
-            injected.push((*id, ctx.event.variables.put(*id, fired)));
+        if owed(ctx, id) {
+            inject(ctx, *id, &mut injected);
         }
     }
     injected
+}
+
+/// Deliver one catch-up fire of `id` at its current value into
+/// `injected`, unless it fires live this cycle (a live fire delivers
+/// itself), is bottom (a bottom input is bottom at the wake) or never
+/// delivered.
+pub(crate) fn inject<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    id: BindId,
+    injected: &mut Injected,
+) {
+    let v = match read_var(ctx, &id) {
+        Some(VarRead::Delivered(tv)) if tv.tag().triggers() => return,
+        Some(VarRead::Delivered(tv) | VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
+            tv.value_cloned()
+        }
+        _ => return,
+    };
+    injected.push((id, ctx.event.variables.put(id, TagValue::fired(v))));
 }
 
 /// Wake-catch-up fire tracking (design/wake_catchup.md): one fire bit
@@ -547,20 +563,7 @@ impl TrackedFires {
             pending.iter().filter(|id| set.contains(id)).copied().collect();
         for id in read {
             pending.remove(&id);
-            let standing = match read_var(ctx, &id) {
-                // a live fire delivers itself
-                Some(VarRead::Delivered(tv)) if tv.tag().triggers() => None,
-                Some(VarRead::Delivered(tv) | VarRead::Standing(tv))
-                    if !tv.tag().is_bottom() =>
-                {
-                    Some(tv.value_cloned())
-                }
-                _ => None,
-            };
-            if let Some(v) = standing {
-                let prior = ctx.event.variables.put(id, TagValue::fired(v));
-                injected.push((id, prior));
-            }
+            inject(ctx, id, &mut injected);
         }
         injected
     }

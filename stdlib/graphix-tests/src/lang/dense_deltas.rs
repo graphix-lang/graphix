@@ -212,6 +212,26 @@ async fn callee_back_from_bottom(mode: Mode) -> Result<()> {
 
 modes!(callee_back_from_bottom);
 
+// An argument that went bottom while the function was bottom is bottom
+// when the function returns: the call stays bottom, never `[null]`.
+const CALLEE_BACK_ARG_STILL_BOTTOM: &str = r#"{
+  let c = array::iter([0, 1, 2, 3]);
+  let k = 5;
+  k <- select c { 0 => 0, _ => never() };
+  let y = select k { 0 => never(), k => k };
+  let f = |b: i64| [b];
+  let h = select c { 1 => never(), _ => f };
+  h(y)
+}"#;
+
+async fn callee_back_arg_still_bottom(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(CALLEE_BACK_ARG_STILL_BOTTOM, mode).await?;
+    assert_eq!(values, vec![Value::Array([Value::I64(5)].into())]);
+    Ok(())
+}
+
+modes!(callee_back_arg_still_bottom);
+
 // A stateful callee whose function value is bottom for a while, or a
 // collection slot whose source is, pauses as the select-arm twin's body
 // does: its `<-` state survives, and the input that fired meanwhile is

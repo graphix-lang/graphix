@@ -452,20 +452,34 @@ fn with_table(image: &Bytes, rewrite: impl FnOnce(&[u8]) -> Vec<u8>) -> Bytes {
     out
 }
 
-/// `image` with its first instance's offset `at`.
-fn with_first_instance_at(image: &Bytes, at: u64) -> Bytes {
+/// The number of instances `image`'s table holds.
+fn instance_count(image: &Bytes) -> usize {
+    let (_, _, table_at, counts_at) = image_offsets(image);
+    let mut table = &image[table_at..counts_at];
+    netidx_core::pack::decode_varint(&mut table).unwrap() as usize
+}
+
+/// `image` with its `k`th instance's offset `at` of the offset it had.
+fn with_instance_at(image: &Bytes, k: usize, at: impl FnOnce(u64) -> u64) -> Bytes {
     use netidx_core::pack::{decode_varint, encode_varint};
     let (_, heap_at, table_at, _) = image_offsets(image);
     assert!((heap_at as usize) < table_at);
     with_table(image, |mut table| {
         let n = decode_varint(&mut table).unwrap();
-        assert!(n > 0, "the program image holds an instance in its heap");
-        let id = decode_varint(&mut table).unwrap();
-        decode_varint(&mut table).unwrap();
+        assert!(k < n as usize, "the program image holds {n} instances, not {}", k + 1);
         let mut rewritten = Vec::new();
         encode_varint(n, &mut rewritten);
-        encode_varint(id, &mut rewritten);
-        encode_varint(at, &mut rewritten);
+        for _ in 0..k {
+            for _ in 0..2 {
+                encode_varint(decode_varint(&mut table).unwrap(), &mut rewritten);
+            }
+            let len = decode_varint(&mut table).unwrap();
+            encode_varint(len, &mut rewritten);
+            rewritten.extend_from_slice(&table[..len as usize]);
+            table = &table[len as usize..];
+        }
+        encode_varint(decode_varint(&mut table).unwrap(), &mut rewritten);
+        encode_varint(at(decode_varint(&mut table).unwrap()), &mut rewritten);
         rewritten.extend_from_slice(table);
         rewritten
     })
@@ -714,10 +728,53 @@ async fn an_instance_outside_the_heap_is_refused() -> Result<()> {
         session(PROGRAM, None, ParMode::from_env()).await?;
     let image = image.expect("the cold run wrote its image");
     let past_the_end = image.len() as u64 + 1000;
-    let bad = with_first_instance_at(&image, past_the_end);
+    let bad = with_instance_at(&image, 0, |_| past_the_end);
     let Session { values, restored, .. } =
         session_with(PROGRAM, Run::WarmOrCold(bad), ParMode::from_env(), None).await?;
     assert!(!restored, "an image with an instance past its end restored");
+    assert_eq!(cold_values, values);
+    Ok(())
+}
+
+/// An instance whose bytes do not decode fails its site's first dispatch
+/// alone: the site lets go of the reads it held for the instance and
+/// binds its callee afresh, to the values the cold run made.
+#[tokio::test]
+async fn an_instance_that_does_not_decode_binds_afresh() -> Result<()> {
+    let Session { values: cold_values, image, .. } =
+        session(PROGRAM, None, ParMode::from_env()).await?;
+    let image = image.expect("the cold run wrote its image");
+    for k in 0..instance_count(&image) {
+        let bad = with_instance_at(&image, k, |at| at + 1);
+        let Session { values, restored, .. } =
+            session_with(PROGRAM, Run::WarmOrCold(bad), ParMode::from_env(), None)
+                .await?;
+        assert!(restored, "instance {k}: the image was refused at its read");
+        assert_eq!(cold_values, values, "instance {k}");
+    }
+    Ok(())
+}
+
+/// An image that fails to read after its roots decoded (here the heap
+/// does not start where the roots end) deletes them, the reads its imaged
+/// call sites hold not yet registered, and the session runs cold.
+#[tokio::test]
+async fn a_read_failing_after_the_roots_runs_cold() -> Result<()> {
+    let Session { values: cold_values, image, .. } =
+        session(PROGRAM, None, ParMode::from_env()).await?;
+    let image = image.expect("the cold run wrote its image");
+    let (header, heap_at, _, _) = image_offsets(&image);
+    let mut bad = image.to_vec();
+    bad[header..header + 8].copy_from_slice(&(heap_at - 1).to_be_bytes());
+    graphix_compiler::image::seal(&mut bad, SEAL_AT);
+    let Session { values, restored, .. } = session_with(
+        PROGRAM,
+        Run::WarmOrCold(Bytes::from(bad)),
+        ParMode::from_env(),
+        None,
+    )
+    .await?;
+    assert!(!restored, "an image whose heap is misplaced restored");
     assert_eq!(cold_values, values);
     Ok(())
 }

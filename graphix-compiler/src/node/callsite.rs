@@ -1319,7 +1319,8 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// `View::Birth`.
     Static { apply: Box<dyn Apply<R, E>>, first_update: bool },
     /// A statically bound instance the image holds in its heap, decoded
-    /// by the first dispatch; `refs` is the body's summary until then.
+    /// by the first dispatch; `refs` is the body's summary until then,
+    /// whose reads the site holds registered while it is imaged.
     Imaged { instance: LambdaInstanceId, first_update: bool, refs: ImagedRefs },
 }
 
@@ -1446,9 +1447,6 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Absent>,
     pub(crate) fork: ForkSite,
-    /// The reads of an imaged tree this site registered when it decoded
-    /// outside every heap instance, released at delete.
-    held: Option<Box<[BindId]>>,
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -1502,7 +1500,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             defaults_open: true,
             absent: None,
             fork: ForkSite::default(),
-            held: None,
         }
     }
 
@@ -2662,6 +2659,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             && let Err(e) = self.materialize(ctx)
         {
             warn!("decoding the instance of {}: {e:#}; resolving it afresh", self.spec);
+            self.release_held(ctx);
             self.callee = Callee::DynamicUnbound;
         }
         // a first bind reads every quiet production; a bound site's rebind
@@ -2961,7 +2959,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Release what this site registered for an imaged tree.
-    // CR claude for claude: [risk/low] An imaged site's held reads are recorded with
+    // XCR claude for claude: [risk/low] An imaged site's held reads are recorded with
     // record_ref at decode, so until apply_deferred runs they are pending, not
     // registered. This function unregisters them with ctx.rt.unref_var directly. On a
     // failed decode the deletes run before drop_deferred (read_registration deletes the
@@ -2970,11 +2968,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     // ('unref_var of an unregistered') instead of starting cold. Fix: call
     // ctx.unref_var(*id, self.top_id), which cancels a pending reference and
     // unregisters a registered one. Found by reading; not run. (c-image-03)
-    fn release_held(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(held) = self.held.take() {
-            for id in held.iter() {
-                let reader = ctx.reader(self.top_id);
-                ctx.rt.unref_var(*id, reader)
+    // 2026-10-26 claude: release_held now calls ctx.unref_var(id, top_id), which
+    // cancels a pending reference and unregisters a registered one. Pin:
+    // lang::image::a_read_failing_after_the_roots_runs_cold (a heap offset one short
+    // fails the read after the roots decoded; with rt.unref_var it panics 'unref_var of
+    // an unregistered').
+    fn release_held(&self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Callee::Imaged { instance, refs, .. } = &self.callee {
+            for id in refs.flat(*instance).refed.iter() {
+                ctx.unref_var(*id, self.top_id)
             }
         }
     }
@@ -3021,13 +3023,22 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 Box::new(g)
             }
             Err(e) => {
-                // CR claude for claude: [structure/low] A failed decode returns here
+                // XCR claude for claude: [structure/low] A failed decode returns here
                 // with `held` still registered. update_call then binds the site
                 // dynamically, and the imaged subtree's flattened reads keep marking
                 // this site's boundary until it is deleted. `held` means something only
                 // while the callee is Imaged: move it into Callee::Imaged and release
                 // it on both exits of materialize, so the field cannot outlive the
                 // state it belongs to. Found by reading; not run. (c-callsite-06)
+                // 2026-10-26 claude: The held field is gone: an imaged site's held
+                // reads are its Callee::Imaged refs' flat set, registered at decode and
+                // released (release_held) wherever the callee leaves Imaged:
+                // materialize's success, update_call's failure branch before it resets
+                // to DynamicUnbound, and delete. No behavioral pin (a leftover
+                // registration only marks a boundary);
+                // lang::image::an_instance_that_does_not_decode_binds_afresh now drives
+                // the failed-materialize path over every instance and holds it to the
+                // cold values.
                 ctx.fusion.forget_restored_since(mark);
                 ctx.drop_deferred();
                 return Err(e);
@@ -3124,13 +3135,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
         // needed. Take the fix: memoize the flat reads per instance in the shared
         // table and pass the held set down at materialize.
+        // 2026-10-26 claude: Still quadratic: lane debug build, --no-fusion, warm 0.41
+        // s at N=1000 and 1.57 s at N=2000 (cold 1.2 s / 2.0 s on a loaded host). Not
+        // fixed in L3-b03. Memoizing the flat set per instance in the shared table
+        // does not remove the square: each nested imaged site must still register its
+        // whole subtree's reads under its own reader (its boundary is the one a write
+        // must mark for the walk to reach it), so each level pays O(subtree) in
+        // record_ref, apply_deferred and the release. A linear shape has to avoid
+        // registering a nested site's held set at all when that site materializes
+        // during its parent's first body update (every level of this chain does), e.g.
+        // register a nested site's held set only once the parent's first update leaves
+        // it still imaged, or have a site hold one registration per held set rather
+        // than one per read. Either is a change to how imaged reads sit per boundary,
+        // so it wants its own design pass. The held field is now derived from
+        // Callee::Imaged (c-callsite-06), so the doc remark in this CR no longer
+        // applies.
         if let Callee::Imaged { instance, refs, .. } = &site.callee {
-            let held: Box<[BindId]> =
-                refs.flat(*instance).refed.iter().copied().collect();
-            for id in held.iter() {
+            for id in refs.flat(*instance).refed.iter() {
                 ctx.record_ref(*id, top_id)
             }
-            site.held = Some(held);
         }
         Ok(Node::new(CallNode::Call(site)))
     }
@@ -3691,7 +3714,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     format_compact!(
                         "emit_clif: lambda call site `{}` not discovered — \
                          subtree node-walks",
-                        self.spec
+                        self.spec.kind
                     ),
                 ));
             }
@@ -3709,7 +3732,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // A `MarshalArg::Call(i)` indexes the source-order arg list, which
         // spans labeled and positional args; `Default(name)` is this site's
         // compiled default node.
-        // CR claude for claude: [readability/low] Every unresolved call reaches this
+        // XCR claude for claude: [readability/low] Every unresolved call reaches this
         // point, so a call with no static target (a `<-`-written binding, a returned
         // lambda, a destructured rebinding) is reported as "builtin call site .. not
         // discovered", and the quoted spec includes the `#[native]` attribute and a
@@ -3718,7 +3741,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // probe:
         // design/review-2026-10-26/repro/tests-functions-native-builtin-misnamed.gx
         // (tests-functions-07)
-        // CR claude for claude: [readability/medium] Every site with an unbound callee
+        // 2026-10-26 claude: Fixed with its twin c-callsite-03: a call with no static
+        // callee gets its own blocker before the builtin lookup, and the call prints
+        // without its attributes (spec.kind). Pin:
+        // lang::fusion::native_names_a_call_with_no_static_callee, which matches 'call
+        // `f(2)` has no static callee'.
+        // XCR claude for claude: [readability/medium] Every site with an unbound callee
         // ends here, so a call whose function is a run-time value (a `<-` target, a
         // select) is reported as 'builtin call site ... not discovered'. `#[native]
         // h(y)` with `h <- ..` shows that text to the user, and FusionStats.failed
@@ -3727,14 +3755,31 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // the function is a run-time value'. probe:
         // design/review-2026-10-26/repro/c-callsite-native-dynamic-call-blames-builtin.gx
         // (c-callsite-03)
+        // 2026-10-26 claude: CallSite::emit_clif now refuses a site with no static callee
+        // and no builtin site info as 'call .. has no static callee: its function is a
+        // run-time value, so it dispatches at run time', ahead of the builtin text, and
+        // prints every blocker's call as spec.kind (no attributes, no line breaks). The
+        // fuzzer's Fuse::Clean noise list takes the new text. Pin:
+        // lang::fusion::native_names_a_call_with_no_static_callee (twin:
+        // tests-functions-07).
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
+            None if self.callee.apply().is_none() => {
+                return Err(fusion::blocker(
+                    &self.spec,
+                    format_compact!(
+                        "emit_clif: call `{}` has no static callee: its function is \
+                         a run-time value, so it dispatches at run time",
+                        self.spec.kind
+                    ),
+                ));
+            }
             None => {
                 return Err(fusion::blocker(
                     &self.spec,
                     format_compact!(
                         "emit_clif: builtin call site `{}` not discovered — doesn't fuse",
-                        self.spec
+                        self.spec.kind
                     ),
                 ));
             }
@@ -3818,8 +3863,7 @@ impl Absent {
     ) -> T {
         let mut injected = super::wake::Injected::new();
         for id in self.missed.drain(..) {
-            let live = ctx.event.variables.get(&id).is_some_and(|tv| tv.tag().triggers());
-            // CR claude for claude: [bug/high] An argument that went bottom while the
+            // XCR claude for claude: [bug/high] An argument that went bottom while the
             // function was bottom is caught up here as a FIRED null. A bottom is stored
             // as Null with a bottom tag, and this injection never checks
             // `tv.tag().is_bottom()`. With `h = select c { 1 => never(), _ => f }`, `f
@@ -3830,10 +3874,13 @@ impl Absent {
             // arguments through one shared catch-up helper. probe:
             // design/review-2026-10-26/repro/c-callsite-absent-wake-injects-bottom-as-null.gx
             // (c-callsite-01)
-            if !live && let Some((tv, _)) = ctx.rt.store_get(&id) {
-                let catch_up = TagValue::tagged(tv.value_cloned(), Tag::FIRED);
-                injected.push((id, ctx.event.variables.put(id, catch_up)));
-            }
+            // 2026-10-26 claude: Absent::wake, TrackedFires::deliver and deliver_owed now
+            // share wake::inject, which delivers no catch-up fire for a bottom, absent or
+            // live-firing input, so an argument that went bottom while the function was
+            // bottom stays bottom at the wake. Pin:
+            // lang::dense_deltas::callee_back_arg_still_bottom (fails as [[5], [null]] with
+            // the old injection).
+            super::wake::inject(ctx, id, &mut injected);
         }
         let captured = &mut self.captured;
         let r = ctx.under(View::Wake, |ctx| {

@@ -6440,7 +6440,8 @@ mod tests {
                     reason.contains("node does not emit CLIF")
                         || reason.contains("module statement is structure")
                         || reason.contains("function-valued let")
-                        || reason.contains("not discovered"),
+                        || reason.contains("not discovered")
+                        || reason.contains("no static callee"),
                     "expected `{code}` to fuse cleanly under the JIT \
                      but {id:?} hit a real blocker: {reason}"
                 );
