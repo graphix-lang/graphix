@@ -954,6 +954,39 @@ fn store_production<R: Rt>(ctx: &mut ExecCtx<'_, R>, id: BindId, tv: &TagValue) 
 }
 
 impl<R: Rt> Module<R> {
+    fn with(
+        spec: Arc<Expr>,
+        flags: BitFlags<CFlag>,
+        body: Body<R>,
+        env: Lexical,
+        sig_binds: Map<CompactString, BindId>,
+        sig: Sig,
+        scope: Scope,
+        proxy: Vec<Proxy>,
+        nodes: Box<[Node<R>]>,
+        catches: Box<[usize]>,
+        runs: Runs,
+        top_id: ExprId,
+        task: TaskId,
+    ) -> Self {
+        Self {
+            spec,
+            flags,
+            body,
+            env,
+            sig_binds,
+            sig,
+            scope,
+            proxy,
+            nodes,
+            catches,
+            runs,
+            top_id,
+            task,
+            resident: TagValue::phantom(),
+        }
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -982,7 +1015,7 @@ impl<R: Rt> Module<R> {
             ctx.record_ref(*inner, top_id);
             ctx.record_ref(*outer, top_id);
         }
-        Ok(Node::new(Self {
+        Ok(Node::new(Self::with(
             spec,
             flags,
             body,
@@ -995,9 +1028,8 @@ impl<R: Rt> Module<R> {
             catches,
             runs,
             top_id,
-            task: TaskId::OUTSIDE,
-            resident: TagValue::phantom(),
-        }))
+            TaskId::OUTSIDE,
+        )))
     }
 
     pub(super) fn compile_dynamic(
@@ -1037,22 +1069,22 @@ impl<R: Rt> Module<R> {
                 env.grant_trait(tid)
             }
         }
-        Ok(Node::new(Self {
+        let body = Body::Dynamic { source, sig_env: ctx.env.lexical() };
+        Ok(Node::new(Self::with(
             spec,
             flags,
-            env: env.lexical(),
-            sig_binds: sig_binds(&ctx.env, scope),
+            body,
+            env.lexical(),
+            sig_binds(&ctx.env, scope),
             sig,
-            body: Body::Dynamic { source, sig_env: ctx.env.lexical() },
-            scope: scope.clone(),
-            proxy: Vec::new(),
-            nodes: Box::new([]),
-            catches: Box::new([]),
-            runs: Runs::default(),
+            scope.clone(),
+            Vec::new(),
+            Box::new([]),
+            Box::new([]),
+            Runs::default(),
             top_id,
-            task: TaskId::OUTSIDE,
-            resident: TagValue::phantom(),
-        }))
+            TaskId::OUTSIDE,
+        )))
     }
 
     pub(super) fn compile_static(
@@ -1072,22 +1104,21 @@ impl<R: Rt> Module<R> {
         bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig).with_context(
             || format_compact!("binding signature for module {}", scope.lexical),
         )?;
-        let mut t = Self {
+        let mut t = Self::with(
             spec,
             flags,
+            Body::Static,
             env,
-            sig_binds: sig_binds(&ctx.env, scope),
+            sig_binds(&ctx.env, scope),
             sig,
-            body: Body::Static,
-            scope: scope.clone(),
-            proxy: Vec::new(),
-            nodes: Box::new([]),
-            catches: Box::new([]),
-            runs: Runs::default(),
+            scope.clone(),
+            Vec::new(),
+            Box::new([]),
+            Box::new([]),
+            Runs::default(),
             top_id,
             task,
-            resident: TagValue::phantom(),
-        };
+        );
         let _module = profile::module(&scope.lexical);
         t.compile_inner(ctx, &exprs)
             .with_context(|| format_compact!("compiling module {}", scope.lexical))?;
