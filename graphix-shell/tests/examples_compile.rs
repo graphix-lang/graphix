@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use futures::{StreamExt, stream};
 use graphix_compiler::{
     CFlag,
-    expr::{FilesResolver, Load, Origin, parser},
+    expr::{Load, Origin, parser},
 };
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
@@ -57,10 +57,8 @@ async fn examples_compile() -> Result<()> {
     files.extend(example_files(&root.join("bench"))?);
     let failures: Vec<String> = stream::iter(files)
         .map(|f| async move {
-            let base = f.parent().expect("example has a parent dir").to_path_buf();
             let r = ShellBuilder::<NoExt>::default()
                 .cache(CacheMode::Off)
-                .module_resolvers(vec![FilesResolver::new(base, None)])
                 .enable_flags(CFlag::ExpandSeq.into())
                 .mode(Mode::Check(Load::File(f.clone())))
                 .build()

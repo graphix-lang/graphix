@@ -2,6 +2,7 @@
 //! guarded walks run on heap segments and the parser refuses an AST
 //! deeper than `parser::max_nesting()`, so a deep program is a compile
 //! error. What the parser admits is checked, run with fusion on and off,
+//! run restored from an image, run as a called lambda's body (which fuses)
 //! and formatted.
 //!
 //! Each case runs in a child process on a small worker stack (an
@@ -12,7 +13,7 @@
 use graphix_compiler::{
     BitFlags, CFlag,
     expr::{
-        FilesResolver, Load, Source,
+        Load, Source,
         format::{FormatConfig, SourceKind, format_source},
     },
 };
@@ -20,9 +21,11 @@ use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env, fs,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::SystemTime,
 };
 
 const STACK: usize = 512 * 1024;
@@ -41,12 +44,12 @@ const REJECTED: usize = 100_000;
 /// cannot refuse.
 const FLAT_AT_REJECTED: &[&str] = &["uniontyp", "seqarm"];
 
-/// The deepest nesting of `shape` the parser admits, found by bisection,
-/// so each shape runs as deep as a program may be.
-fn accepted(shape: &str) -> usize {
+/// The deepest nesting of `shape` the parser admits in `mode`, found by
+/// bisection, so each shape runs as deep as a program may be.
+fn accepted(shape: &str, mode: &str) -> usize {
     use graphix_compiler::expr::{Origin, parser};
     let admitted = |d: usize| {
-        let text = arcstr::ArcStr::from(program(shape, d));
+        let text = arcstr::ArcStr::from(source(shape, d, mode));
         let origin = Origin { parent: None, source: Source::Unspecified, text };
         match parser::parse(origin) {
             Ok(_) => true,
@@ -71,8 +74,24 @@ const DEPTH_VAR: &str = "GRAPHIX_DEEP_DEPTH";
 const MODE_VAR: &str = "GRAPHIX_DEEP_MODE";
 
 /// What a child does with the program: check it, run it (fusion on or
-/// off), or format it.
-const MODES: [&str; 4] = ["check", "run", "nofusion", "fmt"];
+/// off), format it, compile it to an image then run it restored from the
+/// image, or run it as the body of a called lambda, which fuses.
+const MODES: [&str; 6] = ["check", "run", "nofusion", "fmt", "image", "twin"];
+
+/// The program a child of `mode` compiles: a twin's typedefs stay at the
+/// top level.
+fn source(shape: &str, d: usize, mode: &str) -> String {
+    let program = program(shape, d);
+    match mode {
+        "twin" => {
+            let (types, body): (Vec<&str>, Vec<&str>) =
+                program.lines().partition(|l| l.starts_with("type "));
+            let types: String = types.iter().map(|t| format!("{t}\n")).collect();
+            format!("{types}let twin = |z| {{\n{};\nz\n}};\ntwin(1)", body.join("\n"))
+        }
+        _ => program,
+    }
+}
 
 /// Exit code the child uses for any other failure where the program must
 /// build and run.
@@ -83,7 +102,7 @@ const RUN: usize = 999;
 
 /// `(name, source)` — one per construct whose nesting recurses somewhere
 /// in the pipeline. Add a case here when you add a recursive construct.
-// CR claude for claude: [test-gap/low] Every nested shape here is top-level code, which
+// XCR claude for claude: [test-gap/low] Every nested shape here is top-level code, which
 // never fuses (only lambdachain sits inside a called lambda). Image mode runs only for
 // FLAT_SHAPES. So the fusion emission walks that recurse per level unguarded
 // (emit_variant_cond calls itself for each nested variant payload) and the nested
@@ -91,6 +110,12 @@ const RUN: usize = 999;
 // emit helper would pass this gate. Fix: give each shape a fused twin (`let f = |z|
 // <shape over z>; f(1)`) in the run modes, and run the nested shapes through the image
 // mode as well. Found by reading; not run. (x-stack-07)
+// 2026-10-26 claude: Every shape now also runs as a twin (its program as the body of a
+// called lambda, typedefs hoisted, which fuses: 'fusion: 1 of 1 attempted regions
+// fused' for the wrapped parens shape) and through the image mode, each at the depth
+// the parser admits for that mode (accepted(shape, mode)). All pass on the 512K stack;
+// the image of the lambda shape needs tests-shell-compiler-01's guard. Pin:
+// deep_nesting_does_not_overflow (slow-tests), modes twin and image.
 fn program(shape: &str, d: usize) -> String {
     match shape {
         "parens" => format!("let x = {}1{}", "(1 + ".repeat(d), ")".repeat(d)),
@@ -188,11 +213,45 @@ fn program(shape: &str, d: usize) -> String {
             format!("let v = 1;\nlet r = {}v{}", "&mut (".repeat(d), ")".repeat(d))
         }
         "catch" => format!("let x = {}1{}", "{ catch(e) e; ".repeat(d), " }".repeat(d)),
+        // CR claude for claude: [perf/medium] Nested try blocks check in about cubic time:
+        // `graphix --check` of this shape takes 1.2 s at depth 125, 2.0 s at 250 and 7.6 s
+        // at 500 (debug), and at its admitted depth of 993 every mode of this test spends
+        // 95 s, the twin 180 s, which is most of the test's run. Find the walk the seq
+        // lowering or its check repeats per enclosing try. Found by timing this test's
+        // children. (seq-try-depth-01)
         "trywith" => format!(
             "seq {{ {}1; 1{} }}",
             "try { 1; ".repeat(d),
             " } with(e) { 0 }".repeat(d)
         ),
+        "live" => format!(
+            "let x = seq {{ until {}true{}; 1 }}",
+            "live(".repeat(d),
+            ")".repeat(d)
+        ),
+        "never" => format!("let x: i64 = {}1{}", "never<i64>(".repeat(d), ")".repeat(d)),
+        "any" => format!("let x = {}1{}", "any(".repeat(d), ")".repeat(d)),
+        "abstract" => format!(
+            "type T = Abstract<[`Z, T]>;\nlet x = {}`Z{}",
+            "T(".repeat(d),
+            ")".repeat(d)
+        ),
+        "tupleidx" => {
+            format!(
+                "let t = {}1{};\nlet x = t{}",
+                "(1, ".repeat(d),
+                ")".repeat(d),
+                ".1".repeat(d)
+            )
+        }
+        "mapidx" => format!(
+            "let m = {}1{};\nlet x = m{}",
+            r#"{"k" => "#.repeat(d),
+            "}".repeat(d),
+            r#"{"k"}$"#.repeat(d)
+        ),
+        "slice" => format!("let a = [1, 2];\nlet x = a{}", "[0..]$".repeat(d)),
+        "qmark" => format!("let x = {}1{}", "cast<i64>(".repeat(d), ")?".repeat(d)),
         "structwith" => format!(
             "let s = {{a: 1}};\nlet x = {}s{}",
             "{(".repeat(d),
@@ -288,13 +347,6 @@ const CHAIN_DEPTH: usize = 10000;
 /// bounds none of it: module resolution recurses once per file.
 const MODCHAIN_DEPTH: usize = 1000;
 
-// CR claude for claude: [test-gap/low] No shape nests these recursive kinds: live(..),
-// never<T>(..), any(..), an abstract's T(..), `.0`, `m{k}`, slices, or `?` (qop writes
-// `$`). Each has its own compile, typecheck, update and image codec. All eight pass
-// today at their admitted depths on a 512K stack (check, run, --no-fusion, warm), but
-// an unguarded recursion added to any of them would go unnoticed here. Add a case for
-// each, as program()'s rule asks. Found by running the eight shapes by hand at their
-// admitted depths on a 512K stack. (tests-shell-compiler-06)
 const SHAPES: &[&str] = &[
     "parens",
     "array",
@@ -336,10 +388,19 @@ const SHAPES: &[&str] = &[
     "catch",
     "trywith",
     "structwith",
+    "live",
+    "never",
+    "any",
+    "abstract",
+    "tupleidx",
+    "mapidx",
+    "slice",
+    "qmark",
 ];
 
-/// What a child may map: a runaway case dies alone, by a signal.
-const CHILD_MEMORY: u64 = 4 << 30;
+/// What a child may map: a runaway case dies alone, by a signal. A runtime
+/// maps about 3 GB, the image mode's two in one process more.
+const CHILD_MEMORY: u64 = 8 << 30;
 
 /// The child half: check, run or format one shape on a small-stack
 /// runtime. Returning at all is the assertion.
@@ -365,10 +426,10 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
             }
         }
         "modnest" => {
-            fs::write(&file, program(shape, depth)).expect("write");
+            fs::write(&file, source(shape, depth, mode)).expect("write");
             fs::write(dir.join("x.gx"), "let k = 1").expect("write");
         }
-        _ => fs::write(&file, program(shape, depth)).expect("write"),
+        _ => fs::write(&file, source(shape, depth, mode)).expect("write"),
     }
     let text = fs::read_to_string(&file).expect("read");
     let refused = |e: &str| {
@@ -413,16 +474,7 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
         let shell = |cache| {
             ShellBuilder::<NoExt>::default()
                 .cache(cache)
-                .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
-                // CR claude for claude: [test-gap/medium] Mode "nofusion" removes
-                // FusionDisabled, which no default flag set holds, so this mode
-                // compiles with fusion on, exactly as "run" does. The deep node-walk
-                // update the off mode is meant to cover is never run for shapes whose
-                // top level fuses, and nested arithmetic at top level does fuse. Use
-                // enable_flags here. probe:
-                // design/review-2026-10-26/repro/shell-deep-nesting-nofusion.gx
-                // (shell-02)
-                .disable_flags(match mode {
+                .enable_flags(match mode {
                     "nofusion" => CFlag::FusionDisabled.into(),
                     _ => BitFlags::empty(),
                 })
@@ -435,10 +487,14 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
         };
         match mode {
             "check" => shell(CacheMode::Off).check().await,
-            // cold, writing the images under the parent's cache, then warm
+            // compiled and written, then restored: a restored program
+            // writes nothing
             "image" => {
-                for _ in 0..2 {
-                    shell(CacheMode::On).run(MainThreadHandle::new().0).await?;
+                shell(CacheMode::Warm).run(MainThreadHandle::new().0).await?;
+                let written = cache_entries();
+                shell(CacheMode::On).run(MainThreadHandle::new().0).await?;
+                if cache_entries() != written {
+                    anyhow::bail!("the second run did not restore the program image")
                 }
                 Ok(())
             }
@@ -455,6 +511,25 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
         eprintln!("{shape}@{depth} {mode}: {e}");
         std::process::exit(FAILED)
     }
+}
+
+/// Every file under this process's image cache, with its creation time:
+/// a load touches an entry's modification time, and a store replaces the
+/// file.
+fn cache_entries() -> BTreeMap<PathBuf, SystemTime> {
+    fn walk(dir: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) {
+        for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let (path, meta) = (e.path(), e.metadata().expect("cache entry metadata"));
+            if meta.is_dir() {
+                walk(&path, out)
+            } else {
+                out.insert(path, meta.created().expect("cache entry birth time"));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(&dirs::cache_dir().expect("a cache dir").join("graphix"), &mut out);
+    out
 }
 
 /// `graphix --check` of `program` finishes, accepted, within `budget`;
@@ -606,16 +681,6 @@ fn a_call_over_a_shared_type_dag_elaborates_in_linear_time() {
 // called at two types, whose kernels' types are DAGs, builds in time
 // linear in the DAG.
 #[test]
-// CR claude for claude: [perf/medium] This pin calls f directly. The same call made
-// from inside another definition (`let g = |b| f(b); g(1)`, a monomorphic `|b: i64|
-// f(b)`, or an `array::map` callback `|b| f(b)`) still doubles per level: 0.17 s at
-// depth 18, 1.8 s at 24 and 3.4 s at 25, while --check stays at 0.04 s.
-// GRAPHIX_NO_SUBST=1 takes depth 24 to 0.1 s, and GRAPHIX_PROFILE_INSTANCES puts the
-// time in the wrapper instance's elaboration (Typecheck1). Some walk on the
-// instance-by-substitution path (InstanceTypes::instance_of, settle, Type::take_row)
-// visits the DAG per path, not per node. Give it the per-node memo the direct path got,
-// and add the wrapper and callback shapes here. Variant of t-tvar-02. probe:
-// design/review-2026-10-26/repro/x-rerun-2-dag-wrapper-exponential.sh (x-rerun-2-03)
 fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
     const DEPTH: usize = 60;
     let mut program = String::from("let f = |a| {\n  let x0 = a;\n");
@@ -629,9 +694,9 @@ fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
 }
 
 /// A pair DAG built through a generic constructor, and one reached
-/// through generic callers, builds in time linear in its depth: the
-/// position and pre-unification walks of a signature take a shared node
-/// once.
+/// through generic callers, a monomorphic one and a collection's
+/// callback, builds in time linear in its depth: the position and
+/// pre-unification walks of a signature take a shared node once.
 #[test]
 fn shared_type_dags_through_generic_calls_build_in_linear_time() {
     const DEPTH: usize = 60;
@@ -648,7 +713,9 @@ fn shared_type_dags_through_generic_calls_build_in_linear_time() {
         body(&|i| format!("mk(x{i})"))
     );
     let callers = format!(
-        "{}let g = |b| f(b);\nlet h = |c| g(c);\nlet r = h(1);\nlet q = h(\"s\");\nsys::exit(0)\n",
+        "{}let g = |b| f(b);\nlet h = |c| g(c);\nlet r = h(1);\nlet q = h(\"s\");\n\
+         let m = |b: i64| f(b);\nlet n = m(1);\nlet a = array::map([1, 2], |b| f(b));\n\
+         sys::exit(0)\n",
         body(&|i| format!("(x{i}, x{i})"))
     );
     for program in [constructor, callers] {
@@ -706,7 +773,7 @@ fn deep_nesting_does_not_overflow() {
             .env(SHAPE_VAR, shape)
             .env(DEPTH_VAR, depth.to_string())
             .env(MODE_VAR, mode)
-            .env("XDG_CACHE_HOME", cache.path())
+            .env("XDG_CACHE_HOME", cache.path().join(format!("{shape}-{depth}-{mode}")))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -715,12 +782,9 @@ fn deep_nesting_does_not_overflow() {
     };
     let cases: Vec<(&str, usize, &str)> = SHAPES
         .iter()
-        .flat_map(|s| {
-            let depth = accepted(s);
-            MODES.map(|m| (*s, depth, m))
-        })
+        .flat_map(|s| MODES.map(|m| (*s, accepted(s, m), m)))
         .chain(SHAPES.iter().map(|s| (*s, REJECTED, "check")))
-        // CR claude for claude: [test-gap/medium] Only FLAT_SHAPES run the "image"
+        // XCR claude for claude: [test-gap/medium] Only FLAT_SHAPES run the "image"
         // mode, so no deeply nested program is ever restored from an image on the 512K
         // stack. Running every SHAPE cold then warm with RUST_MIN_STACK=524288 passes
         // for 39 of them. `lambda` (995 nested literals) aborts on the warm start,
@@ -731,10 +795,15 @@ fn deep_nesting_does_not_overflow() {
         // (tests-shell-compiler-02)
         // 2026-10-26 claude: the lambda shape now runs in image mode too
         // (tests-shell-compiler-01's pin); the other shapes and the restore check remain.
-        .chain(FLAT_SHAPES.iter().flat_map(|s| {
-            MODES.into_iter().chain(["image"]).map(|m| (*s, FLAT_DEPTH, m))
-        }))
-        .chain([("lambda", accepted("lambda"), "image")])
+        // 2026-10-26 claude: MODES holds image for every shape. The image mode compiles and
+        // writes with CacheMode::Warm (a refused write fails it), then runs with
+        // CacheMode::On and fails unless no cache file was replaced, compared by birth time
+        // since a load touches the mtime; each child has its own cache dir. The child's
+        // address-space cap went from 4G to 8G: a runtime maps about 3 GB and two in one
+        // process ran out of mmap for stacker segments, aborting at random. With
+        // tests-shell-compiler-01's guard undone, lambda@995 image aborts (overflowed its
+        // stack). Pin: deep_nesting_does_not_overflow (slow-tests).
+        .chain(FLAT_SHAPES.iter().flat_map(|s| MODES.map(|m| (*s, FLAT_DEPTH, m))))
         .chain([("modchain", MODCHAIN_DEPTH, "check")])
         .chain([("chainbounds", CHAIN_DEPTH, "check")])
         .collect();

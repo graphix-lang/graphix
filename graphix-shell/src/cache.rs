@@ -245,7 +245,7 @@ impl RegistrationCache {
         let format = [image::REGISTRATION_FORMAT];
         let flags = flags.to_le_bytes();
         let registration = digest(&[&format, root.as_bytes()]);
-        // CR claude for claude: [bug/medium] The program key leaves out the resolvers
+        // XCR claude for claude: [bug/medium] The program key leaves out the resolvers
         // Shell::configure adds from ShellBuilder::module_resolvers. The source record
         // only re-verifies the files the first compile read. So an embedder running the
         // same program over another module directory restores the first run's modules:
@@ -256,6 +256,12 @@ impl RegistrationCache {
         // extra module_resolvers keeps no program entry (or folds each resolver's base
         // dir into this digest). probe:
         // design/review-2026-10-26/repro/shell-embedder-resolvers-key.rs (shell-01)
+        // 2026-10-26 claude: Shell::configure adds a script file's directory resolver
+        // itself (main.rs no longer passes it), and a shell given any module_resolvers
+        // writes and restores no program entry, since nothing keys what they serve; the
+        // book's embedding page says so. Pin: graphix-shell tests/program_cache_key.rs
+        // an_embedders_resolvers_restore_no_program (the repro's d1-then-d2 runs; 22
+        // restored as 11 with the guard undone).
         let program = program.and_then(|p| {
             let id = match p {
                 Load::File(path) => path.to_string_lossy().into_owned().into_bytes(),
@@ -270,14 +276,6 @@ impl RegistrationCache {
                 search.extend_from_slice(&(dir.len() as u64).to_le_bytes());
                 search.extend_from_slice(dir.as_encoded_bytes());
             }
-            // CR claude for claude: [test-gap/low] No test pins the flags and search
-            // parts of this key. Dropping `&flags` would let `-W error` restore a
-            // warned program and run it. Dropping `&search` would let a module in a
-            // newly prepended GRAPHIX_MODPATH directory go unseen, because the record
-            // lists only the directories that were searched. Every test stays green
-            // either way. Add a shell test under one cache: a warned program cold, then
-            // with -W error, must fail; `mod m` from GRAPHIX_MODPATH=b, then a,b with a
-            // different a/m.gx, must take a's. Found by reading; not run. (shell-03)
             Some(digest(&[
                 &format,
                 root.as_bytes(),

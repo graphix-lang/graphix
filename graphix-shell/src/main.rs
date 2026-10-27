@@ -3,10 +3,7 @@ use arcstr::ArcStr;
 use clap::{Args, Parser, Subcommand};
 use enumflags2::BitFlags;
 use flexi_logger::{Duplicate, FileSpec, Logger};
-use graphix_compiler::{
-    CFlag, FAILURE_TARGET,
-    expr::{FilesResolver, Load},
-};
+use graphix_compiler::{CFlag, FAILURE_TARGET, expr::Load};
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_package_core::{NetConfig, NetTimeouts};
 use graphix_rt::NoExt;
@@ -493,15 +490,6 @@ fn tokio_main(
                         .canonicalize()
                         .with_context(|| format!("{f}"))?;
                     let path = if path.is_dir() { path.join("main.gx") } else { path };
-                    match path.parent() {
-                        Some(p) if p.as_os_str().is_empty() => (),
-                        None => (),
-                        Some(p) => {
-                            let p = PathBuf::from(p);
-                            shell =
-                                shell.module_resolvers(vec![FilesResolver::new(p, None)]);
-                        }
-                    };
                     Load::File(path)
                 }
             };

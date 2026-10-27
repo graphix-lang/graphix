@@ -2,10 +2,10 @@
 //! submodules are beside it, so `b`'s `mod a` is `b/a.gx`, reported
 //! missing, not a stack overflow.
 
-use graphix_compiler::expr::{FilesResolver, Load};
+use graphix_compiler::expr::Load;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
-use std::{fs, sync::Arc};
+use std::fs;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_files_importing_each_other() {
@@ -17,10 +17,6 @@ async fn two_files_importing_each_other() {
     fs::write(dir.join("b.gx"), "mod a;\nlet y = 1").expect("write b.gx");
     let checked = ShellBuilder::<NoExt>::default()
         .mode(Mode::Check(Load::File(dir.join("a.gx"))))
-        .module_resolvers(vec![Arc::new(FilesResolver {
-            base: dir.clone(),
-            overrides: None,
-        })])
         .cache(CacheMode::Off)
         .build()
         .expect("building shell")
@@ -46,10 +42,6 @@ async fn a_directory_linked_into_itself() {
     fs::write(dir.join("m.gx"), "mod m;\nlet a = 1").expect("write m.gx");
     let checked = ShellBuilder::<NoExt>::default()
         .mode(Mode::Check(Load::File(dir.join("main.gx"))))
-        .module_resolvers(vec![Arc::new(FilesResolver {
-            base: dir.clone(),
-            overrides: None,
-        })])
         .cache(CacheMode::Off)
         .build()
         .expect("building shell")
@@ -76,10 +68,6 @@ async fn submodules_beside_a_non_utf8_path() {
     fs::write(dir.join("a").join("b.gx"), "let y = 1").expect("write b.gx");
     let checked = ShellBuilder::<NoExt>::default()
         .mode(Mode::Check(Load::File(dir.join("main.gx"))))
-        .module_resolvers(vec![Arc::new(FilesResolver {
-            base: dir.clone(),
-            overrides: None,
-        })])
         .cache(CacheMode::Off)
         .build()
         .expect("building shell")
@@ -99,10 +87,6 @@ async fn a_script_importing_itself() {
     fs::write(dir.join("main.gx"), "mod main;\n1").expect("write main.gx");
     let checked = ShellBuilder::<NoExt>::default()
         .mode(Mode::Check(Load::File(dir.join("main.gx"))))
-        .module_resolvers(vec![Arc::new(FilesResolver {
-            base: dir.clone(),
-            overrides: None,
-        })])
         .cache(CacheMode::Off)
         .build()
         .expect("building shell")

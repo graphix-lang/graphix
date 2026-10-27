@@ -137,7 +137,11 @@ ships one that loads modules published in netidx (the shell's
 A VFS key is a file path as the resolver looks it up: module `m` is
 `/m.gx` or `/m/mod.gx`, and `m::n` is `/m/n.gx` or `/m/n/mod.gx`. You
 can have as many module resolvers as you like. When loading modules they are
-checked in order, so earlier ones shadow later ones.
+checked in order, so earlier ones shadow later ones. A script file's own
+directory comes before them all, and the module search path after them.
+The image cache cannot tell whether what your resolvers serve has changed,
+so a shell given any compiles its script on every start (the packages'
+registration is still cached).
 
 Note that for most cases, creating a [package](../packages/creating.md) is
 preferable to manually constructing VFS resolvers. Packages handle module

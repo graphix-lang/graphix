@@ -11,7 +11,10 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, ExecState, FusionStats, PrintFlag,
     env::Env,
-    expr::{CouldNotResolve, ExprId, Load, ModPath, ResolverFactory, ResolverRef},
+    expr::{
+        CouldNotResolve, ExprId, FilesResolver, Load, ModPath, ResolverFactory,
+        ResolverRef,
+    },
     format_with_flags,
     typ::TVal,
 };
@@ -299,7 +302,9 @@ pub struct Shell<X: GXExt> {
     /// What the run does with the image cache.
     #[builder(default)]
     cache: CacheMode,
-    /// define module resolvers to append to the default list
+    /// Module resolvers searched after a script file's own directory and
+    /// before the search path. The image cache cannot vouch for what they
+    /// serve, so a shell given any writes and restores no program entry.
     #[builder(default)]
     module_resolvers: Vec<ResolverRef>,
     /// GRAPHIX_MODPATH `scheme:` -> resolver factory registrations
@@ -443,6 +448,15 @@ impl<X: GXExt> Shell<X> {
             Mode::Script(source) => Some(source.clone()),
             Mode::Check(_) | Mode::Repl => None,
         };
+        let cached_program = match &program {
+            Some(_) if !self.module_resolvers.is_empty() => {
+                log::info!(
+                    "no program entry: the cache cannot vouch for an embedder's resolvers"
+                );
+                None
+            }
+            p => p.as_ref(),
+        };
         let mut flags: BitFlags<CFlag> = match self.mode {
             Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled.into(),
             Mode::Repl => CFlag::ReplaceImports.into(),
@@ -454,7 +468,7 @@ impl<X: GXExt> Shell<X> {
             CacheMode::Off => None,
             CacheMode::On | CacheMode::Warm => match cache::RegistrationCache::new(
                 &root,
-                program.as_ref(),
+                cached_program,
                 flags.bits() as u64,
             ) {
                 Ok(c) => Some(c),
@@ -504,9 +518,12 @@ impl<X: GXExt> Shell<X> {
             image
         });
         let mut mods = vec![vfs_modules];
-        for res in self.module_resolvers.drain(..) {
-            mods.push(res);
+        if let Mode::Script(Load::File(p)) | Mode::Check(Load::File(p)) = &self.mode
+            && let Some(dir) = p.parent()
+        {
+            mods.push(FilesResolver::new(dir.to_path_buf(), None));
         }
+        mods.extend(self.module_resolvers.drain(..));
         let mut gx = GXConfig::builder(ctx, sub);
         if let Some(r) = registration {
             gx = gx.registration(r);
