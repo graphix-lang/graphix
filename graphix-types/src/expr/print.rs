@@ -773,7 +773,11 @@ impl PrettyBuf {
     }
 
     /// Run `f` with `n` more columns following its last line.
-    fn with_tail<R, F: FnOnce(&mut Self) -> R>(&mut self, n: usize, f: F) -> R {
+    pub(crate) fn with_tail<R, F: FnOnce(&mut Self) -> R>(
+        &mut self,
+        n: usize,
+        f: F,
+    ) -> R {
         self.tail += n;
         let r = f(self);
         self.tail -= n;
@@ -1325,7 +1329,7 @@ impl PrettyDisplay for BindExpr {
             write!(buf, "{typ} =")?;
             if buf.col() > buf.limit {
                 buf.rollback(start);
-                typ.fmt_pretty_inner(buf)?;
+                buf.with_tail(" =".len(), |buf| typ.fmt_pretty_inner(buf))?;
                 buf.kill_newline();
                 write!(buf, " =")?;
             }

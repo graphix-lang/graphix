@@ -302,7 +302,7 @@ fn opens_with_bracket(t: &Type) -> bool {
 /// A lone argument that opens with a bracket hugs the brackets it
 /// stands between, as a lone bracketed call argument does: `` `Tag({ ``,
 /// `` `Outer(`Inner([ ``, `Array<{`.
-// CR claude for claude: [bug/low] The type printer lays out a hugged argument flat
+// XCR claude for claude: [bug/low] The type printer lays out a hugged argument flat
 // without reserving the closing brackets that follow it. The expression printer's hug
 // wraps its body in `buf.with_tail(close)`. As a result, `type T = Array<`A({ <62 a's>:
 // i64 })>;` prints as 92 columns at width 90. BindExpr's annotation has the same gap
@@ -310,6 +310,11 @@ fn opens_with_bracket(t: &Type) -> bool {
 // columns. Fix: lay out `t` under `buf.with_tail(close.chars().count(), ..)` here, and
 // the annotation under a tail of 2 in BindExpr::fmt_pretty_inner. probe:
 // design/review-2026-10-26/repro/x-rerun-3-fmt-type-hug-width.sh (x-rerun-3-07)
+// 2026-10-27 claude: pretty_lone_arg lays a hugged type argument out under a tail of
+// its closer, and BindExpr's laid-out annotation runs under a tail of its ' ='
+// (PrettyBuf::with_tail now pub(crate)); the repro's lines are 15-71 columns; gxfmt
+// corpus over both repos clean. Pin: format.rs type_hugs_fit_the_width (field lengths
+// 54..=64, both shapes), which fails with either tail removed.
 fn pretty_lone_arg(
     buf: &mut PrettyBuf,
     open: &str,
@@ -318,7 +323,7 @@ fn pretty_lone_arg(
 ) -> fmt::Result {
     if opens_with_bracket(t) {
         write!(buf, "{open}")?;
-        t.fmt_pretty(buf)?;
+        buf.with_tail(close.chars().count(), |buf| t.fmt_pretty(buf))?;
         buf.kill_newline();
         return writeln!(buf, "{close}");
     }

@@ -1,8 +1,9 @@
 //! The image session: an encode or decode that preserves identity.
-//! Under a session, ids relocate (dense on encode, offset into a
-//! reserved block on decode), origins and type-variable wrappers and
-//! cells are object tables, expressions keep their ids and origins, and
-//! the environment's maps keep their sharing ([`crate::shared_map`]).
+//! Under a session, ids relocate (written as region and offset, with the
+//! spans each region used; on decode, moved into a reserved block),
+//! origins and type-variable wrappers and cells are object tables,
+//! expressions keep their ids and origins, and the environment's maps
+//! keep their sharing ([`crate::shared_map`]).
 //! Outside a session the same codecs are the syntax codec's: fresh ids,
 //! fresh cells, no sharing. Objects of types the core does not know
 //! ride [`Obj::Any`] and the encoder's [`SessionExt`].
@@ -11,11 +12,6 @@
 //! resolves into what was decoded earlier, so the runtime owns an
 //! [`ImageDecoder`] and opens a [`DecodeImage`] over it per read.
 
-// CR claude for claude: [doc-drift/low] The module doc above says ids relocate "dense
-// on encode". Encode writes each id as its region bit and offset (ids::to_wire) and
-// records the span per region; dense renumbering was the replaced scheme. Reword it:
-// written as region and offset, relocated into a reserved block on decode. Found by
-// reading; not run. (t-image-03)
 mod env;
 
 pub use env::{lexical_decode, lexical_encode};
@@ -212,8 +208,9 @@ pub struct ImageEncoder {
     /// Each definition's offset in `defs` by ordinal: an object met for
     /// the first time takes the next.
     offsets: Vec<Option<u64>>,
-    /// The definitions are appended ([`Self::finish`]): an object met
-    /// afterwards would never be defined, so it takes no ordinal.
+    /// The definitions are appended ([`Self::finish`]): an object
+    /// without a definition by then would never have one, so neither a
+    /// first sight nor the first write of one measured before is taken.
     finished: bool,
     /// Buffers for definitions being written, one per nesting level.
     scratch: Vec<ImageBuf>,
@@ -433,17 +430,19 @@ pub struct ImageDecoder {
 pub type SharedDecoder = sync::Arc<Mutex<ImageDecoder>>;
 
 impl ImageDecoder {
-    /// Enter `obj` in the slot of the definition being decoded. A value
-    /// a cycle built twice keeps its first.
-    fn enter(&mut self, obj: Obj) -> Result<(), PackError> {
+    /// Enter `obj` in the slot of the definition being decoded, saying
+    /// whether it took the slot: a value a cycle built twice keeps its
+    /// first.
+    fn enter(&mut self, obj: Obj) -> Result<bool, PackError> {
         let ord = *self.defining.last().ok_or(PackError::InvalidFormat)?;
         let slot = self.objects.get_mut(ord as usize).ok_or(PackError::InvalidFormat)?;
-        if slot.is_none() {
+        let empty = slot.is_none();
+        if empty {
             self.built += 1;
             self.entered.push(ord);
             *slot = Some(obj);
         }
-        Ok(())
+        Ok(empty)
     }
 
     fn get<T: Object>(&self, ord: u32) -> Option<T> {
@@ -1167,21 +1166,33 @@ where
     K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
     Q: std::hash::Hash + Eq + ?Sized,
 {
-    let seen = encoding(|e| match table(e).get_mut(key) {
-        // CR claude for claude: [risk/low] A key that object_len measured before
-        // ImageEncoder::finish passes here after finish: `defined` flips, the contents
-        // go into `e.defs`, which finish has already appended and cleared, and the
-        // trailer already says u64::MAX for this ordinal. The write succeeds, but every
-        // read of the REF fails, so the entry never restores. Nothing writes an object
-        // after finish today, so this is latent. Refuse when `e.finished &&
-        // !s.defined`, as new_ordinal does for a first sight. Found by reading; not
-        // run. (t-image-01)
-        Some(s) => Some((s.ord, !std::mem::replace(&mut s.defined, true))),
-        None => {
-            let ord = new_ordinal(e)?;
-            let (k, _pin) = owned(key);
-            table(e).insert(k, Slot { ord, defined: true, _pin });
-            Some((ord, true))
+    let seen = encoding(|e| {
+        let finished = e.finished;
+        match table(e).get_mut(key) {
+            Some(s) if s.defined => Some((s.ord, false)),
+            // XCR claude for claude: [risk/low] A key that object_len measured before
+            // ImageEncoder::finish passes here after finish: `defined` flips, the contents
+            // go into `e.defs`, which finish has already appended and cleared, and the
+            // trailer already says u64::MAX for this ordinal. The write succeeds, but every
+            // read of the REF fails, so the entry never restores. Nothing writes an object
+            // after finish today, so this is latent. Refuse when `e.finished &&
+            // !s.defined`, as new_ordinal does for a first sight. Found by reading; not
+            // run. (t-image-01)
+            // 2026-10-27 claude: object_encode refuses the first write of an object
+            // measured before ImageEncoder::finish (a slot not yet defined once finished),
+            // as new_ordinal refuses a first sight; ImageEncoder::finished's doc says both.
+            // Pin: graphix-types image::tests::a_definition_after_finish_is_refused (fails
+            // with the guard undone).
+            Some(s) => (!finished).then(|| {
+                s.defined = true;
+                (s.ord, true)
+            }),
+            None => {
+                let ord = new_ordinal(e)?;
+                let (k, _pin) = owned(key);
+                table(e).insert(k, Slot { ord, defined: true, _pin });
+                Some((ord, true))
+            }
         }
     })
     .flatten();
@@ -1243,9 +1254,10 @@ pub fn built<T: Object>(ord: u32) -> Option<T> {
     decoding(|d| d.get::<T>(ord)).flatten()
 }
 
-/// Enter `obj` in the slot of the definition being decoded.
+/// Enter `obj` in the slot of the definition being decoded, saying
+/// whether it took the slot.
 #[doc(hidden)]
-pub fn enter(obj: Obj) -> Result<(), PackError> {
+pub fn enter(obj: Obj) -> Result<bool, PackError> {
     decoding(|d| d.enter(obj)).unwrap_or(Err(PackError::InvalidFormat))
 }
 
@@ -1262,14 +1274,9 @@ pub(crate) fn object_decode<T: Object>(
         built::<T>,
         |sub| {
             let v = contents(sub)?;
-            // CR claude for claude: [perf/low] When the slot was empty (every
-            // definition on a valid image except a cycle re-entry), the lookup below
-            // returns a second clone of `v`, and `v` is then dropped: an extra clone
-            // and drop of an Expr or FnType per decoded definition, on the warm-start
-            // path. Have ImageDecoder::enter return whether it filled the slot, return
-            // `v` when it did, and read the stored object only when it did not. Found
-            // by reading; not run. (t-image-02)
-            enter(v.clone().into_obj())?;
+            if enter(v.clone().into_obj())? {
+                return Ok(v);
+            }
             // a cycle through the object built it first: every occurrence
             // is that one
             let stored = decoding(|d| d.defining.last().and_then(|ord| d.get::<T>(*ord)));
@@ -1683,6 +1690,24 @@ mod tests {
             assert_eq!(decoded.b, pair.b);
             assert_eq!(u64::decode(&mut input).unwrap(), 12345);
             assert!(input.is_empty());
+        });
+    }
+
+    /// An object measured before the image's definitions were appended
+    /// and first written after has no definition to name: its write is
+    /// refused, as a first sight after them is.
+    #[test]
+    fn a_definition_after_finish_is_refused() {
+        use crate::expr::parser::parse_type;
+        let (measured, unseen) =
+            (parse_type("i64").unwrap(), parse_type("string").unwrap());
+        let mut enc = ImageEncoder::new();
+        EncodeImage::with(&mut enc, || measured.encoded_len());
+        let _ = Packed::new(&mut enc, ImageBuf::with_capacity(0));
+        EncodeImage::with(&mut enc, || {
+            let mut buf = ImageBuf::with_capacity(0);
+            assert!(measured.encode(&mut buf).is_err());
+            assert!(unseen.encode(&mut buf).is_err());
         });
     }
 

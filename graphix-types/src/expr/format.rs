@@ -1546,6 +1546,24 @@ mod tests {
         stable(Program, &src);
     }
 
+    // a hugged type argument leaves the columns of the closers after it,
+    // and a let's laid-out annotation those of its ` =`
+    #[test]
+    fn type_hugs_fit_the_width() {
+        use SourceKind::Program;
+        let cfg = FormatConfig::default();
+        for n in 54..=64 {
+            let a = "a".repeat(n);
+            for src in [
+                format!("let zz: Array<{{{a}: i64, b: i64}}> = [];\nzz"),
+                format!("type T = Array<`A({{{a}: i64}})>;\n1"),
+            ] {
+                fits(&format_source(Program, &src, &cfg).unwrap(), DEFAULT_WIDTH);
+                stable(Program, &src);
+            }
+        }
+    }
+
     // the closer, a postfix suffix and the separator that follow a layout
     // on its last line are kept free: an index whose call fits flat only
     // without them breaks
