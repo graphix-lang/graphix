@@ -640,10 +640,16 @@ pub async fn drain_events(
     }
 }
 
-/// Evaluate a graphix expression and return its first value with the
-/// test context (caller must shut it down).
+/// Evaluate a graphix expression and return its first value, as
+/// [`data`], with the test context (caller must shut it down).
 pub async fn eval(code: &str, register: &[PackageRef]) -> Result<(Value, TestCtx)> {
     eval_with_setup(code, register, |_| {}).await
+}
+
+/// [`eval`], the value as the runtime delivered it: for a Rust reader of
+/// the runtime form, kind markers included.
+pub async fn eval_raw(code: &str, register: &[PackageRef]) -> Result<(Value, TestCtx)> {
+    first_value([("/test.gx", result_source(code))], register, |_| {}).await
 }
 
 pub async fn eval_with_setup<F>(
@@ -654,7 +660,9 @@ pub async fn eval_with_setup<F>(
 where
     F: FnOnce(&mut TestState),
 {
-    first_value([("/test.gx", result_source(code))], register, setup).await
+    let (v, ctx) =
+        first_value([("/test.gx", result_source(code))], register, setup).await?;
+    Ok((data(v), ctx))
 }
 
 async fn first_value<'a, F>(
@@ -667,9 +675,12 @@ where
 {
     let (ctx, mut rx) = fixture_runtime(files, register, Mode::Jit, setup).await?;
     let res = compile_result(&ctx).await?;
-    let v =
-        next_update(&mut rx, res.exprs[0].id, Instant::now() + Duration::from_secs(5))
-            .await?;
+    let v = next_update_raw(
+        &mut rx,
+        res.exprs[0].id,
+        Instant::now() + Duration::from_secs(5),
+    )
+    .await?;
     Ok((v, ctx))
 }
 
@@ -774,7 +785,8 @@ pub async fn eval_packed(
     let exprs = graphix_compiler::expr::parser::parse(ori)?;
     let packed = graphix_compiler::expr::serialize::pack_module(&exprs)?;
     let entry = VfsEntry { source, packed: Some(packed) };
-    first_value([("/test.gx", entry)], register, |_| {}).await
+    let (v, ctx) = first_value([("/test.gx", entry)], register, |_| {}).await?;
+    Ok((data(v), ctx))
 }
 
 pub use graphix_compiler::expr::parser::GRAPHIX_ESC;
