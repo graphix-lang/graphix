@@ -276,13 +276,13 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         // A standing bottom scrutinee is not an event: the return's
         // freshness is the scrutinee's.
         &mut |cx| {
-            let ph = emit_bottom_placeholder(cx, ret, &[scrut_disc])?;
+            let ph = emit_bottom_placeholder(cx, ret, scrut_disc)?;
             emit_kernel_return(cx, ret, ph, CompositeSource::Owned)
         },
         // A bottomed guard with no history stops the chain: return the
         // bottom with the outcome's freshness.
         &mut |cx, stale_bits| {
-            let ph = emit_bottom_placeholder(cx, ret, &[stale_bits])?;
+            let ph = emit_bottom_placeholder(cx, ret, stale_bits)?;
             emit_kernel_return(cx, ret, ph, CompositeSource::Owned)
         },
     )?;
@@ -593,7 +593,7 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
         .and_then(|t| kernel_abi::abi_kind(&t))
         .filter(|k| !matches!(k, AbiKind::Unit | AbiKind::Null))
         .unwrap_or(AbiKind::Value);
-    emit_bottom_placeholder_of_kind(cx, kind, &[cv.disc])
+    emit_bottom_placeholder_of_kind(cx, kind, cv.disc)
 }
 
 /// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`, or a `[T, null]`
@@ -690,7 +690,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.seal_block(bad_bl);
             emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
             // The inner's STALE carries; TAINT marks no-value.
-            let ph = emit_bottom_placeholder_of_kind(cx, k, &[cv.disc])?;
+            let ph = emit_bottom_placeholder_of_kind(cx, k, cv.disc)?;
             cx.b.ins()
                 .jump(qmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(continue_block);
@@ -741,7 +741,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
             // Tainted Value::Null placeholder (helper-safe by
             // construction); the inner's STALE carries.
-            let ph = emit_bottom_placeholder_of_kind(cx, AbiKind::Value, &[cv.disc])?;
+            let ph = emit_bottom_placeholder_of_kind(cx, AbiKind::Value, cv.disc)?;
             cx.b.ins()
                 .jump(qmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(continue_block);

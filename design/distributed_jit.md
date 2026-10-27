@@ -196,7 +196,7 @@ each was obvious in hindsight and invisible in advance.
    whole-kernel abort. Per-param STALE tracking beside it is what lets
    a kernel replicate the node-walk's firing. A BOTTOM IS A PRODUCTION:
    its STALE bit follows the same trigger fold as a value
-   (`nodes::emit_bottom_placeholder` takes the governing discs), while
+   (`nodes::emit_bottom_placeholder` takes the governing disc), while
    the absent-delivery placeholders of an unmatched select arm are
    standing by construction.
 

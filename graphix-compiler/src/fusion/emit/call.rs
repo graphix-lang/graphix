@@ -283,7 +283,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 cx.b.switch_to_block(cont_bl);
                 cx.b.seal_block(cont_bl);
             }
-            let ph = emit_bottom_placeholder(cx, &info.return_type, &[tagbits])?;
+            let ph = emit_bottom_placeholder(cx, &info.return_type, tagbits)?;
             cx.b.ins()
                 .jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(ok_bl);

@@ -2,10 +2,8 @@
 //! each traversal's gate and its loop over the scaffold.
 
 use super::{
-    self as emit, BodyCx, CompiledExpr, CompositeSource,
-    abi::LocalKind,
-    body::{emit_into_slot, slot_source},
-    scaffold,
+    self as emit, BodyCx, CompiledExpr, CompositeSource, abi::LocalKind,
+    body::emit_into_slot, scaffold,
 };
 use crate::{
     BindId, Node, NodeView, Rt, UserEvent,
@@ -660,8 +658,6 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
             };
             acc_leaves = leaves;
             scaffold::FoldAcc::Composite {
-                init_src: slot_source(cx, init, LocalKind::Composite),
-                body_src: slot_source(cx, body, LocalKind::Composite),
                 leaves: &acc_leaves,
                 pattern: acc.pattern.map(|p| (p, &acc_type)),
             }
@@ -680,18 +676,19 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
                     Some(_) => {}
                 }
             }
-            scaffold::FoldAcc::Value {
-                init_src: CompositeSource::Owned,
-                body_src: CompositeSource::Owned,
-            }
+            scaffold::FoldAcc::Value
         }
         _ => return Ok(None),
     };
     let acc_kind = acc_shape.local_kind();
     let operand = move |cx: &mut BodyCx, n: &Node<R, E>| match acc_kind {
-        LocalKind::Value => emit::emit_owned_value_operand_node(cx, n),
-        LocalKind::Composite => emit_into_slot(cx, n, acc_kind).map(|s| s.cv),
-        LocalKind::Scalar(_) | LocalKind::String => n.emit_clif(cx),
+        LocalKind::Value => {
+            Ok((emit::emit_owned_value_operand_node(cx, n)?, CompositeSource::Owned))
+        }
+        LocalKind::Composite => emit_into_slot(cx, n, acc_kind).map(|s| (s.cv, s.source)),
+        LocalKind::Scalar(_) | LocalKind::String => {
+            Ok((n.emit_clif(cx)?, CompositeSource::Owned))
+        }
     };
     emit_loop(cx, source, flavor, |cx, src| {
         let sites = emit::loop_body(cx, body);

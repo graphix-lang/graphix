@@ -113,6 +113,17 @@ impl PrimType {
         matches!(self, PrimType::F32 | PrimType::F64)
     }
 
+    /// The least value of a signed integer type; `None` for any other.
+    pub fn signed_int_min(self) -> Option<i64> {
+        match self {
+            PrimType::I8 => Some(i8::MIN as i64),
+            PrimType::I16 => Some(i16::MIN as i64),
+            PrimType::I32 => Some(i32::MIN as i64),
+            PrimType::I64 => Some(i64::MIN),
+            _ => None,
+        }
+    }
+
     pub fn is_signed(self) -> bool {
         matches!(
             self,

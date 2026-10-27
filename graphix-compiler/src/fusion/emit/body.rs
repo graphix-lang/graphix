@@ -888,19 +888,6 @@ fn slot_fit<R: Rt, E: UserEvent>(
     }
 }
 
-/// Whether a slot of kind `slot` must clone `node`'s production to own
-/// it ([`emit_into_slot`]'s `source`, known before the emission).
-pub(super) fn slot_source<R: Rt, E: UserEvent>(
-    cx: &BodyCx,
-    node: &Node<R, E>,
-    slot: LocalKind,
-) -> CompositeSource {
-    match slot_fit(cx, node, slot) {
-        SlotFit::Same => node_composite_source(node),
-        SlotFit::Widen(_) | SlotFit::Narrow => CompositeSource::Owned,
-    }
-}
-
 /// A node's production as a slot of some kind takes it.
 pub(super) struct Slotted {
     pub(super) cv: CompiledExpr,

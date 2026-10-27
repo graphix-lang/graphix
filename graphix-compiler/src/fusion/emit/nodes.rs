@@ -24,7 +24,7 @@ use smallvec::{SmallVec, smallvec};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, const_stale_gate, is_tainted,
-        prim_to_value_disc, propagate_flags, scalar_disc, value_disc,
+        prim_to_value_disc, propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
@@ -225,64 +225,66 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             anyhow!("emit_clif: arith operand of non-scalar type {}", lhs.typ())
         })?;
     let base = scalar_disc(cx.b, prim);
-    // Cranelift has no `frem`: a float `%` is Rust's, the node-walk's.
-    if matches!(op, ArithOp::Mod) && prim.is_float() {
-        let helper = match prim {
-            PrimType::F32 => "graphix_f32_rem",
-            _ => "graphix_f64_rem",
-        };
-        let call = cx.call_helper(helper, &[l, r])?;
-        let value = call[0];
-        let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
-        return Ok(widen_to_declared_repr(
-            cx,
-            out_typ,
-            prim,
-            CompiledExpr::new(disc, value),
-        ));
-    }
-    if matches!(op, ArithOp::Div | ArithOp::Mod)
-        && prim.is_integer()
-        && node_int_div_may_bottom(lhs, rhs)
-    {
-        let is_zero = cx.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
-        // `x % -1` is `x % 1`, 0, without the MIN ÷ -1 the hardware traps on
-        let (bad, divisor_one) = match (prim.is_signed(), op) {
-            (false, _) => (is_zero, is_zero),
-            (true, ArithOp::Mod) => {
-                let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
-                (is_zero, cx.b.ins().bor(is_zero, is_neg1))
-            }
-            (true, _) => {
-                let min: i64 = match prim {
-                    PrimType::I8 => i8::MIN as i64,
-                    PrimType::I16 => i16::MIN as i64,
-                    PrimType::I32 => i32::MIN as i64,
-                    _ => i64::MIN,
-                };
-                let is_min = cx.b.ins().icmp_imm_s(IntCC::Equal, l, min);
-                let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
-                let overflow = cx.b.ins().band(is_min, is_neg1);
-                let bad = cx.b.ins().bor(is_zero, overflow);
-                (bad, bad)
-            }
-        };
-        let one = cx.b.ins().iconst(prim_to_clif(prim), 1);
-        let safe_r = cx.b.ins().select(divisor_one, one, r);
-        let value = compile_bin(cx.b, op, prim, l, safe_r)?;
-        // A div0 / signed MIN÷-1 taints the result, as does a tainted operand.
-        let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
-        let taint_word = cx.b.ins().iconst(types::I64, TAINT);
-        let zero = cx.b.ins().iconst(types::I64, 0);
-        let bad_taint = cx.b.ins().select(bad, taint_word, zero);
-        let disc = cx.b.ins().bor(disc, bad_taint);
-        let cv = CompiledExpr::new(disc, value);
-        return Ok(widen_to_declared_repr(cx, out_typ, prim, cv));
-    }
-    let value = compile_bin(cx.b, op, prim, l, r)?;
     let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
-    let cv = CompiledExpr::new(disc, value);
-    Ok(widen_to_declared_repr(cx, out_typ, prim, cv))
+    let int_div = matches!(op, ArithOp::Div | ArithOp::Mod) && prim.is_integer();
+    let (value, disc) = if int_div && node_int_div_may_bottom(lhs, rhs) {
+        let (value, bad) = emit_int_div(cx, op, prim, l, r)?;
+        (value, taint_if(cx.b, disc, bad))
+    } else {
+        (emit_scalar_bin(cx, op, prim, l, r)?, disc)
+    };
+    Ok(widen_to_declared_repr(cx, out_typ, prim, CompiledExpr::new(disc, value)))
+}
+
+/// `l op r` over register scalars of `prim`. Cranelift has no `frem`: a
+/// float `%` is Rust's, the node-walk's.
+fn emit_scalar_bin(
+    cx: &mut BodyCx,
+    op: ArithOp,
+    prim: PrimType,
+    l: ClifValue,
+    r: ClifValue,
+) -> Result<ClifValue> {
+    match (op, prim) {
+        (ArithOp::Mod, PrimType::F32) => {
+            Ok(cx.call_helper("graphix_f32_rem", &[l, r])?[0])
+        }
+        (ArithOp::Mod, PrimType::F64) => {
+            Ok(cx.call_helper("graphix_f64_rem", &[l, r])?[0])
+        }
+        _ => compile_bin(cx.b, op, prim, l, r),
+    }
+}
+
+/// An integer `/` or `%` over `prim` with its divisor made safe: the
+/// value, and whether the operation fails (a zero divisor, a signed
+/// `MIN / -1`). `x % -1` is `x % 1`, 0, without the `MIN % -1` the
+/// hardware traps on.
+fn emit_int_div(
+    cx: &mut BodyCx,
+    op: ArithOp,
+    prim: PrimType,
+    l: ClifValue,
+    r: ClifValue,
+) -> Result<(ClifValue, ClifValue)> {
+    let is_zero = cx.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
+    let (bad, divisor_one) = match (prim.signed_int_min(), op) {
+        (None, _) => (is_zero, is_zero),
+        (Some(_), ArithOp::Mod) => {
+            let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
+            (is_zero, cx.b.ins().bor(is_zero, is_neg1))
+        }
+        (Some(min), _) => {
+            let is_min = cx.b.ins().icmp_imm_s(IntCC::Equal, l, min);
+            let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
+            let overflow = cx.b.ins().band(is_min, is_neg1);
+            let bad = cx.b.ins().bor(is_zero, overflow);
+            (bad, bad)
+        }
+    };
+    let one = cx.b.ins().iconst(prim_to_clif(prim), 1);
+    let safe_r = cx.b.ins().select(divisor_one, one, r);
+    Ok((compile_bin(cx.b, op, prim, l, safe_r)?, bad))
 }
 
 /// An operand as a Value pair for a borrowing helper, uncloned; `owned`
@@ -357,44 +359,38 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 /// shape) — never bottom. Over one integer prim the success path is
 /// inline, and a failure builds its error through
 /// `graphix_value_checked_<op>`, the node-walk's `Value::checked_*`
-/// core; any other operands take that helper every time, borrowed.
+/// core; over one float prim it is the unchecked operation, since float
+/// arithmetic follows IEEE and never fails; any other operands take
+/// that helper every time, borrowed.
 pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: ArithOp,
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    // CR claude for claude: [perf/low] Float operands of a checked op fall through to
-    // emit_value_arith_node, which boxes both scalars and calls
-    // graphix_value_checked_<op> on every evaluation. But float checked arithmetic
-    // follows IEEE and never fails, so the helper always returns what compile_bin (or
-    // graphix_f64_rem / graphix_f32_rem for `%`) computes inline. Add a float-scalar
-    // arm that emits the unchecked op and widens the payload with scalar_to_payload_i64
-    // under the scalar disc. Found by reading; the engines agree on the values (probe
-    // t11.gx). (f-nodes-scalar-03)
     match (cx.node_kind(lhs.typ()), cx.node_kind(rhs.typ())) {
         (Some(AbiKind::Scalar(p)), Some(AbiKind::Scalar(q)))
             if p == q && p.is_integer() =>
         {
             emit_checked_int_arith(cx, op, p, lhs, rhs)
         }
+        (Some(AbiKind::Scalar(p)), Some(AbiKind::Scalar(q)))
+            if p == q && p.is_float() =>
+        {
+            let lcv = lhs.emit_clif(cx)?;
+            let rcv = rhs.emit_clif(cx)?;
+            let value = emit_scalar_bin(cx, op, p, lcv.payload, rcv.payload)?;
+            let base = scalar_disc(cx.b, p);
+            let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
+            Ok(CompiledExpr::new(disc, scalar_to_payload_i64(cx.b, p, value)))
+        }
         _ => emit_value_arith_node(cx, op, true, lhs, rhs),
     }
 }
 
 /// [`emit_checked_arith_node`] over two integers of `prim`: the operation
-/// and whether it fails (an overflow, a zero divisor, `MIN / -1` and
-/// `MIN % -1`) in plain instructions every host lowers.
-// CR claude for claude: [structure/low] This duplicates emit_arith_node's divisor guard
-// (zero test, the signed MIN table, select of a safe divisor), and the two copies
-// disagree on `%`. Here `MIN % -1` counts as bad and goes through
-// graphix_value_checked_rem, which returns 0 (int_arith's wrapping_rem). The doc above
-// says it fails, but the language rule and the rem_by_neg_one_is_zero pin say it is 0,
-// checked or not. Extract one guard from emit_arith_node's version (Mod's -1 is a
-// divisor-one rewrite, not a failure), use it in both, and keep the MIN table in one
-// PrimType method. value_is_zero / value_is_neg_one / value_is_int_min also match
-// varint variants that never reach the register path. Found by reading; the values
-// agree today (probe t2.gx). (f-nodes-scalar-01)
+/// and whether it fails (an overflow, a zero divisor, `MIN / -1`) in
+/// plain instructions every host lowers.
 fn emit_checked_int_arith<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: ArithOp,
@@ -408,24 +404,7 @@ fn emit_checked_int_arith<R: Rt, E: UserEvent>(
     let signed = prim.is_signed();
     let ty = prim_to_clif(prim);
     let (value, bad) = match op {
-        ArithOp::Div | ArithOp::Mod => {
-            let mut bad = cx.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
-            if signed {
-                let min: i64 = match prim {
-                    PrimType::I8 => i8::MIN as i64,
-                    PrimType::I16 => i16::MIN as i64,
-                    PrimType::I32 => i32::MIN as i64,
-                    _ => i64::MIN,
-                };
-                let is_min = cx.b.ins().icmp_imm_s(IntCC::Equal, l, min);
-                let is_neg1 = cx.b.ins().icmp_imm_s(IntCC::Equal, r, -1);
-                let overflow = cx.b.ins().band(is_min, is_neg1);
-                bad = cx.b.ins().bor(bad, overflow);
-            }
-            let one = cx.b.ins().iconst(ty, 1);
-            let safe_r = cx.b.ins().select(bad, one, r);
-            (compile_bin(cx.b, op, prim, l, safe_r)?, bad)
-        }
+        ArithOp::Div | ArithOp::Mod => emit_int_div(cx, op, prim, l, r)?,
         // narrower than 64 bits: the exact result in 64, then whether it
         // fits back
         _ if ty != types::I64 => {
@@ -1142,34 +1121,27 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
 /// position with no value this cycle.
 ///
 /// A bottom is a production, so its STALE bit folds from the governing
-/// discs here (a fresh bottom returned unfolded re-fires every cycle).
-/// Pass `&[]` only where the whole run is being torn down. The absent-delivery twin,
-/// `select::placeholder_for_kind`, is unconditionally standing.
-// CR claude for claude: [structure/low] Every caller (emit_taint_guarded_read, the
-// select tail, both qop paths, the call site) passes exactly one governing disc. An
-// empty slice is the one input that returns the unfolded FRESH bottom the doc calls a
-// bug, and the `&[]` teardown case the doc allows has no caller. Take a single
-// `governing: ClifValue` here and in emit_bottom_placeholder_of_kind, so a placeholder
-// is always folded, and drop the stale sentence. Found by reading; not run.
-// (f-nodes-scalar-02)
+/// disc (a fresh bottom returned unfolded re-fires every cycle). The
+/// absent-delivery twin, `select::placeholder_for_kind`, is
+/// unconditionally standing.
 pub(super) fn emit_bottom_placeholder(
     cx: &mut BodyCx,
     elem: &Type,
-    governing_discs: &[ClifValue],
+    governing: ClifValue,
 ) -> Result<CompiledExpr> {
     let kind = kernel_abi::abi_kind(elem)
         .ok_or_else(|| anyhow!("emit_clif: no placeholder for {elem}"))?;
-    emit_bottom_placeholder_of_kind(cx, kind, governing_discs)
+    emit_bottom_placeholder_of_kind(cx, kind, governing)
 }
 
 /// [`emit_bottom_placeholder`] for a placeholder of ABI kind `kind`.
 pub(super) fn emit_bottom_placeholder_of_kind(
     cx: &mut BodyCx,
     kind: AbiKind,
-    governing_discs: &[ClifValue],
+    governing: ClifValue,
 ) -> Result<CompiledExpr> {
     let cv = emit_bottom_of_kind(cx, kind)?;
-    let disc = propagate_flags(cx.b, cv.disc, governing_discs);
+    let disc = propagate_flags(cx.b, cv.disc, &[governing]);
     Ok(CompiledExpr::new(disc, cv.payload))
 }
 
@@ -1249,7 +1221,7 @@ pub(super) fn emit_taint_guarded_read(
     cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
     cx.b.switch_to_block(skip_bl);
     cx.b.seal_block(skip_bl);
-    let ph = emit_bottom_placeholder(cx, elem, &[src_disc])?;
+    let ph = emit_bottom_placeholder(cx, elem, src_disc)?;
     cx.b.ins().jump(merge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
     cx.b.switch_to_block(merge);
     cx.b.seal_block(merge);
@@ -1533,31 +1505,19 @@ fn value_is_zero(v: &Value) -> bool {
             | Value::U16(0)
             | Value::U32(0)
             | Value::U64(0)
-            | Value::Z32(0)
-            | Value::Z64(0)
-            | Value::V32(0)
-            | Value::V64(0)
     )
 }
 
 fn value_is_neg_one(v: &Value) -> bool {
-    matches!(
-        v,
-        Value::I8(-1)
-            | Value::I16(-1)
-            | Value::I32(-1)
-            | Value::I64(-1)
-            | Value::Z32(-1)
-            | Value::Z64(-1)
-    )
+    matches!(v, Value::I8(-1) | Value::I16(-1) | Value::I32(-1) | Value::I64(-1))
 }
 
 fn value_is_int_min(v: &Value) -> bool {
     match v {
         Value::I8(x) => *x == i8::MIN,
         Value::I16(x) => *x == i16::MIN,
-        Value::I32(x) | Value::Z32(x) => *x == i32::MIN,
-        Value::I64(x) | Value::Z64(x) => *x == i64::MIN,
+        Value::I32(x) => *x == i32::MIN,
+        Value::I64(x) => *x == i64::MIN,
         _ => false,
     }
 }

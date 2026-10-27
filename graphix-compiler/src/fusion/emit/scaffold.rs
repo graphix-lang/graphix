@@ -852,16 +852,6 @@ where
     let n_disc = cx.b.ins().select(oversize, forced_disc, n_disc);
     let n = cx.b.ins().select(oversize, zero, n);
     let flags = SlotFlags::new(cx, n, LoopKind::Slots);
-    // CR claude for claude: [dead/low] [dead/low] These four lines do nothing. Folding
-    // STALE into the accumulator (an AND that starts at STALE) changes nothing, and the
-    // oversize TAINT already rides `n_disc`, forced above, which emit_init_kind hands
-    // to `SlotFlags::apply` as `src`; apply ORs its TAINT into the result. Delete the
-    // three constants and the `flags.accs.fold` call. Found by reading; not run.
-    // (f-scaffold-body-01)
-    let stale = cx.b.ins().iconst(types::I64, STALE);
-    let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
-    let disc = cx.b.ins().select(oversize, tainted, stale);
-    flags.accs.fold(cx, disc);
     let sunk = emit_slots(cx, &flags, SinkKind::Buf, (zero, n_disc, n), facts, {
         |cx, lp, s| {
             let ((), value) = lp.run(
@@ -1086,12 +1076,10 @@ pub(crate) enum FoldAcc<'a> {
     /// A register scalar. Owns nothing.
     Scalar(PrimType),
     /// Owned ValArray bits. The loop owns the current acc: each
-    /// iteration the body's result is made owned per `body_src` and the
-    /// old acc dropped. `leaves` are the acc pattern's destructure
-    /// leaves, re-read off the current acc each iteration.
+    /// iteration the body's result is made owned and the old acc
+    /// dropped. `leaves` are the acc pattern's destructure leaves,
+    /// re-read off the current acc each iteration.
     Composite {
-        init_src: CompositeSource,
-        body_src: CompositeSource,
         leaves: &'a [Leaf],
         /// The acc parameter's destructure past a flat tuple, over the
         /// acc's frozen type.
@@ -1103,16 +1091,7 @@ pub(crate) enum FoldAcc<'a> {
     /// An owned two-word Value. Its real value disc varies per
     /// iteration (a nullable acc alternates Null and its value), so the
     /// disc Variable carries the whole disc, never a re-based constant.
-    // CR claude for claude: [structure/low] [structure/low] The init/body sources here
-    // repeat an ownership rule that already lives elsewhere. For Composite they come
-    // from `body::slot_source`, which re-derives `emit_into_slot`'s `Slotted::source`
-    // ahead of time, while the fold's operand closure calls `emit_into_slot` and throws
-    // that source away. For Value both are always `Owned`. If the two rules ever drift,
-    // the fold drops an acc it only borrowed. Have the init/body closures return the
-    // `Slotted` source and make the acc owned from it, then delete `slot_source`, these
-    // fields and the `init_src()`/`body_src()` accessors. Found by reading; not run.
-    // (f-scaffold-body-02)
-    Value { init_src: CompositeSource, body_src: CompositeSource },
+    Value,
 }
 
 impl FoldAcc<'_> {
@@ -1121,27 +1100,7 @@ impl FoldAcc<'_> {
             FoldAcc::Scalar(p) => LocalKind::Scalar(*p),
             FoldAcc::Composite { .. } => LocalKind::Composite,
             FoldAcc::Str => LocalKind::String,
-            FoldAcc::Value { .. } => LocalKind::Value,
-        }
-    }
-
-    /// Where the init's result comes from.
-    fn init_src(&self) -> CompositeSource {
-        match self {
-            FoldAcc::Composite { init_src, .. } | FoldAcc::Value { init_src, .. } => {
-                *init_src
-            }
-            FoldAcc::Scalar(_) | FoldAcc::Str => CompositeSource::Owned,
-        }
-    }
-
-    /// Where the body's result comes from.
-    fn body_src(&self) -> CompositeSource {
-        match self {
-            FoldAcc::Composite { body_src, .. } | FoldAcc::Value { body_src, .. } => {
-                *body_src
-            }
-            FoldAcc::Scalar(_) | FoldAcc::Str => CompositeSource::Owned,
+            FoldAcc::Value => LocalKind::Value,
         }
     }
 
@@ -1158,7 +1117,7 @@ impl FoldAcc<'_> {
                 (ensure_owned_composite_src(cx, src, cv.payload)?, cv.disc)
             }
             FoldAcc::Scalar(_) | FoldAcc::Str => (cv.payload, cv.disc),
-            FoldAcc::Value { .. } => {
+            FoldAcc::Value => {
                 let (d, p) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
                 (p, d)
             }
@@ -1170,7 +1129,7 @@ impl FoldAcc<'_> {
     /// only TAINT and STALE ride.
     fn carry_disc(&self, cx: &mut BodyCx, from_disc: ClifValue) -> ClifValue {
         let base = match self {
-            FoldAcc::Value { .. } => {
+            FoldAcc::Value => {
                 const KEEP: i64 = !TAG_MASK as i64 | TAINT | STALE;
                 return cx.b.ins().band_imm_u(from_disc, KEEP);
             }
@@ -1185,7 +1144,8 @@ impl FoldAcc<'_> {
 
 /// `array::fold(arr, init, |acc, x| body)`. Each iteration binds the
 /// acc first, then the element (the order is load-bearing); the body's
-/// result becomes the next acc.
+/// result becomes the next acc. `init` and `body` return their result
+/// with where it comes from, which decides whether owning it clones.
 pub(crate) fn emit_fold_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
@@ -1198,8 +1158,8 @@ pub(crate) fn emit_fold_loop<'a, 'f, 'c, I, F>(
     body: F,
 ) -> Result<(CompiledExpr, SlotFlags)>
 where
-    I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<(CompiledExpr, CompositeSource)>,
+    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<(CompiledExpr, CompositeSource)>,
 {
     arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
@@ -1208,17 +1168,17 @@ where
     // must ride or an acc-consuming body reads FIRED on every run.
     let acc_vv = ValueVar::owned(cx.b, kind);
     let flags = SlotFlags::new(cx, len, LoopKind::Fold);
-    let init_cv = init(cx)?;
+    let (init_cv, init_src) = init(cx)?;
     // A pointer-shaped acc is loop-owned from the start: a borrowed init
     // clones here.
-    let (init_pay, init_disc) = acc.owned(cx, init_cv, acc.init_src())?;
+    let (init_pay, init_disc) = acc.owned(cx, init_cv, init_src)?;
     let d0 = acc.carry_disc(cx, init_disc);
     acc_vv.define(cx.b, d0, init_pay);
     let lp = open_loop(cx, len, arr.disc, &facts.sites, flags.entered)?;
     // The acc binds before the interrupt poll so the poll's abort cleanup
     // drops an owned acc. Acc leaves carry the acc's loop-carried
     // TAINT|STALE; unlike an element, the acc can be tainted.
-    let ((bound, acc_leaves), new_acc) = lp.run(
+    let ((bound, acc_leaves), (new_acc, new_src)) = lp.run(
         cx,
         |cx, i| {
             if let Some(d) = deliver_acc_to_new_slot(cx, acc_vv.disc) {
@@ -1245,7 +1205,7 @@ where
     )?;
     // Make the new acc owned before anything drops: a borrowed body
     // result (`|acc, x| acc`) may alias the old acc, an element, or a leaf.
-    let (new_pay, new_disc) = acc.owned(cx, new_acc, acc.body_src())?;
+    let (new_pay, new_disc) = acc.owned(cx, new_acc, new_src)?;
     emit_drop_local(cx.b, cx.ctx, kind, acc_vv)?;
     drop_locals(cx, &acc_leaves)?;
     bound.drop_leaves(cx)?;

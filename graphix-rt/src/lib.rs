@@ -94,6 +94,10 @@ pub trait GXExt: Default + fmt::Debug + Send + Sync + 'static {
     // E parameter. He also wants to look at removing the custom netidx parts of Event
     // and rt, so rt only runs async jobs and netidx is a stdlib library delivering by
     // bind ids like the others (a follow-on project).
+    // 2026-10-27 claude: Not done (L4-b10): it is the c-lib-05 deletion (UserEvent,
+    // Event::user, the E parameter), about 1090 UserEvent mentions over 85 files plus
+    // netidx-admin, which conflicts with every lane editing node code; it wants the solo
+    // batch noted on c-lib-05.
     fn do_cycle(&mut self, event: &mut Event<Self::UserEvent>) -> Result<()>;
 
     /// Return true if there are events ready to deliver
@@ -513,16 +517,6 @@ enum ToGX<X: GXExt> {
     FusionStats {
         res: oneshot::Sender<FusionStats>,
     },
-    CycleReady {
-        res: oneshot::Sender<bool>,
-    },
-    /// Wait for the next value emitted by `id`, or `None` if the
-    /// runtime goes idle (no cycle ready) before any value arrives.
-    /// See [`GXHandle::wait_result_or_idle`].
-    WaitResultOrIdle {
-        id: ExprId,
-        res: oneshot::Sender<Option<Value>>,
-    },
     /// Answer when the runtime next goes idle. See [`GXHandle::wait_idle`].
     WaitIdle {
         res: oneshot::Sender<()>,
@@ -888,29 +882,6 @@ impl<X: GXExt> GXHandle<X> {
         self.exec(|res| ToGX::FusionStats { res }).await
     }
 
-    /// Whether the runtime has pending work for the next cycle. For a
-    /// purely synchronous program, once this is `false` the runtime will
-    /// never produce another value on its own.
-    pub async fn cycle_ready(&self) -> Result<bool> {
-        self.exec(|res| ToGX::CycleReady { res }).await
-    }
-
-    /// Wait for the next value `id` emits, or `None` when the runtime goes
-    /// idle before any value arrives.
-    ///
-    /// If `id` already emitted before this call was serviced the runtime
-    /// is already idle and this returns `None`; the value is in the event
-    /// stream, so drain the event subscription on `None`.
-    // CR claude for claude: [dead/low] Nothing in this repo or ../netidx calls
-    // wait_result_or_idle or GXHandle::cycle_ready. They carry ToGX::WaitResultOrIdle
-    // and ToGX::CycleReady, the GX::result_watch field, its test on every fired root in
-    // update_nodes, and a waiter kind in run's idle verdict, all untested. Delete them.
-    // Keep the private GX::cycle_ready, which run uses. Found by reading; not run.
-    // (rt-04)
-    pub async fn wait_result_or_idle(&self, id: ExprId) -> Result<Option<Value>> {
-        self.exec(|res| ToGX::WaitResultOrIdle { id, res }).await
-    }
-
     /// Wait until the runtime has no cycle ready, confirmed on a second
     /// pass. Every update of the cycles before it, and the
     /// [`GXEvent::Idle`] a pending [`GXHandle::notify_idle`] sends at the
@@ -1187,24 +1158,19 @@ impl<X: GXExt> GXConfig<X> {
         GXConfigBuilder::default().ctx(ctx).sub(sub)
     }
 
+    /// Do what [`start`](Self::start) does before the first cycle, compile
+    /// the root and the program and send their images, and run nothing:
+    /// an error when the program did not compile.
+    pub async fn compile(self) -> Result<()> {
+        GX::new(self).await?.program_compiled()
+    }
+
     /// Start the runtime and return a handle to it. It compiles `root`,
     /// the module every later compile sees (the package root
     /// `graphix_package::register_packages` returns, its builtins
     /// registered in `ctx`), or restores it from the registration image,
     /// then compiles `program` when one is given. With no root the
     /// runtime holds the language alone.
-    /// Do what [`start`](Self::start) does before the first cycle, compile
-    /// the root and the program and send their images, and run nothing:
-    /// an error when the program did not compile.
-    // CR claude for claude: [readability/low] This doc block opens with `start`'s
-    // documentation ("Start the runtime and return a handle to it ..."), followed by
-    // compile's own, and `start` has no doc. rustdoc therefore tells embedders that
-    // compile returns a handle. Move the first paragraph onto `start`. Found by
-    // reading; not run. Also reported as (rt-05), (shell-06). (book-modules-udt-14)
-    pub async fn compile(self) -> Result<()> {
-        GX::new(self).await?.program_compiled()
-    }
-
     pub async fn start(self) -> Result<GXHandle<X>> {
         // The handle and the running `ExecState` share the control.
         let control = self.ctx.control.clone();

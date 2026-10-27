@@ -71,6 +71,22 @@ run!(rem_by_neg_one_is_zero, REM_BY_NEG_ONE_IS_ZERO, |v: Result<&Value>| match v
     _ => false,
 }; FuseExpect::Jit);
 
+// Checked float arithmetic follows IEEE and never fails: an infinity,
+// a NaN, never an error.
+run!(
+    checked_float_follows_ieee,
+    r#"{
+    let f = |x: f64, y: f64| (x +? y, x -? y, x *? y, x /? y, x %? y);
+    let g = |x: f32, y: f32| (x +? y, x *? y, x /? y, x %? y);
+    (#[native] f(1.0, 0.0), #[native] f(1e308, 1e308), #[native] f(7.5, -2.0), #[native] g(f32:1.0, f32:0.0))
+}"#,
+    prints(
+        "[[f64:1., f64:1., f64:0., f64:inf, f64:NaN], [f64:inf, f64:0., f64:inf, f64:1., f64:0.], \
+         [f64:5.5, f64:9.5, f64:-15., f64:-3.75, f64:1.5], [f32:1., f32:0., f32:inf, f32:NaN]]"
+    );
+    FuseExpect::Jit
+);
+
 // Each checked failure names its cause.
 const CHECKED_FAILURES_NAME_THEIR_CAUSE: &str = r#"
 {

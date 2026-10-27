@@ -378,10 +378,6 @@ pub(super) struct GX<X: GXExt> {
     resolvers: Resolvers,
     batch_pool: Pool<Vec<GXEvent>>,
     flags: BitFlags<CFlag>,
-    /// A pending `WaitResultOrIdle` request: deliver the first value the
-    /// watched expr emits, or `None` when the runtime next goes idle. See
-    /// `GXHandle::wait_result_or_idle`.
-    result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
     /// Pending `WaitIdle` requests, answered at the next idle verdict.
     idle_waiters: Vec<oneshot::Sender<()>>,
     /// A `NotifyIdle` is pending: the next idle verdict sends
@@ -439,7 +435,6 @@ impl<X: GXExt> GX<X> {
             resolvers: std::sync::Arc::from(cfg.resolvers),
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
-            result_watch: None,
             idle_waiters: Vec::new(),
             notify_idle: false,
             settle_waiters: Vec::new(),
@@ -593,13 +588,6 @@ impl<X: GXExt> GX<X> {
             let tv = n.update(&mut self.ctx.view());
             if tv.is_fired() {
                 let v = tv.value_cloned();
-                let watched =
-                    matches!(self.result_watch.as_ref(), Some((wid, _)) if *wid == id);
-                if watched {
-                    if let Some((_, tx)) = self.result_watch.take() {
-                        let _ = tx.send(Some(v.clone()));
-                    }
-                }
                 if let Some(tr) = self.trace.as_mut() {
                     tr.record(self.ctx.rt.cycle, id, &v);
                 }
@@ -1087,15 +1075,6 @@ impl<X: GXExt> GX<X> {
                 }
                 ToGX::FusionStats { res } => {
                     let _ = res.send(self.ctx.fusion.stats());
-                }
-                ToGX::CycleReady { res } => {
-                    let _ = res.send(self.cycle_ready());
-                }
-                ToGX::WaitResultOrIdle { id, res } => {
-                    // `do_cycle` runs right after this batch, so the watch gets one
-                    // chance to fulfil Some before the idle check fulfils None. A
-                    // second request supersedes a pending one (its sender drops).
-                    self.result_watch = Some((id, res));
                 }
                 ToGX::WaitIdle { res } => self.idle_waiters.push(res),
                 ToGX::NotifyIdle => self.notify_idle = true,
@@ -1678,17 +1657,13 @@ impl<X: GXExt> GX<X> {
                 // the grace loop: a finished task or a fire wakes it
                 let settled =
                     !self.settle_waiters.is_empty() && !self.ctx.rt.outstanding();
-                let waiter = self.result_watch.is_some()
-                    || self.trace.is_some()
+                let waiter = self.trace.is_some()
                     || !self.idle_waiters.is_empty()
                     || self.notify_idle
                     || settled;
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
-                    if let Some((_, tx)) = self.result_watch.take() {
-                        let _ = tx.send(None);
-                    }
                     // XCR claude for claude: [risk/low] When try_reserve finds the
                     // channel full, notify_idle stays set, but idle_passes goes back to
                     // 0. The select! below then has no grace timer and no arm that

@@ -741,7 +741,7 @@ node graph IS the IR — there is no parallel typed IR
   words are defined only through `ValueVar::define`, which also writes
   the stack slot its drops read (`abi.rs`); a bottom is a
   production whose STALE bit follows the same trigger fold as a value
-  (`nodes::emit_bottom_placeholder` takes the governing discs); kernel
+  (`nodes::emit_bottom_placeholder` takes the governing disc); kernel
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
 - **JIT pipeline and memory** (`fusion/emit/jit.rs`): emission names
