@@ -1642,24 +1642,20 @@ where
 
 /// A struct literal's start: its first field's name and what may follow
 /// a field's name.
-// CR claude for claude: [bug/medium] A struct literal whose first field is a pun
-// followed by a comment is not taken as a struct: this lookahead wants `:`, `,` or
-// `}` right after the name's spaces, so `{ a //below }` and `{ a // eol }` fall to the
-// block parse, which refuses at the comment ("Unexpected `/`"). Two fields parse
-// (`{ a, b //below }`), and CLAUDE.md says a comment may end a field's line or stand
-// below a list's last item, so the printer writes this form and the formatter refuses
-// its own output. Found by expr::test::expr_pp_round_trip and pack_round_trip
-// (generated `{ #[..] and //.. //.. }`); repro: `let a = 1; let s = { a //below
-// }; s` through `graphix fmt --stdout`. Fix: let the lookahead skip a line's comment and
-// own-line comments before the `}`, and add the one-field case to the parser tests.
-// Not fixed when found: an off-topic gate failure goes to Eric first. (struct-pun-comment-01)
 fn struct_head<I>() -> impl Parser<I, Output = ()>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (token('{'), leading_decorations(), fldname(), spaces())
+    let comment = || (string("//"), skip_many(satisfy(|c| c != '\n')), spaces());
+    (
+        token('{'),
+        leading_decorations(),
+        fldname(),
+        spaces(),
+        skip_many(attempt(comment())),
+    )
         .with(satisfy(|c| matches!(c, ':' | ',' | '}')))
         .map(|_| ())
 }
