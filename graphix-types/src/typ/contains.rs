@@ -656,6 +656,16 @@ impl Type {
     // tied to another variable 'c; Array<'b> with y: 'b still checks); its verdicts
     // helper now bounds a run at 30 s so an accepted program fails the test instead of
     // hanging it.
+    // 2026-10-27 claude: L1-b08 found the change had also made
+    // FnType::open_quantifier_gates hold a signature's open quantifiers rank-2 rigid
+    // (open_quantifier_rigid), extending the rank-2 rule to quantified function types
+    // in let annotations and struct fields (pins rank2_let_annotation_keeps_its_bound,
+    // rank2_typedef_struct_field_keeps_its_bound); that broke
+    // lang::collection::collection_returns_a_generic_function (check accepts, build
+    // refuses) and was no part of this finding, so it is reverted with those two pins,
+    // and trait_any_bound_does_not_imply_ordered expects its original refusal again.
+    // Whether a written quantified fn type outside a formal is rank-2 is a semantics
+    // question for Eric.
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
         if strictly_identical(self, c)
             || matches!((self, c), (Type::Ordered, Type::Discernible))

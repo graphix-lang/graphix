@@ -241,4 +241,4 @@ run!(hbs_partials_reference_refused, r#"{
 
 run!(hbs_partials_function_refused, r#"
     hbs::render(#partials: {p: |x| x}, "hi {{a}}", {a: 1})
-"#, refused("is not data: a writer writes no function and no reference"); FuseExpect::None);
+"#, refused("is not data: data holds no function and no reference"); FuseExpect::None);
