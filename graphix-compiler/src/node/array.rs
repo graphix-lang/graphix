@@ -154,6 +154,12 @@ impl<R: Rt> ArrayRef<R> {
         // no image format bump. Remaining: Catch and ErrorRelay, Bind, LambdaInstance,
         // Module, CachedArgsAsync, Filter/Queue/Hold/Throttle, and net/time/watch/http
         // builtins. The CR remains open for those kinds.
+        // 2026-10-27 claude: Catch, ErrorRelay and Bind now build through one
+        // constructor each (Catch::with, ErrorRelay::with, Bind::with; Bind had a third
+        // site in lower_over_operands), commits 6852e38f6, f33713163, 6d51e8bb1, by the
+        // local qwen lane, reviewed. lang::image and lang::errors pass. Remaining:
+        // LambdaInstance, Module, CachedArgsAsync, Filter/Queue/Hold/Throttle, and the
+        // net/time/watch/http builtins.
         Ok(Self::with(spec, typ, etyp, source, i))
     }
 
