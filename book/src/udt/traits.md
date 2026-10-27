@@ -233,6 +233,12 @@ them as Graphix syntax). Every type has the structural default, so
 the core traits hold as bounds for every type, and the dispatchers
 work on every value: `Eq::eq(1, 1)` is `1 == 1`.
 
+Each comparison uses only its own trait implementation. An `Eq` implementation
+allows equality on its abstract type without examining the representation,
+but ordering still requires that representation to be ordered unless `Ord`
+is also implemented. Likewise, `Ord` does not supply equality or excuse an
+ambiguous representation from the `Discernible` check.
+
 A case-insensitive key, equal however it is capitalized:
 
 ```graphix

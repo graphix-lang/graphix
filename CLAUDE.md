@@ -992,9 +992,9 @@ cycle, across workers; the compiler never pins threads.
   compared type (`==` and the orderings), a map key type and what the
   stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,
   `map::` keys) may hold no such pair anywhere: the `'a: Discernible`
-  bound (`Type::indiscernible`; an abstract type with no `Eq` or `Ord`
-  implementation is judged by its representation, the refusal naming the
-  abstract), which a generic definition's variable
+  bound (`Type::indiscernible`; an abstract type without `Eq` is judged by
+  its representation for equality, and one without `Ord` for ordering,
+  the refusal naming the abstract and the missing trait), which a generic definition's variable
   takes from its body, so each call checks it; what orders or hashes
   (the orderings, sorts, `min`/`max`, `dedup`, map keys) takes
   `'a: Ordered`, which also refuses a reference, a function or a type holding two

@@ -15,7 +15,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::{BitFlags, bitflags, make_bitflags};
 use immutable_chunkmap::map::Map;
 use netidx_value::{NakedValue, Typ, ValArray, Value};
@@ -2085,13 +2085,18 @@ fn abstract_at(t: &Type) -> Option<At<Type>> {
     }
 }
 
-/// What an abstract type's values compare, order and hash by when it has
-/// no `Eq` or `Ord` implementation of its own: its representation, its
+/// What an abstract type's values compare by without an implementation
+/// of the corresponding comparison trait: its representation, its
 /// parameters substituted (`design/tvar_constraints.md`). A Rust-backed
 /// abstract has none to look into, and one with an implementation is
 /// what the implementation says.
-fn compared_rep(env: &Env, id: AbstractId, params: &[Type]) -> Option<Type> {
-    // CR claude for claude: [bug/medium] Either impl excuses the representation from both
+fn compared_rep(
+    env: &Env,
+    id: AbstractId,
+    params: &[Type],
+    kind: CoreTrait,
+) -> Option<Type> {
+    // XCR claude for claude: [bug/medium] Either impl excuses the representation from both
     // judgments, but an Eq impl says nothing about order. type B = Abstract<[i64, f64]>
     // with only `impl Eq for B` passes Ordered, and array::sort([B(2), B(1.5), B(1)])
     // returns [B(1), B(2), B(1.5)], the mixed-numeric order Ordered refuses when the
@@ -2103,7 +2108,14 @@ fn compared_rep(env: &Env, id: AbstractId, params: &[Type]) -> Option<Type> {
     // (t-cast-setops-05)
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q32, An Eq-only
     // abstract and Ordered): yes, per trait (the recommendation: per trait.)
-    if env.implements(CoreTrait::Eq, id) || env.implements(CoreTrait::Ord, id) {
+    // 2026-10-27 codex: Implemented the per-trait ruling: Ord alone bypasses the Ordered
+    // representation check; Eq alone bypasses Discernible and equality-reference
+    // traversal. Diagnostics name the missing trait. Pins
+    // lang::traits::{eq_only_abstract_does_not_supply_order,ord_only_abstract_does_not_supply_equality}
+    // failed in all four modes before the fix; the corresponding positive tests cover
+    // each implemented trait. The equality refusal uses differing function signatures,
+    // which share a runtime form. Rules, book and language skill updated.
+    if env.implements(kind, id) {
         return None;
     }
     Some(env.abstract_reps.get(&id)?.instantiate_with(params))
@@ -2266,10 +2278,10 @@ pub enum Indiscernible {
     /// The name of a definition whose parameters grow as it recurses, so
     /// no walk decides it.
     Grows(ModPath),
-    /// An abstract type with no `Eq` or `Ord` implementation, whose values
+    /// An abstract type without the requested comparison implementation, whose values
     /// compare by a representation that fails one of the above; its
     /// representation is its module's, so only its name is told.
-    Abstract(Type),
+    Abstract(Type, CoreTrait),
 }
 
 impl Indiscernible {
@@ -2294,7 +2306,7 @@ impl Indiscernible {
             | Indiscernible::OpenNumber(_) => {
                 unreachable!("a runtime test is no order")
             }
-            Indiscernible::Abstract(_) => {
+            Indiscernible::Abstract(..) => {
                 unreachable!("a runtime test does not look into an abstract type")
             }
         }
@@ -2302,11 +2314,11 @@ impl Indiscernible {
 
     /// Why an abstract type's values fail a comparison: they compare by
     /// a representation outside its module's sight.
-    pub fn by_representation(a: &Type) -> String {
-        format!(
-            "{} has no Eq or Ord implementation, so its values compare by its \
+    pub fn by_representation(a: &Type, kind: CoreTrait) -> CompactString {
+        format_compact!(
+            "{} has no {kind:?} implementation, so its values compare by its \
              representation, which can't tell them apart or order them here; \
-             implement Eq and Ord for it",
+             implement {kind:?} for it",
             a.resolve_tvars()
         )
     }
@@ -2445,7 +2457,8 @@ fn rep_ambiguity(
                     Some(Indiscernible::Unordered(t.clone()))
                 }
                 Type::Abstract { id, params } => {
-                    let rep = compared_rep(env, *id, params)?;
+                    let kind = if ordered { CoreTrait::Ord } else { CoreTrait::Eq };
+                    let rep = compared_rep(env, *id, params, kind)?;
                     let inside = walk(
                         seen,
                         abstract_at(t),
@@ -2463,7 +2476,7 @@ fn rep_ambiguity(
                         }
                         Indiscernible::OpenNumber(n) => Indiscernible::OpenNumber(n),
                         Indiscernible::Grows(n) => Indiscernible::Grows(n),
-                        _ => Indiscernible::Abstract(t.clone()),
+                        _ => Indiscernible::Abstract(t.clone(), kind),
                     })
                 }
                 _ => None,
@@ -2542,10 +2555,10 @@ impl Type {
                     n.resolve_tvars(),
                     Indiscernible::OPEN_NUMBER
                 ),
-                Indiscernible::Abstract(a) => {
+                Indiscernible::Abstract(a, kind) => {
                     anyhow::anyhow!(
                         "{what} holds {}",
-                        Indiscernible::by_representation(a)
+                        Indiscernible::by_representation(a, *kind)
                     )
                 }
             }
@@ -2578,17 +2591,18 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
                     }
                     Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
                     Type::Map { key, value } => any(&mut [&**key, &**value].into_iter()),
-                    Type::Abstract { id, params } => match compared_rep(env, *id, params)
-                    {
-                        None => false,
-                        Some(rep) => walk(
-                            seen,
-                            abstract_at(t),
-                            false,
-                            || true,
-                            |seen| compared_ref(env, seen, &rep),
-                        ),
-                    },
+                    Type::Abstract { id, params } => {
+                        match compared_rep(env, *id, params, CoreTrait::Eq) {
+                            None => false,
+                            Some(rep) => walk(
+                                seen,
+                                abstract_at(t),
+                                false,
+                                || true,
+                                |seen| compared_ref(env, seen, &rep),
+                            ),
+                        }
+                    }
                     _ => false,
                 }
             },
@@ -2910,7 +2924,7 @@ fn map_refs(
             (Type::Abstract { id, params }, v)
                 if let Some(g) = abstract_value::get(v)
                     && g.id == *id
-                    && let Some(rep) = compared_rep(env, *id, params) =>
+                    && let Some(rep) = compared_rep(env, *id, params, CoreTrait::Eq) =>
             {
                 let payload = map_refs(env, holds, &rep, &g.payload, f);
                 abstract_value::wrap(*id, g.name.clone(), g.params.clone(), payload)

@@ -510,6 +510,12 @@ an event samples is sampled first and unwrapped after, `(k ~ sel)$`,
 which samples the null and drops it; a call takes that value, not the
 key and `sel$` apart.
 
+## Abstract comparisons
+
+An abstract's `Eq` implementation bypasses representation checks for equality
+only; `Ord` bypasses them for ordering only. Without the relevant implementation,
+its representation must satisfy `Discernible` or `Ordered`, respectively.
+
 ## Field access
 
 A union of structs allows `.field` when every member has that name, even at

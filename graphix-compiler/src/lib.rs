@@ -2659,13 +2659,13 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
     format_with_flags(PrintFlag::DerefTVars, || {
         let typ = typ.resolve_tvars();
         match (what, why) {
-            (Discerned::Compared { .. }, Indiscernible::Abstract(a)) => bail!(
+            (Discerned::Compared { .. }, Indiscernible::Abstract(a, kind)) => bail!(
                 "can't compare values of {typ}: {}",
-                Indiscernible::by_representation(&a)
+                Indiscernible::by_representation(&a, kind)
             ),
-            (_, Indiscernible::Abstract(a)) => bail!(
+            (_, Indiscernible::Abstract(a, kind)) => bail!(
                 "a map key type can't hold {}",
-                Indiscernible::by_representation(&a)
+                Indiscernible::by_representation(&a, kind)
             ),
             (Discerned::Compared { .. }, Indiscernible::Pair(a, b)) => bail!(
                 "can't compare values of {typ}: {} and {} have the same runtime \

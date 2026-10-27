@@ -733,13 +733,9 @@ run!(
     FuseExpect::None
 );
 
-// An abstract type with no Eq or Ord implementation compares by its
-// representation, so the checks look through it: members that share a
-// runtime form, a function and a reference are refused there as they are
-// bare, the refusal naming the abstract and not its representation.
 run!(
     abstract_compares_by_its_rep,
-    refused("U has no Eq or Ord implementation"),
+    refused("U has no Eq implementation"),
     "/test.gx" => r##"
         type U = Abstract<[fn(x: i64) -> i64, fn(x: string) -> i64]>;
         let f: [fn(x: i64) -> i64, fn(x: string) -> i64] = |x: i64| x;
@@ -750,7 +746,7 @@ run!(
 
 run!(
     abstract_function_has_no_order,
-    refused("F has no Eq or Ord implementation"),
+    refused("F has no Ord implementation"),
     "/test.gx" => r##"
         type F = Abstract<fn(x: i64) -> i64>;
         let result = array::sort([F(|x: i64| x)])
@@ -2601,4 +2597,45 @@ run!(
         let m = map::insert(map::insert({}, e, 1), f, 2);
         let result = [cast<Any>(e == f)$, cast<Any>("[e]")$, cast<Any>(map::len(m))$]
     "#
+);
+
+run!(
+    eq_only_abstract_does_not_supply_order,
+    r#"{
+    type B = Abstract<[i64, f64]>;
+    impl Eq for B { let eq = |a, b| true };
+    array::sort([B(2), B(1.5), B(1)])
+}"#,
+    refused("must be Ordered")
+);
+
+run!(
+    ord_only_abstract_does_not_supply_equality,
+    r#"{
+    type B = Abstract<[fn(x: i64) -> i64, fn(x: string) -> i64]>;
+    impl Ord for B { let cmp = |a, b| `Equal };
+    let a: [fn(x: i64) -> i64, fn(x: string) -> i64] = |x: i64| x;
+    B(a) == B(a)
+}"#,
+    refused("B has no Eq implementation")
+);
+
+run!(
+    eq_only_abstract_supplies_equality,
+    r#"{
+    type B = Abstract<[i64, f64]>;
+    impl Eq for B { let eq = |a, b| true };
+    B(2) == B(1.5)
+}"#,
+    is(Value::Bool(true))
+);
+
+run!(
+    ord_only_abstract_supplies_order,
+    r#"{
+    type B = Abstract<[Array<i64>, (i64, i64)]>;
+    impl Ord for B { let cmp = |a, b| `Equal };
+    B([1, 2]) <= B((1, 2))
+}"#,
+    is(Value::Bool(true))
 );
