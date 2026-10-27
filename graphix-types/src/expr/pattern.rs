@@ -234,28 +234,6 @@ impl StructurePattern {
     /// cell last for the elements the rest stands over, so each element
     /// narrows against the scrutinee's element type on its own and the
     /// rest takes it whole.
-    // XCR claude for claude: [bug/critical] Each element of a slice pattern is typed
-    // apart here (one Set member per element), but PatternNode::shape_matches tests the
-    // value against the whole Array<Set{..}>, that is, each element against the union
-    // of the element types. Over an open or Any element type the uses bind the members
-    // apart: `let f = |a| select a { [x, y] => str::len(x) + y, _ => 0 }; f([5,
-    // "abc"])` passes the check, binds 5 as a string, and the fused run aborts on a
-    // misaligned pointer dereference (UB in release). `[x, ..]` and `[<x, ..>]` over
-    // Any admit anything through the open rest cell. Test each element against its own
-    // position's type at run time, in both engines, as a tuple is, or type every
-    // element bind as the whole element type. Pin the generic, Any and List forms.
-    // probe:
-    // design/review-2026-10-26/repro/x-typecheck-patterns-slice-elements-untested.gx
-    // (x-typecheck-patterns-01)
-    // 2026-10-26 claude: Each name a slice element binds now holds its part of every
-    // member the element's structure admits (StructPatternNode::hold_slice_members,
-    // called from PatternNode::bind_narrowed), so an open or Any element type no longer
-    // lets uses type the elements apart; a literal's footprint is its own type so a
-    // literal-discriminated element is not over-constrained. Pins:
-    // lang::select::slice_element_binds_hold_every_member (Any, List and generic forms;
-    // SIGSEGV with the call removed), slice_elements_share_an_open_type,
-    // slice_nested_binds_hold_every_member. Still open: `[x, _]` over Any, whose `_`
-    // member Any.narrow_pattern leaves open, closes with (c-pattern-03).
     fn infer_slice(
         env: &Env,
         scope: &ModPath,

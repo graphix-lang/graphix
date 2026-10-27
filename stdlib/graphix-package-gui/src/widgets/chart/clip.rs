@@ -38,22 +38,6 @@ enum Edge {
 /// (Liang–Barsky), each its parameter along the segment and its point,
 /// which lies exactly on the edge that cut it; `None` when none of it
 /// is, or a coordinate is not finite.
-// XCR claude for claude: [bug/low] b - a overflows to infinity for finite points of
-// opposite sign beyond about 9e307. Then q / p is 0, the interval collapses to t = 0,
-// and lerp returns NaN (a + inf * 0). The visible part of the segment is dropped and
-// NaN points reach plotters, which breaks the module's promise that runs lie inside the
-// view. Fix: when dx or dy is not finite, clip a/2 and b/2 against the halved view
-// (Liang–Barsky does not change under uniform scaling), and compute lerp as a*(1-t) +
-// b*t. probe: design/review-2026-10-26/repro/gui-chart-clip-overflow.rs (verbatim copy
-// of these functions, compiled standalone) (gui-chart-04)
-// 2026-10-26 claude: clip_segment now takes every difference as half_diff (b/2 - a/2,
-// finite for finite inputs, bit-identical ratios above the subnormals), lerp goes
-// through it, and each clipped end is snapped onto the edge that cut it, so a visible
-// piece of a segment between far points is kept in the view even where its parameter
-// rounds (the halving alone would leave the horizontal case at x = 0..0); clip_area's y
-// cuts use half_diff too. Pins:
-// clip::test::a_line_between_far_points_is_cut_at_its_edges,
-// an_area_between_far_points_is_cut_where_it_crosses (both fail on the old code).
 fn clip_segment(
     a: (f64, f64),
     b: (f64, f64),

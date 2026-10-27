@@ -260,45 +260,6 @@ fn comments() -> impl Strategy<Value = Comments> {
 /// The `//` comment lines and `#[..]` attributes an expression can carry.
 /// Comment text must not open with `/` (that reads back as `///`). `None`
 /// when there are none of either.
-// XCR claude for claude: [test-gap/medium] This never sets `eol` or `below`, and
-// format.rs has no end-of-line or below case, so no test checks how the printer writes
-// them (`write_eol`, `item_sep`, `item_end`, `trails`). Removing either write from
-// `item_sep`/`item_end` passes the suite; a comment below a trailing `;` is already
-// refused in the field (see the CR at `item_sep`). Generate `eol` on list items and
-// `below` on a list's last item, and add fixed format cases per list kind, with and
-// without a trailing separator. Found by reading; not run. (x-formatter-02)
-// 2026-10-26 claude: test.rs `Trailers` hangs an eol comment on items (most get none)
-// and below lines on the last of every list the generator makes: statements (a
-// trailing NoOp included, never with an eol), select arms, struct and with fields,
-// call args, array/list/tuple/variant elements, seq steps, impl and trait methods, sig
-// items (`module_sig`); `check_dec`, `check_trait` and `check_module_sig` compare
-// them; the flat round trips strip them (`untrailed`: a flat print has no line to
-// end), and pack_round_trip prints pretty so they are packed. Fixed cases per list
-// kind, with and without a trailing separator: format.rs
-// comments_after_list_items_stay. Removing the eol write from `item_sep` fails
-// expr_pp_round_trip and comments_after_list_items_stay; removing the below write from
-// `item_end` fails those and an_empty_statement_is_its_semicolon.
-// XCR claude for claude: [test-gap/medium] No strategy makes `Decorations::eol` or
-// `below`, and `check_dec` ignores both. So the round-trip, pack and tree-sitter
-// proptests never print or parse an end-of-line comment or one below a list's last
-// item. `item_sep`, `item_end`, `trail` and `commented` are pinned only by a few parser
-// unit tests, which missed that a comment below a statement before a trailing `;` is
-// never printed (see the CR on `item_sep`). Fix: give list items (statements, arms,
-// fields, arguments, elements) an optional eol and the last one optional below lines,
-// including before `do_block`'s trailing NoOp, and compare both in `check_dec`. Also,
-// five of six decorated positions get a decoration here, and one anywhere below a node
-// makes it unprintable flat. So flat layouts of selects, blocks and structs almost
-// never run in `expr_pp_round_trip`. Weight `None` up (e.g. 4 to 1). Found by reading;
-// the bug it misses was run:
-// design/review-2026-10-26/repro/tests-expr-fmt-trailing-semi-below.gx (tests-expr-04)
-// 2026-10-26 claude: x-formatter-02's fix covers the eol/below generation (`Trailers`,
-// before a trailing NoOp too) and their comparison in `check_dec`; what remains here is
-// weighting `None` up in `decorations()` so flat layouts run.
-// 2026-10-26 claude: decorations() is now prop_oneof![4 => Just(None), 1 => decorated],
-// so a generated tree is often undecorated and the flat layouts run in
-// expr_pp_round_trip; all expr proptests pass. Pin:
-// expr::test::generated_trees_are_often_undecorated (deterministic runner: 229 of 400
-// trees bare now, 35 with the old weighting, threshold 120).
 /// Mostly none: one decoration anywhere below a node makes it unprintable
 /// flat, so a tree must often have none for the flat layouts to run.
 fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
@@ -544,20 +505,6 @@ fn str_form() -> impl Strategy<Value = StrForm> {
     prop_oneof![Just(StrForm::Quoted), Just(StrForm::Raw), Just(StrForm::Template)]
 }
 
-// XCR claude for claude: [test-gap/low] Only expression strings are collected here, and
-// `check_structure_pattern` ignores a `Literal`'s `WrittenForm`. So the round-trip
-// proptests pass even if the pattern printer ignores a string pattern's written
-// delimiters, for example if `StructurePattern`'s Display wrote `Literal(v)` for
-// strings. Fix: collect pattern string literals too (walk binds, lambda args, select
-// arms and a seq `let` trigger's pattern, as `format::Ornaments::pattern` does), and
-// apply `constant`'s CRLF rule in `structure_pattern`'s literal leaf. Found by reading;
-// not run. (tests-expr-07)
-// 2026-10-26 claude: same_str_forms now compares format::str_forms, the formatter
-// guard's own ornament walk (Ornaments) filtered to Delimiters, so pattern string
-// literals (binds, lambda args, select arms, a seq let trigger) count; the test's own
-// walk is gone. The CRLF rule is written_form, shared by constant() and
-// structure_pattern's literal leaf. Pin: expr_round_trip fails at once when
-// StructurePattern's Display ignores the WrittenForm.
 /// `e0` and `e1` write their strings, expressions' and patterns', between
 /// the same delimiters.
 fn same_str_forms(e0: &Expr, e1: &Expr) -> bool {
@@ -1831,26 +1778,6 @@ fn add_parens(mut e: Expr) -> Expr {
     }
 }
 
-// XCR claude for claude: [test-gap/low] Binary operators are generated only here, over
-// operands from this strategy alone. So no generated tree has `?`/`$` over an operator
-// or prefix form, or a lambda (or an operator ending in one) as an operand.
-// `printer_parenthesizes_unparenthesized_trees` therefore never tests `print::suffixed`
-// or the lambda case of `print::under`. And `under` is wrong without written parens:
-// `BinOp(+, BinOp(+, a, |x| x), b)` prints `a + |x| x + b`, which reads back as a
-// lambda over `x + b`; a lone lambda left operand misprints the same way. Fix: add a
-// `qop!` arm and a lambda leaf here; have `add_parens` parenthesize what those need;
-// and make `under` parenthesize an operand that ends in a lambda unless it is the
-// operator's last. Found by reading; not run. (tests-expr-05)
-// 2026-10-26 claude: print.rs: under parenthesizes a left operand that ends in a bare
-// lambda (ends_in_lambda: a lambda, a BinOp whose bare right operand ends in one, an &
-// over one); suffixed takes a lambda; prefixed takes a lambda except under & (the
-// parser refuses -|x| x, !|x| x, *|x| x and takes &|x| x). arithexpr has a lambda leaf
-// and a ?/$ arm over any operand; add_parens parenthesizes a suffixed operand and a
-// left operand ending in a lambda, a right-operand lambda stays bare; strip_parens also
-// takes the parens off a lambda an operator holds. Pins:
-// expr::test::operands_ending_in_a_lambda_print_in_parens (each of the four printer
-// changes fails it when undone) and printer_parenthesizes_unparenthesized_trees (fails
-// on the under and suffixed undos). gxfmt corpus over both repos: clean.
 fn arithexpr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![
         4 => constant(),
@@ -3063,20 +2990,6 @@ fn ts_list_closer_parses() {
 /// What the parser takes at a file's head, between its tokens and in a
 /// pattern, tree-sitter takes too.
 #[test]
-// XCR claude for claude: [test-gap/low] These sources are asserted against tree-sitter
-// only, so the claim in the test's name is never checked. `val x: i64; // c\n/// d\nval
-// y: i64` is refused by the parser ("a comment stands on a line of its own"; an
-// interface takes no end-of-line comment), yet it stays in this list. Fix: parse each
-// source with `parser::parse` or `parse_sig` too, assert the parser's refusals in
-// `ts_refuses_what_the_parser_does`, and drop or move that entry. probe:
-// design/review-2026-10-26/repro/tests-expr-gxi-eol-comment.gxi (tests-expr-06)
-// 2026-10-26 claude: Both lists now check the parser too (parser_takes: parse or
-// parse_sig after without_shebang): ts_accepts asserts the parser takes each source,
-// ts_refuses that it refuses each. The eol-comment entry stays: the parser takes it
-// since the comment-rule fixes on cr26-staging (interface items take an Eol comment),
-// so the repro no longer reproduces. Pin: an entry the parser refuses fails
-// ts_accepts_what_the_parser_does on 'the parser refuses' (checked with a val with no
-// separator).
 fn ts_accepts_what_the_parser_does() {
     use tree_sitter_compat::find_probe_error;
     const SRCS: &[&str] = &[

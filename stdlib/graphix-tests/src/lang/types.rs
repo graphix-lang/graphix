@@ -1331,17 +1331,6 @@ run!(
     refused("the members' fields differ");
     FuseExpect::None
 );
-// XCR claude for claude: [test-gap/medium] union_field_write_where_members_agree cannot
-// fail on the write it is about. run! reads only the first update, which is 8, computed
-// before `*r <- 5` lands, and the predicate accepts any i64. A no-op write through
-// `&mut s.a`, or a patch into the wrong member, still passes. Gate the result on the
-// write (e.g. skip(#n: 1, ..)) and pin it exactly: s is {a: 5, b: 9} and the sum is 12.
-// probe: design/review-2026-10-26/repro/tests-types-union-field-write-first-value.gx
-// (tests-types-03)
-// 2026-10-26 claude: The fixture now skips the update before the write lands and pins
-// the next exactly: s is {a: 5, b: 9} and the sum 12. A no-op write leaves no second
-// update (the test times out) and a wrong patch misprints. Pin:
-// lang::types::union_field_write_where_members_agree.
 run!(
     union_field_write_where_members_agree,
     "{ type S = [{a: i64, b: string}, {a: i64, b: i64}]; \
@@ -2235,17 +2224,6 @@ run!(an_alias_is_its_expansion, r#"{
 
 // Mixed sets compare by == like any union, numeric ones included: values
 // of two numeric types are never equal.
-// XCR claude for claude: [test-gap/medium] No test feeds a NaN to a comparison. The
-// JIT's NaN handling, the fcmp Unordered fix-ups in fusion/emit/scalar.rs, could be
-// replaced by a plain fcmp and every test would still pass, with the kernel and the
-// node-walk then disagreeing on NaN == NaN and NaN < -inf. Add a fixture here that runs
-// the six comparisons over (NaN, NaN), (NaN, -inf) and (-inf, NaN) in a `#[native]`
-// function body, plus sort and min over a NaN, and pin the exact results. probe:
-// design/review-2026-10-26/repro/tests-types-nan-order-unpinned.gx (tests-types-02)
-// 2026-10-26 claude: New fixture lang::types::nan_comparison_is_a_total_order: the six
-// comparisons in a #[native] body over (NaN, NaN), (NaN, -inf), (-inf, NaN), plus
-// array::sort, min and max over a NaN, pinned exactly. Replacing compile_cmp's float
-// fix-ups with plain fcmp fails its jit and jit_par modes (checked).
 const COMPARISON_MIXED: &str = r#"{
   let x: [i64, f64] = 3;
   let y: [i64, f64] = 2.5;

@@ -749,17 +749,6 @@ run!(dynamic_module_missing_import, DYNAMIC_MODULE_MISSING_IMPORT, load_refused(
 
 // Sleep is pause: a loaded body whose arm sleeps resumes at the wake
 // even though its source does not fire again.
-// XCR claude for claude: [test-gap/low] This fixture catches a reload at the wake and an
-// arm that never wakes, but not an arm that never sleeps. If the loaded body kept
-// ticking while unselected, x would reach 40 sooner and `n >= 40` would still hold.
-// Gate on a self-loop counter instead of timers and pin the value delivered at the wake
-// exactly, so a tick while asleep shows. Found by reading; not run.
-// (tests-modules-image-07)
-// 2026-10-27 claude: The loaded body is a self-loop counter in lockstep with the
-// program's own step counter, asleep for steps 10..19, and the fixture pins the value
-// delivered at the wake exactly: 10 (a body that ticked asleep gives 20, a reload at
-// the wake 0 or 1, an arm that never wakes nothing). Pin:
-// dynamic_module_sleep_is_pause.
 const DYNAMIC_MODULE_SLEEP: &str = r#"
 {
     let src = "let x = 0; x <- select x { v if v < 100 => v + 1, _ => never() }";

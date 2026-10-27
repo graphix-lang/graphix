@@ -2019,22 +2019,6 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     }
 }
 
-// XCR claude for claude: [perf/medium] ConnectDeref has no `fuse`, and neither do Deref
-// and ByRef, so the right side of `*r <- e`, the child of `*e` and a place key never
-// get a region pass: a pure call there stays in the node-walk, where `v <- e`
-// (Connect::fuse) fuses it. A `#[native]` in those positions is refused as "a position
-// the fusion pass cannot check". Give each a fuse over its children through
-// fusion::fuse_parts (self.rhs here, self.child in Deref, the referent's nodes in
-// ByRef), as Connect does. probe:
-// design/review-2026-10-26/repro/x-node-contract-connectderef-no-fuse.gx
-// (x-node-contract-02)
-// 2026-10-27 claude: ConnectDeref::fuse fuses its RHS, Deref::fuse its child and
-// ByRef::fuse its referent through fusion::fuse_parts; a place's keys fuse as parts
-// and its root only descends (Place::fuse), so root_place still finds the Ref or Deref
-// it downcasts. Pin: lang::byref::native_under_references (#[native] on a pure call in
-// each of the four positions; without the fuse methods each position is refused as 'a
-// position the fusion pass cannot check'). fusecheck counts may rise for pins writing
-// *r <- f(..).
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         f(&self.rhs)
@@ -2085,21 +2069,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 addressless = self.cell.is_none();
             }
         }
-        // XCR claude for claude: [bug/medium] A write made before the reference first
-        // arrives is kept only as a flag. It is then landed with the RHS's value in the
-        // arrival cycle, if that value is not bottom. An event RHS is bottom by then,
-        // so the write never lands, though CLAUDE.md and design/place_references.md say
-        // it lands at the first target. Fix: hold the written value (`pending:
-        // Option<Value>`), drop it on a bottom address, and land it at the first cell
-        // whatever the RHS is then. Pin the event-RHS case in lang::byref. probe:
-        // design/review-2026-10-26/repro/x-engine-firing-prearrival-write-dropped.gx
-        // (x-engine-firing-04)
-        // 2026-10-27 claude: ConnectDeref::pending now holds the written value
-        // (Option<Value>): a fired, non-bottom RHS replaces it, a reference arriving
-        // addressless drops it, and the first cell lands it whatever the RHS is then. A
-        // RHS that fired bottom no longer leaves a flag that a later stale value would
-        // land. Pin: lang::byref::event_write_before_reference_arrives (the probe's
-        // shape; times out in all four modes with the flag restored).
         if addressless {
             self.pending = None;
         } else if written.is_some() {
@@ -2778,7 +2747,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // rest of the debt is paid through `pay`; a bottom arg pays nothing
         let live = self.arg.value.as_ref().filter(|_| !self.arg.tag.is_bottom());
         let answered = match live {
-            // XCR claude for claude: [bug/medium] A trigger that finds the argument
+            // XCR claude for eric: [bug/medium] A trigger that finds the argument
             // bottom after it once had a value is answered here from the stale held
             // value: the debt is decremented, the next match turns it into a bottom,
             // and nothing is paid when the argument returns. A trigger that finds the
@@ -2807,6 +2776,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             // (9, 10) when the reference returns), never its last. This follows
             // CLAUDE.md and book/src/core/select.md; x-engine-firing-01 and
             // x-seq-sampling-05 still ask Eric to confirm the rule.
+            // 2026-10-27 claude: reviewed: the code banks cleanly and the pins hold; it
+            // decides the rule x-engine-firing-01 and x-seq-sampling-05 ask you to rule
+            // on (bank vs ride vs never-produced only). If you rule bank, delete this
+            // with them; otherwise revert 265c6bcd2.
             Some(v) if owed > 0 && var.is_none() => {
                 owed -= 1;
                 Some(v)
@@ -2857,23 +2830,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     // that a banked trigger outlives its run and document it. probe:
     // design/review-2026-10-26/repro/x-seq-sampling-bank-survives-run.gx
     // (x-seq-sampling-04)
-    // XCR claude for claude: [bug/medium] A banked sample under Owed::Each (seqq's
-    // request queue) sends all but one payment of a backlog through `id` with set_var,
-    // one per cycle. This sleep takes none of them back: payments that land while the
-    // arm sleeps are missed, and the wake's catch-up re-raises the variable once. A
-    // seqq in a select arm whose capture arrived late runs 2 of its 4 queued requests.
-    // Count payments sent but not yet received; on sleep, re-mint `id` (release it, ref
-    // a fresh one) and add the count back to `owed`, as Queue/IterQ do with
-    // InFlight::take_back. probe:
-    // design/review-2026-10-26/repro/x-node-contract-banked-sample-sleep.gx
-    // (x-node-contract-01)
-    // 2026-10-27 claude: Banking::Each's Payments counts what it paid through its id
-    // and has not received; Sample::sleep re-mints the id (release, ref a fresh one)
-    // and adds that count back to owed, so the wake answers one from the held argument
-    // and pays the rest again. Pin: lang::seqq::banked_requests_survive_a_sleep (the
-    // probe's shape on a step counter: four runs; two with the sleep's take-back
-    // removed, all four modes). Image format 90 (Sample's banking encoding changed with
-    // x-seq-sampling-07).
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         // what was paid and not yet received is owed again under a fresh
         // id, so a payment landing while asleep is not lost

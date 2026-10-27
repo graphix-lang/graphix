@@ -146,42 +146,6 @@ pub(super) fn emit_outlined(
     })
 }
 
-// XCR claude for claude: [perf/medium] [perf/medium] Every outlined loop stores
-// every local in scope into its frame record, and its chunk loads and binds all of
-// them back, though an iteration reads only its callback's free locals. A kernel
-// with M loops and L locals therefore emits M x L stores, executed at every kernel
-// run, and L loads per chunk. Separately, `call::emit_pending_abort`'s rungs
-// `use_var` every owned local, so the SSA builder passes all of them as block
-// arguments from every abort exit (M x L again). For a chain of n `array::map`
-// lets: 10900 stores at n=100, 41800 at 200, 163600 at 400, and first value at 0.64
-// s / 2.09 s / 8.09 s for n=400 / 800 / 1600 (debug, mostly phase Link). Fix: store
-// and bind only the locals the iteration reads (the outer reads
-// `lowering::ReadsMemo` already computes for captures). Spill each owned local once
-// where it is bound and have the rungs load it. probe:
-// design/review-2026-10-19/repro/x-perf-compile-outline-frame-stores.sh
-// (x-perf-compile-01)
-// 2026-10-20 claude: The frame half is done (see x-rerun-6-05 beside this: only the
-// locals the iteration reads are stored and bound). Still open:
-// call::emit_pending_abort rungs use_var every owned local, so every abort exit
-// passes all of them as block arguments.
-// 2026-10-20 claude: Measured the abort-rung half after the frame fix: in the chain
-// probe block params grow as n^2 (41k/162k/645k at n=200/400/800) while
-// instructions grow linearly (82 per loop), and the Cranelift backend on the one
-// large kernel takes 0.41/1.96/7.0 s at n=800/1600/3200 (1.25/4.7 s at 1600/3200
-// with the verifier off; opt_level none does not help), the end-to-end run
-// 1.0/3.5/11.2 s. The fix stands as written, with one hazard: a tail loop redefines
-// its formals variables every iteration (body.rs, the staged def_vars before the
-// jump to the head), so a spill slot must be written at every def_var of an owned
-// local, not only at bind_local, or a rung drops a stale value.
-// 2026-10-26 claude: Both halves are done. The frame half (864d616ce) had no pin:
-// graphix-shell/tests/kernel_ssa_growth.rs
-// map_chain_frames_hold_only_what_they_read now counts the CLIF stores of a 100-let
-// array::map chain (1298; 11396 with every local handed). The abort-rung half is
-// e061de34a's spill slots (the call.rs XCR of this id), pinned by
-// owned_fold_chain_has_no_alias_per_exit and long_owned_fold_chain_runs.
-// f-call-flow-05: emit_outlined now collects the handed locals once and passes the
-// list to emit_chunk. Link of one large kernel is still most of a long chain's
-// time.
 /// The locals a chunk is handed: those the iteration reads, and every
 /// synthetic one, which no read names by id.
 fn handed<'e>(env: &'e JitEnv, facts: &'e LoopBody) -> impl Iterator<Item = &'e Local> {

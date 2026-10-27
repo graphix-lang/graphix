@@ -819,22 +819,6 @@ fn narrow_to_representation<R: Rt, E: UserEvent>(
     declared: Arc<ImplDef>,
     implementation: &ImplDef,
 ) -> Fulfils {
-    // XCR claude for claude: [bug/medium] This narrows the registered declaration, which
-    // may already be a narrowed copy, and Impl::delete never puts the full declaration
-    // back. After a dynamic module reload whose Cast impl gains a method, the new
-    // method can never return: check_sig_items proxies only the narrowed methods, and
-    // writers keep using the representation. Narrow from the interface's own
-    // declaration: keep the bind_sig ImplDef in the Impl node, and have Impl::delete
-    // re-register it when it removes a narrowed copy. probe:
-    // design/review-2026-10-26/repro/c-module-traits-dyn-cast-reload.gx
-    // (c-module-traits-01)
-    // 2026-10-27 claude: Impl keeps Fulfils { entry, narrowed }: the registered entry
-    // and, when narrow_to_representation narrowed it, the interface's declaration,
-    // which Impl::delete puts back in the entry's place (Env::replace_impl), so each
-    // load narrows the full declaration. Pin
-    // lang::modules::dynamic_cast_reload_gains_a_method (times out with the restore
-    // undone). Relies on a reload deleting the old body before compiling the new
-    // (x-rerun-5-09 may change that order).
     let mut methods = declared.methods.clone();
     for (name, _) in declared.methods.into_iter() {
         if !implementation.methods.contains_key(name) {
@@ -1057,19 +1041,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             return self.lower_core_call(ctx, core);
         }
         // a union self dispatches per member, as the check judged it
-        // XCR claude for claude: [bug/medium] A union member that is a ref to a union
-        // (`type U = [i64, string]` inside `[U, Counter]`) reaches find_impl
-        // unexpanded, which finds no impl. Elaboration refuses ("no implementation of
-        // Show for U") what the check accepted, and GRAPHIX_ELAB_AUDIT reports it.
-        // Expand each non-trait Type::Ref member and flatten nested sets recursively,
-        // not only multi-flag primitives, before lower_trait_union. probe:
-        // design/review-2026-10-26/repro/c-module-traits-union-alias-self.gx
-        // (c-module-traits-02)
-        // 2026-10-27 claude: resolve_trait_call lowers a union self over
-        // Type::dispatch_members, the member list the check's trait_contains and
-        // dispatch_collision judge, so a member that names a union is expanded and
-        // flattened before lower_trait_union; pin
-        // lang::traits::trait_union_dispatch_through_alias.
         let union = match &self_t {
             Type::Set(_) => true,
             Type::Primitive(p) => p.len() > 1,

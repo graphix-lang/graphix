@@ -65,24 +65,6 @@ impl SameType {
 pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
     let mut seen: LPooled<AHashSet<SameType>> = LPooled::take();
     let mut distinct: LPooled<Vec<&Type>> = LPooled::take();
-    // XCR claude for claude: [perf/low] [perf/low] This dedupe is a linear scan, and
-    // `same` never equates two primitive types (each literal element carries its own
-    // Type) or two separately built structs. Every element counts as distinct and the
-    // loop is O(n^2) in the literal's length. `[0, 1, ..]` checks in 0.34 / 0.86 / 2.55
-    // s at 20k / 40k / 80k elements (Typecheck0 90 / 412 / 1822 ms), and a string-keyed
-    // map literal in 0.46 / 1.15 / 3.36 s. Compare Type::Primitive by value in `same`,
-    // and keep the distinct members in a set keyed by a cheap identity instead of
-    // scanning. probe:
-    // design/review-2026-10-26/repro/x-perf-compile-literal-element-union.sh
-    // (x-perf-compile-08)
-    // 2026-10-27 claude: element_union dedupes through a pooled hash set keyed by
-    // SameType (discriminant plus a primitive's bits, a cell's address or the shared
-    // parts' addresses, else the type's address), so equal primitives are one member
-    // and the dedupe is linear; [0, 1, ..] at 80k now checks its literal in a few ms
-    // (debug). Separately built structs stay distinct members, as before: only content
-    // comparison would merge them, and union_of_alternatives handles them. Pin
-    // node::array::tests::a_literals_element_union_is_linear (400k i64 elements under 2
-    // s; the old scan takes 20 s).
     distinct.extend(ts.iter().copied().filter(|t| seen.insert(SameType::of(t))));
     match &distinct[..] {
         [_, one] => Ok((*one).clone()),

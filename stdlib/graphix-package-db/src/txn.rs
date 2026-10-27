@@ -182,24 +182,6 @@ impl TxnState {
                 Ok(Value::Error(rep::make_variant(literal!("Conflict"), []).into()))
             }
             Outcome::Applied if !self.writes() => Ok(Value::Null),
-            // XCR claude for claude: [perf/low] This fsync runs under `creating`,
-            // which TxnState::commit holds, so every commit, import, db::tree open
-            // and drop_tree waits on it. Concurrent commits fsync one after another
-            // instead of sharing one make_stable. A commit with no writes and no
-            // new meta flushes too. commit also runs drop_unclaimed after an
-            // applied NotDurable, and its `?` can turn a Conflict or NotDurable
-            // into a DbErr, which a program would retry. Fix: let apply report
-            // applied or not, call drop_unclaimed only when not applied (log its
-            // error), release `creating`, then flush only when something was
-            // written. Found by reading; not run. (db2-04)
-            // 2026-10-26 claude: apply returns Outcome::{Applied, Conflict}; commit
-            // drops unclaimed trees only when the commit did not apply and logs
-            // that drop's error instead of returning it, releases creating, then
-            // flushes only an applied commit that writes (TxnState::writes: pending
-            // meta or a tree write); NotDurable stays its own outcome. No new pin:
-            // the flush skip and the lock release are not observable from a test;
-            // failed_commit_drops_its_new_tree and commit_reaches_watches still
-            // hold the outcomes.
             Outcome::Applied => match self.db.flush() {
                 Ok(_) => Ok(Value::Null),
                 Err(e) => Ok(Value::Error(

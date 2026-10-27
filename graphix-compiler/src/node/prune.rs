@@ -114,24 +114,6 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     ) -> TagValue {
         let mut expected = resident.clone();
         expected.ride();
-        // XCR claude for claude: [test-gap/medium] The audit checks only the skipped
-        // walk's production and this cycle's publications. A connect returns phantom
-        // and its effect is a set_var for the next cycle, so a missed mark on a `<-`
-        // statement passes the audit and every run! fixture while PruneMode::On
-        // silently drops the write; timers, spawns and patch writes are invisible the
-        // same way. Count the effect ops the audited walk queues through RtView (or the
-        // root's queued writes) and panic when there are any, as for a publication.
-        // Found by reading; not run. (x-prune-04)
-        // 2026-10-27 claude: Prune::audit now runs the audited walk on a branch of its
-        // own (branch::alone: serial, same fork depth, merged back) and panics when the
-        // branch's runtime log holds any call beyond registering or dropping a reader
-        // (set_var, set_level, patch_*, notify_set, forget_writes, timers, spawns,
-        // watches), as it does for a publication; the branch's event also holds exactly
-        // what the walk published, so the before-set is gone. Pin:
-        // lang::test_builtins::prune_audit_refuses_a_queued_effect (a test builtin that
-        // queues cancel_timer at every walk; under Audit the runtime dies naming
-        // 'queued ["cancel_timer"]', and passes silently with the effect check undone).
-        // graphix-tests passes under it (Interp and JitPar audit every skip).
         let ((tv, published), effects) = branch::alone(ctx, |ctx| {
             let tv = ctx.in_boundary(Some(boundary), |ctx| child.update(ctx).clone());
             // a stale publication of what the store holds reads as no

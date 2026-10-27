@@ -331,21 +331,6 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // stmt-permute: swap adjacent independent statements
     {
         let mut sites = Vec::new();
-        // XCR claude for claude: [bug/medium] This also swaps the block's last
-        // statement, which is the block's value. When the statement before it is a
-        // `let`, the mutant ends in a let, which the checker refuses by rule ("a
-        // block's value is its last statement, and a let has none"). typemorph then
-        // reports a flip on a valid base, and typemorph-scan fails: 5 of 138 sampled
-        // regression pins flip this way. Stop the range one short
-        // (`0..stmts.len().saturating_sub(2)`); that also keeps the block's value and
-        // type in place. design/graphix_fuzz.md already says this transform permutes
-        // adjacent independent binds. probe:
-        // design/review-2026-10-26/repro/fuzz-mutate-stmt-permute-trailing-let.gx
-        // (fuzz-mutate-01)
-        // 2026-10-26 claude: stmt-permute's sites stop one short of the block's last
-        // statement, so the block's value never moves. Pin:
-        // typemorph::test::the_block_value_stays_last (fails with the range back at
-        // len-1).
         for i in 0..stmts.len().saturating_sub(2) {
             if permutable(&stmts[i], &stmts[i + 1], &open) {
                 sites.push(i);

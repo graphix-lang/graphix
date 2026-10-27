@@ -102,26 +102,6 @@ async fn run_code(
     Ok(Run { value, regions, invocations })
 }
 
-// XCR claude for claude: [test-gap/medium] This returns only the value, so the tests
-// built on it, and on impure_map, pure_map and region_map, about forty of them, pass
-// with fusion entirely lost: closure_*, nested_hof_*, every impure_*,
-// fused_variant_payload_shadow, shadow_arm_binding_outer_ref and the proptest
-// impure_matches_pure. Their comments describe kernel mechanics (cross-kernel calls,
-// slots sharing the prototype's kernels), and a de-fusion never changes a value, so
-// nothing here would catch, for example, fusion/share.rs no longer sharing kernels with
-// slot instances. Fix: return the build's `fusion_stats().fused` from run_code, assert
-// it is above zero here in debug builds (and zero in load_node_walked), and have the
-// proptest's pure side use the counting path. Found by reading; graphix-fuzz run
-// confirms these programs fuse today. (tests-fusion-traits-03)
-// 2026-10-26 claude: run_code returns a Run (value, regions fused by this build,
-// invocations) and Run::fused_as holds it to a FuseExpect through
-// testing::check_fuse_expectation (debug builds): load_and_count, load_and_await,
-// pure_map, region_map, native_map and impure_map require a fused region,
-// load_node_walked requires none, and the three node-walked impure fixtures (catch,
-// sample, reference) say FuseExpect::None through impure_run; the proptest's pure side
-// counts, its impure side (body x fuses nothing) does not. Checked by building the
-// counting path with fusion disabled: 17 closure/nested_hof fixtures fail, and
-// impure_run with fusion disabled fails 15 impure_* fixtures.
 /// Load `code` as a file and return its first value and the runtime's
 /// (fused kernel runs, JIT wrapper entries); its build must fuse.
 async fn load_and_count(code: &str) -> Result<(Value, (u64, u64))> {

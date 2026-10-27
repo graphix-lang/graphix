@@ -97,23 +97,6 @@ impl<X: GXExt> Rows<X> {
 pub(crate) struct TableW<X: GXExt> {
     gx: GXHandle<X>,
     columns: Children<X, CompiledColumn<X>>,
-    // XCR claude for claude: [bug/low] Rows are kept by whole-row value. A row whose
-    // value changed goes through compile_children, which compiles every cell again. So
-    // when one cell changes its widget (a select that swaps text for text_input, say),
-    // its siblings in that row are rebuilt as well. A text_editor beside it loses its
-    // Content (cursor, selection, scroll) and its unechoed edits, and a text_input or
-    // toggle loses its pending sends. row and column keep unchanged children, because
-    // Children reconciles per widget. Hold each row's cells beside their values, and
-    // reconcile a changed row's cells against the old row at the same index
-    // (reconcile(&mut old_cells, new_items, ..)) instead of compiling them all. Found
-    // by reading; not run. (gui-widgets-b-02)
-    // 2026-10-26 claude: TableW's rows are now Rows: every row's cells in one list
-    // beside their values, with each row's end, reconciled as one list
-    // (graphix_rt::reconcile), so a changed cell compiles alone and its siblings,
-    // moved or not, keep their widgets; the Vec<GuiW> Item impl and compile_children
-    // are gone. Pin: reconcile_test::a_changed_cell_keeps_its_row_siblings (a text
-    // beside a cell that swaps text for text_input keeps its content ref; fails when
-    // the row compiles afresh).
     pub(crate) rows: Rows<X>,
     p: Props<X>,
 }

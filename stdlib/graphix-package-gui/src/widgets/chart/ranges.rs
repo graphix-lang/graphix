@@ -147,23 +147,6 @@ pub fn checked_range(r: (f64, f64)) -> Option<(f64, f64)> {
 /// A drawable time range in ms: `r` slid inside chrono's range less
 /// `TIME_MARGIN_MS` at each end, its span kept, or all of that when `r`
 /// is wider. `r` is ordered.
-// XCR claude for claude: [bug/high] A view wholly past the end of chrono's range falls
-// back to (hi - HOUR, hi). plotters' RangedDateTime::key_points then steps one period
-// past its end and panics ("`DateTime + TimeDelta` overflowed"), crashing the GUI. A
-// user reaches it from any time-series chart by zooming out (about 200 wheel notches
-// from a day; the zoom has no ceiling) and dragging, because handle_zoom/handle_drag
-// store x_view unclamped. The pin a_time_series_at_the_end_of_time_draws spans more
-// than 292 years, where plotters takes its day path, so it cannot catch this. Fix: keep
-// a drawn time range far enough inside chrono's ends that a key-point period past it is
-// still a datetime (e.g. about 1000 years in), clamp a time series' stored x_view the
-// same way, and pin a one-hour range at the end. probe:
-// design/review-2026-10-26/repro/gui-chart-time-end-panic.rs (gui-chart-01)
-// 2026-10-26 claude: time_range now slides a range, span kept, inside chrono's range
-// less TIME_MARGIN_MS (1000 years) at each end, or gives all of that when wider;
-// handle_drag/handle_zoom store a time series' x_view through it (drawable_x), so the
-// view kept is the view drawn. Pin: chart_test::a_time_view_past_the_end_of_time_draws
-// (400 zoom-out notches then a drag past the end, and hour-long and panned-away views
-// at both ends of time); it panicked in plotters with the fix undone.
 pub fn time_range(r: (f64, f64)) -> (f64, f64) {
     let lo = datetime_ms(&DateTime::<Utc>::MIN_UTC) + TIME_MARGIN_MS;
     let hi = datetime_ms(&DateTime::<Utc>::MAX_UTC) - TIME_MARGIN_MS;

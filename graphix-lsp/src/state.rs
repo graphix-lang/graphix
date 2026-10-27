@@ -397,18 +397,6 @@ impl ServerState {
 
     /// The check that answers queries about `path`: a root's whose last
     /// check succeeded, else the last successful check of any.
-    // XCR claude for claude: [bug/medium] This takes the first root that has any
-    // Checked. That can be a root whose last check failed and so predates the edit,
-    // while another root of the same file has just checked the current buffer. Example:
-    // with util.gx shared by two tools and only one tool broken by an edit, hover on
-    // util's `f` shows its old type, and a newly added `g` has no hover or references.
-    // Prefer a root with `error.is_none()`, and fall back to a stale check only when no
-    // current one exists. probe:
-    // design/review-2026-10-26/repro/x-lsp-probe-stale-shared-root.py (x-lsp-probe-02)
-    // 2026-10-26 claude: checked_for takes the check of a root whose last check
-    // succeeded, and a stale one only when no root of the file has a current check.
-    // Pin: graphix-shell tests/lsp a_shared_file_answers_from_a_current_check (the
-    // probe's two tools, one broken by the edit).
     pub(crate) fn checked_for(&self, path: &Path) -> Option<&Checked> {
         let roots = self.roots_of(path);
         let roots = || roots.iter().filter_map(|root| self.roots.get(root));
@@ -431,23 +419,6 @@ impl ServerState {
 
     /// A (line, char column) in the text `lines` indexes as an LSP
     /// position.
-    // XCR claude for claude: [perf/medium] Every call rescans `text` from the top
-    // (`lines(text).nth(line)`), and document_symbols, workspace_symbols, references
-    // and warned call it per item, so those requests are O(items x file size).
-    // document_symbols' `typ` also scans all of ide.binds per symbol. On 2000 vs 4000
-    // one-line lets, documentSymbol takes 0.22 vs 0.84 s and references 0.09 vs 0.37 s,
-    // more than the check itself (0.25 s). Fix: build each text's line-start offsets
-    // once per request (per ArcStr for references), have the position conversions index
-    // into them, and key this file's binds by (pos, name) once for `typ`. probe:
-    // design/review-2026-10-26/repro/lsp-quadratic-positions.py (lsp-02)
-    // 2026-10-26 claude: Position conversions go through position::LineIndex (each
-    // line's range found once per text); a request builds one per text (documentSymbol,
-    // workspace/symbol per file, a Query's LineIndexes per Origin text, warned per
-    // warning text), and documentSymbol keys the file's binds by (pos, name) once. The
-    // probe now gives documentSymbol 0.06/0.09 s, workspace/symbol 0.05/0.10 s,
-    // references 0.01/0.02 s at N=2000/4000 (was 0.36/1.47, 0.19/0.79, 0.15/0.68 on
-    // this host). No timing pin; LineIndex's conversions are pinned by
-    // position::tests::lines_break_as_lsp_does.
     pub(crate) fn encode(&self, lines: &LineIndex, at: Position) -> Position {
         lines.position(at.line, at.character as usize, self.position_encoding)
     }

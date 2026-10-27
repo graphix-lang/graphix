@@ -205,23 +205,6 @@ async fn timer_survives_interrupt() -> Result<bool> {
     ] {
         held.push(ctx.rt.compile(ArcStr::from(stmt)).await?);
     }
-    // XCR claude for claude: [risk/low] This interrupt fires on a wall-clock guess: 400
-    // ms after compile, assuming go's cycle is already spinning. GX::do_cycle clears
-    // the interrupt bit at each cycle's start, so an interrupt that lands before that
-    // cycle is dropped. spin then never ends, and the compile("cnt") below waits
-    // forever: a hang, not a failure. interrupted_recursion_rides has the same timing
-    // shape (`10ms + took/2`). Interrupt only once the wedge is seen, e.g. `while
-    // timeout(50ms, rt.get_env()).await.is_err() { rt.interrupt() }`, as
-    // interrupt_recovers waits for its probe to time out. Found by reading; not run.
-    // (tests-lib-b1-02)
-    // 2026-10-27 claude: Both timing guesses are gone. timer_survives_interrupt calls
-    // interrupt_wedge: wait until a probe stays unanswered 100 ms (the spin's cycle
-    // has started), then interrupt again until the runtime answers.
-    // interrupted_recursion_rides interrupts once a probe stays unanswered took/4.
-    // wedged pauses as long as its probe between probes (a tight get_env loop kept
-    // go's cycle from ever starting: 44M answers in 30 s, the test hung) and fails
-    // after 30 s instead of hanging. No pin can fail for a timing guess; the interrupt
-    // tests passed 3 runs in a row and once under taskset -c 0.
     interrupt_wedge(&ctx).await?;
     held.push(ctx.rt.compile(ArcStr::from("cnt")).await?);
     let cnt = held.last().unwrap().exprs[0].id;

@@ -596,19 +596,6 @@ impl Env {
             typedefs: self.typedefs.clone(),
             traits: self.traits.clone(),
             hidden_impls: self.hidden_impls.clone(),
-            // XCR claude for claude: [bug/low] A task shares the parent's warning
-            // record, so Env::publish_warning records a task's warning when the task
-            // warns, while IdeMode::Warnings prints it only at the task's join. A
-            // program image therefore carries a parallel module run's warnings in the
-            // order the tasks ran, and a warm start replays them in an order different
-            // from the cold run's program order (nondeterministic too). Give each task
-            // a fresh record when the parent is recording, and have Env::join append it
-            // to the parent's, so the record follows join order like the printed copy.
-            // probe: design/review-2026-10-26/repro/t-misc-warning-order-image.sh
-            // (t-misc-01)
-            // 2026-10-26 claude: Fixed with t-env-05: the record is written at the
-            // print, a task's warnings at its join, so the image carries them in join
-            // order. Pin: env::test::warning_record_follows_join_order (graphix-types).
             recorded: self.recorded.clone(),
         }
     }
@@ -757,22 +744,6 @@ impl Env {
         match self.ide.sink() {
             None => {
                 let warning = format_compact!("WARNING at {pos} {ori}: {message}");
-                // XCR claude for claude: [bug/low] The record is shared by every compile
-                // task (Env::fork clones the Arc) and is written when a warning is
-                // generated, while the print goes through IdeMode::Warnings and is
-                // joined in program order. Parallel module checks therefore record in
-                // completion order, and a warm image's replay_warnings prints a
-                // different order from the cold run, one that also changes between
-                // runs. Fix: record in program order, at the point the joined warnings
-                // are printed (IdeMode::join), or with a per-fork record that Env::join
-                // appends in order. probe:
-                // design/review-2026-10-26/repro/t-env-warning-replay-order.sh
-                // (t-env-05)
-                // 2026-10-26 claude: Recording moved into the print: ide::print records
-                // each warning as it reaches stderr (IdeMode::print_warning, and
-                // IdeMode::join for a task's buffered warnings), so the record follows
-                // the printed program order. Pin:
-                // env::test::warning_record_follows_join_order (graphix-types).
                 self.ide.print_warning(warning, &self.recorded)
             }
             Some(ide) => ide.lock().warnings.push(Warning {
@@ -877,20 +848,6 @@ impl Env {
             Sandbox::Blacklist(bl) => {
                 let mut t = self.clone();
                 for n in bl.iter() {
-                    // XCR claude for claude: [bug/low] Each entry is classified against
-                    // `t`, which the earlier entries already pruned. `blacklist [sys,
-                    // sys::net]` removes /sys first, then takes `sys::net` for a value
-                    // and fails with "no value net in module /sys and no module
-                    // sys::net", while `[sys::net, sys]` works. Fix: test
-                    // `self.modules.contains(n)` and skip an entry that is already
-                    // under a removed module. probe:
-                    // design/review-2026-10-26/repro/t-env-blacklist-order.gx
-                    // (t-env-06)
-                    // 2026-10-26 claude: Each entry is now classified and checked
-                    // against the unsandboxed env (self) and removed from the copy, so
-                    // an entry under a module an earlier entry removed is no error.
-                    // Pin: env::test::blacklist_entries_are_independent_of_order
-                    // (graphix-types).
                     if self.modules.contains(n) {
                         t.unbind_lexical_under(n);
                     } else {
@@ -1037,7 +994,7 @@ impl Env {
             // (`use gui::text::{self, *}`).
         }
         let mut found: Option<(&str, T)> = None;
-        // XCR claude for claude: [bug/medium] Two globs that reach the same binding are
+        // XCR claude for eric: [bug/medium] Two globs that reach the same binding are
         // refused as ambiguous here. From a submodule declared in a block, `use
         // super::*; use package::*` both reach a top-level `let x`, and `x` is refused
         // with "both `#do4611686018427395233` and `` provide it". Rust's rule, which
@@ -1052,6 +1009,9 @@ impl Env {
         // design/module_system.md, book/src/core/use.md (book not rebuilt). Pins:
         // lang::modules::globs_reaching_one_binding_agree (fails with the old
         // any-two-hits rule), globs_reaching_two_bindings_are_ambiguous (the message).
+        // 2026-10-27 claude: reviewed: the fix matches the CR and Rust (two globs
+        // reaching one binding agree), pinned by globs_reaching_one_binding_agree. It
+        // changes a language rule, so it waits for your confirmation.
         for g in sn.globs.iter() {
             if let Some((at, t)) = g.find(n, f) {
                 match &found {
@@ -1079,36 +1039,6 @@ impl Env {
         depth: usize,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
-        // XCR claude for claude: [perf/low] A reference to a name bound d block levels
-        // out runs `lookup_at` at every level. Each level hashes and copies a scope
-        // prefix of length O(d) (`names.get`, `module_at`, and the caller's `binds`
-        // lookup), and each call also recomputes `mod_root`. That makes one reference
-        // O(d^2), and every instance build pays it again. With 1000 parameter reads 160
-        // blocks deep, InstanceGraph takes 2.3 s, against 0.04 s for reads of an inner
-        // local. Fix: hash each level once, e.g. carry interned level ids or prehashed
-        // prefixes in the Scope, built at block entry, and take `mod_root` from the
-        // Scope. Alternatively, memoize `(scope, name) -> BindId` per compile. probe:
-        // design/review-2026-10-12/repro/t-misc-02-outer.gx vs t-misc-02-local.gx
-        // (t-misc-02) (t-misc-02)
-        // 2026-10-16 claude: Measured on the quick build: the probe's outer-name
-        // version checks in 0.45 s against 0.14 s for the local one, about 0.3 ms per
-        // reference at depth 160. Each level of chain_lookup hashes the level's whole
-        // path three times (the caller's binds lookup, names.get, module_at) and scans
-        // it once for mod_root, so a constant-factor cut (one mod_root per chain)
-        // leaves the O(d^2). The real fix is prehashed scope keys across binds, names
-        // and modules (a key-type change to the env's maps) or a per-compile (scope,
-        // name) memo that every bind must invalidate. Real programs nest a few blocks,
-        // so this is a cost-versus-churn call: readdressed to eric.
-        // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
-        // needed. Real programs nest a few blocks: try the per-compile (scope, name)
-        // memo; if it is churn, close as acceptable.
-        // 2026-10-26 claude: Closed as acceptable per the 2026-10-23 triage: the
-        // per-compile (scope, name) memo would have to be invalidated by every bind,
-        // import, glob and typedef, in a compile that forks tasks with envs of their
-        // own, which is churn across every writer of the env's lexical maps. Measured
-        // now (debug, unpinned): the probe's outer-name version checks in 1.8 s against
-        // 1.5 s for the local one, 0.3 ms per reference at depth 160; real programs
-        // nest a few blocks. Delete when reviewed.
         for level in chain_levels(from) {
             if let Some(t) = self.lookup_at(origin, level, n, depth, f)? {
                 return Ok(Some(t));
@@ -2116,28 +2046,6 @@ impl Env {
     /// name's final target is registered: before elaboration, whose
     /// instances expand their callers' types under their definitions'
     /// envs, and again before fusion for what elaboration registered.
-    // XCR claude for claude: [bug/high] This walks only self.typedefs, the lexical map
-    // of the env it is called on. A module with an interface, or a dynamic module,
-    // keeps its typedefs in Module::env, which with_restored_mut swaps out, so the
-    // check-end seed never reaches them. A recursive type there keeps an empty inner
-    // cell. The array::map instance then resolves it by name under /array and fails:
-    // `type T = Array<[null, T]>; let a: T = [null]; let r = array::map([a], |x| 7)` in
-    // m.gx with an m.gxi passes --check and fails the build with "undefined type T in
-    // m". Fix: have deftype record each TypeDef in a global (non-lexical,
-    // forked/joined) registry of unseeded definitions, and have this walk drain it.
-    // probe: design/review-2026-10-26/repro/t-env-module-typedef-unseeded.sh (t-env-02)
-    // 2026-10-26 claude: The reported failure no longer reproduces on cr26-staging:
-    // 462df926e made the call-site walks expand typedefs by a probe that fills no cell,
-    // so the array::map instance no longer resolves T under /array. The root cause
-    // stood (instrumenting seed_typedef_refs showed a module body's typedefs, static
-    // with an interface or dynamic, never walked), so Module::typecheck1_nodes now
-    // seeds the module's own typedefs (Env::seed_typedef_refs_under, its scope and
-    // below) in the module's env before and after its typecheck1, as the root seeds
-    // before typecheck1 and before fusion. No pin: in every probe tried
-    // (array::map/filter/fold/sort/zip over T, casts, json reads, abstract reps, warm
-    // images, GRAPHIX_NO_SUBST, a runtime_api check of the inner cell after the
-    // compile) the cell was already filled by the check or nothing read it in a foreign
-    // env, so no test fails with this undone. Review it with that in mind.
     pub fn seed_typedef_refs(&self) {
         self.seed_typedef_refs_under(&ModPath::root())
     }

@@ -410,22 +410,6 @@ pub fn strip_with<E>(
 /// unmarked level: an array's elements (a marker included), a list's
 /// heads and the end of its spine, a map's keys and values, an error's
 /// payload; `None` when no part changed.
-// XCR claude for claude: [bug/high] map_parts recurses through its callback with no
-// stack guard, and abstract_value::rewrite (Forms::Keep, to_marked_data) recurses
-// through it once per level. strip_with, the Strip path, is guarded.
-// CachedVals::as_data runs this over every async builtin's DATA_ARGS, and a List is a
-// value as deep as it is long. So db::insert of a 300-element List overflows the tokio
-// worker and aborts the process; db::cursor's range key takes the same path. Fix: wrap
-// the body in crate::stack::ensure_sufficient as strip_with does, and pin a db round
-// trip of a 100k-element List. probe:
-// design/review-2026-10-26/repro/x-stack-db-list-value.gx (x-stack-01)
-// 2026-10-27 claude: map_parts runs under crate::stack::ensure_sufficient, and a list
-// cell's spine is walked in a loop (rep::map_spine: each head and the spine's end
-// mapped, the cells after the last change shared), so rewrite's Keep path no longer
-// recurses per element. Pins: graphix-tests lib_tests::db::db_long_lists_round_trip (a
-// 100000-element List value and a 10000-element List key through insert, get and a
-// prefix cursor; aborts with a stack overflow with the fix undone) and rep::tests (the
-// spine walk's results, a 1000000-element list).
 pub fn map_parts<E>(
     v: &Value,
     f: &mut impl FnMut(&Value) -> Result<Option<Value>, E>,

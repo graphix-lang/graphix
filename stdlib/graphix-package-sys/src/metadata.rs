@@ -114,20 +114,6 @@ fn utc(t: SystemTime) -> Option<DateTime<Utc>> {
 }
 
 pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
-    // XCR claude for claude: [bug/medium] `ts.into()` is chrono's From<SystemTime>,
-    // which unwraps `timestamp_opt` and panics for a time outside chrono's range. btrfs
-    // and tmpfs let any user set such an mtime (utimensat with 1e14 s).
-    // sys::fs::metadata and fstat then return `sys_fs_metadata panicked` instead of the
-    // metadata, and the panic message goes to stderr (under the TUI the panic hook
-    // tears the display down). Convert with `duration_since(UNIX_EPOCH)` plus
-    // `DateTime::from_timestamp(secs, nanos)` and give null for a time it cannot hold.
-    // probe: design/review-2026-10-26/repro/x-panics-metadata-far-timestamp.sh
-    // (x-panics-01)
-    // 2026-10-26 claude: metadata::utc converts through TimeDelta::from_std and checked
-    // add/sub from the epoch, so a time chrono cannot hold is null and a time before
-    // the epoch keeps its sign. Pin: graphix-package-sys
-    // metadata::test::a_time_chrono_cannot_hold_is_null (sets a far mtime, panics with
-    // the old ts.into()).
     let accessed = m.accessed().ok().and_then(utc);
     let created = m.created().ok().and_then(utc);
     let modified = m.modified().ok().and_then(utc);

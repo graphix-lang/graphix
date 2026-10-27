@@ -237,20 +237,6 @@ run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, prints("[i64:10, i64:20]");
 
 // A key move a selected reader saw is read stale by an arm woken after it:
 // the woken arm's counter does not tick.
-// XCR claude for claude: [test-gap/medium] This test only asserts that the woken arm
-// does not tick. It also passes if a woken Deref never fires, and nothing pins the
-// positive half: Deref::update's `wake::owed` read of a new target written while the
-// arm slept. Deleting that read fails no test. Add a twin. The other arm reads `r`
-// without dereferencing it (`r ~ -1`), so no arm tracks the new target `y`; `y` is
-// written during the sleep, and the woken arm's `count(*r)` must reach 2, while staying
-// at 1 when `y` is never written. probe:
-// design/review-2026-10-26/repro/tests-lang-rest-b-deref-stamp-catchup.gx
-// (tests-lang-rest-b-02)
-// 2026-10-26 claude: Twin added:
-// lang::byref::woken_deref_catches_up_a_target_written_asleep runs the probe's program
-// in every mode and asserts the woken count is 2 when y is written during the sleep and
-// 1 when it never is; it fails in all four modes with Deref::update's wake::owed read
-// removed.
 async fn woken_deref_reads_a_seen_move_stale(mode: Mode) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(
         r#"{
@@ -312,18 +298,6 @@ modes!(woken_deref_catches_up_a_target_written_asleep);
 // A place's address is evaluated once: a key with an effect runs it
 // once per fire (`n` fires at its binding and once more, not twice
 // more), and the read sees that one evaluation.
-// XCR claude for claude: [risk/low] This fixture, deref_null_ref_is_bottom and
-// place_root_bottom_mirror race a 20 ms timer against the runtime's next cycle (or a
-// 200 ms window). Under load the timer can win, and the test fails with the code right:
-// count 1, or the old target read. Sample on a step counter as the other place fixtures
-// do (`select step { 5 => null, _ => never() }`), so the read derives from the write.
-// Found by reading; not run. (tests-lang-rest-b-08)
-// 2026-10-26 claude: The three now derive their reads from the writes:
-// deref_null_ref_is_bottom and place_key_evaluated_once sample on a step counter, and
-// place_root_bottom_mirror writes b at a step and waits for GXHandle::wait_settled,
-// then drains the events, in place of a 200 ms window. deref_null_ref_is_bottom now
-// fuses (step counter), so its FuseExpect is Jit. No pin beyond the fixtures: nothing
-// was wrong in the code under test.
 const PLACE_KEY_EVALUATED_ONCE: &str = r#"
 {
   let step = 0;
@@ -342,20 +316,6 @@ run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, prints("[i64:2, i64:10]
 // happen, as no operation with a bottom input does; when the key returns
 // the reference retargets, and nothing written meanwhile lands there
 // (tests-lang-rest-b-03).
-// XCR claude for claude: [test-gap/medium] This and the other byref fixtures pin only
-// one side of the rule: a write whose reference is BOTTOM is dropped. The other side,
-// 'a write made before the reference first arrives waits for it and lands at its first
-// target' (ConnectDeref::pending), has no pin, and removing `pending` fails nothing.
-// Add a fixture where the reference is absent, not bottom, at the write, e.g. `let w =
-// sys::time::after_idle(duration:50.ms, &mut x); *w <- 42` (x becomes 42). Set it
-// beside the `k$`-over-null form, which must leave x alone. probe:
-// design/review-2026-10-26/repro/tests-lang-rest-b-write-before-ref-arrives.gx
-// (tests-lang-rest-b-03)
-// 2026-10-26 claude: Pin: lang::byref::write_before_reference_arrives writes 42
-// through an after_idle reference (absent at the write: lands at x) and through k$
-// over a null k (bottom at the write: y stays 1), and reads both once x is 42. It
-// fails in all four modes with ConnectDeref's pending memory removed. The event-RHS
-// case is x-engine-firing-04, still open.
 const PLACE_BOTTOM_KEY: &str = r#"
 {
   let step = 0;

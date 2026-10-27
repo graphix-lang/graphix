@@ -2547,27 +2547,6 @@ impl Type {
     /// (inferred, not written) not. A name that does resolve is refused
     /// where it is applied wrongly ([`TypeRef::check_application`]).
     #[doc(hidden)]
-    // XCR claude for claude: [bug/medium] A written type is checked here only for names
-    // that resolve. Arity and parameter bounds are checked only inside lookup_ref_by,
-    // that is, only when some relation expands the ref. So `let bad: [P, null] = null`
-    // (P takes one parameter), `type Q = [P<i64, string, bool>, null]` and `[B<string>,
-    // null]` with `type B<'a: Number>` are all accepted. The arity error then surfaces
-    // at whatever later expression first expands the name, e.g. a select over `bad`
-    // reports "P expects 1 type parameters" there. Fix: in this same written-name walk,
-    // compare a resolved name's params.len() with its definition's arity, and probe
-    // each bound where the argument holds no open cell, refusing at the annotation.
-    // probe: design/review-2026-10-26/repro/t-typ-mod-written-type-arity-unchecked.gx
-    // (t-typ-mod-01)
-    // 2026-10-27 claude: unresolved_names refuses a written name that resolves and is
-    // applied wrongly (TypeRef::check_application: arity through
-    // ResolvedRef::check_arity, which lookup_ref_by shares, and each bound whose
-    // argument and bound hold no open cell), so defer_unresolved_names and
-    // defer_typedef_names return the refusal placed at the annotation or typedef;
-    // check_pending_names applies the same check to a name that resolves only by the
-    // check's end. The three repro forms are refused at their annotation. Pins:
-    // lang::types::written_name_short_of_parameters_refused,
-    // typedef_body_with_extra_parameters_refused,
-    // written_parameter_outside_its_bound_refused.
     pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) -> Result<()> {
         let mut res = Ok(());
         self.for_each_written_name(&mut |tr| {

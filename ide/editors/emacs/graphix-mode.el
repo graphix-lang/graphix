@@ -114,28 +114,6 @@
 ;; ("""...""") may hold bare quotes, so the syntax table alone mis-pairs
 ;; them: their delimiters are string fences and a backslash inside is
 ;; punctuation.
-;; XCR claude for claude: [bug/medium] The closing delimiter is searched with no bound,
-;; so when a raw or template string closes after END, point passes END and the loop's
-;; next `re-search-forward` with bound END signals "Invalid search bound (wrong side of
-;; point)". Calling syntax-ppss anywhere inside a multi-line template (jit-lock chunks,
-;; show-paren, electric-pair, indentation) errors in both graphix-mode and
-;; graphix-ts-mode. Bounding the search is not enough: a pass that starts inside the
-;; string strips the closing fence and then skips the closer as in-string, so the string
-;; runs to the end of the buffer. Fix: loop only while point < END, and when START is
-;; inside a fenced string (`(nth 3 (syntax-ppss start))` is t), find the closer of the
-;; string opened at `(nth 8 ppss)` and fence it, marking opener and closer separately as
-;; python.el's python-syntax-stringify does. probe:
-;; design/review-2026-10-26/repro/ide-tooling-emacs-multiline-template.sh
-;; (ide-tooling-01)
-;; 2026-10-26 claude: graphix--syntax-propertize now judges each quote and backslash
-;; alone from the syntax-ppss state before it (python.el's way): in code a raw or triple
-;; opener's quote is a fence, in a fenced string the first quote of the string's closer
-;; is a fence and a backslash is punctuation, and point never passes END; so a pass may
-;; start anywhere, inside a string included. Pin:
-;; ide/editors/emacs/graphix-mode-tests.el graphix-mode-fenced-strings-any-pass (chunk
-;; sizes 1..500, queries up, down and from the middle); it fails with the old function
-;; (Invalid search bound) and with the old one bounded to END (a string runs on). Not in
-;; cargo test: run with emacs --batch, as ide/README.md says.
 (defun graphix--raw-hashes (at)
   "The hashes before the quote at AT when it opens a raw string, else nil."
   (save-excursion
@@ -356,24 +334,6 @@ Falls back to this mode when tree-sitter is not available.
        (no-node parent-bol 0)))
     "Tree-sitter indentation rules for Graphix.")
 
-  ;; XCR claude for claude: [risk/low] This recipe builds GitHub's default branch, but
-  ;; the font-lock queries below come from the checkout this file was loaded from. A
-  ;; checkout that is not main can get a grammar its queries do not match, and treesit
-  ;; then refuses a whole feature's query: those colors vanish silently. nvim got the
-  ;; same fix already (its init.lua builds the grammar from its own checkout); Zed pins
-  ;; a checked rev and Helix uses a path source. Fix: find the checkout from
-  ;; load-file-name (../../tree-sitter-graphix/grammar.js) and use its root as the
-  ;; recipe URL, falling back to GitHub outside a checkout. Found by reading; not run.
-  ;; (ide-tooling-02)
-  ;; 2026-10-26 claude: graphix--treesit-grammar-recipe now takes its URL from the
-  ;; checkout the file was loaded from (file-truename of load-file-name, three
-  ;; directories up, when ide/tree-sitter-graphix/grammar.js is there), else GitHub;
-  ;; treesit uses a local directory in place (Emacs 30+) or clones it (29). Checked by
-  ;; installing the grammar from this checkout into a temp dir with Emacs 31 and
-  ;; opening a buffer in graphix-ts-mode with no parse errors. ide/README.md says to
-  ;; put editors/emacs on the load-path. Pin: graphix-mode-tests.el
-  ;; graphix-mode-grammar-recipe-is-this-checkout, which fails with the GitHub-only
-  ;; recipe.
   (defvar graphix--treesit-grammar-recipe
     (let ((root (and load-file-name
                      (expand-file-name "../../.." (file-name-directory

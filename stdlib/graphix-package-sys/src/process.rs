@@ -270,30 +270,6 @@ pub(crate) struct ProcessSpawnEv;
 // call whose dropped reply loses what it did finishes and answers at the wake); pin
 // lib_tests::process::spawn_answers_at_the_wake. tcp accept is Calls::Latest, which
 // cannot be non-cancel-safe, so its loss stands until (x-async-io-01) is decided.
-// XCR claude for claude: [bug/high] spawn is cancel-safe by default, so an arm's sleep
-// aborts it. But the eval spawns on its first poll (future::select in
-// CachedArgsAsync::update polls the eval before `aborted`), and the reply then lands on
-// the reminted id and is dropped. The child runs with no Proc: the program can never
-// wait on it or kill it, and with kill_on_drop false it outlives the program.
-// FileOpenEv has the same problem: an aborted `CreateNew` still creates the file.
-// TcpConnect and TcpListen lose their stream or listener the same way. Fix: CANCEL_SAFE
-// = false on ProcessSpawnEv, FileOpenEv, TcpConnectEv and TcpListenEv, so the reply is
-// kept and answered at the wake; and select (aborted, eval) so a call aborted before it
-// ran does nothing. probe:
-// design/review-2026-10-26/repro/sys-io-spawn-aborted-by-sleep-orphans-child.gx and
-// sys-io-open-aborted-by-sleep.gx (sys-io-01)
-// 2026-10-26 claude: ProcessSpawnEv, FileOpenEv, TcpConnectEv and TcpListenEv are
-// CANCEL_SAFE = false, so their reply waits in kept and answers at the wake, and a
-// sleep no longer aborts them. Pins:
-// lib_tests::process::spawn_answers_at_the_wake,
-// lib_tests::fs::file_handle::test_open_answers_at_the_wake,
-// lib_tests::tcp::tcp_listen_connect_answer_at_the_wake (each times out with its
-// constant removed; connect checked alone). The select order is unchanged: polling the
-// abort first starves a Latest site under a busy trigger (tcp_accept_busy_trigger fails
-// in par/jit_par with it, 10 of 50 accepted), so a delete that lands before an eval's
-// first poll still lets it run (a deleted site's spawn). A child spawned in an arm
-// that never wakes stays in kept, unreachable until the wake, as the rule says. tcp
-// accept is Latest and keeps the loss (x-async-io-01).
 impl EvalCachedAsync for ProcessSpawnEv {
     const NAME: &str = "sys_process_spawn";
     const CANCEL_SAFE: bool = false;

@@ -232,23 +232,6 @@ impl<'a> Query<'a> {
             (seg == self.ident).then(|| (written.clone(), segs.len() - 1 - i))
         };
         // a segment before the last names the module of its prefix
-        // XCR claude for claude: [bug/low] This assumes every segment after the one
-        // under the cursor descends one level, but `super` ascends. In a::b,
-        // `super::super::top`'s first `super` comes out as the root instead of `a`:
-        // hover shows `mod ` (the root, empty), there is no definition, and its
-        // references are every `super` naming the root. `references` makes the same
-        // computation. Record the reference site's module with
-        // ReferenceSite/TypeRefSite and resolve each written prefix with
-        // `Env::canonical_modpath` instead of truncating the item's scope. probe:
-        // design/review-2026-10-26/repro/x-lsp-probe-super-segments.py (x-lsp-probe-07)
-        // 2026-10-27 claude: Fixed: ReferenceSite and TypeRefSite carry the lexical
-        // scope they were written in, and Query::prefix_module (used by target and
-        // references) resolves a prefix that is a run of leading keywords with the new
-        // Env::path_anchor from that scope (mod_root of the anchor), which
-        // resolve_visible now uses as well; a prefix ending in an ordinary segment
-        // keeps the truncation, which holds since every later segment descends. Pin:
-        // graphix-shell tests/lsp each_super_names_the_module_it_climbs_to (value and
-        // type paths, references, hover, definition).
         for r in ide.references.iter() {
             if let Some((written, after)) = on(&r.ori, r.pos, &r.name) {
                 if after == 0 {

@@ -436,20 +436,6 @@ impl<'a> Ornaments<'a> {
         })
     }
 
-    // XCR claude for claude: [bug/medium] An attribute's arguments are not children, so
-    // this walk never visits them. `Ornament::Decorations` compares their `Decorations`
-    // with an equality that ignores an argument's own decorations. A comment inside an
-    // attribute argument that the printer drops (an end-of-line one: `Attr` prints its
-    // args flat) therefore passes the guard, and `graphix fmt` writes the file without
-    // it. Fix: walk each `d.attrs[..].args` here like a child, and have the parser
-    // refuse comments inside attribute arguments as `spliced` does for a splice. probe:
-    // design/review-2026-10-26/repro/tests-expr-fmt-attr-arg-comment-lost.gx
-    // (tests-expr-03)
-    // 2026-10-26 claude: `Ornaments::expr` walks each attribute's arguments as
-    // children, so the guard sees their decorations; `attribute()` refuses an argument
-    // holding a comment (`holds_comment`), as a splice does. Pins: format.rs
-    // the_guard_reads_attribute_arguments (fails without the walk), parser/test.rs
-    // no_comment_stands_inside_a_splice_or_an_attribute (the attribute case).
     fn expr(&mut self, e: &'a Expr) {
         ensure_sufficient(|| {
             self.node += 1;

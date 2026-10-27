@@ -391,7 +391,7 @@ impl<X: GXExt, T: Item<X>> Children<X, T> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        // XCR claude for claude: [structure/low] This recompile-on-change block is
+        // CR claude for claude: [structure/low] This recompile-on-change block is
         // copied by hand in MenuItems::update, MenuBarW::handle_update and twice in
         // TableW::handle_update. The matching None-or-cast at compile time is copied in
         // MenuItems::compile, MenuBarW::compile and TableW::compile. Children is
@@ -408,6 +408,16 @@ impl<X: GXExt, T: Item<X>> Children<X, T> {
         // Children; the four hand copies and the three None-or-cast blocks are gone,
         // each list's context now added by its caller. Pins: the gui package's menu,
         // context menu, table and reconcile tests (all 324 pass).
+        // 2026-10-27 claude: Children<X, T> with Item covers menu items, menu groups
+        // and table columns. But c8dd9bc2b (gui-widgets-b-02) replaced the table-row
+        // Item with table::Rows, and that brought back a hand copy. Rows::update
+        // repeats Children::update's recompile-on-change block (id == r.id && last !=
+        // v, block_on reconcile, set last, then update each item), and Rows::field
+        // repeats the None-or-cast seeding. This note's claim that 'TableW's rows are
+        // Children' no longer holds. Fold Rows into Children so only one copy remains:
+        // for example, give Children a hook for how a list value becomes its flat items
+        // (rows flatten and record ends), or make Rows a Children over the flattened
+        // cells plus its ends.
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
             let vals = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
             rt.block_on(reconcile(&mut self.ws, vals, |v| T::compile(gx, v)))?;
@@ -528,24 +538,6 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 /// control shows its newest send, so input that comes before an echo builds
 /// on what the user did, not on the stale value; a send answered and not
 /// echoed by the time the runtime is idle was rejected.
-// XCR claude for claude: [structure/low] The echo protocol is four steps, and every
-// control repeats them by hand: answered then ask_idle, and retain_handler, in
-// handle_update; idle; and call_arg then send in on_message. That happens in checkbox
-// and toggler (toggle.rs, whose two trait impls are identical outside the macro that
-// was meant to share them), text_input and text_editor. A control that leaves out a
-// step, such as ask_idle, never sees a rejection and shows the user's value forever.
-// Give Echoes an update(gx, id, handler) -> bool (answered + ask_idle + retain_handler)
-// and an on_call(msg, handler, shell, extract) -> bool, and move the shared toggle
-// methods into toggle_widget!. Found by reading; not run. (gui-widgets-b-04)
-// 2026-10-26 claude: Echoes::update(gx, id, handler) does answered + ask_idle +
-// retain_handler and Echoes::on_call(msg, handler, shell, extract) replaces call_arg +
-// send; answered, retain_handler and send are private now, so a control cannot take
-// part of the protocol. toggle_widget! generates both toggles' whole GuiWidget impl,
-// view included (the iced constructor is its last argument). Pins:
-// rejected_toggles_return_to_the_program_value,
-// rejected_text_input_returns_to_the_program_value,
-// rejected_text_editor_returns_to_the_program_value all fail with ask_idle dropped from
-// Echoes::update.
 pub(crate) struct Echoes<T>(std::collections::VecDeque<(ExprId, Option<T>, bool)>);
 
 impl<T: PartialEq> Echoes<T> {
@@ -844,7 +836,7 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 
 /// Compile a widget value into a GuiW. Returns a boxed future to
 /// avoid infinite-size futures from recursive async calls.
-// XCR claude for claude: [bug/medium] This compile, and the handle_update, view and
+// CR claude for claude: [bug/medium] This compile, and the handle_update, view and
 // on_message recursion over the widget tree, run with no stack guard. A container chain
 // 300 deep, compiled as the event loop does it (Handle::block_on on the 8 MiB main
 // thread), overflows and aborts the process; 100 deep compiles. The TUI got the fix for
@@ -863,6 +855,17 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 // KiB thread; it aborts with a stack overflow without the compile guard, and again
 // without the walk guards. Not covered: iced's own layout, draw and event recursion
 // over the Element tree, which is upstream.
+// 2026-10-27 claude: StackGuarded around widgets::compile and the GuiW newtype guarding
+// handle_update, view, on_message, take_ops, before_view and idle are what the CR asked
+// for, and the pin shows those walks hold at 1000 deep. But the CR's problem is a
+// 300-deep chain aborting the process in a window, and the pin never runs iced's side
+// of a frame: layout, update, operate and draw over the Element tree. Nothing shows
+// that the reported scenario now runs. Add an h.render() (frame()) of the deep tree to
+// the pin, on a stack no bigger than the event loop's. Also, per CLAUDE.md, iced's
+// unbounded Element recursion is either an UPSTREAM.md entry (as handlebars' depth
+// recursion is) or, since it is a crash, something Graphix bounds or works around, e.g.
+// a depth limit refused at compile with a clear error. Dropping a deep GuiW chain is
+// unguarded destructor recursion too, which the stack-discipline rules list.
 pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
     Box::pin(StackGuarded(async move {
         let Some((s, [v])) = rep::variant(&source) else {

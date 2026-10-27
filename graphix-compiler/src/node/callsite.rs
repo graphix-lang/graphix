@@ -450,40 +450,6 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
         (Type::Fn(formal), Type::Fn(fv)) => {
             judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
         }
-        // XCR claude for claude: [bug/medium] A union is searched here for bare fn
-        // members only, so a function inside a union member is never judged: a struct
-        // field of an option, a tuple in a union, a variant payload. `let t: [{f: fn(y:
-        // string) -> bool}, null] = {f: g}` with `g = |#x = 4096, y| x == y` passes the
-        // check, and the run-time bind of `(s.f)("seven")` then refuses the default
-        // (string does not contain i64) and leaves the call bottom. Without `, null`
-        // the check refuses it. Recurse with `at` into the declared member that has the
-        // value's constructor (or pair members by constructor when both sides are
-        // unions), and pin the union-member shapes beside default_hidden_by_a_field.
-        // probe:
-        // design/review-2026-10-26/repro/c-callsite-hidden-default-under-union-member.gx
-        // (c-callsite-02)
-        // 2026-10-26 claude: hidden_defaults_at now flattens both sides' union members
-        // (typedefs and cells opened, opened/union_members) and judges each value member
-        // against the one declared member built by the same constructor
-        // (same_constructor: fn, struct with the same fields, tuple or variant of the
-        // same arity and tag, array, list, map, error, reference); a value member that
-        // two declared members could hold, or none, is not judged. The bare-fn case is
-        // the same rule. Pins: lang::functions::default_hidden_under_an_optional_struct,
-        // _under_a_tuple_member, _under_an_element_member, _under_a_variant_member (each
-        // fails with the pairing restricted to fn members), and
-        // default_fits_its_variant_member (only the matching member judges).
-        // 2026-10-27 claude: The walk reads typedefs with Type::lookup_ref_probe (fills
-        // no resolution cell: lookup_ref filled another module's typedef cells from the
-        // site's env during parallel module checks, so gui::data_table's ColumnSpec
-        // check failed about 1 in 2000 compiles), expands a value's typedef only where
-        // its parameters hold a function whose definition has a labeled default
-        // (holds_defaulted; a typedef body is written, judged where a function entered
-        // it), counts expansions per path (siblings no longer share one budget), and
-        // walks each pair of shared nodes once (visited). The gui registration had
-        // walked recursive widget typedefs to depth 16 at every site: 0.87 s per stdlib
-        // compile, now 0.13 s. Pin: graphix-shell
-        // deep_nesting::hidden_defaults_judge_in_linear_time (fails with either the gate
-        // or the memo removed); colspec stress 0 of 8000.
         (Type::Set(_), _) | (_, Type::Set(_)) => {
             let mut formals: LPooled<Vec<Type>> = LPooled::take();
             union_members(&d, &mut formals, &mut |m| opened(&ctx.env, m, &mut 0));
@@ -615,53 +581,10 @@ type Quantified = SmallVec<[(ArcStr, TVar); 2]>;
 /// for the argument's check: the argument must be well typed for every
 /// 'b the bound admits, since the callee may call it at any. `None` for
 /// any other formal.
-// XCR claude for claude: [bug/medium] Only a formal whose type IS a quantified function
-// type is held rigid. A rank-2 type nested in a struct or tuple formal (`|s: {f: fn<'b:
-// Any>(x: 'b) -> 'b}|`) returns None here, so pre_unify_arg binds 'b to the argument's
-// type. `run(s)` with `s = {f: |x: i64| x + 1}` passes the check, and the build refuses
-// it with the internal 'an instance at fn(s: { f: fn(x: i64) -> i64 }) ..' error
-// (graphix-fuzz: DIVERGENCE). A struct literal holding a lambda and a tuple formal
-// behave the same. This is a reachable case of x-typecheck-generics-02's unjudged
-// FnType::contains_int gates. Fix: gate, and judge with added_bound and polymorphic_in,
-// every quantified fn type the formal holds. probe:
-// design/review-2026-10-26/repro/x-typecheck-generics-rank2-nested-in-struct.gx
-// (x-typecheck-generics-05)
-// 2026-10-26 claude: quantified_formal now takes, through rank2_parts, the quantifiers
-// of every function type at a data position of the formal (the formal itself, a field,
-// a tuple slot, an element, a union member; never inside a function type), expanding
-// the typedefs and bindings on the way so the cells it holds rigid are the ones the
-// argument meets, and typecheck_arg judges each with added_bound, polymorphic_in and
-// escapes_through. The repro, its struct-literal and tuple variants are refused at the
-// call. Pins: lang::types::rank2_field_refuses_mono (the repro),
-// rank2_tuple_element_refuses_mono, rank2_data_positions_take_poly (polymorphic lambdas
-// at a field, a member, a tuple slot and a typedef field still run). Stricter now: an
-// argument whose own literal holds a top-level cell, a struct literal of a let-bound
-// generic function or an array literal of lambdas (r({f: id}), gs([|x| x])), is refused
-// as not polymorphic, as apply(select c { .. }) already is at a plain rank-2 formal:
-// carried_out counts every top-level cell as the environment's.
 fn quantified_formal(
     env: &Env,
     typ: &Type,
 ) -> Option<(Type, LPooled<Vec<RigidGate>>, Quantified)> {
-    // XCR claude for claude: [bug/high] A quantified function type that sits inside a
-    // formal (a struct field `{f: fn<'b: [i64, string]>(x: 'b) -> 'b}`, an `Array<F>`
-    // element, a `[F, null]` member) is not held here. Only a formal that is itself
-    // `fn<..>` gets its quantifiers made rigid and checked by `added_bound`. So
-    // `app({f: |x| x * x})` passes the check, and the callee's `s.f("a")` fails at run
-    // time ("binding the callee failed: a run-time bind ... did not type"): bottom
-    // forever, in both engines. This is a witness for the still-open half of
-    // x-typecheck-generics-02 (FnType::contains_int's own quantifier gates are not
-    // judged). Fix: collect every quantifier of a quantified Fn reachable in the
-    // formal's type (FnType::inner_quantifiers, as the definition's own check does),
-    // and hold and judge each the same way. probe:
-    // design/review-2026-10-26/repro/x-rerun-3-rank2-nested-formal.gx (x-rerun-3-01)
-    // 2026-10-26 claude: Fixed with x-typecheck-generics-05: every quantifier of a
-    // function type at a data position of the formal (through typedefs: S's field,
-    // Array<F>'s element, [F, null]'s member) is held rigid and judged by added_bound.
-    // The repro is refused ('the argument requires 'b: [u8, ..], which the parameter's
-    // quantifier does not declare'). Pins:
-    // lang::types::rank2_typedef_field_keeps_its_bound (the repro),
-    // rank2_element_keeps_its_bound, rank2_member_keeps_its_bound.
     let mut quantified = Quantified::new();
     let formal = rank2_parts(env, typ, &mut SmallVec::new(), &mut quantified);
     if quantified.is_empty() {
@@ -889,35 +812,6 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
 /// arguments of a copy of the site's, and whose result and throws fit
 /// the copy's, so a variable the site fixes through another parameter,
 /// its result or its throws fixes this one.
-// XCR claude for claude: [bug/critical] A hidden label's default is judged here against
-// a fresh instance whose parameters alone take the site's types; the return type and
-// throws are never related. `let f = |#d = 1, x| [d, x]; let g: fn(x: string) ->
-// Array<string> = f` ties d to string through the return type, but in this copy d is
-// still open, so the default 1 fits and the check accepts. At run time the JIT reads
-// the i64 as an ArcStr and aborts (misaligned pointer dereference). The node-walk
-// prints [1, "s"] as an Array<string>. The same holds through a struct field, a `<-`
-// target, a generic HOF formal and a rank-2 formal. Fix: relate site.rtype ⊇ inst.rtype
-// and site.throws ⊇ inst.throws before the default is judged. probe:
-// design/review-2026-10-26/repro/x-typecheck-generics-hidden-default-return-tie.gx
-// (x-typecheck-generics-01)
-// 2026-10-26 claude: callee_param now holds the fresh instance's result and throws to
-// the site copy's (site.rtype contains inst.rtype, site.throws contains inst.throws),
-// and checked_default, where a fn type hides the label, also checks the default against
-// the label of the function value as the site holds it (judge_hidden_defaults passes
-// it), which narrows that value's cell: a hidden default now decides its label's type
-// the way an omitting site's view does, so a result decided later (an annotation on a
-// HOF's result) meets the default's type; CLAUDE.md says so. Before, such a cell
-// settled to bottom while the instance ran the default's i64
-// (default_runs_once_per_bind's (i64, _) result, which now fuses: its FuseExpect is
-// Jit). Pins: lang::functions::default_hidden_by_a_result_element,
-// _by_a_generic_formal_result, _by_a_result_type, _by_a_throws, _by_a_callback_result,
-// _by_a_generic_result, default_fits_a_result_type; rank-2 shape probed (refused).
-// 2026-10-27 claude: checked_default now compiles and typechecks the default in f's env
-// but makes its containments (the site's label, callee_param, the value's label) in the
-// site's env, where the site's types were written: a site type's unresolved typedef is
-// no longer resolved in the callee's env. callee_param writes only fresh cells (the
-// instance and the site's copy); the value-label narrowing is a write by the site's
-// task like its other checks, refused as foreign by tvar::decided.
 fn callee_param<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     f: &LambdaDef<R, E>,
@@ -946,25 +840,6 @@ fn callee_param<R: Rt, E: UserEvent>(
         let _ = site.rtype.contains(&ctx.env, &inst.rtype);
         let _ = site.throws.contains(&ctx.env, &inst.throws);
     }
-    // XCR claude for claude: [bug/critical] The site's arguments are linked into `inst`
-    // above, but its return type never is. So a hidden label whose type only the result
-    // holds is judged against a fresh, unconstrained cell. `let f = |#n = 1, x: i64|
-    // (x, n); let h: fn(x: i64) -> (i64, string) = f; h(1).1` passes the check, and the
-    // JIT then reads the i64 1 as an ArcStr pointer: 'misaligned pointer dereference
-    // ... 0x1', an abort in debug builds and UB in release. The same hole makes
-    // GRAPHIX_NO_SUBST=1 refuse functions.rs's default_runs_once_per_bind ('_ does not
-    // contain i64' at `count(1)`). Fix: also hold `inst.rtype` (and throws) to
-    // `site.rtype` before the default is checked, and pin it with a default_hidden_*
-    // fixture in which the label appears only in the result. probe:
-    // design/review-2026-10-26/repro/tests-functions-hidden-default-unsound.gx
-    // (tests-functions-01)
-    // 2026-10-26 claude: Fixed with x-typecheck-generics-01: the instance callee_param
-    // builds takes the site's result and throws, and the default narrows the label of
-    // the function value the fn type hides. The repro, its array::map/count variant and
-    // the str::len variant are refused by the check; default_runs_once_per_bind passes
-    // under GRAPHIX_NO_SUBST=1. Pins: lang::functions::default_hidden_by_a_result_type
-    // (the repro), default_hidden_by_a_callback_result (the array::map variant),
-    // default_hidden_by_a_generic_result.
     inst.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
 }
 
@@ -972,21 +847,6 @@ fn callee_param<R: Rt, E: UserEvent>(
 /// holds for every choice of them only if none was aliased to a cell the
 /// argument does not own: a top-level variable or an enclosing
 /// definition's, which would carry the quantifier out.
-// XCR claude for claude: [structure/low] The quantifier cells of a formal are collected
-// by hand here and in quantified_formal, callee_param, bound_quantifiers and
-// escapes_through: `collect_tvars` then a filter on `quantifiers.contains`.
-// FnType::open_quantifiers already does this but is private. typecheck_arg computes the
-// same set three times per argument. Fix: expose one FnType accessor, use it at all
-// five sites, and compute `quantified` once in typecheck_arg and pass it down. Found by
-// reading; not run. (t-fntyp-06)
-// 2026-10-26 claude: FnType::each_quantifier (pub, beside open_quantifiers, which now
-// rides it) is the one accessor, and Type::each_quantifier walks it over every function
-// type under a type (inner_quantifiers and bound_quantifiers ride that).
-// quantified_formal, callee_param, bound_quantifiers, polymorphic_in and
-// escapes_through use them; typecheck_arg collects the quantified set once
-// (quantified_formal's Quantified) and passes (name, cell) pairs to polymorphic_in and
-// escapes_through. Behaviour pinned by the lang::types rank2_* and NESTED_QUANTIFIER
-// fixtures.
 fn polymorphic_in(quantified: &[(ArcStr, usize)], arg: &Type) -> Result<()> {
     if let Some((q, tv)) = carried_out(quantified, arg) {
         bail!(
@@ -1031,17 +891,6 @@ fn escapes_through(quantified: &[(ArcStr, usize)], env: &Type) -> Result<()> {
 }
 
 /// Every cell under `t`, following bindings.
-// XCR claude for claude: [structure/low] carried_out's nested `walk` is this function
-// with its arguments reordered: delete it and call this one. The 'collect_tvars, keep
-// the names in ft.quantifiers' step is also written five times in this file
-// (quantified_formal, callee_param, polymorphic_in, bound_quantifiers,
-// escapes_through). Make it one FnType method next to the private
-// FnType::open_quantifiers, so a change to quantifier identity happens once. Found by
-// reading; not run. (c-callsite-05)
-// 2026-10-26 claude: carried_out's nested walk is gone; it calls reaches_cell. The
-// quantifier collection is FnType::each_quantifier / Type::each_quantifier at every
-// site (see t-fntyp-06). Covered by the lang::types rank2_* and
-// NESTED_QUANTIFIER_ENV_CELL fixtures.
 fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar)) {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
@@ -1145,32 +994,6 @@ fn holds_invariantly(env: &Env, t: &Type, expanding: &mut SmallVec<[usize; 4]>) 
             tv.binding().is_some_and(|b| holds_invariantly(env, &b, expanding))
         }
         Type::Fn(_) => false,
-        // XCR claude for claude: [bug/medium] A `Type::Ref` is counted as invariant here
-        // and in `data_positions` whatever it names, so a transparent alias types a
-        // call differently from its expansion. With `type M<'a> = ['a, null]`, `|x: 'a,
-        // y: M<'a>|` refuses `f(n, u64:0)` (n: [u64, null]) with "'a: u64 does not
-        // contain [u64, null]", but `y: ['a, null]` accepts it and widens. Follow the
-        // ref's resolution and recurse into the expansion; keep it invariant only when
-        // it resolves to an abstract type. Pin it with an alias next to
-        // an_invariant_argument_decides_first. probe:
-        // design/review-2026-10-26/repro/tests-functions-alias-not-transparent.gx
-        // (tests-functions-03)
-        // 2026-10-26 claude: holds_invariantly and data_positions now expand a typedef
-        // reference (callsite::expansion, a probe lookup) and judge its expansion, so
-        // an abstract type stays invariant and a transparent alias is its expansion; a
-        // typedef met again inside its own expansion, or one that does not resolve,
-        // stays a type application (invariant). Widening's hint, waits and cells take
-        // the env for it, and the call's formals are keyed once before the sort. Pin:
-        // lang::types::an_alias_is_its_expansion (the repro, plus a recursive alias
-        // that still checks); it fails with the expansion disabled.
-        // 2026-10-26 claude: The expansion is a probe that fills no resolution cell
-        // (Type::lookup_ref_probe, peek resolution, with the found definition's key):
-        // filling the cells of another module's typedef body from a call site's env
-        // during a parallel module check made gui::data_table's ColumnSpec return check
-        // fail now and then ('ColumnSpec does not contain {..}', two refs of one name
-        // resolved apart), seen twice in the full gate with lookup_ref_with; gone over 3
-        // runs of the gui lib suite and 5 of examples_compile with the probe.
-        // rank2_parts (x-typecheck-generics-05) uses the same probe.
         Type::Ref(_) if let Some((key, whole)) = expansion(env, t, expanding) => {
             expanding.push(key);
             let r = holds_invariantly(env, &whole, expanding);
@@ -3069,20 +2892,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Release what this site registered for an imaged tree.
-    // XCR claude for claude: [risk/low] An imaged site's held reads are recorded with
-    // record_ref at decode, so until apply_deferred runs they are pending, not
-    // registered. This function unregisters them with ctx.rt.unref_var directly. On a
-    // failed decode the deletes run before drop_deferred (read_registration deletes the
-    // decoded roots; materialize deletes an instance whose kernels did not install). A
-    // nested imaged site in those trees then hits the debug_assert in Rt::unref_var
-    // ('unref_var of an unregistered') instead of starting cold. Fix: call
-    // ctx.unref_var(*id, self.top_id), which cancels a pending reference and
-    // unregisters a registered one. Found by reading; not run. (c-image-03)
-    // 2026-10-26 claude: release_held now calls ctx.unref_var(id, top_id), which
-    // cancels a pending reference and unregisters a registered one. Pin:
-    // lang::image::a_read_failing_after_the_roots_runs_cold (a heap offset one short
-    // fails the read after the roots decoded; with rt.unref_var it panics 'unref_var of
-    // an unregistered').
     fn release_held(&self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Callee::Imaged { instance, refs, .. } = &self.callee {
             for id in refs.flat(*instance).refed.iter() {
@@ -3133,22 +2942,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 Box::new(g)
             }
             Err(e) => {
-                // XCR claude for claude: [structure/low] A failed decode returns here
-                // with `held` still registered. update_call then binds the site
-                // dynamically, and the imaged subtree's flattened reads keep marking
-                // this site's boundary until it is deleted. `held` means something only
-                // while the callee is Imaged: move it into Callee::Imaged and release
-                // it on both exits of materialize, so the field cannot outlive the
-                // state it belongs to. Found by reading; not run. (c-callsite-06)
-                // 2026-10-26 claude: The held field is gone: an imaged site's held
-                // reads are its Callee::Imaged refs' flat set, registered at decode and
-                // released (release_held) wherever the callee leaves Imaged:
-                // materialize's success, update_call's failure branch before it resets
-                // to DynamicUnbound, and delete. No behavioral pin (a leftover
-                // registration only marks a boundary);
-                // lang::image::an_instance_that_does_not_decode_binds_afresh now drives
-                // the failed-materialize path over every instance and holds it to the
-                // cold values.
                 ctx.fusion.forget_restored_since(mark);
                 ctx.drop_deferred();
                 return Err(e);
@@ -3842,36 +3635,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // A `MarshalArg::Call(i)` indexes the source-order arg list, which
         // spans labeled and positional args; `Default(name)` is this site's
         // compiled default node.
-        // XCR claude for claude: [readability/low] Every unresolved call reaches this
-        // point, so a call with no static target (a `<-`-written binding, a returned
-        // lambda, a destructured rebinding) is reported as "builtin call site .. not
-        // discovered", and the quoted spec includes the `#[native]` attribute and a
-        // line break. Report a call with no static target as such ('dispatches at run
-        // time') before the builtin lookup, and print the call without its attributes.
-        // probe:
-        // design/review-2026-10-26/repro/tests-functions-native-builtin-misnamed.gx
-        // (tests-functions-07)
-        // 2026-10-26 claude: Fixed with its twin c-callsite-03: a call with no static
-        // callee gets its own blocker before the builtin lookup, and the call prints
-        // without its attributes (spec.kind). Pin:
-        // lang::fusion::native_names_a_call_with_no_static_callee, which matches 'call
-        // `f(2)` has no static callee'.
-        // XCR claude for claude: [readability/medium] Every site with an unbound callee
-        // ends here, so a call whose function is a run-time value (a `<-` target, a
-        // select) is reported as 'builtin call site ... not discovered'. `#[native]
-        // h(y)` with `h <- ..` shows that text to the user, and FusionStats.failed
-        // records the wrong blocker. Before the builtin lookup, give a site with no
-        // apply that is not a static builtin its own blocker, e.g. 'no static callee:
-        // the function is a run-time value'. probe:
-        // design/review-2026-10-26/repro/c-callsite-native-dynamic-call-blames-builtin.gx
-        // (c-callsite-03)
-        // 2026-10-26 claude: CallSite::emit_clif now refuses a site with no static callee
-        // and no builtin site info as 'call .. has no static callee: its function is a
-        // run-time value, so it dispatches at run time', ahead of the builtin text, and
-        // prints every blocker's call as spec.kind (no attributes, no line breaks). The
-        // fuzzer's Fuse::Clean noise list takes the new text. Pin:
-        // lang::fusion::native_names_a_call_with_no_static_callee (twin:
-        // tests-functions-07).
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
             None if self.callee.apply().is_none() => {
@@ -3973,23 +3736,6 @@ impl Absent {
     ) -> T {
         let mut injected = super::wake::Injected::new();
         for id in self.missed.drain(..) {
-            // XCR claude for claude: [bug/high] An argument that went bottom while the
-            // function was bottom is caught up here as a FIRED null. A bottom is stored
-            // as Null with a bottom tag, and this injection never checks
-            // `tv.tag().is_bottom()`. With `h = select c { 1 => never(), _ => f }`, `f
-            // = |b: i64| [b]` and y bottom from event 2, `h(y)` yields `[null]` (an
-            // Array<i64>) at event 3 in both engines, where it should be bottom. Skip a
-            // bottom store entry, as TrackedFires::deliver, wake::owed and
-            // Bind::reraise_writes_while_asleep already do, or route the missed
-            // arguments through one shared catch-up helper. probe:
-            // design/review-2026-10-26/repro/c-callsite-absent-wake-injects-bottom-as-null.gx
-            // (c-callsite-01)
-            // 2026-10-26 claude: Absent::wake, TrackedFires::deliver and deliver_owed now
-            // share wake::inject, which delivers no catch-up fire for a bottom, absent or
-            // live-firing input, so an argument that went bottom while the function was
-            // bottom stays bottom at the wake. Pin:
-            // lang::dense_deltas::callee_back_arg_still_bottom (fails as [[5], [null]] with
-            // the old injection).
             super::wake::inject(ctx, id, &mut injected);
         }
         let captured = &mut self.captured;

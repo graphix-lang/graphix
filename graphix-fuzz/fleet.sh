@@ -224,26 +224,6 @@ sync_tree() {
         # this machine's checkout is ~/proj/graphix itself: verified, never
         # written; graphix builds against the sibling netidx
         if ! is_this_machine "$name"; then
-            # XCR claude for claude: [perf/low] This pushes the whole checkout, untracked
-            # files included: today .claude/worktrees is 2.0 of the 3.3 GB synced, to
-            # every box on every deploy, and none of it is a build input. Sync the
-            # fingerprinted roots only (`--files-from` of `git ls-files --
-            # "${FP_ROOTS[@]}"`), or exclude .claude and fuzz. Every host is rsync now,
-            # so the syncthing machinery is dead: the SYNC_WAIT poll after a synchronous
-            # rsync waits up to 600 s for a mismatch that cannot heal. Drop it and the
-            # syncthing/hz0 prose, and fail the box at once. Found by measuring the
-            # tree; the deploy was not run. (fuzz-main-aux-05)
-            # 2026-10-26 claude: sync_tree pushes the tree without /.claude, /fuzz
-            # and /vendor (graphix; vendor.py's 1.2 GB output, not a soak build
-            # input) and /.claude (netidx); what is left untracked is under 200 MB;
-            # the syncthing machinery is gone (the sync column of HOSTS, SYNC_WAIT
-            # and its poll, the syncthing/hz0 prose): a box is pushed once,
-            # fingerprinted once and fails at once on a mismatch. A whole-repo
-            # --files-from of git ls-files was not taken: --delete does not reach a
-            # file list, and the workspace needs graphix-lsp and
-            # ide/tree-sitter-graphix, which the fingerprint roots leave out (so the
-            # fingerprint misses them too; not changed here). No pin: a deploy
-            # script; bash -n only, the deploy was not run.
             rsync -a --delete --exclude target --exclude .git --exclude /.claude \
                 --exclude /fuzz --exclude /vendor "$repo/" "$name:proj/graphix/"
             rsync -a --delete --exclude target --exclude .git --exclude /.claude \
@@ -406,18 +386,6 @@ EOF
     # A missing sample is not a pass: the SECOND one must exist and be
     # non-zero (proof the campaign checked something), and when both
     # exist the second must exceed the first.
-    # XCR claude for claude: [bug/low] The remote sample() counts only the `fuzz…`
-    # counter line. run_aggregator never launches a source with a zero share, and the
-    # mix allows one, so FLEET_MIX=0:50:50:10 fails every healthy box with NO SUBJECTS
-    # CHECKED. Sample every source's `<tag>…N run` line and sum the counts, so any
-    # source that checks something counts as progress. Found by reading; not run.
-    # (fuzz-main-aux-04)
-    # 2026-10-26 claude: verify_host's remote sample() sums every source's last
-    # counter (awk keyed by the tag before the ellipsis), printing nothing until some
-    # source logged a line, so a mix with a zero share for any source, fuzz included,
-    # still counts progress and the sum only grows. No pin: a deploy script; checked
-    # by hand over a fake soak.log (generate 1000 then 2000 plus reactive 500 gives
-    # 2500 run, an empty log gives nothing); the deploy was not run.
     if [[ -z $b || ${b%% *} -eq 0 ]]; then
         warn "$(printf '%-8s NO SUBJECTS CHECKED (samples: %s then %s)' \
              "$name" "${a:-<none>}" "${b:-<none>}")"

@@ -201,22 +201,6 @@ fn restore_tables<R: Rt, E: UserEvent>(
         ctx.static_callees.insert(b, StaticCall(Arc::new(Expr::decode(buf)?)));
     }
     ctx.tags.extend(<Vec<ArcStr> as Pack>::decode(buf)?);
-    // XCR claude for claude: [bug/low] A restored assertion gets empty flags and
-    // warned false, because Tables::encode writes only id, kind and spec. A pending
-    // #[pure] assertion is checked again at run-time binds, so a warm #[pure]
-    // function that calls dbg warns twice: once replayed from
-    // ProgramRoot::warnings, then again at its first run-time bind. Under -W error,
-    // that bind reports a plain warning where the cold run reports an error. Fix:
-    // write the flags (flags_encode) and the warned bit with the rest, preferably
-    // by deriving Pack for DefAssertion so a new field cannot be dropped. probe:
-    // design/review-2026-10-26/repro/c-image-def-assertion-flags.sh Also reported
-    // as (x-image-02). (c-image-02)
-    // 2026-10-27 claude: DefAssertion derives Pack (unwrapped) and the tables
-    // encode the whole Vec, flags and warned included, so a new field cannot be
-    // dropped; REGISTRATION_FORMAT 91. The block moved with the decode loop it sat
-    // in. Pin graphix-shell/tests/program_cache_key.rs
-    // a_restored_pure_assertion_warns_as_cold (warm warns once and errs under -W
-    // error, as cold).
     ctx.def_assertions.lock().extend(<Vec<DefAssertion> as Pack>::decode(buf)?);
     Ok(())
 }

@@ -1082,30 +1082,6 @@ impl Live {
                 prev(info)
             }))
         });
-        // XCR claude for claude: [bug/medium] The alternate screen is entered here, but
-        // stderr is held only at the end of take, after the modes, the mouse and
-        // Terminal::new; recover has the same order. Stderr written in that window
-        // lands raw on the TUI and ratatui never erases it. A resume after tui::suspend
-        // hits it often, because the suspend result's readers print just as the display
-        // re-takes the terminal. Hold stderr first, before raw mode, here and in
-        // recover; keep _stderr as the last field so stderr is still replayed after the
-        // terminal is given back. probe:
-        // design/review-2026-10-26/repro/tui-core-stderr-leak-at-resume.py (3 of 5 runs
-        // leak) (tui-core-01)
-        // 2026-10-26 claude: Live::take holds stderr (hold_stderr) before raw mode and
-        // the alternate screen; recover replays the old hold and holds again before
-        // re-taking the modes; _stderr stays the last field. Pin: terminal_test
-        // stderr_never_reaches_the_alternate_screen (a thread writes stderr nonstop
-        // through 20 take/panic/recover cycles; no LEAK between 1049h and 1049l; fails
-        // every run with take or recover reverted).
-        // 2026-10-27 claude: The pin was flaky in the campaign's gates (LEAK inside a
-        // screen, about 3 in 40 runs under taskset -c 0): a std stderr write that had
-        // looked up fd 2 before the hold's dup2 landed on the old stderr after the
-        // 1049h. stderr.rs swap_stderr now takes std's stderr lock across both dup2s,
-        // so no write through std's stderr straddles the swap (0 in 80 runs). Raw fd-2
-        // writers, which bypass that lock, can still straddle it. A panic on the
-        // tui-stderr reader thread while a writer blocks on a full pipe would now wait
-        // on that writer; serve has no panicking path.
         #[cfg(unix)]
         let stderr = hold_stderr();
         terminal::enable_raw_mode().context("raw mode")?;

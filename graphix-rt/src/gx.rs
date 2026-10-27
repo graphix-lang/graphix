@@ -345,22 +345,6 @@ impl<N> Roots<N> {
 
 pub(super) struct GX<X: GXExt> {
     ctx: ExecState<GXRt<X>, X::UserEvent>,
-    // XCR claude for claude: [perf/medium] Every root is removed with
-    // IndexMap::shift_remove (ToGX::Delete, delete_callable), which moves every later
-    // root, so deleting k roots among n costs O(k·n). Every Ref is a root and the
-    // GUI/TUI compile one per widget property, so a rebuild pays it: dropping 16000
-    // Refs takes 320 ms, 4000 take 20 ms (dev profile), doubling n quadruples the time.
-    // Keep the compile order with a per-root sequence number instead: a BTreeMap<u64,
-    // (ExprId, Node)> plus an IntMap<ExprId, u64>, with update_nodes scheduling by
-    // sequence. Removal becomes O(log n). probe:
-    // design/review-2026-10-26/repro/rt-delete-roots-quadratic.rs (rt-02)
-    // 2026-10-26 claude: GX::nodes is a Roots: a BTreeMap from a per-root sequence
-    // number to (ExprId, Node) and an IntMap from ExprId to its sequence number;
-    // update_nodes schedules by sequence and a removal moves nothing. The repro now
-    // drops 2000/4000/8000/16000 refs in 0.76/1.6/2.9/5.1 ms (was 9/34/128/534).
-    // graphix-rt no longer depends on indexmap. Pin: graphix-rt/tests/root_deletion.rs
-    // dropping_refs_is_not_quadratic (best of three; 16000 refs must take under 24x
-    // 2000; the IndexMap gave 62x).
     nodes: Roots<Node<GXRt<X>, X::UserEvent>>,
     callables: IntMap<CallableId, CallableInt>,
     /// Calls whose arguments have not landed, oldest first: a call is
@@ -488,30 +472,6 @@ impl<X: GXExt> GX<X> {
                 Ok(root) => {
                     t.program = Some(Ok(ProgramRoot { warnings, ..root }));
                     info!("program init time: {:?}", st.elapsed());
-                    // XCR claude for claude: [bug/medium] When the flags ask for fusion
-                    // but the context's JIT is unavailable (the arena reservation
-                    // failed under an address-space limit, or GRAPHIX_JIT_ARENA is out
-                    // of range), the program compiles with no kernels. This still
-                    // writes its image under the same key a fused run uses, so every
-                    // later run restores it and runs the node-walk only until the
-                    // sources change. A warm start that cannot load its kernels for the
-                    // same reason falls back to a cold compile and overwrites a good
-                    // fused entry the same way. Fix: write no program entry when fusion
-                    // was wanted and ctx.fusion.available() is false, or key the entry
-                    // by JIT availability. probe:
-                    // design/review-2026-10-26/repro/c-image-unfused-entry-sticks.sh
-                    // Also reported as (x-image-01). (c-image-01)
-                    // 2026-10-26 claude: GX::new sends an error instead of the program
-                    // entry when fusion_on(flags) and the context's JIT does not build
-                    // (FusionCtx::available, now pub, as is
-                    // graphix_compiler::fusion_on), so the shell writes nothing (logged
-                    // as image not taken; --warm fails) and the next run with a JIT
-                    // compiles fused. The warm-start fallback that cannot load kernels
-                    // goes through the same write, so it no longer overwrites a fused
-                    // entry. CLAUDE.md and design/program_image.md say so. Pin:
-                    // graphix-shell/tests/jit_unavailable.rs no_entry_without_kernels
-                    // (the unfused run writes no entry, the next one writes a fresh
-                    // one).
                     if let (Some(tx), Some(probes)) = (cfg.program_image, probes) {
                         let image = if fusion_on(t.flags) && !t.ctx.fusion.available() {
                             Err(anyhow!(
@@ -898,6 +858,18 @@ impl<X: GXExt> GX<X> {
             // interrupt cut point sits at a boundary edge. No pin fails without it: that
             // window needs an interrupt landing mid-loop, which no test drives
             // deterministically. Review whether the fence is worth its per-slot boundary.
+            // 2026-10-27 claude: Checked: Callback::call puts every slot whose callee may
+            // be a builtin (a builtin def or a dynamic callee) inside Prune::fence. A fence
+            // is a boundary no cycle skips, so its visit means the walk reached the slot.
+            // It is never imaged (image_encode refuses NOT_QUIESCENT, and slots exist only
+            // after a cycle). This is the CR's own suggested remedy, and CLAUDE.md's
+            // walk-pruning rule now states it. Two things are open: the fence has no
+            // failing pin, and I see no deterministic way to land an interrupt between two
+            // builtin-callee slots (a builtin slot cannot spin, and a lambda callee already
+            // has its instance boundary); and the note asks whether one boundary per
+            // builtin slot is worth its cost. That trade-off is Eric's call. If he accepts
+            // an unpinned containment fence, delete this; if not, revert the fence and
+            // write a CR for redelivery keyed per reader.
             let seen = self.ctx.rt.by_ref.get(&id).is_none_or(|readers| {
                 readers
                     .iter()
@@ -1347,19 +1319,6 @@ impl<X: GXExt> GX<X> {
         };
         // a checker bug in one buffer must not end the runtime: the check
         // answers the panic and the session is put back
-        // XCR claude for claude: [risk/low] A panic caught here is only partly undone:
-        // Saved restores program state, but DefGate's scratch (def_gate_depth,
-        // rec_defs) is undone only by DefGate::close, which an unwind skips, and
-        // open_compile_frame does not reset it. After a checker panic inside a
-        // definition's body, def_gate_depth stays above 0 for the rest of the LSP
-        // session. node::defer_settle then defers no statement settle and traits.rs
-        // stops refusing an unknown self type, so later checks of every buffer silently
-        // miss those diagnostics. Reset def_gate_depth, rec_defs and resolving_lambdas
-        // in CompileCtx::open_compile_frame next to pending_settles. Found by reading;
-        // not run. (rt-03)
-        // 2026-10-26 claude: fixed with c-lib-03: the panic arm calls
-        // clear_resolution_scratch; pin
-        // a_check_panicking_in_a_definition_leaves_none_open.
         let res = match AssertUnwindSafe(go).catch_unwind().await {
             Ok(res) => res,
             Err(panic) => {
@@ -1609,23 +1568,6 @@ impl<X: GXExt> GX<X> {
                         custom_tasks.extend(joined(r));
                     }
                 };
-                // XCR claude for claude: [perf/medium] This sweep, and the var_watches
-                // one below it, try_recv's every registered channel, at the top of
-                // every loop pass and again in the arm that woke it. A cycle therefore
-                // costs O(channels) even when all are idle, and every db subscription,
-                // line reader, fs watcher and http server owns one. With 20000 idle db
-                // subscriptions, 3000 counter cycles take 1.37 s, against 12 ms without
-                // them. Drain through the SelectAll instead (`while let Some(Some(up))
-                // = watches.next().now_or_never()`), which polls only woken streams and
-                // still removes ended ones, and delete both per-receiver loops. probe:
-                // design/review-2026-10-26/repro/x-concurrency-watch-sweep-per-cycle.sh
-                // (x-concurrency-03)
-                // 2026-10-26 claude: Both sweeps now drain through the SelectAll
-                // (drain_ready: next().now_or_never() until it is pending), which polls
-                // only woken receivers and drops ended ones; the per-receiver try_recv
-                // loops are gone. The repro (debug build) went from 2.18 s to 26 ms for
-                // 20000 idle db subscriptions (plain 20000: 15 to 33 ms, noise). No
-                // timing pin; the repro script measures it.
                 (watches) => {
                     drain_ready(&mut self.ctx.rt.watches, &mut custom_tasks)
                 };
@@ -1667,39 +1609,6 @@ impl<X: GXExt> GX<X> {
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
-                    // XCR claude for claude: [risk/low] When try_reserve finds the
-                    // channel full, notify_idle stays set, but idle_passes goes back to
-                    // 0. The select! below then has no grace timer and no arm that
-                    // fires when the subscriber frees room, so the Idle waits for an
-                    // unrelated wake, which a quiet program may never have, and a GUI
-                    // control's echo is neither confirmed nor rejected until then.
-                    // While notify_idle is pending, keep the grace armed or wait on
-                    // `self.sub.reserve()` in the select. Found by reading; not run.
-                    // (x-concurrency-04)
-                    // 2026-10-26 claude: Fixed with (rt-01): an owed Idle waits on the
-                    // subscriber's reserve() in the run loop's select. Pin:
-                    // graphix-rt/tests/send_loop.rs
-                    // an_idle_owed_to_a_full_channel_arrives_when_it_drains.
-                    // XCR claude for claude: [bug/medium] When the subscriber's channel
-                    // is full at the idle check, notify_idle stays pending, but the
-                    // select below arms nothing that waits for room. When the
-                    // subscriber drains, nothing wakes the runtime, so GXEvent::Idle
-                    // never arrives until unrelated activity does, and a GUI control
-                    // waiting on it (widgets::ask_idle) keeps its stale send. Every
-                    // cycle sends a batch, even an empty one, so the NotifyIdle's own
-                    // cycle can fill the channel. Fix: while notify_idle is pending and
-                    // nothing is ready, add a select arm on `self.sub.reserve()` that
-                    // sends the Idle batch, and pin it with a 1-slot channel. probe:
-                    // design/review-2026-10-26/repro/rt-notify-idle-full-channel.rs
-                    // (rt-01)
-                    // 2026-10-26 claude: The idle verdict no longer sends the Idle
-                    // itself: it marks it owed, and the run loop's select waits on room
-                    // in the subscriber's channel (reserve_or_never) and sends it
-                    // there, then loops without a cycle, so a full channel delays the
-                    // Idle until the subscriber drains instead of losing it; a closed
-                    // channel drops the request. Pin: graphix-rt/tests/send_loop.rs
-                    // an_idle_owed_to_a_full_channel_arrives_when_it_drains (fails 5 of
-                    // 6 runs without the fix).
                     idle_owed = self.notify_idle;
                     for tx in self.idle_waiters.drain(..) {
                         let _ = tx.send(());

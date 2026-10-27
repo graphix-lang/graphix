@@ -1862,23 +1862,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             let mut generic = cells
                 .iter()
                 .filter(|(_, tv)| {
-                    // XCR claude for claude: [bug/high] This counts bound cells as
-                    // generic: Type::reached_cells inserts every cell it walks, bound
-                    // ones included. At a run-time bind (a collection slot, a call
-                    // through a function value), `let y = i + 1` holds the operator's
-                    // result cell, which the definition's check bound to i64 at GENERIC
-                    // level. So `&mut y` there is refused with "y was made generic by
-                    // an earlier compile", while --check and a static call accept it.
-                    // Skip cells whose binding is set, and pin `&mut` over an
-                    // operator-initialized local inside an array::map callback. probe:
-                    // design/review-2026-10-26/repro/x-refs-catchup-runtime-bind-mut-ref-refused.gx
-                    // (x-refs-catchup-01)
-                    // 2026-10-26 claude: Same bug as (c-bind-01), fixed there: the cell was unbound
-                    // (the instance had not been typechecked yet) and Generic because a run-time
-                    // bind compiled at the thread's default level; with_runtime_settles now enters
-                    // Level::TOP, so filtering bound cells here was not needed (tried: it did not
-                    // fix the repro). Pin:
-                    // lang::byref::mut_reference_to_an_inferred_local_at_a_run_time_bind.
                     tv.level() == typ::tvar::Level::GENERIC && !tv.is_quantifier_rigid()
                 })
                 .peekable();
@@ -2390,24 +2373,6 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Open the compile frame of a top-level node, a statement's or one
     /// built at runtime outside any statement, before [`check_and_fuse`]:
     /// the previous compile's scratch is dropped.
-    // XCR claude for claude: [risk/medium] [risk/medium] GX::check recovers from a
-    // checker panic with drop_deferred and Saved::restore only. The resolution scratch
-    // a panic unwinds past survives into every later compile: def_gate_depth, rec_defs,
-    // def_gate_params, instance_fn_params, fn_param_args, written_lets,
-    // resolving_lambdas, defaults_in_check and body. A def_gate_depth left at 1 makes
-    // node::defer_settle drop every deferred settle and judgment, so the LSP session
-    // quietly accepts what a fresh check refuses. This frame only ever opens a
-    // top-level compile, so debug_assert here that that scratch is balanced, and reset
-    // it. GX::check's panic arm should also delete the nodes it already compiled. Found
-    // by reading; not run. (c-lib-03)
-    // 2026-10-26 claude: open_compile_frame debug_asserts the resolution scratch is
-    // empty (def_gate_depth, rec_defs, def_gate_params, instance_fn_params,
-    // fn_param_args, written_lets, block_typedefs, resolving_lambdas,
-    // defaults_in_check, body); CompileCtx::clear_resolution_scratch empties it, and
-    // GX::check's panic arm calls it and deletes the statements it already built (nodes
-    // now live outside the unwound future). Pin: graphix-rt/tests/runtime_api.rs
-    // a_check_panicking_in_a_definition_leaves_none_open (a builtin whose init panics
-    // inside a def body; with the clear undone the next check panics on the assert).
     pub fn open_compile_frame(&mut self, top_id: ExprId) {
         debug_assert!(
             self.resolution_scratch_is_empty(),
@@ -2992,24 +2957,6 @@ impl ErrorHandler {
 
     /// The handler of the innermost seq machine covering this one,
     /// itself included.
-    // XCR claude for claude: [perf/medium] machine() walks the handler chain to the root
-    // when there is no seq machine, and it runs at every catch install and delete
-    // (polled_by / unpolled_by). raise and handled likewise walk every ancestor,
-    // locking each pollers mutex. With a catch in each activation of a recursion, every
-    // install and every raise is O(depth): depth 8k/16k/32k takes 872/2361/7875 ms
-    // against 360/550/1035 ms without the catch, and 2619/8921 ms at 8k/16k with a
-    // raise per level. Cache the nearest machine in DynNode at with_catch (O(1)
-    // machine()), and link each node to its nearest machine or try ancestor (the only
-    // handlers whose nested count anyone reads) so raise/handled walk only those.
-    // probe: design/review-2026-10-26/repro/c-error-op-catch-depth-quadratic.sh Also
-    // reported as (x-stack-04). (c-error-op-03)
-    // 2026-10-26 claude: a handler now records its kind (Catch, Try, Machine), its
-    // innermost machine above and its innermost Try or Machine above (the handlers
-    // whose nested count a step reads); machine() is O(1) and raise/handled walk only
-    // those counters. Repro on a loaded host: catch 2214 ms at 16k, 5600 ms at 64k
-    // (linear; review: 7875 ms at 32k). The image encodes the kind (REGISTRATION_FORMAT
-    // 88). Pin: lib.rs handler_tests::nested_errors_count_only_where_a_step_waits
-    // (fails when every ancestor counts); no timing pin.
     pub(crate) fn machine(&self) -> Option<ErrorHandler> {
         match self.0.kind {
             HandlerKind::Machine => Some(self.clone()),

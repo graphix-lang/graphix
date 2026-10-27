@@ -25,20 +25,6 @@ fn toml_to_value(v: toml::Value) -> Value {
         toml::Value::Integer(i) => Value::I64(i),
         toml::Value::Float(f) => Value::F64(f),
         toml::Value::Boolean(b) => Value::Bool(b),
-        // XCR claude for claude: [bug/medium] Converting through dt.to_string() and RFC
-        // 3339 loses a TOML 1.1 offset datetime without seconds: "t =
-        // 1979-05-27T07:32Z" becomes the string "1979-05-27T07:32Z", and a datetime
-        // target refuses it with InvalidCast. Build the chrono value from the
-        // Datetime's date, time (seconds default 0) and offset fields, and keep the
-        // string only for a value with no offset. probe:
-        // design/review-2026-10-26/repro/small-pkgs-toml-datetime-no-seconds.gx
-        // (small-pkgs-07)
-        // 2026-10-26 claude: toml_to_value builds an offset date-time's instant from
-        // its date, time (seconds and nanoseconds defaulting to 0, a leap second 60 as
-        // chrono's) and offset fields (offset_datetime); a local date, time or
-        // date-time still reads as its text. Pin: graphix-tests
-        // lib_tests::toml::toml_offset_datetimes_read_as_instants (no seconds, a
-        // -07:00 offset, a space separator with a fraction, a local date-time).
         toml::Value::Datetime(dt) => match offset_datetime(&dt) {
             Some(dt) => Value::DateTime(TArc::new(dt)),
             None => Value::String(ArcStr::from(dt.to_string().as_str())),

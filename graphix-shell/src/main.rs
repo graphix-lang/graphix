@@ -204,22 +204,6 @@ struct Params {
     /// the program to run instead of starting the REPL (a file, or
     /// netidx:/path), then the arguments passed to it: everything after
     /// the program is the program's
-    // XCR claude for claude: [bug/medium] trailing_var_arg only applies once
-    // program_args has a value, so a first program argument that names a graphix option
-    // or subcommand is taken by graphix. `graphix cli.gx --help` shows graphix's help,
-    // `graphix cli.gx -n 3 foo` turns on --no-netidx and the script sees ["3", "foo"],
-    // and `graphix cli.gx fmt x` runs the formatter on x in place. Fold `file` into
-    // this positional (a Vec whose first element is the script) so everything after the
-    // filename is the program's, as the help text promises. probe:
-    // design/review-2026-10-26/repro/examples-rest-program-args-intercepted.sh
-    // (examples-rest-02)
-    // 2026-10-26 claude: The script and its arguments are one trailing positional
-    // (Params::program, the script first), so everything after the script is the
-    // script's: a graphix option or subcommand name included; main splits it into the
-    // file and program_args, and a standalone binary keeps every argument as the
-    // program's. Pin: graphix-shell tests/program_args.rs
-    // arguments_after_the_script_are_the_scripts (--help, -n 3, fmt x, --check after
-    // the script).
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
@@ -282,22 +266,6 @@ impl NetArgs {
     }
 
     async fn pub_sub(&self, bind: Option<BindCfg>) -> Result<(Publisher, Subscriber)> {
-        // XCR claude for claude: [bug/high] With no netidx config file, `graphix
-        // netidx:/path` panics ("Cannot start a runtime from within a runtime"). This
-        // load runs on the async main runtime, and Config::load_default_or_local_only
-        // falls back to Config::local_only, which builds a runtime and block_on's it.
-        // That is the zero-config local setup install.md advertises. Other netidx users
-        // are unaffected because NetState loads on a thread of its own. Run this load
-        // off the runtime the same way (a std::thread or spawn_blocking), or share
-        // NetState's loader. probe:
-        // design/review-2026-10-26/repro/book-core-netidx-script-panic.sh
-        // (book-core-01)
-        // a fallback to the machine-local resolver blocks on a runtime of its own
-        // 2026-10-26 claude: NetArgs::pub_sub loads the config on a blocking-pool
-        // thread (spawn_blocking), so the local-only fallback's block_on runs outside
-        // the async runtime. Pin: graphix-shell tests/netidx_zero_config.rs
-        // netidx_script_loads_without_a_config_file (no config, a held port standing in
-        // for the local resolver; panicked before).
         let net = self.clone();
         let (cfg, auth) = tokio::task::spawn_blocking(move || net.load())
             .await

@@ -181,22 +181,6 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             }
             return;
         }
-        // XCR claude for claude: [perf/low] Only the fast path above moves the fork's
-        // touched keys with `absorb`. This path goes through merged_keys, which clones
-        // every key into the parent's list (`mine.extend(keys.iter().cloned())`) before
-        // draining them here, so nested slow-path joins still copy each key once per
-        // level (the cost x-perf-compile-03 named). Iterate the keys by reference for
-        // the merge, then `absorb(mine, &mut touched)` when the parent records, and
-        // leave merged_keys to dedup and bump the generation. Found by reading; not
-        // run. (t-misc-03)
-        // 2026-10-27 claude: The slow path no longer goes through merged_keys
-        // (deleted): it walks the fork's keys by reference, skips a key whose value
-        // already agrees with the parent's (a duplicate key included, which replaces
-        // the seen-set dedup and its key clones), clones a key only for an insert, and
-        // hands the list to the parent with absorb as the fast path does. The conflict
-        // assert is unchanged for every key it reaches. No timing pin; the tracked.rs
-        // tests (join_into_a_written_parent, join_a_fork_of_a_fork, join_siblings, the
-        // two conflict panics) cover the slow path's results.
         let Some(mut touched) = touched.filter(|t| !t.is_empty()) else {
             return;
         };

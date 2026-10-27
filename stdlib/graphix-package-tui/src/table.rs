@@ -173,19 +173,6 @@ impl<X: GXExt> TuiWidget for TableW<X> {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
-        // XCR claude for claude: [bug/medium] filter_map drops a row whose reference has
-        // not delivered yet, so every later row moves up one index. `selected`, an
-        // index into the program's rows, then highlights the next row: with r0 late and
-        // #selected: &1, '>> row two' is highlighted until r0 arrives. Keep the slot by
-        // mapping an absent row to `Row::default()` instead of skipping it. probe:
-        // design/review-2026-10-26/repro/tui-widgets-table-absent-row.sh
-        // (tui-widgets-03)
-        // 2026-10-26 claude: TableW::draw maps a row whose reference has not delivered
-        // to an empty one-line row (Row::default().height(1), the height Row::new
-        // gives) instead of dropping it, so every later row keeps its index and the
-        // selection names the program's row. Pin:
-        // render_test::a_table_keeps_the_slot_of_a_row_that_arrives_late (fails with
-        // the filter_map back: ' one', '>>two').
         let mut table = Table::default().rows(self.rows.iter().map(|(_, r)| {
             r.t.as_ref().map_or_else(|| Row::default().height(1), |r| r.build())
         }));

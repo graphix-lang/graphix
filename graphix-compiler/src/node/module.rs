@@ -495,17 +495,6 @@ fn check_hidden_typedef(
         bail!("{} is defined by its interface; delete this definition", td.name)
     }
     let sig_params = scope_params(&sig_td.params, scope);
-    // XCR claude for claude: [bug/low] Parameters are paired by name and only from the
-    // implementation's side, so `type Box<'a> = Abstract<'a>` implements a declared
-    // `type Box<'a, 'b>;`, and a reordered head compares constraints at the wrong
-    // positions. Require equal arity and compare position by position. probe:
-    // design/review-2026-10-26/repro/c-module-traits-hidden-type-arity.sh
-    // (c-module-traits-06)
-    // 2026-10-27 claude: check_hidden_typedef now requires the implementation's
-    // parameter count to equal the interface's and compares name and constraint
-    // position by position. Pins: lang::interfaces::abstract_type_missing_param (the
-    // repro's shape) and abstract_type_reordered_params; abstract_type_extra_param's
-    // message changed with it.
     let params = scope_params(&td.params, scope);
     if params.len() != sig_params.len() {
         bail!(
@@ -687,25 +676,6 @@ fn check_sig_items<R: Rt, E: UserEvent>(
             .and_then(|()| check_interface_names(&view, &scope.lexical, si, val))
             .placed(&si.ori, si.pos)?;
     }
-    // XCR claude for claude: [bug/medium] A file module with a .gxi declared in a
-    // function body is refused: with m.gx `let y = 2` and m.gxi `val y: i64;`, `let h =
-    // |k: i64| -> i64 { mod m; m::y + k }` fails here with 'sig item val y: i64 is
-    // missing an implementation'. The same `mod m;` at the top level or in a top-level
-    // block checks, and so does the body case without m.gxi. This loop finds no binding
-    // for the declared names under the module's scope when the module sits in a lambda
-    // body. Make the interface check see the body's bindings, and pin an interfaced
-    // module in a body in lang/modules.rs. probe:
-    // design/review-2026-10-26/repro/x-rerun-4-interfaced-module-in-body.sh
-    // (x-rerun-4-01)
-    // 2026-10-27 claude: The root cause was the env the check ran in: a lambda
-    // instance's env holds only the binds from before its body, so the signature's
-    // bindings at the module's scope were missing from it. Module now keeps
-    // sig_binds, the bindings bind_sig made at its scope, and check_sig pairs the
-    // body's bindings with them instead of looking them up in the env. The module
-    // image carries them (REGISTRATION_FORMAT 90). The check itself still runs in
-    // the statement's env: a snapshot taken at bind_sig misses a type a later module
-    // defines (annotation_names_from_a_later_module). Pin:
-    // lang::modules::interfaced_module_in_a_lambda_body (two instances).
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
     // a name a later `let` shadows is not the one the interface exports
     let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
@@ -838,17 +808,6 @@ fn check_sig_items<R: Rt, E: UserEvent>(
 /// implemented, under the declared head; and the script's own types and
 /// traits agree with the declared ones, as a module's do (the
 /// interface's others were spliced into the script).
-// XCR claude for claude: [structure/low] This repeats check_sig_items' interface checks
-// (val type match, declared impl head match, names and redefinition), with copies of
-// their messages, and has already drifted (no refusal of an impl implemented twice).
-// Share one val check and one impl-head check between the two, leaving each caller only
-// the lookup of what implements the item. Found by reading; not run.
-// (c-module-traits-07)
-// 2026-10-27 claude: check_val and check_impl_head are now shared by check_sig_items
-// and check_script_sig, one message each. The impl implemented twice needs no check in
-// check_script_sig: a script's second impl is already refused at registration
-// ('conflicting implementation', checked by hand with and without a .gxi). Refactor
-// only; the interfaces, modules and traits fixtures cover both callers' messages.
 pub fn check_script_sig<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     sig: &Sig,
@@ -1444,20 +1403,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                         Ok(()) => compiled = true,
                     }
                 }
-                // XCR claude for claude: [bug/medium] Returning here skips this cycle's
-                // outer-to-inner forwarding, the body's update and the publication of
-                // its productions. A write to a val landing with the bad source never
-                // reaches the body: foo::x reads 5 while foo::y stays at the old 0. Set
-                // the error status but fall through to the proxy loops and the node
-                // update, as the bottom path does. probe:
-                // design/review-2026-10-26/repro/c-module-traits-dyn-error-drops-cycle.gx
-                // (c-module-traits-03)
-                // 2026-10-27 claude: Module::update now records a load failure (an error
-                // value, or a source that does not compile) as the status and falls
-                // through to the proxy forwarding and the body update. Pin:
-                // lang::modules::source_error_keeps_the_body_running (55, not 5). The
-                // teardown on a bad source string is x-rerun-5-09, Eric's call, and is
-                // left as it was.
                 v => {
                     failed = Some(errf!(ERR_TAG, "unexpected {}", crate::typ::Naked(&v)))
                 }
@@ -1621,34 +1566,6 @@ fn decided_binds<R: Rt, E: UserEvent>(
         .by_id
         .iter()
         .map(|(_, b)| b)
-        // XCR claude for claude: [bug/low] This keeps every binding outside the refused
-        // module, including a sibling module's locals whose cell merged into the
-        // parent's. For `mod n` writing `super::x`, the refusal reads "annotate `x`
-        // (line 1, column 5), `v` (line 1, column 15)". `v` is a local of sibling m in
-        // m.gx, which n cannot see, and the position is printed without a file, so the
-        // reader looks in the parent. Keep only bindings whose scope is an ancestor of
-        // the module, and print each one's file. probe:
-        // design/review-2026-10-26/repro/t-tvar-decided-binds-sibling.sh (t-tvar-06)
-        // 2026-10-27 claude: decided_binds keeps only bindings whose scope is a strict
-        // ancestor of the module, and names a binding's source when it differs from
-        // the module statement's origin. Pins:
-        // lang::modules::module_check_refusal_names_no_sibling_local (this repro) and
-        // module_check_refusal_names_the_file.
-        // XCR claude for claude: [bug/medium] This keeps every binding outside the
-        // module, a sibling module's included, and prints each one's line and column
-        // with no file. With `let x = never(); mod a; mod b;` and both modules reading
-        // `super::x`, a's refusal says "annotate `x` (line 1, column 5), `w` (line 3,
-        // column 5)". `w` is b's binding, line 3 is a position in b.gx, the error is
-        // placed in main.gx, and annotating `w` cannot help. Keep only bindings whose
-        // scope is an ancestor of the module (the code around it) and print the file
-        // when it is not the parent's. module_check_refusal_is_the_first_in_order
-        // should pin the whole hint. probe:
-        // design/review-2026-10-26/repro/tests-modules-image-left-open-names-sibling.sh
-        // (tests-modules-image-02)
-        // 2026-10-27 claude: Fixed with t-tvar-06: decided_binds keeps only ancestors
-        // and names another file's source. module_check_refusal_is_the_first_in_order
-        // now pins the whole hint (ends_with); module_check_refusal_names_the_file pins
-        // the file naming.
         .filter(|b| {
             b.scope != *module
                 && Path::is_parent(&*b.scope.0, &*module.0)

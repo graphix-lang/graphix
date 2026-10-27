@@ -1336,7 +1336,7 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// XCR claude for claude: [test-gap/medium] These echo tests judge a rejected send
+// CR claude for claude: [test-gap/medium] These echo tests judge a rejected send
 // through GuiTestHarness::drain, which calls root.w.idle() after every drain whether or
 // not a widget asked. testing::drain_idle drops GXEvent::Idle. A real window runs
 // idle() only on GXEvent::Idle, which the runtime sends only after a widget's ask_idle
@@ -1356,6 +1356,19 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 // a no-op, rejected_toggles_return_to_the_program_value,
 // rejected_text_input_returns_to_the_program_value and
 // rejected_text_editor_returns_to_the_program_value fail.
+// 2026-10-27 claude: The harness change is right: GuiTestHarness::drain calls idle()
+// only for GXEvent::Idle, through testing::drain_events. But the ordering this note
+// relies on no longer holds. f036c94b3 (rt-01) changed the run loop in
+// graphix-rt/src/gx.rs: the idle verdict now answers idle_waiters and only marks the
+// Idle as owed (idle_owed); the Idle batch is sent later, in the select's
+// reserve_or_never arm. So a wait_idle can be answered before the Idle is in the
+// stream. drain_events then returns from a round that delivered no updates without
+// handing the Idle to the widgets, and the rejected_* pins pass only because the
+// runtime thread usually reaches the select first. GXHandle::wait_idle's doc
+// (graphix-rt/src/lib.rs), which says the same verdict's Idle is already in the stream,
+// is now wrong too. Fix in the runtime: when an Idle is owed, answer the idle waiters
+// only after the Idle batch is sent (in the reserve arm), or try_reserve and send
+// before answering, deferring only when the channel is full.
 async fn rejected_toggles_return_to_the_program_value() -> Result<()> {
     for kind in ["checkbox", "toggler"] {
         let code = format_compact!(

@@ -127,20 +127,6 @@ type SqliteOpen = CachedArgsAsync<SqliteOpenEv>;
 #[derive(Debug, Default)]
 struct SqliteExecEv;
 
-// XCR claude for claude: [bug/medium] exec, exec_batch, begin, commit, rollback and
-// close keep the default CANCEL_SAFE = true. But their work runs in spawn_blocking,
-// which an abort cannot stop, so a sleep of the call site drops only the reply and the
-// statement still runs. An INSERT in an arm that sleeps the cycle after it is issued
-// inserts its row and never answers, not even at the wake, and a retry inserts twice.
-// Set `const CANCEL_SAFE: bool = false` on these evals (and in simple_sql_builtin!) so
-// the reply is kept and answers at the wake, as the cursor reads and stream writes do.
-// probe: design/review-2026-10-26/repro/http-sqlite-db1-exec-reply-lost.gx
-// (http-sqlite-db1-01)
-// 2026-10-26 claude: SqliteExecEv, SqliteExecBatchEv, SqliteCloseEv and
-// simple_sql_builtin! (begin/commit/rollback) are CANCEL_SAFE = false; the exec
-// answers at the wake, once. Pin: graphix-tests
-// lib_tests::sqlite::sqlite_exec_answers_at_the_wake (times out with the constant
-// removed). sqlite_open and sqlite_query keep the default.
 impl EvalCachedAsync for SqliteExecEv {
     type Args = (Conn, ArcStr, ValArray);
 

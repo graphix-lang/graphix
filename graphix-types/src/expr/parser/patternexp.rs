@@ -163,23 +163,6 @@ where
         structure_pattern_or(),
         sptoken(')'),
     )
-        // XCR claude for claude: [bug/medium] The type path's WrittenPath is discarded
-        // here and in `construct` in parser/mod.rs. Neither StructurePattern::Abstract
-        // nor ExprKind::Construct records a TypeRefSite when it resolves the typedef.
-        // So LSP references on an abstract type `T` miss every `T(v)` and pattern
-        // `T(p)`, and go-to-definition there returns nothing. Keep the WrittenPath in
-        // both nodes, as ImplExpr keeps trait_at, and push a TypeRefSite where they
-        // resolve the typedef under `env.ide.is_lsp()`. probe:
-        // design/review-2026-10-26/repro/t-parser-b-abstract-ctor-refs.py
-        // (t-parser-b-04)
-        // 2026-10-27 claude: Fixed: StructurePattern::Abstract carries at: WrittenAt
-        // (the path's first written segment; NOWHERE out of a packed AST, where
-        // nothing is recorded), and Construct::compile and the abstract pattern's
-        // compile record a TypeRefSite through the new Env::push_typedef_ref (gated on
-        // is_lsp). Construct needed no new field: its spec's pos is where the path
-        // starts. Pin: graphix-shell tests/lsp
-        // an_abstract_constructor_references_its_type (references and definition from
-        // each of the four sites).
         .map(move |((name, path_at), bind, _)| StructurePattern::Abstract {
             all: all.clone(),
             name,
@@ -276,20 +259,6 @@ where
     })
 }
 
-// XCR claude for claude: [bug/low] A pattern literal gets the float range note
-// (`finite`) but not the integer one. `select 1 { u8:300 => 0, _ => 1 }` is refused
-// with 'Expected whitespaces or =>' and no reason, while `let a = u8:300` says "`300`
-// is out of the range of u8". Put int_range_note behind the literal choice here as
-// `literal` does. A `duration:` literal past its range
-// (duration:99999999999999999999.s) is likewise refused with no reason. probe:
-// design/review-2026-10-26/repro/x-rerun-4-pattern-int-range-note.gx (x-rerun-4-06)
-// 2026-10-27 claude: Fixed: literal_pattern takes int_range_note and
-// duration_unit_note behind its literal choice (both now generic over their output),
-// and duration_unit_note also names a known-unit duration no Duration holds
-// (netidx_value::parser::duration_of says None: negative or too long), in expressions
-// and patterns. Pin: graphix-types parser test a_literal_out_of_range_names_its_type
-// (the select u8:300, duration:99999999999999999999.s and pattern duration:-1.s
-// cases).
 fn literal_pattern<I>() -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

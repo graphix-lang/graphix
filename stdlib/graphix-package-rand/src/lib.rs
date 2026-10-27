@@ -117,27 +117,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         macro_rules! gen_cases {
             ($start:expr, $end:expr; $($ftyp:ident),+; $($typ:ident),+) => {
                 match ($start, $end) {
-                    // XCR claude for claude: [bug/low] `.ok()` drops sample_single's
-                    // error, so an empty range, a NaN or infinite bound, and a
-                    // finite float range whose width overflows f64 (`#start:
-                    // -1e308, #end: 1e308`, a valid request) produce nothing
-                    // forever, and nothing is logged. Log the refused range under
-                    // FAILURE_TARGET as other failing operators do. Sample a finite
-                    // overflowing float range as `start * (1 - u) + end * u` so it
-                    // gives a value. probe:
-                    // design/review-2026-10-26/repro/x-panics-rand-silent-range.gx
-                    // (x-panics-02)
-                    // 2026-10-27 claude: rand samples through sample/sample_float:
-                    // a range with no value (empty, a float one with start == end
-                    // included, which rand's inclusive float sampler answered with
-                    // start, or a NaN bound) logs 'rand: no value in [start, end)'
-                    // under FAILURE_TARGET and produces nothing; a float sample
-                    // that rounds up to end is drawn again; a finite float range
-                    // too wide for its type is sampled at half scale and doubled
-                    // (exact, so the result stays in [start, end)) in place of the
-                    // start*(1-u)+end*u form. Pins: graphix-shell
-                    // tests/swallowed_error_logs.rs an_empty_rand_range_is_logged,
-                    // graphix-tests lib_tests::core::rand_wide_float_range.
                     $(
                         (Value::$ftyp(start), Value::$ftyp(end)) => {
                             logged(*start, *end, sample_float(*start, *end), Value::$ftyp)

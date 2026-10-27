@@ -395,38 +395,6 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
             // filter_map keeps the payloads its callback does not null
-            // XCR claude for claude: [test-gap/low] The callback here only ever returns
-            // `e` or null; filter_map's `` `Keep(v) `` member, which has its own
-            // node-walk rule, is never generated. Likewise no generator in generate/
-            // emits `~!` or `live(`, and none mints a reference inside a select arm or
-            // a callback where deletion releases it. All of these are semantics that
-            // have not soaked yet. Draw a `Keep` body here (pinned to `[e, null,
-            // `Keep(e)]`) and add `~!` and `live` steps to reactive.rs's ceremonies.
-            // Found by reading; not run. (fuzz-gen-a-06)
-            // 2026-10-26 claude: Done: filter_map callbacks (array and list) draw half
-            // the time a body under a return written [e, null, `Keep(e)] that keeps an
-            // e as `Keep(..) (exprs::filter_map_parts, over the new callback_parts
-            // shared with map_parts and filter_parts); sample chains in reactive.rs
-            // draw the strict ~! a third of the time (ReactiveStats::strict_samples);
-            // live(..) waits and reads were already added by (x-rerun-3-02). Pins:
-            // graphix-fuzz generate::test::keep_presence,
-            // tests::generated_keep_bodies_check (eight generated Keep programs pass
-            // the check), generate::reactive::test::reactive_composition_presence
-            // (strict samples). Remains: no generator mints a reference inside a
-            // select arm or a callback slot whose deletion releases it.
-            // 2026-10-27 claude: The remainder is done: funcs::gen_ref_stmts mints a
-            // writable reference to a select arm's own let (the other arm names a
-            // visible binding or its own let), over a bool written to its negation in
-            // the second cycle so the arm sleeps holding it, and a read-only one to an
-            // array::map callback slot's parameter over a source written from 3
-            // elements to 1, so the slots the read copy names are deleted
-            // (GenStats::ref_in_arm, ref_in_slot). Pins:
-            // generate::test::minted_ref_presence (both forms in at least 1% of
-            // default programs), tests::generated_minted_refs_agree (4 programs of
-            // each form pass the check and agree across modes); both fail with the two
-            // branches removed. The arm form first minted &mut (lit) in the other arm,
-            // which the checker refuses to read through (deref-union-01, a new CR for
-            // eric).
             3 if e.is_scalar() => {
                 let HofParts { src, binder, body } =
                     filter_map_parts(ctx, rng, e, GenType::Array, d);

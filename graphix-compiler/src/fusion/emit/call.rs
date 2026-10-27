@@ -933,22 +933,6 @@ pub(super) fn emit_drop_local(
     kind: LocalKind,
     vv: ValueVar,
 ) -> Result<()> {
-    // XCR claude for claude: [perf/medium] [perf/medium] This use_vars a local before
-    // emit_owned_drop returns for a scalar. Scope drops call it for every local, so
-    // each scalar is looked up at the drop site, and Cranelift's SSA builder walks it
-    // back through every join since its definition, leaving a dead block-param alias at
-    // each one. A fused body with n scalar lets and n selects emits 2597 / 10197 /
-    // 40397 unused aliases at n = 50 / 100 / 200 and builds in 0.53 / 1.42 / 4.82 s at
-    // n = 800 / 1600 / 3200. Return before the use_var when `kind` is
-    // LocalKind::Scalar, as emit_pending_abort already filters scalars. probe:
-    // design/review-2026-10-26/repro/x-perf-compile-scalar-drop-use-var.sh
-    // (x-perf-compile-04)
-    // 2026-10-26 claude: emit_drop_local returns for a scalar before reading anything,
-    // and an owned local's drop reads its spill slot (ValueVar::read_spilled), so no
-    // drop walks a variable back through the joins: the CLIF of a 100-select scalar
-    // chain has 99 aliases (was 10197). Pin: graphix-shell/tests/kernel_ssa_growth.rs
-    // scalar_select_chain_has_no_alias_per_join (fails with 10197 aliases with the
-    // early return undone).
     if matches!(kind, LocalKind::Scalar(_)) {
         return Ok(());
     }
@@ -1015,34 +999,6 @@ pub(super) fn emit_pending_abort(
     for (kind, vv) in ctx.owned_input_stack.borrow().iter() {
         emit_drop_local(b, ctx, *kind, *vv)?;
     }
-    // XCR claude for claude: [bug/high] [bug/high] The abort rungs of x-perf-compile-01
-    // now crash the process, not just slow it. A fused chain of `let aI =
-    // array::fold(aI-1, [], |acc, x| array::push(acc, x))` gets a kernel frame that
-    // grows with the square of the chain: 226 KB at 200 lets, 771 KB at 400, 2.83 MB at
-    // 800. From about 700 lets the prologue's stack probe runs off the 2 MB tokio
-    // worker stack and the process aborts with a stack overflow (--no-fusion runs it in
-    // 0.36 s). Struct `with` chains build the same way: 6.1 s fused vs 0.13 s
-    // node-walked at 800. Each rung use_vars the owned locals below it, so every abort
-    // exit carries all of them as block parameters, and the register allocator spills
-    // them. Fix as x-perf-compile-01 says: spill each owned local once where it is
-    // bound (and at every def_var of a tail formal) and have the rungs load the slot.
-    // probe:
-    // design/review-2026-10-26/repro/x-perf-compile-fold-chain-stack-overflow.sh,
-    // design/review-2026-10-26/repro/x-perf-compile-owned-chain-quadratic.sh (cites
-    // x-perf-compile-01) (x-perf-compile-01)
-    // 2026-10-26 claude: Every owned ValueVar (abi.rs ValueVar::owned: params, lets,
-    // holds, a fold's acc, a find's taken value) gets a 16-byte stack slot that every
-    // definition writes (ValueVar::define/define_disc; the tail rebind, the acc's
-    // per-slot delivery and the find's take included), and every drop, the abort
-    // ladder's rungs and the held inputs included, reads it there (read_spilled); a
-    // chunk's borrowed locals have none. The 800-let fold chain runs in 1.9 s (was a
-    // stack-overflow abort), 200 lets 0.29 s (was 1.18 s); CLIF aliases 3.8k at 200
-    // lets (was 165k); the struct-with chain links linearly. Link of the one large
-    // kernel is still the bulk of the time (0.6/2.4/4.6 s at 400/800/1600). Pins:
-    // graphix-shell/tests/kernel_ssa_growth.rs owned_fold_chain_has_no_alias_per_exit
-    // and long_owned_fold_chain_runs (53167 aliases and SIGABRT with read_spilled
-    // reading the variables). The outline.rs CR of the same id is the parent finding;
-    // its abort-rung half is this.
     let owned: SmallVec<[(usize, LocalKind, ValueVar); 8]> = env
         .locals_above(ctx.owned_floor)
         .enumerate()

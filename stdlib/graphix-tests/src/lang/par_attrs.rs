@@ -468,19 +468,6 @@ async fn a_reference_and_its_reader_stay_ordered() -> Result<()> {
 // A block's runs fork: here nothing but the block's statements can.
 #[tokio::test(flavor = "current_thread")]
 async fn block_runs_fork() -> Result<()> {
-    // XCR claude for claude: [test-gap/medium] Under Force, `ran.forks` includes the
-    // forks of the stdlib root's init cycles: 73 before the fixture compiles. So
-    // `assert!(ran.forks > 0)` here, and the `forks > 0` half of
-    // first_cycle_growth_agrees, pass even if a block's runs never fork (a fixture of
-    // `42` already reports 73). `dense_deltas::run_delta_with` should read forks and
-    // build_forks just before `compile_result` and return the differences, as `run!`
-    // does with forks_before. probe:
-    // design/review-2026-10-26/repro/tests-lang-rest-a-par-attrs-force-fork-baseline.rs
-    // (tests-lang-rest-a-02)
-    // 2026-10-26 claude: run_delta_with (dense_deltas.rs) and par_attrs' module_forks
-    // read forks and build_forks just before compile_result and return the fixture's
-    // own counts. Pin: block_runs_fork now also asserts a lone 42 forks 0 under Force
-    // (fails with the init-cycle baseline back: 73).
     let alone = run_par("42", ParMode::Force).await?;
     assert_eq!(alone.forks, 0, "a lone constant forked");
     let ran = run_par("{ let a = 1; let b = 2; b }", ParMode::Force).await?;

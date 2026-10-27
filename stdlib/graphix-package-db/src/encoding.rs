@@ -35,17 +35,6 @@ pub(crate) fn encode_value(v: &Value) -> Result<GPooled<Vec<u8>>> {
     Ok(buf)
 }
 
-// XCR claude for claude: [bug/medium] A stored value can decode to a top-level
-// Value::Error. CachedArgsAsync skips read_back for every error a DATA_RESULT eval
-// returns, so db::get hands the file's error to the program as the call's error,
-// outside its declared `DbErr`. db::import copies raw bytes, so a crafted import file
-// (or db directory) produces a coverage hole in the caller's select. Fix: refuse a
-// top-level error here as undecodable data, since data never holds an error. probe:
-// design/review-2026-10-26/repro/x-security-db-stored-error.sh (x-security-02)
-// 2026-10-26 claude: decode_value refuses a stored top-level Value::Error as
-// undecodable (a db value is NoError, so data never holds one); db::get answers
-// DbErr. Pin: encoding::test::a_stored_error_is_undecodable; the repro prints DbErr
-// and exits 0.
 /// A stored value; an error is undecodable, since data never holds one.
 pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
     match Value::decode(&mut &*data) {

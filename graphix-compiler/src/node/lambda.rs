@@ -1440,42 +1440,6 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
             Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
         ctx.with_restored(def_env.clone(), |ctx| match &body {
             DefBody::Expr(body) => {
-                // XCR claude for claude: [bug/medium] `enclosing` comes from ctx.body
-                // where the instance is built, not from the definitions lexically
-                // around the literal. A type variable two lambdas inside its definition
-                // is therefore a fresh variable: `let mk = 'a: Number |k: 'a| |y: i64|
-                // |x: 'a| [x, k]; mk(1)(0)("s")` is accepted and prints ["s", 1], while
-                // the one-level form is refused. Capture the declared signatures when
-                // the literal compiles (with def_env) and use those here. probe:
-                // design/review-2026-10-26/repro/x-rerun-5-nested-lambda-tvar.gx
-                // (x-rerun-5-02)
-                // 2026-10-27 claude: The definitions around a literal are now captured
-                // when the literal compiles: Lambda::compile takes ctx.body.declared
-                // and hands it to make_init, which no longer reads ctx.body at init;
-                // DefOrigin::Source carries the chain (enclosing) and the image writes
-                // it (def_encode/def_decode; REGISTRATION_FORMAT 92), so a restored
-                // definition's run-time instances keep it. Pin:
-                // lang::types::a_signature_two_lambdas_down_names_the_enclosing_variable
-                // (fails with the init-time read restored).
-                // XCR claude for claude: [bug/medium] `ctx.body` here is whatever
-                // compile is in progress when `init` runs, not the definitions
-                // lexically around this one. A nested literal's definition check runs
-                // from Lambda::typecheck0, after the enclosing compile has put
-                // `ctx.body` back to None. So `declared` is only this signature, and a
-                // body annotation in a nested lambda never names the enclosing
-                // definition's variable. `'a: Number |x: 'a| -> 'a { let g = |y| { let
-                // v: 'a = 1; y }; g(x) }` is accepted, where the same `let` directly in
-                // the body is refused. Capture `ctx.body.declared` in Lambda::compile
-                // and pass it to make_init (def_decode passes an empty chain). probe:
-                // design/review-2026-10-26/repro/c-lambda-nested-body-annotation.gx
-                // (c-lambda-02)
-                // 2026-10-27 claude: Fixed with x-rerun-5-02: make_init takes the
-                // enclosing chain Lambda::compile captured, so a nested literal's
-                // definition check (run from Lambda::typecheck0 after ctx.body is None)
-                // compiles its body under the enclosing signatures; def_decode reads
-                // the chain from the image instead of an empty one. Pin:
-                // lang::types::a_nested_body_annotation_names_the_enclosing_variable
-                // (fails with the init-time read restored).
                 let compiling = BodyCompile {
                     share: shared.clone(),
                     checking: matches!(mode, BindMode::Definition),
@@ -1778,24 +1742,6 @@ impl Lambda {
             // one does not, is theirs
             let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             enclosing_tvars(ctx, &mut known);
-            // XCR claude for claude: [bug/medium] This removes only the names
-            // `l.constraints` declares. The quantifiers this lambda derives for itself,
-            // a trait-typed parameter's `#x` (trait_quantifiers) and a constructor
-            // quantifier's `'c#elem` (ctors), are not removed, so they alias the
-            // enclosing definition's same-named cells. `|x: Display| { let g = |x:
-            // Display| x; g(1) }` is refused, and the same program with the inner
-            // parameter named `y` prints 1. The same happens to a nested `'c:
-            // Collection` under an enclosing `'c: Collection`. Exclude every variable
-            // this signature introduces (each `constraints` entry's name and each ctor
-            // elem name) and pin both programs. probe:
-            // design/review-2026-10-26/repro/c-lambda-nested-quantifier-name-capture.sh
-            // (c-lambda-01)
-            // 2026-10-27 claude: Lambda::compile now keeps out of the enclosing aliases
-            // every variable the signature introduces: each constraints entry (the
-            // declared quantifiers and the trait-typed parameters' #x) and each
-            // constructor quantifier's 'c#elem. Pin:
-            // lang::types::a_nested_lambdas_derived_quantifiers_are_its_own (both repro
-            // programs; fails with the old l.constraints-only retain).
             known.retain(|name, _| {
                 !constraints.iter().any(|(tv, _)| tv.name == *name)
                     && !ctors
@@ -2238,33 +2184,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
-        // XCR claude for claude: [bug/medium] `filter_map` drops each captured key
-        // `instance_fn_params` has no entry for. Only a static bind
-        // (CallSite::bind_instance) registers that map, so in every run-time bind
-        // (build_bound, prebind) the nested literal's calls through the enclosing
-        // instance's fn parameters vanish, and callback_facts judges the callback pure
-        // instead of unresolved. `#[sync] |f, v| filter(v, |x| f(x))` called through a
-        // `<-`-target variable with an async f passes, while the static call is
-        // refused. Register the formals in build_bound as bind_instance does, and count
-        // a key with no formal as unresolved rather than dropping it. probe:
-        // design/review-2026-10-26/repro/c-lambda-sync-dynamic-captured-call.gx
-        // (c-lambda-03)
-        // 2026-10-27 claude: A run-time bind (CallSite::build_bound, so prebind too)
-        // now registers its instance's fn-typed formals around the instance's check and
-        // elaboration (setup_dynamic_bind -> register_fn_params, which takes the apply;
-        // unregistered after CallSite::elaborate_bound), so a nested literal's captured
-        // calls name the formal and resolve to the function the bind passed. A captured
-        // key no instance named (a collection slot's instance registers none) now sets
-        // ParamCalls::own, so callback_facts judges it async (the 'else async' rule)
-        // instead of dropping it. Trade-off for review: a #[sync] function whose slot
-        // callback calls a function-typed element through a nested literal is now
-        // refused even when every element is pure (e.g. d = |fs, v| array::map(fs, |f|
-        // filter(v, |x| f(x))) called with [|x| x > 0]), where before it passed and the
-        // async case passed too. Pins:
-        // graphix-shell/tests/bound_callee_assertion.rs::bound_callee_captured_param_call_is_judged
-        // (async callback reported, pure one not; fails both without the registration
-        // and without the fallback),
-        // lang::attributes::slot_captured_param_call_sync_refused (the fallback).
         let mut own = tables.table.calls_own;
         let mut captured = SmallVec::new();
         for k in tables.table.calls_captured.iter() {

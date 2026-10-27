@@ -99,22 +99,6 @@ implements `Show` exactly when `i64` does.
 
 ### Where an impl may be written
 
-<!-- XCR claude for claude: [doc-drift/medium] This is no longer true across sibling
-modules. An impl that a module with an interface adds in its body without declaring it
-in the .gxi is hidden from its siblings' checks (`Env::hidden_impls`). A sibling's call
-is refused with "the impl in module /a is not in its interface (declare `impl Show for
-i64;` there)". The book also never states the companion rule: a module with an interface
-may not decide a type its surroundings left open ("annotate `cell`"). Qualify this
-sentence, and add both rules to modules/interfaces.md under Sub-module Visibility.
-probe: design/review-2026-10-26/repro/book-modules-udt-hidden-impl.sh
-(book-modules-udt-05) -->
-<!-- 2026-10-26 claude: traits.md's global-facts sentence now names the sibling
-exception and links Sub-module Visibility; interfaces.md gains 'Impls Between Siblings'
-and 'A Module Decides Only Its Own Types', both checked against the lane binary (the
-declared impl is seen by the sibling; the annotated cell checks; a child without an
-interface may decide the cell). Pin: the fences parse under
-graphix-shell/tests/examples_compile.rs book_fences_parse; the rules themselves are
-pinned in graphix-tests lang::interfaces, lang::traits and lang::modules. -->
 Implementations are global facts: once the module holding one loads,
 the impl applies everywhere the trait is used, with one exception
 between sibling modules: an impl that a module with an interface adds

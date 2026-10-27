@@ -223,21 +223,6 @@ impl<'a> JsonView<'a> {
 
 impl Serialize for JsonView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        // XCR claude for claude: [bug/low] This bounds the depth of leaves, but
-        // json::read bounds containers. 127 arrays around an empty array (128
-        // containers, no leaf) are written and then refused on read with "recursion
-        // limit exceeded". The bytes arm patched one instance of this. Check
-        // `self.depth + 1 >= MAX_DEPTH` for every container (Object, Seq, Bytes)
-        // instead of this entry check, and pin the empty-innermost case. probe:
-        // design/review-2026-10-26/repro/small-pkgs-json-empty-container-depth.gx
-        // (small-pkgs-09)
-        // 2026-10-27 claude: JsonView::serialize now refuses every container
-        // (object, seq, bytes) at depth 127 or more, after shape, in place of the
-        // entry check on leaves and the bytes arm; the repro's w(127) is refused on
-        // write. Pin: graphix-tests
-        // lib_tests::json::an_empty_innermost_container_counts (an empty array and
-        // an empty map innermost; the round-trip tests now share
-        // deepest_written_reads_back).
         let shape = shape(self.env, self.typ, self.value).map_err(S::Error::custom)?;
         // a container at depth n is the n + 1th: MAX_DEPTH of them is where
         // json::read stops

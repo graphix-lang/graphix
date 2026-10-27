@@ -765,21 +765,6 @@ fn kind_union(ctx: &mut GenCtx, rng: &mut Rng, n: &str, s: &str) -> Vec<String> 
     ctx.push(e, GenType::Bool);
     let numeric = picked.iter().filter(|&&i| matches!(member(i).0, "i64" | "f64"));
     if numeric.count() < 2 {
-        // XCR claude for claude: [bug/medium] A map key must be `Ordered`, which refuses
-        // a type holding two numeric types. KIND_MEMBERS has both `i64` and `f64`, so
-        // every union that picks both is refused here. That is 39 of the 40 rejects in
-        // `gen-check 2000 6` (98% compile rate). The same rule is broken by exprs.rs's
-        // annotated `<`/`>=` over a `types::random_union` int-beside-float pair. Fix:
-        // add a `GenType::ordered()` predicate and use it at both sites. Here, key the
-        // map only when the members are not both numeric; otherwise keep `==` alone.
-        // probe: design/review-2026-10-26/repro/fuzz-gen-b-kind-union-mapkey.gx
-        // (fuzz-gen-b-02)
-        // 2026-10-26 claude: GenType::ordered (types.rs) says whether a type has an
-        // order; the generated comparison draws an ordering only over an ordered type,
-        // else == or !=, and kind_union keys its map only when it did not pick both i64
-        // and f64. gen-check 2000 6 now compiles 2000/2000 (was 1960). Pin:
-        // generate::funcs::test::generated_orderings_check checks 40 kind unions and
-        // ~1000 comparisons over annotated unions; it fails with either site undone.
         stmts.push(format!("let {m} = map::len({{{u} => i64:1, {w} => i64:2}})"));
         ctx.push(m, I64);
     }
@@ -903,31 +888,6 @@ pub(super) fn gen_shape_template(
 pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<String> {
     let (qf, x, t) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
     let n = 2 + rng.below(3);
-    // XCR claude for claude: [test-gap/medium] The template assumes `#trigger:
-    // i64:{credits}` releases calls 1..credits-1 and types them as live i64 values. A
-    // trigger fire born with the queuefn is no credit, so with a constant trigger only
-    // call 0 ever produces. The calls pushed as I64 are bottom forever, and every
-    // expression generated over them is vacuous (`graphix-fuzz gen 150 1` draws credits
-    // = 3, whose v4 and v5 feed a select and a division). Fix: push only call 0 as a
-    // value and the rest as queued (Opaque, printed), or give the trigger fires after
-    // birth that the model counts. probe:
-    // design/review-2026-10-26/repro/x-rerun-3-fuzz-queuefn-credits.gx (x-rerun-3-03)
-    // 2026-10-26 claude: Fixed with fuzz-gen-a-01 below: a counter trigger fires once
-    // after birth per released call, so every call pushed as i64 produces. Pin:
-    // generate::funcs::test::queuefn_typed_calls_are_released.
-    // XCR claude for claude: [bug/medium] A trigger fire born with the queuefn releases
-    // nothing, so the constant `#trigger: i64:{credits}` gives exactly one release
-    // whatever `credits` is. With credits >= 2, calls 1..credits-1 are pushed as live
-    // I64 vocabulary but stay bottom forever, and every later expression that reads
-    // them is blanked. Take credits = 1, or drive the trigger from a binding written
-    // credits - 1 times after birth. probe:
-    // design/review-2026-10-26/repro/fuzz-gen-a-queuefn-credits.gx (fuzz-gen-a-01)
-    // 2026-10-26 claude: The trigger is a counter born at 0 that fires credits - 1
-    // times after birth (its birth fire releases nothing), so calls 0..credits-1 are
-    // released and typed i64, the rest queued and printed. Pin:
-    // generate::funcs::test::queuefn_typed_calls_are_released runs 12 templates with
-    // two or more typed calls and requires a tail over all of them to fire (0 of 12
-    // with the constant trigger).
     let credits = 1 + rng.below(n - 1);
     let body = exprs::gen_typed(ctx, rng, &I64, 1);
     let mut stmts = vec![

@@ -333,22 +333,6 @@ fn decode<R: Rt, E: UserEvent>(
     }
     if commit {
         for (r, _, v) in d.written.drain(..) {
-            // XCR claude for claude: [bug/medium] This skips a place write whose value
-            // is already stored, but a binding target is always written. Decoding the
-            // same value three times fires `x` three times but `s.a` once, and `*r <-`
-            // through the same place fires every time. The premise in the comment is
-            // stale: a place reference does not fire when its root is written, and
-            // decode's arguments do not change when a target is written, so there is no
-            // self-feed to guard. Remove the test and write every target through
-            // write_through. probe:
-            // design/review-2026-10-26/repro/core-aux-decode-place-drops-repeat.gx
-            // (core-aux-03)
-            // 2026-10-26 claude: decode writes every target through write_through, a
-            // place already holding the value included; the guard and its stale premise
-            // are gone (a place reference does not fire with its root: a dynamic-key
-            // &mut a[i] decoded three times fires a three times and does not loop).
-            // Pin: lib_tests::buffer::decode_writes_a_place_every_packet (the guard
-            // gives [2, 4]); the repro prints (4, 4).
             crate::write_through(ctx, r, v);
         }
     }

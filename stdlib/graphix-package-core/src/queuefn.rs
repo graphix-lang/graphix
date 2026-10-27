@@ -195,40 +195,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         // a site's paid calls are released one a cycle, each once the one
         // before lands; at a wake the credit banked while it slept pays its
         // calls, and a call it makes meanwhile queues behind them
-        // XCR claude for claude: [bug/medium] At a wake every paid entry is set_var'd in
-        // this one cycle. Writes to different bindings land together, so two queued
-        // calls whose fired arguments are disjoint reach f as one call, and with
-        // overlapping deltas a later call's argument arrives early. A call made in this
-        // cycle with leftover credit lands with them too (released = woke_any). The
-        // wrapped function can see the queueing, against design/queue_fn.md. Release
-        // the woken entries one per cycle, e.g. keep them queued as paid and have the
-        // site set_var a private tick binding it reads, popping one per update. probe:
-        // design/review-2026-10-26/repro/core-aux-queuefn-wake-merges-calls.gx
-        // (core-aux-01)
-        // 2026-10-26 claude: WrapperApply releases one call a cycle per site:
-        // QueueState::in_flight holds a site whose release has not landed, a wake marks
-        // the calls its banked credit covers paid, the site releases the next paid one
-        // when the last lands, and a trigger or credit meeting a release in flight
-        // queues the call paid. Pin:
-        // lib_tests::core::queuefn_wake_releases_one_call_a_cycle (fails with the fix
-        // undone: the queued calls merge).
-        // XCR claude for claude: [bug/medium] The wake releases every queued
-        // call the credit covers in one cycle. Each entry writes only the
-        // arguments that fired for it, and the runtime queues writes per
-        // variable, so the first release lands with arguments of later
-        // ones. A call made in the wake cycle (the `woke_any` path) mixes
-        // the same way. With q(1, 100) and q(2, 200) queued across a sleep,
-        // the function sees (1, 200), which was never called, then (2,
-        // 200). Fix: at the wake, release one entry and release the next
-        // when its binds land, keeping later calls behind, so each delta
-        // lands alone. probe:
-        // design/review-2026-10-26/repro/x-async-io-queuefn-wake-mixes-calls.gx
-        // (x-async-io-03)
-        // 2026-10-26 claude: Fixed with core-aux-01: one release a cycle per
-        // site (QueueState::in_flight, paid entries); a call made in the wake
-        // cycle queues paid behind the released ones. Pin:
-        // lib_tests::core::queuefn_wake_releases_one_call_a_cycle; the repro
-        // prints (1, 100) then (2, 200).
         let landed = self.call.args().iter().any(|b| ctx.event.variables.contains_key(b));
         let (released, count_write) = {
             let mut s = self.state.lock();
@@ -531,19 +497,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             let new_ref =
                 graphix_compiler::reference::cell(&v).map(|c| (c, ctx.write_target(c)));
             let mut s = self.state.lock();
-            // XCR claude for claude: [bug/low] Only the cell is compared, and a moving
-            // place (`&mut arr[i]`) keeps its cell and changes only its path. When i
-            // moves, the new place is not told the depth until the depth next changes,
-            // contradicting the comment below. Keep the resolved WriteTarget
-            // (ctx.write_target) instead of the cell and reset last_written_depth when
-            // it changes. probe:
-            // design/review-2026-10-26/repro/core-aux-queuefn-count-move.gx
-            // (core-aux-04)
-            // 2026-10-26 claude: QueueState::count_ref keeps the cell and its resolved
-            // WriteTarget; a target that changes (a moving place) resets
-            // last_written_depth so the new place is told the depth. Pin:
-            // lib_tests::core::queuefn_count_follows_a_moving_place (prints [2, -1]
-            // with the fix undone).
             if s.count_ref != new_ref {
                 // a reference that arrives or moves is told the depth
                 s.count_ref = new_ref;

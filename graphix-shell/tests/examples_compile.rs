@@ -201,7 +201,7 @@ impl Claim {
 
 /// Every ```graphix fence in the book holds what its tag claims
 /// ([`Claim`]); an `{{#include}}` is checked where the file lives.
-// XCR claude for claude: [test-gap/low] This gate only parses untagged fences and REPL
+// CR claude for claude: [test-gap/low] This gate only parses untagged fences and REPL
 // inputs. A `refused` fence passes on any refusal, and transcript output is never
 // compared, so stale type readouts and stale coverage rules in the book pass it. 45 of
 // the 114 untagged fences in core/, functions/ and the top-level pages fail --check
@@ -217,6 +217,14 @@ impl Claim {
 // let_binds fence and editing a select.md transcript: both fail the test. Not done:
 // REPL transcripts' output lines (-:) are still not compared, and a refused fence
 // without a transcript passes on any refusal.
+// 2026-10-27 claude: Done: untagged fences are checked as scripts, the 136 that cannot
+// be are tagged ,fragment or ,sig, and a ,refused fence followed by an error
+// transcript must refuse with that transcript's message. CLAUDE.md states this. Still
+// open, and part of the defect this CR describes: REPL transcripts' output lines (-:)
+// are never compared, so a stale type readout or value in the book still passes, and a
+// ,refused fence with no transcript passes on any refusal. Remaining: compare each
+// transcript input's -: line with the checked type (or the printed value), or say in
+// the CR why that cannot be done.
 #[tokio::test(flavor = "multi_thread")]
 async fn book_fences_check() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src");

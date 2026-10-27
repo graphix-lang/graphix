@@ -590,25 +590,6 @@ pub(super) fn gen_module(
             _ => {
                 let (fname, fty) = &public[rng.below(public.len())];
                 let alias = ctx.fresh();
-                // XCR claude for claude: [test-gap/low] The imported name goes into the
-                // vocabulary, but nothing makes a later slot read it. Measured over 100
-                // module programs: 50 of 63 item imports are never referenced and only
-                // draw an "unused import" warning, yet the feature report counts them
-                // as `use-main` coverage. Fix: read each import right away (`let w =
-                // alias(args)`, or a let over the constant), as the abstract arm does
-                // for `mk`. List in the road-0 header only the modules the body
-                // actually references. probe:
-                // design/review-2026-10-26/repro/fuzz-gen-b-unused-imports.sh
-                // (fuzz-gen-b-03)
-                // 2026-10-26 claude: Each main-scope import is now read at once by a
-                // let (read_import: a call over generated arguments for a function, the
-                // value for a constant; the glob arm reads one public), and road 0's
-                // use super header is written last and names only the earlier modules
-                // the module's gx (or its gxi, when written) reads. Over the first 100
-                // module programs of gen 2000 1234: 87 imports, 0 unused-import
-                // warnings, every program a trace. Pin: graphix-fuzz
-                // generate::modules::test::imports_are_read (fails on the unfixed
-                // generator, and on the header half alone).
                 stmts.push(format!("use {mname}::{fname} as {alias}"));
                 read_import(ctx, rng, &alias, &plain(fty), &mut stmts);
                 ctx.push(alias, plain(fty));

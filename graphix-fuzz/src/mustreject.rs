@@ -644,7 +644,7 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         | ExprKind::Tuple { args }
         | ExprKind::Variant { args, .. } => args.iter().any(open),
         ExprKind::Struct(st) => st.args.iter().any(|(_, a)| open(a)),
-        // XCR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
+        // CR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
         // whose own type is a TVar, bound or not. So this fallback calls an operator's,
         // a negation's and a `$`/`?` result open, and retype, widen-hop, shared-var and
         // ref-widen (and abstract_widen's own `types.cell` test) skip every let over `a
@@ -669,6 +669,17 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         // v = 2 + 1, -(2 + 1), cast<i64>(2.5)$ now get a retype site) and
         // must_reject_families_skip_what_their_rules_allow (the captured-cell mk(1)
         // subject).
+        // 2026-10-27 claude: Partial fix. open_init now recurses into operators,
+        // negation, $/?, part reads and constructors, and treats a callee whose let
+        // reaches an open cell (typemorph::open_lets) as open. Pinned (let v = 2 + 1 /
+        // -(2 + 1) / cast<i64>(2.5)$ get retype; the captured-cell mk(1) is skipped).
+        // But the CR also names abstract_widen's own types.cell test, and that is
+        // unchanged. abstract_widen (mustreject.rs:480) still skips a let when any
+        // non-Apply preorder node is a cell, and ExprTypeSite::cell is true for a bound
+        // TVar (ide.rs:115). So `let v = m0::mkb(x + i64:1)` still gets no
+        // abstract-widen site. Remains: decide abstract_widen's skip with open_init
+        // (its Apply arm already treats an open argument as open), and pin a B<i64> let
+        // over an operator argument.
         _ => types.cell(value),
     }
 }
@@ -980,21 +991,6 @@ fn shared_var(
             })
             .try_fold(BitFlags::empty(), |acc, p| Some(acc | p?));
         let Some(held) = held else { continue };
-        // XCR claude for claude: [bug/low] The literal is disjoint from the first
-        // argument's type only, but every argument at the shared variable's parameters
-        // takes part in the widest-argument rule. A third argument whose type contains
-        // both (`g(1, "tm", u)` with `u: [i64, string]`) makes the call legal, so the
-        // mutant is a false LEAK. Require every other argument at a parameter of that
-        // cell to be concrete and pick the literal disjoint from all their types, or
-        // skip such a call. probe:
-        // design/review-2026-10-26/repro/fuzz-mutate-shared-var-third-arg.gx
-        // (fuzz-mutate-05)
-        // 2026-10-26 claude: shared_var takes every argument at a parameter of the
-        // shared variable but the mutated second: each must be a concrete primitive
-        // not open by open_init, and the literal is disjoint from their union. Pins:
-        // must_reject_families_skip_what_their_rules_allow (g(1, 2, u) with u: [i64,
-        // string]) and must_reject_families_are_refused_where_their_rules_say (g(1, 2,
-        // 3)).
         let Some(u) = disjoint_literal(&Type::Primitive(held)) else { continue };
         let at = arg_indices(i, &sizes, ap.args.len())[b];
         let cand = mutate::replace(root, at, &u);
@@ -1207,24 +1203,6 @@ fn widen_consumer(
             None => binds_any = true,
         });
     }
-    // XCR claude for claude: [bug/low] A bare name counts as a consumer unless a `let
-    // NAME = <lambda with an unannotated parameter>` binds it. A callee bound by a
-    // destructuring let (`let (f, k) = (|y| z <- y, 0)`), or a subject-module function
-    // brought in by `use m0::f` or `use m0::f as g` (the generator writes both forms),
-    // therefore passes as rigid, though its unannotated parameter is a cell shared with
-    // the environment that the call widens. Each case gives a false LEAK. Put every
-    // name the body binds by any form into `untyped`: let patterns via `with_names`,
-    // select-arm and lambda binders, and `use` items' bound names (a glob makes every
-    // bare name untyped). probe:
-    // design/review-2026-10-26/repro/fuzz-mutate-widen-consumer-callee-holes.gx
-    // (fuzz-mutate-03)
-    // 2026-10-26 claude: widen_consumer's untyped set takes every name any node of the
-    // body binds (typemorph::each_bound, which typemorph::binds now rides: let
-    // patterns, lambda and arm binders, catch/try binds, use items, a glob or
-    // mod/trait/impl making every bare name untyped), except a let of a lambda literal
-    // with every parameter annotated. Pin:
-    // must_reject_families_skip_what_their_rules_allow (the destructuring, use m0::f
-    // and use m0::f as g subjects); design/must_reject.md family 4 says so.
     let consumer_callee = |f: &Expr| match &typemorph::unparen(f).kind {
         ExprKind::Ref { name } => {
             let name = name.to_string();
@@ -1521,22 +1499,6 @@ fn mono_reuse(
         let jb = *jb;
         // every value use shares the wrapped binding's cells, so the
         // checker refuses at whichever reached use conflicts first
-        // XCR claude for claude: [bug/low] The value uses here, and labels_default's
-        // sites, follow `f` by name only. A forwarding alias `let g = f` shares the
-        // wrapped binding's cells once `f` is no longer generalized, so a use of `g`
-        // before the second use of `f` meets the conflict first, and the refusal there
-        // is a false MISPLACED. labels_default does the same with `w(g)`. Follow
-        // unannotated `let g = f` forwards, as affected_stmts follows lets built from a
-        // value, and count their uses as value uses and sites; or skip a base where `f`
-        // is forwarded. probe:
-        // design/review-2026-10-26/repro/fuzz-mutate-alias-misplaced.gx
-        // (fuzz-mutate-04)
-        // 2026-10-26 claude: mono_reuse and labels_default follow unannotated let g = f
-        // forwards transitively (forwarded_uses): an alias's value uses are value uses
-        // and sites, and labels_default's sites are the statements mentioning any
-        // alias. Pins: must_reject_families_are_refused_where_their_rules_say (the
-        // alias subjects for mono-reuse and label-default); design/must_reject.md
-        // family 1 says so.
         let mut sites = vec![si];
         sites.extend(values.iter().map(|(_, j)| *j).filter(|j| *j <= jb));
         sites.sort_unstable();

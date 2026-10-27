@@ -450,16 +450,6 @@ pub enum ImageSourceV {
 }
 
 impl ImageSourceV {
-    // XCR claude for claude: [bug/low] The extension test is case-sensitive, so
-    // "Logo.SVG" is handed to the raster loader. The image crate cannot decode SVG, so
-    // the image widget (ImageHandle::of) draws nothing and the window icon
-    // (decode_icon) fails. Compare the extension with eq_ignore_ascii_case against svg
-    // and svgz. Found by reading; not run. (gui-widgets-a-05)
-    // 2026-10-26 claude: is_svg compares a path's extension with eq_ignore_ascii_case
-    // against svg and svgz (Path::extension), so Logo.SVG goes to the svg loader. Pin:
-    // graphix-package-gui
-    // test::widgets_test::an_svg_path_is_known_by_its_extension_in_any_case (fails
-    // with the case-sensitive ends_with).
     pub fn is_svg(&self) -> bool {
         match self {
             Self::Path(p) => {
@@ -594,22 +584,6 @@ impl FromValue for ImageSourceV {
     }
 }
 
-// XCR claude for claude: [bug/low] `Fixed(usize)` reads the Graphix `Fixed(i64)` through
-// netidx's FromValue for usize, which converts I64 with `as`. So `Fixed(-1)` becomes
-// 18446744073709551615 columns: a single row of zero-width cells and no error.
-// LengthV's `FillPortion(u16)` has the same problem through u32:
-// `FillPortion(4294967297)` reads as weight 1, while 256 is refused. Fix: read both
-// payloads as i64 and range-check them (columns >= 1, weight 1..=MAX_PORTION) with a
-// bail!. Record netidx-value's wrapping FromValue for u32/usize in UPSTREAM.md as the
-// root cause. probe: design/review-2026-10-26/repro/gui-core-signed-fields-wrap.rs
-// (gui-core-03)
-// 2026-10-26 claude: LengthV reads FillPortion and GridColumnsV reads Fixed as i64 and
-// range-check them (weight 1..=MAX_PORTION through u16::try_from, columns >= 1 through
-// usize::try_from), refusing what used to wrap; GridColumnsV has a hand FromValue over
-// a private Repr. netidx-value's wrapping integer FromValue is in UPSTREAM.md. grid.gxi
-// says n is at least 1. Pin: graphix-package-gui
-// test::widgets_test::integer_payloads_are_range_checked_not_wrapped (fails with the
-// as-casts back).
 #[derive(Clone, Copy, Debug)]
 pub enum GridColumnsV {
     Fixed(usize),

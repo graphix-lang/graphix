@@ -388,32 +388,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             emit_helpers::with_deferred(|| {
                 emit_helpers::with_kernel_env(env, || {
                     super::par_loop::with_par_loan(Some(loan), || unsafe {
-                        // XCR claude for claude: [risk/medium] [risk/medium] Nothing
-                        // guarantees stack for the kernel's frame here. Callers keep
-                        // only RED_ZONE (1 MB) free, and nothing bounds a frame, so a
-                        // kernel whose frame is near or above 1 MB aborts the process
-                        // with a stack overflow instead of de-fusing. The owned-array
-                        // fold chain at 800 lets has a 2.83 MB frame and dies in its
-                        // prologue's stack probe; at 400 the frame is already 771 KB.
-                        // Record each kernel's frame size at link and run the wrapper
-                        // on a grown segment (stack::grow) when the remaining stack is
-                        // short. Alternatively refuse to fuse a region whose frame
-                        // passes a bound below RED_ZONE. probe:
-                        // design/review-2026-10-26/repro/x-perf-compile-fold-chain-stack-overflow.sh
-                        // (x-perf-compile-07)
-                        // 2026-10-27 claude: The repro no longer overflows at HEAD: e061de34a's
-                        // spill slots made the fold chain's frame linear (explicit slots 25.6 KB at
-                        // 400 lets, 51.2 KB at 800, about 64 bytes a let; it was 2.83 MB at 800).
-                        // The bound the CR asks for: lower::check_frame refuses a kernel body or
-                        // loop chunk whose explicit stack slots pass MAX_FRAME (RED_ZONE / 4, 256
-                        // KB) at the end of its emission, so it de-fuses (blocker 'a frame of N
-                        // bytes, past M — de-fuse') instead of overflowing the RED_ZONE its caller
-                        // keeps; register spills are not counted. Checked end to end with the bound
-                        // at 16 KB: the 400-let chain de-fused f, fused its 400 folds apart and
-                        // printed [1, 2, 3]. Pin:
-                        // fusion::emit::lower::tests::a_frame_past_the_bound_is_refused (the wiring
-                        // at both seal points is two lines, not pinned end to end: a chain past 256
-                        // KB is about 4000 lets, too slow for the gate).
                         f(slots.as_ptr(), out.as_mut_ptr());
                     })
                 })

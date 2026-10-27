@@ -214,25 +214,6 @@ fn compile_inner<R: Rt, E: UserEvent>(
                 }
                 continue;
             }
-            // XCR claude for claude: [bug/low] Only #[parallel] and #[serial] refuse
-            // stray arguments (fork_kind). The definition assertions handled here, and
-            // registry attributes such as #[native], never look at attr.args.
-            // `#[pure(1, 2)]`, `#[sync(fast)]` and `#[native(1)]` are accepted and the
-            // arguments are silently dropped. Fix: refuse a non-empty attr.args here,
-            // for a DefAssertionKind and before dispatching a registry attribute, with
-            // the message fork_kind uses. Variant of c-data-map-04. probe:
-            // design/review-2026-10-26/repro/x-rerun-2-attr-args-ignored.gx
-            // (x-rerun-2-05)
-            // 2026-10-26 claude: compile_inner refuses a non-empty argument list on
-            // every attribute but the fork controls (which fork_kind judges) and the
-            // seq lowering's run-event marker: '#[name] takes no arguments',
-            // definition assertions and registry attributes alike, so --check refuses
-            // it as the build does. The Attribute trait's doc now says arguments are
-            // refused; a registry attribute that wants arguments would need the
-            // registry to say so. Pins:
-            // lib_tests::native::def_assertion_arguments_refused and
-            // native_arguments_refused (run!, all modes, check parity; both fail with
-            // the fix undone).
             if !attr.args.is_empty() {
                 bailat!(spec, "#[{}] takes no arguments", attr.name)
             }
@@ -425,23 +406,6 @@ fn compile_kind<R: Rt, E: UserEvent>(
             let typ = Type::of_literal(v).at(spec)?;
             Ok(Constant::new(v.clone(), typ, spec.clone()))
         }
-        // XCR claude for claude: [bug/medium] The SeqStep exemption reaches every block
-        // nested in a step, not just the lowering's own: SeqStep is inherited by
-        // everything compiled under a step's items. A user block ending in a let inside
-        // a step, under a tuple say, passes the check and compiles as a plain Block
-        // whose Bind never produces. `seq t { let a = (1, { let c = 2; let b = c + 1
-        // }); a }` checks clean and stalls; outside a seq the same block is refused.
-        // Exempt by the block itself (one the lowering built: its last let binds a
-        // lowered `#` name, Expr::is_lowered), not by the inherited flag, and pin the
-        // nested case. probe:
-        // design/review-2026-10-26/repro/c-data-map-seq-trailing-let-block.gx
-        // (c-data-map-01)
-        // 2026-10-26 claude: The SeqStep exemption is gone: no lowering builds a block
-        // ending in a let (the seq lowering's steps compile as block children and
-        // lower_block ends in its value), and every seq fixture passes without it, so
-        // any block ending in a let is refused, in a step as anywhere. Pin:
-        // lang::modules::block_ending_in_a_let_in_a_seq_step_refused (the probe's
-        // nested shape; fails with the fix undone).
         ExprKind::Block { exprs }
             if exprs.last().is_some_and(|e| matches!(e.kind, ExprKind::Bind(_))) =>
         {

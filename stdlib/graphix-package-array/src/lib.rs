@@ -305,29 +305,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 // what queued while f answered starts next cycle: what fired f
                 // now would fire it again, and that is no answer for the next
                 // element
-                // XCR claude for claude: [bug/medium] After a false answer, the
-                // next queued element is fed and f is updated again in the same
-                // cycle. Whatever made f fire this cycle (the input behind the
-                // answer just consumed) fires it again, and that stale fire is
-                // taken as the new element's answer. With f = |n, x| { let r =
-                // never(); r <- x; r % 2 == 0 }, a late answerer the gxi
-                // allows, group yields [1, 2, 3, 4] where element 2 answered
-                // true, so the result should be [1, 2] then [3, 4]. Both
-                // engines agree. Fix: start each queued element for the next
-                // cycle with rt.set_var on pred.args(), as the true branch
-                // already does, and drop the same-cycle re-update. Then one
-                // answer per cycle belongs to the element in flight. Add a pin
-                // with a late-answering predicate; every current group test
-                // answers synchronously. probe:
-                // design/review-2026-10-26/repro/collections-str-group-stale-answer.gx
-                // (collections-str-01)
-                // 2026-10-26 claude: Group::update starts every queued element for the
-                // next cycle through pred.args() after any answer, true or false, and
-                // updates f once per cycle: the grouping loop and its interrupt check
-                // are gone. Pin:
-                // lib_tests::array::group_late_answer_belongs_to_its_element (the old
-                // code gives [[0], [1, 2, 3, 4], [5, 6], [7, 8]] in every mode); the
-                // repro now groups [1, 2] [3, 4] [5, 6] [7, 8] in both engines.
                 if let Some(v) = self.queue.pop_front() {
                     self.ready = false;
                     self.buf.push(v.clone());

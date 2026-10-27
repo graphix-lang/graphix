@@ -1127,17 +1127,6 @@ fn draw_3d_chart<DB: DrawingBackend, X: GXExt>(
 }
 
 /// A 3D axis' tick text: the value, after the axis' label when it has one.
-// XCR claude for claude: [bug/low] 3D ticks are written with one fixed decimal, so a
-// surface whose z spans 0..0.01 labels every tick 0.0, and Unix-ms values print as
-// 13-digit integers. The 2D value axes moved to TickFormat for exactly this; the 3D
-// axes did not. Fix: in draw_3d_chart, build a TickFormat per axis from its range and
-// the mesh's label count, and have axis_format write `{l}: {fmt.format(*v)}`. Found by
-// reading; not run. (gui-chart-03)
-// 2026-10-26 claude: draw_3d_chart builds a TickFormat per axis (tick_format, shared
-// with x_ticks/y_ticks, plotters' 10 labels when the mesh sets none) from its range
-// and label count; axis_format writes fmt.format(v). Pin:
-// widgets::chart::draw::test::a_3d_axis_tells_its_ticks_apart (z over 0..0.01 labels
-// 0.000..0.010 apart, Unix-ms in scientific).
 fn axis_format(label: Option<&str>, fmt: TickFormat) -> impl Fn(&f64) -> String + '_ {
     move |v| match label {
         Some(l) => format!("{l}: {}", fmt.format(*v)),

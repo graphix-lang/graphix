@@ -461,21 +461,6 @@ fn backend_all(
     const PER_THREAD: usize = 8;
     let work: Vec<(FuncId, &mut Function)> =
         work.iter_mut().map(|(id, f)| (*id, f)).collect();
-    // XCR claude for claude: [bug/medium] This call runs on a thread outside any rayon
-    // pool (the link batch's thread, or the runtime thread on the fallback path), so it
-    // builds rayon's global pool just to read its size. That pool is about 30 workers,
-    // and nothing ever runs on them (74 threads vs 47 with RAYON_NUM_THREADS=1). When
-    // threads are short, the build fails and rayon panics here ('The global thread pool
-    // has not been initialized ... WouldBlock'), which defeats the inline fallback
-    // link_batch takes when its spawn fails and the per-spawn `.ok()` below. Fix: read
-    // RAYON_NUM_THREADS, else available_parallelism, without touching rayon. probe:
-    // design/review-2026-10-26/repro/x-parallel-rayon-global-pool.sh (x-parallel-03)
-    // 2026-10-26 claude: backend_all's budget is branch::eval_workers() (the running
-    // cycle's evaluation workers, else GRAPHIX_EVAL_THREADS, else one a core), the knob
-    // every other graphix worker count reads, in place of RAYON_NUM_THREADS; nothing in
-    // the JIT touches rayon now. Pin: graphix-rt/tests/jit_backend_threads.rs (a fused
-    // program, 66 functions on 9 link threads, then build_global must still succeed; it
-    // fails with rayon::current_num_threads back).
     let threads = crate::branch::eval_workers().min(work.len().div_ceil(PER_THREAD));
     if threads <= 1 {
         let mut ctx = Context::new();
@@ -816,26 +801,6 @@ impl Generation {
         }
         match self.module.define_function_bytes(id, rec.align, &rec.bytes, &relocs) {
             Ok(()) => Ok(()),
-            // XCR claude for claude: [risk/low] Every ModuleError::Allocation becomes
-            // ArenaExhausted here, but Arena::allocate also fails for an OS commit
-            // failure (`res.commit(..)?`: mprotect, or VirtualAlloc MEM_COMMIT on
-            // Windows) and for an unsupported alignment. On a commit failure,
-            // Jit::install retires the generation, reserves 256 MB, 512 MB, 1 GB and 2
-            // GB arenas that fail the same way, and install_or_panic then panics with
-            // "the JIT could not link emitted code", which blames the JIT for an
-            // out-of-memory condition. Fix: return the full-reservation case from
-            // Arena::allocate as io::Error::other(ArenaExhausted), map to
-            // ArenaExhausted here only an Allocation whose err.get_ref() is
-            // ArenaExhausted, and let any other error carry its OS cause. Found by
-            // reading; not run. (x-unsafe-01)
-            // 2026-10-26 claude: Arena::allocate reports a full reservation as
-            // io::Error::other(ArenaExhausted) (the type moved to emit/arena.rs), and
-            // define_record maps to ArenaExhausted only an Allocation error carrying
-            // it; a commit or alignment refusal keeps its own cause, so Jit::install
-            // fails at once with it instead of reserving four ever larger arenas. Pin:
-            // jit::tests::an_arena_refusal_is_not_exhaustion (an alignment the arena
-            // refuses; with every Allocation mapped to ArenaExhausted the error claims
-            // exhaustion and three more generations retire).
             Err(ModuleError::Allocation { err })
                 if err.get_ref().is_some_and(|e| e.is::<ArenaExhausted>()) =>
             {
@@ -1674,36 +1639,6 @@ impl Jit {
                 Ok(p) => return Ok((p, generation.code.clone())),
                 Err(e) => e,
             };
-            // XCR claude for claude: [risk/low] Two holes in this retry loop. (1) When
-            // try_install cannot reserve a fresh generation, the generation whose
-            // install just failed stays current. It still holds a spill thunk and
-            // chunks that were defined before their body's define failed, and their
-            // relocations name the undefined body. This loop retries into that
-            // generation, and Jit::relocate logs the error and carries on. The next
-            // install that succeeds then panics inside cranelift's finalize_definitions
-            // ("can't resolve symbol"), which breaks the Generation doc and
-            // jit_memory.md's "nothing panics". (2) The `arena >= JIT_ARENA_MAX` test
-            // runs after try_install has created the fresh generation of that size, so
-            // a MAX-sized generation is never tried: with GRAPHIX_JIT_ARENA=2147483647
-            // the first exhaustion panics the link. Fix: never install into a
-            // generation whose install failed (have try_install say whether it put a
-            // fresh one in place, and otherwise make the next install start with a
-            // fresh one or err); retry only after a fresh generation was made; stop
-            // only after a fresh JIT_ARENA_MAX generation has failed. Found by reading;
-            // not run. (f-jit-01)
-            // 2026-10-26 claude: Jit::generation is an Option: a failed install drops
-            // the generation before anything else, so none is ever installed into or
-            // finalized again, and the next install reserves a fresh one (or errs,
-            // leaving none); try_install is gone. Fresh arenas come from
-            // arena_sizes(self.arena), which ends with JIT_ARENA_MAX, and the loop
-            // stops only when a fresh generation of the last size failed. relocate
-            // retires a mostly dead generation the same way and lets install reserve
-            // its successor. Pins: jit::tests::no_install_goes_into_a_failed_generation
-            // (a thunk defined before its body's define failed, with no fresh arena
-            // reservable: the old loop installed the next batch into that generation
-            // and cranelift panicked in finalize) and
-            // jit::tests::exhaustion_tries_fresh_arenas_up_to_the_colocated_range.
-            // design/jit_memory.md's mark and move sections say the same.
             self.generation = None;
             self.retired += 1;
             self.relocate = true;

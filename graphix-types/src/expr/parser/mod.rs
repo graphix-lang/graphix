@@ -929,25 +929,6 @@ where
         res.extend(l.slots.drain(..).map(|(pos, e)| {
             e.unwrap_or_else(|| ExprKind::NoOp.to_expr(pos).ending(pos))
         }));
-        // XCR claude for claude: [bug/medium] With no item before them,
-        // comments fail the whole list. A .gx file (or module) of only
-        // comments, or a REPL input that is one, is a parse error while an
-        // empty file parses. `{ 1;\n // below\n}` is refused because
-        // `brace` parses its first statement outside this list, though `{
-        // 1; 2;\n// below\n}` is fine. Return the unplaced comments
-        // instead: `statements` hangs them on the NoOp of the empty slot,
-        // and `brace`'s `Tail::Block` trails them onto `first`. probe:
-        // design/review-2026-10-26/repro/t-parser-a-comment-only-file.sh
-        // (t-parser-a-03)
-        // 2026-10-26 claude: `commented` no longer fails: it returns the lines
-        // below the last item and each list kind places them: statements on the
-        // last statement (a trailing `;`'s empty one included, which covers
-        // `brace`'s `{ 1;\n// below\n}`), comma lists on the last item (an
-        // empty one with comments is still refused), interfaces and traits on
-        // `Sig::below`/`TraitExpr::below`. A comment-only .gx, module or .gxi
-        // parses and formats. Pins: format.rs comments_after_list_items_stay
-        // ("// only a comment" for both kinds),
-        // an_empty_statement_is_its_semicolon ("{ a;\n// c\n}").
         if let Some(last) = res.last_mut() {
             trail(last, None, &l.below)
         }
@@ -1715,29 +1696,6 @@ where
     }
     let entry = || (expr(), spstring("=>").with(expr()));
     let tail = choice((
-        // XCR claude for claude: [bug/low] Map entries are read with the plain
-        // separator, so `1 => 2, // one` and a comment below the last entry are
-        // parse errors. Every other expression list takes them through
-        // `comma_items`. The same holds for `any(..)`/`never(..)`/attribute
-        // arguments and impl bodies (traitexp's `sep_by_tok(expr(), semisep(),
-        // ..)`). Parse these with `comma_items`/`statements`, and have
-        // `comment_line`'s note mention the after-separator form. probe:
-        // design/review-2026-10-26/repro/t-parser-a-list-eol-coverage.sh
-        // (t-parser-a-06)
-        // 2026-10-26 claude: Impl bodies now parse as `statements`
-        // (t-parser-b-03), and an attribute's arguments refuse every comment
-        // (tests-expr-03: they print on the attribute's line), so what remains
-        // here is map entries and `any(..)`/`never(..)` arguments.
-        // 2026-10-27 claude: Map entries after the first, and any(..)/never(..)
-        // arguments, parse as comma lists: commented is split into
-        // slot/list_rest/ListRest::after, so brace's map tail continues the
-        // list its first key started, and comma_items' checks are comma_listed,
-        // shared with it. The map printer goes through pretty_separated, so an
-        // entry's eol and the lines below the last print back; the note now
-        // names the after-separator form. The expression generator hangs
-        // Trailers on map entries and any/never arguments. Pins: format.rs
-        // comments_after_list_items_stay (map, any, never rows),
-        // expr_pp_round_trip via the generator.
         attempt(spstring("=>"))
             .with((
                 expr(),
@@ -1767,18 +1725,6 @@ where
         }
     }
     choice((
-        // XCR claude for claude: [readability/low] For a block starting with a bare name
-        // (`{ a; ..`), this probe's field list meets the `;` and notes "the list is not
-        // closed before this `;`". The note survives the backtrack, so `{ a;` at end of
-        // input, `{ a;)` and `f({ a;` report it instead of the unclosed `{`. Start the
-        // probe only when the first field name is followed by `:`, `,` or `}` (a
-        // look_ahead before `structure()`). probe:
-        // design/review-2026-10-26/repro/t-parser-a-block-note.sh (t-parser-a-07)
-        // 2026-10-27 claude: brace starts the struct-literal probe only where
-        // struct_head sees a field name followed by ':', ',' or '}', so a block whose
-        // first statement is a bare name never meets the list's ';' note. Pin: parser
-        // test separator_notes_only_where_an_item_follows ('{ a;', 'f({ a;' name the
-        // unclosed brace, '{ a;)' has no note, '{ a: 1; b: 2 }' keeps the list note).
         attempt(look_ahead(struct_head()).with(structure())),
         (
             position(),
@@ -2065,36 +2011,6 @@ fn crlf_as_lf<'a>(text: &'a str, buf: &'a mut LPooled<String>) -> &'a str {
     buf.as_str()
 }
 
-// XCR claude for claude: [bug/low] This counts a lone \r as a line break, but the parser
-// does not, and diagnostics and query positions come from the parser. In a lone-CR
-// document, `let x = 1;\rlet y = "a" + 1;\ry` publishes its error at line 0, character
-// 10, instead of line 1, characters 8..15. Have the parser count \r as a line break, or
-// translate parser positions through this function before they reach the client. probe:
-// design/review-2026-10-26/repro/x-rerun-5-lsp-lone-cr-diag.py (x-rerun-5-08)
-// 2026-10-27 claude: Fixed with lsp-03: the parser now counts positions with
-// parser::Lines, a combine positioner whose lines end at \r\n, \r or \n;
-// position::lines moved here as parser::lines and is the one line rule (grow.rs
-// snippet, first columns and unclosed_at_end, shebang_len, the LSP's LineIndex,
-// text_between, use_path, call_context). Pins: graphix-types parser test
-// a_lone_carriage_return_ends_a_line, graphix-shell tests/lsp
-// lone_carriage_returns_end_lines (error at (2,12), hover and labels past a lone CR).
-// XCR claude for claude: [bug/low] These lines break at a lone \r, but the compiler's
-// SourcePosition starts a line only at \n. In a lone-CR document every compiler
-// position is read against the wrong line: "nope not defined" on the third line is
-// published at (0,10), and hover on line 1 answers nothing. Also text::text_between
-// (str::lines), text::use_path (split_inclusive) and text::call_context (counts \n)
-// each split lines their own way. Fix: make the parser's positioner count a lone \r as
-// a newline, so compiler lines match the client's, and route those three helpers
-// through this function. probe: design/review-2026-10-26/repro/lsp-lone-cr-positions.py
-// Also reported as (x-lsp-probe-06). (lsp-03)
-// 2026-10-27 claude: Fixed as suggested: parser::Lines counts a lone \r as a line
-// break, so compiler lines match the client's; text::text_between, use_path and
-// call_context now read lines through parser::lines (use_path and call_context through
-// text_between), and a #! line ends at a lone \r too (format keeps that break). Pins:
-// graphix-types a_lone_carriage_return_ends_a_line and the shebang case in format's
-// a_shebang_line_stays_and_positions_count_it; graphix-shell tests/lsp
-// lone_carriage_returns_end_lines (the LSP test harness now counts \r lines as a client
-// does).
 /// A source position as an editor counts lines: a line ends at "\r\n",
 /// "\r" or "\n".
 #[derive(Debug, Clone, Copy, Default)]
@@ -2225,41 +2141,6 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let (mut r, below): (LPooled<Vec<SigItem>>, Comments) = parse_all!(
         &ori.text,
         || ori.clone(),
-        // XCR claude for claude: [bug/medium] Interface items here, in modexp's `sig()`
-        // and in traitexp's `trait_decl` are listed with `sep_by_tok`, not `commented`.
-        // So a `//` after an item's `;` is refused as a trailing comment. A `//` below
-        // the last item, or a .gxi holding only comments, fails as a leading comment
-        // with no item after it. CLAUDE.md makes both legal, "below a list's last item
-        // or a file's" included. Parse these lists like `commented`, give `Comments` an
-        // eol line and Sig/TraitExpr a below list, and print them as
-        // Decorations::eol/below are printed. probe:
-        // design/review-2026-10-26/repro/t-parser-b-list-comments.sh (t-parser-b-02)
-        // 2026-10-26 claude: Interface items (`parse_sig`, modexp's `sig()`) and trait
-        // methods (`trait_decl`) are now `decl_items` lists read by `commented`: the
-        // comment ending an item's line rides `SigItem::eol`/`TraitMethod::eol` (`Eol`,
-        // an always-equal `Aside` like `Comments`), the lines below the last ride
-        // `Sig::below`/`TraitExpr::below`; `pretty_separated` prints both, the guard's
-        // `Ornaments` walks both, and a `//` that starts its line is never an eol
-        // comment. This takes 'the rule covers every list', as CLAUDE.md is written
-        // (now naming `Eol` and the `below` fields); the for-eric twins
-        // t-format-resolver-03, x-formatter-03 and tests-parser-01 ask Eric the same
-        // question. Pins: format.rs comments_after_list_items_stay (trait, sig and
-        // Interface cases), expr::test expr_pp_round_trip and sig_pack_round_trip,
-        // which generate eol and below on trait methods and sig items.
-        // XCR claude for claude: [bug/medium] A comment after an interface's last item
-        // is read as the leading comment of an item that never comes, so `val x:
-        // i64;\n// val y: i64\n` (a commented-out last declaration) and a .gxi of only
-        // comments fail with "Unexpected end of input". CLAUDE.md allows comments below
-        // a file's last item, and a .gx accepts them. Accept a trailing comment slot
-        // here and give `Sig` a `below` list the printer writes back, or narrow the
-        // rule if interfaces are meant to be excluded. probe:
-        // design/review-2026-10-26/repro/t-parser-a-gxi-trailing-comment.sh
-        // (t-parser-a-04)
-        // 2026-10-26 claude: A .gxi's comments below its last item, and a .gxi of only
-        // comments, parse into `Sig::below` and print back (see the note on
-        // t-parser-b-02 for the shape and the open question the for-eric twins ask).
-        // Pins: format.rs comments_after_list_items_stay ("val x: i64;\n// val y:
-        // i64\n" and "// only a comment\n" as Interface).
         decl_items(sig_item, || attempt(spaces().with(eof())), true)
     )?;
     Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)), below })

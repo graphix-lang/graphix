@@ -263,22 +263,6 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if let Some(Some(a)) = &p.x_axis.t {
             chart = chart.x_axis(a.build(rect.width, text_room));
         }
-        // XCR claude for claude: [bug/low] Label counts are bounded before ratatui sees
-        // them, but text widths are not. ratatui adds widths in u16 (`w + 1` for an
-        // axis title, `inner_width + 2` for the legend, `area.x + label_size + margin`
-        // for a horizontal bar label in barchart.rs), so a 65535-wide y title, a
-        // 65534-wide dataset name or a 65535-wide bar label panics the display under
-        // overflow checks (dev, soak) and wraps in release. Cut titles, dataset names
-        // and bar labels to the rect's width when building them (AxisV::build,
-        // DatasetW::segment, BarProps::build), and add an UPSTREAM.md entry. probe:
-        // design/review-2026-10-26/repro/tui-widgets-wide-text-overflow.sh
-        // (tui-widgets-05)
-        // 2026-10-26 claude: into_borrowed_line_within (lib.rs, unicode-truncate,
-        // ratatui's own truncation crate) cuts axis titles and labels and dataset
-        // names to rect.width - 2 (the legend border) and bar labels to rect.width - 1
-        // (the bar margin); the horizontal value room reads the cut width. UPSTREAM.md
-        // entry added. Pin: test::panic_test::text_wider_than_u16_draws_cut (the
-        // repro's three programs, each drawn cut).
         if let Some(Some(a)) = &p.y_axis.t {
             chart = chart.y_axis(a.build(
                 (rect.height as u32).min(

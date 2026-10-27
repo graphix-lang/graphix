@@ -24,23 +24,6 @@ fn invalid_geometry(h: &GuiTestHarness) -> bool {
     h.root.w.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap().has_invalid_geometry()
 }
 
-// XCR claude for claude: [test-gap/medium] [test-gap/medium] Every canvas rendering test
-// asserts only that no shape was flagged as invalid geometry. That flag is set only
-// when draw_shape returns None, and no test here screenshots the canvas, so a draw that
-// fills with the wrong colour, misplaces a shape, or draws nothing at all passes every
-// test here, including "the others draw" in a_non_finite_shape_is_left_out. Check
-// pixels with h.screenshot: e.g. rect_with_fill's grey at (30,35) inside its 10,20
-// 40x30 rectangle, and a red pixel on the valid line of a_non_finite_shape_is_left_out.
-// Found by reading; not run. (tests-gui-a-01)
-// 2026-10-26 claude: Every canvas rendering test now screenshots a 200x200 frame (draws
-// in canvas_test.rs) and probes pixels: each shape's colour inside it and black
-// outside, circle_with_neither an all-black frame, path_and_curves_render spread so
-// each of its six shapes has its own probe, text_renders white text lit in its box
-// only. A circle fill dropped or a rect fill shifted 3 px fails circle_with_fill_only,
-// circle_with_both and rect_with_fill. The probes found that the ±3e38 line of
-// canvas_huge_line_keeps_finite_endpoints draws nothing (a ±1e12 one draws), so that
-// test asserts only that it is not skipped; new CR (canvas-huge-line-01) at draw_shape.
-// canvas_arc_to_reversal_draws asserts its sliver covers no pixel.
 /// The side of the square frame the tests draw.
 const SIDE: u32 = 200;
 

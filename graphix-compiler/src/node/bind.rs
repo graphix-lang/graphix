@@ -970,22 +970,6 @@ fn fits_every_member<R: Rt, E: UserEvent>(
 ) -> Result<bool> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     expr::union_members(&ctx.env, typ, &mut members)?;
-    // XCR claude for claude: [bug/medium] At compile, a value whose type is still an
-    // open cell (a select's, a call's result) is one 'member' here, and
-    // `ptyp.contains(typ)` binds that cell to the pattern's shape before the value is
-    // checked. So `let t = select c { 0 => (1, "x"), _ => ("y", 2) }; let (a, b) = t`
-    // is refused with '(i64, string) does not contain [..]' at the select (or at the
-    // callee for `let (a, b) = f(1)`). The same pattern in a select arm accepts it.
-    // Fix: when the value's type is an unbound cell, defer this check to typecheck0
-    // after the value's check, as complete_partial is deferred. probe:
-    // design/review-2026-10-26/repro/c-bind-let-shape-binds-value.gx (c-bind-05)
-    // 2026-10-26 claude: Bind::compile defers the fit of a destructuring pattern over
-    // a value typed by an open cell (Deferred::Shape): the pattern compiles against
-    // its own predicate with each name a fresh cell, and typecheck0 (complete_shape)
-    // holds the predicate to every member of the checked value and types each name by
-    // names_by_member. Pins:
-    // lang::tuples_structs::let_destructures_a_union_typed_by_the_check,
-    // let_over_a_later_typed_union_refuses_a_member_it_misses.
     if members.len() < 2 || matches!(ptyp, Type::TVar(_)) {
         return ptyp.any_as_tvar().contains(&ctx.env, typ);
     }
@@ -1629,53 +1613,6 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
             };
             if let Some(r) = named {
-                // XCR claude for claude: [bug/medium] In a single script, `&mut f`
-                // inside a function body is refused here as "made generic by an earlier
-                // compile" when f holds a function. generalized_earlier judges by the
-                // levels of the cells f's type reaches, and inside a body those read as
-                // generic. The binding is not generalized: written_lets found the
-                // write, and mark_connect_target removed f from env.poly_binds. The
-                // same write as `f <- ..` is accepted, because Connect::typecheck0_with
-                // asks env.poly_binds. A `let r = &mut f` outside the function is
-                // accepted too. Fix: refuse on `ctx.env.poly_binds.contains(&r.id)`
-                // instead, and pin the lambda-body case. probe:
-                // design/review-2026-10-26/repro/c-node-mod-mut-ref-in-lambda.gx
-                // (c-node-mod-02)
-                // 2026-10-26 claude: The probe no longer reproduced at the tip, nor
-                // did the run-time bind case once with_runtime_settles entered
-                // Level::TOP (c-bind-01). ByRef::compile still judged a writable
-                // reference by the levels of the cells the binding's type reaches;
-                // it now refuses only a binding env.poly_binds still holds, the fact
-                // Connect::typecheck0_with asks (mark_connect_target keeps there
-                // only what an earlier compile generalized), so `&mut f` and `f <-`
-                // decide alike. Pins: lang::types::mut_ref_in_a_lambda_to_a_written_function
-                // (the probe's case), written_after_generalized_is_held_to_it (the
-                // REPL refusal); no pin at the tip fails with the old test. With it,
-                // c-bind-01's pin no longer fails with that fix's AtLevel removed:
-                // the refusal does not read levels at all.
-                // XCR claude for claude: [bug/high] `&mut y` over an inferred let is
-                // refused at every run-time bind. In a collection slot or a dynamic
-                // call, `{ let y = i + 1; let r = &mut y; .. }` fails with 'binding the
-                // callee failed: y was made generic by an earlier compile' although the
-                // check accepted it. Cause: generalized_earlier counts BOUND cells at
-                // Level::Generic, and that is the level of the cells a run-time bind
-                // creates for an operator, a call result or an array literal. `<-`
-                // never asks this, so it works. Fix: count only unbound cells in
-                // generalized_earlier (reached_cells already walks through a binding),
-                // and pin `&mut` over an inferred let inside an array::map callback.
-                // probe: design/review-2026-10-26/repro/c-bind-mut-ref-runtime-bind.gx
-                // (c-bind-01)
-                // 2026-10-26 claude: The cell &mut y saw was UNBOUND, not bound: ByRef
-                // compiles before the instance's typecheck substitutes its types, and a
-                // run-time bind compiled at the thread's default level, Generic, so
-                // every fresh cell of the instance looked generalized.
-                // with_runtime_settles (node/mod.rs, the one entry of build_bound,
-                // prebind and the core-trait hook sites) now enters Level::TOP, as
-                // compile_top and check_and_fuse_inner do for a static bind;
-                // generalized_earlier is unchanged. Pin:
-                // lang::byref::mut_reference_to_an_inferred_local_at_a_run_time_bind (a
-                // dynamic call and an array::map slot; fails with 'binding the callee
-                // failed: y was made generic' when the AtLevel is removed).
                 if ctx.env.poly_binds.contains(&r.id) {
                     bailat!(
                         spec,
@@ -1719,23 +1656,6 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 
     /// Drop the place registration.
-    // XCR claude for claude: [bug/medium] When a place's key goes bottom, unregister
-    // clears the cell's ref_path. ref_target then falls back to the cell itself. A copy
-    // of the reference held elsewhere (`holder <- &mut a[k]`) then writes into the
-    // mirror cell (`write_target` gives `WriteTarget::Bind(cell)`), and its Deref reads
-    // that value back: `*w` shows 99 while k is bottom and for a cycle after, and `a`
-    // never held 99. place_references.md says such a write does not happen. Fix: keep
-    // an addressless entry for the cell, so write_target has no target and the deref
-    // reads bottom. probe: design/review-2026-10-26/repro/c-bind-addressless-write.gx
-    // (c-bind-02)
-    // 2026-10-26 claude: The runtime's place registry holds a node::place::RefPath,
-    // At(root, path) or Nowhere: a place whose address is bottom (from birth or after
-    // its key went bottom) registers Nowhere, so ExecCtx::write_target is None and
-    // every writer (ConnectDeref, core write_through, queuefn, buffer decode, the
-    // embedder's set_deref) drops the write, and ref_target reads the cell's bottom; a
-    // delete or release clears the entry. ByRef::registered mirrors what the runtime
-    // holds. Pin: lang::byref::a_write_through_an_addressless_place_does_not_happen (a
-    // (3, 99) read appears with the old write target).
     fn unregister(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if self.registered.take().is_some() {
             ctx.rt.clear_ref_path(&self.id);
@@ -1848,42 +1768,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             }
         };
         if ctx.event.born() || retargeted {
-            // XCR claude for claude: [bug/medium] The Keep's target is fixed at the
-            // first publication. A place rooted at a dereference (`&mut *r`) that
-            // retargets when r moves keeps pinning its first root, not the binding its
-            // ref_path now names. After the site is deleted, a kept copy's binding can
-            // be released under it, and writes through the copy are dropped with "its
-            // root has no value". Move the pin on retarget: a mutable Keep target
-            // updated under the Lives lock. A second Keep would not work, because the
-            // old one dropping would release the cell. probe:
-            // design/review-2026-10-26/repro/x-refs-catchup-moving-root-unpinned.gx
-            // (x-refs-catchup-03)
-            // 2026-10-26 claude: Lives keeps each cell's pinned binding
-            // (LivesState::targets) instead of the Keep holding it, and Keep::retarget
-            // moves the pin under the lock: ByRef::update retargets its keep whenever
-            // the place re-registers on another binding, unpinning the old one (an
-            // orphan whose last pin it was is released). Pins:
-            // lang::byref::a_kept_place_pins_the_root_it_moved_to (writes dropped at
-            // c=4.. without it),
-            // reference::test::a_retargeted_keep_pins_its_new_binding_alone; both
-            // repros give their expected output.
-            // XCR claude for claude: [bug/medium] The keep is made once and pins the
-            // binding the place named at that moment. A place rooted at `*r` that later
-            // retargets (r moves from &mut y1 to &mut y2) still pins y1. When the slot
-            // holding y2 is deleted, y2's value is released, and every write through a
-            // surviving copy is dropped with 'its root has no value'. Fix: move the pin
-            // to the new target whenever the place re-registers on another binding (a
-            // Lives method that swaps the Keep's target). probe:
-            // design/review-2026-10-26/repro/c-bind-keep-retarget.gx (c-bind-03)
-            // 2026-10-26 claude: Lives keeps each cell's pinned binding
-            // (LivesState::targets) instead of the Keep holding it, and Keep::retarget
-            // moves the pin under the lock: ByRef::update retargets its keep whenever
-            // the place re-registers on another binding, unpinning the old one (an
-            // orphan whose last pin it was is released). Pins:
-            // lang::byref::a_kept_place_pins_the_root_it_moved_to (writes dropped at
-            // c=4.. without it),
-            // reference::test::a_retargeted_keep_pins_its_new_binding_alone; both
-            // repros give their expected output. (same fix as x-refs-catchup-03)
             let target = ctx.env.byref_chain.get(&self.id).copied();
             let target = target.or_else(|| match &self.registered {
                 Some(RefPath::At(r, _)) => Some(*r),
@@ -2159,22 +2043,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 // a move to another element is read fired
                 let t = match moved {
                     // at a wake, catch-up decides through the reference's fire
-                    // XCR claude for claude: [bug/medium] A key move is read fired here,
-                    // but a move to another root binding (Moved::Target) is read quiet.
-                    // Through a held copy of a place `&(*r)[0]` whose r moves from &a
-                    // to &b, `*w` keeps the old element for a cycle (c=2: 10 while `*p`
-                    // gives 30), because `let rd = *w` does not republish a quiet read.
-                    // Fix: when a Moved::Target replaces an existing address, read it
-                    // fresh outside a wake, as Moved::Path is; a first address keeps
-                    // join(addr). probe:
-                    // design/review-2026-10-26/repro/c-bind-target-move-quiet.gx
-                    // (c-bind-04)
-                    // 2026-10-26 claude: Deref::address tells a first binding
-                    // (Moved::First, read joined with the reference's tag) from a move
-                    // to another binding (Moved::Target), which is read fired outside a
-                    // wake as a key's move is, a bottom included. Pin:
-                    // lang::byref::a_held_place_reads_its_new_root_at_once (via the
-                    // holder reads 10 at c=2 and 30 at c=4 without it).
                     Moved::Path | Moved::Target if !ctx.event.wake() => {
                         tv.tag().join(addr).fresh()
                     }
@@ -2274,27 +2142,6 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 wrap!(self, p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut))?
             }
         };
-        // XCR claude for claude: [perf/low] A let chain of references (`let x1 = &x0;
-        // let x2 = &x1; ..`) still checks in quadratic time: 1.43 s at 5000 lets and
-        // 5.79 s at 10000 (debug --check), almost all of it in Typecheck0. The [X], {a:
-        // X}, (X, 1) and `A(X) chains are now linear. The x-stack-03 note says &X is
-        // linear too; that does not hold past about 2000 lets. By reading, this
-        // check_contains binds the reference's own cell with an occurs walk over the
-        // referent's whole type. SeqLit and Map skip that walk with
-        // array::bind_element. Bind the cell the same way when it is this node's own,
-        // and add an &X case to deep_nesting::wrapped_let_chains_check_in_linear_time.
-        // probe: design/review-2026-10-26/repro/x-rerun-1-ref-chain-quadratic.sh
-        // (x-rerun-1-03)
-        // 2026-10-26 claude: The quadratic part was check_contains' closed() walk of
-        // the whole referent at the top of every committing call. ByRef's check now
-        // skips a referent whose type shares content with the one the reference was
-        // typed with at compile (Type::shares_content, contains' own reflexive test,
-        // now public), the case of every &x, and binds its own unshared cell with
-        // array::bind_element (a place); anything else checks as before. Debug --check
-        // of the chain: 1.16 / 1.33 / 1.8 s at 2500 / 5000 / 10000 (startup about 1 s)
-        // against 2.2 / 3.7 / 9.4 s. Pin:
-        // deep_nesting::wrapped_let_chains_check_in_linear_time's new &X case (past 15
-        // s without it).
         if cell.shares_content(&t) || super::array::bind_element(cell, &t) {
             return Ok(());
         }

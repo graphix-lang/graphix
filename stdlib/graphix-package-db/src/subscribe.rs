@@ -225,23 +225,6 @@ impl DbSubscribe {
             Some(Ok(Value::Null)) => Ok(GPooled::orphan(vec![])),
             Some(Ok(v)) => encode_prefix(tree.key_typ, &v),
         };
-        // XCR claude for claude: [bug/low] A prefix that cannot be written as data (a
-        // Rust handle in an Array<Any> key) makes the subscription silent forever. In
-        // DbCursorNewEv::eval the same failure (`.ok()?`) leaves cursor::new bottom, so
-        // cursor::read never answers, while db::insert of that key is a DbErr
-        // (db_unstorable_value: 'a DbErr, not silence'). Deliver the encoding error as
-        // one DbErr batch under bind_id here, and keep it in CursorInner for `next` to
-        // return. probe:
-        // design/review-2026-10-26/repro/db2-unencodable-prefix-silent.gx (db2-03)
-        // 2026-10-26 claude: DbSubscribe::watch returns a prefix's write error and a
-        // fired subscription reports it as its one DbErr event under its bind id
-        // (DbSubscribe::report; a wake does not report it again); the watch task and
-        // report build their delivery through one subscribe::delivery. A cursor's
-        // CursorInner holds Result<Option<sled::Iter>>: a prefix (cursor::new) or a
-        // bound (cursor::range, which had the same .ok()?) that cannot be written makes
-        // every read that DbErr. subscription.gxi and cursor.gxi say so. Pin:
-        // graphix-tests lib_tests::db::db_unwritable_prefix_is_an_error (fails with
-        // either half undone).
         let Ok(prefix) = prefix else { return Ok(()) };
         let (tx, rx) = mpsc::channel(1);
         ctx.rt.watch(rx);

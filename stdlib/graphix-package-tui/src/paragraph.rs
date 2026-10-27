@@ -42,23 +42,6 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
             p.wrap.t.unwrap_or(true).then(|| Wrap { trim: p.trim.t.unwrap_or(true) });
         let (x, mut y) = p.scroll.t.map(|s| (s.x.0, s.y.0)).unwrap_or_default();
         let height = rect.height as usize;
-        // XCR claude for claude: [bug/medium] scroll.y is a validate::Offset clamped to
-        // u16::MAX for ratatui, so a text of more than 65536 lines cannot show its
-        // tail: y = 69995 shows line 65535, and the clamp only logs. The pin
-        // a_paragraph_scrolls_past_a_thousand_lines states the rule 'an offset counts
-        // content lines, past any screen size'. Read y as validate::Index. Without
-        // wrap, slice the lines here (`lines.get(y..)`, at most rect.height of them)
-        // and pass scroll (0, x): exact, and it stops converting every line on every
-        // frame (70000 static lines cost about 2.5 ms per unrelated redraw). With wrap,
-        // pass only the first y + rect.height lines. probe:
-        // design/review-2026-10-26/repro/tui-widgets-paragraph-scroll-cap.sh
-        // (tui-widgets-04)
-        // 2026-10-26 claude: ScrollV.y is a validate::Index; unwrapped, draw slices the
-        // lines from y and passes scroll (0, x); wrapped, it drops whole lines (counted
-        // by Paragraph::line_count, ratatui feature unstable-rendered-line-info) while
-        // y passes u16::MAX; either way only the first y + height lines are converted
-        // per frame. Pins: render_test a_paragraph_scrolls_past_u16_lines,
-        // a_wrapped_paragraph_scrolls_past_u16_rows.
         match wrap {
             None => {
                 lines = lines.get(y..).unwrap_or(&[]);

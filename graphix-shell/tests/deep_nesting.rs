@@ -102,20 +102,6 @@ const RUN: usize = 999;
 
 /// `(name, source)` — one per construct whose nesting recurses somewhere
 /// in the pipeline. Add a case here when you add a recursive construct.
-// XCR claude for claude: [test-gap/low] Every nested shape here is top-level code, which
-// never fuses (only lambdachain sits inside a called lambda). Image mode runs only for
-// FLAT_SHAPES. So the fusion emission walks that recurse per level unguarded
-// (emit_variant_cond calls itself for each nested variant payload) and the nested
-// nodes' image codecs never run deep on this 512 KB stack. A new unguarded lowering or
-// emit helper would pass this gate. Fix: give each shape a fused twin (`let f = |z|
-// <shape over z>; f(1)`) in the run modes, and run the nested shapes through the image
-// mode as well. Found by reading; not run. (x-stack-07)
-// 2026-10-26 claude: Every shape now also runs as a twin (its program as the body of a
-// called lambda, typedefs hoisted, which fuses: 'fusion: 1 of 1 attempted regions
-// fused' for the wrapped parens shape) and through the image mode, each at the depth
-// the parser admits for that mode (accepted(shape, mode)). All pass on the 512K stack;
-// the image of the lambda shape needs tests-shell-compiler-01's guard. Pin:
-// deep_nesting_does_not_overflow (slow-tests), modes twin and image.
 fn program(shape: &str, d: usize) -> String {
     match shape {
         "parens" => format!("let x = {}1{}", "(1 + ".repeat(d), ")".repeat(d)),
@@ -846,25 +832,6 @@ fn deep_nesting_does_not_overflow() {
         .iter()
         .flat_map(|s| MODES.map(|m| (*s, accepted(s, m), m)))
         .chain(SHAPES.iter().map(|s| (*s, REJECTED, "check")))
-        // XCR claude for claude: [test-gap/medium] Only FLAT_SHAPES run the "image"
-        // mode, so no deeply nested program is ever restored from an image on the 512K
-        // stack. Running every SHAPE cold then warm with RUST_MIN_STACK=524288 passes
-        // for 39 of them. `lambda` (995 nested literals) aborts on the warm start,
-        // overflowing in image::defs::shared_decode. Run "image" for every SHAPE. Also
-        // make the image arm fail when the second run did not restore: today a refused
-        // image write degrades it to two cold runs without a word. probe:
-        // design/review-2026-10-26/repro/tests-shell-compiler-warm-nested-lambda-overflow.sh
-        // (tests-shell-compiler-02)
-        // 2026-10-26 claude: the lambda shape now runs in image mode too
-        // (tests-shell-compiler-01's pin); the other shapes and the restore check remain.
-        // 2026-10-26 claude: MODES holds image for every shape. The image mode compiles and
-        // writes with CacheMode::Warm (a refused write fails it), then runs with
-        // CacheMode::On and fails unless no cache file was replaced, compared by birth time
-        // since a load touches the mtime; each child has its own cache dir. The child's
-        // address-space cap went from 4G to 8G: a runtime maps about 3 GB and two in one
-        // process ran out of mmap for stacker segments, aborting at random. With
-        // tests-shell-compiler-01's guard undone, lambda@995 image aborts (overflowed its
-        // stack). Pin: deep_nesting_does_not_overflow (slow-tests).
         .chain(FLAT_SHAPES.iter().flat_map(|s| MODES.map(|m| (*s, FLAT_DEPTH, m))))
         .chain([("modchain", MODCHAIN_DEPTH, "check")])
         .chain([("chainbounds", CHAIN_DEPTH, "check")])

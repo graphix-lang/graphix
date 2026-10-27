@@ -323,51 +323,6 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             if let Some(succ) = option_result_success(members) {
                 return abi_kind_d(succ, seen).map(|_| AbiKind::Nullable);
             }
-            // XCR claude for claude: [perf/medium] A union not covered by these three
-            // rules has no kernel encoding: [`A, `B, null] (an optional enum), [`A,
-            // `B(i64), null], [{x: i64}, `N], [List<i64>, Array<i64>]. Every function
-            // returning or taking one node-walks. With kind markers the value tells all
-            // these members apart (graphix_value_is_a), so: let a null or error member
-            // beside any encodable rest be Nullable, and let a union of any marked
-            // kinds and arrays ride as Value, with #[native] pins. probe:
-            // design/review-2026-10-19/repro/x-kind-markers-optional-enum-no-kernel.gx
-            // (x-kind-markers-06)
-            // 2026-10-20 claude: Tried widening the Value rule to any members a value
-            // tells apart (lists, maps, tag unions, primitives beside composites):
-            // every probe in x-kind-markers-06-union-formals/ that then fused DIVERGED
-            // (interp != jit), so the select lowering of type tests over a Value
-            // scrutinee is not ready for those kinds; reverted. The order is: make the
-            // select lowering test each member kind on a Value (graphix_value_is_a),
-            // pin it, then widen this rule.
-            // 2026-10-20 claude: Correction to the note above: the DIVERGENCE verdicts
-            // were the probes own #[native] refusing, not wrong values. With #[native]
-            // stripped and the rule widened, every probe agrees between the engines,
-            // but nothing new fuses: the formal still has no kernel encoding and the
-            // select refuses its scrutinee (type .. does not freeze concrete), so the
-            // freeze step, this rule and the select lowering over a Value scrutinee all
-            // need the change together. Reverted.
-            // 2026-10-21 claude: A union of composites and null, [(i64, i64),
-            // Array<i64>, null], is a case of this one: f-select-02 made the select
-            // lowering destructure a composite member of any value scrutinee
-            // (emit_member_cond in emit/select.rs: a tag test for an option's or a
-            // result's composite, graphix_value_is_a for a written member test, the
-            // node-walk's shape test for an inferred one), but that union does not
-            // freeze, so its select de-fuses before any pattern is lowered. Of the
-            // three changes this CR needs together, the select lowering's member tests
-            // now exist for composites; the freeze step and the abi_kind rule remain.
-            // 2026-10-27 claude: abi_kind and the freeze now take any union of encoded
-            // members as a Value (abi_kind_d's Set rule: no member a Set, none without
-            // a kernel encoding; Freeze: a non-variant union must be canonical, and a
-            // member that freezes to a Set or bottom is NonCanonical), and the select
-            // lowering tests a written type over such a Value scrutinee with
-            // graphix_value_is_a, as the node-walk's is_a does (emit_arm_cond). The
-            // probe's three functions, and every x-kind-markers-06-union-formals probe,
-            // fuse under #[native] with the node-walk's answers. A list pattern over a
-            // union holding a list still de-fuses ('list pattern over non-list'). Pin:
-            // graphix-tests fusion_review::unions_of_marked_kinds_fuse (#[native] on
-            // returns, formals, variant/null/composite patterns, written type tests,
-            // ==, interpolation, array::map); its jit modes fail with either half
-            // undone.
             let all_variants = members
                 .iter()
                 .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _, _)))));
@@ -614,18 +569,6 @@ struct Freeze {
     deepest: Cell<usize>,
 }
 
-// XCR claude for claude: [perf/medium] Freezing walks a type's typedefs once per
-// path, so a typedef DAG (`type T0 = [null, (T1, T1)]`, `type T1 = [null, (T2,
-// T2)]`, ..) is 2^depth: a block `{ <T0..T30>; let v: T0 = null; select v { null =>
-// 1, (a, b) => 2 } }` does not finish fusing in 170 s, and depth 21 / 23 take 3.6 /
-// 6.2 s (debug, fused; --no-fusion 1 s). Found beside x-rerun-5-01, whose
-// shapes_collide half is fixed. Freeze each (typedef, params) once a walk, sharing
-// the frozen node. probe: the block above as a .gx file, run with fusion
-// (fuse-freeze-dag-01)
-// 2026-10-26 claude: Fixed by the freeze memo of f-kernel-01: the block at 21
-// levels runs in 1-2.5 s fused (10.9 s with the memo off), 30 levels in 1.1 s. Pin:
-// kernel_abi::tests::typedef_chain_named_twice_at_the_top_freezes_once (freezing
-// (T1, T1) over this chain; fails its 2 s bound with the memo off).
 impl Freeze {
     fn freeze(&self, t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
         crate::stack::ensure_sufficient(|| {
@@ -719,23 +662,6 @@ impl Freeze {
                     if !members.iter().all(variant) {
                         // one the normalizer would collapse freezes as what it
                         // collapses to
-                        // XCR claude for claude: [risk/low] [risk/low] This normalizes
-                        // `resolved`, a shallow clone (deref_cloned) whose members share
-                        // the program's TVar cells. TVar::normalize_int binds a non-normal
-                        // binding back into the shared cell, so freezing a composite union
-                        // can rewrite a settled cell during fusion.
-                        // freeze_for_abi_normalized's doc forbids exactly that ("never t:
-                        // normalize writes bindings back into shared TVar cells").
-                        // Normalize a deep copy (`resolved.resolve_tvars().normalize()`),
-                        // or return NonCanonical and let the normalized retry, which
-                        // already works on a resolve_tvars() copy, decide. Found by
-                        // reading; not run. (f-kernel-02)
-                        // 2026-10-26 claude: The composite-union canonicity test
-                        // normalizes resolved.resolve_tvars(), a deep copy, so a member's
-                        // TVar cell is never rebound. Pin:
-                        // kernel_abi::tests::composite_union_freeze_preserves_shared_cells
-                        // (the cell's tuple-of-a-non-normal-set binding is rewritten
-                        // without the fix).
                         let canonical = matches!(
                             resolved.resolve_tvars().normalize(),
                             Type::Set(ref ms) if ms.len() == members.len()
@@ -793,30 +719,6 @@ impl Freeze {
                     if len > MAX_FREEZE_EXPANSIONS {
                         return Err(NonCanonical);
                     }
-                    // XCR claude for claude: [perf/medium] [perf/medium] The freeze is still
-                    // exponential when a typedef DAG is two wide. The memo lives in the
-                    // parent Seen node, so it only shares a ref's frozen form between
-                    // siblings under the same expansion. When A_i and B_i each name both
-                    // A_{i+1} and B_{i+1}, every node is reached through two parents and
-                    // the work doubles with each layer. 20 layers: 5.2 s of phase=Freeze,
-                    // against 0.17 s with --no-fusion and 46 ms for --check. Fix: keep the
-                    // results of refs whose expansion met no recurring ref
-                    // (path-independent) in one map per top-level freeze keyed by the
-                    // TypeRef. Or count expansions and refuse with Unsupported past
-                    // lowering::FUSION_SIZE_CAP, as the structural-sharing case does.
-                    // probe: design/review-2026-10-26/repro/f-kernel-freeze-layered-dag.gx
-                    // (f-kernel-01)
-                    // 2026-10-26 claude: Freeze is now one walk (kernel_abi::Freeze) with a
-                    // memo per top-level freeze: a closed ref whose expansion met no
-                    // recurring ref is frozen once and reused on any path (within
-                    // MAX_FREEZE_EXPANSIONS, tracked per entry); the sibling memo in
-                    // Seen::frozen keeps the rest. The probe takes 1.8 s, the --no-fusion
-                    // time (7.1 s before). A two-wide DAG that recurs (A_i, B_i naming the
-                    // next and, at the bottom, A0) is still path-dependent and unshared.
-                    // Pins:
-                    // kernel_abi::tests::two_wide_typedef_dag_freezes_once_per_definition
-                    // and typedef_chain_named_twice_at_the_top_freezes_once (each fails its
-                    // 2 s bound, about 5 s at depth 22, with the memo off).
                     let fp = expand_key_fp(tr);
                     if let Some(t) = self.memoized(fp, tr, len) {
                         return Ok(t);

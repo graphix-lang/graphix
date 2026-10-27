@@ -749,27 +749,6 @@ fn graphix_castcall(
 /// result. The run leaves by its abort path at its next poll (a loop
 /// head, a self-call), releasing what it owns as it would; the kernel
 /// then discards what it deferred and resumes the panic.
-// XCR claude for claude: [risk/medium] A recorded panic does not stop the run. Nothing
-// in the JIT code reads KERNEL_PANIC again: graphix_interrupted and graphix_stack_check
-// check only stack::interrupted(). The kernel goes on with the placeholder, and several
-// placeholders are untainted values it branches on (graphix_value_eq and
-// graphix_value_cmp give 0, graphix_string_buf_push_value appends nothing). Example: a
-// fused tail loop `select K(i) == K(13) { true => i, false => go(i + 1) }` whose Eq
-// hook panics at 13 loops forever on "not equal", and a non-tail self-call recurses
-// until memory runs out. The node-walk unwinds and the runtime dies. Fix: once a panic
-// is recorded, have graphix_interrupted and graphix_stack_check report "interrupted" so
-// the run leaves by its abort path at the next poll; then drop the !kernel_panicked()
-// check in graphix_iocall and make fast_dispatch's doc ("it aborts the kernel") true.
-// Found by reading; not run (only graphix-tests registers a panicking builtin).
-// (f-helpers-01)
-// 2026-10-27 claude: graphix_interrupted and graphix_stack_check now ask run_stops():
-// an interrupt or a panic the run recorded, so a kernel leaves by its abort path at its
-// next loop poll or self-call once a hook or fast fn panicked; graphix_iocall's own
-// panicked check is gone (a panicked run's Io is cleared anyway), and guard_panic's doc
-// says the run leaves. Pin: graphix-tests
-// lang::test_builtins::a_panic_stops_a_kernel_loop (a fused tail loop and a non-tail
-// self-call whose Eq hook panics at K(13); jit/jit_par count 990 panics with the fix
-// undone, under 100 with it, the loop polling every 64 iterations).
 fn guard_panic<T>(placeholder: T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,

@@ -138,23 +138,6 @@ impl Write {
             && let Either::Left((_, dv)) =
                 std::mem::replace(&mut self.dv, Either::Right(VecDeque::new()))
         {
-            // XCR claude for claude: [bug/medium] Dropping the Dval here discards any
-            // write netidx queued because the subscription has not connected yet
-            // (Dval::write queues while Dead). A write issued while the arm was
-            // selected is then lost when the arm sleeps, the node is deleted or the
-            // path moves before the first connect finishes, which takes milliseconds
-            // while a deselect can come the next cycle. Fix: in NetState::release, keep
-            // an unconnected Dval alive in a task that awaits wait_subscribed (with a
-            // timeout) before dropping it, so issued writes still go out. probe:
-            // design/review-2026-10-26/repro/sys-net-write-lost-at-sleep.gx
-            // (sys-net-03)
-            // 2026-10-26 claude: NetState::release keeps a write target holding writes
-            // queued while it connects (Dval::queued_writes) in a task until it
-            // connects (Dval::wait_subscribed, which follows the queued writes' send)
-            // or QUEUED_WRITE_GRACE (10 s) passes, then drops it and its route; one
-            // with nothing queued drops at once. Covers sleep, delete and a moved path.
-            // Pin: lib_tests::net::net_write_survives_a_sleep_before_connect, which
-            // hung with the fix undone.
             NetState::get(ctx).release(dv)
         }
     }
@@ -311,23 +294,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         match (path, path_fired || woke) {
             (_, false) | (None, true) => (),
-            // XCR claude for claude: [bug/medium] This guard compares the stored Path,
-            // which Path::from canonicalised, with the raw string, so a non-canonical
-            // path ("/local/x/", "//x") never matches. Every re-fire of the unchanged
-            // path tears the subscription down and replays its value. Write::same_path
-            // and Publish::update's path-moved test have the same mismatch: there the
-            // standing value is written again at every fire (a repeated effect), and
-            // the value is unpublished and republished at every fire. Fix: build the
-            // Path from the incoming string first and compare Path with Path at all
-            // three sites. probe:
-            // design/review-2026-10-26/repro/sys-net-noncanonical-path.sh (sys-net-02)
-            // 2026-10-26 claude: Subscribe, Write and Publish compare Path with Path:
-            // the incoming string is canonicalised with Path::from (as_path for Write)
-            // before the comparison. Pin:
-            // lib_tests::net::net_noncanonical_path_refires (a trailing-slash path
-            // refiring 10 times: subscription delivers once, the standing value is
-            // written once, the publication is seen once); with the fix undone it
-            // counted (9, 9, 5).
             (Some(Value::String(path)), true) => {
                 let path = Path::from(path);
                 if self.cur.as_ref().is_none_or(|(p, _)| *p != path) {
@@ -916,25 +882,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     let req = &mut w.0;
 
                     // a write the handler cannot take is the writer's error
-                    // XCR claude for claude: [bug/high] A remote write of an error value
-                    // reaches the handler. cast_value refuses an error (an error is not
-                    // data) and returns InvalidCast. The `!matches!(req.value,
-                    // Value::Error(_))` guard then accepts that InvalidCast as Ok
-                    // because the written value was an error, so a handler typed `|v:
-                    // [i64, string]|` runs on an error value. Both engines report a
-                    // coverage hole, and the process aborts under
-                    // GRAPHIX_ABORT_ON_NO_MATCH=1. Fix: answer the writer with every
-                    // Value::Error the cast returns, and pin it. probe:
-                    // design/review-2026-10-26/repro/x-security-net-write-error.gx
-                    // (x-security-01)
-                    // 2026-10-26 claude: Publish casts a write with
-                    // Type::try_cast_value (new: cast_value's refusal as Err), so a
-                    // refusal is answered to the writer whatever the written value was,
-                    // and an error reaches only a handler whose type holds it. Pin:
-                    // lib_tests::net::net_write_of_an_error (a [i64, string] handler
-                    // never sees the written error, a [i64, Error<`Boom(string)>]
-                    // handler does); with the fix undone the first handler recorded the
-                    // InvalidCast error.
                     let taken = match &self.write_typ {
                         Some(typ) if self.handler => {
                             coretraits::with_display_hooks(ctx, |env| {
@@ -1260,19 +1207,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 }
             }
         }
-        // XCR claude for claude: [bug/medium] This republishes whenever path, doc or
-        // spec fires, even with the value already published. Every subscriber of the
-        // procedure, its doc and its args sees an unsubscribe, and callers wait out the
-        // gap. Publish::update unpublishes only when the path really moved. Fix: keep
-        // the published (path, doc, spec) with `current` and republish only when one
-        // differs, or at the wake. probe:
-        // design/review-2026-10-26/repro/sys-net-rpc-republish-same-path.gx
-        // (sys-net-05)
-        // 2026-10-26 claude: PublishRpc keeps what it published from (Published: path,
-        // doc, spec, proc) and republishes only when one differs or after a sleep
-        // (which drops it); a bottom path, doc or spec still drops it. Pin:
-        // lib_tests::net::net_noncanonical_path_refires, whose rpc doc subscriber
-        // counted 11 deliveries over 10 path refires with the fix undone, 1 with it.
         if path_fired || doc_fired || spec_fired || woke {
             match (&pathv, &docv, &specv) {
                 (Some(path), Some(doc), Some(spec))
@@ -1307,31 +1241,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     continue;
                 }
                 match self.arg(ctx, &c) {
-                    // XCR claude for claude: [bug/high] This error reply, and
-                    // Publish::update's write refusal (`reply.send(e)`), go to netidx
-                    // as a marked graphix variant without write_data. Netidx cannot
-                    // encode it, so the caller's whole connection to this publisher
-                    // drops. The caller gets "call cancelled before a reply was
-                    // received" instead of the cast error, and every other subscription
-                    // it holds here blips to SubscribeError("unsubscribed"). Fix: write
-                    // both replies as data (write_data or rep::strip) in one helper
-                    // that every reply path uses, as Handler::update already does for
-                    // answers. Then make net_rpc_refused_cast_answered assert the
-                    // InvalidCast message: is_err alone cannot see this. probe:
-                    // design/review-2026-10-26/repro/sys-net-rpc-cast-error-kills-connection.gx,
-                    // design/review-2026-10-26/repro/sys-net-write-refusal-kills-connection.gx
-                    // (sys-net-01)
-                    // 2026-10-26 claude: Every reply that leaves for netidx is now data: a
-                    // refused call's cast error, a refused write's cast error and a write to a
-                    // publication with no handler answer Value::Error(message) through
-                    // remote_failure/refusal (the netidx convention, read by the caller as
-                    // RpcError(msg)), never a marked graphix variant. PublishRpc::arg and
-                    // Publish's write cast return Result (Type::try_cast_value), so a refusal is
-                    // told apart from data that is an error. Pins:
-                    // lib_tests::net::net_rpc_refused_cast_answered now asserts the message,
-                    // lib_tests::net::net_write_refusal_answers_the_writer (sys::net::call to a
-                    // plain publication); both got "call cancelled before a reply was received"
-                    // with the fix undone.
                     Err(e) => RpcReply(c).reply(refusal(&e)),
                     Ok(arg) => self.handler.push(arg, RpcReply(c)),
                 }

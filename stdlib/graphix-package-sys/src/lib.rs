@@ -459,23 +459,6 @@ impl Halves {
     /// Cancel pending reads and writes, shut down the writer, at most
     /// `CLOSE_SHUTDOWN` (a peer that does not read can hold up a flush or
     /// a TLS close_notify), and release both halves.
-    // XCR claude for claude: [bug/medium] Only reads run under `until_closed`. write,
-    // write_exact, flush and tcp shutdown hold the writer lock across an unbounded
-    // await, so a write blocked on a peer that stopped reading makes close wait
-    // forever. The descriptor is never released, and take (seek, a TLS upgrade) blocks
-    // behind it too. Closing the stdin of a child that never reads, after a 300000-byte
-    // write_exact, never answers. Fix: run the write-side evals under `until_closed`,
-    // and drop the write half here instead of awaiting an unbounded shutdown (a TLS
-    // close_notify can block too). probe:
-    // design/review-2026-10-26/repro/x-async-io-close-blocked-by-write.gx
-    // (x-async-io-04)
-    // 2026-10-27 claude: write, write_exact, flush and tcp shutdown run under
-    // Halves::until_closed, so a close cuts a blocked write and takes the writer;
-    // close's shutdown is bounded by CLOSE_SHUTDOWN (5 s, an error past it, the halves
-    // released either way: a TLS close_notify or a file flush a stalled peer holds);
-    // io.gxi's Close says so. Pins: io::test::close_cancels_write and
-    // close_cancels_write_exact (time out with the writes outside until_closed). The
-    // bound itself has no pin (it needs a stalled TLS peer).
     pub(crate) async fn close(self: &Arc<Self>) -> IoResult<()> {
         self.closing.store(true, AtomicOrdering::Release);
         self.closed.notify_waiters();

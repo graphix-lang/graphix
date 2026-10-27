@@ -30,17 +30,6 @@ fn data_to_value(cell: &Data) -> Value {
             Some(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
             None => Value::F64(edt.as_f64()),
         },
-        // XCR claude for claude: [bug/medium] A date-only ISO cell (`2020-01-01`, the
-        // common ods date cell) and one with fractional seconds
-        // (`2020-01-01T10:00:00.5`) match neither parse and come back as strings, while
-        // the same dates in xlsx/xls read as datetimes. Parse `%Y-%m-%dT%H:%M:%S%.f`,
-        // then a bare `%Y-%m-%d` at midnight UTC, before falling back to a string, and
-        // pin both forms. probe:
-        // design/review-2026-10-26/repro/small-pkgs-ods-date-cells.sh (small-pkgs-05)
-        // 2026-10-26 claude: Data::DateTimeIso goes through iso_datetime: RFC 3339,
-        // then a local date-time with optional fractional seconds read as UTC, then a
-        // bare date at midnight UTC, else the string. Pin: graphix-package-xls
-        // test::ods_date_cells_read_as_datetimes (the probe's three ods date cells).
         Data::DateTimeIso(s) => match iso_datetime(s) {
             Some(dt) => Value::DateTime(TArc::new(dt)),
             None => Value::String(ArcStr::from(s.as_str())),
@@ -186,21 +175,6 @@ fn check_ods<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(), String> {
                 continue;
             }
             Event::End(e) if e.name().as_ref() == b"table:table" => {
-                // XCR claude for claude: [bug/high] The bound resets at every table's
-                // end, but calamine builds every table of the workbook at open, so
-                // memory is the sum over tables. An 814-byte ods of 16 tables, each
-                // under MAX_CELLS, OOM-kills the runtime through xls::sheets.
-                // Accumulate each finished table's pushed.max(area) into a workbook
-                // total and refuse when the total passes MAX_CELLS; pin it with several
-                // tables whose sum is over the bound. probe:
-                // design/review-2026-10-26/repro/small-pkgs-ods-many-tables-oom.sh
-                // (small-pkgs-04)
-                // 2026-10-26 claude: check_ods now sums each finished table's cells
-                // (OdsTable::cells, pushed.max(area)) into a workbook total and refuses
-                // at a row end where the total with the current table passes MAX_CELLS.
-                // Pin: graphix-package-xls test ods_bounds_the_tables_together (two
-                // 3000x3000 tables: one reads, both are refused; fails with the sum
-                // undone).
                 if let Some(t) = table.take() {
                     done = done.saturating_add(t.cells());
                 }
@@ -361,7 +335,7 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     {
         return Err(errf!("XlsErr", "{e}"));
     }
-    // XCR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
+    // CR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
     // to sharedStrings.xml's uniqueCount attribute, unchecked. A 1 KB xlsx declaring
     // uniqueCount="100000000000" makes xls::read fail to allocate 2.4 TB and abort the
     // process; spawn_blocking cannot contain an abort. Guard xlsx as check_ods guards
@@ -377,6 +351,17 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // UPSTREAM.md has the calamine entry. Pins: graphix-package-xls tests
     // xlsx_refuses_an_overstated_string_count (aborts with the check undone, for each
     // path spelling) and xlsx_reads_shared_strings.
+    // 2026-10-27 claude: The bound is still attacker-scalable. check_shared_strings
+    // accepts uniqueCount up to the part's uncompressed byte count, and calamine's
+    // `self.strings.reserve(n)` (xlsx/mod.rs) takes 24 bytes per declared string. A
+    // deflate bomb of whitespace inside sharedStrings.xml, about 3 MB of xlsx expanding
+    // to 3 GB, therefore passes the check and asks calamine to reserve ~72 GB, which
+    // still aborts the process on a normal host. The whitespace itself would cost
+    // calamine nothing. The check already streams the whole part, so count the `<si>`
+    // elements there and refuse a declared count above that number; the reservation is
+    // then bounded by strings calamine builds anyway. Alternatively, cap the count at a
+    // fixed bound tied to MAX_CELLS. Pin a small, highly compressed part whose byte
+    // count exceeds its declared count but whose `<si>` count does not.
     open_workbook_auto_from_rs(rs).map_err(|e| errf!("XlsErr", "{e}"))
 }
 

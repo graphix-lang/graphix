@@ -69,24 +69,6 @@ parser! {
         }
         // a splice prints on its string's line, where no comment can stand
         let spliced = |(e, end): (Expr, SourcePosition)| {
-            // XCR claude for claude: [bug/medium] This checks only comments above a
-            // node. A comment ending a line (`Decorations::eol`) or below a list's last
-            // item (`below`) inside a splice parses and runs, but the printer writes a
-            // splice flat and drops it, so `graphix fmt` refuses the file as a
-            // "formatter bug". Refuse those too. Separately, the reason noted at
-            // `e.pos` never reaches the report when the splice spans lines, because the
-            // failure is reported at the splice's end. The user sees only "the parser
-            // could not continue past this point". Note the reason where the splice
-            // ends. probe:
-            // design/review-2026-10-26/repro/tests-expr-splice-eol-comment.gx,
-            // design/review-2026-10-26/repro/tests-expr-splice-comment-reason.gx
-            // (tests-expr-02)
-            // 2026-10-26 claude: `holds_comment` (parser/mod.rs) refuses every comment
-            // in a splice: above, at the end of a line, below a list, a trait's or a
-            // sig's, and one in an attribute's arguments; the refusal is noted at the
-            // splice's end, where a multi-line splice's failure is reported, so the
-            // reason reaches the user. Pin: parser/test.rs
-            // no_comment_stands_inside_a_splice_or_an_attribute.
             // CR claude for eric: [bug/medium] This checks only `dec.comments`, so a
             // comment ending a line inside a splice (`"[{ let x = 1; // hi\n x }]"`) or
             // standing below a list in one parses. The formatter then refuses the file

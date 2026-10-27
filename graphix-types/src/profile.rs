@@ -386,26 +386,6 @@ pub fn instance(
     let _p = phase(Phase::InstanceCensus);
     span.instance = PROFILE.with_borrow_mut(|p| {
         let c = p.census.as_mut().unwrap();
-        // XCR claude for claude: [bug/low] `elaborating` is pushed only by
-        // profile::elaboration (GXLambda::typecheck1), but a row is created here by the
-        // instance's InstanceGraph/InstanceCheck span, when no elaboration guard is
-        // open. Every INSTANCE line prints parent=0 (267 of 267 for table_basic.gx
-        // under --expand, serial too). bench/instances.py's tree() then reports 'chain
-        // depth 1, widest 0 children' for every root, and its critical path and Nx
-        // figures mean nothing. Fix: read the parent from a census stack of the open
-        // spans' instance ids (pushed here, popped when the span drops), or delete
-        // tree(), parent, elaboration_ns and the Elaboration guard. probe:
-        // design/review-2026-10-26/repro/ide-tooling-instances-flat-tree.sh
-        // (ide-tooling-07)
-        // 2026-10-27 claude: Census::open replaces elaborating: an instance is open
-        // while its InstanceCheck span (profile::instance pushes, Span::drop pops) or
-        // its Elaboration guard lives, and a new row's parent is the innermost open
-        // instance. elaboration_ns became open_ns, the outermost opening's wall time
-        // (check and elaboration, the instances built meanwhile included);
-        // bench/instances.py's tree() reads graph_ns + open_ns. table_basic --expand:
-        // 45 of 267 rows now have a parent (0 before). Pin:
-        // graphix-shell/tests/profile_instances.rs (a HOF callback's instance names the
-        // instance of the function whose check built it; fails on the old profile.rs).
         let parent = c.open.last().copied();
         let row = c.instances.entry(id).or_default();
         if row.definition.is_none() {

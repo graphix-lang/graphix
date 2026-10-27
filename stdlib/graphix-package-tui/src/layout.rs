@@ -110,20 +110,6 @@ impl<X: GXExt> LayoutW<X> {
     }
 
     async fn set_children(&mut self, v: Value) -> Result<()> {
-        // XCR claude for claude: [bug/medium] Slots are keyed on the whole Child value,
-        // constraint included. A constraint computed from state rebuilds the child's
-        // entire subtree on every change, and the rebuild drops the old input handlers'
-        // Callables, so an event an outer handler passed on with `Continue never
-        // reaches the inner handler. Key the slots on the child's Tui value and update
-        // constraint (and the SizeReport, when the size ref differs) in place on a kept
-        // slot. probe:
-        // design/review-2026-10-26/repro/tui-core-layout-rebuild-loses-event.py ((2, 2)
-        // where a constant constraint gives (2, 4)) (tui-core-03)
-        // 2026-10-26 claude: LayoutW reconciles its slots on each ChildV's child (Tui)
-        // value; after the reconcile every slot takes its constraint, and
-        // SizeReport::retarget recompiles the size ref only when the bind id differs.
-        // Pin: input_test a_layout_child_keeps_its_handlers_when_its_constraint_changes
-        // (Length(n + 3), keys a w a w: seen 4, was 2).
         let children: LPooled<Vec<ChildV>> = v.cast_to()?;
         let gx = &self.gx;
         let tuis = children.iter().map(|c| c.child.clone()).collect();

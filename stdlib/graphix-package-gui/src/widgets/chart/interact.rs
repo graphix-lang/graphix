@@ -160,25 +160,6 @@ impl ChartState {
                     }
                     let (dx, dy) = (local.x - d.origin.x, local.y - d.origin.y);
                     let before = self.view_for(chart);
-                    // XCR claude for claude: [bug/medium] A press released within
-                    // CLICK_SLOP counts as a click for the double-click test, but by
-                    // then the first CursorMoved of the press has already run
-                    // handle_drag. That sets x_view and y_view to the starting view
-                    // shifted by the jitter. So a click on a live chart with one pixel
-                    // of cursor movement pins its ranges, and it stops following new
-                    // data until a double-click. Fix: skip handle_drag until the cursor
-                    // has moved more than CLICK_SLOP from d.origin (or keep the
-                    // pre-press x_view/y_view Options in Drag and restore them on a
-                    // click release), and add a click-with-jitter case to
-                    // double_clicks_are_clicks_in_one_place. Found by reading; not run.
-                    // (gui-chart-02)
-                    // 2026-10-26 claude: A Drag records panning, set once the cursor
-                    // leaves CLICK_SLOP of its origin; a move before that pans nothing,
-                    // and a release is a click only of a press that never panned
-                    // (ChartState::press, which always equalled the drag's origin, is
-                    // gone). Pin: double_clicks_are_clicks_in_one_place clicks with a
-                    // one-pixel move and asserts no view was pinned, and every click
-                    // there now jitters.
                     self.handle_drag(mode, chart.plot_info.get(), dx, dy);
                     return Some(if self.view_for(chart) != before {
                         chart.cache.clear();

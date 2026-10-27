@@ -544,25 +544,6 @@ impl Callback {
         let (Self { scope, id, typ, top_id, share, arg: _ }, fty) =
             (self, Type::Fn(self.typ.clone()));
         let call = match kind {
-            // XCR claude for claude: [risk/medium] The prototype call's synthetic spec
-            // gets a fresh ExprId at every build, so its definition's DefTable has no
-            // row for it. Every instance of a collection intrinsic therefore checks
-            // this call in full (CallSite::typecheck0_instance's fallback) instead of
-            // substituting, and GRAPHIX_ELAB_AUDIT prints a fallback line for
-            // `array::map([1, 2], |x| x + 1)`, so the audit can never be clean. Share
-            // one spec across compiles of the intrinsic body (BodyShared::specs, as
-            // CompileCtx::shared_spec does for source nodes) so the check records the
-            // row. probe:
-            // design/review-2026-10-26/repro/c-lambda-collection-prototype-no-row.gx
-            // (c-lambda-05)
-            // 2026-10-26 claude: Every compile of a collection intrinsic gives its
-            // prototype call one expression id, minted once in the definition's
-            // BodyShared (prototype, imaged with it; REGISTRATION_FORMAT 89) and
-            // passed through CollectionIntrinsic::build to genn::apply_prototype, so
-            // the check's table has the call's row and an instance substitutes.
-            // GRAPHIX_ELAB_AUDIT is silent on the probe cold and warm. Pin:
-            // graphix-shell/tests/elab_audit.rs collection_instances_substitute
-            // (fails with the fix undone: three fallback lines, map, fold, list map).
             CallKind::Prototype(spec_id) => {
                 let function = genn::reference(ctx, *id, fty, *top_id);
                 genn::apply_prototype(
@@ -1093,29 +1074,6 @@ fn woken_slots<R: Rt, E: UserEvent, T>(
     let Some(mut missed) = paused else {
         return update(ctx, SlotViews { old_len, standing: View::Cycle });
     };
-    // XCR claude for claude: [bug/medium] The resume of paused slots delivers the
-    // tracked bits but opens no node::wake::CatchUp scope. A callee a woken slot binds
-    // fresh, because the function value changed while the source was bottom, is never
-    // owed the fires its body's inputs had meanwhile. The slot's `a ~ x` stays silent,
-    // where the same code in a select arm catches up. Wrap the update in
-    // `missed.open(ctx, 0)` / `missed.ran(..)`. callsite::Absent::wake has the same gap
-    // with `captured`. probe:
-    // design/review-2026-10-26/repro/x-refs-catchup-paused-body-no-catchup.gx
-    // (x-refs-catchup-05)
-    // 2026-10-26 claude: woken_slots opens the paused slots' catch-up scope
-    // (TrackedFires::open under the wake view, closed by ran) around the update, and
-    // callsite::Absent::wake opens its captured tracker's scope the same way, so a
-    // callee bound fresh at the resume is owed its inputs' fires by write stamp. The
-    // probe and its Absent variant print (7, [1]) and (8, [1]) in both engines. Pins:
-    // lang::collection::bottom_source_fresh_callee_catches_up and
-    // lang::dense_deltas::callee_back_fresh_inner_callee (all four modes; both fail
-    // with the fix undone). The scope's since is the tracker's build cycle, the cycle
-    // the source went bottom, so a write stamped in that very cycle is still not owed
-    // to such a callee (the build-cycle question of tests-select-03).
-    // 2026-10-27 claude: The build-cycle case is closed by tests-select-03: a never-run
-    // ArmClock now owes writes from the tracker's build cycle on (CatchUp::unseen,
-    // stamp >= unseen), so a write stamped in the cycle the source went bottom is owed
-    // to a callee bound fresh at the resume.
     let caught_up = missed.deliver(ctx, 0);
     // every slot runs under an init view: a standing one's wake, a fresh one's birth
     let scope = ctx.under(View::Wake, |ctx| missed.open(ctx, 0));
@@ -1336,21 +1294,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 return self.resident.set(TagValue::tagged(v, tag));
             }
         }
-        // XCR claude for claude: [risk/low] This is read before woken_slots runs the
-        // paused slots' catch-up. A callback that fired while the source was bottom
-        // reaches the slots only through that missed.deliver, so they rebind to the new
-        // callee with rebound false. site.redecide() is skipped, and SlotSite keeps,
-        // permanently (Siblings is a OnceLock), the fork verdict decided for the old
-        // callee. That breaks update_slots' rule that slots run in order the cycle
-        // their callback changes and are decided again once bound. Decide rebound after
-        // the catch-up, for example have woken_slots report whether it re-raised
-        // callback.id. Found by reading; a probe that rebinds the callback during a
-        // pause under GRAPHIX_PAR=force showed no wrong value. (c-collection-03)
-        // 2026-10-26 claude: rebound is read inside woken_slots' update closure, after
-        // the paused slots' catch-up has delivered a callback that changed meanwhile,
-        // so update_slots runs the slots in order and redecides the site. No pin: as
-        // the CR says, a probe under GRAPHIX_PAR=force shows no wrong value, and
-        // nothing a program sees tells the verdict apart.
         let callback = self.callback.id;
         let slots = woken_slots(ctx, old_len, paused, |ctx, views| {
             // after the paused slots' catch-up, which delivers a callback
@@ -1704,25 +1647,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
         let init = self.base.init.update(ctx).clone();
-        // XCR claude for claude: [bug/medium] An init fire that lands while the source
-        // is bottom is lost. This path returns without passing the init to slot 0's
-        // acc, so the paused slots' TrackedFires never sees it. At the return, `anew`
-        // re-passes the init stale, so `array::fold(xs, i, |acc, x| acc ~ (acc + x))`
-        // stays 1 after i moved to 100 during the pause. The same fold over a source
-        // that never went bottom gives 101, and a map whose slots capture i is caught
-        // up. The JIT agrees on 1, so fix both engines. Record that the init triggered
-        // while paused and pass slot 0 a fired acc at the return, or keep slot 0's acc
-        // current while paused so the tracker observes it. Add a pin beside
-        // bottom_source_slots_wake_caught_up. probe:
-        // design/review-2026-10-26/repro/c-collection-fold-init-paused.gx
-        // (c-collection-02)
-        // 2026-10-26 claude: While the source is bottom and the slots paused, a
-        // triggering init is delivered to slot 0's acc and the paused tracker observes
-        // it, so at the return the acc's fire is caught up (the return's stale re-pass
-        // of the init is then injected fired). Both engines print 101 from n=4 on the
-        // probe (the fold node-walks in the JIT too: its callback samples). Pin:
-        // lang::collection::bottom_source_fold_init_caught_up (all four modes; fails
-        // with the fix undone, last value 1).
         if source.is_none() {
             // slot 0 reads the init as its acc: a fire of it the paused
             // slots miss is theirs to catch up

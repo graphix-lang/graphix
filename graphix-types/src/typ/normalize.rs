@@ -74,23 +74,6 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         Type::Set(a) | Type::Tuple(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Struct(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Fn(a) => Some((d, &**a as *const _ as usize, 0)),
-        // XCR claude for claude: [risk/low] The key drops a reference's mutability: `&X`
-        // and `&mut X` over one inner Arc get one key. contains' probe and commit memos
-        // (via probe_key), normalize's memo and resolve_tvars' memo all key on it, and
-        // `&T ⊇ &mut T` holds while the reverse does not, so a cached verdict or
-        // rebuilt node would be wrong for the other mutability. No constructor shares
-        // the inner Arc today, so this is latent. Fix: key ByRef with the mutability in
-        // the third component, and treat node_addr's ByRef arm the same way. Found by
-        // reading; not run. (t-contains-07)
-        // 2026-10-27 claude: norm_key keys a ByRef by its mutability in the third
-        // component (so probe_key too), and node_addr tags its address's low bits (Type
-        // is 8-aligned, asserted) by kind: a set, tuple, variant or abstract over one
-        // slice, and an array, list, error, &T or &mut T over one inner Type, are
-        // distinct shared nodes, so union_identical's shared-node short cut no longer
-        // calls &T and &mut T over one Arc identical (it did). Pin: graphix-types
-        // typ::contains::tests::reference_mutability_is_part_of_a_shared_node.
-        // Remaining: two variants of different tags over one payload slice still share
-        // a node_addr.
         Type::Array(a) | Type::List(a) | Type::Error(a) => {
             Some((d, &**a as *const Type as usize, 0))
         }
@@ -132,26 +115,6 @@ enum MergeKey {
 }
 
 impl MergeKey {
-    // XCR claude for claude: [perf/medium] [perf/medium] Only variants and structs get a
-    // key here. A Type::Ref (every named typedef) and a Type::Abstract are unkeyed, so
-    // Kept::merge_with tries each incoming one against every kept member: a union of N
-    // named or abstract members normalizes in O(N^2). Constructs that normalize once
-    // per arm or per element then cost O(N^3). A select with N type-test arms over N
-    // abstract types checks in 0.07 / 0.22 / 1.26 / 9.1 s at N = 200 / 400 / 800 / 1600
-    // (structs: 0.04 / 0.07 / 0.14 / 0.45 s). An array literal of N abstract values
-    // takes 1.1 s at 800. merge_inner merges a Ref only with an identical Ref and an
-    // Abstract only with an identical Abstract, so key Ref by its name and parameter
-    // count and Abstract by its id. probe:
-    // design/review-2026-10-26/repro/x-perf-compile-abstract-union-cubic.sh
-    // (x-perf-compile-02)
-    // 2026-10-27 claude: MergeKey keys a Ref by its definition (def_key), or its
-    // written scope and name while its cell is open (same_definition's two cases), and
-    // an Abstract by its id, each with its arity, so Kept::merge_with tries such a
-    // member only against those it could merge with. Debug --check: select over N
-    // abstract types 2.2 / 10.0 s at N = 800 / 1600 before, 1.2 / 1.5 s after; array
-    // literal 1.9 / 9.3 s before, 1.0 / 1.1 s after (about 0.8 s of each is startup).
-    // Pin: graphix-types typ::normalize::tests::named_and_abstract_members_are_keyed
-    // (deterministic; a timing pin would be flaky).
     fn of(t: &Type) -> Option<Self> {
         match t {
             Type::Variant(tag, args, _) => Some(Self::Variant(tag.clone(), args.len())),

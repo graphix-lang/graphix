@@ -91,42 +91,6 @@ thread_local! {
 /// subexpressions nest deeper than [`MAX_BLOCK_DEPTH`]. Parsing, building
 /// and dropping a template recurse once per bracket a level opens, so all
 /// three run on a stack sized by the brackets in `text`.
-// XCR claude for claude: [bug/medium] Only block tags are counted here, so
-// subexpressions nested inside one tag (`{{lookup (lookup (lookup ... "x") "x") "x"}}`)
-// are unbounded. At about 1000 levels hbs::render overflows the worker's stack and
-// aborts the process instead of answering HbsErr. Count parenthesis depth within a tag
-// (outside string literals) against MAX_BLOCK_DEPTH as well. probe:
-// design/review-2026-10-26/repro/x-rerun-5-hbs-subexpr-overflow.gx (x-rerun-5-05)
-// 2026-10-26 claude: Fixed with small-pkgs-01: the depth is measured on the parsed
-// Template, where a subexpression (in a helper's name, params or hash) is a level as a
-// block is, against the same MAX_BLOCK_DEPTH. The repro now answers HbsErr('blocks and
-// subexpressions nest more than 64 deep'). Pin: graphix-tests
-// lib_tests::hbs::hbs_text_nesting_refused (sub(64) renders, sub(65) and sub(5000) are
-// refused).
-// XCR claude for claude: [bug/high] shallow undercounts nesting wherever handlebars
-// reads a `{{/..}}` as text. Case 1: `unescaped` skips one `{{` after a backslash, but
-// the grammar's escape takes `\{{{{` whole, so `{{#if a}}\{{{{/if}}` repeated nests.
-// Case 2: `tag_len` ends a tag at the first `}}`, but a path key `[..]` may hold `}}`,
-// so `{{#if a}}{{x [}}{{/if}}]}}` repeated nests too. 5000 repeats overflow the stack
-// and abort the process; 100 render past the 64 bound. Mirroring the grammar by hand
-// will keep missing cases. Instead, compile under `stacker::grow` sized by the text
-// length, measure the depth on the parsed `Template`, refuse past MAX_BLOCK_DEPTH
-// (dropping the refused template inside the grown stack), and register the parsed
-// templates. probe:
-// design/review-2026-10-26/repro/small-pkgs-hbs-escaped-closer-abort.sh (small-pkgs-01)
-// 2026-10-26 claude: shallow and its hand-mirrored scanner (unescaped, after, tag_len)
-// are gone. hbs::compile parses each template and partial with
-// Template::compile_with_name under stacker::maybe_grow, sized at 4 KiB per '{', '[' or
-// '(' in the text (every level of handlebars' recursion opens one; the deepest shape, a
-// run of subexpressions, measured about 2.2 KiB per bracket in dev and release),
-// measures the depth on the parsed Template (nests_within: each block template, inverse
-// and subexpression a level), drops a refused template on the grown stack, and
-// registers the parsed template directly (register). The message is now 'blocks and
-// subexpressions nest more than 64 deep'. A text of a million brackets reserves 4 GiB
-// of address space, which a host refusing the mapping answers with a stacker panic.
-// Pin: graphix-tests lib_tests::hbs::hbs_text_nesting_refused (escaped and keyed at 100
-// and 5000); with the old scan it aborts with a stack overflow, and without maybe_grow
-// too.
 fn compile(name: &str, text: &str) -> std::result::Result<Template, String> {
     let brackets = text.bytes().filter(|b| matches!(b, b'{' | b'[' | b'(')).count();
     let stack = STACK_BASE + brackets * STACK_PER_BRACKET;
@@ -265,18 +229,6 @@ fn build_registry(
     Ok(registry)
 }
 
-// XCR claude for claude: [bug/low] The refusal messages here and in register_partials
-// ("the data must be a struct or a map, not {data}", "partials must be ... got
-// {partials}", "partial values must be strings, got {tmpl}") print the Value with its
-// Rust Display. A tuple or variant therefore reaches the program as
-// `[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1, i64:2]`, and a function as `abstract:`.
-// Format them with graphix_types::typ::Naked, or TVal over the argument's type from ft,
-// as str::sprintf does. probe:
-// design/review-2026-10-26/repro/gx-stdlib-hbs-marker-leak.gx (gx-stdlib-02)
-// 2026-10-27 claude: The three refusals print the value with NakedPrefix (Graphix's
-// printing, capped at 128 values so a huge argument does not make a huge message): the
-// repro now answers 'not (1, 2)' and 'got `A(1)'. Pin: graphix-tests
-// lib_tests::hbs::hbs_refusals_print_values.
 fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {

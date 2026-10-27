@@ -520,24 +520,6 @@ fn fn_names(body: &[Expr], env: &Env, scope: &ModPath) -> LPooled<AHashSet<ArcSt
             }
         })
     }
-    // XCR claude for claude: [perf/low] [perf/low] `values` is collected over the whole
-    // body, scope-blind, so one unrelated binding of the same name (a callback's `|inc|
-    // inc`) removes a function from the set. Then `array::map([t, 2], inc)` elsewhere
-    // puts `inc` into the issue tuple and calls through `#seqissued.2`, the case
-    // t-seq-05 fixed for the unshadowed name. Fusion goes from 10 regions to 8. Fix:
-    // carry the function names in the rewrite's redirect map (a Redirect variant
-    // mapping a name to itself), so the existing scoping in rewrite_with_inner drops
-    // them where they are rebound, and have issue_call test the map instead of
-    // `issue.fns`. probe:
-    // design/review-2026-10-26/repro/t-seq-fn-name-shadowed-elsewhere.gx (t-seq-06)
-    // 2026-10-26 claude: Redirect::Function names a function an issued call takes bare:
-    // fn_names gives the outer functions and fn-position names the body passes (no
-    // scope-blind values set), desugar_plain seeds them into visible under the
-    // trigger's cells, shadow_step makes a let of one name to a lambda literal one, and
-    // every binding the rewrite already scopes (arm, lambda, try, catch, let) drops it;
-    // issue_call reads the map, and Issue keeps only pc. Pin:
-    // expr::seq::test::a_function_stays_at_the_call_site_past_an_unrelated_binding (0
-    // bare calls on the old lowering).
     args.retain(|n| {
         fn_args.contains(n)
             || env
@@ -578,27 +560,6 @@ fn fn_position_args(
 }
 
 /// Whether a binding is a function: a trait method, or of a function type.
-// XCR claude for claude: [bug/high] [bug/high] Machine::snapshot and desugar_queued's
-// captures decide what to snapshot with is_function, which reads the binding's type
-// before the check. For `let g = id(|x: i64| x + 1)` that type is still open, so a
-// callee `g(..)` in a step is snapshotted (`(pc, g)`, or a `#seqqcap` under seqq). The
-// call then goes through a projection and has no static target, so the step is planned
-// `reads all writes all`. Under seq that costs a cycle and the call node-walks. Under
-// seqq it also turns every capture live: the run reads k as it stands, not as it stood
-// at enqueue. Fix: never snapshot or capture a Ref in an Apply's function position, so
-// a callee stays at the call site where the call resolves it. Keep is_function for
-// value reads. probe: design/review-2026-10-26/repro/t-seq-seqq-callee-captured.gx
-// (t-seq-01)
-// 2026-10-26 claude: A Ref in a call's function position is never snapshotted or
-// captured: seq.rs captured() skips it (Machine::snapshot and desugar_queued's
-// captures both walk through it), and the rewrite sends such a callee only through
-// redirects that are not snapshots (callee_ref), so the call reads the binding and
-// resolves as it would outside the seq. The probe's id(..) form still prints (1, 30):
-// g bound to a call's result has no static target anywhere, and a call with no static
-// target counts as every variable (CLAUDE.md), so its captures stay live; an alias
-// (let g = g0) is what the fix changes, (1, 30) before, (1, 10) (2, 20) (3, 30) now.
-// Pins: lang::seq_snapshot::a_callee_is_never_captured ([200001] without the fix) and
-// expr::seq::test::the_rewrite_respects_scopes's c(c, f(x)) case.
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -1109,25 +1070,6 @@ impl Machine<'_> {
             }
             ExprKind::Connect { name, value, deref, .. } => {
                 let value = decorated(value, &stmt.dec);
-                // XCR claude for claude: [bug/medium] Only the value is snapshotted, so
-                // a statement `*target <- v` resolves `target` when v fires, not at the
-                // step's entry, and the write lands wherever the reference points then.
-                // The same statement in a `{ .. }` block reads the target through the
-                // entry snapshot (lower_block), and seqq writes through the queued
-                // handle, so the three forms disagree: (43, 42) where both writes
-                // belong in a. When `deref` is set, take the snapshot over the whole
-                // statement (`captured` already matches ConnectDeref) so rewrite_target
-                // reads the entry cell, and route the try sink's Write::Connect with
-                // deref through the same snapped map. probe:
-                // design/review-2026-10-26/repro/x-seq-sampling-deref-connect-target-not-snapshotted.gx
-                // (x-seq-sampling-03)
-                // 2026-10-26 claude: Machine::snapshot takes the step's sink and reads every reference
-                // a Write::Connect with deref writes through at the step's entry; a connect statement
-                // is snapshotted whole (its own deref target included), writes() takes the snapped map,
-                // and a try's join step snapshots its sink too. So the statement, the try's direct
-                // write and the block form all write where the reference pointed at entry. Pin:
-                // lang::seq_snapshot::a_write_through_a_reference_reads_it_at_entry (statement and try
-                // forms; 4243 with the sink part undone).
                 let snap = self.snapshot(stmt, sink, visible);
                 let value = self.stmt_value(&value, &snap.map)?;
                 let target = rewrite_target(name, *deref, &snap.map);
@@ -1179,25 +1121,6 @@ impl Machine<'_> {
         self.decls.push(let_bind(pos, &e_cell, None, never(pos)));
         // a try whose value only writes variables has each body write them,
         // typed as they are
-        // XCR claude for claude: [bug/medium] [bug/medium] The direct sink puts `x <- v`
-        // into each body's last step, where the name resolves in that body's scope. A
-        // `let x` in the try body takes the write, so `x <- try { let x = 1; x + 4 }
-        // with(e) { 0 }` never writes the outer x. In the with body the bind name maps
-        // to the error cell, so `e <- try { .. } with(e) { 7 }` writes `#seqe` and is
-        // refused with a type error. `*r <- try { let r = ..; .. }` has the same
-        // problem. Fix: take the direct path only when no target's root name is bound
-        // by either body (nested try bodies included) or is the with bind. Otherwise
-        // use the join cell, whose write is emitted in the try statement's scope.
-        // probe: design/review-2026-10-26/repro/t-seq-try-direct-write-shadowed.gx
-        // (t-seq-02)
-        // 2026-10-26 claude: lower_try takes the direct path only when no target's
-        // simple name is bound where the bodies' last statements see it (try_binds: the
-        // with bind, a let of either body or of a nested try's bodies); otherwise the
-        // join cell, written in the try statement's scope. Remaining limit: the join
-        // cell's type is its first writer's, so a shadowed target whose two bodies
-        // write different members of its union is refused (i64 does not contain string)
-        // where the unshadowed direct path accepts it. Pin:
-        // lang::seq_try::connected_try_writes_past_a_shadowing_name.
         let direct = !sink.is_empty()
             && sink.iter().all(|w| {
                 matches!(w, Write::Connect { name, .. }
@@ -1683,25 +1606,6 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             let snapshot =
                 ExprKind::TupleRef { source: Arc::new(r#ref(pos, &input)), field }
                     .to_expr(pos);
-            // XCR claude for claude: [bug/medium] [bug/medium] A step reads a `#seqqcap`
-            // cell directly: Machine::snapshot snapshots only names it finds in env,
-            // and the capture lets are not there yet. When the analysis turns a
-            // SeqCapture live (the body writes the variable through a callee), the step
-            // follows the variable after its entry. The same write spelled `x <- 1`
-            // keeps x un-captured, so x gets the entry snapshot and the step sees the
-            // world as it stood (§5). So `put(1); select x > 2 { true => x, false =>
-            // never() }` completes with 10 when x moves, while `x <- 1; ..` stalls.
-            // Fix: have Machine::snapshot snapshot the capture cells like outer
-            // variables. A non-live capture fires only at dequeue, so its snapshot is
-            // the same value. probe:
-            // design/review-2026-10-26/repro/t-seq-seqq-callee-capture-live.gx
-            // (t-seq-04)
-            // 2026-10-26 claude: Queue carries its capture cells, Machine::captures
-            // holds them, and Machine::snapshot reads a capture cell like an outer
-            // variable, so a step reads a capture a callee's write turned live at its
-            // entry. Pin:
-            // lang::seq_snapshot::a_capture_a_callee_writes_is_read_at_entry (put(1)
-            // and x <- 1 both stall).
             ExprKind::SeqCapture(Arc::new(SeqCaptureExpr {
                 machine: seq.spec.id,
                 snapshot: Arc::new(snapshot),
@@ -1876,24 +1780,6 @@ fn rewrite(e: &Expr, map: &Names) -> Expr {
 }
 
 /// A copy of `names` for a scope to shadow in.
-// XCR claude for claude: [perf/low] [perf/low] rewrite_with_inner calls this at every
-// select arm, lambda, catch, try and nested seq whether or not it shadows anything, and
-// the map holds one Local per let the seq has bound. Machine::snapshot also rewrites
-// each step twice (once only to learn the used cells). Lowering is therefore O(steps x
-// arms x lets): 4000 steps of 10-arm selects check in 1.3 s, or 7.9 s when each step is
-// bound to its own name. Fix: copy only when the construct's pattern, parameters or
-// bind name a key in the map (`with_names` + `contains_key`), else reuse `map`; and
-// take the used cells from the rewrite that becomes the step's value. probe:
-// design/review-2026-10-26/repro/t-seq-rewrite-scope-copies.sh (t-seq-07)
-// 2026-10-26 claude: rewrite_with_inner copies the map only where a construct binds a
-// key in it (unbound: arms, lambda params, catch, try's with bind, a nested seq's
-// trigger) or a filter drops an entry (only: live, &, nested seq); Machine::snapshot no
-// longer rewrites the step to learn its cells: Machine::enter folds the built step's
-// items; and lower_stmts inserts a Local only for a name with an outer binding to hide,
-// so the map no longer holds one entry per let. The probe (debug, heavily loaded host):
-// N=8000 unbound 4.95 s, bound 5.06 s, where the bound form was 6x the unbound at
-// N=4000. No pin (timing only); the seq fixtures (691) and expr::seq unit tests cover
-// the rewrite's output.
 fn scope(names: &Names) -> LPooled<Names> {
     let mut inner: LPooled<Names> = LPooled::take();
     inner.extend(names.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -1980,35 +1866,6 @@ pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
             ExprKind::Until(c) => {
                 let mut moves = false;
                 c.fold((), &mut |(), x| {
-                    // XCR claude for claude: [bug/low] A dereference reads its referent
-                    // live in a step (the snapshot holds the reference, not the
-                    // target), so `until *r > 5` gets this warning that it cannot
-                    // change and then completes when the referent changes. Count
-                    // ExprKind::Deref as moving here too, and add "or a read through a
-                    // reference" to CLAUDE.md's "live(e) ... the only way a step waits
-                    // for the world to change". probe:
-                    // design/review-2026-10-26/repro/x-seq-sampling-until-deref-false-warning.gx
-                    // (x-seq-sampling-06)
-                    // 2026-10-26 claude: fixed_untils counts ExprKind::Deref as moving, and
-                    // CLAUDE.md says a read through a reference reads its target live. Pins: lsp
-                    // a_fixed_until_warns_once (no warning at until *r > 3) and graphix-tests
-                    // seq_snapshot::a_fixed_until_warns (compiles it under WarningsAreErrors).
-                    // XCR claude for claude: [bug/low] A dereference reads its referent
-                    // live, not from the step snapshot. So `until *r > 3` gets the
-                    // "cannot change after the step is entered" warning and then passes
-                    // when k reaches 4. Count ExprKind::Deref as moving here. The
-                    // warning is also printed twice for `seqq let c = t { .. }`: its
-                    // desugar wraps an inner seqq, and the ExprKind::Seq arm in
-                    // node/compiler.rs runs fixed_untils on both. Skip a Seq whose
-                    // trigger is a lowered (`#seqbind`) name. probe:
-                    // design/review-2026-10-26/repro/x-engine-seq-errors-until-deref-warning.gx
-                    // (x-engine-seq-errors-03)
-                    // 2026-10-26 claude: fixed_untils counts ExprKind::Deref as moving, and
-                    // returns nothing for a seqq let, whose lowered seqq over the same body
-                    // warns instead (chosen by shape, Queued with a Bind trigger, over the
-                    // #seqbind name). Pins: graphix-types
-                    // seq::test::a_seqq_let_names_a_fixed_until_once (2 without the skip), lsp
-                    // a_fixed_until_warns_once, seq_snapshot::a_fixed_until_warns.
                     moves |= matches!(
                         x.kind,
                         ExprKind::Live(_) | ExprKind::Apply(_) | ExprKind::Deref(_)

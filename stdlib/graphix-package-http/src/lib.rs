@@ -461,22 +461,6 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
             rep::read_tuple(h).map(rep::Parts::elems)
             && !k.eq_ignore_ascii_case(hyper::header::CONTENT_LENGTH.as_str())
         {
-            // XCR claude for claude: [bug/medium] A content-length the handler returns
-            // is passed to hyper next to a Full body of another length. hyper checks
-            // that they match only in debug builds, where the connection task panics.
-            // In release it writes the handler's value and then the real body, so the
-            // extra bytes are read as the next response on a keep-alive connection
-            // (response splitting). A handler that forwards an upstream response's
-            // headers hits this whenever lossy UTF-8 decoding changes the body's
-            // length. Fix: drop content-length here (hyper sets it from the body), or
-            // answer 500 on a mismatch. probe:
-            // design/review-2026-10-26/repro/x-security-http-content-length.sh
-            // (x-security-04)
-            // 2026-10-26 claude: build_hyper_response drops a content-length the
-            // handler gives (any case), so hyper writes the body's own;
-            // http/mod.gxi's Reply says so. Pin:
-            // lib_tests::http::http_handler_content_length_is_the_bodys (debug hyper
-            // panics the connection with the header kept).
             response = response.header(&**k, &**v);
         }
     }
@@ -1015,25 +999,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
         self.stop();
-        // XCR claude for claude: [bug/medium] mod.gxi promises that a request the server
-        // drops because it sleeps or is deleted is answered 500. But abort_all here,
-        // and in Listening::drop on delete, kills each connection task before its
-        // handle_http_request sees the dropped reply sender, so the client gets a
-        // closed connection with no status line. Drop the reply senders first, then ask
-        // each connection to close gracefully (a per-Listening shutdown signal that
-        // serve_connection selects on to call hyper's graceful_shutdown, awaited with a
-        // short bound), and keep abort_all only as the fallback. Otherwise change the
-        // gxi to say what happens. probe:
-        // design/review-2026-10-26/repro/http-sqlite-db1-serve-sleep-no-500.sh
-        // (http-sqlite-db1-02)
-        // 2026-10-26 claude: Inbox::close drops queued requests and refuses later posts
-        // (each dropped reply sender answers 500); sleep and delete close the inbox and
-        // drop the handler's requests, then Conns::close signals the connection
-        // generation (a watch flag serve_connection selects on to call hyper's
-        // graceful_shutdown) and aborts what is still open after CLOSE_GRACE (5 s) in a
-        // task; a restart on another address closes the old connections the same way.
-        // Pin: lib_tests::http::http_request_held_at_the_sleep_is_500 (gets a closed
-        // connection with the abort_all restored).
         self.inbox.close();
         self.inbox = Arc::default();
         self.handler.sleep(ctx);

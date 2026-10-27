@@ -1149,21 +1149,6 @@ pub(crate) type QopCoverage = SmallVec<[u64; 4]>;
 /// cache key, because a kernel bakes those resolutions as CLIF calls.
 pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 
-// XCR claude for claude: [bug/critical] The coverage half of the kernel cache key walks
-// only this body's own emitted nodes (for_each_emitted_node), not the callees it
-// reaches. A `?` in a callee raises to the handler of whichever call chain reached it.
-// Two instances of this lambda under different catches therefore get the same key. The
-// second region then reuses the first's kernel and body, whose callee kernel was built
-// against the first handler, so the second call's error goes to the first catch.
-// Collect the Qop handlers with fusion::for_each_reachable_node, as share::RegionPrint
-// does, and add a run! fixture for this shape. probe:
-// design/review-2026-10-26/repro/f-mod-lowering-callee-raise-wrong-handler.gx
-// (graphix-fuzz check: DIVERGENCE, (1, 2) vs (1, 0)). (f-mod-lowering-01)
-// 2026-10-26 claude: body_fingerprint now walks fusion::for_each_reachable_node, so
-// both the coverage and the resolution halves of the kernel key cover every callee
-// body the kernel runs and links. Pin: graphix-tests
-// fusion_review::callee_raise_reaches_its_own_chains_handler (jit and jit_par fail
-// with the emitted-only walk).
 fn body_fingerprint<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ec: &CompileCtx<R, E>,
@@ -1607,20 +1592,6 @@ fn capture_slots<R: Rt, E: UserEvent>(
     external.sort_by_key(|id| id.inner());
     let mut out: LPooled<Vec<(CaptureSlot, ParamKind)>> = LPooled::take();
     for bind_id in external.drain(..) {
-        // XCR claude for claude: [bug/medium] A banked `~` reports its debt BindId in
-        // refs. That is a runtime variable with no env binding, so external_reads keeps
-        // it and this line refuses the kernel with 'a capture has no binding'. The same
-        // body fuses as a region: collect_region_inputs skips the id and block emission
-        // drops an unused `let z = t ~ a`. As a callee it is refused, and #[native]
-        // names a capture the program does not have. Drop ids with no binding in
-        // ReadsMemo::captured so emission names the real blocker or fuses. probe:
-        // design/review-2026-10-26/repro/f-mod-lowering-sample-debt-capture.gx
-        // (f-mod-lowering-03)
-        // 2026-10-26 claude: ReadsMemo::captured now holds a binding captured only when
-        // the env has it and it is not fn-shaped, so a banked sample's debt id never
-        // becomes a capture slot (the callee fuses, as the region does). Pin:
-        // graphix-tests fusion_review::callee_banked_sample_is_no_capture (jit and
-        // jit_par refuse with 'a capture has no binding' without the fix).
         let b = ec.env.by_id.get(&bind_id).ok_or("a capture has no binding")?;
         let no_slot = || format_compact!("capture `{}` has no kernel encoding", b.name);
         let kt = freeze_in_env(&b.typ, &ec.env).ok_or_else(no_slot)?;
@@ -1659,24 +1630,6 @@ pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
     }
     let inv = invariant_formals(g, Some(self_bind));
     for (i, fa) in g.typ().args.iter().enumerate() {
-        // XCR claude for claude: [perf/medium] A labeled formal refuses the loop, so the
-        // accumulator idiom `|#acc: i64 = 0, n: i64| ... f(#acc: acc + 1, n - 1)` keeps
-        // one live activation per depth. At depth 200000 it trips a 100000 activation
-        // budget, while the positional twin runs in constant space. attributes.rs
-        // tail_recursive_labeled pins this gap as accepted. The rebind can take a
-        // labeled argument by name (`cs.arg_named`, as `kernel_sig` already does), with
-        // an omitted label taking its default. Accept labeled formals here, and turn
-        // tail_recursive_labeled into a passing #[tail_recursive] pin. probe:
-        // design/review-2026-10-26/repro/tests-lang-rest-a-labeled-accumulator-no-tail-loop.sh
-        // (tests-lang-rest-a-03)
-        // 2026-10-26 claude: tail_loop_blocker no longer refuses a labeled formal;
-        // emit_self_tail_call takes each rebound formal's argument through
-        // lowering::formal_arg (an omitted label is the default the bind added) and emits them
-        // in CallSite::update_order. The repro prints 200000 for both forms under a 100000
-        // budget; graphix-fuzz check agrees on a reactive probe with reordered and omitted
-        // labels. Pin: attributes.rs tail_recursive_labeled is now a passing #[tail_recursive]
-        // fixture (an omitted label, a reordered call, a string formal); it fails with labeled
-        // formals refused. Book recursion.md and the NoLoop::Formals text updated.
         if inv[i] {
             continue;
         }

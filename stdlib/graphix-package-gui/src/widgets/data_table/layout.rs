@@ -305,17 +305,6 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         for (name, w) in fits.drain(..) {
-            // XCR claude for claude: [bug/low] Auto-fit calls on_resize only for a
-            // column with a width value; a column with an on_resize but a null width
-            // just gets user_widths. A drag calls on_resize for any column that has one
-            // (handle_mouse_move_resize), so a program persisting widths through
-            // on_resize sees drags but never an auto-fit. Call on_resize here for every
-            // column that has one, and also record user_widths when ref_width is None.
-            // Found by reading; not run. (gui-datatable-04)
-            // 2026-10-26 claude: Auto-fit and a drag resize through one
-            // DataTableW::user_resize (events.rs): a column without a width ref takes
-            // the width in user_widths, and every column with an on_resize is asked.
-            // Pin: test::data_table_test::auto_fit_asks_on_resize_without_a_width_ref.
             if let Some((f, w)) = self.user_resize(name, w) {
                 let _ = self.gx.call(f, ValArray::from_iter([Value::F64(w)]));
             }

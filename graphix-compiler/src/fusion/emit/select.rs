@@ -377,25 +377,6 @@ pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
     let (scrut, scrut_typ, _kept) = classify_scrutinee(cx, value, typ, id)?;
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
     emit_structure_cond(cx, pattern, &scrut_typ, false, scrut, &scrut_typ, &mut binds)?;
-    // XCR claude for claude: [bug/high] A let pattern is irrefutable, so `cond` is false
-    // only for a bottom placeholder (the empty array, a NULL|TAINT Value).
-    // mask_unmatched then ORs STALE into every bind and turns a fired bottom into a
-    // standing one, where the node-walk delivers it fresh. `count` over `let (a, b) =
-    // select n { k if (10 / d) > 0 => (k, k), k => (k, 0) }; a + b` counts at steps
-    // where the node-walk bottoms. The binds already carry the value's flags through
-    // propagate_flags, and the reads are total. Pass mask None here and in
-    // emit_composite_binds, and pin the repro. probe:
-    // design/review-2026-10-26/repro/f-select-let-destructure-stale.gx (f-select-01)
-    // 2026-10-26 claude: emit_let_binds and emit_composite_binds install their binds
-    // unmasked (the binds carry the value's own flags), so a let over a fresh bottom
-    // binds fresh bottoms. Also fixed: classify_scrutinee read a composite scrutinee
-    // with node.emit_clif, so a let whose value's own type is a union of composites (an
-    // annotated tuple let over a select, or an or-pattern let) handed the null Value
-    // placeholder to graphix_valarray_len and aborted; it now reads through
-    // emit_into_slot, which narrows a value-shaped production. Pins:
-    // fusion_review::let_destructure_over_fresh_bottom (jit fails with the mask
-    // restored) and let_destructure_over_a_union_of_composites (jit aborts without
-    // emit_into_slot).
     install_arm_binds(cx, &binds, scrut, None)
 }
 
@@ -808,26 +789,6 @@ fn emit_leaf_cond_inner(
             let words = at.words(cx)?;
             Some(emit_value_leaf_cond(cx, sub, typ, words)?)
         }
-        // XCR claude for claude: [perf/medium] A binding or-pattern at an element
-        // position always de-fuses here, even when its alternatives bind the same
-        // kind. So `select v { (`A(x) | `B(x), n) => x + n }` node-walks and
-        // `#[native]` on it is refused, while the same or-pattern as a whole arm
-        // fuses through emit_or_chain. CLAUDE.md promises or-patterns at bracketed
-        // element positions fuse natively. Lower this leaf as emit_or_chain does:
-        // try each alternative on the element, install the first match's binds and
-        // forward them to one join block under the shared BindIds. probe:
-        // design/review-2026-10-26/repro/x-rerun-4-or-elem-bind-defuse.gx
-        // (x-rerun-4-04)
-        // 2026-10-26 claude: emit_leaf_cond lowers a binding or-leaf at an
-        // element, payload or list head: each alternative is a leaf at the same
-        // place, the leaf's test is their OR, and SelectArmBind::Or installs
-        // through emit_or_chain (alternatives handed over, a miss binding
-        // placeholders as stale as the scrutinee, so a let over a fresh bottom
-        // stays fresh). Pins: fusion_review::select_nested_leaves_fuse o0-o6
-        // (#[native], fails with the leaf refused) and
-        // let_destructure_over_fresh_bottom's g; leak witness select-leaf-binds
-        // (graphix-fuzz leakcheck; a 60 s manual run showed interp 15 kB/s, jit 6
-        // kB/s).
         StructPatternNode::Or { alts } => {
             let alts = alts
                 .iter()
@@ -1101,21 +1062,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             Some(c) => cx.b.ins().band(c, reached),
             None => reached,
         };
-        // XCR claude for claude: [perf/low] Every bind of a guarded arm is cloned here
-        // on every invocation, including those neither the guard nor the body reads.
-        // The chain retains only read binds; do the same here (body refs plus guard
-        // refs). A guarded or-arm is also left out of Tested::Guarded below, so the
-        // chain emits its alternative chain and owned clones a second time. Its
-        // prologue binds are already clean wherever the chain takes the arm, so record
-        // Tested::Guarded(pcond) for it too. Found by reading; not run. (f-select-04)
-        // 2026-10-26 claude: The prologue keeps only the binds the guard or the body
-        // reads (retain_read, shared with the chain), and a guarded or-arm records
-        // Tested::Guarded, so the chain branches on the prologue's test and reuses its
-        // binds instead of emitting the alternatives and their clones again. No pin
-        // can see the clones; behaviour is pinned by
-        // fusion_review::select_nested_leaves_fuse g0/g1 and
-        // prologue_unguarded_or_arm_reaches_the_chain, and the
-        // select-or-arm-bottom-guard leak witness covers the or-arm's binds.
         let mut reads = Refs::default();
         body.refs(&mut reads);
         g.node.refs(&mut reads);
@@ -1543,20 +1489,6 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
 /// Whether every value of the scrutinee's type passes an arm's written
 /// type test: the test holds the type, which holds no abstract type
 /// (whose test is nominal).
-// XCR claude for claude: [perf/low] A test is trivial here only when the predicate
-// equals the scrutinee's type. A wider predicate that every value passes still de-fuses
-// the select: over an i64 scrutinee, `Number as x` and `[i64, string] as x` are "not
-// lowerable", and `Any as x` fails to freeze before this check runs. Fix: count as
-// trivial a predicate that contains the frozen scrutinee type, checked without binding
-// and before the predicate is frozen, keeping the holds_abstract exclusion. Pin the
-// three forms under #[native]. Variant of tests-select-03. probe:
-// design/review-2026-10-26/repro/x-rerun-2-wider-type-test-defuses.sh (x-rerun-2-04)
-// 2026-10-26 claude: type_test_is_trivial is a containment probe (no binding) of the
-// resolved predicate over the frozen scrutinee type, before any freeze, and the
-// abstract exclusion is the scrutinee type's (a predicate that holds Any no longer
-// counts as abstract). Pin: fusion_review::select_nested_leaves_fuse y0-y3 (Number,
-// Any, [i64, string], a Number bind read in the body), which fails with the equality
-// test restored.
 fn type_test_is_trivial<R: Rt, E: UserEvent>(
     cx: &BodyCx,
     pat: &PatternNode<R, E>,
@@ -1640,19 +1572,6 @@ fn emit_list_pattern_cond(
     let kc = cx.b.ins().iconst(types::I64, k as i64);
     let ex = cx.b.ins().iconst(types::I8, exact as i64);
     let mut cond = cx.call_helper("graphix_list_match", &[list.0, list.1, kc, ex])?[0];
-    // XCR claude for claude: [perf/medium] A literal or or-pattern in a list
-    // element position is refused here, so `#[native] select a { [<"a", ..>] =>
-    // 1, _ => 0 }` over List<string> (or `[<1, ..>]` over List<i64>)
-    // node-walks. The same leaves fuse in tuple, slice and struct element
-    // positions. Read the j-th head as ListHead does and test it with the slice
-    // path's leaf lowering, ANDed into the list-match condition. probe:
-    // design/review-2026-10-26/repro/x-rerun-5-list-literal-leaf-defuses.gx
-    // (x-rerun-5-06)
-    // 2026-10-26 claude: emit_list_pattern_cond tests every head with
-    // emit_leaf_cond at LeafAt::ListHead, read through the new borrowed
-    // graphix_list_head_borrowed helper, so a literal, or-pattern, variant,
-    // tuple or struct head fuses. Pin: fusion_review::select_nested_leaves_fuse
-    // p1-p3i (#[native]), failing with non-bind heads refused.
     for (idx, sub) in elems.iter().enumerate() {
         if let Some(c) =
             emit_leaf_cond(cx, LeafAt::ListHead { list, idx }, sub, &et, binds)?
@@ -2233,28 +2152,6 @@ fn emit_member_cond(
 /// (the scrutinee, or a borrowed leaf or payload): its tag and arity,
 /// then each payload's own pattern against its member of `pred`, the
 /// frozen predicate.
-// XCR claude for claude: [perf/medium] A struct, tuple or slice pattern in a payload (``
-// `Text({ id, .. }) ``, the admin TUI's idiom) refuses below as a 'nested variant
-// payload pattern', and emit_list_pattern_cond refuses every non-bind head (`[<(0, s),
-// t..>]`). So the whole select node-walks, while emit_composite_pattern_cond_inner
-// already handles all these leaf shapes for tuple, array and struct leaves. Factor that
-// leaf classifier out and use it here and for list heads. For a composite payload,
-// select the payload word against graphix_valarray_empty_borrowed on the tag test, as
-// emit_member_cond does. probe:
-// design/review-2026-10-26/repro/f-select-payload-struct-pattern.gx (f-select-03)
-// 2026-10-26 claude: The leaf classifier is emit_leaf_cond over LeafAt (an element, a
-// payload, a list head); emit_variant_cond and emit_list_pattern_cond use it, so a
-// struct, tuple or slice pattern in a payload or at a list head, a variant's all-bind
-// in a payload, and every leaf kind the composite path took fuse. A payload or head
-// read as an array selects the empty array unless its disc is ARRAY. Pin:
-// fusion_review::select_nested_leaves_fuse p0-p2 (#[native]), failing with composite
-// payload patterns refused.
-// 2026-10-26 claude: A composite pattern at a payload also tests the payload against its
-// type (graphix_inferred_type_matches), since a payload's type is the arm predicate's
-// and another case of the same tag and arity may hold another struct
-// (select::partial_struct_completes_against_what_reaches caught it;
-// fusion_review::select_nested_leaves_fuse p4 pins it), and emit_variant_cond refuses a
-// predicate whose cases of one tag and arity disagree on their payloads.
 fn emit_variant_cond(
     cx: &mut BodyCx,
     v: (ClifValue, ClifValue),

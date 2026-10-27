@@ -1117,20 +1117,6 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         feeds.push(feed);
     }
     let Some(last) = feeds.iter().rposition(|f| *f) else { return Ok(None) };
-    // XCR claude for claude: [bug/high] The ordering check counts only handler raises. A
-    // fused argument's Io call is queued and performed after the kernel's run, while a
-    // fed argument's effects happen in its feeder before the kernel. So `f(dbg(a),
-    // dbg(once(b)))` prints b's line before a's under fusion and a's first under
-    // --no-fusion. Treat an earlier fused argument that performs (lowering::performs)
-    // like one that raises, and refuse to feed when a later fed argument performs or
-    // raises. The fuzzer cannot catch this, because its oracle ignores printed output.
-    // probe: design/review-2026-10-26/repro/f-mod-lowering-fed-arg-io-order.gx
-    // (f-mod-lowering-02)
-    // 2026-10-26 claude: try_fuse_feeding_args counts an argument's Io calls
-    // (analysis::region_facts(..).io, which also sees an Io builtin with no IoCall in a
-    // fed argument) beside its handler raises: a fed argument that raises or performs
-    // after a fused one that does refuses the feeding. Pin:
-    // lang::printing::arguments_print_in_written_order (jit fails with the fix undone).
     let mut fused_effect = false;
     for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
         let Some(node) = arg.node.as_ref() else { continue };

@@ -142,24 +142,6 @@ impl<X: GXExt> TuiWidget for CalendarW<X> {
         } else {
             // ratatui draws every week, bounded by the buffer and not the
             // area, so a short one draws into a buffer of its own
-            // XCR claude for claude: [bug/medium] Buffer::merge in ratatui-core indexes
-            // cells with u16 arithmetic, `(y - area.y) * area.width`. On a terminal of
-            // more than 65535 cells, a short calendar panics the display in dev and
-            // soak builds and scrambles frame cells in release. The empty buffer also
-            // replaces the parent's styles in the rect, so a calendar in a block with a
-            // background colour loses the background whenever it is short. Fix: seed
-            // `short` from the frame's cells in `rect`, render into it, and copy its
-            // cells back one by one through `frame.buffer_mut()[(x, y)]` instead of
-            // calling merge. That also stops the per-draw walk of the whole frame.
-            // Record the merge overflow in UPSTREAM.md. probe:
-            // design/review-2026-10-26/repro/tui-widgets-calendar-merge-overflow.sh
-            // (tui-widgets-01)
-            // 2026-10-26 claude: The short path keeps a Buffer in CalendarW, resizes it
-            // to the rect, swaps the frame's cells of the rect in, renders, and swaps
-            // them back: no merge, no u16 indexing, the parent's styles kept, no
-            // whole-frame walk. UPSTREAM.md records the merge overflow. Pins:
-            // widgets_test a_short_calendar_draws_on_a_large_screen (300x300),
-            // a_short_calendar_keeps_its_background.
             let rect = rect.intersection(frame.area());
             let buf = frame.buffer_mut();
             self.short.resize(rect);

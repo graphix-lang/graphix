@@ -635,7 +635,7 @@ impl Type {
     /// Whether the declared bound `self` implies the bound `c`: it is `c`,
     /// or holds it of every type it admits (a predicate only where none of
     /// those has an unknown part), and `Ordered` implies `Discernible`.
-    // XCR claude for claude: [bug/medium] implies leaves the declaring side's own
+    // XCR claude for eric: [bug/medium] implies leaves the declaring side's own
     // variables open. `self == c` uses Type's PartialEq, which treats two unbound cells
     // as equal. The empty-flag probe `c ⊇ self` admits an open cell as anything. So an
     // interface bound `'a: Array<'b>` (the caller picks 'b) implies the
@@ -666,6 +666,11 @@ impl Type {
     // and trait_any_bound_does_not_imply_ordered expects its original refusal again.
     // Whether a written quantified fn type outside a formal is rank-2 is a semantics
     // question for Eric.
+    // 2026-10-27 claude: reviewed: the implies fix holds (strict identity, RigidCheck
+    // probe, pinned by script_interface
+    // bounds_hold_for_every_instance_of_the_signature). Readdressed for the open
+    // question above: is a written quantified fn type outside a formal (a let
+    // annotation, a struct field) rank-2?
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
         if strictly_identical(self, c)
             || matches!((self, c), (Type::Ordered, Type::Discernible))
@@ -967,25 +972,6 @@ impl std::fmt::Display for TypeMismatch {
                     s(passed)
                 )?;
             }
-            // XCR claude for claude: [bug/medium] This renders both types in full. A
-            // type that shares its parts prints 2^depth long, so a 32-line program
-            // (`let x_i = `A(x_{i-1}, x_{i-1})` 30 times, then `let y: i64 = x30`)
-            // makes --check run out of memory past 6 GB. At 28 levels the error is 2.4
-            // GB. Fusion's refusals already cap a type at 512 bytes (fusion::Brief,
-            // x-rerun-2-01). Move that capped writer here and render both sides through
-            // it, comparing the capped texts for the `apart` check. Do the same for the
-            // `val .. is declared .. but implemented ..` messages in node/module.rs.
-            // probe: design/review-2026-10-26/repro/x-rerun-4-dag-type-mismatch-oom.gx
-            // (x-rerun-4-02)
-            // 2026-10-27 claude: typ::Brief (moved from fusion) caps a printed type at
-            // 512 bytes; TypeMismatch renders both sides through it and compares the
-            // capped texts, the module.rs sig-mismatch messages print the
-            // implementation through it, and the walks contains_mismatch runs
-            // (discernible_cell, uncastable_refusal's open-cell search via
-            // find_open_cell, same_name_apart) visit each shared node once. The
-            // 30-level repro checks in under a second. Pins: graphix-types
-            // typ::contains::tests::mismatch_message_is_bounded (a 60-level shared type
-            // each side), brief_is_bounded.
             let (expected, actual) = (
                 format_compact!("{}", Brief(&self.expected)),
                 format_compact!("{}", Brief(&self.actual)),
@@ -1333,56 +1319,6 @@ impl Type {
                  it: implement Cast for it where it is defined"
             ));
         }
-        // XCR claude for claude: [bug/medium] This blames Data whenever either side
-        // holds an unbound Data cell anywhere and either side holds a function or
-        // reference. It never checks that the cell sits where the code is. So a
-        // function refused for its return type is reported as data. `publish(#on_write:
-        // h, ..)` with `h = |v: i64| { x <- v; null }` is refused with "fn(v: i64) ->
-        // null is not data: a writer writes no function and no reference". The Data
-        // cell is the handler's argument, and the real mismatch is `-> _`. Fire this
-        // explanation only where an unbound Data cell on one side meets a function or
-        // reference on the other, walking the two types together as contains does.
-        // Otherwise fall through to the TypeMismatch. probe:
-        // design/review-2026-10-26/repro/tests-lib-b2-not-data-misattributed.gx
-        // (tests-lib-b2-01)
-        // 2026-10-27 claude: uncastable_refusal now walks the two types together
-        // (DataMeet, pairing parts as contains does, a function's own quantifiers
-        // excluded) and blames Data only where an open Data cell meets a function or
-        // reference; else the plain TypeMismatch. Pins:
-        // lang::types::data_argument_cell_does_not_blame_the_handler,
-        // lib_tests::net::net_on_write_handler_result_is_a_mismatch.
-        // XCR claude for claude: [bug/medium] This explains any failed contains as a
-        // Data refusal when a Data cell sits anywhere in either side, including inside
-        // a function's parameter list. So a publish handler `h: fn(v: i64) -> i64`
-        // (wrong return: the formal wants `-> _`) is told 'fn(v: i64) -> i64 is not
-        // data: a writer writes no function and no reference', though nothing writes
-        // it. The literal `|v: i64| 0` gets the true 'type mismatch _ does not contain
-        // i64'. Make `data_cell` stop at a `Type::Fn`'s arguments and return, as it
-        // already does for the function's own quantifiers: a Data cell there judges
-        // what the function is called with, never the function. probe:
-        // design/review-2026-10-26/repro/tests-lang-rest-a-handler-mismatch-says-not-data.gx
-        // (tests-lang-rest-a-04)
-        // 2026-10-27 claude: Fixed with tests-lib-b2-01: a Data cell inside a function's
-        // parameters meets the parameter it is paired with, never the function. Pin:
-        // lib_tests::net::net_on_write_handler_result_is_a_mismatch (publish #on_write h:
-        // fn(v: i64) -> i64 is a type mismatch).
-        // XCR claude for claude: [readability/low] When the refused pair is a whole
-        // function type (an `#on_write` or rpc `#f` handler against `fn(v: 'a) ->
-        // _`), `code(t)` is true of the handler itself, so the message names the
-        // handler: "fn(v: &i64) -> '_7759: unbound is not data: a writer writes no
-        // function and no reference". The user wrote `v: &i64`. The message calls
-        // the callback not data, prints an inference variable, and speaks of a
-        // writer where the value is read. Fix: report the part the Data cell meets
-        // (walk the pair to the cell bounded Data and print what it is matched
-        // with, `&i64`), and word it for both directions. probe:
-        // design/review-2026-10-26/repro/x-rerun-3-not-data-names-handler.gx
-        // (x-rerun-3-08)
-        // 2026-10-27 claude: The refusal names the part the Data cell meets and is
-        // worded for both directions: '&i64 is not data: data holds no function
-        // and no reference'. Pin:
-        // lib_tests::net::net_on_write_reference_argument_named; the wording pins
-        // json writers_refuse_a_typed_reference and cast_trait
-        // write_of_a_function_refused changed with it.
         let part = DataMeet::new(env).walk([self, t])?;
         Some(anyhow::anyhow!(
             "{} is not data: data holds no function and no reference",
@@ -2718,23 +2654,6 @@ impl Type {
             Type::Set(Arc::from_iter(residue.drain(..)))
         };
         let target = target.normalize();
-        // XCR claude for claude: [bug/medium] The residue goes to the first unbound
-        // member, and is_unbound_tvar counts a rigid declared variable as unbound. With
-        // ['r, 'q] ⊇ [i64, Array<string>] inside 'r's definition, the residue goes to
-        // the rigid 'r, the committing walk refuses it, and the containment fails
-        // although 'q could take the residue. Written ['q, 'r], it checks. The
-        // Primitive arm of `Set ⊇ t` picks its bare member the same way
-        // (`s.iter().find(|m| is_unbound_tvar(m))`). Fix both: take the first unbound
-        // member that a guide(flags) probe admits the residue into, and fail only when
-        // none does. probe:
-        // design/review-2026-10-26/repro/t-contains-rigid-bare-member.gx
-        // (t-contains-02)
-        // 2026-10-27 claude: place_members and the Primitive arm of Set ⊇ t both give
-        // the residue to Type::residue_member: the first open member a guide(flags)
-        // probe admits it into (a rigid one admits only itself), else the first as
-        // before. ['r, 'q] now checks as ['q, 'r] does. Pins:
-        // lang::types::union_residue_skips_a_rigid_member (place_members) and
-        // union_residue_skips_a_rigid_member_primitives.
         let free = s0.iter().zip(&free).filter_map(|(m, free)| free.then_some(m));
         match Self::residue_member(free, flags, env, hist, &target)? {
             Some(m) => m.contains_int(flags, env, hist, &target),
@@ -3141,27 +3060,6 @@ pub(super) fn find_impl_with(
     }
     let wanted = t.with_deref(|t| t.and_then(Type::resolved_abstract));
     for im in list.iter().filter(|im| !env.impl_hidden(im)) {
-        // XCR claude for claude: [perf/medium] [perf/medium] This skip never fires. An
-        // impl's target is stored as the typedef reference it was written as (`impl
-        // Show for C` gives a Type::Ref), and an abstract type can only be named that
-        // way. So every lookup contains-checks the query against every impl of the
-        // trait, expanding the head's ref both ways. N abstract types with N impls and
-        // one call each check in 0.42 / 1.27 / 4.41 s at N = 800 / 1600 / 3200, against
-        // 0.24 s for 3200 calls to one impl. lower_trait_union also passes union
-        // members unexpanded, against Env::find_impl's documented precondition. Record
-        // each impl's head abstract id once at register_impl (which already uses
-        // head_abstract for its overlap check) and compare it with head_abstract of the
-        // dereferenced `t` here. probe:
-        // design/review-2026-10-26/repro/x-perf-compile-find-impl-scan.sh
-        // (x-perf-compile-03)
-        // 2026-10-27 claude: find_impl_with skips an impl whose head names another
-        // abstract type, both read without a lookup by Type::resolved_abstract (an
-        // Abstract, or a Ref whose filled resolution cell holds an Abstract body;
-        // register_impl fills the impl's), so a Ref query from lower_trait_union is
-        // skipped the same way; Env::head_abstract takes the same fast path. The repro
-        // measures 1.20 / 1.26 / 1.67 s at N = 800 / 1600 / 3200 (debug), against 1.70
-        // / 2.97 / 7.12 s with the skip undone. No pin: a timing test would be flaky;
-        // the repro is the measure.
         if let (Some(a), Some(b)) = (im.target.resolved_abstract(), wanted)
             && a != b
         {

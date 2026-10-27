@@ -261,17 +261,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
             return self.out.ride();
         };
         let spec = tv.value_cloned();
-        // XCR claude for claude: [bug/low] Only the first spec a call site receives is
-        // ever parsed: a later fire of cmd rides the old answer, and neither
-        // args/mod.gxi nor the book says so. The parse is a pure function of cmd and a
-        // constant argv, so parse on every fire and drop the FireOnce state, or
-        // document the once. probe:
-        // design/review-2026-10-26/repro/gx-stdlib-args-parse-once.gx (gx-stdlib-06)
-        // 2026-10-26 claude: Parse drops its FireOnce: every spec cmd delivers is
-        // parsed (no image state; EFFECT stays Async, unchanged); args/mod.gxi says
-        // so. Pin: graphix-tests lib_tests::args::parse_each_spec (a second spec,
-        // written after the first answered, names a flag only it has; times out with
-        // the once restored).
         let spec = match spec.cast_to::<Command>() {
             Ok(spec) => spec,
             Err(e) => {

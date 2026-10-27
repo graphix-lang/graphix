@@ -245,21 +245,6 @@ pub fn record_self_blocks(n: i64) {
 /// `GRAPHIX_EVAL_THREADS`, else one worker a core: the workers an
 /// evaluation pool is built with.
 pub fn eval_threads() -> usize {
-    // XCR claude for claude: [risk/low] A value this cannot use (`abc`, `0`, `-2`) falls
-    // back to one worker per core without a word, and cost.rs reads GRAPHIX_PAR_T the
-    // same way. GRAPHIX_PAR and GRAPHIX_PRUNE report a bad value through env_mode, and
-    // the stack and activation budgets report theirs, so a mistyped thread count or
-    // threshold silently benchmarks the default. Read both through a reporting count
-    // helper beside env_mode, which GRAPHIX_ACTIVATION_BUDGET can share. probe:
-    // design/review-2026-10-26/repro/t-misc-eval-threads-typo.sh (t-misc-02)
-    // 2026-10-27 claude: GRAPHIX_EVAL_THREADS, GRAPHIX_PAR_T (cost::start_calibration)
-    // and GRAPHIX_ACTIVATION_BUDGET now read through stack::env_count, which reports a
-    // value that is no count of at least its least (1 for the threads, 0 for the
-    // others) and falls back as before; it, env_mode and GRAPHIX_STACK_BUDGET share
-    // stack::report_env for the message. The repro prints a line for abc, 0, -2 and
-    // lots. Pin: stack::test::a_bad_count_is_reported (children with
-    // GRAPHIX_EVAL_THREADS abc/0/-2 and GRAPHIX_ACTIVATION_BUDGET -1; fails with the
-    // silent parse restored).
     static THREADS: LazyLock<usize> = LazyLock::new(|| {
         env_count("GRAPHIX_EVAL_THREADS", 1, "using one worker a core").unwrap_or_else(
             || std::thread::available_parallelism().map_or(1, |n| n.get()),

@@ -207,26 +207,6 @@ where
         optional(attempt(spaces().skip(look_ahead(token('{')))).with(between(
             token('{'),
             sptoken('}'),
-            // XCR claude for claude: [bug/medium] Impl methods are `let` statements, but
-            // this list is `sep_by_tok`, not the block's `statements`. So `let show =
-            // ..; // eol` and a `// below` line under the last method are parse errors,
-            // while the same lines in a `{ .. }` block parse. CLAUDE.md makes both
-            // legal. Parse with `statements(|| token('}'))`, drop the NoOp a trailing
-            // `;` leaves before the `let name = ..` check, and have the ImplExpr
-            // printer write eol/below as the block printer does. probe:
-            // design/review-2026-10-26/repro/t-parser-b-list-comments.sh
-            // (t-parser-b-03)
-            // 2026-10-26 claude: Impl bodies parse with `statements(|| token('}'))`; a
-            // trailing `;`'s empty statement is dropped and the lines below it move to
-            // the last method (an empty body holding only comments is refused), and the
-            // impl printer is `pretty_items`. The body's `{` is looked for before any
-            // space is consumed, so a bodiless impl ending a list leaves the next
-            // line's comment below it. Pins: parser/test.rs
-            // a_comment_below_the_last_impl_method_rides_it (was
-            // trailing_impl_comment_is_error) and
-            // a_comment_starting_a_line_stands_below, format.rs
-            // comments_after_list_items_stay (impl cases), expr_pp_round_trip
-            // (generated impl method eol/below).
             spaces().with(statements(|| token('}'))),
         ))),
         position(),

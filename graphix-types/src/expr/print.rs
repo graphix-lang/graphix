@@ -246,25 +246,6 @@ fn pretty_print_exprs(
 /// Each of `exprs` on its own line, `sep` after all but the last. The
 /// empty statement a trailing `;` leaves is that `;` and nothing more.
 fn pretty_items(buf: &mut PrettyBuf, exprs: &[Expr], sep: &str) -> fmt::Result {
-    // XCR claude for claude: [bug/medium] When a `;` list ends in its separator, its
-    // last element is the NoOp `statements` makes for the empty slot. The parser
-    // (`commented`'s `place`) puts the comments below that separator on the
-    // statement before it. Here, and in `pretty_file_items`, only the last
-    // element's trailing comments are printed, so they are dropped and the
-    // formatter refuses its own output. A file `let a = 1;\nlet b = 2;\n// the
-    // end\n` cannot be formatted, nor can a block or seq ending `2;\n// below\n}`.
-    // Print the trailing comments of the last item that is not the trailing NoOp,
-    // after the NoOp's `;`. probe:
-    // design/review-2026-10-26/repro/t-parser-a-below-after-trailing-semi.sh
-    // (t-parser-a-01)
-    // 2026-10-26 claude: The comments below a trailing `;` now ride its empty
-    // statement: `commented` returns the lines below the last item
-    // (`Listed::below`) and `statements` hangs them on the list's last element, the
-    // trailing NoOp included, so `item_end` prints them after the `;`;
-    // `pretty_items`, `pretty_file_items` and the trait/sig/impl printers share
-    // `pretty_separated`. Pins: format.rs an_empty_statement_is_its_semicolon and
-    // comments_after_list_items_stay, and expr::test expr_pp_round_trip, which now
-    // generates below lines on a trailing NoOp.
     let below = exprs.last().map(below_of).unwrap_or(&[]);
     pretty_separated(buf, exprs, sep, pretty_item, eol_of, below)
 }
@@ -659,19 +640,6 @@ fn shows_trailing(eol: Option<&ArcStr>, below: &[ArcStr]) -> bool {
 }
 
 /// `sep` after a list item, then `eol`, the comment ending its line.
-// XCR claude for claude: [bug/medium] A statement list ending in `;` and then an
-// own-line comment (`{ a; b;\n// c\n}`, or a file `x;\n// c`) cannot be formatted. The
-// parser's `commented` hangs the comment on `b` as `below`, but only `item_end` prints
-// `below`, and it runs on the empty statement after the `;`. The comment is lost and
-// the guard reports "formatter bug". Fix: write `prev`'s `below` lines here after the
-// eol comment. Add both shapes to format.rs's `an_empty_statement_is_its_semicolon`.
-// probe: design/review-2026-10-26/repro/t-format-resolver-trailing-semi-comment.sh Also
-// reported as (tests-expr-01), (x-formatter-01). (t-format-resolver-01)
-// 2026-10-26 claude: Fixed at the parser rather than here: a `below` now only ever
-// rides a list's last element, the trailing `;`'s empty statement when there is one
-// (`statements`), so `item_sep` has nothing to write and `item_end` prints the lines
-// after the `;`. Both shapes are in format.rs an_empty_statement_is_its_semicolon;
-// expr_pp_round_trip generates them.
 fn item_sep(buf: &mut PrettyBuf, sep: &str, eol: Option<&ArcStr>) -> fmt::Result {
     buf.kill_newline();
     write!(buf, "{sep}")?;
@@ -1596,21 +1564,6 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 /// `(42).0` would lex as a float; a bare tag would take the `(` of a call as
 /// its payload), and so is a decorated source, whose decorations would
 /// otherwise stand above the whole chain.
-// XCR claude for claude: [readability/low] Any postfix source not listed here gets
-// parens. So `graphix fmt` rewrites `any(a, b).f`, `cast<T>(x).f`, `T(1).0`,
-// `never<T>().f` and `select x { .. }.f` as `(any(a, b)).f` and so on. The parser reads
-// each back bare to the same tree, because it drops parens around a postfix source.
-// Fix: add the forms that close with their own bracket (`Any`, `Never`, `TypeCast`,
-// `Construct`, `Live`, `Select`, and `Variant` with arguments), checking each against
-// `trigger_parens` for the seq-head context. probe:
-// design/review-2026-10-26/repro/tests-expr-fmt-postfix-parens.gx (tests-expr-08)
-// 2026-10-27 claude: prints_as_bare_postfix now takes every primary that closes with
-// its own bracket (select, cast, abstract construct, any, never, live, a tag with a
-// payload; a bare tag stays parenthesized), and its doc's editor-grammar claim is gone
-// (tree-sitter's _primary_expression holds all of them). The seq-head cases read back
-// (a_bracketed_postfix_source_prints_bare covers select/construct/live heads); gxfmt
-// over every .gx/.gxi here and in ../netidx round trips. Pins: format.rs
-// a_bracketed_postfix_source_prints_bare, parser test print_bare_chains_round_trip.
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     use ExprKind::*;
     !shows(&e.dec)
@@ -2007,17 +1960,6 @@ fn ends_bodyless(e: &Expr) -> bool {
 /// `select` and its scrutinee, continuation lines nested under it; a
 /// scrutinee ending in a bodyless impl gets the impl's empty body, which
 /// the arms' `{` would otherwise be read as.
-// XCR claude for claude: [bug/low] The scrutinee is laid out with no tail, but ` {`
-// follows it on its line. fmt_flat keeps one column for the newline and ` {` takes two.
-// So `select ffffffffffffffffffffffffff(1, 2) {` prints 41 columns at --width 40.
-// pretty_seq_head's trigger closure has the same gap, and head_fits already counts the
-// ` {` for a Select. Fix: run pretty_after under `buf.with_tail(" {".len(), ..)`, and
-// do the same around the trigger's `t.fmt_pretty` in pretty_seq_head. probe:
-// design/review-2026-10-26/repro/t-print-select-head-overflow.sh (t-print-01)
-// 2026-10-27 claude: pretty_scrutinee lays the scrutinee out under a tail of the ' {'
-// after it, and pretty_seq_head the trigger under ' {' plus its ')' when parenthesized.
-// Pin: format.rs a_head_fits_with_its_brace (the repro's select and seq at width 40),
-// which fails with either tail removed.
 fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
     buf.with_tail(" {".len(), |buf| pretty_after(buf, "select", arg))?;
     buf.kill_newline();

@@ -72,24 +72,6 @@ impl Watches {
 
     /// End every watch, now and to come: each receiver sees its channel
     /// close after the changes of every write applied before.
-    // XCR claude for claude: [bug/medium] Nothing records that a list has ended, so
-    // `add` after `end` registers a watch that is never closed. This happens when a
-    // subscription asleep during db::drop_tree re-attaches at its wake
-    // (DbSubscribe::watch from the Quiet branch), and when a subscription is made from
-    // a tree handle taken before the drop. The accessors then never fire, though
-    // mod.gxi promises one DbErr. Also, `end` does not take `order`, so a watched write
-    // applied before the drop but not yet sent loses its change. Fix: hold the list as
-    // Option<Arc<[Watch]>>, set to None here, and have `add` close `tx` at once on an
-    // ended list. Take `self.order.write()` before closing (lock order creating ->
-    // order is kept). probe: design/review-2026-10-26/repro/db2-sub-sleep-drop.gx
-    // (db2-02)
-    // 2026-10-27 claude: Watches::list is Option: end takes order.write() (a watched
-    // write in flight sends first), closes every channel and leaves None; add on None
-    // closes tx at once, so a re-attaching or late subscription gets its DbErr;
-    // forget_watches ends outside the map lock. Pins:
-    // subscribe::test::a_watch_after_the_end_delivers_an_error (times out undone) and
-    // the_end_waits_for_a_write_in_flight (end finishes before the write sends,
-    // undone).
     pub(crate) fn end(&self) {
         let _order = self.order.write();
         for w in self.list.lock().take().iter().flat_map(|l| l.iter()) {

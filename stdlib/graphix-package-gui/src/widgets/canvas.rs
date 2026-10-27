@@ -155,24 +155,6 @@ impl FromValue for ShapeVec {
         };
         let (shapes, report) = Self::read(&a);
         if let Some(report) = report {
-            // XCR claude for claude: [bug/medium] This warning uses the default log
-            // target, and the shell logs only FAILURE_TARGET by default, so a skipped
-            // shape vanishes with no message. The draw path's "canvas skipped
-            // non-finite geometry" and every other refused prop do reach stderr. The
-            // text also blames a non-finite number for every cast failure: a Text shape
-            // of size 0 or above 4096, refused by TextSizeV as canvas.gxi documents, is
-            // reported as "a field is not a finite number". Log under FAILURE_TARGET at
-            // error, and name the first cast error instead of a fixed cause. Found by
-            // reading; not run. (gui-widgets-a-02)
-            // 2026-10-26 claude: ShapeVec::read now returns the shapes that read and a
-            // report naming how many were left out and the first one's cast error (a
-            // Text of size 0 says 'a text size must be finite, positive and at most
-            // 4096 pixels, got 0'); ShapeVec::from_value logs it at error under
-            // FAILURE_TARGET. Pin:
-            // canvas_test::a_shape_left_out_is_reported_with_its_cause (fails against
-            // the fixed 'not a finite number' text). The log target itself has no pin:
-            // the gui lib tests share env_logger's process-global logger, so a test
-            // cannot capture records.
             log::error!(target: graphix_compiler::FAILURE_TARGET, "{report}");
         }
         Ok(shapes)

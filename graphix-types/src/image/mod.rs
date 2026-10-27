@@ -1170,19 +1170,6 @@ where
         let finished = e.finished;
         match table(e).get_mut(key) {
             Some(s) if s.defined => Some((s.ord, false)),
-            // XCR claude for claude: [risk/low] A key that object_len measured before
-            // ImageEncoder::finish passes here after finish: `defined` flips, the contents
-            // go into `e.defs`, which finish has already appended and cleared, and the
-            // trailer already says u64::MAX for this ordinal. The write succeeds, but every
-            // read of the REF fails, so the entry never restores. Nothing writes an object
-            // after finish today, so this is latent. Refuse when `e.finished &&
-            // !s.defined`, as new_ordinal does for a first sight. Found by reading; not
-            // run. (t-image-01)
-            // 2026-10-27 claude: object_encode refuses the first write of an object
-            // measured before ImageEncoder::finish (a slot not yet defined once finished),
-            // as new_ordinal refuses a first sight; ImageEncoder::finished's doc says both.
-            // Pin: graphix-types image::tests::a_definition_after_finish_is_refused (fails
-            // with the guard undone).
             Some(s) => (!finished).then(|| {
                 s.defined = true;
                 (s.ord, true)

@@ -190,7 +190,7 @@ impl Mode {
             Mode::Unpruned => PruneMode::Off,
             _ if std::env::var_os("GRAPHIX_PRUNE").is_some() => PruneMode::from_env(),
             Mode::Jit | Mode::Par => PruneMode::On,
-            // XCR claude for claude: [test-gap/medium] Every run! mode audits and none
+            // CR claude for claude: [test-gap/medium] Every run! mode audits and none
             // prunes, so the gate never runs the production default (PruneMode::On)
             // beyond the few lang::prune pins. The audit walks each boundary it would
             // skip, so a fixture computes what Off computes, and a divergence that
@@ -206,21 +206,14 @@ impl Mode {
             // Par+JitPar, so the serial JIT prunes too); GRAPHIX_PRUNE still overrides.
             // The graphix-tests suite passes under it. Pin:
             // testing::tests::fixtures_prune_for_real_and_audited_in_each_engine.
-            // XCR claude for claude: [test-gap/medium] [test-gap/medium] Every run!
-            // fixture runs under Audit. Prune::audit walks each boundary it would skip
-            // and checks only that cycle's production and publications, so the child's
-            // state evolves as unpruned and no fixture ever takes the riding path. A
-            // skip that leaves state behind, and shows cycles later, cannot fail the
-            // gate: the TrackedFires::last_run divergence runs clean under
-            // GRAPHIX_PRUNE=audit. Only Pair::Prune and the lang::prune pins prune for
-            // real. Fix: prune for real (PruneMode::On) in some modes, say Jit and
-            // JitPar, and audit in Interp and Par, so every predicate also checks
-            // pruned semantics. probe:
-            // design/review-2026-10-26/repro/c-prune-wake-last-run-pruned.gx
-            // (c-prune-wake-04)
-            // 2026-10-26 claude: Fixed with x-prune-03: Jit and Par fixtures prune for
-            // real, Interp and JitPar audit. Pin:
-            // testing::tests::fixtures_prune_for_real_and_audited_in_each_engine.
+            // 2026-10-27 claude: The code fix is right: Jit and Par prune for real,
+            // Interp and JitPar audit, and the pin checks that each engine gets both.
+            // But two docs still state the old rule, against CLAUDE.md's rule that a
+            // rule change fixes this file in the same change. CLAUDE.md's walk-pruning
+            // paragraph says 'a test fixture audits every skip
+            // (testing::Mode::fixture_prune)', and design/walk_pruning.md says
+            // '**run!** audits every skip in all four modes'. Update both, then
+            // regenerate AGENTS.md.
             Mode::Interp | Mode::JitPar => PruneMode::Audit,
         }
     }
@@ -293,15 +286,6 @@ pub async fn check_fixture(ctx: &TestCtx) -> Result<()> {
 /// The check refuses exactly when the build does: the check's refusal
 /// when both refuse, which a fixture's predicate holds as it holds the
 /// build's.
-// XCR claude for claude: [test-gap/low] Two refusals agree here whatever their messages,
-// and run! applies its predicate only to the build's error. A check that refuses for a
-// different or wrong reason passes every refused(..) fixture, though --check and the
-// LSP show the check's message. Return the check's error when both refuse and have
-// run_mode assert pred on it too. Found by reading; not run. (core-aux-05)
-// 2026-10-26 claude: verdicts_agree answers the check's refusal when both refuse, and
-// run! holds the fixture's predicate to it before the build's, so a refused(..) fixture
-// fails when the check refuses for another reason; every graphix-tests fixture passes
-// under it. Pin: testing::tests::both_refusing_answers_the_checks_refusal.
 pub fn verdicts_agree(
     checked: Result<()>,
     built: Result<(), &anyhow::Error>,

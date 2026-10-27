@@ -22,23 +22,6 @@ macro_rules! witness {
 
 /// Witnesses, each a program one of whose statements must be refused.
 const WITNESSES: &[(&str, &str)] = &[
-    // XCR claude for claude: [test-gap/medium] This witness no longer depends on what
-    // fusion does. The select's type is already i64 before fusion runs: the node-walk
-    // build, the fused build and the check alone all refuse with "string does not
-    // contain i64". Its header records a union for the node-walk instead. If fusion
-    // went back to normalizing the original type in place (the hazard
-    // try_freeze_for_abi_normalized documents), this text would not change and the gate
-    // would still pass. Fix: find a witness that fails with the in-place normalize
-    // reintroduced, or also compare each statement's compiled type (printed without
-    // normalizing) between Mode::Jit and Mode::Interp. probe:
-    // design/review-2026-10-26/repro/tests-fusion-traits-parity-witness-vacuous.sh
-    // (tests-fusion-traits-02)
-    // 2026-10-26 claude: refusals_and_types_identical_across_fusion (fusion_parity.rs)
-    // now also compares the type of every root binding the program made, printed under
-    // DerefTVars without normalizing, and a new witness tuple_union_binding (a binding
-    // of a union of two equal tuples, read by a fused v.0) fails both comparisons when
-    // try_freeze_for_abi_normalized normalizes t in place instead of t.resolve_tvars()
-    // (checked by reintroducing it).
     witness!("fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx"),
     // `v` is the union of two equal tuples, which the check leaves as it
     // is; the fused read of `v.0` must not collapse it in `v`'s cell.

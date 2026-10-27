@@ -92,27 +92,6 @@ impl Identity {
         }
     }
 
-    // XCR claude for claude: [perf/medium] Two equal DAGs in different allocations are
-    // compared here path by path: only one node shared by both sides short-cuts. `type
-    // R<'a, 'b> = ('a, 'b); let mk = |x: 'a| -> R<'a, 'a> (x, x)` with 24 nested mk
-    // lets in a definition checks in 40 ms but builds in 12.5 s, x4 per two levels. gdb
-    // shows Identity::same under contains::identical_linked from
-    // CallSite::setup_static_bind. Fix: remember the (shared_identity, shared_identity)
-    // pairs this walk has already found identical and answer a repeat from that set,
-    // then pin the shape in deep_nesting.rs. probe:
-    // design/review-2026-10-26/repro/t-typ-mod-ref-dag-identity-exponential.sh
-    // (t-typ-mod-03)
-    // 2026-10-27 claude: Identity::same and contains' link_equal (now struct Link, the
-    // second walk identical_linked runs, which kept the probe exponential after the
-    // first fix) remember the pairs of shared nodes found to agree (typ::NodePairs,
-    // keyed by shared_identity, TVars excluded) and answer a repeat from the set; both
-    // walks are conjunctive, so a pair found once agrees for the rest of the walk.
-    // Pairs found inside a function type hold only under its cell pairing and are
-    // cleared when the outermost Fn ends. A walk memoizes only past its first 64 nodes:
-    // always-on hashing cost about 7% on the GUI examples' --check, the threshold about
-    // 1% (noise). Probe n=24: 12.5 s -> 0.1 s. Pin: graphix-shell deep_nesting
-    // a_typedef_named_type_dag_builds_in_linear_time (depth 60; times out at 15 s with
-    // NodePairs::key returning None).
     fn same(&mut self, t0: &Type, t1: &Type) -> bool {
         // one shared node is identical to itself, however large
         if t0.shared_identity().is_some_and(|a| t1.shared_identity() == Some(a)) {

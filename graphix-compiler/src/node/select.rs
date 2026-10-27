@@ -412,21 +412,6 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         NodeView::Lambda(_) | NodeView::Select(_) | NodeView::SeqMachine(_) => Ok(()),
         // a handler's action runs on its errors, not at an entry
         NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
-        // XCR claude for claude: [bug/medium] A handler-ful `?` whose operand reads no
-        // variable (`0 => error(`Bad)?`) raises only at the arm's first entry, just as
-        // a constant write fires only then, but nothing here warns of it. A raise to a
-        // handler is an event, as a write is. Add `NodeView::Qop(q) if
-        // q.handler().is_some() && reads_nothing(&q.n) => warn(n.spec(), "this
-        // raise")`. warn_triggerless_seq has the same gap: it tests only
-        // `trigger.is_none()`, so `seq 1 { .. }` in an arm also runs once with no
-        // warning; warn there too when the trigger reads no variable. probe:
-        // design/review-2026-10-26/repro/x-engine-seq-errors-const-raise-no-warning.gx
-        // (x-engine-seq-errors-02)
-        // 2026-10-26 claude: warn_birth_only warns of a handler-ful ? whose operand
-        // reads no variable (a function's name no longer counts as a read in
-        // reads_nothing, so error(`Bad)? qualifies), and warn_triggerless_seq warns of
-        // a seq whose trigger names no binding (names_nothing). Pin:
-        // lang::select::birth_only_warnings (the raise and seq 1 cases).
         NodeView::Qop(q) if q.handler().is_some() && reads_nothing(&q.n) => {
             warn(n.spec(), "this raise")
         }
@@ -455,17 +440,6 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     cs: &super::callsite::CallSite<R, E>,
 ) -> bool {
-    // XCR claude for claude: [readability/low] A builtin call with no arguments
-    // (sys::dirs::home_dir, sys::args) is Async because it produces at its birth only.
-    // Here it counts as acting on the world, and the vacuous all(reads_nothing) makes
-    // it warn 'acts only at this arm's first entry ... Sample the event'. It acts on
-    // nothing, its value stands at every re-entry, and no event can be sampled into it.
-    // Return false here for a call with no arguments. probe:
-    // design/review-2026-10-26/repro/sys-io-dirs-arm-spurious-warning.gx (sys-io-05)
-    // 2026-10-26 claude: acts_on_the_world counts a builtin only when the call has an
-    // argument node; home_dir() in an arm no longer warns. Pin:
-    // lang::select::birth_only_warnings (compiles the home_dir arm under
-    // WarningsAreErrors). The Async label itself is x-builtin-effects-03.
     if let Some(b) = super::callsite::static_builtin(ctx, cs) {
         return cs.arg_nodes().next().is_some()
             && matches!(
@@ -478,17 +452,6 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
     ctx.bind_to_lambda
         .get(&r.id)
         .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
-        // XCR claude for claude: [bug/low] A function counts as acting only when it
-        // performs Io. So a call that writes a captured variable (`let set = |v: i64| {
-        // m <- v; v }`, then `set(5)` in an arm) gets no warning. Like `m <- 5` written
-        // in the arm, it writes only at the arm's first entry (count(m) stays 1 over
-        // three entries). Fix: also count `facts.event` (the function may raise, or
-        // write a binding it does not own), which is the same once-per-birth effect.
-        // probe: design/review-2026-10-26/repro/x-rerun-3-birth-warn-misses-write-fn.gx
-        // (x-rerun-3-06)
-        // 2026-10-26 claude: acts_on_the_world also counts facts.event (a raise or a
-        // write to a binding the function does not own), so set(5) in an arm warns.
-        // Pin: lang::select::birth_only_warnings (the set(5) case).
         .is_some_and(|d| {
             let facts = d.facts.lock();
             facts.io || facts.event
@@ -1203,21 +1166,6 @@ fn pooled_leaves(
     ) -> Result<Option<Miss>> {
         let admitted = match sp {
             StructPatternNode::Bind(_) | StructPatternNode::Ignore => None,
-            // XCR claude for claude: [bug/medium] `leaf` recurses into a tuple or struct
-            // position, but not into an abstract constructor pattern there. `Box(true)`
-            // under a tuple falls to head_of, which has no head for it, and the whole
-            // arm goes unpooled. So `(Box(true), _) => 1, (Box(false), n) => n` over
-            // `(Box<bool>, i64)` is refused "missing match cases". So is `{b: Box(`A),
-            // ..}` with `{b: Box(`B), ..}`, though `children` already reads an
-            // abstract's payload and the same arms at top level are accepted. Fix: send
-            // `StructPatternNode::Abstract` to `children` here, with the tuple and
-            // struct cases. probe:
-            // design/review-2026-10-26/repro/x-rerun-3-abstract-pool-nested.gx
-            // (x-rerun-3-05)
-            // 2026-10-26 claude: pooled_leaves's leaf sends StructPatternNode::Abstract
-            // to children with the tuple and struct cases, so a nested
-            // Box(true)/Box(false) pools its payload's heads. Pin:
-            // lang::select::pool_reads_a_nested_abstract_payload.
             StructPatternNode::Slice { kind: SliceKind::Tuple, .. }
             | StructPatternNode::Struct { .. }
             | StructPatternNode::Abstract { .. } => {
@@ -1441,26 +1389,6 @@ impl LiteralPool {
         let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
         // the atom pools against the one member of its shape it can match:
         // under its type test, with a head each position admits
-        // XCR claude for claude: [bug/medium] An atom that can match only one member is
-        // still refused pooling, in two ways. Leaf::reachable calls a bool head at an
-        // i64 position reachable (domain None), so `(true, _)` reaches (i64, bool) as
-        // well as (bool, i64) and claim returns Unpooled. And a pooled_leaves failure
-        // on another member (a struct width the pattern does not admit) returns
-        // Unpooled instead of skipping that member. `(true, _), (false, _), (i64, bool)
-        // as t` over [(bool, i64), (i64, bool)], `Box(true), Box(false), Box<i64> as b`
-        // over [Box<bool>, Box<i64>] and `{a: true}, {a: false}, {a, b}` over [{a:
-        // bool}, {a: bool, b: i64}] are all refused as missing cases. Judge
-        // reachability from whether the position's type can hold the head, and
-        // `continue` past a member the atom cannot match. probe:
-        // design/review-2026-10-26/repro/x-typecheck-patterns-pool-member-ambiguous.gx
-        // (x-typecheck-patterns-05)
-        // 2026-10-26 claude: pooled_leaves now answers Miss::Never when the atom cannot
-        // match the member (a head the position's type cannot hold, via may_hold; a
-        // struct width or field set the pattern does not admit; another tuple length or
-        // abstract id), and claim skips that member; Miss::Unread still gives Unpooled.
-        // Leaf::reachable is gone. pool_covers_only_its_own_abstract_instantiation lost
-        // its third arm, which the pool now (rightly) finds dead. Pin:
-        // lang::select::pool_skips_a_member_the_atom_cannot_match.
         let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
         for m in shape.members(env, scrut)? {
             if let Some(t) = explicit
@@ -1690,60 +1618,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 continue;
             };
             let saved = pat.bind_tentative(ctx, v, tag);
-            // XCR claude for claude: [bug/medium] A reached guard gets only the
-            // tracker's bits. That tracker was built from the guard's refs before any
-            // Deref in it ran, and is never refreshed, and the guard opens no
-            // write-stamp catch-up scope (TrackedFires::open/ran) here. So a woken
-            // guard misses the fires of inputs it learns as it runs. In the probe, b
-            // moves while the guard is unreached and `count(*r)` never sees it: the
-            // select prints (9, 0) where `count(b)`, or the same count(*r) in an arm
-            // body, catches up. Fix: open and close the scope around the guard's update
-            // and call `fires.evaluated` after its first run, as the arm path does.
-            // Then pin it. probe:
-            // design/review-2026-10-26/repro/x-engine-firing-guard-deref-catchup.gx
-            // Also reported as (x-refs-catchup-06). (x-engine-firing-03)
-            // 2026-10-26 claude: Fixed: a reached guard runs inside its tracker's
-            // catch-up scope (TrackedFires::open/ran), takes what its first run learns
-            // (TrackedFires::evaluated), and a guard falling asleep refreshes its refs
-            // as a deselected arm does (callees included). The probe now gives (9, 1).
-            // Pins: lang::select::guard_catches_up_through_a_reference,
-            // guard_catches_up_a_target_fired_as_it_sleeps (fails without evaluated),
-            // guard_wake_binds_a_callee_caught_up (fails without the scope).
-            // XCR claude for claude: [bug/medium] A woken guard catches up only the refs
-            // its tracker named when the select was first updated. The guard never
-            // opens the write-stamp catch-up scope (TrackedFires::open/ran) and never
-            // refreshes its refs (TrackedFires::evaluated), as evaluate_arm does for an
-            // arm. So a fire it reads through a reference (`n if count(*r) > 1`) or a
-            // function value (`n if gd(n)`) while asleep is lost; the direct read and
-            // the arm-body twins both catch it up. Fix: wrap pat.update in
-            // fires.open/fires.ran and call fires.evaluated with the guard's refs
-            // afterwards, then pin both cases beside guard_below_the_claim_sleeps. Both
-            // engines agree, so the fuzzer cannot see it. probe:
-            // design/review-2026-10-26/repro/tests-select-sleeping-guard-misses-learned-inputs.gx
-            // (tests-select-01)
-            // 2026-10-26 claude: Fixed with x-engine-firing-03: open/ran around the guard's
-            // update, evaluated after it, and a refresh of the guard's refs when it falls asleep
-            // (the dynamic case needed the refresh: the bound callee's reads are learned only by
-            // a full refs walk). The probe prints guard 2 on all three lines in both engines.
-            // Pins: lang::select::guard_catches_up_through_a_reference,
-            // guard_catches_up_through_a_dynamic_callee.
-            // XCR claude for claude: [bug/medium] A guard the chain did not reach at
-            // birth is first run here under View::Wake, but an arm's first entry is
-            // a Step (`entered`). The guard's constants stand, so a stateful
-            // builtin over a constant never produces. `n if count(5) == 1` then
-            // stays never-produced and leaves the select bottom at every reach of
-            // its arm, while the arm-body twin `n => count(5)` gives 1. Fix: record
-            // whether each guard ever ran (an enum instead of the `asleep` bool)
-            // and run its first reach as a Step. probe:
-            // design/review-2026-10-26/repro/tests-select-guard-first-reach-is-a-wake.gx
-            // Also reported as (x-engine-firing-02). (tests-select-02)
-            // 2026-10-26 claude: Fixed: GuardSleep's asleep bools are a GuardRun per arm
-            // (Unborn, Unreached, Awake, Asleep); a guard first reached after it was
-            // passed by runs under View::Step, a resumed one under View::Wake, one
-            // reached at the select's first update under the ambient view. The probe
-            // prints guard t=3 guard. Pins: lang::select::guard_first_reach_is_a_birth,
-            // guard_first_reach_after_a_bottom_birth (the
-            // x-engine-firing-guard-first-reach-wake.gx shape).
             let view = runs[i].reached();
             let caught_up = fires.deliver(ctx, i);
             let t = ctx.under(view, |ctx| {
@@ -1915,48 +1789,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     // (and c-select-seq-arm-in-birth-instance.gx) (c-select-seq-02)
                     false => View::Step,
                 };
-                // XCR claude for claude: [bug/medium] An arm's tracked inputs come from
-                // `TrackedFires::new` at the select's first update and are refreshed
-                // only in `deselect`. `Deref::refs` names its target only after the
-                // Deref's first update. So an arm selected for the first time reads
-                // `*r`'s target live without consuming that target's fire bit. The bit
-                // stays pending, and the other arm gets a phantom FIRED catch-up when
-                // it wakes. In the probe, cnt ticks at the wake although the false arm
-                // already read b. Fix: refresh the arm's tracked refs
-                // (`tracked.refresh(&ctx.env, i, ..)`) right after its first evaluation
-                // here, and do the same in seq_machine, which builds its tracker the
-                // same way. A moving reference that changes target later needs a
-                // refresh when a Deref's address moves, or its reads keyed under the
-                // reference's own cell. probe:
-                // design/review-2026-10-12/repro/c-bind-06.gx (c-bind-06)
-                // 2026-10-15 claude: done for a target a node names by its first
-                // evaluation: TrackedFires::evaluated adds it (callees left out) and
-                // its read consumes the fire, in a select and a seq step (5c66bda6a;
-                // pins lang::select::wake_spent_through_a_reference,
-                // wake_spent_directly). Open: a moving reference whose Deref changes
-                // target later is still tracked under its old one until a deselect
-                // refresh.
-                // 2026-10-16 claude: The open part (a moving reference's later target
-                // untracked until a refresh) needs the same mechanism
-                // tests-lang-rest-b-02 (wake.rs, Eric's) asks for, an input learned
-                // after the arm's last refresh: a per-variable fire epoch or seeding
-                // from what the arm reaches at run time. Readdressed with it.
-                // 2026-10-24 claude: Eric ruled (2026-10-24): option A, a fire stamp
-                // per variable: each variable records the cycle of its last fire and an
-                // arm the cycle it last ran; at a wake, an input stamped after the
-                // arm's last run fired while it slept. Covers dynamic callees and
-                // moving references.
-                // 2026-10-25 claude: Built with tests-lang-rest-b-02's fire stamps: an
-                // arm evaluated under a wake or step view opens a catch-up scope
-                // (node::wake::CatchUp: the arm's last run, the select's tracked
-                // inputs, the enclosing scopes), and a Deref whose target no enclosing
-                // select tracks reads it FIRED when it was written after that run
-                // (wake::owed), so a moving reference's later target is caught up
-                // without a refresh. No pin of the moving case: a target that moves
-                // while the arm sleeps moves the reference too, whose own fire is
-                // tracked, and I did not find one that failed before. The dynamic
-                // callee half is pinned by
-                // lang::select::first_entry_dynamic_callee_catches_up.
                 let (t, v) =
                     ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx));
                 planes.emit(t, v)
@@ -2218,27 +2050,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         // that may be Any has no struct type to complete it,
                         // so its test would be the exact struct of the fields
                         // it names
-                        // XCR claude for claude: [bug/high] This refusal looks only at a
-                        // top-level `StructurePattern::Struct { exhaustive: false, ..
-                        // }`. A partial struct nested in a tuple, variant or slice over
-                        // an `Any` scrutinee is not completed either:
-                        // `complete_type_predicate` finds no member under Any. So it
-                        // falls through to `Ok(None) => ()`, and its runtime test is
-                        // the exact struct of the named fields. Over `(1, {a: 1, b:
-                        // 2})` the arm `(_, {a, ..})` misses while `(_, {a, b})` hits.
-                        // Test `spec_pat.structure_predicate.has_partial_struct()` here
-                        // instead, as the let path in node/bind.rs already does, so the
-                        // nested case gets this same refusal. probe:
-                        // design/review-2026-10-26/repro/t-parser-b-nested-partial-struct-any.gx
-                        // (t-parser-b-01)
-                        // 2026-10-26 claude: Fixed: the refusal tests has_partial_struct() over
-                        // a scrutinee that is Any or holds it (may_be_any), so a partial struct
-                        // nested in a tuple, variant or slice over Any is refused as the
-                        // top-level one is; under a typed position ((i64, Any)) it still matches
-                        // by shape. Pins: lang::select::nested_partial_struct_over_any_refused,
-                        // partial_struct_in_a_variant_over_any_refused,
-                        // partial_struct_in_a_slice_over_any_refused,
-                        // nested_partial_struct_under_a_typed_tuple.
                         Ok(None)
                             if spec_pat.structure_predicate.has_partial_struct()
                                 && may_be_any(&ctx.env, &scrut)? =>

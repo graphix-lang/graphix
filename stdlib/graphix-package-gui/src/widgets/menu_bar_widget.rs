@@ -572,40 +572,6 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                 modifiers,
                 ..
             }) => {
-                // XCR claude for claude: [bug/medium] A shortcut fires here whatever has
-                // the keyboard focus. Nothing checks focus or capture, and iced's
-                // Column hands the key to every child, so a focused text_input or
-                // text_editor handles the same key too. menu::shortcut accepts a key
-                // with no modifier, so shortcut("/") or shortcut("n") fires on every
-                // "/" or "n" the user types into an input. The book example's
-                // Ctrl+V/C/Z run both the input's own paste/copy/undo and the menu
-                // action. Needs a precedence rule: at least refuse modifier-less (and
-                // Shift-only) shortcuts in menu::shortcut, and decide whether a focused
-                // text widget or the menu owns Ctrl+C/V/X/Z/A. No pin covers a shortcut
-                // beside a focused text widget. Found by reading; not run.
-                // (gui-widgets-b-01)
-                // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no
-                // ruling needed. Refuse modifier-less and Shift-only shortcuts; a
-                // focused text widget owns Ctrl+C/V/X/Z/A.
-                // 2026-10-23 claude: Half done: menu::shortcut refuses a key with no
-                // Ctrl, Alt or Super (a plain or Shift-only key is typed text), so
-                // shortcut("/") no longer fires on typing. Open: a focused text widget
-                // still sees Ctrl+C/V/X/Z/A beside the menu's action; the menu bar runs
-                // before its siblings in iced's Column, so telling it a text widget has
-                // focus needs a focus query (iced's operation::focusable) at the key
-                // event.
-                // 2026-10-26 claude: The other half is done: frame() asks the built
-                // interface whether a widget has the keyboard focus (iced's only
-                // focusable widgets are text_input and text_editor; the TextFocused
-                // operation) before it delivers a frame with a key press, and runs the
-                // update under menu_bar_widget::with_text_focus; shortcut_action then
-                // answers no action for Ctrl/Cmd with c, v, x, z or a while a text
-                // widget has the focus, so the menu bar and the open menus leave those
-                // keys to it and fire every other shortcut. The event loop and the test
-                // harnesses share frame(). Book: ui/gui/menu.md says so. Pin:
-                // interaction_test::a_focused_text_widget_owns_its_editing_keys (Ctrl+C
-                // fires the menu unfocused, not with a text_input or text_editor
-                // focused, Ctrl+S fires either way); it fails with the rule disabled.
                 let items = self.descs.iter().flat_map(|m| m.items.iter());
                 if let Some(id) = shortcut_action(items, key, modified_key, *modifiers) {
                     state.open_menu = None;

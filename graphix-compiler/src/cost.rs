@@ -95,29 +95,6 @@ pub fn start_calibration() {
         return fix_calibration(t);
     }
     if !STARTED.load(Ordering::Relaxed) && !STARTED.swap(true, Ordering::Relaxed) {
-        // XCR claude for claude: [bug/medium] [bug/medium] A spawn failure here or in
-        // calibrate's pool panics, although the calibration only tunes a heuristic.
-        // calibrate also builds a second pool of eval_threads() workers (32 here)
-        // beside the tokio workers and the evaluation pool, at runtime construction,
-        // for --check too. Under a task limit the process fails: `--check` of a
-        // one-line file in a scope with TasksMax=40 panics in the calibration pool,
-        // then the evaluation pool's halving runs down to one worker and panics too,
-        // rc=1 (TasksMax=70: the calibration panic, rc=0). On a spawn or build failure,
-        // fall back to fix_calibration with a default. Measure with a small pool, and
-        // skip calibration for a check-only run. probe:
-        // design/review-2026-10-26/repro/x-perf-compile-thread-limit-panic.sh
-        // (x-perf-compile-06)
-        // 2026-10-27 claude: A failed calibration thread spawn or pool build logs a
-        // warning and leaves the calibration unset (nothing forks under Auto), never
-        // panics; calibrate measures on a pool of CALIBRATION_WORKERS (2, at most
-        // eval_threads) instead of eval_threads() workers. The repro at TasksMax=70 is
-        // rc=0 with no panic; at TasksMax=40 the calibration no longer panics but the
-        // evaluation pool's halving still does (x-perf-runtime-04, its own CR). A
-        // check-only run still calibrates, on two threads for about 20 ms, which no
-        // longer seemed worth a config flag. Pin:
-        // cost::tests::no_thread_leaves_the_threshold_unmeasured (a child under
-        // RLIMIT_NPROC=0; panics 'spawn the calibration thread' with the expect
-        // restored). Also ForkSite::plan_with splits plan_auto (c-cost-misc-02).
         let spawned = std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
             .spawn(|| {

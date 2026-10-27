@@ -204,26 +204,6 @@ impl Scale {
                 min: bounds.min,
                 max: bounds.max,
                 step,
-                // XCR claude for claude: [bug/medium] The step count is floor((max -
-                // min) / step), and that quotient often comes out a hair under an
-                // integer in floating point: 0.3 / 0.1 is 2.9999999999999996, and 0.6 /
-                // 0.1 and 0.7 / 0.1 likewise. slider(#min: &0.0, #max: &0.3, #step:
-                // &0.1, ..) therefore has three positions: its right end sends 0.2, 0.3
-                // can never be chosen, and a program value of 0.3 draws where 0.2 does.
-                // Snap a quotient within a few ulps of an integer to that integer
-                // (n.round() when (n - n.round()).abs() <= 4.0 * f64::EPSILON *
-                // n.round().max(1.0), else n.floor()); Scale::value's .min(max) then
-                // puts the last step exactly on max. Pin it with a 0.1 step over [0,
-                // 0.3] in stepped_slider_keys_wheel_and_drags_share_one_lattice, which
-                // only uses step 1.0. probe:
-                // design/review-2026-10-26/repro/gui-widgets-b-slider-step-floor.py
-                // (replays this formula in f64). (gui-widgets-b-01)
-                // 2026-10-26 claude: Scale::new counts steps through step_count, which
-                // takes a quotient within 4 ulps of an integer as that integer, else
-                // floors it; [0, 0.3] by 0.1 now has four positions. Pin:
-                // stepped_slider_keys_wheel_and_drags_share_one_lattice (0.2 + ArrowUp
-                // sends 0.3, 0.3 + ArrowDown sends 0.2, on both sliders; with floor the
-                // first sends nothing).
                 count: step_count((bounds.max - bounds.min) / step),
             },
             _ => Self::Fraction(bounds),

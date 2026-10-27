@@ -75,21 +75,6 @@ fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
 /// [`GROWN`], check it is alive and printing nothing more, then send `sig`
 /// and require it to exit: twice for SIGINT (cancel, then exit, as a user
 /// would), once for SIGTERM.
-// XCR claude for claude: [risk/medium] Under --no-fusion these wedges are not a spin:
-// each call is a retained activation (x-fix-nodes-03), so the debug binary grows about
-// 0.5 GB/s. FIRST_CYCLE_WEDGE is at 2.7 GB when the 6 s wedged_after ends, and the JIT
-// twin stays at 72 MB. The four node-walk tests here run concurrently under cargo test,
-// so this file alone peaks near 10 GB in the plain gate. Signal the node-walk wedges
-// about 1.5 s after they start, and serialize this file's tests with a static
-// parking_lot::Mutex (or cap the child with RLIMIT_AS). probe:
-// design/review-2026-10-26/repro/tests-shell-compiler-interp-wedge-memory.py
-// (tests-shell-compiler-03)
-// 2026-10-26 claude: signal_frees_process signals a wedge once its RSS passes GROWN
-// (512 MB, read from /proc where the host has it) or at its deadline, whichever comes
-// first, and the node-walk runs hold a static parking_lot Mutex (NODE_WALK), so one
-// interp wedge is alive at a time: about 0.5-1 GB peak where the file reached ~10 GB.
-// Pin: the assertion that the child is under 2*GROWN when signalled (with the early
-// signal undone, first-cycle/interp reached 2115 MB and failed).
 fn signal_frees_process(
     program: &str,
     no_fusion: bool,

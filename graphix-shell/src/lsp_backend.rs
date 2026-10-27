@@ -46,19 +46,6 @@ async fn build_backend() -> Result<StdArc<dyn LspBackend>> {
             .context("registering stdlib modules")?;
     // The stdlib layer, shared by every per-project check.
     let base_resolvers: Vec<ResolverRef> = vec![vfs];
-    // XCR claude for claude: [bug/low] These search-path resolvers (GRAPHIX_MODPATH
-    // entries and the data dir) are FilesResolvers with no buffer overrides, and
-    // `resolvers_for` appends them as they are. A module a project reaches through them
-    // is checked from disk, ignoring the open buffer. Its own submodules do see
-    // buffers, because `resolve_modules_level` takes the overrides of any resolver in
-    // the chain. Build these entries with `Some(buffer_overrides)` (an overrides
-    // argument to `search_path`/`parse_modpath`). Found by reading; not run.
-    // (t-format-resolver-05)
-    // 2026-10-27 claude: search_path and parse_modpath take the overrides their
-    // FilesResolvers read through; the LSP backend passes its buffer overrides, the
-    // runtime None. Pin: graphix-shell/tests/lsp_modpath.rs
-    // a_modpath_module_is_read_from_its_buffer (fails with None passed: m::b not
-    // defined).
     let buffer_overrides: BufferOverrides = Arc::new(Mutex::new(AHashMap::default()));
     let search = graphix_rt::search_path(
         &Default::default(),

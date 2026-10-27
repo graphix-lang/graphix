@@ -34,24 +34,6 @@ parser! {
             choice((
                 typedef().map(SigKind::TypeDef),
                 trait_decl(true).map(|t| SigKind::Trait(Arc::new(t))),
-                // XCR claude for claude: [risk/low] An interface `impl` parses with a
-                // body, which the check always refuses (node/module.rs "without a
-                // body"), so `SigKind::Impl` represents a state no valid program has.
-                // The formatter's guard also never looks at those bodies:
-                // `Ornaments::sig` (format.rs) walks item comments and trait defaults
-                // only, and `Expr` equality ignores `dec` and `str_form`. A comment,
-                // attribute or delimiter lost there would be written without a refusal.
-                // Parse only the head and `;` here, and drop `methods` from the
-                // interface form. Found by reading; a .gxi impl body formats unchanged
-                // and the check refuses it. (t-format-resolver-04)
-                // 2026-10-27 claude: The interface form is its own type: SigKind::Impl
-                // holds an ImplHead (trait, params, constraints, target), and ImplExpr
-                // is { head, methods }. parse_sig reads an impl item with
-                // traitexp::impl_sig, the head alone, refusing a body with 'an
-                // interface declares an impl without a body'; the check's dead refusal
-                // in node/module.rs is gone. SigKind's pack lost the empty methods
-                // array, so REGISTRATION_FORMAT 93. Pin:
-                // parser::test::an_interface_impl_is_its_head_alone.
                 impl_sig().map(|i| SigKind::Impl(Arc::new(i))),
                 string("val")
                     .with(space())
@@ -296,20 +278,6 @@ where
             if let Some(msg) = check_use_item(segs) {
                 return Err(refusal::<I>(end, msg));
             }
-            // XCR claude for claude: [bug/low] A rename may change the
-            // imported name's case. `use m::T as t` binds a type no type
-            // position can write, since typath needs a capitalized name.
-            // `use m::v as V` binds a value that parses as a type or
-            // constructor. Both pass the check with only an "unused import"
-            // warning. Refuse a rename whose initial case differs from the
-            // renamed segment's (the module's for `self`). probe:
-            // design/review-2026-10-26/repro/t-parser-b-rename-case.sh
-            // (t-parser-b-05)
-            // 2026-10-27 claude: use_items refuses a rename whose initial case
-            // differs from the renamed segment's (the module's for self), at
-            // the rename, with 'a rename keeps its name's case'. Pin:
-            // parser::test::use_new_grammar (four cases incl. group self and a
-            // group member).
             if let Some(r) = rename
                 && segs.last().is_some_and(|s| capitalized(s) != capitalized(r))
             {

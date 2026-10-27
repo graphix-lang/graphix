@@ -214,26 +214,6 @@ pub struct TypedRead<F> {
 
 impl<F> TypedRead<F> {
     fn new(env: &Env, target: CastTarget) -> Self {
-        // XCR claude for claude: [bug/medium] exact is decided once for the whole
-        // target, so one integer field turns every inexact number in the document into
-        // a decimal, including those read into Any. Read into {n: i64, xs: Array<Any>},
-        // the xs elements select as decimal. Read into {xs: Array<Any>}, the same text
-        // gives f64, which is the documented behaviour for a position holding neither
-        // an integer nor a decimal. Decide per position: have the cast turn a Decimal
-        // at an Any or float position back into the f64 the plain reader gives, or pass
-        // the target type to the visitor. probe:
-        // design/review-2026-10-26/repro/x-kind-markers-json-exact-leaks-to-any.gx
-        // (x-kind-markers-06)
-        // 2026-10-26 claude: The parse stays exact for the whole document; the cast now
-        // decides per position: json's ReadFormat::read casts through
-        // CastTarget::read_exact_floats (Type::cast_exact_floats,
-        // CastCx::decimal_floats), where a decimal at an Any, unbound, or primitive
-        // position holding neither an integer nor a decimal becomes the f64 its text
-        // reads as before it is cast. The book's json Numbers section says so (book not
-        // rebuilt: local mdbook 0.4.49). Pin:
-        // lib_tests::json::json_exact_number_is_per_position (the old read gives
-        // decimals at the Any and string positions); the repro prints f64 on both
-        // lines.
         Self { exact: target.holds_exact_number(env), target, format: PhantomData }
     }
 }
@@ -322,25 +302,6 @@ impl ExitRequest {
     /// Ask to exit with `code`. A program already exiting keeps its first
     /// code, and one whose embedder no longer listens has been dropped by
     /// it: the process is the embedder's to end.
-    // XCR claude for claude: [bug/medium] When the receiver is gone, sys::exit falls
-    // through to std::process::exit with the program's code. The fuzz harness drops the
-    // receiver while the runtime still runs: compile_with_stats binds `let Started {
-    // ctx, .. }`, so the receiver is dropped before the first cycle, and start_session
-    // drops it when it abandons a construction that then finishes on its own task. A
-    // subject calling sys::exit therefore kills check-one with its own status (died()
-    // records a phantom CRASH), and a pin that exits at init would end the in-process
-    // regress gate, an exit 0 passing it. An embedder that seeded an ExitRequest never
-    // wants a process exit: treat a failed send as handled (`let _ = tx.send(code);
-    // true`), and drop order_result's comment that a subject's sys::exit ends the
-    // child. probe: design/review-2026-10-26/repro/fuzz-lib-b-exit-kills-harness.sh
-    // (fuzz-lib-b-01)
-    // 2026-10-26 claude: ExitRequest::request returns nothing: an embedder that seeded
-    // one owns the process, so a send its dropped receiver refuses is handled, and
-    // sys::exit falls back to std::process::exit only without an ExitRequest.
-    // order_result's comment is gone. Pin:
-    // lib_tests::sys::exit_without_a_listener_keeps_the_process (runs the program in a
-    // child of the test binary; the old code ends it with status 3); check-one with a 1
-    // ms budget now writes agree and exits 0.
     pub fn request(&self, code: i32) {
         if let Some(tx) = self.0.lock().take() {
             let _ = tx.send(code);
@@ -524,46 +485,6 @@ pub fn map_key(k: &Value) -> Result<ArcStr> {
         Value::String(s) => s,
         Value::DateTime(dt) => dt.to_rfc3339().into(),
         Value::Duration(d) => format_compact!("{}", d.as_secs_f64()).as_str().into(),
-        // XCR claude for claude: [bug/medium] A bare variant key strips to its tag, the
-        // string "B", which Naked then prints quoted. So json::write_str({`B => 1})
-        // writes {"\"B\"":1}, toml writes '"B"' = 1, and json::read back into Map<`B,
-        // i64> refuses with 'variant tag mismatch'. Write a key that strips to a string
-        // bare, as the String arm above does; the writers' duplicate-key check then
-        // refuses `A beside "A". Tuple and payload-variant keys ({"[1, 2]":1}) cannot
-        // read back at all, since a cast never parses a string into a collection:
-        // refuse them in the writers too, or record that they are write-only. probe:
-        // design/review-2026-10-26/repro/x-rerun-4-variant-map-key-json.gx
-        // (x-rerun-4-03)
-        // 2026-10-26 claude: Addressed by the t-rep-02 fix: map_key dispatches on the
-        // key's data, so a bare-variant key is written bare and reads back (pins
-        // lib_tests::json::string_data_map_keys_read_back,
-        // lib_tests::toml::toml_variant_map_key_reads_back). The tuple and
-        // payload-variant keys wait on Eric's core-lib-02 / x-kind-markers-01.
-        // 2026-10-26 claude: No longer reproduces: the repro prints j {"B":1} r {`B =>
-        // 1} and toml B = 1, fixed with t-rep-02 (pins
-        // lib_tests::json::string_data_map_keys_read_back,
-        // lib_tests::toml::toml_variant_map_key_reads_back). The tuple and
-        // payload-variant keys are Eric's core-lib-02 / x-kind-markers-01; nothing
-        // changed here in this batch.
-        // XCR claude for claude: [bug/high] A key whose data is a string is printed here
-        // by Naked, which quotes it. A map keyed by a bare variant writes {"\"A\"":1}
-        // in json ('"A"' in toml) and the read back is refused, and a map keyed by
-        // `type Id = Abstract<string>` with `impl Cast` reads back silently as
-        // Id("\"abc\""). Fix: take to_data of the key first, then dispatch on the data
-        // with the arms above, so string data is written bare. Pin both round trips.
-        // Composite keys ("[1, 2]") cannot read back either, since a cast never parses
-        // a string into a collection, so this function's doc overclaims. Whether
-        // writers should refuse such keys is a ruling. probe:
-        // design/review-2026-10-26/repro/t-rep-variant-map-key-quoted.gx (t-rep-02)
-        // 2026-10-26 claude: map_key now takes abstract_value::to_data of every key and
-        // dispatches on the data, so a key whose data is a string (a bare variant, an
-        // abstract string type with impl Cast) is written bare and reads back; the
-        // writers' existing duplicate-key checks refuse `A beside "A". The doc now says
-        // only string, number, bool, datetime and duration keys read back; the
-        // composite-key ruling is Eric's core-lib-02. Pins:
-        // lib_tests::json::string_data_map_keys_read_back,
-        // lib_tests::toml::toml_variant_map_key_reads_back (both fail with the fix
-        // undone).
         k => format_compact!("{}", graphix_compiler::typ::Naked(&k)).as_str().into(),
     })
 }
@@ -1727,27 +1648,6 @@ impl NumKey {
         match v {
             v if let Some(n) = ExactNum::of(v) => Self::Num(n),
             Value::String(s) if let Some(n) = ExactNum::parse(s.trim()) => Self::Num(n),
-            // XCR claude for claude: [bug/medium] Every key that is not an integer is
-            // still compared as an f64, so a #numeric sort misorders decimals, and
-            // numeric strings with a fraction, that differ past f64's precision. They
-            // tie and the stable sort keeps the input order. `array::sort(#numeric:
-            // true, [decimal:0.10000000000000000001, decimal:0.1])` returns them
-            // descending; the plain sort orders them correctly. Add a Decimal arm:
-            // Value::Decimal, and strings that parse as a decimal, key exactly, with
-            // Int compared through Decimal::try_from. Then make this the one numeric
-            // key: the data_table's SortKey copies it, decimal-to-f64 path included.
-            // probe: design/review-2026-10-26/repro/x-rerun-1-numeric-sort-decimal.gx
-            // (x-rerun-1-02)
-            // 2026-10-26 claude: graphix_package_core::ExactNum is the one numeric
-            // key: integers, decimals and floats compare exactly against each other
-            // (decimal against f64 through the fraction's exact n*2^e against
-            // m*5^s*2^s), numeric strings parse as an integer or a decimal before the
-            // f64 cast. NumKey and the data_table's SortKey both key through it, the
-            // decimal-to-f64 path gone. Pins:
-            // lib_tests::array::numeric_sort_orders_decimals_exactly (the repro's
-            // pairs, plus decimals against f64 0.1 under Any),
-            // exact_num_test::mixed_numbers_order_exactly, data_table numeric_keys
-            // cases and the total-order test.
             v => match v.clone().cast(Typ::F64) {
                 Some(Value::F64(f)) => Self::Num(ExactNum::Float(f)),
                 _ => Self::Other(v.clone()),
@@ -2437,23 +2337,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         let cached = match T::DATA_ARGS {
             _ if !start => None,
             [] => Some(&self.cached),
-            // XCR claude for claude: [risk/low] On a conversion failure this returns
-            // early. By then a reply taken from the event this cycle (`res`, with
-            // `inflight` already decremented) is dropped, and the loop that spawns the
-            // next queued call is skipped, so a waiting Fifo call stalls until some
-            // later update. Cast::to_value returns Any, so a to_value that yields a
-            // function or a reference reaches this. Fix: answer the error without
-            // returning: skip prepare_args, run the drain loop, let `res` win the
-            // cycle, and re-send the error through the reply variable when both
-            // arrived. Found by reading; not run. (core-lib-03)
-            // 2026-10-26 claude: A conversion failure no longer returns: it skips
-            // prepare_args, the drain loop runs, a reply taken this cycle wins and the
-            // error is answered next cycle through answer_next_cycle (the reply
-            // variable, or the front of kept for a non-cancel-safe eval), which the
-            // replaced-reply path now shares. Pin:
-            // lib_tests::db::db_not_data_keeps_the_reply_of_its_cycle (an insert
-            // finishing asleep, woken with a value whose Cast writes a function; gives
-            // [] with the early return restored, ["null"] now).
             idx => match self.cached.as_data(ctx, idx) {
                 Ok(c) => {
                     data = c;
@@ -3734,20 +3617,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         };
         // one allocation is one value when every equality is structural:
         // a core Eq implementation need not be reflexive
-        // XCR claude for claude: [perf/low] This shortcut covers only two top-level
-        // arrays of one allocation. An unchanged Map (`uniq(i ~ m)`), or a tuple
-        // rebuilt each cycle around the same array (`uniq((i ~ big, 1))`), is still
-        // compared element by element: about 1 ms and 0.33 ms per fire at 100k entries.
-        // Under the same no-hooks condition, use one recursive equality that treats
-        // arrays and maps of the same allocation as equal at every level and recurses
-        // otherwise. probe: design/review-2026-10-26/repro/x-rerun-4-uniq-same-map.sh
-        // (x-rerun-4-05)
-        // 2026-10-26 claude: uniq without live Eq hooks compares through structural_eq:
-        // Value equality walked iteratively, an array (same pointer and length) or a
-        // map (same root node) both share taken as equal at every level. The repro now
-        // runs map n=100000 in 4.3 ms and tuple n=100000 in 5.7 ms per 1000 cycles, as
-        // n=1000. Pin: structural_eq_test::agrees_with_value_equality (agreement with
-        // Value's == only; no timing pin).
         let changed = match last.as_ref() {
             Some(l) if !coretraits::hooks_live(&ctx.env) => !structural_eq(l, &cmp),
             _ => coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref()),

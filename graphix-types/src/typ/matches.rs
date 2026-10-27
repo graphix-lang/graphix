@@ -62,22 +62,6 @@ impl SigPairs {
     /// those pairings defer in turn, accept. Unions that share no open
     /// implementation cell pair apart, so one that cannot pair fails
     /// without retrying the others.
-    // XCR claude for claude: [perf/low] Each permutation of the popped union recurses
-    // into the settle of every other deferred union and clones SigPairs every time.
-    // When the union that cannot pair is the one popped last, all the others are
-    // retried in full, for (n!)^k attempts. Four 6-member unions with one mismatch do
-    // not finish in 150 s, so --check and the LSP hang on a mistyped interface. Fix:
-    // settle each union on its own first, and backtrack only into unions that share a
-    // cell with the failing one; a failure independent of the other unions fails at
-    // once. probe: design/review-2026-10-26/repro/t-contains-sig-settle-exponential.sh
-    // (t-contains-06)
-    // 2026-10-27 claude: SigPairs::settle splits the deferred unions into groups
-    // linked by an open implementation cell no pairing has decided (split_group) and
-    // searches each group apart (search, whose recursion settles the rest of its group
-    // the same way), so a union that cannot pair fails after its own permutations. The
-    // K=4 repro is refused at once (was >150 s). Pin:
-    // lang::interfaces::unpairable_union_refused_without_retrying_the_others (hangs
-    // with the split undone).
     pub(super) fn settle(
         &mut self,
         env: &Env,
@@ -520,25 +504,6 @@ impl Type {
                     })
                 }
             }
-            // XCR claude for claude: [bug/medium] This pairs union members by position
-            // and assumes both sides are in the same order. A union is sorted once,
-            // when it is built, and TVar's Ord compares unbound cells by their absent
-            // bindings. So an implementation union built while its cells were open
-            // keeps that order after they bind, while the interface's union is sorted
-            // by the current Ord. `val f: fn(b: bool, x: 'a) -> [Array<i64>,
-            // Array<'a>]` over `|b: bool, x| select b { true => [x], false => [3] }` is
-            // refused ("expected 'a, got i64") although the types are identical. Fix:
-            // defer to settle every pair of unions where either side holds an unbound
-            // cell anywhere (has_unbound), not only a top-level open member. probe:
-            // design/review-2026-10-26/repro/t-contains-sig-union-order.sh
-            // (t-contains-03)
-            // 2026-10-27 claude: sig_matches_inner defers every same-length pair of
-            // unions that holds an unbound cell anywhere (the ground arm above takes
-            // the rest), and the positional pairing arm is gone, so SigPairs::settle
-            // pairs the members in whatever order the rest accepts (up to
-            // MAX_PAIRED_MEMBERS; a larger union still pairs in stored order). The
-            // repro checks. Pin:
-            // lang::interfaces::union_with_nested_cells_pairs_in_any_order.
 
             // a union is sorted as it was built, while its cells were open,
             // so its members pair in whichever order the rest accepts
@@ -645,22 +610,6 @@ impl Type {
                     }
                 }
             }
-            // XCR claude for claude: [bug/medium] Only a signature variable may meet an
-            // implementation union of open cells. A concrete signature type falls to
-            // the final mismatch arm, although it is an instance (the cells bind to it
-            // and the union collapses). `val f: fn(b: bool, x: i64, y: i64) -> i64`
-            // over `|b: bool, x, y| select b { true => x, false => y }` is refused with
-            // "signature has i64, implementation has ['_N, '_M]". Fix: drop the TVar
-            // requirement on the signature side here and pair every open member with
-            // the signature type; strictly_identical already catches a member that an
-            // argument mapped to something else. probe:
-            // design/review-2026-10-26/repro/t-contains-sig-concrete-vs-open-union.sh
-            // (t-contains-04)
-            // 2026-10-27 claude: The open-union arm takes any signature type, not only
-            // a variable: each open member pairs with it, and a member an argument
-            // mapped elsewhere is a usage mismatch. The repro checks. Pins:
-            // lang::interfaces::union_of_open_cells_implements_a_concrete_type,
-            // union_of_open_cells_does_not_implement_one_of_two_types.
 
             // a union of open implementation cells is the signature's type
             // when each cell is
