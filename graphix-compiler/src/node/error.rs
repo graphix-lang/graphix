@@ -893,6 +893,25 @@ pub struct Qop<R: Rt> {
 }
 
 impl<R: Rt> Qop<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        n: Node<R>,
+        strip: Strip,
+        mode: QopMode,
+    ) -> Node<R> {
+        let raised = Self::raised_typ(strip, &n);
+        Node::new(Self {
+            spec,
+            typ,
+            n,
+            strip,
+            mode,
+            raised,
+            resident: TagValue::phantom(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -902,16 +921,7 @@ impl<R: Rt> Qop<R> {
         let n = decode_node(ctx, buf)?;
         let strip = Strip::decode(buf)?;
         let mode = QopMode::decode(buf)?;
-        let raised = Self::raised_typ(strip, &n);
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            strip,
-            mode,
-            raised,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, n, strip, mode))
     }
 
     pub(crate) fn compile(
@@ -934,16 +944,7 @@ impl<R: Rt> Qop<R> {
         };
         let typ = Type::empty_tvar();
         let strip = Strip::Error;
-        let raised = Self::raised_typ(strip, &n);
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            strip,
-            mode,
-            raised,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, n, strip, mode))
     }
 
     pub(crate) fn check_unhandled(
