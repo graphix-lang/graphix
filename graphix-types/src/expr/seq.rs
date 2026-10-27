@@ -39,7 +39,7 @@ pub static IDLE: ArcStr = literal!("Idle");
 /// Where the rewrite sends a name. A cell (a `seq let` trigger's name, a
 /// try's `e`) takes every use; a snapshot (a trigger's value, a `seqq`
 /// capture) and an entry (a step's entry snapshot) take only the reads, so
-/// a write or `&` reaches the variable itself. A nested seq takes its own
+/// a write, a `&` or a call's function reaches the variable itself. A nested seq takes its own
 /// entries, and a `live` neither. A local is a name a statement of the seq
 /// binds: it stays itself, and no outer variable of its name is captured.
 /// A function is a local or outer name bound to a function: it stays
@@ -578,7 +578,7 @@ fn fn_position_args(
 }
 
 /// Whether a binding is a function: a trait method, or of a function type.
-// CR claude for claude: [bug/high] [bug/high] Machine::snapshot and desugar_queued's
+// XCR claude for claude: [bug/high] [bug/high] Machine::snapshot and desugar_queued's
 // captures decide what to snapshot with is_function, which reads the binding's type
 // before the check. For `let g = id(|x: i64| x + 1)` that type is still open, so a
 // callee `g(..)` in a step is snapshotted (`(pc, g)`, or a `#seqqcap` under seqq). The
@@ -589,6 +589,16 @@ fn fn_position_args(
 // a callee stays at the call site where the call resolves it. Keep is_function for
 // value reads. probe: design/review-2026-10-26/repro/t-seq-seqq-callee-captured.gx
 // (t-seq-01)
+// 2026-10-26 claude: A Ref in a call's function position is never snapshotted or
+// captured: seq.rs captured() skips it (Machine::snapshot and desugar_queued's
+// captures both walk through it), and the rewrite sends such a callee only through
+// redirects that are not snapshots (callee_ref), so the call reads the binding and
+// resolves as it would outside the seq. The probe's id(..) form still prints (1, 30):
+// g bound to a call's result has no static target anywhere, and a call with no static
+// target counts as every variable (CLAUDE.md), so its captures stay live; an alias
+// (let g = g0) is what the fix changes, (1, 30) before, (1, 10) (2, 20) (3, 30) now.
+// Pins: lang::seq_snapshot::a_callee_is_never_captured ([200001] without the fix) and
+// expr::seq::test::the_rewrite_respects_scopes's c(c, f(x)) case.
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -821,7 +831,7 @@ impl Machine<'_> {
         // that a step waits for every variable it names, or make a read wait only where
         // its node runs. probe:
         // design/review-2026-10-26/repro/t-seq-untaken-arm-stalls.gx (t-seq-05)
-        captured(e, &mut |r| {
+        captured(e, false, &mut |r| {
             let (ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. }) =
                 &r.kind
             else {
@@ -1475,20 +1485,18 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             args
         })
     });
-    let mut captures = body.iter().fold(
-        LPooled::<IndexMap<ArcStr, (Expr, ArcStr, BindId)>>::take(),
-        |caps, stmt| {
-            stmt.fold(caps, &mut |mut caps, e| {
-                if let ExprKind::Ref { name }
-                | ExprKind::Connect { name, deref: true, .. } = &e.kind
-                    && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
-                    && !is_function(env, bind)
-                    && !simple_name(name).is_some_and(|n| fn_args.contains(n))
-                {
-                    let n = caps.len();
-                    caps.entry(ArcStr::from(
-                        simple_name(name).unwrap_or(name.0.as_ref()),
-                    ))
+    let mut captures: LPooled<IndexMap<ArcStr, (Expr, ArcStr, BindId)>> = LPooled::take();
+    for stmt in body.iter() {
+        captured(stmt, true, &mut |e| {
+            if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
+                &e.kind
+                && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
+                && !is_function(env, bind)
+                && !simple_name(name).is_some_and(|n| fn_args.contains(n))
+            {
+                let n = captures.len();
+                captures
+                    .entry(ArcStr::from(simple_name(name).unwrap_or(name.0.as_ref())))
                     .or_insert_with(|| {
                         let mut expr = e.clone();
                         expr.kind = ExprKind::Ref { name: name.clone() };
@@ -1498,11 +1506,9 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                             bind.id,
                         )
                     });
-                }
-                caps
-            })
-        },
-    );
+            }
+        });
+    }
     // a capture the body writes or takes a reference to stays live: find
     // them through a scoped rewrite that sends them to the capture's cell
     let cell_of: LPooled<Names> = captures
@@ -2015,16 +2021,34 @@ pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
     out
 }
 
-/// Each expression in `e` but those under a `live` and in a nested seq,
-/// which takes its own snapshots.
-fn captured(e: &Expr, f: &mut impl FnMut(&Expr)) {
+/// Each expression in `e` that may read a variable of the seq's world: all
+/// but a call's function named by a `Ref` ([`callee_ref`]), and, unless
+/// `nested`, those under a `live` and in a nested seq, which takes its own
+/// snapshots.
+fn captured(e: &Expr, nested: bool, f: &mut impl FnMut(&Expr)) {
     ensure_sufficient(|| {
-        if let ExprKind::Live(_) | ExprKind::Seq(_) = e.kind {
+        if !nested && matches!(e.kind, ExprKind::Live(_) | ExprKind::Seq(_)) {
             return;
         }
         f(e);
-        e.for_each_child(&mut |c| captured(c, f));
+        let callee = callee_ref(e);
+        e.for_each_child(&mut |c| {
+            if !callee.is_some_and(|k| std::ptr::eq(k, c)) {
+                captured(c, nested, f)
+            }
+        });
     })
+}
+
+/// The function of a call `e` when a `Ref` names it: the call reads the
+/// binding where it resolves it, never a snapshot or a capture of it.
+fn callee_ref(e: &Expr) -> Option<&Expr> {
+    match &e.kind {
+        ExprKind::Apply(a) if matches!(a.function.kind, ExprKind::Ref { .. }) => {
+            Some(&a.function)
+        }
+        _ => None,
+    }
 }
 
 /// `e` with each `live(x)` of this seq's written as `x`, its reads having
@@ -2321,8 +2345,15 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             ExprKind::Block { exprs: rewrite_stmts(exprs, map, mode) }
         }
         ExprKind::Apply(a) => {
+            let function = match callee_ref(e) {
+                Some(f) => {
+                    let unsnapped = only(map, |r| !r.snapshot());
+                    rewrite(f, unsnapped.as_deref().unwrap_or(map))
+                }
+                None => rewrite(&a.function, map),
+            };
             let call = ApplyExpr {
-                function: Arc::new(rewrite(&a.function, map)),
+                function: Arc::new(function),
                 args: Arc::from_iter(
                     a.args.iter().map(|(n, v)| (n.clone(), rewrite(v, map))),
                 ),
@@ -2640,7 +2671,7 @@ mod test {
 
     /// The rewrite's scoping: a name bound inside the rewritten
     /// expression is not redirected where that binding is in scope, and
-    /// a snapshot takes only reads.
+    /// a snapshot takes only reads, never a call's function.
     #[test]
     fn the_rewrite_respects_scopes() {
         let map = names(&[
@@ -2670,6 +2701,7 @@ mod test {
             ("{ let q = &t; *q <- 10 }", "{ let q = &t; *q <- 10 }", bindings),
             ("{ let q = &x; *q <- t }", "{ let q = &cx; *q <- st }", bindings),
             ("seq let (f, y) = t { f + x }", "seq let (f, y) = st { f + cx }", bindings),
+            ("c(c, f(x))", "c(sc, cf(cx))", bindings),
             (
                 "seq abort(g(c)) { h(c) }",
                 "seq abort(g(sc)) { h(sc) }",

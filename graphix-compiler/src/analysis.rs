@@ -18,10 +18,10 @@ use crate::{
     fusion::{self, lowering},
     node::{
         Runs,
-        callsite::{ArgKey, CallSite},
+        callsite::{ArgKey, CallSite, lambda_literal},
         collection::MapQBase,
         fork_control::{ForkControl, ForkKind},
-        lambda::{GXLambda, LambdaDef, ParamCalls, SelfCall},
+        lambda::{DefBody, DefOrigin, GXLambda, LambdaDef, ParamCalls, SelfCall},
         module::Module,
         op::compared_refs,
         seq_machine::{SeqCapture, SeqMachine},
@@ -897,14 +897,27 @@ fn calls_builtin<R: Rt, E: UserEvent>(
     }
 }
 
-/// Whether a builtin call can read or write through an argument: one whose
+/// What a builtin call can reach through its arguments, the most of any
+/// one's.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Reach {
+    Nothing,
+    /// It calls back functions whose source writes nothing; what they
+    /// read (their captures, a core-trait impl's) is not followed.
+    Reads,
+    /// Anything: through a reference, an `Any`, or a function that may
+    /// write.
+    All,
+}
+
+/// What a builtin call can read or write through an argument: one whose
 /// value can hold a reference or a function, at a parameter its declared
 /// signature types as one, as `Any` or by a bounded variable (a builtin
 /// has nothing else to reach through).
-fn builtin_reaches_out<R: Rt, E: UserEvent>(
+fn builtin_reach<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     ctx: &CompileCtx<R, E>,
-) -> bool {
+) -> Reach {
     let env = &ctx.env;
     let ft = callee_def(cs, ctx).map(|d| &d.typ);
     let formal = |ft: &FnType, key: &ArgKey| -> Option<Type> {
@@ -926,13 +939,94 @@ fn builtin_reaches_out<R: Rt, E: UserEvent>(
         t.collect_tvars(&mut tvs);
         bounds.iter().any(|(tv, _)| tvs.contains_key(&tv.name))
     };
+    // a function handed back to the builtin, or a reference, may be
+    // called or written through there
+    let handed = |n: &Node<R, E>| {
+        let source = handed_def(n, ctx).and_then(|d| match &d.origin {
+            DefOrigin::Source { spec, body: DefBody::Expr(_), .. }
+                if !d.typ.rtype.reaches_out(env) =>
+            {
+                Some(spec)
+            }
+            DefOrigin::Source { .. } | DefOrigin::Runtime => None,
+        });
+        match source {
+            Some(spec) if writes_nothing(spec) => Reach::Reads,
+            _ => Reach::All,
+        }
+    };
     cs.args
         .iter()
-        .filter(|(_, a)| a.node.as_ref().is_some_and(|n| n.typ().reaches_out(env)))
-        .any(|(key, _)| match ft {
-            None => true,
-            Some(ft) => formal(ft, key).is_none_or(|t| reaches(ft, &t)),
+        .filter_map(|(key, a)| Some((key, a.node.as_ref()?)))
+        .filter(|(_, n)| n.typ().reaches_out(env))
+        .filter(|(key, _)| {
+            ft.is_none_or(|ft| formal(ft, key).is_none_or(|t| reaches(ft, &t)))
         })
+        .map(|(_, n)| handed(n))
+        .max()
+        .unwrap_or(Reach::Nothing)
+}
+
+/// Whether `e` writes no variable, makes no reference and calls nothing:
+/// a function whose source this holds of reads, and does nothing else.
+fn writes_nothing(e: &Expr) -> bool {
+    use ExprKind::*;
+    crate::stack::ensure_sufficient(|| {
+        let own = match &e.kind {
+            Connect { .. }
+            | Apply(_)
+            | ByRef(..)
+            | Module { .. }
+            | Impl(_)
+            | Trait(_)
+            | Seq(_)
+            | Until(_)
+            | Live(_)
+            | TryWith(_)
+            | SeqGuard(_)
+            | SeqAbort(_)
+            | SeqMachine(_)
+            | SeqCapture(_) => false,
+            NoOp
+            | Constant(_)
+            | ExplicitParens(_)
+            | Block { .. }
+            | Use { .. }
+            | Bind(_)
+            | Ref { .. }
+            | StringInterpolate { .. }
+            | StructRef { .. }
+            | TupleRef { .. }
+            | ArrayRef { .. }
+            | ArraySlice { .. }
+            | MapRef { .. }
+            | StructWith(_)
+            | Lambda(_)
+            | TypeDef(_)
+            | TypeCast { .. }
+            | Never { .. }
+            | Any { .. }
+            | Array { .. }
+            | List { .. }
+            | Map { .. }
+            | Tuple { .. }
+            | Variant { .. }
+            | Construct { .. }
+            | Struct(_)
+            | Select(_)
+            | Qop { .. }
+            | Rethrow(_)
+            | OrNever(_)
+            | Catch(_)
+            | Deref(_)
+            | Neg(_)
+            | BinOp { .. }
+            | Not { .. } => true,
+        };
+        let mut nothing = own;
+        e.for_each_child(&mut |c| nothing = nothing && writes_nothing(c));
+        nothing
+    })
 }
 
 /// The facts of the functions a builtin call is handed: each argument of
@@ -965,44 +1059,52 @@ fn callback_facts<R: Rt, E: UserEvent>(
         calls.captured.iter().map(captured).fold(base, |a, f| a.join(f))
     };
     let function = |n: &Node<R, E>| -> LambdaFacts {
-        let lid = match n.view() {
-            NodeView::Lambda(l) => {
-                return l
-                    .def_value()
-                    .downcast_ref::<LambdaDef<R, E>>()
-                    .map_or(unresolved.facts, of_def);
-            }
-            NodeView::Ref(r) if (unresolved.params)(r.id) => return LambdaFacts::PURE,
-            // XCR claude for claude: [bug/medium] A Ref callback takes its definition's
-            // own facts and never its ParamCalls, which the literal branch above joins
-            // (`own` is ASYNC, and each captured parameter takes its callee's facts). A
-            // let-bound callback that calls the enclosing function's parameter
-            // therefore reads as pure. `#[sync] |f, v| { let g = |x| f(x); filter(v, g)
-            // }` with an async f passes, while `filter(v, |x| f(x))` and `filter(v, f)`
-            // are refused. Resolve the Ref to its LambdaDef and share the literal
-            // branch's computation for it (one closure over `&LambdaDef`). probe:
-            // design/review-2026-10-26/repro/c-lambda-sync-through-let-callback.gx
-            // (c-lambda-04)
-            // 2026-10-26 claude: callback_facts computes a handed definition's facts in
-            // one closure, of_def (its own facts joined with ParamCalls: own is async,
-            // each captured parameter takes its resolution), used by the literal branch
-            // and by a Ref resolved through bind_to_lambda or fn_forward_resolutions.
-            // Pin: attributes.rs sync_on_let_bound_callback (accepted without the fix).
-            NodeView::Ref(r) => ctx
-                .bind_to_lambda
-                .get(&r.id)
-                .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
-                .map(|d| d.id)
-                .or_else(|| ctx.fn_forward_resolutions.get(&r.id).copied()),
-            _ => None,
-        };
-        lid.and_then(|lid| lambda_def(ctx, lid)).map_or(unresolved.facts, of_def)
+        match n.view() {
+            NodeView::Ref(r) if (unresolved.params)(r.id) => LambdaFacts::PURE,
+            _ => handed_def(n, ctx).map_or(unresolved.facts, of_def),
+        }
     };
     cs.args
         .values()
         .filter_map(|a| a.node.as_ref())
         .filter(|n| n.typ().with_deref(|t| matches!(t, Some(Type::Fn(_)))))
         .fold(LambdaFacts::PURE, |acc, n| acc.join(function(n)))
+}
+
+/// The definition a function argument `n` is: a lambda literal, bare or
+/// sampled (a seq step's inline callback), or a binding resolved to one.
+fn handed_def<'a, R: Rt, E: UserEvent>(
+    n: &'a Node<R, E>,
+    ctx: &'a CompileCtx<R, E>,
+) -> Option<&'a LambdaDef<R, E>> {
+    if let Some(l) = lambda_literal(n) {
+        return l.def_value().downcast_ref::<LambdaDef<R, E>>();
+    }
+    let lid = match n.view() {
+        // XCR claude for claude: [bug/medium] A Ref callback takes its definition's
+        // own facts and never its ParamCalls, which the literal branch above joins
+        // (`own` is ASYNC, and each captured parameter takes its callee's facts). A
+        // let-bound callback that calls the enclosing function's parameter
+        // therefore reads as pure. `#[sync] |f, v| { let g = |x| f(x); filter(v, g)
+        // }` with an async f passes, while `filter(v, |x| f(x))` and `filter(v, f)`
+        // are refused. Resolve the Ref to its LambdaDef and share the literal
+        // branch's computation for it (one closure over `&LambdaDef`). probe:
+        // design/review-2026-10-26/repro/c-lambda-sync-through-let-callback.gx
+        // (c-lambda-04)
+        // 2026-10-26 claude: callback_facts computes a handed definition's facts in
+        // one closure, of_def (its own facts joined with ParamCalls: own is async,
+        // each captured parameter takes its resolution), used by the literal branch
+        // and by a Ref resolved through bind_to_lambda or fn_forward_resolutions.
+        // Pin: attributes.rs sync_on_let_bound_callback (accepted without the fix).
+        NodeView::Ref(r) => ctx
+            .bind_to_lambda
+            .get(&r.id)
+            .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+            .map(|d| d.id)
+            .or_else(|| ctx.fn_forward_resolutions.get(&r.id).copied()),
+        _ => None,
+    };
+    lambda_def(ctx, lid?)
 }
 
 /// A call's facts by its callee alone.
@@ -1424,7 +1526,8 @@ fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) 
 /// `n`'s own reads and writes into `s`, and the instances its calls
 /// reach into `callees`. A write or read through a reference, a call
 /// with no static target, a dynamic module, and a builtin handed a
-/// function or a reference touch every variable.
+/// reference or a function that may write touch every variable; a builtin
+/// handed only functions that write nothing reads every variable.
 /// A call with no static target is opaque: what it calls may change at
 /// any bind. Only `current`, a slot site's own call, which the site
 /// decides again when its callback rebinds, counts as the instance it
@@ -1565,11 +1668,35 @@ fn own_access<R: Rt, E: UserEvent>(
                     // design/dependency_summaries.md §2, so it needs your call. probe:
                     // design/review-2026-10-26/repro/x-dup-seqq-filter-unsnapshots.gx
                     // (and x-dup-seqq-nested-seq-unsnapshots.gx) (x-dup-01)
-                    if builtin_reaches_out(cs, ctx) {
-                        if gxdbg_seqplan() {
-                            eprintln!("SEQPLAN   opaque builtin {}", cs.fnode().spec());
+                    // 2026-10-26 claude: x-seq-sampling-01's fix (builtin_reach) makes
+                    // a builtin handed a write-free function read all and write
+                    // nothing, so the filter probe prints (1, 3). The nested-seq probe
+                    // prints (1, 1): before, every nested seq made all captures live,
+                    // so whether a nested seq reads the seqq's queued capture or takes
+                    // its own snapshot at its entry was never visible. The lowering
+                    // passes seqq captures into a nested seq (rewrite_with_inner drops
+                    // only Entry redirects there; the Redirect docs say a nested seq
+                    // takes its own entries), which gives 1; the probe and CLAUDE.md's
+                    // 'a nested seq excepted, which takes its own' read as 2. Question:
+                    // does a nested seq in a seqq read the queued capture (1, today) or
+                    // the variable at its own entry (2: give seqq captures a redirect
+                    // of their own that rewrite_with_inner drops at a nested seq, as it
+                    // drops Entry)?
+                    let reach = builtin_reach(cs, ctx);
+                    if reach != Reach::Nothing && gxdbg_seqplan() {
+                        let what = match reach {
+                            Reach::Reads => "reading",
+                            _ => "opaque",
+                        };
+                        eprintln!("SEQPLAN   {what} builtin {}", cs.fnode().spec());
+                    }
+                    match reach {
+                        Reach::Nothing => (),
+                        Reach::Reads => {
+                            s.reads.all = true;
+                            s.ordered = true;
                         }
-                        s.opaque()
+                        Reach::All => s.opaque(),
                     }
                     return;
                 }
@@ -2302,7 +2429,7 @@ fn plan_machines<R: Rt, E: UserEvent>(
                 written.union(&s.writes);
             });
             for (id, c) in caps.iter() {
-                // CR claude for claude: [bug/high] A step that calls a builtin handed a
+                // XCR claude for claude: [bug/high] A step that calls a builtin handed a
                 // function gets `all` reads and writes from builtin_reaches_out, and
                 // `all` names every capture here, so every seqq capture goes live and
                 // the run reads the variables as they stand, not as they were queued.
@@ -2316,6 +2443,22 @@ fn plan_machines<R: Rt, E: UserEvent>(
                 // dependency_summaries.md §2 with it. probe:
                 // design/review-2026-10-26/repro/x-seq-sampling-seqq-opaque-step-makes-captures-live.gx
                 // (x-seq-sampling-01)
+                // 2026-10-26 claude: builtin_reaches_out is now builtin_reach
+                // (Reach::Nothing/Reads/All). A builtin handed only functions whose source writes
+                // nothing (handed_def: a lambda literal, bare or sampled, or a binding resolved to a
+                // definition; writes_nothing over its source: no connect, call, &, seq, module, impl; a
+                // result type that holds no function or reference) reads all and writes nothing;
+                // anything else stays opaque. The suggested instance join is not possible here: a
+                // builtin's callback (genn::Callback) binds at run time, so before the first cycle it
+                // has no instance to summarize, which is why reads stay all (parallel plans are
+                // unchanged: they read only reads and ordered). callback_facts shares handed_def, so it
+                // also resolves a sampled literal now. The probe prints (0, 0, 0).
+                // dependency_summaries.md section 2 says so. Pin:
+                // lang::seq_snapshot::a_callback_that_writes_nothing_keeps_the_captures (filter and
+                // nested-seq rows give 6 without it; a writing callback still makes the capture live).
+                // Side effect for x-dup-01: a nested seq in a seqq now reads the seqq's captures as the
+                // Redirect docs say (a snapshot passes into a nested seq, only entries do not), so
+                // x-dup-seqq-nested-seq-unsnapshots.gx prints (1, 1), where it expects (1, 2).
                 let live = written.names(&c.live_id);
                 c.is_live.store(live, Ordering::Relaxed);
                 if live {

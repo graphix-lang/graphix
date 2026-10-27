@@ -110,6 +110,37 @@ async fn a_capture_a_callee_writes_is_read_at_entry(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A callee stays at its call site whatever its binding's type before the
+// check: a call through an alias resolves statically, so it writes nothing
+// and the capture keeps the request's value.
+async fn a_callee_is_never_captured(mode: Mode) -> Result<()> {
+    let body = "let x = 0; x <- select step { 3 => 200, _ => never() }; \
+                let g0 = |k: i64| k + 1; let g = g0; \
+                let t = select step { 1 => 1, _ => never() }; \
+                seqq t { until live(step) > 5; let c = g(0); x * 1000 + c }";
+    assert_eq!(values(body, mode).await?, [1]);
+    Ok(())
+}
+
+// A builtin handed a function that writes nothing (a pure callback, a
+// nested seq's busy gate) leaves the captures queued; one handed a
+// function that writes a capture makes it live.
+async fn a_callback_that_writes_nothing_keeps_the_captures(mode: Mode) -> Result<()> {
+    for (stmt, want) in [
+        ("let y = filter(t, |v| v > 0)", 0),
+        ("let y = seq { 1 }", 0),
+        ("let y = filter(t, |v| { x <- v + 100; v > 0 })", 6),
+    ] {
+        let body = format!(
+            "let x = 0; x <- step ~ step; \
+             let t = select step {{ 1 => 1, _ => never() }}; \
+             seqq t {{ until live(step) > 5; {stmt}; x }}"
+        );
+        assert_eq!(values(&body, mode).await?, [want], "{stmt}");
+    }
+    Ok(())
+}
+
 // An until that reads only the snapshot and calls nothing cannot change
 // after its entry, and the check warns of it; one with a live part is
 // quiet.
@@ -150,3 +181,5 @@ modes!(a_callee_born_with_a_constant_answers_it);
 modes!(a_fixed_until_warns);
 modes!(a_write_through_a_reference_reads_it_at_entry);
 modes!(a_capture_a_callee_writes_is_read_at_entry);
+modes!(a_callee_is_never_captured);
+modes!(a_callback_that_writes_nothing_keeps_the_captures);

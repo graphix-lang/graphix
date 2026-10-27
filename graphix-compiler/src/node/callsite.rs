@@ -4027,7 +4027,7 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
 
 /// The lambda literal an argument is: bare, or sampled (a seq step's
 /// inline callback, `pc ~! |x| ..`), whose value is the literal's.
-fn lambda_literal<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&Lambda> {
+pub(crate) fn lambda_literal<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&Lambda> {
     match node.view() {
         NodeView::Lambda(l) => Some(l),
         NodeView::Sample(s) => match s.arg.node.view() {

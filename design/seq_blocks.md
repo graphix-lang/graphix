@@ -172,8 +172,10 @@ as a call's missing argument is waited for (§6.3). It does not change
 while the step runs: `select x > 2 { true => x, false => never() }`
 stalls when `x` was 2 at entry, and so does `select big(x) { .. }`,
 which is handed the same `x`. The rule is lexical: a function the step
-calls runs on its own terms, its state and its own captures live, as an
-async builtin's subscription or socket is. A step waits for the world
+calls by name is never snapshotted (the call reads the binding,
+whatever its type before the check), and it runs on its own terms, its
+state and its own captures live, as an async builtin's subscription or
+socket is. A step waits for the world
 to change only through `live(e)`, whose variables are read live:
 `until live(ready)`. An `until` whose condition has no `live` part and
 calls nothing cannot change after its entry, and the check warns of it.
@@ -634,9 +636,10 @@ body's captured inputs taken at enqueue time rather than at step entry.
 The preamble (`desugar_queued`) identifies the body's free reads by a
 scoped rewrite over the current environment — nested binds, patterns
 and lambda parameters respected, qualified names included, trait
-method dispatchers and function-typed bindings left as static call
-targets, since a call through a projection of the request tuple would
-resolve dynamically and never fuse — and projects them
+method dispatchers, function-typed bindings and every name a call's
+function position spells left as static call targets, since a call
+through a projection of the request tuple would resolve dynamically and
+never fuse — and projects them
 out: every trigger samples ONE tuple (the request plus its captures),
 never separate queues of independently updating captures. Each capture
 is `hold`-latched on activation so a standing input is present for the

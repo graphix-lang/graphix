@@ -69,8 +69,13 @@ walks it (`fusion::for_each_node`):
   points to, which may be any variable, at the place it names this
   cycle;
 - a call reaches its instance (a static target, a resolved lambda, a
-  self-bind of the call graph); a builtin handed a reference, a
-  function or an `Any` reads and writes `all`, and one handed neither
+  self-bind of the call graph); a builtin handed only functions whose
+  source writes nothing (a lambda literal, bare or sampled, or a
+  Graphix definition a binding resolves to, with no `<-`, call, `&`,
+  seq or module in it and a result that holds no function or reference) reads
+  `all` and writes nothing, since its callbacks bind at run time and
+  have no instance to follow yet; one handed a reference, an `Any` or
+  any other function reads and writes `all`, and one handed neither
   touches nothing; any other call, and a dynamic module, read and
   write `all`.
 
