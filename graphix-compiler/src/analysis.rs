@@ -1216,7 +1216,7 @@ fn is_call_to<R: Rt>(cs: &CallSite<R>, instance: LambdaInstanceId) -> bool {
     cs.static_target().map(|target| target.instance) == Some(instance)
 }
 
-fn lambda_def<'a, R: Rt>(
+pub(crate) fn lambda_def<'a, R: Rt>(
     ctx: &'a CompileCtx<R>,
     lid: LambdaId,
 ) -> Option<&'a LambdaDef<R>> {

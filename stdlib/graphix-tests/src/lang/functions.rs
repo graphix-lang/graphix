@@ -1199,6 +1199,40 @@ async fn rec_shrink_deletes_unreached_depths(mode: Mode) -> Result<()> {
 
 modes!(rec_shrink_deletes_unreached_depths);
 
+// A pure recursion's depth swinging 10, 5, 10, .. for 250 cycles: the
+// depths left asleep are reborn when reached again (and deleted at every
+// hundredth shrink), and every cycle answers its own sum.
+async fn rec_pure_depth_swing_answers_each_cycle(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let t = array::iter(array::init(250, |i| 10 - i % 2 * 5));
+        let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) };
+        f(t)
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    let expected: Vec<i64> = (0..250).map(|i| if i % 2 == 0 { 55 } else { 15 }).collect();
+    assert_eq!(as_i64s(&values), expected);
+    Ok(())
+}
+
+modes!(rec_pure_depth_swing_answers_each_cycle);
+
+// A depth reborn after a shrink reads its capture as it stands: the
+// capture moves while depths 2 and 3 sleep, and their rebirth sees it.
+async fn rec_reborn_depth_reads_its_capture(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let t = array::iter([3, 1, 1, 3]);
+        let base = 100;
+        base <- select t {1 => 200, _ => never()};
+        let rec f = |n: i64| -> i64 select n { 0 => base, _ => n + f(n - 1) };
+        f(t)
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [106, 101, 201, 206]);
+    Ok(())
+}
+
+modes!(rec_reborn_depth_reads_its_capture);
+
 // Pure non-tail recursion re-fired with changing args recomputes:
 // [fib(8), fib(9), fib(10)] = [21, 34, 55].
 const REC_TRANSIENT_PURE_REFIRE: &str = r#"

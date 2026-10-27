@@ -1421,8 +1421,18 @@ pub struct CallSite<R: Rt> {
     defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Absent>,
+    /// A shrink kept this pure recursive callee asleep: re-reaching it
+    /// dispatches it as a fresh bind.
+    rebirth: bool,
+    /// Shrinks kept since this site last deleted its callee.
+    kept_shrinks: u8,
     pub(crate) fork: ForkSite,
 }
+
+/// A recursive edge keeps its pure callee across this many shrinks in a
+/// row and deletes it at the next, so a depth left for good is freed in
+/// time while a depth that swings rebuilds once in a hundred.
+const KEPT_SHRINKS: u8 = 99;
 
 /// The registered builtin a site calls by name: its function is a
 /// binding the index resolves to a builtin's definition, or one bound to
@@ -1474,6 +1484,8 @@ impl<R: Rt> CallSite<R> {
             share: None,
             defaults_open: true,
             absent: None,
+            rebirth: false,
+            kept_shrinks: 0,
             fork: ForkSite::default(),
         }
     }
@@ -2635,8 +2647,9 @@ impl<R: Rt> CallSite<R> {
 impl<R: Rt> CallSite<R> {
     fn update_call(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
+        let rebirth = mem::take(&mut self.rebirth);
         if woke
-            && ctx.event.born()
+            && (rebirth || ctx.event.born())
             && let Some(f) = self.callee.apply_mut()
         {
             f.reborn(ctx)
@@ -2653,6 +2666,7 @@ impl<R: Rt> CallSite<R> {
         // first bind stood them in, and compiles its defaults afresh; a
         // constant function never rebinds
         let keep = match &self.callee {
+            _ if rebirth => Keep::Every,
             Callee::Static { first_update: true, .. } => Keep::Every,
             Callee::Static { .. } => Keep::Nothing,
             Callee::DynamicBound { .. }
@@ -2698,7 +2712,7 @@ impl<R: Rt> CallSite<R> {
             mem::replace(first_update, false)
         } else {
             fnode_value.is_some_and(|v| self.rebind(ctx, v, &mut set))
-        };
+        } || rebirth;
         // a fresh bind reads its quiet arguments as new
         if bound {
             for arg in self.args.values() {
@@ -3345,9 +3359,11 @@ impl<R: Rt> CallSite<R> {
 
     pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
-        // A recursive edge deselected by a shrink is deleted, so
-        // re-reaching this depth binds a fresh activation.
-        // CR claude for claude: [perf/medium] Deleting the callee here (shrink = delete)
+        // A recursive edge deselected by a shrink deletes its callee, so
+        // re-reaching this depth binds a fresh activation; a pure callee is
+        // kept asleep instead and reborn when re-reached, which no program
+        // can tell from a fresh bind.
+        // XCR claude for claude: [perf/medium] Deleting the callee here (shrink = delete)
         // makes a recursion whose depth swings rebuild every activation between the two
         // depths every cycle, as fresh run-time binds that cost ~15x an update.
         // Node-walked fib(14 - i % 2) costs 860 ms per 100 cycles against 80 for
@@ -3360,8 +3376,28 @@ impl<R: Rt> CallSite<R> {
         // (x-perf-runtime-03)
         // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68,
         // Activation memory and depth churn):
+        // 2026-10-27 claude: Lever 3 built as ruled (D1, amortized): a recursive edge's
+        // sleep in a deselected arm keeps a pure callee (definition facts sync and
+        // stateless) asleep and sets CallSite::rebirth; re-reaching the depth calls
+        // Apply::reborn and dispatches it as a fresh bind (View::Birth, arguments read
+        // as new). A site deletes at every hundredth shrink in a row (KEPT_SHRINKS). The
+        // probe now costs 115 ms per 100 cycles alternating 14/13 against 84 fixed (was
+        // 860). A stateful callee still deletes (rec_shrink_deletes_unreached_depths
+        // unchanged). Pins: lang::functions::rec_pure_depth_swing_answers_each_cycle,
+        // rec_reborn_depth_reads_its_capture. Docs: CLAUDE.md activation state,
+        // design/recursive_activations.md. Open for Eric: a depth left for good stays
+        // allocated, asleep, until its site shrinks again; a time-driven cleanup would
+        // need a per-runtime queue of kept activations. Needs a soak.
         if super::in_deselected_arm() && self.is_recursive_edge() {
-            if let Some(mut f) = self.callee.take_apply() {
+            if self.kept_shrinks < KEPT_SHRINKS && self.callee_is_pure(ctx) {
+                self.kept_shrinks += 1;
+                self.rebirth = true;
+                if let Some(f) = self.callee.apply_mut() {
+                    f.sleep(ctx)
+                }
+            } else if let Some(mut f) = self.callee.take_apply() {
+                self.kept_shrinks = 0;
+                self.rebirth = false;
                 f.delete(ctx)
             }
         } else if let Some(f) = self.callee.apply_mut() {
@@ -3380,6 +3416,16 @@ impl<R: Rt> CallSite<R> {
 
     pub(crate) fn typ(&self) -> &Type {
         &self.rtype
+    }
+
+    /// Whether the bound callee is a lambda whose definition is pure
+    /// (sync, no per-activation state): nothing in it outlives a birth.
+    fn callee_is_pure(&self, ctx: &ExecCtx<'_, R>) -> bool {
+        match self.callee.apply().map(|a| a.view()) {
+            Some(ApplyView::Lambda(g)) => crate::analysis::lambda_def(ctx, g.id())
+                .is_some_and(|d| d.facts.lock().is_pure()),
+            _ => false,
+        }
     }
 
     pub(crate) fn spec(&self) -> &Expr {

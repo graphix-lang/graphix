@@ -781,6 +781,9 @@ impl<R: Rt> Slot<R> {
     // Readdressed for that decision.
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68, Activation
     // memory and depth churn):
+    // 2026-10-27 claude: Under the D1 ruling, slots and activations sharing their
+    // prototype's graph (lever 2) is not taken now; lever 1 (smaller instances) applies
+    // to slots as to activations and is next under x-fix-nodes-03.
     fn new(
         ctx: &mut CompileCtx<R>,
         callback: &Callback,

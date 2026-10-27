@@ -157,9 +157,19 @@ Sleep is still pause for arms that PERSIST — an arm is a fixed position
 (pause/resume), a recursion depth is a transient invocation
 (delete/fresh). The JIT twin is `FusedKernel::update`'s reclaim of
 per-activation `SelfBlock` subtrees not stamped with the current reach
-generation (`kernel_instance_state.md`). If oscillation thrash from
-immediate delete+realloc ever bites, the refinement is a reset-on-reuse
-pool in BOTH systems — semantically identical.
+generation (`kernel_instance_state.md`).
+
+A pure callee (its definition's facts sync and stateless: nothing in it
+outlives a birth) is the exception that removes oscillation thrash: the
+shrink keeps it asleep (`CallSite::rebirth`), and re-reaching the depth
+dispatches it as a fresh bind does, under `View::Birth` after
+`Apply::reborn`, its arguments read as new, which no program can tell
+from a fresh activation. Each site deletes at every hundredth shrink in
+a row (`KEPT_SHRINKS`), so a swinging depth rebuilds once in a hundred
+swings; a depth left for good stays allocated, asleep, until its site
+shrinks again or the recursion's caller deletes it. Pins:
+`lang::functions::rec_pure_depth_swing_answers_each_cycle` (10/5 for
+250 cycles), `rec_reborn_depth_reads_its_capture`.
 
 Rejected: retaining shrunk activations (the initial call; revisited
 for the semantics reason above). Rejected: an iterative slot-vector

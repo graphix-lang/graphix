@@ -675,7 +675,9 @@ node graph IS the IR — there is no parallel typed IR
   as one native loop held to the activations' answers
   (`design/tail_calls_are_calls.md`); instances are retained
   unconditionally; shrink = delete (a depth not reached this cycle is
-  deleted; re-reaching it is fresh). No depth limit; evaluation is
+  deleted; re-reaching it is fresh), except that a pure callee is kept
+  asleep and reborn as a fresh bind when re-reached, deleted at every
+  hundredth shrink of its site (`CallSite::rebirth`). No depth limit; evaluation is
   atomic within a cycle; containment is the cooperative interrupt
   (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`; a reply the
   interrupted cycle kept from every reader, their boundaries unvisited,

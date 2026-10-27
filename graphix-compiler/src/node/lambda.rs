@@ -1165,6 +1165,10 @@ impl<R: Rt> GXLambda<R> {
     // this decision (tests-shell-compiler-04).
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q68, Activation
     // memory and depth churn):
+    // 2026-10-27 claude: Lever 3 (depth churn) is built, see x-perf-runtime-03. Lever 1
+    // (smaller activations: an instance's nodes built from its definition's types with no
+    // placeholder cells, shared Ref and call-site structures) is next; the per-activation
+    // cost and MAX_BYTES_PER_ACTIVATION are unchanged so far.
     fn new_with_body(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
