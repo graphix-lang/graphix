@@ -4987,3 +4987,17 @@ async fn birth_only_warnings(mode: Mode) -> Result<()> {
 }
 
 modes!(birth_only_warnings);
+
+run!(select_discriminants_follow_instantiation, r#"{
+    let f = |x| select x { v => v };
+    (f((1, 2)), f([3, 4, 5]))
+}"#, |v: Result<&Value>| match v {
+    Ok(Value::Array(v)) => match &v[..] {
+        [Value::Array(a), Value::Array(b)] => {
+            a[..] == [Value::I64(1), Value::I64(2)]
+                && b[..] == [Value::I64(3), Value::I64(4), Value::I64(5)]
+        }
+        _ => false,
+    },
+    _ => false,
+}; FuseExpect::Jit);

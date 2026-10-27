@@ -5,6 +5,7 @@ use super::{
     compiler::compile,
     pattern::StructPatternNode,
     produce_constant,
+    select::ArmDiscriminants,
 };
 use crate::SourcePosition;
 use crate::{
@@ -57,6 +58,8 @@ use triomphe::Arc;
 /// again. An id two nodes share has no row.
 #[derive(Debug, Default)]
 pub struct DefTable {
+    /// Only closed rows may share discriminants across substitutions.
+    discriminants: Mutex<AHashMap<ExprId, Option<Arc<ArmDiscriminants>>>>,
     types: AHashMap<ExprId, Type>,
     ftypes: AHashMap<ExprId, FnType>,
     /// What a node derives beside its own type, in the order the node
@@ -217,6 +220,7 @@ impl DefTable {
     fn renamed(&self, known: &AHashMap<usize, TVar>) -> DefTable {
         ensure_sufficient(|| {
             let mut table = DefTable {
+                discriminants: Mutex::default(),
                 types: self
                     .types
                     .iter()
@@ -338,6 +342,7 @@ impl DefTable {
                     .map(|_| Ok((LambdaId::decode(sub)?, u32::decode(sub)?)))
                     .collect::<Result<_, _>>()?;
                 Ok(SArc::new(DefTable {
+                    discriminants: Mutex::default(),
                     types,
                     ftypes,
                     aux,
@@ -479,6 +484,28 @@ impl InstanceTypes {
     pub(crate) fn aux(&mut self, id: ExprId) -> Option<SmallVec<[Type; 8]>> {
         let ts = self.tables.table.aux.get(&id)?;
         Some(ts.iter().map(|t| self.instance_of(t)).collect())
+    }
+
+    pub(crate) fn arm_discriminants(
+        &self,
+        id: ExprId,
+        arg: ExprId,
+        arms: usize,
+    ) -> Option<Arc<ArmDiscriminants>> {
+        let table = &self.tables.table;
+        table
+            .discriminants
+            .lock()
+            .entry(id)
+            .or_insert_with(|| {
+                let scrutinee = table.types.get(&arg)?;
+                let predicates = table.aux.get(&id)?;
+                if scrutinee.has_unbound() || predicates.iter().any(Type::has_unbound) {
+                    return None;
+                }
+                Some(Arc::new(ArmDiscriminants::new(scrutinee.clone(), arms)))
+            })
+            .clone()
     }
 
     /// The signature the definition's check settled for the call at `id`.

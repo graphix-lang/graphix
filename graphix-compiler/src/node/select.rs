@@ -15,7 +15,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{AbstractId, Type},
+    typ::{AbstractId, ShallowScrutinee, Type},
     wrap,
 };
 use anyhow::{Result, anyhow};
@@ -59,6 +59,7 @@ pub struct Select<R: Rt> {
     /// scrutinee, which may have moved while no reader was awake.
     slept: WakeBit,
     arm_facts: Option<LazyArmFacts>,
+    discriminants: Option<Arc<ArmDiscriminants>>,
     /// The compile's flags, for the definition check's warnings.
     flags: BitFlags<CFlag>,
 }
@@ -74,9 +75,7 @@ struct LazyArmFacts {
     /// Per arm: entered before. A first entry is the arm's birth, every
     /// later one a resume.
     entered: Vec<bool>,
-    /// Per arm: the shallow discriminator of an inferred predicate, found
-    /// when the chain first consults the arm.
-    shallow: Vec<OnceLock<Option<Type>>>,
+    discriminants: Arc<ArmDiscriminants>,
     /// A value no arm matched was logged: once per select.
     logged_no_match: bool,
     /// The arms with a guard, in order.
@@ -86,6 +85,21 @@ struct LazyArmFacts {
     missed: Vec<bool>,
     /// A select with guards: the ones the chain does not reach sleep.
     guards: Option<Box<GuardSleep>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ArmDiscriminants {
+    shallow: Box<[OnceLock<Option<Type>>]>,
+    scrutinee: ShallowScrutinee,
+}
+
+impl ArmDiscriminants {
+    pub(crate) fn new(scrutinee: Type, arms: usize) -> Self {
+        Self {
+            shallow: (0..arms).map(|_| OnceLock::new()).collect(),
+            scrutinee: ShallowScrutinee::new(scrutinee),
+        }
+    }
 }
 
 /// A guard the chain does not reach sleeps, and wakes caught up when it
@@ -140,7 +154,11 @@ fn guard_refs<R: Rt>(pat: &PatternNode<R>, r: &mut Refs) {
 }
 
 impl LazyArmFacts {
-    fn build<R: Rt>(ctx: &ExecCtx<'_, R>, arms: &[(PatternNode<R>, Node<R>)]) -> Self {
+    fn build<R: Rt>(
+        ctx: &ExecCtx<'_, R>,
+        arms: &[(PatternNode<R>, Node<R>)],
+        discriminants: Arc<ArmDiscriminants>,
+    ) -> Self {
         LazyArmFacts {
             tracked: TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
                 arm_refs(&arms[i], r)
@@ -150,7 +168,7 @@ impl LazyArmFacts {
                 .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
                 .collect(),
             entered: vec![false; arms.len()],
-            // CR claude for claude: [perf/medium] [perf/medium] Each arm's
+            // XCR claude for claude: [perf/medium] [perf/medium] Each arm's
             // shallow_discriminant re-walks the whole scrutinee union
             // (covers_what_it_meets -> union_members, Type::shallow_discriminant ->
             // flatten_union_members), expanding every named member's typedef. That is
@@ -173,7 +191,22 @@ impl LazyArmFacts {
             // per-definition share (the discriminants depend only on the patterns and
             // the scrutinee type), which needs the instance rows (DefTable) to carry
             // them or a reuse rule for unsubstituted instances.
-            shallow: arms.iter().map(|_| OnceLock::new()).collect(),
+            // 2026-10-27 codex: Cache select discriminants on definition check tables
+            // when both the scrutinee and predicate rows are closed; open rows retain
+            // instance-local facts. Each scrutinee flattens and checks its members once,
+            // and exact predicates skip that work entirely. Pins:
+            // deep_nesting::select_discriminants_first_value_in_time failed without the
+            // fix at its 4 s deadline and passed with it in 1.43 s;
+            // lang::select::select_discriminants_follow_instantiation exercises
+            // differently shaped generic instantiations. Debug --no-cache --no-fusion
+            // first-value probe, 2000 slots and 25/50/100 last-arm nominal members:
+            // 0.679/2.401/8.040 s before, 0.452/0.558/1.122 s after, same values.
+            // Timings are on the shared host. Targeted shallow-discriminant, select,
+            // fusion, seq and kernel-image tests pass; no FuseExpect changed. The
+            // derivable definition cache is not serialized, so already-imaged instance
+            // bodies rebuild their local facts on restore; the cold-path timing pin does
+            // not measure that path.
+            discriminants,
             logged_no_match: false,
             guarded: arms
                 .iter()
@@ -311,6 +344,7 @@ impl<R: Rt> Select<R> {
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
             arm_facts: None,
+            discriminants: None,
             flags,
         })
     }
@@ -1539,7 +1573,13 @@ impl<R: Rt> Update<R> for Select<R> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         if self.arm_facts.is_none() {
-            self.arm_facts = Some(LazyArmFacts::build(ctx, &self.arms));
+            let discriminants = self.discriminants.take().unwrap_or_else(|| {
+                Arc::new(ArmDiscriminants::new(
+                    self.arg.node.typ().clone(),
+                    self.arms.len(),
+                ))
+            });
+            self.arm_facts = Some(LazyArmFacts::build(ctx, &self.arms, discriminants));
         }
         let Self {
             selected,
@@ -1551,18 +1591,20 @@ impl<R: Rt> Update<R> for Select<R> {
             resident,
             slept,
             arm_facts,
+            discriminants: _,
             flags,
         } = self;
         let LazyArmFacts {
             tracked,
             sleep_on_deselect,
             entered,
-            shallow,
+            discriminants,
             logged_no_match,
             guarded,
             missed,
             guards,
         } = arm_facts.as_mut().expect("arm facts built above");
+        let ArmDiscriminants { shallow, scrutinee } = &**discriminants;
         let woke = slept.take();
         // The guarded arms' production tags. Only guards the chain
         // consults contribute fires or bottomness.
@@ -1586,7 +1628,7 @@ impl<R: Rt> Update<R> for Select<R> {
             let pat = &mut arms[i].0;
             let reach = live.filter(|_| open).filter(|v| {
                 let shallow = shallow[i]
-                    .get_or_init(|| pat.shallow_discriminant(&ctx.env, arg.node.typ()));
+                    .get_or_init(|| pat.shallow_discriminant(&ctx.env, scrutinee));
                 let s = pat.shape_matches(&ctx.env, shallow.as_ref(), v);
                 shaped[i] = Some(s);
                 s
@@ -1667,7 +1709,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 {
                     let s = shaped.get(i).copied().flatten().unwrap_or_else(|| {
                         let shallow = shallow.get_or_init(|| {
-                            pat.shallow_discriminant(&ctx.env, arg.node.typ())
+                            pat.shallow_discriminant(&ctx.env, scrutinee)
                         });
                         pat.shape_matches(&ctx.env, shallow.as_ref(), v)
                     });
@@ -1821,6 +1863,7 @@ impl<R: Rt> Update<R> for Select<R> {
             resident: _,
             slept: _,
             arm_facts: _,
+            discriminants: _,
             flags: _,
         } = self;
         arg.node.delete(ctx);
@@ -1841,6 +1884,7 @@ impl<R: Rt> Update<R> for Select<R> {
             resident: _,
             slept,
             arm_facts,
+            discriminants: _,
             flags: _,
         } = self;
         slept.set();
@@ -1871,6 +1915,7 @@ impl<R: Rt> Update<R> for Select<R> {
             resident: _,
             slept: _,
             arm_facts: _,
+            discriminants: _,
             flags: _,
         } = self;
         arg.node.refs(refs);
@@ -2014,6 +2059,11 @@ impl<R: Rt> Select<R> {
             }
             wrap!(n, n.typecheck0_instance(ctx, types))?;
         }
+        self.discriminants = types.arm_discriminants(
+            self.spec.id,
+            self.arg.node.spec().id,
+            self.arms.len(),
+        );
         let rtypes: LPooled<Vec<&Type>> =
             self.arms.iter().map(|(_, n)| n.typ()).collect();
         self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;

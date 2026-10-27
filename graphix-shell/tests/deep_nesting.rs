@@ -20,9 +20,12 @@ use graphix_compiler::{
 use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
+use poolshark::local::LPooled;
 use std::{
     collections::{BTreeMap, HashMap},
-    env, fs,
+    env,
+    fmt::Write,
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::SystemTime,
@@ -881,5 +884,35 @@ fn deep_nesting_does_not_overflow() {
          stack overflow looks like — it aborts, so the child dies rather \
          than returning an error): {failed:#?}",
         failed.len(),
+    );
+}
+
+#[test]
+fn select_discriminants_first_value_in_time() {
+    let mut source: LPooled<String> = LPooled::take();
+    let mut union: LPooled<String> = LPooled::take();
+    union.push('[');
+    for i in 0..100 {
+        writeln!(source, "type C{i} = Abstract<i64>;").unwrap();
+        if i != 0 {
+            union.push_str(", ");
+        }
+        write!(union, "C{i}").unwrap();
+    }
+    union.push(']');
+    writeln!(source, "let f = |x: {union}| select x {{").unwrap();
+    for i in 0..100 {
+        writeln!(source, "C{i} as c => c.0 + {i},").unwrap();
+    }
+    writeln!(source, "}}; let xs: Array<{union}> = array::init(2000, |i| C99(i));")
+        .unwrap();
+    source.push_str(
+        "let r = array::fold(array::map(xs, |x| f(x)), 0, |a, b| a + b);\n\
+        sys::exit(select r { 2197000 => 0, _ => 1 }); r",
+    );
+    completes_within(
+        &["--no-cache", "--no-fusion"],
+        &source,
+        std::time::Duration::from_secs(4),
     );
 }

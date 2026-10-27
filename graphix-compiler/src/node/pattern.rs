@@ -7,7 +7,7 @@ use crate::{
     format_with_flags,
     node::{Held, compiler, list},
     rep,
-    typ::{AbstractId, IsAFlags, Type},
+    typ::{AbstractId, IsAFlags, ShallowScrutinee, Type},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
@@ -2170,12 +2170,11 @@ impl<R: Rt> PatternNode<R> {
     pub(super) fn shallow_discriminant(
         &self,
         env: &Env,
-        scrutinee: &Type,
+        scrutinee: &ShallowScrutinee,
     ) -> Option<Type> {
-        if self.explicit_type_predicate && !self.covers_what_it_meets(env, scrutinee) {
-            return None;
-        }
-        let shallow = self.type_predicate.shallow_discriminant(env, scrutinee);
+        let shallow = scrutinee.discriminant(env, &self.type_predicate).filter(|_| {
+            !self.explicit_type_predicate || self.covers_what_it_meets(env, scrutinee)
+        });
         if crate::dbgenv::gxdbg_shallow() {
             match &shallow {
                 Some(t) => eprintln!("SHALLOW {} => {t}", self.type_predicate),
@@ -2188,11 +2187,10 @@ impl<R: Rt> PatternNode<R> {
     /// Whether a written predicate holds the whole of every member of
     /// `scrutinee` it could match, so telling the members apart decides
     /// it: `Array<i64> as a` over `Array<[i64, string]>` tests elements.
-    fn covers_what_it_meets(&self, env: &Env, scrutinee: &Type) -> bool {
-        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        if union_members(env, scrutinee, &mut members).is_err() {
+    fn covers_what_it_meets(&self, env: &Env, scrutinee: &ShallowScrutinee) -> bool {
+        let Some(members) = scrutinee.members(env) else {
             return false;
-        }
+        };
         let pred = &self.type_predicate;
         !members.is_empty()
             && members.iter().all(|m| match pred.could_match(env, m) {

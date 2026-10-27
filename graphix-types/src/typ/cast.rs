@@ -3,7 +3,7 @@ use crate::{
     abstract_value::{self, CastHook},
     env::Env,
     errf,
-    expr::ModPath,
+    expr::{ModPath, union_members},
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
@@ -21,7 +21,7 @@ use immutable_chunkmap::map::Map;
 use netidx_value::{NakedValue, Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{borrow::Cow, fmt, mem, ops::ControlFlow};
+use std::{borrow::Cow, fmt, mem, ops::ControlFlow, sync::OnceLock};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -1541,29 +1541,68 @@ impl Type {
     /// typecheck unified against their member; explicit `x as T` stays
     /// strict.
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
-        let mut scrut: LPooled<Vec<Type>> = LPooled::take();
-        let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
-        flatten_union_members(scrutinee, env, &mut scrut, &mut seen)?;
-        let mut walked = ShapeSeen::default();
-        let mut below = |m: &Type| {
-            m.try_for_each_child(&mut |c| match shapes_collide(c, env, &mut walked) {
-                true => ControlFlow::Break(()),
-                false => ControlFlow::Continue(()),
+        ShallowScrutinee::new(scrutinee.clone()).discriminant(env, self)
+    }
+}
+
+/// The scrutinee and its referenced definitions must stay fixed while these facts are used.
+#[derive(Debug)]
+pub struct ShallowScrutinee {
+    typ: Type,
+    members: OnceLock<Option<SmallVec<[Type; 8]>>>,
+    facts: OnceLock<Option<Box<[MemberFacts]>>>,
+}
+
+impl ShallowScrutinee {
+    pub fn new(typ: Type) -> Self {
+        Self { typ, members: OnceLock::new(), facts: OnceLock::new() }
+    }
+
+    pub fn members(&self, env: &Env) -> Option<&[Type]> {
+        self.members
+            .get_or_init(|| {
+                let mut members = SmallVec::new();
+                union_members(env, &self.typ, &mut members).ok()?;
+                Some(members)
             })
-            .is_break()
-        };
-        if scrut.iter().any(|m| below(m)) {
+            .as_deref()
+    }
+
+    fn facts(&self, env: &Env) -> Option<&[MemberFacts]> {
+        self.facts
+            .get_or_init(|| {
+                let mut scrut: LPooled<Vec<Type>> = LPooled::take();
+                let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
+                flatten_union_members(&self.typ, env, &mut scrut, &mut seen)?;
+                let mut walked = ShapeSeen::default();
+                let mut below = |m: &Type| {
+                    m.try_for_each_child(&mut |c| match shapes_collide(
+                        c,
+                        env,
+                        &mut walked,
+                    ) {
+                        true => ControlFlow::Break(()),
+                        false => ControlFlow::Continue(()),
+                    })
+                    .is_break()
+                };
+                if scrut.iter().any(|m| below(m)) {
+                    return None;
+                }
+                Some(scrut.iter().map(member_facts).collect())
+            })
+            .as_deref()
+    }
+
+    pub fn discriminant(&self, env: &Env, predicate: &Type) -> Option<Type> {
+        let mut preds: LPooled<Vec<Type>> = LPooled::take();
+        let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
+        flatten_union_members(predicate, env, &mut preds, &mut seen)?;
+        if preds.iter().all(|p| member_facts(p).exact) {
             return None;
         }
-        let mut sfacts: LPooled<Vec<MemberFacts>> = LPooled::take();
-        for m in scrut.iter() {
-            sfacts.push(member_facts(m));
-        }
-        let mut preds: LPooled<Vec<Type>> = LPooled::take();
-        seen.clear();
-        flatten_union_members(self, env, &mut preds, &mut seen)?;
+        let sfacts = self.facts(env)?;
         let mut out: LPooled<Vec<Type>> = LPooled::take();
-        let mut changed = false;
         for p in preds.iter() {
             let pf = member_facts(p);
             if pf.exact {
@@ -1586,10 +1625,6 @@ impl Type {
                 return None;
             }
             out.push(shallowify(p));
-            changed = true;
-        }
-        if !changed {
-            return None;
         }
         Some(if out.len() == 1 {
             out.pop().unwrap()
@@ -1650,6 +1685,7 @@ fn shapes_collide(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
 /// `Value::Array`, each kind under its own marker; `arr` is the member's
 /// constraint within that class. `exact`: the full `is_a` is already
 /// O(1).
+#[derive(Debug)]
 struct MemberFacts {
     arr: Option<(Form, ArrCon)>,
     map: bool,
@@ -1658,7 +1694,7 @@ struct MemberFacts {
 }
 
 /// What a member's array is: its kind, and a variant's tag.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Form {
     Array,
     Tuple,
@@ -1667,7 +1703,7 @@ enum Form {
     List,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArrCon {
     Len(usize),
     AnyLen,
