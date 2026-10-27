@@ -284,18 +284,14 @@ fn graphix_files() -> Vec<TokenStream> {
     }]
 }
 
-// CR claude for claude: [risk/low] The existence check uses the manifest path,
-// src/graphix/main.gx, but the emitted include_str!("graphix/main.gx") resolves
-// relative to the file that invokes defpackage!. Invoked from anywhere but a file
-// directly under src/, it reads a different path and fails the build. Emit the absolute
-// path the check used (c.graphix_src().join("main.gx")) into include_str!. Found by
-// reading; not run. (shell-07)
 fn main_program_impl(c: &Crate) -> TokenStream {
-    if c.graphix_src().join("main.gx").exists() {
+    let main = c.graphix_src().join("main.gx");
+    if main.exists() {
+        let main = main.to_str().expect("the manifest dir is UTF-8");
         quote! {
             fn main_program(&self) -> Option<&'static str> {
                 if cfg!(feature = "standalone") {
-                    Some(include_str!("graphix/main.gx"))
+                    Some(include_str!(#main))
                 } else {
                     None
                 }
@@ -580,4 +576,30 @@ pub fn package_refs(_input: proc_macro::TokenStream) -> proc_macro::TokenStream 
         }
     }
     .into()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// The main program is read from the package's own `src/graphix`,
+    /// wherever in the crate `defpackage!` is invoked.
+    #[test]
+    fn the_main_program_is_read_by_its_manifest_path() {
+        let root = env::temp_dir().join(format!("graphix-derive-{}", std::process::id()));
+        let c = Crate {
+            root: root.clone(),
+            name: "t".into(),
+            deps: vec![],
+            doc: Default::default(),
+        };
+        std::fs::create_dir_all(c.graphix_src()).unwrap();
+        let main = c.graphix_src().join("main.gx");
+        std::fs::write(&main, "0").unwrap();
+        let got = main_program_impl(&c).to_string();
+        std::fs::remove_dir_all(&root).unwrap();
+        let main = main.to_str().unwrap();
+        let want = quote!(include_str!(#main)).to_string();
+        assert!(got.contains(&want), "{got}");
+    }
 }

@@ -2713,6 +2713,7 @@ impl Type {
                         env.push_type_ref(crate::ide::TypeRefSite {
                             pos: *pos,
                             ori: ori.clone(),
+                            scope: scope.clone(),
                             name: name.clone(),
                             canonical_scope: canonical_scope.clone(),
                         });
@@ -2853,6 +2854,7 @@ impl Type {
                     env.push_type_ref(crate::ide::TypeRefSite {
                         pos,
                         ori: ori.clone(),
+                        scope: tr.scope.clone(),
                         name: tr.name.clone(),
                         canonical_scope,
                     });

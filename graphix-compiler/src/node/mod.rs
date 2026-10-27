@@ -1854,6 +1854,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             ctx.env.push_reference(ReferenceSite {
                 pos: target_pos(&spec),
                 ori: spec.ori.clone(),
+                scope: scope.lexical.clone(),
                 name: name.clone(),
                 bind_id: id,
             });
@@ -2026,6 +2027,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             ctx.env.push_reference(ReferenceSite {
                 pos: target_pos(&spec),
                 ori: spec.ori.clone(),
+                scope: scope.lexical.clone(),
                 name: name.clone(),
                 bind_id: src_id,
             });

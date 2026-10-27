@@ -1,8 +1,7 @@
 //! Source text around a position. Columns are char counts here; the
 //! LSP encoding is translated at the boundary (`crate::position`).
 
-use crate::position::lines;
-use graphix_compiler::SourcePosition;
+use graphix_compiler::{SourcePosition, expr::parser::lines};
 use lsp_types::Position;
 use poolshark::local::LPooled;
 
@@ -26,17 +25,23 @@ pub(crate) fn covers(start: Position, len: usize, cursor: Position) -> bool {
         && cursor.character <= start.character + len as u32
 }
 
-/// The text from `from` up to `to`.
+/// The text from `from` up to `to`, its line breaks read as "\n".
 pub(crate) fn text_between(text: &str, from: Position, to: Position) -> LPooled<String> {
     let mut out: LPooled<String> = LPooled::take();
-    let lines = text.lines().enumerate().skip(from.line as usize);
+    let lines = lines(text).enumerate().skip(from.line as usize);
     for (i, line) in lines.take_while(|(i, _)| *i <= to.line as usize) {
         let skip = if i == from.line as usize { from.character as usize } else { 0 };
         let end = if i == to.line as usize { to.character as usize } else { usize::MAX };
+        if i > from.line as usize {
+            out.push('\n');
+        }
         out.extend(line.chars().take(end).skip(skip));
-        out.push('\n');
     }
     out
+}
+
+fn text_before(text: &str, cursor: Position) -> LPooled<String> {
+    text_between(text, Position { line: 0, character: 0 }, cursor)
 }
 
 fn line_chars(text: &str, line: u32) -> Option<LPooled<Vec<char>>> {
@@ -148,9 +153,7 @@ pub(crate) struct UsePath {
 /// `use` back of the cursor: the buffer need not parse. `None` outside
 /// a `use`, and after `as`, where a new name is being written.
 pub(crate) fn use_path(text: &str, cursor: Position) -> Option<UsePath> {
-    let mut lines = text.split_inclusive('\n');
-    let mut before: String = lines.by_ref().take(cursor.line as usize).collect();
-    before.extend(lines.next()?.chars().take(cursor.character as usize));
+    let before = text_before(text, cursor);
     let statement = &before[before.rfind(';').map_or(0, |i| i + 1)..];
     let at = statement.rmatch_indices("use").map(|(i, _)| i).find(|i| {
         let bounded = !statement[..*i].chars().next_back().is_some_and(is_id_char);
@@ -199,19 +202,9 @@ pub(crate) fn use_path(text: &str, cursor: Position) -> Option<UsePath> {
 /// boundary. String literals are not parsed.
 pub fn call_context(text: &str, cursor: Position) -> Option<String> {
     let mut chars: LPooled<Vec<char>> = LPooled::take();
-    chars.extend(text.chars());
-    let (mut offset, mut line, mut col) = (0usize, 0u32, 0u32);
-    while offset < chars.len() && (line, col) != (cursor.line, cursor.character) {
-        if chars[offset] == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-        offset += 1;
-    }
+    chars.extend(text_before(text, cursor).chars());
     let mut depth = 0i32;
-    let mut i = offset;
+    let mut i = chars.len();
     while i > 0 {
         i -= 1;
         match chars[i] {

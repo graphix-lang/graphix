@@ -1119,3 +1119,105 @@ fn a_shared_file_answers_from_a_current_check() {
     let f = c.hover("util.gx", "let |f");
     assert!(f.as_deref().is_some_and(|h| h.contains("string")), "{f:?}");
 }
+
+/// A lone "\r" ends a line for the compiler as it does for the client: an
+/// error, a hover and a call's labels past one stand where the client
+/// sees them.
+#[test]
+fn lone_carriage_returns_end_lines() {
+    let mut c = Client::start(&[
+        ("bad.gx", "let a = 1;\rlet b = 2;\rlet c = a + nope;\rc\r"),
+        ("main.gx", "let a = 1;\rlet b = a;\rb\r"),
+    ]);
+    c.open("bad.gx");
+    assert_eq!(c.diagnostics("bad.gx"), [(2, 12, "nope not defined".to_string())]);
+    c.open("main.gx");
+    hover_is(&mut c, "let |b = a", "b: i64");
+    c.replace("main.gx", "\rb\r", "\rlet q = println(#\rlet z = 1;\rb\r");
+    assert_eq!(c.completions("main.gx", "println(#|"), ["#dest"]);
+}
+
+/// Completion offers no name a lowering made: no source can write one.
+#[test]
+fn completion_offers_no_lowered_name() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "let clk = 1;\n\
+         let a = seq clk {\n\
+         \x20 let x = clk + 1;\n\
+         \x20 try { let c = x; c } with(err) { let m = 2; m }\n\
+         };\n\
+         a\n",
+    )]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    for marker in ["let m = |2", "let c = |x"] {
+        let got = c.completions("main.gx", marker);
+        assert!(got.iter().any(|g| g == "clk"), "{marker}: {got:?}");
+        assert!(got.iter().all(|g| !g.starts_with('#')), "{marker}: {got:?}");
+    }
+}
+
+/// An abstract type's constructor and its patterns name the type: each is
+/// one of its references and goes to its definition.
+#[test]
+fn an_abstract_constructor_references_its_type() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "type T = Abstract<i64>;\n\
+         let t: T = T(1);\n\
+         let r = select t { T(n) => n };\n\
+         r\n",
+    )]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let def = c.site("main.gx", "type |T");
+    let uses = ["type |T", "let t: |T", "= |T(1)", "{ |T(n)"];
+    let want: Vec<_> = uses.iter().map(|m| c.site("main.gx", m)).collect();
+    for m in uses {
+        assert_eq!(c.references("main.gx", m), want, "{m}");
+        assert_eq!(c.definition("main.gx", m), Some(def.clone()), "{m}");
+    }
+}
+
+/// Each leading `super` names the module it climbs to from where the path
+/// is written, for a value's path and a type's alike.
+#[test]
+fn each_super_names_the_module_it_climbs_to() {
+    let mut c = Client::start(&[
+        ("main.gx", "type Top = i64;\nlet top = 5;\nmod a;\na::y\n"),
+        ("a.gx", "let x = super::top;\nmod b;\nlet y = b::deep;\n"),
+        ("a/b.gx", "let deep: super::super::Top = super::super::top + super::x;\n"),
+    ]);
+    c.open("a/b.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let a = vec![
+        c.site("a/b.gx", ": |super::super::Top"),
+        c.site("a/b.gx", "= |super::super::top"),
+        c.site("a/b.gx", "+ |super::x"),
+        c.site("main.gx", "mod |a"),
+        c.site("main.gx", "|a::y"),
+    ];
+    let root = vec![
+        c.site("a.gx", "= |super::top"),
+        c.site("a/b.gx", ": super::|super::Top"),
+        c.site("a/b.gx", "= super::|super::top"),
+    ];
+    for (marker, want, hover) in [
+        (": |super::super::Top", &a, "mod a"),
+        ("= |super::super::top", &a, "mod a"),
+        (": super::|super::Top", &root, "mod "),
+        ("= super::|super::top", &root, "mod "),
+    ] {
+        assert_eq!(&c.references("a/b.gx", marker), want, "{marker}");
+        let got = c.hover("a/b.gx", marker);
+        assert!(
+            got.as_deref().is_some_and(|h| h.contains(&format!("{hover}\n"))),
+            "{marker}: {got:?}"
+        );
+    }
+    assert_eq!(
+        c.definition("a/b.gx", "= |super::super::top"),
+        Some(c.site("a.gx", "|let x"))
+    );
+}

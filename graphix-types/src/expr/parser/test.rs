@@ -120,6 +120,24 @@ fn crlf_reads_as_lf() {
     );
 }
 
+// A lone "\r" ends a line, as it does for an editor: positions, a parse
+// failure's line and its snippet, and the end of a `#!` line count it.
+#[test]
+fn a_lone_carriage_return_ends_a_line() {
+    let exprs = parse(Origin::unspecified("let x = 1;\r  let y = x;\r\ny")).unwrap();
+    let at: Vec<_> = exprs.iter().map(|e| (e.pos.line, e.pos.column)).collect();
+    assert_eq!(at, [(1, 1), (2, 3), (3, 1)]);
+    let msg = parse_program("let x = 1;\rlet y = x +;\ry");
+    assert!(msg.contains("line: 2, column: 12"), "{msg}");
+    assert!(msg.contains("    let y = x +;\n"), "{msg}");
+    let msg = parse_program("let x = 1;\r// c\rlet y = (2");
+    assert!(msg.contains("line: 3, column: 9"), "{msg}");
+    let text = ArcStr::from("#!/usr/bin/env graphix\rlet x = 1;\rx");
+    let exprs = parse(Origin::unspecified(&without_shebang(&text))).unwrap();
+    assert_eq!(exprs.len(), 2);
+    assert_eq!((exprs[1].pos.line, exprs[1].pos.column), (3, 1));
+}
+
 // A string's splice prints on the string's line, so no comment stands
 // inside one, at its top or deeper.
 #[test]
@@ -2655,7 +2673,7 @@ fn a_try_with_binder_may_be_underscore() {
 }
 
 #[test]
-fn an_integer_out_of_range_names_its_type() {
+fn a_literal_out_of_range_names_its_type() {
     for (src, note) in [
         (
             "let a = u8:256;\na",
@@ -2667,13 +2685,30 @@ fn an_integer_out_of_range_names_its_type() {
         ),
         ("f(i8:-129)", "`-129` is out of the range of i8"),
         ("[v32:4294967296]", "`4294967296` is out of the range of v32"),
+        (
+            "let a = select 1 { u8:300 => 0, _ => 1 };\na",
+            "note: at line: 1, column: 20: `300` is out of the range of u8",
+        ),
+        (
+            "let a = duration:99999999999999999999.s;\na",
+            "`99999999999999999999.s` is negative or longer than the longest duration",
+        ),
+        (
+            "let a = select x { duration:-1.s => 0, _ => 1 };\na",
+            "note: at line: 1, column: 29: `-1.s` is negative",
+        ),
     ] {
         let msg = parse_program(src);
         assert!(msg.contains(note), "{src}: {msg}");
     }
-    for src in ["u8:255", "i8:-128", "-9223372036854775808", "1e3"] {
+    for src in ["u8:255", "i8:-128", "-9223372036854775808", "1e3", "duration:-0.s"] {
         parse_one(src).unwrap();
     }
+    parse_one("select x { u8:255 => 0, duration:-0.s => 1, _ => 2 }").unwrap();
+    parse(Origin::unspecified(
+        "let duration: duration = duration:1.5s;\nlet u8: u8 = 1;\nu8",
+    ))
+    .unwrap();
 }
 
 // a splice and an attribute print on one line, so no comment of any kind

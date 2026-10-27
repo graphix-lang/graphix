@@ -23,6 +23,8 @@ use triomphe::Arc;
 pub struct ReferenceSite {
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
+    /// The lexical scope it was written in.
+    pub scope: ModPath,
     pub name: ModPath,
     pub bind_id: BindId,
 }
@@ -62,6 +64,8 @@ pub struct ScopeMapEntry {
 pub struct TypeRefSite {
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
+    /// The lexical scope it was written in.
+    pub scope: ModPath,
     /// The name as written in source (e.g. `Result`, `array::Foo`).
     pub name: ModPath,
     /// Canonical scope of the typedef the reference resolved to.

@@ -1,10 +1,13 @@
 use crate::{
-    position::{PositionEncoding, char_col_to_position, lines},
+    position::{PositionEncoding, char_col_to_position},
     state::ServerState,
     uri::uri_to_path,
 };
 use anyhow::Result;
-use graphix_compiler::expr::format::{FormatConfig, Refused, SourceKind, format_source};
+use graphix_compiler::expr::{
+    format::{FormatConfig, Refused, SourceKind, format_source},
+    parser::lines,
+};
 use lsp_types::{DocumentFormattingParams, Position, Range, TextEdit};
 
 /// The edit that turns `text` into its formatted form: none when it is

@@ -1,9 +1,13 @@
+use super::{Lines, lines};
 use crate::stack::ensure_sufficient;
 use combine::{
     ErrorOffset, ParseError, Parser, Stream, StreamOnce,
     error::{ParseResult, StreamError, Tracked},
     parser::ParseMode,
-    stream::{StreamErrorFor, position::SourcePosition},
+    stream::{
+        StreamErrorFor,
+        position::{Positioner, SourcePosition},
+    },
 };
 use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
@@ -215,17 +219,13 @@ fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosit
         Interp,
     }
     let mut stack: LPooled<Vec<Ctx>> = LPooled::take();
-    let mut at = SourcePosition { line: 1, column: 1 };
+    let mut at = Lines::default();
     let mut chars: LPooled<Vec<char>> = LPooled::take();
     chars.extend(text.chars());
     let mut i = 0;
-    let step = |c: char, at: &mut SourcePosition| match c {
-        '\n' => *at = SourcePosition { line: at.line + 1, column: 1 },
-        _ => at.column += 1,
-    };
     while i < chars.len() {
         let c = chars[i];
-        let here = at;
+        let here = at.position();
         let ahead = |k: usize| chars.get(i + k).copied();
         let mut advance = 1;
         match stack.last().copied() {
@@ -256,7 +256,9 @@ fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosit
             },
             _ => match c {
                 '/' if ahead(1) == Some('/') => {
-                    while i + advance < chars.len() && chars[i + advance] != '\n' {
+                    while i + advance < chars.len()
+                        && !matches!(chars[i + advance], '\r' | '\n')
+                    {
                         advance += 1;
                     }
                 }
@@ -290,12 +292,12 @@ fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosit
         }
         for k in 0..advance {
             if let Some(c) = chars.get(i + k) {
-                step(*c, &mut at);
+                at.update(c);
             }
         }
         i += advance;
     }
-    if at != pos {
+    if at.position() != pos {
         return None;
     }
     stack.iter().rev().find_map(|c| match c {
@@ -305,9 +307,12 @@ fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosit
 }
 
 fn snippet(text: &str, pos: SourcePosition) -> String {
-    let (line, col) = match text.lines().nth((pos.line.max(1) - 1) as usize) {
+    // no line follows a final break
+    let last = lines(text).count() - 1;
+    let n = (pos.line.max(1) - 1) as usize;
+    let (line, col) = match lines(text).nth(n).filter(|l| n < last || !l.is_empty()) {
         Some(line) => (line, (pos.column.max(1) - 1) as usize),
-        None => match text.lines().rev().find(|l| !l.trim().is_empty()) {
+        None => match lines(text).filter(|l| !l.trim().is_empty()).last() {
             Some(line) => (line, line.chars().count()),
             None => return String::new(),
         },
@@ -341,7 +346,7 @@ struct FirstColumnsScope(Option<LPooled<Vec<i32>>>);
 impl FirstColumnsScope {
     fn enter(text: &str) -> Self {
         let mut cols: LPooled<Vec<i32>> = LPooled::take();
-        cols.extend(text.split('\n').map(|line| {
+        cols.extend(lines(text).map(|line| {
             let blank = line.chars().take_while(|c| c.is_whitespace()).count();
             blank as i32 + 1
         }));

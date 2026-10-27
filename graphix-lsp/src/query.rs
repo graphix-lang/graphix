@@ -17,12 +17,14 @@ use graphix_compiler::{
     env::{Bind, TraitDef, TypeDef},
     expr::{ModPath, Origin, Source},
     ide::ModuleRefSite,
+    mod_root,
     typ::Type,
 };
 use lsp_types::{
     Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range, Uri,
 };
 use netidx_core::path::Path as NPath;
+use poolshark::local::LPooled;
 use std::{cell::RefCell, fmt::Write, path::Path};
 use triomphe::Arc;
 
@@ -143,6 +145,26 @@ impl<'a> Query<'a> {
             .collect()
     }
 
+    /// The module the segments of `name` before its last `after` name,
+    /// written in `site` and naming an item in `item_scope`: a run of
+    /// leading keywords names where it leads from `site`; any other
+    /// segment, which every later one descends from, `item_scope` less
+    /// the segments after it.
+    fn prefix_module(
+        &self,
+        name: &ModPath,
+        after: usize,
+        site: &ModPath,
+        item_scope: &ModPath,
+    ) -> Option<ModPath> {
+        let parts: LPooled<Vec<&str>> = NPath::parts(&name.0).collect();
+        let prefix = &parts[..parts.len().checked_sub(after)?];
+        Some(match self.checked.env.path_anchor(site, prefix).ok()? {
+            Some(anchor) => ModPath(NPath::from(ArcStr::from(mod_root(anchor)))),
+            None => truncated(item_scope, after - 1),
+        })
+    }
+
     /// Each segment of a `use` item that stands in this statement,
     /// with where it stands and the canonical path it names.
     fn use_segments(
@@ -209,9 +231,8 @@ impl<'a> Query<'a> {
             let seg = written.split("::").nth(i)?;
             (seg == self.ident).then(|| (written.clone(), segs.len() - 1 - i))
         };
-        // a segment before the last names the module of its prefix: the
-        // item's scope less the segments after it
-        // CR claude for claude: [bug/low] This assumes every segment after the one
+        // a segment before the last names the module of its prefix
+        // XCR claude for claude: [bug/low] This assumes every segment after the one
         // under the cursor descends one level, but `super` ascends. In a::b,
         // `super::super::top`'s first `super` comes out as the root instead of `a`:
         // hover shows `mod ` (the root, empty), there is no definition, and its
@@ -220,15 +241,22 @@ impl<'a> Query<'a> {
         // ReferenceSite/TypeRefSite and resolve each written prefix with
         // `Env::canonical_modpath` instead of truncating the item's scope. probe:
         // design/review-2026-10-26/repro/x-lsp-probe-super-segments.py (x-lsp-probe-07)
-        let module =
-            |scope: &ModPath, after: usize| Target::Module(truncated(scope, after - 1));
+        // 2026-10-27 claude: Fixed: ReferenceSite and TypeRefSite carry the lexical
+        // scope they were written in, and Query::prefix_module (used by target and
+        // references) resolves a prefix that is a run of leading keywords with the new
+        // Env::path_anchor from that scope (mod_root of the anchor), which
+        // resolve_visible now uses as well; a prefix ending in an ordinary segment
+        // keeps the truncation, which holds since every later segment descends. Pin:
+        // graphix-shell tests/lsp each_super_names_the_module_it_climbs_to (value and
+        // type paths, references, hover, definition).
         for r in ide.references.iter() {
             if let Some((written, after)) = on(&r.ori, r.pos, &r.name) {
                 if after == 0 {
                     return Some((Target::Bind(r.bind_id), written));
                 }
                 let scope = &self.bind(r.bind_id)?.scope;
-                return Some((module(scope, after), (&*self.ident).into()));
+                let module = self.prefix_module(&r.name, after, &r.scope, scope)?;
+                return Some((Target::Module(module), (&*self.ident).into()));
             }
         }
         for t in ide.type_refs.iter() {
@@ -240,7 +268,9 @@ impl<'a> Query<'a> {
                         written,
                     ));
                 }
-                return Some((module(&t.canonical_scope, after), (&*self.ident).into()));
+                let module =
+                    self.prefix_module(&t.name, after, &t.scope, &t.canonical_scope)?;
+                return Some((Target::Module(module), (&*self.ident).into()));
             }
         }
         let here = |at: Position| covers(at, self.ident.chars().count(), self.cursor);
@@ -398,28 +428,34 @@ impl<'a> Query<'a> {
             targets.extend(self.sig_partner(id).map(Target::Bind));
         }
         // a path's last segment names its item, each segment before it the
-        // module of its prefix: the item's scope less the segments after it
-        let mut path =
-            |ori: &Origin, pos, name: &ModPath, item: Target, scope: &ModPath| {
-                let segs = Self::segments(pos, name);
-                let n = segs.len();
-                for (i, (at, len)) in segs.into_iter().enumerate() {
-                    let t = match n - 1 - i {
-                        0 => item.clone(),
-                        after => Target::Module(truncated(scope, after - 1)),
-                    };
-                    if targets.contains(&t) {
-                        out.extend(self.location(ori, at, len));
+        // module of its prefix
+        let mut path = |ori: &Origin,
+                        pos,
+                        name: &ModPath,
+                        site: &ModPath,
+                        item: Target,
+                        scope: &ModPath| {
+            let segs = Self::segments(pos, name);
+            let n = segs.len();
+            for (i, (at, len)) in segs.into_iter().enumerate() {
+                let t = match n - 1 - i {
+                    0 => Some(item.clone()),
+                    after => {
+                        self.prefix_module(name, after, site, scope).map(Target::Module)
                     }
+                };
+                if t.is_some_and(|t| targets.contains(&t)) {
+                    out.extend(self.location(ori, at, len));
                 }
-            };
+            }
+        };
         for r in ide.references.iter() {
             let Some(b) = self.bind(r.bind_id) else { continue };
-            path(&r.ori, r.pos, &r.name, Target::Bind(r.bind_id), &b.scope);
+            path(&r.ori, r.pos, &r.name, &r.scope, Target::Bind(r.bind_id), &b.scope);
         }
         for t in ide.type_refs.iter() {
             let item = Target::Type(t.canonical_scope.clone(), basename(&t.name).into());
-            path(&t.ori, t.pos, &t.name, item, &t.canonical_scope);
+            path(&t.ori, t.pos, &t.name, &t.scope, item, &t.canonical_scope);
         }
         for m in ide.module_references.iter() {
             if m.segments.is_none() {

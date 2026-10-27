@@ -1438,7 +1438,7 @@ impl PrettyDisplay for StructurePattern {
             P::Variant { all: _, tag, binds } => {
                 pretty_pattern_elts(buf, &format_compact!("`{tag}("), &pats(binds), ")")
             }
-            P::Abstract { all: _, name, bind } => {
+            P::Abstract { name, bind, .. } => {
                 write!(buf, "{name}(")?;
                 bind.fmt_pretty(buf)?;
                 buf.kill_newline();

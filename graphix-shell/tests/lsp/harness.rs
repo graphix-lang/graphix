@@ -131,8 +131,11 @@ impl Client {
         let start =
             text.find(&needle).unwrap_or_else(|| panic!("`{needle}` is not in {file}"));
         let before = &text[..start + cursor];
-        let line = before.matches('\n').count() as u32;
-        let character = before.rsplit('\n').next().unwrap().encode_utf16().count() as u32;
+        // a client's lines end at "\r\n", "\r" or "\n"
+        let line = (before.matches('\r').count() + before.matches('\n').count()
+            - before.matches("\r\n").count()) as u32;
+        let character =
+            before.rsplit(['\r', '\n']).next().unwrap().encode_utf16().count() as u32;
         Position { line, character }
     }
 

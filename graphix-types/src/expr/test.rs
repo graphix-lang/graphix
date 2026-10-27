@@ -757,6 +757,7 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                     StructurePattern::Abstract {
                         all,
                         name: ModPath::from([name]),
+                        at: WrittenAt::NOWHERE,
                         bind: Arc::new(b),
                     }
                 }
@@ -2047,8 +2048,8 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
                     .all(|(p0, p1)| check_structure_pattern(p0, p1))
         }
         (
-            StructurePattern::Abstract { all: a0, name: n0, bind: b0 },
-            StructurePattern::Abstract { all: a1, name: n1, bind: b1 },
+            StructurePattern::Abstract { all: a0, name: n0, bind: b0, .. },
+            StructurePattern::Abstract { all: a1, name: n1, bind: b1, .. },
         ) => a0 == a1 && n0 == n1 && check_structure_pattern(b0, b1),
         (
             StructurePattern::Variant { all: a0, tag: t0, binds: p0 },

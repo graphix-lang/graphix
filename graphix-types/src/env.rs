@@ -5,7 +5,7 @@ use crate::{
         FieldRefSite, Ide, IdeMode, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite, Warning, WarningRecord,
     },
-    mod_root,
+    is_lowered, mod_root,
     profile::{self, Phase},
     tracked::{TrackedMap, TrackedSet},
     typ::{
@@ -815,6 +815,27 @@ impl Env {
         self.with_ide(|ide| ide.push_type_ref(site))
     }
 
+    /// Record, for the IDE, that `name`, written at `pos` in `scope`,
+    /// names `td`.
+    pub fn push_typedef_ref(
+        &self,
+        td: &TypeDef,
+        name: &ModPath,
+        scope: &ModPath,
+        pos: SourcePosition,
+        ori: &Arc<Origin>,
+    ) {
+        if self.ide.is_lsp() {
+            self.push_type_ref(TypeRefSite {
+                pos,
+                ori: ori.clone(),
+                scope: scope.clone(),
+                name: name.clone(),
+                canonical_scope: td.def.canonical_scope().clone(),
+            })
+        }
+    }
+
     pub fn push_sig_link(&self, link: SigImplLink) {
         self.with_ide(|ide| ide.sig_links.push(link))
     }
@@ -940,6 +961,23 @@ impl Env {
             }
             _ => "/",
         }
+    }
+
+    /// The scope a path's leading keywords name from `scope`: `self`,
+    /// `package` or a run of `super`; `None` unless `lead` is exactly one.
+    pub fn path_anchor<'a>(
+        &self,
+        scope: &'a str,
+        lead: &[&str],
+    ) -> Result<Option<&'a str>> {
+        Ok(match lead {
+            ["self"] => Some(mod_root(scope)),
+            ["package"] => Some(self.package_root(scope)),
+            [_, ..] if lead.iter().all(|s| *s == "super") => {
+                Some(self.super_anchor(scope, lead.len())?)
+            }
+            _ => None,
+        })
     }
 
     /// The scope `k` levels of `super` above the module enclosing
@@ -1151,11 +1189,9 @@ impl Env {
             bail!("`{kw}` is only legal leading a path")
         }
         let interior = &parts[lead..parts.len() - 1];
-        let anchor: &str = match parts[0] {
-            "self" => mod_root(scope),
-            "super" => self.super_anchor(scope, n_super)?,
-            "package" => self.package_root(scope),
-            _ if parts.len() == 1 => {
+        let anchor: &str = match self.path_anchor(scope, &parts[..lead])? {
+            Some(anchor) => anchor,
+            None if parts.len() == 1 => {
                 if let Some(t) = self.chain_lookup(scope, scope, base, 0, &mut f)? {
                     return Ok(Some(t));
                 }
@@ -1166,7 +1202,7 @@ impl Env {
                 }
                 return Ok(f("/core", base));
             }
-            first => match self.resolve_module_seg(scope, first)? {
+            None => match self.resolve_module_seg(scope, parts[0])? {
                 Some(m) => {
                     let m = self.descend(scope, m, &interior[1..])?;
                     return self.lookup_at(scope, &m, base, 0, &mut f);
@@ -1634,7 +1670,7 @@ impl Env {
                 let at = res.len();
                 res.extend(
                     vars.iter()
-                        .filter(|(name, _)| name.starts_with(part))
+                        .filter(|(name, _)| name.starts_with(part) && !is_lowered(name))
                         .map(|(name, bind)| (name.clone(), *bind)),
                 );
                 res[at..].sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
@@ -2266,7 +2302,7 @@ impl Env {
             ori,
             binder: None,
         };
-        self.with_ide(|ide| ide.binds.push(bind.clone()));
+        self.mirror_bind(&bind);
         self.by_id.insert(id, Arc::new(bind));
         Arc::make_mut(self.by_id.get_mut(&id).expect("just inserted"))
     }
@@ -2277,8 +2313,16 @@ impl Env {
     pub fn retype(&mut self, id: BindId, typ: Type) {
         if let Some(b) = self.by_id.get_mut(&id) {
             Arc::make_mut(b).typ = typ;
-            let b = (**b).clone();
-            self.with_ide(|ide| ide.binds.push(b));
+            let b = b.clone();
+            self.mirror_bind(&b);
+        }
+    }
+
+    /// Give the IDE the binding as it stands, unless a lowering named it:
+    /// no source wrote it, so no query or completion may answer it.
+    fn mirror_bind(&self, b: &Bind) {
+        if !is_lowered(&b.name) {
+            self.with_ide(|ide| ide.binds.push(b.clone()));
         }
     }
 

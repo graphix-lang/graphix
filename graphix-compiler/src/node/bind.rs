@@ -926,6 +926,7 @@ impl Ref {
                     ctx.env.push_reference(ReferenceSite {
                         pos: spec.pos,
                         ori: spec.ori.clone(),
+                        scope: scope.lexical.clone(),
                         name: name.clone(),
                         bind_id,
                     });

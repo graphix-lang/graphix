@@ -112,12 +112,16 @@ impl<'a> Completer<'a> {
 
     /// Every binding declared before the cursor in a scope enclosing
     /// it, innermost and latest first.
-    // CR claude for claude: [bug/low] Completion inside a seq body offers the
+    // XCR claude for claude: [bug/low] Completion inside a seq body offers the
     // lowering's bindings (#seqpc.., #seqv.._N, #seqe.., #seqt.._clk, ...):
     // Env::bind_variable records them in ide.binds, and neither this filter nor the
     // `lookup_matching` loop in `names` drops them. Filter `graphix_types::is_lowered`
     // names in both, or skip the ide.binds push for them in bind_variable. probe:
     // design/review-2026-10-26/repro/x-lsp-probe-seq-lowered-names.py (x-lsp-probe-05)
+    // 2026-10-27 claude: Fixed at the root in graphix-types env.rs: Env::mirror_bind
+    // gives the IDE no binding a lowering named (is_lowered), so ide.binds never holds
+    // one, and lookup_matching drops lowered names (shell completion too). This filter
+    // is unchanged. Pin: graphix-shell tests/lsp completion_offers_no_lowered_name.
     fn locals(&self) -> impl Iterator<Item = &'a Bind> {
         let binds = self.checked.into_iter().flat_map(|c| c.ide.binds.iter().rev());
         let defining = self.defining();

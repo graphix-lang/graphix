@@ -548,10 +548,11 @@ pub fn format_source(
     let n = super::parser::shebang_len(text);
     if n > 0 {
         // the rest keeps the `#!` line's break, so its positions are the file's
-        let (line, rest) = text.split_at(n - usize::from(text[..n].ends_with('\r')));
+        let (line, rest) = text.split_at(n);
         let brk = match rest {
             r if r.starts_with("\r\n") => "\r\n",
             r if r.starts_with('\n') => "\n",
+            r if r.starts_with('\r') => "\r",
             _ => "",
         };
         let mut out: LPooled<String> = LPooled::take();
@@ -1200,6 +1201,11 @@ mod tests {
             Program,
             "#!/usr/bin/env graphix\r\nlet x =   1;\r\nx\r\n",
             "#!/usr/bin/env graphix\r\nlet x = 1;\r\nx\r\n",
+        );
+        formats_to(
+            Program,
+            "#!/usr/bin/env graphix\rlet x =   1;\rx\r",
+            "#!/usr/bin/env graphix\rlet x = 1;\nx\n",
         );
         formats_to(Program, "\u{feff}let x =   1;\nx\n", "\u{feff}let x = 1;\nx\n");
         formats_to(Interface, "\u{feff}val x:  i64", "\u{feff}val x: i64\n");

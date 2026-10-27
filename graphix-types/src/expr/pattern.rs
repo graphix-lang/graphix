@@ -48,6 +48,8 @@ pub enum StructurePattern {
     Abstract {
         all: Option<Name>,
         name: ModPath,
+        /// where `name` was written
+        at: WrittenAt,
         bind: Arc<StructurePattern>,
     },
     Struct {
@@ -185,7 +187,7 @@ impl StructurePattern {
                     .collect::<Result<SmallVec<[_; 8]>>>()?;
                 Ok(Type::Variant(tag.clone(), Arc::from_iter(a), WrittenAt::NOWHERE))
             }
-            Self::Abstract { all: _, name, bind: _ } => {
+            Self::Abstract { name, .. } => {
                 let td = env
                     .lookup_typedef(scope, name)?
                     .ok_or_else(|| anyhow!("unknown type {name}"))?;
@@ -580,7 +582,7 @@ impl StructurePattern {
                 with_sep!(binds);
                 write!(f, ")")
             }
-            StructurePattern::Abstract { all: _, name, bind } => {
+            StructurePattern::Abstract { name, bind, .. } => {
                 write!(f, "{name}({bind})")
             }
             StructurePattern::Or(alts) => {

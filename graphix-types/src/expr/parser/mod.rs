@@ -25,7 +25,7 @@ use combine::{
     stream::StreamErrorFor,
     stream::{
         Range,
-        position::{self, SourcePosition},
+        position::{self, Positioner, RangePositioner, SourcePosition},
     },
     token, unexpected_any, value,
 };
@@ -34,7 +34,9 @@ use escaping::Escape;
 use netidx_core::path::Path;
 use netidx_value::{
     Value,
-    parser::{VAL_ESC, VAL_MUST_ESC, not_prefix, sep_by_tok, value as parse_value},
+    parser::{
+        VAL_ESC, VAL_MUST_ESC, duration_of, not_prefix, sep_by_tok, value as parse_value,
+    },
 };
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -1187,7 +1189,7 @@ where
 /// A diagnostic arm behind the literal parser: an integer literal out of
 /// its type's range names the type, since the value parser fails without
 /// a reason.
-fn int_range_note<I>() -> impl Parser<I, Output = Expr>
+fn int_range_note<I, O>() -> impl Parser<I, Output = O>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -1221,7 +1223,7 @@ where
                     format_compact!("`{int}` is out of the range of {name}"),
                 );
             }
-            unexpected_any("integer literal").map(|_: ()| unreachable!())
+            unexpected_any("integer literal").map(|_: ()| -> O { unreachable!() })
         },
     )
 }
@@ -1250,8 +1252,9 @@ where
 
 /// A diagnostic arm behind the literal parser: a `duration:` literal with
 /// an unknown unit names the unit, since the value parser accepts the
-/// longest known prefix and fails after it.
-fn duration_unit_note<I>() -> impl Parser<I, Output = Expr>
+/// longest known prefix and fails after it, and one no duration holds
+/// says so, since the value parser fails without a reason.
+fn duration_unit_note<I, O>() -> impl Parser<I, Output = O>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -1260,13 +1263,14 @@ where
     const UNITS: [&str; 9] = ["ns", "us", "ms", "s", "m", "h", "d", "M", "y"];
     (
         attempt(string("duration:")),
+        position(),
         many1::<CompactString, _, _>(satisfy(|c: char| {
             c.is_ascii_digit() || c == '.' || c == '-' || c == '+'
         })),
         position(),
         many1::<CompactString, _, _>(satisfy(|c: char| c.is_alphabetic())),
     )
-        .then(|(_, _, pos, unit): (_, CompactString, _, CompactString)| {
+        .then(|(_, start, n, pos, unit): (_, _, CompactString, _, CompactString)| {
             if !UNITS.contains(&unit.as_str()) {
                 grow::note_reason(
                     pos,
@@ -1276,8 +1280,16 @@ where
                          s, m, h, d, M and y (`duration:30.m`)"
                     ),
                 );
+            } else if n.parse::<f64>().is_ok() && duration_of(&n, &unit).is_none() {
+                grow::note_reason(
+                    start,
+                    Some(n.len() + unit.len()),
+                    compact_str::format_compact!(
+                        "`{n}{unit}` is negative or longer than the longest duration"
+                    ),
+                );
             }
-            unexpected_any("duration literal").map(|_: ()| unreachable!())
+            unexpected_any("duration literal").map(|_: ()| -> O { unreachable!() })
         })
 }
 
@@ -1916,7 +1928,7 @@ macro_rules! parse_all {
         let quick = grow::parsing(text, || {
             ($p).skip(spaces())
                 .skip(eof())
-                .parse(position::Stream::with_positioner(text, SourcePosition::default()))
+                .parse(position::Stream::with_positioner(text, Lines::default()))
                 .map(|(r, _)| r)
         });
         match quick {
@@ -1935,12 +1947,12 @@ fn explain<'a, T, P>(
     p: P,
 ) -> anyhow::Result<T>
 where
-    P: Parser<easy::Stream<position::Stream<&'a str, SourcePosition>>, Output = T>,
+    P: Parser<easy::Stream<position::Stream<&'a str, Lines>>, Output = T>,
 {
     grow::parsing(text, || {
         p.skip(spaces())
             .skip(eof())
-            .easy_parse(position::Stream::new(text))
+            .easy_parse(position::Stream::with_positioner(text, Lines::default()))
             .map(|(r, _)| r)
             .map_err(|mut e| {
                 grow::note_error_pos(e.position);
@@ -1979,13 +1991,105 @@ fn crlf_as_lf<'a>(text: &'a str, buf: &'a mut LPooled<String>) -> &'a str {
     buf.as_str()
 }
 
+// XCR claude for claude: [bug/low] This counts a lone \r as a line break, but the parser
+// does not, and diagnostics and query positions come from the parser. In a lone-CR
+// document, `let x = 1;\rlet y = "a" + 1;\ry` publishes its error at line 0, character
+// 10, instead of line 1, characters 8..15. Have the parser count \r as a line break, or
+// translate parser positions through this function before they reach the client. probe:
+// design/review-2026-10-26/repro/x-rerun-5-lsp-lone-cr-diag.py (x-rerun-5-08)
+// 2026-10-27 claude: Fixed with lsp-03: the parser now counts positions with
+// parser::Lines, a combine positioner whose lines end at \r\n, \r or \n;
+// position::lines moved here as parser::lines and is the one line rule (grow.rs
+// snippet, first columns and unclosed_at_end, shebang_len, the LSP's LineIndex,
+// text_between, use_path, call_context). Pins: graphix-types parser test
+// a_lone_carriage_return_ends_a_line, graphix-shell tests/lsp
+// lone_carriage_returns_end_lines (error at (2,12), hover and labels past a lone CR).
+// XCR claude for claude: [bug/low] These lines break at a lone \r, but the compiler's
+// SourcePosition starts a line only at \n. In a lone-CR document every compiler
+// position is read against the wrong line: "nope not defined" on the third line is
+// published at (0,10), and hover on line 1 answers nothing. Also text::text_between
+// (str::lines), text::use_path (split_inclusive) and text::call_context (counts \n)
+// each split lines their own way. Fix: make the parser's positioner count a lone \r as
+// a newline, so compiler lines match the client's, and route those three helpers
+// through this function. probe: design/review-2026-10-26/repro/lsp-lone-cr-positions.py
+// Also reported as (x-lsp-probe-06). (lsp-03)
+// 2026-10-27 claude: Fixed as suggested: parser::Lines counts a lone \r as a line
+// break, so compiler lines match the client's; text::text_between, use_path and
+// call_context now read lines through parser::lines (use_path and call_context through
+// text_between), and a #! line ends at a lone \r too (format keeps that break). Pins:
+// graphix-types a_lone_carriage_return_ends_a_line and the shebang case in format's
+// a_shebang_line_stays_and_positions_count_it; graphix-shell tests/lsp
+// lone_carriage_returns_end_lines (the LSP test harness now counts \r lines as a client
+// does).
+/// A source position as an editor counts lines: a line ends at "\r\n",
+/// "\r" or "\n".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Lines {
+    at: SourcePosition,
+    after_cr: bool,
+}
+
+impl Positioner<char> for Lines {
+    type Position = SourcePosition;
+    type Checkpoint = Self;
+
+    fn position(&self) -> SourcePosition {
+        self.at
+    }
+
+    fn update(&mut self, c: &char) {
+        match c {
+            '\n' if self.after_cr => (),
+            '\r' | '\n' => self.at = SourcePosition { line: self.at.line + 1, column: 1 },
+            _ => self.at.column += 1,
+        }
+        self.after_cr = *c == '\r';
+    }
+
+    fn checkpoint(&self) -> Self {
+        *self
+    }
+
+    fn reset(&mut self, checkpoint: Self) {
+        *self = checkpoint
+    }
+}
+
+impl<'a> RangePositioner<char, &'a str> for Lines {
+    fn update_range(&mut self, range: &&'a str) {
+        for c in range.chars() {
+            self.update(&c)
+        }
+    }
+}
+
+/// A text's lines as [`Lines`] numbers them, each without its break;
+/// what follows the last break, empty or not, is a line.
+pub fn lines(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = Some(text);
+    std::iter::from_fn(move || {
+        let t = rest?;
+        Some(match t.find(['\r', '\n']) {
+            None => {
+                rest = None;
+                t
+            }
+            Some(i) => {
+                let brk = if t[i..].starts_with("\r\n") { 2 } else { 1 };
+                rest = Some(&t[i + brk..]);
+                &t[..i]
+            }
+        })
+    })
+}
+
 /// The length of the byte-order mark and then the `#!` line a program
 /// text may start with, the line's newline excluded; 0 when there is
 /// neither. Every reader of a program skips them.
 pub fn shebang_len(text: &str) -> usize {
     let bom = if text.starts_with(BOM) { BOM.len_utf8() } else { 0 };
     let rest = &text[bom..];
-    bom + if rest.starts_with("#!") { rest.find('\n').unwrap_or(rest.len()) } else { 0 }
+    bom + if rest.starts_with("#!") { lines(rest).next().map_or(0, str::len) } else { 0 }
 }
 
 /// `text` without its byte-order mark and `#!` line, the newline kept so
