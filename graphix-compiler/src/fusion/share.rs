@@ -10,8 +10,8 @@ use crate::{
     analysis::RegionFacts,
     expr::ExprId,
     fusion::{
-        FusedKernel, collect_region_inputs, emit::WrappedKernel, for_each_reachable_node,
-        kernel_abi::KernelSig,
+        FusedKernel, FusionAttempt, collect_region_inputs, emit::WrappedKernel,
+        for_each_reachable_node, kernel_abi::KernelSig,
     },
     image::{self, ImageBuf},
     typ::Type,
@@ -85,14 +85,23 @@ pub(crate) struct SharedRegion {
     print: RegionPrint,
 }
 
-/// The fusion attempts of one prototype walk, by ordinal; `Some` where
-/// the attempt built a kernel.
-type Table = Arc<Vec<Option<SharedRegion>>>;
+pub(crate) enum SharedAttempt {
+    Fused(SharedRegion),
+    Refused { root: ExprId, blocker: Option<ExprId> },
+}
+
+impl SharedAttempt {
+    fn fused(&self) -> bool {
+        matches!(self, Self::Fused(_))
+    }
+}
+
+type Table = Arc<Vec<SharedAttempt>>;
 
 /// What the fusion walk does with a region attempt beside building it.
 pub(crate) enum Share {
     /// A prototype walk: record every attempt.
-    Collect(Vec<Option<SharedRegion>>),
+    Collect(Vec<SharedAttempt>),
     /// A slot walk: answer attempt `next` from the table, never build.
     Reuse { table: Table, next: usize },
 }
@@ -114,21 +123,30 @@ impl std::fmt::Debug for SlotShare {
     }
 }
 
-/// Record a prototype walk's attempt at `node`, which built `fused`.
+/// Record a prototype walk's outcome at `node`.
 pub(crate) fn record<R: Rt>(
     ctx: &mut CompileCtx<R>,
     node: &Node<R>,
-    fused: Option<&mut Node<R>>,
+    attempt: &mut FusionAttempt<R>,
 ) {
     let Some(Share::Collect(attempts)) = &mut ctx.fusion.share else { return };
-    let entry =
-        fused.and_then(|n| n.downcast_mut::<FusedKernel<R>>()).map(|k| SharedRegion {
-            root: node.spec().id,
-            kernel: k.kernel().clone(),
-            jit: k.jit().clone(),
-            facts: k.facts(),
-            print: RegionPrint::of(node),
-        });
+    let entry = match attempt {
+        FusionAttempt::Fused(n) => {
+            let k = n
+                .downcast_mut::<FusedKernel<R>>()
+                .expect("a fused attempt builds a kernel");
+            SharedAttempt::Fused(SharedRegion {
+                root: node.spec().id,
+                kernel: k.kernel().clone(),
+                jit: k.jit().clone(),
+                facts: k.facts(),
+                print: RegionPrint::of(node),
+            })
+        }
+        FusionAttempt::Refused(blocker) => {
+            SharedAttempt::Refused { root: node.spec().id, blocker: *blocker }
+        }
+    };
     attempts.push(entry)
 }
 
@@ -140,22 +158,30 @@ pub(crate) fn reuse<R: Rt>(
     ctx: &mut CompileCtx<R>,
     node: &Node<R>,
     return_type: &Type,
-) -> Option<Node<R>> {
-    let Some(Share::Reuse { table, next }) = &mut ctx.fusion.share else { return None };
+) -> FusionAttempt<R> {
+    let Some(Share::Reuse { table, next }) = &mut ctx.fusion.share else {
+        return FusionAttempt::Refused(None);
+    };
     let (table, at) = (table.clone(), *next);
     *next += 1;
-    let entry = table.get(at)?.as_ref()?;
+    let entry = match table.get(at) {
+        Some(SharedAttempt::Fused(entry)) => entry,
+        Some(SharedAttempt::Refused { root, blocker }) if *root == node.spec().id => {
+            return FusionAttempt::Refused(*blocker);
+        }
+        _ => return FusionAttempt::Refused(None),
+    };
     if entry.root != node.spec().id {
         log::debug!(
             "fusion::share: attempt {at} is {:?}, not {:?}",
             entry.root,
             node.spec().id
         );
-        return None;
+        return FusionAttempt::Refused(None);
     }
     if entry.kernel.return_type != *return_type {
         log::debug!("fusion::share: slot region {:?} returns another type", entry.root);
-        return None;
+        return FusionAttempt::Refused(None);
     }
     let inputs = collect_region_inputs(&**node, ctx);
     let params = &entry.kernel.params;
@@ -164,7 +190,7 @@ pub(crate) fn reuse<R: Rt>(
             "fusion::share: slot region {:?} keeps its node-walk: {why}",
             entry.root
         );
-        None
+        FusionAttempt::Refused(None)
     };
     if inputs.len() != params.len()
         || !inputs
@@ -189,7 +215,7 @@ pub(crate) fn reuse<R: Rt>(
         let k = fused.downcast_mut::<FusedKernel<R>>().expect("a kernel");
         k.redirect(redirects);
     }
-    Some(fused)
+    FusionAttempt::Fused(fused)
 }
 
 /// Fuse a collection's prototype through `f`: the table its slots
@@ -206,7 +232,7 @@ pub(crate) fn fuse_prototype<R: Rt>(
                 unreachable!("the walk restores its share")
             };
             r?;
-            let any = attempts.iter().any(Option::is_some);
+            let any = attempts.iter().any(SharedAttempt::fused);
             Ok(any.then(|| SlotShare { table: Arc::new(attempts), base: 0 }))
         }
         Some(Share::Collect(attempts)) => {
@@ -221,7 +247,7 @@ pub(crate) fn fuse_prototype<R: Rt>(
                 Some(Share::Reuse { next, .. }) => (*next).min(table.len()),
                 _ => base,
             };
-            let any = table[base.min(end)..end].iter().any(Option::is_some);
+            let any = table[base.min(end)..end].iter().any(SharedAttempt::fused);
             Ok(any.then(|| SlotShare { table, base }))
         }
     }
@@ -250,9 +276,14 @@ impl SlotShare {
         encode_varint(self.base as u64, buf);
         encode_varint(self.table.len() as u64, buf);
         for e in self.table.iter() {
-            let Some(e) = e else {
-                buf.put_u8(0);
-                continue;
+            let e = match e {
+                SharedAttempt::Fused(e) => e,
+                SharedAttempt::Refused { root, blocker } => {
+                    buf.put_u8(0);
+                    root.encode(buf)?;
+                    blocker.encode(buf)?;
+                    continue;
+                }
             };
             buf.put_u8(1);
             e.root.encode(buf)?;
@@ -278,9 +309,16 @@ impl SlotShare {
         let n = decode_varint(buf)? as usize;
         let mut table = Vec::with_capacity(n.min(1024));
         for _ in 0..n {
-            if u8::decode(buf)? == 0 {
-                table.push(None);
-                continue;
+            match u8::decode(buf)? {
+                0 => {
+                    table.push(SharedAttempt::Refused {
+                        root: ExprId::decode(buf)?,
+                        blocker: Option::<ExprId>::decode(buf)?,
+                    });
+                    continue;
+                }
+                1 => (),
+                _ => return Err(PackError::InvalidFormat),
             }
             let root = ExprId::decode(buf)?;
             let facts = RegionFacts::decode(buf)?;
@@ -293,7 +331,13 @@ impl SlotShare {
                 raises.push((h, ExprId::decode(buf)?, ExprId::decode(buf)?));
             }
             let print = RegionPrint { callees, raises };
-            table.push(Some(SharedRegion { root, kernel, jit, facts, print }));
+            table.push(SharedAttempt::Fused(SharedRegion {
+                root,
+                kernel,
+                jit,
+                facts,
+                print,
+            }));
         }
         Ok(Self { table: Arc::new(table), base })
     }

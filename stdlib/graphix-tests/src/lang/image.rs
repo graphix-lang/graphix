@@ -1173,3 +1173,25 @@ async fn a_block_function_keeps_its_lowering_warm() -> Result<()> {
     assert_eq!(cold, warm, "the warm run lowered again");
     Ok(())
 }
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn nested_sample_argument_slots_restore_fusion() -> Result<()> {
+    let image =
+        fused_program_image(super::fusion::NESTED_SAMPLE_ARGUMENT_IN_SLOTS).await?;
+    let (tx, mut rx) = mpsc::channel(10);
+    let warm = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .flags(Default::default())
+            .registration(RegistrationImage::load(image)),
+    )
+    .await?;
+    let _program = warm.rt.program().await?.expect("the program restored");
+    let values = first_values(&mut rx).await;
+    assert!(
+        matches!(&values[..], [Value::Array(a)] if a[..] == [Value::I64(2), Value::I64(3), Value::I64(4)])
+    );
+    assert_eq!(warm.rt.control().invocations().0, 3);
+    warm.shutdown().await;
+    Ok(())
+}

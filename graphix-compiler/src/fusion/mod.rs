@@ -1054,12 +1054,15 @@ pub fn fuse<R: Rt>(child: &mut Node<R>, ctx: &mut CompileCtx<R>) -> anyhow::Resu
     if let Some(p) = child.as_prune_mut() {
         return p.fuse_child(ctx);
     }
-    if let Some(new) = try_fuse(child, ctx)? {
-        ctx.discard(std::mem::replace(child, new));
-        check_node_attributes(child, ctx)?;
-        return Ok(());
-    }
-    if let Some(new) = try_fuse_feeding_args(child, ctx)? {
+    let blocker = match try_fuse_attempt(child, ctx)? {
+        FusionAttempt::Fused(new) => {
+            ctx.discard(std::mem::replace(child, new));
+            check_node_attributes(child, ctx)?;
+            return Ok(());
+        }
+        FusionAttempt::Refused(blocker) => blocker,
+    };
+    if let Some(new) = try_fuse_feeding_args(child, ctx, blocker)? {
         ctx.discard(std::mem::replace(child, new));
         check_node_attributes(child, ctx)?;
         return Ok(());
@@ -1078,6 +1081,7 @@ static FED_ARGS: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["#fed"]));
 fn try_fuse_feeding_args<R: Rt>(
     child: &mut Node<R>,
     ctx: &mut CompileCtx<R>,
+    blocker: Option<ExprId>,
 ) -> anyhow::Result<Option<Node<R>>> {
     let top_id = ctx.fusion.top_id.unwrap_or(child.spec().id);
     let Some(cs) = child.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
@@ -1093,7 +1097,7 @@ fn try_fuse_feeding_args<R: Rt>(
     // then nothing is fed.
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
     for arg in cs.args.values_mut() {
-        // CR claude for claude: [perf/low] An argument is fed only when discovery
+        // XCR claude for claude: [perf/low] An argument is fed only when discovery
         // refuses it, and discovery rejects a `~` (or Any, Never, a reference) only at
         // its root. So `f(a, t ~ a)` fuses with its argument fed, while `f(a, (t ~ a) +
         // 1)` passes discovery, fails at emission and keeps the call in the node-walk.
@@ -1107,9 +1111,43 @@ fn try_fuse_feeding_args<R: Rt>(
         // blocker's spec (a refusal value, not Ok(None)) and try_fuse_feeding_args to
         // feed the argument that holds it; a ctx field for the last blocker would be a
         // new ctx global.
+        // 2026-10-27 codex: The default Update::emit_clif in compiler lib.rs now
+        // returns FusionBlocker (the prior plain error lost its expression identity),
+        // retaining its diagnostic text. Fusion attempts now return the refusing
+        // expression id to the feeder retry. An argument containing that blocker is
+        // fed, subject to the existing effect-order and input checks; the call retries
+        // once. Collection prototype records retain refusal roots and blockers so
+        // runtime slots make the same choice, including after image restoration; the
+        // image format advances. Pins: lang::fusion::nested_sample_argument_is_fed::jit
+        // failed without the fix on the required outer-kernel shape and passes with it.
+        // nested_sample_argument_in_slots and
+        // nested_sample_argument_kernel_runs_in_each_slot use an identity callee whose
+        // body creates no standalone kernel; the old debug shell emitted zero kernels
+        // for this exact fixture. The counter pin and
+        // lang::image::nested_sample_argument_slots_restore_fusion require three kernel
+        // runs for three slots and pass with the fix. Those final slot fixtures were
+        // not run as Rust tests against old sources. All lang::fusion, lang::select and
+        // lang::seq tests, program_image_restores_kernels, and the long-seq/select
+        // time-budget pins pass. No existing FuseExpect moved. The named nested-sample
+        // probe now builds the fed outer kernel as well as the direct-sample call. The
+        // small named --no-cache --expand probe took a median 0.140 s before and 0.088
+        // s after (three debug runs each); no compile-time speedup is claimed.
+        // 2026-10-27 codex: Validation limitation: cargo --offline fmt --all passed
+        // before the final test batch; its final repeat reached
+        // /home/eric/proj/graphix/stdlib/graphix-tests/src/lang/seq_calls.rs through
+        // netidx's path dependencies and failed because that checkout is read-only.
+        // Formatted all changed Rust files directly with the workspace rustfmt
+        // configuration and skip_children=true; git diff --check passes. No external
+        // files changed.
         let feed = arg.node.as_mut().is_some_and(|node| {
+            let mut blocked = false;
+            if let Some(id) = blocker {
+                for_each_node(node, &mut |n| blocked |= n.spec().id == id);
+            }
             let mut discovery = lowering::BuiltinCallDiscovery::default();
-            lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err()
+            blocked
+                || lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery)
+                    .is_err()
         });
         feeds.push(feed);
     }
@@ -1388,6 +1426,11 @@ fn check_attribute_targets<R: Rt>(
     Ok(())
 }
 
+pub(crate) enum FusionAttempt<R: Rt> {
+    Fused(Node<R>),
+    Refused(Option<ExprId>),
+}
+
 /// Try to fuse the whole subtree rooted at `node` into one JIT kernel.
 /// Mechanics only; policy lives in each node's [`Update::fuse`].
 ///
@@ -1399,8 +1442,18 @@ pub fn try_fuse<R: Rt>(
     node: &Node<R>,
     ctx: &mut CompileCtx<R>,
 ) -> anyhow::Result<Option<Node<R>>> {
+    Ok(match try_fuse_attempt(node, ctx)? {
+        FusionAttempt::Fused(node) => Some(node),
+        FusionAttempt::Refused(_) => None,
+    })
+}
+
+fn try_fuse_attempt<R: Rt>(
+    node: &Node<R>,
+    ctx: &mut CompileCtx<R>,
+) -> anyhow::Result<FusionAttempt<R>> {
     if !region_is_candidate(node) {
-        return Ok(None);
+        return Ok(FusionAttempt::Refused(None));
     }
     let phase = profile::phase(Phase::ReturnType);
     let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
@@ -1421,9 +1474,9 @@ pub fn try_fuse<R: Rt>(
     if ctx.fusion.reusing() {
         return Ok(share::reuse(ctx, node, &return_type));
     }
-    let mut fused = build_region(node, ctx, return_type)?;
-    share::record(ctx, node, fused.as_mut());
-    Ok(fused)
+    let mut attempt = build_region(node, ctx, return_type)?;
+    share::record(ctx, node, &mut attempt);
+    Ok(attempt)
 }
 
 /// The node of the region `node` fused into `kernel`, over a feeder per
@@ -1450,7 +1503,7 @@ fn build_region<R: Rt>(
     node: &Node<R>,
     ctx: &mut CompileCtx<R>,
     return_type: Type,
-) -> anyhow::Result<Option<Node<R>>> {
+) -> anyhow::Result<FusionAttempt<R>> {
     ctx.fusion.stats.attempted += 1;
     let phase = profile::phase(Phase::Builtins);
     // `apply_sites` lets `CallSite::emit_clif` lower a registered site
@@ -1561,7 +1614,7 @@ fn build_region<R: Rt>(
         check_attribute_targets(n, ctx)?;
     }
     ctx.attr_absorbed.lock().extend(lambdas.decorated.iter().map(|n| n.spec().id));
-    Ok(Some(n))
+    Ok(FusionAttempt::Fused(n))
 }
 
 /// De-fuse the region, recording the reason so `attempted` and
@@ -1570,9 +1623,9 @@ fn refuse<R: Rt>(
     ctx: &mut CompileCtx<R>,
     spec: &Expr,
     reason: &str,
-) -> anyhow::Result<Option<Node<R>>> {
+) -> anyhow::Result<FusionAttempt<R>> {
     ctx.fusion.stats.record_failure(spec, reason);
-    Ok(None)
+    Ok(FusionAttempt::Refused(Some(spec.id)))
 }
 
 /// Freeze a region root's type into the kernel's return ABI type, or

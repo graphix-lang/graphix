@@ -2515,3 +2515,33 @@ run!(null_formal_fuses, r#"
   (show(null), show(1))
 }
 "#, prints(r#"["<null>", "<1>"]"#); FuseExpect::Jit);
+run!(nested_sample_argument_is_fed, r#"{
+    let f = |x: i64, y: i64| x * y + 1;
+    let a = 3;
+    let t = 4;
+    f(a, (t ~ a) + 1)
+}"#, is(Value::I64(13)); FuseExpect::Jit; shape: graphix_compiler::node_shape::NodeShape::contains_fused(
+    graphix_compiler::node_shape::KernelMatcher::new().params(&["a", "arg"])
+));
+
+pub(super) const NESTED_SAMPLE_ARGUMENT_IN_SLOTS: &str = r#"
+array::map([1, 2, 3], |a| {
+    let f = |x: i64, y: i64| y;
+    f(a, (a ~ a) + 1)
+})
+"#;
+
+run!(nested_sample_argument_in_slots, NESTED_SAMPLE_ARGUMENT_IN_SLOTS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3), Value::I64(4)])
+}; FuseExpect::Jit);
+
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "current_thread")]
+async fn nested_sample_argument_kernel_runs_in_each_slot() -> Result<()> {
+    let (v, (fused, _)) = load_and_count(NESTED_SAMPLE_ARGUMENT_IN_SLOTS).await?;
+    assert!(
+        matches!(&v, Value::Array(a) if a[..] == [Value::I64(2), Value::I64(3), Value::I64(4)])
+    );
+    assert_eq!(fused, 3);
+    Ok(())
+}

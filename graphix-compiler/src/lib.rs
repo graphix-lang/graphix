@@ -35,7 +35,7 @@ pub use stack::{Budget, Control, CtlFlag, ParMode, PruneMode, with_control};
 pub use stack::{set_activation_budget, set_stack_budget};
 pub mod tval;
 
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use profile::Phase;
 // Packages implementing `Apply::emit_clif` take cranelift through the
 // compiler, so they stay in version lockstep with the JIT.
@@ -775,12 +775,15 @@ pub trait Update<R: Rt>: Debug + Send + Sync + Any + 'static {
     /// SSA result; an impl emits its children via `child.emit_clif(cx)`.
     /// The default is `Err`: the subtree node-walks.
     fn emit_clif(&self, _cx: &mut BodyCx) -> Result<fusion::emit::CompiledExpr> {
-        anyhow::bail!(
-            "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
-             node-walks",
-            self.spec().id,
-            self.spec()
-        )
+        Err(fusion::blocker(
+            self.spec(),
+            format_compact!(
+                "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
+                 node-walks",
+                self.spec().id,
+                self.spec()
+            ),
+        ))
     }
 
     /// Fuse this subtree. `Ok(Some(replacement))`: the caller swaps it
