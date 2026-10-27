@@ -229,6 +229,31 @@ pub(crate) fn join_open_raised(
 }
 
 impl<R: Rt> Catch<R> {
+    fn with(
+        spec: Arc<Expr>,
+        handler: Node<R>,
+        action: Option<CatchAction<R>>,
+        own_handler: ErrorHandler,
+        constraint: Option<Type>,
+        thrown: Option<Type>,
+        bind_id: BindId,
+        top_id: ExprId,
+        polled: Option<BoundaryRef>,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            handler,
+            action,
+            own_handler,
+            receipts: Receipts::default(),
+            constraint,
+            thrown,
+            bind_id,
+            top_id,
+            polled,
+        })
+    }
+
     /// The covering seq machine's abort stamp, 0 outside one.
     fn run_stamp(&self) -> u64 {
         self.own_handler.machine().map_or(0, |m| m.abort_stamp())
@@ -263,18 +288,17 @@ impl<R: Rt> Catch<R> {
         ctx.record_ref(bind_id, top_id);
         let polled = ctx.boundary.clone();
         own_handler.polled_by(&polled);
-        Ok(Node::new(Self {
+        Ok(Self::with(
             spec,
             handler,
             action,
             own_handler,
-            receipts: Receipts::default(),
             constraint,
             thrown,
             bind_id,
             top_id,
             polled,
-        }))
+        ))
     }
 
     pub(crate) fn compile(
@@ -355,18 +379,17 @@ impl<R: Rt> Catch<R> {
         }
         let polled = ctx.boundary.clone();
         own_handler.polled_by(&polled);
-        let node = Node::new(Self {
+        let node = Self::with(
             spec,
             handler,
             action,
             own_handler,
-            receipts: Receipts::default(),
-            constraint: c.constraint.clone(),
-            thrown: None,
+            c.constraint.clone(),
+            None,
             bind_id,
             top_id,
             polled,
-        });
+        );
         Ok((node, covered))
     }
 
