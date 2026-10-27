@@ -568,11 +568,9 @@ pub(crate) fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
     lowering::expand_refs(t, ctx.type_env)
 }
 
-/// [`kernel_abi::freeze_for_abi_normalized`], retrying through
-/// [`resolve_node_typ`] when the plain freeze fails.
+/// [`lowering::freeze_in_env`] through the region's env snapshot.
 pub(super) fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
-    kernel_abi::freeze_for_abi_normalized(t)
-        .or_else(|| kernel_abi::freeze_for_abi_normalized(&resolve_node_typ(ctx, t)))
+    lowering::freeze_in_env(t, ctx.type_env)
 }
 
 /// The runtime helpers a function body calls, each imported into the

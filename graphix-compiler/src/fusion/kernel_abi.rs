@@ -830,22 +830,15 @@ pub(crate) fn try_freeze_for_abi_normalized(t: &Type) -> Result<Type, FreezeErro
     })
 }
 
-/// The frozen success type `T` of a [`AbiKind::Nullable`] shape
+/// The success type `T` of a frozen [`AbiKind::Nullable`] shape
 /// (`[T, null]`, `[T, Error]`, or the collapsed `T | null` primitive);
 /// `None` for any other shape.
 pub fn nullable_inner(t: &Type) -> Option<Type> {
-    let resolved = t.deref_cloned();
-    {
-        let resolved = resolved.as_ref()?;
-        match resolved {
-            Type::Primitive(p) => nullable_prim(p).map(|t| Type::Primitive(t.into())),
-            Type::Set(members) => {
-                let succ = option_result_success(members)?;
-                freeze_for_abi(succ)
-            }
-            _ => None,
-        }
-    }
+    t.with_deref(|r| match r? {
+        Type::Primitive(p) => nullable_prim(p).map(|t| Type::Primitive(t.into())),
+        Type::Set(members) => option_result_success(members).cloned(),
+        _ => None,
+    })
 }
 
 /// The [`PrimType`] of a register-scalar `Type`; `None` otherwise.

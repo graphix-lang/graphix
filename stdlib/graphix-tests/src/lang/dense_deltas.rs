@@ -69,15 +69,18 @@ pub(super) async fn run_delta_with(
         },
     )
     .await?;
-    ctx.rt.control().reset_invocations();
+    let control = ctx.rt.control();
+    control.reset_invocations();
+    // the stdlib root's own cycles fork too: count the fixture's
+    let (forks_before, build_forks_before) = (control.forks(), control.build_forks());
     let res = compile_result(&ctx).await?;
     let regions = ctx.fusion_stats().await.map(|s| s.fused).unwrap_or(0);
     let deadline = Instant::now() + Duration::from_secs(20);
     let values =
         updates_until_quiet(&ctx.rt, &mut rx, res.exprs[0].id, quiet, deadline).await?;
     let out = sink.take();
-    let control = ctx.rt.control();
-    let (forks, build_forks) = (control.forks(), control.build_forks());
+    let forks = control.forks() - forks_before;
+    let build_forks = control.build_forks() - build_forks_before;
     let (verdicts, invocations) = (control.verdicts(), control.invocations());
     let boundaries = control.boundaries();
     ctx.shutdown().await;

@@ -391,7 +391,7 @@ run!(checked_int_arith_inline, r#"
 const CHECKED_INT_ARITH: &str = r#"[[i8:127, i8:73, error:["ArithError", "attempt to multiply with overflow"], i8:3, i8:19], [error:["ArithError", "attempt to add with overflow"], i8:-127, error:["ArithError", "attempt to multiply with overflow"], error:["ArithError", "attempt to divide with overflow"], i8:0], [error:["ArithError", "attempt to add with overflow"], u16:65533, error:["ArithError", "attempt to multiply with overflow"], u16:32767, u16:1], [error:["ArithError", "attempt to add with overflow"], i64:9223372036854775806, i64:9223372036854775807, i64:9223372036854775807, i64:0], [i64:6074001000, i64:0, error:["ArithError", "attempt to multiply with overflow"], i64:1, i64:0], [u64:3, error:["ArithError", "attempt to subtract with overflow"], u64:2, u64:0, u64:1], [u64:9, u64:9, u64:0, error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"]]]"#;
 
 // A typedef naming the next twice freezes once per level, not 2^depth.
-// CR claude for claude: [perf/medium] This fixture freezes T0 only as a region's return
+// XCR claude for claude: [perf/medium] This fixture freezes T0 only as a region's return
 // type, which is linear. The same chain as a lambda formal (`let f = |x: T0| -> T0 x;
 // f(v)`) freezes exponentially: 0.25 s at 6 levels, 2.8 s at 8, 12.1 s at 9 (11.2 s in
 // phase=Freeze, while --check takes 0.1 s). From 10 levels the call de-fuses with
@@ -402,6 +402,18 @@ const CHECKED_INT_ARITH: &str = r#"[[i8:127, i8:73, error:["ArithError", "attemp
 // Then make this fixture reach a formal (`#[native] f(v)` at 40 levels). probe:
 // design/review-2026-10-26/repro/tests-lang-rest-a-typedef-dag-formal-freeze.gx
 // (tests-lang-rest-a-01)
+// 2026-10-26 claude: Formals, captures, a lambda's return, free-var inputs, self-call
+// arguments and emit's freeze_node_typ all freeze through lowering::freeze_in_env: the
+// type as written first (the freeze expands each ref once and shares a ref named
+// twice), expand_refs only when that fails, as freeze_region_return already did.
+// kernel_abi::nullable_inner returns the frozen success member instead of freezing it
+// again (a second freeze expanded every recursive ref leaf once more, exponential in
+// the depth). The 8-level probe's fusion cost is gone (build time is the check's), and
+// a 16-level formal fuses where it had no kernel encoding. Pin:
+// fusion_review::typedef_dag_formal_freezes_in_linear_time (#[native] f(v) at 14
+// levels; jit and jit_par refuse with 'formal x has no kernel encoding' without
+// freeze_in_env). Not raised to 40 levels: the check itself is exponential in this
+// chain (typedef-dag-check-01, a new CR on that fixture).
 run!(typedef_dag_freezes_in_linear_time, {
     use std::fmt::Write;
     let mut src = poolshark::local::LPooled::<String>::take();
@@ -410,6 +422,29 @@ run!(typedef_dag_freezes_in_linear_time, {
         writeln!(src, "type T{i} = [null, (T{}, T{})];", i + 1, i + 1).unwrap();
     }
     src.push_str("type T40 = [null, (T0, T0)];\nlet v: T0 = null;\nv }");
+    arcstr::ArcStr::from(src.as_str())
+}, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
+
+// The same chain as a lambda formal freezes once per level too, and the
+// formal has a kernel encoding however far the chain unfolds.
+// CR claude for claude: [perf/medium] The check of this program is exponential in
+// the chain's depth: `--check` of the fixture's program takes 2.9 s at 20 levels and
+// 54 s at 24 (debug build), 1.9 s of the 20-level run in phase=Typecheck0, while the
+// same chain read as `let v: T0 = null; v` (typedef_dag_freezes_in_linear_time,
+// 40 levels) checks at once. The call `f(v)` of a formal `x: T0` is what costs, so
+// this fixture stops at 14 levels where tests-lang-rest-a-01 asked for 40. Find
+// the check walk that unfolds the two-wide typedef DAG as a tree and share it per
+// ref, then raise this fixture to 40 levels. probe: the fixture's program at 24
+// levels under graphix --check (typedef-dag-check-01)
+run!(typedef_dag_formal_freezes_in_linear_time, {
+    use std::fmt::Write;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    src.push_str("{\n");
+    for i in 0..14 {
+        writeln!(src, "type T{i} = [null, (T{}, T{})];", i + 1, i + 1).unwrap();
+    }
+    src.push_str("type T14 = [null, (T0, T0)];\nlet f = |x: T0| -> T0 x;\n");
+    src.push_str("let v: T0 = null;\n#[native] f(v) }");
     arcstr::ArcStr::from(src.as_str())
 }, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
 

@@ -12,8 +12,9 @@ use crate::{
     fusion::{
         self, Brief, FusionBlocker,
         kernel_abi::{
-            self, AbiKind, KernelParam, KernelSig, ParamKind, Seen, abi_kind,
-            expand_key_fp, freeze_for_abi_normalized, scalar_prim,
+            self, AbiKind, FreezeError, KernelParam, KernelSig, ParamKind, Seen,
+            abi_kind, expand_key_fp, freeze_for_abi_normalized, scalar_prim,
+            try_freeze_for_abi_normalized,
         },
     },
     node::{callsite::CallSite, lambda::GXLambda},
@@ -778,6 +779,19 @@ pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
     })
 }
 
+/// `t`'s kernel ABI form. The freeze expands a named type where it
+/// reaches it, sharing a part named twice; only a type it cannot read as
+/// written is frozen through [`expand_refs`], whose tree it walks whole.
+pub(crate) fn freeze_in_env(t: &Type, env: &Env) -> Option<Type> {
+    match try_freeze_for_abi_normalized(t) {
+        Ok(t) => Some(t),
+        Err(FreezeError::Unsupported) => None,
+        Err(FreezeError::NonCanonical | FreezeError::Unresolved) => {
+            freeze_for_abi_normalized(&expand_refs(t, env))
+        }
+    }
+}
+
 /// No kernel encodes a type that unfolds past this; resolving further
 /// is work the freeze would discard.
 pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
@@ -1333,9 +1347,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let self_bind = g.self_bind();
     let mut formals = formal_slots(g, self_bind, ec)?;
     let mut captures = capture_slots(g, self_bind, ec, reads)?;
-    let return_type =
-        kernel_abi::freeze_for_abi_normalized(&expand_refs(&g.typ().rtype, &ec.env))
-            .ok_or("its return type has no kernel encoding")?;
+    let return_type = freeze_in_env(&g.typ().rtype, &ec.env)
+        .ok_or("its return type has no kernel encoding")?;
     // A unit-typed call has no value to return; bare Null should have
     // widened.
     if matches!(abi_kind(&return_type), Some(AbiKind::Unit | AbiKind::Null)) {
@@ -1464,7 +1477,7 @@ fn formal_slots<R: Rt, E: UserEvent>(
             ));
         }
         let no_slot = || format_compact!("formal `{name}` has no kernel encoding");
-        let kt = kernel_abi::freeze_for_abi_normalized(&arg_typ).ok_or_else(no_slot)?;
+        let kt = freeze_in_env(&fa.typ, &ec.env).ok_or_else(no_slot)?;
         let kind = param_kind(&kt).ok_or_else(no_slot)?;
         let id = g.args().get(i).and_then(|p| p.single_bind_id());
         // A destructured formal refuses: a name-only slot would let a
@@ -1613,9 +1626,8 @@ fn capture_slots<R: Rt, E: UserEvent>(
         // graphix-tests fusion_review::callee_banked_sample_is_no_capture (jit and
         // jit_par refuse with 'a capture has no binding' without the fix).
         let b = ec.env.by_id.get(&bind_id).ok_or("a capture has no binding")?;
-        let typ = expand_refs(&b.typ, &ec.env);
         let no_slot = || format_compact!("capture `{}` has no kernel encoding", b.name);
-        let kt = kernel_abi::freeze_for_abi_normalized(&typ).ok_or_else(no_slot)?;
+        let kt = freeze_in_env(&b.typ, &ec.env).ok_or_else(no_slot)?;
         let kind = param_kind(&kt).ok_or_else(no_slot)?;
         let name = ArcStr::from(b.name.as_str());
         out.push((CaptureSlot { bind_id, name, typ: kt }, kind));
@@ -1672,8 +1684,7 @@ pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
         if inv[i] {
             continue;
         }
-        let arg_typ = expand_refs(&fa.typ, &ec.env);
-        match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
+        match freeze_in_env(&fa.typ, &ec.env) {
             Some(kt) if param_kind(&kt).is_some() => (),
             _ => return Some(NoLoop::Formals),
         }
@@ -1788,9 +1799,7 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
                 ok = false;
                 return;
             };
-            let Some(arg_kt) =
-                kernel_abi::freeze_for_abi_normalized(&expand_refs(arg.typ(), &ec.env))
-            else {
+            let Some(arg_kt) = freeze_in_env(arg.typ(), &ec.env) else {
                 ok = false;
                 return;
             };

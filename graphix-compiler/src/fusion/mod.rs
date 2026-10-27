@@ -25,13 +25,7 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
-    fusion::{
-        kernel_abi::{
-            FreezeError, KernelParam, KernelSig, ParamKind, freeze_for_abi_normalized,
-            try_freeze_for_abi_normalized,
-        },
-        lowering::expand_refs,
-    },
+    fusion::kernel_abi::{KernelParam, KernelSig, ParamKind},
     node::{self, callsite::CallNode, genn},
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -740,13 +734,9 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
 ) -> Option<FreeVarInput> {
     let b = ctx.env.by_id.get(&id)?;
-    // `freeze_for_abi` is env-free and rejects `Type::Ref`, so refs expand
-    // first. The feeder keeps the unresolved type; only the slot
-    // classification needs the concrete rep.
-    let resolved = expand_refs(&b.typ, &ctx.env);
-    // Normalized: a select with a never() arm leaves a Set polluted by
-    // the arm's late-bound TVar.
-    let frozen = freeze_for_abi_normalized(&resolved)?;
+    // The feeder keeps the unresolved type; only the slot classification
+    // needs the concrete rep.
+    let frozen = lowering::freeze_in_env(&b.typ, &ctx.env)?;
     let kind = lowering::param_kind(&frozen)?;
     Some(FreeVarInput {
         bind_id: id,
@@ -1647,8 +1637,7 @@ fn refuse<R: Rt, E: UserEvent>(
 /// Freeze a region root's type into the kernel's return ABI type, or
 /// `None` if the region can't fuse: `Unit` (⊥) has no kernel
 /// representation. Normalized because a select-rooted region's
-/// type is the raw arm union; on failure, retry with refs expanded,
-/// since an abstract-typed return carries Refs the env-free freeze rejects.
+/// type is the raw arm union.
 pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
     if crate::dbgenv::graphix_dbg_freeze() {
         let d = format_with_flags(PrintFlag::DerefTVars, || format_compact!("{typ}"));
@@ -1657,14 +1646,7 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
             typ.resolve_tvars().normalize()
         );
     }
-    let return_type = match try_freeze_for_abi_normalized(typ) {
-        Ok(t) => t,
-        Err(FreezeError::Unsupported) => return None,
-        Err(FreezeError::NonCanonical | FreezeError::Unresolved) => {
-            let resolved = expand_refs(typ, env);
-            freeze_for_abi_normalized(&resolved)?
-        }
-    };
+    let return_type = lowering::freeze_in_env(typ, env)?;
     kernel_abi::crosses_boundary(&return_type).then_some(return_type)
 }
 
