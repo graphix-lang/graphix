@@ -52,6 +52,8 @@ enum Redirect {
     Entry(ArcStr),
     Local(ArcStr),
     Function(ArcStr),
+    /// A pattern bind of a scrutinee read live: read live, as its source.
+    Live(ArcStr),
 }
 
 impl Redirect {
@@ -61,7 +63,8 @@ impl Redirect {
             | Self::Snapshot(n)
             | Self::Entry(n)
             | Self::Local(n)
-            | Self::Function(n) => n,
+            | Self::Function(n)
+            | Self::Live(n) => n,
         }
     }
 
@@ -1973,6 +1976,22 @@ fn has_call(e: &Expr) -> bool {
     })
 }
 
+/// Whether `e` reads this seq's world live: it holds a `live(..)` of its
+/// own, not one a lambda or a nested seq in it holds, or a pattern bind
+/// of a scrutinee read live.
+fn reads_live(e: &Expr, map: &Names) -> bool {
+    ensure_sufficient(|| match &e.kind {
+        ExprKind::Live(_) => true,
+        ExprKind::Ref { name } => matches!(redirect(name, map), Some(Redirect::Live(_))),
+        ExprKind::Lambda(_) | ExprKind::Seq(_) => false,
+        _ => {
+            let mut found = false;
+            e.for_each_child(&mut |c| found = found || reads_live(c, map));
+            found
+        }
+    })
+}
+
 fn inline_lambda(mut e: &Expr) -> bool {
     while let ExprKind::ExplicitParens(inner) = &e.kind {
         e = inner;
@@ -1981,9 +2000,10 @@ fn inline_lambda(mut e: &Expr) -> bool {
 }
 
 /// One call issued per entry over a snapshot of the arguments taken on
-/// the entry event; only the call's own fired production is this
-/// invocation's answer. A nullary call is a level read at entry.
-// CR claude for claude: [bug/medium] A `live(..)` inside an issued call's argument is
+/// the entry event, and again at each fire of an argument read live;
+/// only the call's own fired production is this invocation's answer. A
+/// nullary call is issued on the entry clock as any other.
+// XCR claude for claude: [bug/medium] A `live(..)` inside an issued call's argument is
 // silently dropped. The argument goes into the `once((pc, args..))` snapshot and
 // strip_live removes the `live`. So in a step, `select big(live(x)) {..}` and the guard
 // `v if big(v)` under `select live(x)` issue `big` once over the entry value and stall
@@ -1997,9 +2017,18 @@ fn inline_lambda(mut e: &Expr) -> bool {
 // big(live(x)) is legal and means what it reads: a call whose argument reads a live
 // variable is issued again at each fire of that argument, and the step completes on the
 // call's first value after entry. Implement that; no refusal.
+// 2026-10-27 claude: Built as ruled. issue_call keeps an argument that reads live at
+// the call site rather than in the entry snapshot: one holding its own live(..), or
+// naming a pattern bind of a scrutinee read live (Redirect::Live, given to an arm's
+// binds when its select's scrutinee reads live). The call is issued again at each fire
+// of that argument, and the step completes on its first fired value after entry. The
+// probe prints all four lines (inline guard, call guard, call scrutinee, live call).
+// Pin: lang::seq_calls::a_call_over_a_live_argument_is_issued_at_each_fire (the guard
+// and the scrutinee forms; both stalled before). CLAUDE.md and book/src/core/seq.md say
+// so.
 fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Expr {
     let pc = issue.pc;
-    // CR claude for claude: [bug/medium] [bug/medium] A nullary call is lowered as a
+    // XCR claude for claude: [bug/medium] [bug/medium] A nullary call is lowered as a
     // level read at entry, so the step completes on the callee's cell as it stands,
     // against seq_blocks.md §5 (a lambda instance's cell standing from the previous run
     // is no completion). A `|| timer(..) ~ runs` callee gives 1, 1, 1 over three runs
@@ -2013,11 +2042,15 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q15, A nullary
     // call in a step): yes, issue it on entry clock, just like a no argument function
     // call in a normal language. (the recommendation: issue it on the entry clock.)
-    if call.args.is_empty() {
-        let mut expr = spec.clone();
-        expr.kind = ExprKind::Apply(call);
-        return entry_fire(expr, pc);
-    }
+    // 2026-10-27 claude: Built as ruled: issue_call no longer lowers a nullary call as
+    // a level read (entry_fire); it is issued on the entry clock as any call is,
+    // through the same entry snapshot (of pc alone). The probe's stale case now gives
+    // 1, 2, 3 (was 1, 1, 1). Pin: lang::seq_calls::a_nullary_call_answers_each_run. One
+    // consequence for Eric: a nullary callee whose body reads only standing values, the
+    // probe's || read_all(path), answers the first run and stalls on later ones, as |u|
+    // read_all(path) does (the |v| k rule: nothing fires the read again). Making a
+    // nullary call re-run its body like a call in an ordinary language would need its
+    // body born again at each issue.
     let pos = spec.pos;
     let input = format_compact!("#seqargs{}", spec.id.inner());
     let issued = format_compact!("#seqissued{}", spec.id.inner());
@@ -2060,6 +2093,9 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
         let value = if let ExprKind::Ref { name } = &arg.kind
             && let Some(Redirect::Function(_)) = redirect(name, map)
         {
+            arg.clone()
+        } else if reads_live(arg, map) {
+            // read live, so each of its fires issues the call again
             arg.clone()
         } else if inline_lambda(arg) {
             ExprKind::BinOp {
@@ -2291,8 +2327,15 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 _ => rewrite(&s.arg, map),
             }),
             arms: Arc::from_iter(s.arms.iter().map(|(p, b)| {
-                let inner =
-                    unbound(map, |f| p.structure_predicate.with_names(&mut |n| f(n)));
+                let inner = if reads_live(&s.arg, map) {
+                    let mut inner = scope(map);
+                    p.structure_predicate.with_names(&mut |n| {
+                        inner.insert(n.clone(), Redirect::Live(n.clone()));
+                    });
+                    Some(inner)
+                } else {
+                    unbound(map, |f| p.structure_predicate.with_names(&mut |n| f(n)))
+                };
                 let inner = inner.as_deref().unwrap_or(map);
                 let guard = p.guard.as_ref().map(|g| rewrite(g, inner));
                 let mut p = p.clone();

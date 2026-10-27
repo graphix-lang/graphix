@@ -242,3 +242,37 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:3, i64:4]")
 );
+
+// A call whose argument reads the world live is issued again at each fire
+// of that argument, a pattern bind of a live scrutinee included, and the
+// step completes on the call's first value after entry (x-rerun-1-01).
+run!(
+    a_call_over_a_live_argument_is_issued_at_each_fire,
+    r#"{
+  let x = 0;
+  select x { k if k < 5 => x <- x + 1, _ => never() };
+  let big = |v| v > 2;
+  let guarded = seq { let v = select live(x) { v if big(v) => v, _ => never() }; v };
+  let scrutinee = seq { let v = select big(live(x)) { true => live(x), false => never() }; v };
+  (guarded, scrutinee)
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(3), Value::I64(3)])
+    }
+);
+
+// A nullary call in a step is issued on the entry clock, as any call is,
+// so each run's answer is that run's (t-seq-03).
+run!(
+    a_nullary_call_answers_each_run,
+    r#"{
+  let t = sys::time::timer(duration:30.ms, 3);
+  let runs = 0;
+  let f = || sys::time::timer(duration:5.ms, false) ~ runs;
+  let r = seq t { runs <- runs + 1; let a = f(); a };
+  array::group(r, |n, _| n == 3)
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::I64(2), Value::I64(3)])
+    }
+);

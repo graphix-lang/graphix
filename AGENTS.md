@@ -1306,8 +1306,10 @@ cycle, across workers; the compiler never pins threads.
   (`seqq`), or at its first arrival if absent, as an issued call's
   arguments are; a callee's state and captures stay live (the rule is
   lexical), a read through a reference (`*r`) reads its target live,
-  and `live(e)` reads `e`'s variables live: those are the ways a step
-  waits for the world to change (`until live(ready)`; an `until` with
+  and `live(e)` reads `e`'s variables live (a call whose argument reads
+  live, a pattern bind of a live scrutinee included, is issued again at
+  each fire of that argument; a nullary call is issued on the entry clock
+  as any call is): those are the ways a step waits for the world to change (`until live(ready)`; an `until` with
   no `live` part, no dereference and no call warns). `seqq` queues triggers
   with captured values; a capture a step writes, a callee's write
   included, is live (`SeqCapture`). `seq t; abort(e) { .. }` ends the run when

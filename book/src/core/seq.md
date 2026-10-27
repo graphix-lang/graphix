@@ -201,6 +201,12 @@ step waits for the world to change only where it says so, with
 seq { select live(x) > 2 { true => live(x), false => never() } }
 ```
 
+A call reads live what its arguments read live: `big(live(x))`, or
+`big(v)` where `v` is bound by a pattern over `live(x)`, is called again
+each time `x` changes, and the step completes on the call's first value
+after the step began. A function that answers only in some cases gates
+the step on them.
+
 The rule is lexical. A function the step calls runs on its own terms:
 its own state and the variables it captures are live, as an asynchronous
 builtin's subscription or socket is. So what a run must agree on, it
