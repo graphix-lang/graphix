@@ -320,14 +320,14 @@ lowered where it stands.
 
 ```graphix
 {
-  let pc: [`Idle, `S0, `S1, ..] = `Idle;
-  let idle = select pc { `Idle => true, _ => false };
+  let pc: i64 = -1;
+  let idle = select pc { -1 => true, _ => false };
   let r = never();                          // the block's value
   let t_c = never();                        // the trigger snapshot, each try's `e` and join cell
-  catch(e) { pc <- `Idle; e? };             // the machine's handler + abort action
+  catch(e) { pc <- -1; e? };             // the machine's handler + abort action
   <abort event>;                            // §9, when the seq has one
   let go = filter(<trigger>, |x| x ~ idle); // busy-drop
-  pc <- go ~ `S0;
+  pc <- go ~ 0;
   machine pc {
     `S0 => { let v0 = <value>; <writes> } -> `S1,
     `S1 => { let v1 = <value>; <writes> } -> end,
@@ -336,8 +336,9 @@ lowered where it stands.
 }
 ```
 
-One step per statement, labelled `S<index>`; the pc type is the set of
-every label. A step's items compile as one statement list: a try-body
+One step per statement, labelled `S<index>` in the expansion; `pc` holds
+the step index as an `i64`, or `-1` while idle. A step's items compile as
+one statement list: a try-body
 step's jump handlers (§7.3), the `let` of its value, then what its
 completion writes (a `let`'s pattern, a connect's target, a try's join
 cell, the block's result `r`). The cells need no annotations: an
@@ -544,8 +545,8 @@ their own types, unless a body binds a target's name where that step
 sees it (a `let` of either body or of a try nested in one, or the with
 body's `e`): then the join cell, written in the try statement's scope. Each try-body
 step carries a generated `Catch` whose handler body is `never()` and
-whose role is `CatchRole::Try`: its `action` is a JUMP (`pc <- \`W` to
-the with body's first step instead of the machine's `pc <- \`Idle`) and
+whose role is `CatchRole::Try`: its `action` is a JUMP (`pc <- w`, where `w` is the index of
+the with body's first step instead of the machine's `pc <- -1`) and
 its `capture` names the `e` cell. At runtime the capture writes the first delivery of each failure
 to the cell; at typecheck it unions its bind's inferred throws into the
 cell's type after its siblings, so the union is exact and a step that
@@ -729,7 +730,7 @@ ab;                                         // SeqAbort: fails the run
 `uniq` keeps a same-arm re-match from re-emitting the expression's
 standing value at each `pc` transition. The machine's `Catch` takes the
 event as its action's `manual` event (`node/error.rs::CatchAction`): a fire marks the abort action pending without an
-error delivery, so the action (`pc <- \`Idle`, the `seqq` credit) still
+error delivery, so the action (`pc <- -1`, the `seqq` credit) still
 runs ONCE when an error and an abort meet, under the same
 received-equals-raised rule as §7.4.
 

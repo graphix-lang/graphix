@@ -22,7 +22,6 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    rep,
     typ::Type,
 };
 use anyhow::{Result, bail};
@@ -138,10 +137,12 @@ impl<R: Rt> SeqMachine<R> {
         });
         let at = pc.update(ctx);
         let at = at.is_fired().then(|| at.value_cloned());
-        let target = match at.as_ref().and_then(|v| rep::bare_tag(v).ok()) {
-            Some(l) if l == crate::expr::seq::IDLE => Some(None),
-            Some(l) => steps.iter().position(|s| s.label == l).map(Some),
-            None => None,
+        let target = match at {
+            Some(Value::I64(crate::expr::seq::IDLE)) => Some(None),
+            Some(Value::I64(k)) => {
+                usize::try_from(k).ok().filter(|k| *k < steps.len()).map(Some)
+            }
+            _ => None,
         };
         tracked.observe(ctx);
         let mut entered = false;
@@ -169,13 +170,10 @@ impl<R: Rt> SeqMachine<R> {
             deselect(ctx, tracked, k, &mut steps[k]);
             *current = None;
             let Some(n) = steps[k].next else {
-                ctx.rt.set_var(
-                    *pc_id,
-                    rep::make_variant(crate::expr::seq::IDLE.clone(), []),
-                );
+                ctx.rt.set_var(*pc_id, Value::I64(crate::expr::seq::IDLE));
                 break;
             };
-            let at = rep::make_variant(steps[n].label.clone(), []);
+            let at = Value::I64(n as i64);
             if !steps[k].same_cycle.load(Relaxed) {
                 ctx.rt.set_var(*pc_id, at);
                 break;

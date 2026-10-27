@@ -34,7 +34,7 @@ use smallvec::SmallVec;
 use triomphe::Arc;
 
 /// The label of a machine with no run in progress.
-pub static IDLE: ArcStr = literal!("Idle");
+pub const IDLE: i64 = -1;
 
 /// Where the rewrite sends a name. A cell (a `seq let` trigger's name, a
 /// try's `e`) takes every use; a snapshot (a trigger's value, a `seqq`
@@ -317,7 +317,7 @@ fn desugar_plain(
     let err_bind = literal!("e");
     let catch_node = {
         let mut abort_body: SmallVec<[Expr; 2]> = SmallVec::new();
-        abort_body.push(connect(pos, &pc, variant(pos, &IDLE)));
+        abort_body.push(connect(pos, &pc, integer(pos, IDLE)));
         if let Some(q) = &queue {
             abort_body.push(connect(pos, q.clock, boolean(pos, true)));
         }
@@ -359,7 +359,12 @@ fn desugar_plain(
     let labels: SmallVec<[ArcStr; 8]> = (0..built.len()).map(label).collect();
 
     let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
-    exprs.push(let_bind(pos, &pc, Some(pc_type(&labels)), variant(pos, &IDLE)));
+    exprs.push(let_bind(
+        pos,
+        &pc,
+        Some(Type::Primitive(Typ::I64.into())),
+        integer(pos, IDLE),
+    ));
     exprs.push(let_bind(pos, &idle, None, idle_of(pos, &pc)));
     exprs.push(let_bind(pos, &result, None, never(pos)));
     exprs.extend(snapshot_decls);
@@ -373,7 +378,7 @@ fn desugar_plain(
     if manual {
         exprs.push(ExprKind::SeqAbort(Arc::new(r#ref(pos, &aborted))).to_expr(pos));
     }
-    exprs.push(connect(pos, &pc, sample(pos, r#ref(pos, &go), variant(pos, &labels[0]))));
+    exprs.push(connect(pos, &pc, sample(pos, r#ref(pos, &go), integer(pos, 0))));
     exprs.extend(snapshot_writes);
     let steps = built.drain(..).zip(labels).map(|(s, label)| SeqStep {
         label,
@@ -1167,7 +1172,7 @@ impl Machine<'_> {
         }
         let mark = self.steps.len();
         let mut tails = self.lower_scoped(&body, &branch, visible)?;
-        let with_entry = label(self.steps.len());
+        let with_entry = self.steps.len() as i64;
         let caught = ArcStr::from(format_compact!("#seqtry{}", spec.id.inner()).as_str());
         // an inner try catches every error its body raises (a constraint
         // must hold them all), so none reaches this one
@@ -1184,7 +1189,7 @@ impl Machine<'_> {
                     action: Arc::new(connect(
                         pos,
                         self.issue.pc,
-                        variant(pos, &with_entry),
+                        integer(pos, with_entry),
                     )),
                     capture: e_cell.clone(),
                 },
@@ -1706,22 +1711,15 @@ fn apply_core(
     .to_expr(pos)
 }
 
-fn pc_type(labels: &[ArcStr]) -> Type {
-    Type::Set(Arc::from_iter(
-        [&IDLE]
-            .into_iter()
-            .chain(labels)
-            .map(|l| Type::Variant(l.clone(), Arc::from_iter([]), WrittenAt::NOWHERE)),
-    ))
-    .normalize()
-}
-
 fn idle_of(pos: SourcePosition, pc: &str) -> Expr {
     select(
         pos,
         r#ref(pos, pc),
         [
-            (pat_variant(&IDLE), ExprKind::Constant(Value::Bool(true)).to_expr(pos)),
+            (
+                pat_lit(Value::I64(IDLE)),
+                ExprKind::Constant(Value::Bool(true)).to_expr(pos),
+            ),
             (pat_wild(), ExprKind::Constant(Value::Bool(false)).to_expr(pos)),
         ],
     )
@@ -2056,7 +2054,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     let issued = format_compact!("#seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
-    // CR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
+    // XCR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
     // carries pc, whose type is the set of all step labels. Each call site therefore
     // costs the check O(steps): 250/500/1000 call steps check in 0.25/1.07/7.1 s
     // (debug), against 0.07/0.10/0.13 s for constant writes. The tuple only needs an
@@ -2086,6 +2084,18 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, map: &Names, issue: Issue) -> Ex
     // call site, as the CR says: normalize, lower, ContainsHist::closed, holds_fn and
     // union_of_alternatives each walk pc's union at every issue site. Keeping fusion
     // with constant-size types still needs an entry clock that is not pc.
+    // 2026-10-27 codex: The machine pc now holds an i64 step index (-1 while idle), so
+    // issue tuples and entry snapshots retain the plain pc read with a constant-size
+    // type and unchanged firing. Runtime jumps use the index directly; try jumps,
+    // aborts and sleep resets use the same representation. The expansion retains
+    // S-index labels. Pin: expr::seq::test::the_pc_type_has_constant_size failed on
+    // the old union and passes now. Strengthened
+    // deep_nesting::a_long_seq_of_calls_checks_in_time to 4000 steps/15 s; it passes
+    // (0.40 s harness time). Debug --check timings at 250/500/1000/4000 steps: before
+    // 0.259/0.471/1.534/21.15 s, after 0.187/0.210/0.293/0.757 s. Seven seq lowering
+    // unit tests, all 651 lang::seq* fixtures, 401 lang::fusion tests and 1351
+    // lang::select tests pass. No FuseExpect changed. The enlarged shell pin was not
+    // run against old sources; the structural pin was.
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a
@@ -2434,9 +2444,8 @@ fn never(pos: SourcePosition) -> Expr {
     ExprKind::Never { typ: None, args: Arc::from(Vec::<Expr>::new()) }.to_expr(pos)
 }
 
-fn variant(pos: SourcePosition, tag: &ArcStr) -> Expr {
-    ExprKind::Variant { tag: tag.clone(), args: Arc::from(Vec::<Expr>::new()) }
-        .to_expr(pos)
+fn integer(pos: SourcePosition, value: i64) -> Expr {
+    ExprKind::Constant(Value::I64(value)).to_expr(pos)
 }
 
 fn sample(pos: SourcePosition, lhs: Expr, rhs: Expr) -> Expr {
@@ -2491,20 +2500,6 @@ fn pat_lit(v: Value) -> Pattern {
     Pattern {
         type_predicate: None,
         structure_predicate: StructurePattern::literal(v),
-        guard: None,
-        pos: WrittenAt::NOWHERE,
-        end: WrittenAt::NOWHERE,
-    }
-}
-
-fn pat_variant(tag: &ArcStr) -> Pattern {
-    Pattern {
-        type_predicate: None,
-        structure_predicate: StructurePattern::Variant {
-            all: None,
-            tag: tag.clone(),
-            binds: Arc::from(Vec::<StructurePattern>::new()),
-        },
         guard: None,
         pos: WrittenAt::NOWHERE,
         end: WrittenAt::NOWHERE,
@@ -2566,15 +2561,26 @@ mod test {
         assert_eq!(named, 1, "{lowered}");
     }
 
-    /// `pc`'s type is a normal union, members in canonical order, so a
-    /// type built over it is identical to its normal form and a check of
-    /// one against the other takes the identity walk, not one per member.
     #[test]
-    fn the_pc_type_is_normal() {
-        let labels: SmallVec<[ArcStr; 8]> = (0..12).map(label).collect();
-        let pc = pc_type(&labels);
-        let Type::Set(members) = &pc else { panic!("pc's type is a union") };
-        assert!(members.windows(2).all(|w| w[0] < w[1]), "{members:?}");
+    fn the_pc_type_has_constant_size() {
+        for n in [1, 32] {
+            let mut body: LPooled<String> = LPooled::take();
+            for _ in 0..n {
+                body.push_str("f(1); ");
+            }
+            let seq = parse_one(&format_compact!("seq {{ {body} }}")).expect("parses");
+            let lowered = desugar(&seq, &Env::default(), &ModPath::root()).unwrap();
+            let mut found = false;
+            lowered.fold((), &mut |(), e| {
+                if let ExprKind::Bind(b) = &e.kind
+                    && b.pattern.single_bind().is_some_and(|n| n.starts_with("#seqpc"))
+                {
+                    assert_eq!(b.typ, Some(Type::Primitive(Typ::I64.into())));
+                    found = true;
+                }
+            });
+            assert!(found);
+        }
     }
 
     /// A seq lowers to a flat list of steps however long it is: no
@@ -2583,7 +2589,7 @@ mod test {
     fn a_long_seq_lowers_flat() {
         let n = 4 * max_nesting();
         let body = (0..n).map(|i| format!("a <- {i}")).collect::<Vec<_>>().join("; ");
-        let seq = parse_one(&format!("seq {{ {body} }}")).expect("parses");
+        let seq = parse_one(&format_compact!("seq {{ {body} }}")).expect("parses");
         let lowered = std::thread::Builder::new()
             .stack_size(512 * 1024)
             .spawn(move || {

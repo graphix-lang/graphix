@@ -485,7 +485,7 @@ impl<R: Rt> Update<R> for Catch<R> {
             abort.manual_mut().into_iter().for_each(|n| n.sleep(ctx));
             abort.pending = None;
             if let AbortRole::Machine { pc, clock, .. } = &mut abort.role {
-                let idle = crate::rep::make_variant(crate::expr::seq::IDLE.clone(), []);
+                let idle = Value::I64(crate::expr::seq::IDLE);
                 let running = ctx
                     .rt
                     .store_get(pc)
