@@ -465,6 +465,48 @@ pub(super) fn gen_error_arm_lambda(
     stmts
 }
 
+/// An error sink, the `catch` that fills it, and the count of the errors
+/// caught: observable, so a raise routed to the wrong handler, or lost,
+/// diverges. The count enters `ctx`.
+pub(super) fn catch_counter(ctx: &mut GenCtx, rng: &mut Rng) -> [String; 4] {
+    let sink = ctx.fresh();
+    let count = ctx.fresh();
+    let handler = if rng.below(2) == 0 {
+        format!("{sink} <- e")
+    } else {
+        format!("{{ let m = e; {sink} <- m }}")
+    };
+    let stmts = [
+        format!("let {sink}: Error<Any> = never()"),
+        format!("catch(e) {handler}"),
+        format!("let {count} = i64:0"),
+        format!("{count} <- {sink} ~ ({count} + i64:1)"),
+    ];
+    ctx.push(count, I64);
+    stmts
+}
+
+/// A [`catch_counter`] and a checked-arithmetic raise it handles: from
+/// the block itself, or from a lambda called in it (the handler follows
+/// the call).
+pub(super) fn gen_catch_slot(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<String> {
+    let mut stmts = Vec::from(catch_counter(ctx, rng));
+    let op = *rng.pick(&["+?", "-?", "*?", "/?", "%?"]);
+    let a = exprs::gen_typed(ctx, rng, &I64, 1);
+    let b = exprs::gen_typed(ctx, rng, &I64, 1);
+    let raised = ctx.fresh();
+    if chance(rng, 0.5) {
+        stmts.push(format!("let {raised} = ({a} {op} {b})?"));
+    } else {
+        let f = ctx.fresh();
+        let x = ctx.fresh();
+        stmts.push(format!("let {f} = |{x}: i64| -> i64 ({x} {op} {b})?"));
+        stmts.push(format!("let {raised} = {f}({a})"));
+    }
+    ctx.push(raised, I64);
+    stmts
+}
+
 /// Reference statements: `let r = &<target>` (a visible scalar binding,
 /// else a fresh literal), then sometimes store the ref in a tuple or
 /// write through it with a literal RHS (a self-reading RHS re-fires

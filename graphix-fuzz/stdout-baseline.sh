@@ -33,19 +33,14 @@
 #   select-guard-shortcircuit/02     a known ORDERING difference
 #   dyncall-apply-unwired/02         log SCOPE NAME differs
 #
-# The last one is the reason this script exists at all: the trace
-# oracle SORTS stdout lines before comparing (graphix-fuzz/src/lib.rs,
-# the Exact tier), so an ordering difference between the engines is
-# structurally invisible to it — and effects are only compared for
-# fully-deterministic programs, with rand/time programs excluded
-# outright. Effect ORDER and effect COUNT are the least-covered
-# dimension in the whole differential setup.
-# CR claude for claude: [doc-drift/low] The header above is stale. The oracle keys each
-# print by epoch and cycle offset and sorts only within a cycle (drive_inner), so order
-# across cycles is compared, and FinalValues programs have their per-epoch print
-# multisets compared too (Trace::agrees_final). What only this baseline catches is a
-# change that moves both engines, plus order within one cycle. Say that. Found by
-# reading; not run. (fuzz-main-aux-08)
+# What only this baseline catches: the trace oracle keys each print by
+# epoch and cycle offset and sorts the prints of one cycle
+# (graphix-fuzz/src/lib.rs, drive_inner), so order across cycles is
+# compared but order within one cycle is invisible to it; programs
+# compared by final values (Trace::agrees_final) compare each epoch's
+# prints as a multiset; and an Excluded program's prints are not
+# compared at all. A change that moves both engines, and an order within
+# one cycle, show only here.
 set -u
 
 outdir=${1:?usage: stdout-baseline.sh <outdir> [--no-fusion]}

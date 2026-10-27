@@ -55,17 +55,9 @@ pub const SEEDS: &[&str] = &[
     // strings
     "str::to_upper(\"hello\")",
     "\"sum is [i64:2 + i64:3]\"",
-    // datetime / duration (value-shape arith)
-    // CR claude for claude: [dead/low] This seed and the next are refused by the
-    // checker: arithmetic takes one Number type, and datetime and duration are not
-    // Numbers. The datetime/duration family therefore seeds only compile errors. Use
-    // the pure time functions the generator uses, `sys::time::add(datetime:...,
-    // duration:1.s)` and `sys::time::add_dur(duration:1.s, duration:500.ms)`, which
-    // oracle_tier keeps Exact. probe:
-    // design/review-2026-10-26/repro/fuzz-main-aux-dead-time-seeds.gx
-    // (fuzz-main-aux-03)
-    "datetime:\"2020-01-01T00:00:00Z\" + duration:1.s",
-    "duration:1.s + duration:500.ms",
+    // datetime / duration
+    "sys::time::add(datetime:\"2020-01-01T00:00:00Z\", duration:1.s)",
+    "sys::time::add_dur(duration:1.s, duration:500.ms)$",
     // error operators
     "{ let r: [i64, null] = i64:5; r? }",
     // composite-success unwrap
@@ -93,9 +85,9 @@ pub const SEEDS: &[&str] = &[
     "// schedule-v1: cap=64 events=512; in0=i64:4; in0=i64:4; in0=i64:9\nuniq(in0)",
     // once / take / skip / filter over the injected stream
     "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\nonce(in0)",
-    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\ntake(i64:2, in0)",
-    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\nskip(i64:2, in0)",
-    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:6; in0=i64:3\nfilter(|x: i64| x > i64:2, in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\ntake(#n: i64:2, in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\nskip(#n: i64:2, in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:6; in0=i64:3\nfilter(in0, |x: i64| x > i64:2)",
     // injection-driven guarded select
     "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:4\nselect i64:0 { i64:0 if in0 % i64:2 == i64:0 => i64:1, _ => i64:2 }",
     // injection feeding a HOF over a rebuilt array

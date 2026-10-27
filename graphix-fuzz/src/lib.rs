@@ -1507,7 +1507,7 @@ fn restorable(cold: &Outcome, image: Result<Bytes, String>) -> Result<Bytes, Out
 }
 
 /// The routes a subject's sessions run on.
-fn session_routes(code: &str) -> &'static [Route] {
+pub fn session_routes(code: &str) -> &'static [Route] {
     if callable::has_header(code) {
         &[Route::InLanguage, Route::Dispatch]
     } else {
@@ -7262,6 +7262,41 @@ mod tests {
         eprintln!(
             "sweep: {fused} regions fused across 120 programs              ({budget_skipped} skipped on budget)"
         );
+    }
+
+    /// Every hand seed passes the check: a refused seed only ever seeds
+    /// compile errors.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn hand_seeds_check() {
+        let t = Duration::from_secs(30);
+        let mut refused = Vec::new();
+        for seed in corpus::SEEDS {
+            if let Err(e) = check_only(seed, t).await {
+                refused.push(format!("{seed}\n{e}"));
+            }
+        }
+        assert!(refused.is_empty(), "hand seeds refused:\n{}", refused.join("\n\n"));
+    }
+
+    /// A generated filter_map callback that keeps a payload as
+    /// `` `Keep(..) `` passes the check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn generated_keep_bodies_check() {
+        let mut rng = mutate::Rng::new(0x4ee9);
+        let keeps: Vec<String> =
+            std::iter::repeat_with(|| generate::gen_program(&mut rng))
+                .take(20_000)
+                .filter(|p| p.contains("=> `Keep("))
+                .take(8)
+                .collect();
+        assert_eq!(keeps.len(), 8);
+        let mut refused = Vec::new();
+        for p in &keeps {
+            if let Err(e) = check_only(p, Duration::from_secs(30)).await {
+                refused.push(format!("{p}\n{e}"));
+            }
+        }
+        assert!(refused.is_empty(), "refused:\n{}", refused.join("\n\n"));
     }
 
     /// Every scheduled hand seed agrees across modes at trace strength:

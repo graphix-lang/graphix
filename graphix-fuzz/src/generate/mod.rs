@@ -544,42 +544,7 @@ fn gen_slots(
         } else if chance(rng, cfg.p_error_lambda) {
             stmts.extend(funcs::gen_error_arm_lambda(ctx, rng, cfg, stats));
         } else if !ctx.codecs && chance(rng, cfg.p_catch) {
-            // CR claude for claude: [structure/low] This error-sink-plus-counter is
-            // written again, statement for statement, in reactive.rs's template, and it
-            // is the only slot template inlined in gen_slots and the only one naming
-            // its bindings from stmts.len() rather than ctx.fresh(). Move it into a
-            // funcs.rs emitter built on one catch_counter helper that reactive.rs calls
-            // too. Found by reading; not run. (fuzz-gen-a-07)
-            let n = stmts.len();
-            let acc = format!("cerr{n}");
-            stmts.push(format!("let {acc}: Error<Any> = never()"));
-            let handler = if rng.below(2) == 0 {
-                format!("{acc} <- e")
-            } else {
-                format!("{{ let m = e; {acc} <- m }}")
-            };
-            stmts.push(format!("catch(e) {handler}"));
-            // the count of errors caught: observable, so a raise routed
-            // to the wrong handler, or lost, diverges
-            let count = format!("ncerr{n}");
-            stmts.push(format!("let {count} = i64:0"));
-            stmts.push(format!("{count} <- {acc} ~ ({count} + i64:1)"));
-            ctx.push(count, I64);
-            // a raise the slot catch handles: from the block itself, or
-            // from a lambda called in it (the handler follows the call)
-            let op = *rng.pick(&["+?", "-?", "*?", "/?", "%?"]);
-            let a = exprs::gen_typed(ctx, rng, &I64, 1);
-            let b = exprs::gen_typed(ctx, rng, &I64, 1);
-            let raised = ctx.fresh();
-            if chance(rng, 0.5) {
-                stmts.push(format!("let {raised} = ({a} {op} {b})?"));
-            } else {
-                let f = ctx.fresh();
-                let x = ctx.fresh();
-                stmts.push(format!("let {f} = |{x}: i64| -> i64 ({x} {op} {b})?"));
-                stmts.push(format!("let {raised} = {f}({a})"));
-            }
-            ctx.push(raised, I64);
+            stmts.extend(funcs::gen_catch_slot(ctx, rng));
         } else if chance(rng, cfg.p_labeled_hof)
             && let hof = funcs::gen_labeled_hof(ctx, rng, cfg, stats)
             && !hof.is_empty()
@@ -686,13 +651,9 @@ fn observe(ctx: &GenCtx, mark: usize) -> Vec<String> {
         if let Entry::Val(t) = e
             && t.printable()
         {
-            // CR claude for claude: [test-gap/low] For a GenType::Ref binding this
-            // prints `&ref`, the same text whatever the reference names, so a moving or
-            // place reference that reads the wrong target in one engine or session
-            // never shows on stdout. Print `[*{n}]` for references instead. probe:
-            // design/review-2026-10-26/repro/fuzz-gen-a-observe-ref.gx (`[r]` prints
-            // &ref twice, `[*r]` prints 1 then 2) (fuzz-gen-a-05)
-            out.push(format!("println(\"[{n}]\")"));
+            // a reference prints as `&ref` whatever it names: print its target
+            let deref = if matches!(t, GenType::Ref { .. }) { "*" } else { "" };
+            out.push(format!("println(\"[{deref}{n}]\")"));
         }
     }
     out.reverse();
@@ -730,6 +691,15 @@ mod test {
         }
     }
 
+    /// A reference binding is observed through its target.
+    #[test]
+    fn observe_prints_a_reference_target() {
+        let mut ctx = GenCtx::new();
+        ctx.push("r".into(), GenType::Ref { inner: Box::new(I64), mutable: true });
+        ctx.push("x".into(), I64);
+        assert_eq!(observe(&ctx, 0), ["println(\"[*r]\")", "println(\"[x]\")"]);
+    }
+
     /// The let-bound names of a generated program, in order, extracted
     /// from the text (names are always `v<digits>` or pool reuses).
     fn let_names(prog: &str) -> Vec<&str> {
@@ -759,6 +729,17 @@ mod test {
         assert!(labeled * 100 / N >= 10, "labeled lambdas in {labeled}/{N}");
         assert!(hof * 100 / N >= 2, "labeled views in {hof}/{N}");
         assert!(defined * 100 / N >= 10, "labeled definitions in {defined}/{N}");
+    }
+
+    /// filter_map callbacks that keep a payload as `` `Keep(..) `` reach
+    /// a campaign.
+    #[test]
+    fn keep_presence() {
+        let mut rng = Rng::new(0x4ee9);
+        const N: usize = 2000;
+        let keeps =
+            (0..N).filter(|_| gen_program(&mut rng).contains("=> `Keep(")).count();
+        assert!(keeps >= 3, "`Keep bodies in {keeps}/{N}");
     }
 
     /// A healthy fraction of default-profile programs embed a nested

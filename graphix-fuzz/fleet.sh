@@ -13,48 +13,41 @@
 # Every verification here is a fact, never a message:
 #   - a stop is verified by pgrep, not by "stopped" on stdout
 #   - a sync is verified by a CONTENT fingerprint over the build inputs,
-#     not by rsync's exit status (hz0's .git is frozen — it is rsync'd
-#     with --exclude .git — so `git log` there is a lie by construction)
+#     not by rsync's exit status (a box's .git is never synced, so `git
+#     log` there is a lie by construction)
 #   - a launch is verified by the campaign's own startup gate line, whose
 #     corpus count comes from pins EMBEDDED at build time, so a stale
 #     binary shows up as a count mismatch
-#
-# Syncthing hosts are NEVER rsync'd into: syncthing is bidirectional and
-# a push would propagate stale files back over live work. They are
-# waited for and content-verified instead.
 
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 
-# name : sync method : workers : timeout scale : os
+# name : workers : timeout scale : os
 # Seeds are allocated in THIS order, 10M apart from the base, so the
 # order is load-bearing.
 #
-# Every box syncs by rsync (remote .git is excluded, so a box's own
-# `git log` says nothing about the tree it runs); the fingerprint check
-# gates the launch. washu-chan, the session box, reaches itself over ssh
-# and joins a soak only when idle: launch it alone with FLEET_ONLY.
+# Every box is pushed the tree by rsync and the fingerprint check gates
+# the launch. washu-chan, the session box, reaches itself over ssh and
+# joins a soak only when idle: launch it alone with FLEET_ONLY.
 #
 # Workers are sized by memory: a worker runs a subject's plain, cold and
 # warm sessions and measures about 375MB on average and 575MB at the top,
 # so a 62GB box takes 80 and katana (16GB) 32.
 HOSTS=(
-    "katana:rsync:32:4:darwin"
-    "washu-chan:rsync:64:1:linux"
-    "aieka:rsync:80:4:linux"
-    "ryouko:rsync:80:1:linux"
+    "katana:32:4:darwin"
+    "washu-chan:64:1:linux"
+    "aieka:80:4:linux"
+    "ryouko:80:1:linux"
 )
 
 MIX=${FLEET_MIX:-}                   # empty: the binary's DEFAULT_MIX
-SYNC_WAIT=${FLEET_SYNC_WAIT:-600}     # seconds to wait for syncthing
 LAUNCH_WAIT=${FLEET_LAUNCH_WAIT:-5400} # seconds to wait for build+gate
 
 f_name()    { echo "${1%%:*}"; }
-f_sync()    { echo "$1" | cut -d: -f2; }
-f_workers() { echo "$1" | cut -d: -f3; }
-f_scale()   { echo "$1" | cut -d: -f4; }
-f_os()      { echo "$1" | cut -d: -f5; }
+f_workers() { echo "$1" | cut -d: -f2; }
+f_scale()   { echo "$1" | cut -d: -f3; }
+f_os()      { echo "$1" | cut -d: -f4; }
 
 # FLEET_ONLY=<name> restricts every step to one host;
 # FLEET_EXCLUDE=<name>[,<name>...] holds those hosts OUT. Both leave the
@@ -95,7 +88,7 @@ usage() {
 usage: fleet.sh deploy <new-campaign> <base-seed> [old-campaign]
        fleet.sh pull <campaign>     pull divergences into fuzz/pending-triage/
        fleet.sh stop <campaign>     stop every box, verified by pgrep
-       fleet.sh sync                push/await the tree, verify by fingerprint
+       fleet.sh sync                push the tree, verify by fingerprint
        fleet.sh launch <campaign> <base-seed>
        fleet.sh verify <campaign>   wait for every launch, then check facts
        fleet.sh status [campaign]
@@ -218,23 +211,20 @@ $dirty"
 }
 
 sync_tree() {
-    local want now h name method got waited wait_limit rc=0
+    local want now h name got rc=0
     require_clean_inputs
     want=$(local_fingerprint)
     say "local build-input fingerprint: $want"
     for h in "${HOSTS[@]}"; do
-        name=$(f_name "$h"); method=$(f_sync "$h")
+        name=$(f_name "$h")
         skip_host "$name" && continue
         now=$(local_fingerprint)
         [[ $now == "$want" ]] || die "local tree CHANGED during the sync \
 ($want -> $now) — the fleet would end half old, half new; commit and redeploy"
-        wait_limit=$SYNC_WAIT
-        if [[ $method == rsync ]] && is_this_machine "$name"; then
-            # its checkout is ~/proj/graphix itself: verified, never written
-            wait_limit=0
-        elif [[ $method == rsync ]]; then
-            # graphix builds against the sibling netidx
-            # CR claude for claude: [perf/low] This pushes the whole checkout, untracked
+        # this machine's checkout is ~/proj/graphix itself: verified, never
+        # written; graphix builds against the sibling netidx
+        if ! is_this_machine "$name"; then
+            # XCR claude for claude: [perf/low] This pushes the whole checkout, untracked
             # files included: today .claude/worktrees is 2.0 of the 3.3 GB synced, to
             # every box on every deploy, and none of it is a build input. Sync the
             # fingerprinted roots only (`--files-from` of `git ls-files --
@@ -243,22 +233,25 @@ sync_tree() {
             # rsync waits up to 600 s for a mismatch that cannot heal. Drop it and the
             # syncthing/hz0 prose, and fail the box at once. Found by measuring the
             # tree; the deploy was not run. (fuzz-main-aux-05)
-            rsync -a --delete --exclude target --exclude .git \
-                "$repo/" "$name:proj/graphix/"
-            rsync -a --delete --exclude target --exclude .git \
+            # 2026-10-26 claude: sync_tree pushes the tree without /.claude, /fuzz
+            # and /vendor (graphix; vendor.py's 1.2 GB output, not a soak build
+            # input) and /.claude (netidx); what is left untracked is under 200 MB;
+            # the syncthing machinery is gone (the sync column of HOSTS, SYNC_WAIT
+            # and its poll, the syncthing/hz0 prose): a box is pushed once,
+            # fingerprinted once and fails at once on a mismatch. A whole-repo
+            # --files-from of git ls-files was not taken: --delete does not reach a
+            # file list, and the workspace needs graphix-lsp and
+            # ide/tree-sitter-graphix, which the fingerprint roots leave out (so the
+            # fingerprint misses them too; not changed here). No pin: a deploy
+            # script; bash -n only, the deploy was not run.
+            rsync -a --delete --exclude target --exclude .git --exclude /.claude \
+                --exclude /fuzz --exclude /vendor "$repo/" "$name:proj/graphix/"
+            rsync -a --delete --exclude target --exclude .git --exclude /.claude \
                 "$repo/../netidx/" "$name:proj/netidx/"
         fi
-        waited=0
-        while :; do
-            got=$(host_fingerprint "$name")
-            [[ $got == "$want" ]] && break
-            (( waited >= wait_limit )) && break
-            sleep 10; waited=$((waited + 10))
-        done
+        got=$(host_fingerprint "$name")
         if [[ $got == "$want" ]]; then
-            local after=""
-            (( waited > 0 )) && after=" after ${waited}s"
-            say "$(printf '%-8s tree verified (%s)%s' "$name" "$got" "$after")"
+            say "$(printf '%-8s tree verified (%s)' "$name" "$got")"
         else
             warn "$(printf '%-8s TREE STALE: %s != %s' "$name" "$got" "$want")"
             rc=1
@@ -362,14 +355,19 @@ echo "=== GATE ==="
 grep -am1 "regression corpus:" "$log" "$dir/soak.log" 2>/dev/null | head -1 || true
 echo "=== PROC ==="
 ~/proj/graphix/graphix-fuzz/soak.sh procs "$camp" 2>/dev/null || echo 0
-# Sample ONE source's counter twice: the log interleaves sources, so
-# "the last line" can name a different source each time and appear to
-# go backwards. A source's counter line lands every 1000 subjects and at
+# A sample is the sum of every source's last counter: the log
+# interleaves sources, so "the last line" can name a different source
+# each time and appear to go backwards, and a mix may give any one source
+# no share. A source's counter line lands every 1000 subjects and at
 # least every 30 s of batches completing, a while after the gate and
 # minutes apart right after launch (a fresh JIT, six
 # sessions per subject), so the first sample waits for a line and the
-# second waits for a DIFFERENT one; only five quiet minutes is a stall.
-sample() { grep -aoE "^  fuzz…[0-9]+ run" "$dir/soak.log" 2>/dev/null | tail -1 || true; }
+# second waits for a DIFFERENT sum; only five quiet minutes is a stall.
+sample() {
+    grep -aoE "^  [a-z]+…[0-9]+ run" "$dir/soak.log" 2>/dev/null |
+        awk -F'…' '{ last[$1] = $2 + 0; seen = 1 }
+                   END { if (seen) { for (k in last) s += last[k]; print s " run" } }' || true
+}
 waited=0
 while [ -z "$(sample)" ] && [ "$waited" -lt 300 ]; do sleep 10; waited=$((waited + 10)); done
 echo "=== COUNT1 ==="
@@ -408,12 +406,18 @@ EOF
     # A missing sample is not a pass: the SECOND one must exist and be
     # non-zero (proof the campaign checked something), and when both
     # exist the second must exceed the first.
-    # CR claude for claude: [bug/low] The remote sample() counts only the `fuzz…`
+    # XCR claude for claude: [bug/low] The remote sample() counts only the `fuzz…`
     # counter line. run_aggregator never launches a source with a zero share, and the
     # mix allows one, so FLEET_MIX=0:50:50:10 fails every healthy box with NO SUBJECTS
     # CHECKED. Sample every source's `<tag>…N run` line and sum the counts, so any
     # source that checks something counts as progress. Found by reading; not run.
     # (fuzz-main-aux-04)
+    # 2026-10-26 claude: verify_host's remote sample() sums every source's last
+    # counter (awk keyed by the tag before the ellipsis), printing nothing until some
+    # source logged a line, so a mix with a zero share for any source, fuzz included,
+    # still counts progress and the sum only grows. No pin: a deploy script; checked
+    # by hand over a fake soak.log (generate 1000 then 2000 plus reactive 500 gives
+    # 2500 run, an empty log gives nothing); the deploy was not run.
     if [[ -z $b || ${b%% *} -eq 0 ]]; then
         warn "$(printf '%-8s NO SUBJECTS CHECKED (samples: %s then %s)' \
              "$name" "${a:-<none>}" "${b:-<none>}")"

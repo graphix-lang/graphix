@@ -246,6 +246,23 @@ fn map_source_elem(rng: &mut Rng, e: &GenType) -> GenType {
     if rng.below(2) == 0 { e.clone() } else { types::scalar_type(rng) }
 }
 
+/// A source of `src_ty` and a callback over its elements of `d_ty`,
+/// whose body `body` generates in the callback's scope.
+fn callback_parts(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    src_ty: &GenType,
+    d_ty: &GenType,
+    d: usize,
+    body: impl FnOnce(&GenCtx, &mut Rng) -> String,
+) -> HofParts {
+    let src = gen_pinned(ctx, rng, src_ty, d);
+    let mut inner = ctx.clone();
+    let binder = callback_binder(&mut inner, rng, d_ty, &[]);
+    let body = body(&inner, rng);
+    HofParts { src, binder, body }
+}
+
 /// A source `coll(d_ty)` (an Array or a List) and a callback from `d_ty`
 /// to `e`.
 fn map_parts(
@@ -256,11 +273,37 @@ fn map_parts(
     d_ty: GenType,
     d: usize,
 ) -> HofParts {
-    let src = gen_pinned(ctx, rng, &coll(Box::new(d_ty.clone())), d);
-    let mut inner = ctx.clone();
-    let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
-    let body = gen_typed(&inner, rng, e, d.min(2));
-    HofParts { src, binder, body }
+    callback_parts(ctx, rng, &coll(Box::new(d_ty.clone())), &d_ty, d, |inner, rng| {
+        gen_typed(inner, rng, e, d.min(2))
+    })
+}
+
+/// A `filter_map` over a source `coll(..)` to the scalar `e`: the
+/// callback's body is an `e` or null, half the time a select that
+/// keeps an `e` as `` `Keep(..) `` under a return written `[e, null,
+/// `Keep(e)]`.
+fn filter_map_parts(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    e: &GenType,
+    coll: fn(Box<GenType>) -> GenType,
+    d: usize,
+) -> HofParts {
+    let d_ty = map_source_elem(rng, e);
+    let nullable = GenType::Nullable(Box::new(e.clone()));
+    callback_parts(ctx, rng, &coll(Box::new(d_ty.clone())), &d_ty, d, |inner, rng| {
+        let dropped = gen_typed(inner, rng, &nullable, d.min(2));
+        if !chance(rng, 0.5) {
+            return dropped;
+        }
+        let keep = gen_typed(inner, rng, e, d.min(2));
+        let cond = gen_typed(inner, rng, &GenType::Bool, d.min(1));
+        let t = e.render();
+        format!(
+            "-> [{t}, null, `Keep({t})] \
+             select {cond} {{ true => `Keep({keep}), false => {dropped} }}"
+        )
+    })
 }
 
 /// A fold callback's scope: `ctx` with an accumulator of `acc_ty` and a
@@ -288,11 +331,9 @@ fn filter_parts(
     e: &GenType,
     d: usize,
 ) -> HofParts {
-    let src = gen_pinned(ctx, rng, ty, d);
-    let mut inner = ctx.clone();
-    let binder = callback_binder(&mut inner, rng, e, &[]);
-    let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
-    HofParts { src, binder, body }
+    callback_parts(ctx, rng, ty, e, d, |inner, rng| {
+        gen_typed(inner, rng, &GenType::Bool, d.min(2))
+    })
 }
 
 /// An array HOF producing `ty`: `map`/`filter`/`flat_map`/`init` for
@@ -362,11 +403,20 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // have not soaked yet. Draw a `Keep` body here (pinned to `[e, null,
             // `Keep(e)]`) and add `~!` and `live` steps to reactive.rs's ceremonies.
             // Found by reading; not run. (fuzz-gen-a-06)
+            // 2026-10-26 claude: Done: filter_map callbacks (array and list) draw half
+            // the time a body under a return written [e, null, `Keep(e)] that keeps an
+            // e as `Keep(..) (exprs::filter_map_parts, over the new callback_parts
+            // shared with map_parts and filter_parts); sample chains in reactive.rs
+            // draw the strict ~! a third of the time (ReactiveStats::strict_samples);
+            // live(..) waits and reads were already added by (x-rerun-3-02). Pins:
+            // graphix-fuzz generate::test::keep_presence,
+            // tests::generated_keep_bodies_check (eight generated Keep programs pass
+            // the check), generate::reactive::test::reactive_composition_presence
+            // (strict samples). Remains: no generator mints a reference inside a
+            // select arm or a callback slot whose deletion releases it.
             3 if e.is_scalar() => {
-                let d_ty = map_source_elem(rng, e);
-                let nullable = GenType::Nullable(e.clone());
                 let HofParts { src, binder, body } =
-                    map_parts(ctx, rng, &nullable, GenType::Array, d_ty, d);
+                    filter_map_parts(ctx, rng, e, GenType::Array, d);
                 Some(format!("array::filter_map({src}, |{binder}| {body})"))
             }
             _ => {
@@ -407,15 +457,16 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             }
             // filter_map keeps the payloads its callback does not null;
             // flat_map splices the list its callback returns
+            _ if e.is_scalar() && rng.below(2) == 0 => {
+                let HofParts { src, binder, body } =
+                    filter_map_parts(ctx, rng, e, GenType::List, d);
+                Some(format!("list::filter_map({src}, |{binder}| {body})"))
+            }
             _ => {
                 let d_ty = map_source_elem(rng, e);
-                let (f, ret) = match e.is_scalar() && rng.below(2) == 0 {
-                    true => ("filter_map", GenType::Nullable(e.clone())),
-                    false => ("flat_map", ty.clone()),
-                };
                 let HofParts { src, binder, body } =
-                    map_parts(ctx, rng, &ret, GenType::List, d_ty, d);
-                Some(format!("list::{f}({src}, |{binder}| {body})"))
+                    map_parts(ctx, rng, ty, GenType::List, d_ty, d);
+                Some(format!("list::flat_map({src}, |{binder}| {body})"))
             }
         },
         // find_map: the first payload its callback does not null

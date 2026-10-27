@@ -362,6 +362,15 @@ async fn main() -> Result<ExitCode> {
             graphix_fuzz::generate::gen_program(rng)
         }
     };
+    // the regression corpus by name, then `n` generated subjects
+    let corpus_and_generated = |n: usize, seed: u64| -> Vec<(String, String)> {
+        let mut rng = graphix_fuzz::mutate::Rng::new(seed);
+        graphix_fuzz::corpus::REGRESSION_CORPUS
+            .iter()
+            .map(|(name, prog)| (name.to_string(), prog.to_string()))
+            .chain((0..n).map(|i| (format!("gen#{i}"), gen_one(&mut rng))))
+            .collect()
+    };
     match args.get(1).map(String::as_str) {
         Some("gen") => {
             // print N generated programs, no oracle
@@ -748,17 +757,9 @@ async fn main() -> Result<ExitCode> {
         Some("typemorph-scan") => {
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let mut programs: Vec<(String, String)> =
-                graphix_fuzz::corpus::REGRESSION_CORPUS
-                    .iter()
-                    .map(|(name, prog)| (name.to_string(), prog.to_string()))
-                    .collect();
-            let corpus_n = programs.len();
-            let mut rng = graphix_fuzz::mutate::Rng::new(seed);
-            for i in 0..n {
-                programs.push((format!("gen#{i}"), gen_one(&mut rng)));
-            }
+            let programs = corpus_and_generated(n, seed);
             let total = programs.len();
+            let corpus_n = total - n;
             let generated: AHashMap<String, String> =
                 programs[corpus_n..].iter().cloned().collect();
             let flips = graphix_fuzz::typemorph_scan(programs, timeout()).await;
@@ -783,17 +784,7 @@ async fn main() -> Result<ExitCode> {
         Some("detcheck") => {
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let mut programs: Vec<(String, String)> =
-                graphix_fuzz::corpus::REGRESSION_CORPUS
-                    .iter()
-                    .map(|(name, prog)| (name.to_string(), prog.to_string()))
-                    .collect();
-            {
-                let mut rng = graphix_fuzz::mutate::Rng::new(seed);
-                for i in 0..n {
-                    programs.push((format!("gen#{i}"), gen_one(&mut rng)));
-                }
-            }
+            let mut programs = corpus_and_generated(n, seed);
             let total = programs.len();
             programs.retain(|(_, prog)| {
                 graphix_fuzz::oracle_tier(prog) == graphix_fuzz::OracleTier::Exact
@@ -1011,23 +1002,7 @@ async fn main() -> Result<ExitCode> {
             let code = code.trim();
             match cmd {
                 "run" => {
-                    let routes: &[graphix_fuzz::Route] =
-                        // CR claude for claude: [structure/low] This is lib's private
-                        // `session_routes` written out again, and selfcheck_one has a
-                        // third copy. Make session_routes pub and call it here and in
-                        // selfcheck_one, so a new route or a changed rule cannot leave
-                        // `run` and selfcheck on a different route set from the oracle.
-                        // typemorph-scan and detcheck below also each build the same
-                        // corpus-plus-`gen#i` program list: give them one helper. Found
-                        // by reading; not run. (fuzz-main-aux-07)
-                        if graphix_fuzz::callable::has_header(code) {
-                            &[
-                                graphix_fuzz::Route::InLanguage,
-                                graphix_fuzz::Route::Dispatch,
-                            ]
-                        } else {
-                            &[graphix_fuzz::Route::InLanguage]
-                        };
+                    let routes = graphix_fuzz::session_routes(code);
                     for (mode, &route) in [Mode::Interp, Mode::Jit]
                         .into_iter()
                         .flat_map(|m| routes.iter().map(move |r| (m, r)))

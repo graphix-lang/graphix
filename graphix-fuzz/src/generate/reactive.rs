@@ -6,7 +6,7 @@
 //! can reference (and shadow) them.
 
 use super::{
-    GenCfg, GenCtx, GenType, chance, exprs, types,
+    GenCfg, GenCtx, GenType, chance, exprs, funcs, types,
     types::{F64, I64, Label, NumTy},
 };
 use crate::mutate::Rng;
@@ -44,6 +44,8 @@ pub struct ReactiveStats {
     pub tuple_triggers: usize,
     /// Ceremony step reads and waits written `live(..)`.
     pub live_reads: usize,
+    /// Sample chains written with the strict `~!`.
+    pub strict_samples: usize,
     /// Ceremonies whose run counter fires on every injection.
     pub reliable_ceremonies: usize,
     /// Ceremony steps by kind, in [`STEP_KINDS`] order.
@@ -234,9 +236,14 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
                 &mut fires_per_injection,
             ),
             5..=7 => cross_cycle(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
-            8 => {
-                sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut fires_per_injection)
-            }
+            8 => sample_chain(
+                &mut ctx,
+                rng,
+                &inputs,
+                &mut stmts,
+                &mut stats,
+                &mut fires_per_injection,
+            ),
             9 | 10 => slept_arm(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
             11 | 12 => nested_connect(
                 &mut ctx,
@@ -503,19 +510,27 @@ fn cross_cycle(
     ctx.push(b, ty);
 }
 
-/// A `~` chain: a sync value sampled on the input's events.
+/// A `~` chain: a sync value sampled on the input's events; a third of
+/// the time the strict `~!`, which is bottom where the value is absent
+/// at the fire, so its cell is not counted on to fire per injection.
 fn sample_chain(
     ctx: &mut GenCtx,
     rng: &mut Rng,
     inputs: &[(String, GenType)],
     stmts: &mut Vec<String>,
+    st: &mut ReactiveStats,
     fires_per_injection: &mut Vec<String>,
 ) {
     let (input, _) = &inputs[rng.below(inputs.len())];
     let t = ctx.fresh();
     let val = exprs::gen_typed(ctx, rng, &I64, 2);
-    stmts.push(format!("let {t} = {input} ~ ({val})"));
-    fires_per_injection.push(t.clone());
+    if chance(rng, 1. / 3.) {
+        st.strict_samples += 1;
+        stmts.push(format!("let {t} = {input} ~! ({val})"));
+    } else {
+        stmts.push(format!("let {t} = {input} ~ ({val})"));
+        fires_per_injection.push(t.clone());
+    }
     ctx.push(t, I64);
 }
 
@@ -741,13 +756,7 @@ fn ceremony(
         "let {bad} = |{x}: i64| -> [i64, Error<`Oops>] \
          select ({x} % i64:2) {{ i64:0 => error(`Oops), _ => {x} }}"
     ));
-    let cerr = ctx.fresh();
-    let nerr = ctx.fresh();
-    stmts.push(format!("let {cerr}: Error<Any> = never()"));
-    stmts.push(format!("catch(e) {cerr} <- e"));
-    stmts.push(format!("let {nerr} = i64:0"));
-    stmts.push(format!("{nerr} <- {cerr} ~ ({nerr} + i64:1)"));
-    ctx.push(nerr, I64);
+    stmts.extend(funcs::catch_counter(ctx, rng));
     let acc = ctx.fresh();
     stmts.push(format!("let {acc} = i64:0"));
     ctx.push(acc.clone(), I64);
@@ -1057,19 +1066,21 @@ fn gen_runaway_burst(rng: &mut Rng) -> (String, ReactiveStats) {
 mod test {
     use super::*;
 
-    /// Subprogram slots and nested connects both appear at the default
-    /// profile.
+    /// Subprogram slots, nested connects and strict samples all appear at
+    /// the default profile.
     #[test]
     fn reactive_composition_presence() {
         let mut rng = Rng::new(0x5150);
-        let (mut nsub, mut nconn) = (0usize, 0usize);
+        let (mut nsub, mut nconn, mut nstrict) = (0usize, 0usize, 0usize);
         for _ in 0..400 {
             let (_, st) = gen_reactive_stats(&GenCfg::default(), &mut rng);
             nsub += st.subprograms;
             nconn += st.nested_connects;
+            nstrict += st.strict_samples;
         }
         assert!(nsub > 10, "subprogram slots over 400 programs: {nsub}");
         assert!(nconn > 15, "nested connects over 400 programs: {nconn}");
+        assert!(nstrict > 5, "strict samples over 400 programs: {nstrict}");
     }
 
     #[test]
