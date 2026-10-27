@@ -111,17 +111,7 @@ pub(crate) fn lower_over_operands<R: Rt>(
                 value: node.spec().clone(),
             })),
         );
-        children.push(Node::new(Bind {
-            spec: Arc::new(bspec),
-            typ,
-            pattern,
-            node,
-            deferred: None,
-            ever_published: false,
-            slept: WakeBit::default(),
-            slept_at: 0,
-            reraised: SmallVec::new(),
-        }));
+        children.push(Bind::with(Arc::new(bspec), typ, pattern, node, None));
     }
     let mut body = compile(ctx, flags, body, &scope, top_id)?;
     body.typecheck0(ctx)?;
@@ -159,6 +149,26 @@ fn builtin_binding<R: Rt>(node: &Node<R>, value: &Expr) -> Option<BuiltinBindInf
 }
 
 impl<R: Rt> Bind<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        pattern: StructPatternNode,
+        node: Node<R>,
+        deferred: Option<Deferred>,
+    ) -> Node<R> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            slept_at: 0,
+            spec,
+            typ,
+            pattern,
+            deferred,
+            node,
+            ever_published: false,
+            reraised: SmallVec::new(),
+        })
+    }
+
     /// A write that landed while the binding slept (one queued before the
     /// sleep, a seq machine's reset) was seen by none of the readers that
     /// slept with it: deliver it to them fired, once, at the wake. A reader
@@ -349,17 +359,7 @@ impl<R: Rt> Bind<R> {
             let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
             ctx.builtin_bindings.insert(key, info);
         }
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            pattern,
-            node,
-            deferred,
-            ever_published: false,
-            slept: WakeBit::default(),
-            slept_at: 0,
-            reraised: SmallVec::new(),
-        }))
+        Ok(Self::with(spec, typ, pattern, node, deferred))
     }
 
     /// Fit the pattern to the value's type, which must be known by now.
@@ -509,17 +509,7 @@ impl<R: Rt> Bind<R> {
         let typ = Type::decode(buf)?;
         let pattern = StructPatternNode::decode(buf)?;
         let node = decode_node(ctx, buf)?;
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            pattern,
-            node,
-            deferred: None,
-            ever_published: false,
-            slept: WakeBit::default(),
-            slept_at: 0,
-            reraised: SmallVec::new(),
-        }))
+        Ok(Self::with(spec, typ, pattern, node, None))
     }
 }
 
