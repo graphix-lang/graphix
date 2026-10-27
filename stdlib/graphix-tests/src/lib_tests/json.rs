@@ -149,13 +149,6 @@ run!(json_nested_struct_cast, r#"{
     matches!(v, Ok(Value::I64(5)))
 }; FuseExpect::Jit);
 
-// json::read without a concrete return type is a compile error.
-// CR claude for claude: [structure/low] This duplicates typecheck.rs json_no_type
-// exactly (same program, same refusal, same FuseExpect), which already sits with the
-// toml/pack/str::parse refusals. Delete this one and its comment. Found by reading; not
-// run. (tests-lib-b1-05)
-run!(json_no_concrete_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
-
 // data is never read into an error, and an error never casts into data
 const JSON_READ_NEVER_AN_ERROR: &str = r##"
 {

@@ -116,15 +116,31 @@ const ALL: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap/low] Every `all` fixture in this file passes equal
-// arguments. An AllEv::eval that returns its first argument without comparing (in
-// fast_eval(fc_all) or in the ref_targets/with_hooks branch) passes ALL,
-// all_compares_references_by_what_they_name and all_with_a_reference_uses_eq. Add a
-// fixture where `all` must stay silent: all(1, 2), all(&a, &b) with a == b, and two
-// Keys whose Eq differs, all under `any(.., later_event ~ "none")`, asserting "none".
-// Found by reading; the current behaviour was checked by hand and is correct.
-// (tests-lib-a-02)
 run!(all, ALL, is(Value::I64(1)); FuseExpect::Jit);
+
+// all stays silent over arguments that differ: plain values, references
+// to two variables of one value, and abstracts their Eq tells apart, with
+// a reference beside them and without.
+const ALL_DIFFERENT: &str = r#"
+{
+  type Key = Abstract<string>;
+  impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+  let a = 1;
+  let b = 1;
+  let later = sys::time::after_idle(duration:50.ms, "none");
+  any(
+    all(1, 2) ~ "values",
+    all(&a, &b) ~ "references",
+    all(Key("Foo"), Key("bar")) ~ "keys",
+    all((&a, Key("Foo")), (&a, Key("bar"))) ~ "keys beside a reference",
+    later
+  )
+}
+"#;
+
+run!(all_different, ALL_DIFFERENT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "none")
+}; FuseExpect::None);
 
 const SUM: &str = r#"
 {

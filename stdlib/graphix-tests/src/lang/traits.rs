@@ -171,15 +171,6 @@ run!(
 );
 
 // A union member without an implementation is refused at the call.
-// CR claude for claude: [test-gap/low] Nothing pins the refusal of a union dispatch
-// over members that share a runtime form (Type::dispatch_collision): no fixture
-// produces "a Show call over .. can't tell .." or its open-member "annotate it"
-// variant. Dropping the check from trait_contains would let a dispatch over two
-// function types compile to a select that cannot tell them apart. Add refused fixtures
-// beside this one: impls for fn(x: i64) -> i64 and fn(x: string) -> i64 with a dispatch
-// over their union, and the open-member case. probe:
-// design/review-2026-10-26/repro/tests-fusion-traits-union-dispatch-same-form.gx
-// (tests-fusion-traits-05)
 run!(
     trait_union_member_missing_refused,
     refused("string does not implement Show"),
@@ -188,6 +179,39 @@ run!(
         impl Show for i64 { let show = |x| "int [x]" };
         let pick = |b: bool| -> [i64, string] select b { true => 1, false => "s" };
         let result = Show::show(pick(true))
+    "#
+    ; FuseExpect::None
+);
+
+// A dispatch over members that share a runtime form is refused: its
+// select could not tell them apart.
+run!(
+    trait_union_dispatch_same_form_refused,
+    refused(
+        "a Show call over [fn(x: i64) -> i64, fn(x: string) -> i64] can't tell \
+         fn(x: i64) -> i64 from fn(x: string) -> i64: both have the same runtime form"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for fn(x: i64) -> i64 { let show = |f| "int fn" };
+        impl Show for fn(x: string) -> i64 { let show = |f| "str fn" };
+        let f: [fn(x: i64) -> i64, fn(x: string) -> i64] = |x: string| str::len(x);
+        let result = Show::show(f)
+    "#
+    ; FuseExpect::None
+);
+
+// So is one over an open member beside one whose form it may yet share.
+run!(
+    trait_union_dispatch_open_member_refused,
+    refused("isn't known here and may share &i64's runtime form: annotate it"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for &i64 { let show = |r| "ref" };
+        impl Show for i64 { let show = |x| "int" };
+        let y = never();
+        let r: [&i64, 'a] = select true { true => &1, false => y };
+        let result = Show::show(r)
     "#
     ; FuseExpect::None
 );

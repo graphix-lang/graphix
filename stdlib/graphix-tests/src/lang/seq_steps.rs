@@ -82,28 +82,6 @@ async fn passed_let_does_not_track(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// A fire of an input while its step waits its turn is re-raised when the
-// step is entered.
-// CR claude for claude: [test-gap/low] This cannot fail. `click` is an outer variable,
-// so the step reads it through its entry snapshot, which fires at every entry while it
-// stands: `click ~ 7` answers 7 whether or not click fired while the step waited.
-// Removing the machine's re-raise (`tracked.deliver` in seq_machine.rs::evaluate)
-// leaves it green. With click firing once before run 1, run 2 still answers 7.
-// let_fire_reaches_a_later_cycle already pins the re-raise through a seq-local let, so
-// delete this test or make it read a let or callee capture that only a re-raise can
-// deliver. probe: design/review-2026-10-26/repro/tests-seq-entry-reraise-vacuous.gx
-// (tests-seq-02)
-async fn entry_reraises_an_earlier_fire(mode: Mode) -> Result<()> {
-    let code = r#"{
-        let click = never();
-        click <- sys::time::after_idle(duration:20.ms, 1);
-        let go = 1;
-        seq go { sys::time::after_idle(duration:60.ms, 0); let r = click ~ 7; r }
-    }"#;
-    assert_eq!(run(code, mode).await?, [7]);
-    Ok(())
-}
-
 // An `until` whose condition already holds when it is entered completes
 // at its entry.
 async fn until_true_at_entry(mode: Mode) -> Result<()> {
@@ -202,6 +180,17 @@ async fn own_trigger_write_starts_the_next_run(mode: Mode) -> Result<()> {
 // async call site for a second run while its previous call is in flight. Add those
 // columns, plus a non-cancel-safe read aborted mid-run. Found by reading; not run.
 // (core-lib-07)
+// 2026-10-27 claude: Partial. restart_builtins_are_reborn_at_each_run now has once,
+// queue, iterq and throttle columns; with each one's reborn body emptied its probe
+// changes (once, queue and throttle never answer run 2, iterq answers run 1's leftover
+// 2). Not added, unreachable from a seq step: skip, take and filter see one value per
+// argument per run (a step issues its call once over an argument snapshot) and a
+// constant #n fires at each entry, restarting the count; iter's and range's reborn only
+// reset out, which their sleep, which comes before every rebirth, already did. Open: an
+// async call in flight across runs. The not CANCEL_SAFE case is core-lib-01, which
+// waits on Eric's ruling; the cancel-safe case needs a Fifo cancel-safe eval with a
+// delay the test controls, and the stdlib's (process wait) is Latest, whose next call
+// aborts the earlier one anyway.
 async fn restart_builtins_are_reborn_at_each_run(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
@@ -213,14 +202,21 @@ async fn restart_builtins_are_reborn_at_each_run(mode: Mode) -> Result<()> {
             let t = take(#n: 1, request);
             let u = uniq(request ~ k);
             let h = hold(#clock: request, request);
-            (c, t, u, h)
+            let o = once(request);
+            let q = queue(#clock: request, array::iter([request, request + 1]));
+            let i = array::iterq(#clock: request, [request, request + 1]);
+            let r = throttle(#rate: duration:10.s, request);
+            (c, t, u, h, o, q, i, r)
         }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
     let printed: Vec<String> = values.iter().map(|v| v.to_string()).collect();
     assert_eq!(
         printed,
-        ["[i64:1, i64:1, i64:5, i64:1]", "[i64:1, i64:20, i64:5, i64:20]"]
+        [
+            "[i64:1, i64:1, i64:5, i64:1, i64:1, i64:1, i64:1, i64:1]",
+            "[i64:1, i64:20, i64:5, i64:20, i64:20, i64:20, i64:20, i64:20]"
+        ]
     );
     Ok(())
 }
@@ -231,7 +227,6 @@ modes!(
     seqq_callee_write_is_live,
     seqq_ref_argument_keeps_captures,
     passed_let_does_not_track,
-    entry_reraises_an_earlier_fire,
     until_true_at_entry,
     let_fire_reaches_a_later_cycle,
     let_fire_read_live_is_not_raised_again,

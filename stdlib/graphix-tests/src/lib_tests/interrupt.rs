@@ -162,7 +162,7 @@ async fn interrupted_recursion_rides(flags: BitFlags<CFlag>) -> Result<()> {
     let took = started.elapsed().saturating_sub(Duration::from_millis(10));
     // run the recursion again and interrupt it halfway
     held.push(ctx.rt.compile(ArcStr::from(rerun("b8"))).await?);
-    tokio::time::sleep(Duration::from_millis(10) + took / 2).await;
+    wedged(&ctx, took / 4).await?;
     ctx.rt.interrupt();
     held.push(
         ctx.rt
@@ -205,8 +205,7 @@ async fn timer_survives_interrupt() -> Result<bool> {
     ] {
         held.push(ctx.rt.compile(ArcStr::from(stmt)).await?);
     }
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    // CR claude for claude: [risk/low] This interrupt fires on a wall-clock guess: 400
+    // XCR claude for claude: [risk/low] This interrupt fires on a wall-clock guess: 400
     // ms after compile, assuming go's cycle is already spinning. GX::do_cycle clears
     // the interrupt bit at each cycle's start, so an interrupt that lands before that
     // cycle is dropped. spin then never ends, and the compile("cnt") below waits
@@ -215,7 +214,15 @@ async fn timer_survives_interrupt() -> Result<bool> {
     // timeout(50ms, rt.get_env()).await.is_err() { rt.interrupt() }`, as
     // interrupt_recovers waits for its probe to time out. Found by reading; not run.
     // (tests-lib-b1-02)
-    ctx.rt.interrupt();
+    // 2026-10-27 claude: Both timing guesses are gone. timer_survives_interrupt calls
+    // interrupt_wedge: wait until a probe stays unanswered 100 ms (the spin's cycle
+    // has started), then interrupt again until the runtime answers.
+    // interrupted_recursion_rides interrupts once a probe stays unanswered took/4.
+    // wedged pauses as long as its probe between probes (a tight get_env loop kept
+    // go's cycle from ever starting: 44M answers in 30 s, the test hung) and fails
+    // after 30 s instead of hanging. No pin can fail for a timing guess; the interrupt
+    // tests passed 3 runs in a row and once under taskset -c 0.
+    interrupt_wedge(&ctx).await?;
     held.push(ctx.rt.compile(ArcStr::from("cnt")).await?);
     let cnt = held.last().unwrap().exprs[0].id;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -249,10 +256,30 @@ async fn interrupted_reply_is_delivered_again() -> Result<()> {
     Ok(())
 }
 
-/// Wait until the runtime stops answering: a cycle is wedged.
-async fn wedged(ctx: &TestCtx) {
-    while tokio::time::timeout(Duration::from_millis(100), ctx.rt.get_env()).await.is_ok()
-    {
+/// Wait until the runtime leaves a probe unanswered for `wait`: a cycle
+/// is wedged. Each answered probe is followed by a pause as long, since a
+/// runtime busy answering commands does not start the cycle.
+async fn wedged(ctx: &TestCtx, wait: Duration) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::timeout(wait, ctx.rt.get_env()).await.is_ok() {
+        if tokio::time::Instant::now() > deadline {
+            bail!("the runtime never wedged")
+        }
+        tokio::time::sleep(wait).await;
+    }
+    Ok(())
+}
+
+/// Interrupt a wedged cycle, again until the runtime answers: an interrupt
+/// that lands before the cycle starts is dropped.
+async fn interrupt_wedge(ctx: &TestCtx) -> Result<()> {
+    let probe = Duration::from_millis(100);
+    wedged(ctx, probe).await?;
+    loop {
+        ctx.rt.interrupt();
+        if tokio::time::timeout(probe, ctx.rt.get_env()).await.is_ok() {
+            return Ok(());
+        }
     }
 }
 
@@ -275,7 +302,7 @@ async fn interrupted_slot_reply_is_delivered_again() -> Result<()> {
         held.push(ctx.rt.compile(ArcStr::from(stmt)).await?);
     }
     for _ in 0..2 {
-        wedged(&ctx).await;
+        wedged(&ctx, Duration::from_millis(100)).await?;
         tokio::time::sleep(Duration::from_millis(200)).await;
         ctx.rt.interrupt();
     }

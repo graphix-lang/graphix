@@ -105,15 +105,6 @@ run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {
 
 // Checked-arithmetic overflow detection.
 
-// CR claude for claude: [test-gap/low] The checked fixtures pin integers only. The
-// CLAUDE.md rule that checked arithmetic over floats follows IEEE and never fails (inf,
-// NaN) has no pin anywhere in graphix-tests. A change that made `f64:1.0 /? f64:0.0` an
-// ArithError would be well-typed (the result type already holds the error) and break
-// nothing. Add a fixture with a fused lambda over runtime f64/f32 arguments plus a
-// top-level literal: today both engines give ((inf, NaN, inf, NaN, inf), (inf, inf,
-// NaN), inf, NaN). probe:
-// design/review-2026-10-26/repro/tests-lib-b1-checked-float-unpinned.gx
-// (tests-lib-b1-03)
 const CHECKED_ADD_OVERFLOW: &str = "is_err(i64:9223372036854775807 +? i64:1)";
 run!(checked_add_overflow_errs, CHECKED_ADD_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
@@ -149,6 +140,20 @@ const CHECKED_NO_OVERFLOW: &str = "i64:5 +? i64:3";
 run!(checked_no_overflow_ok, CHECKED_NO_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(8)))
 }; FuseExpect::Jit);
+
+// Checked arithmetic over floats follows IEEE and never fails: inf and
+// NaN, never an ArithError, fused and not.
+const CHECKED_FLOAT_IEEE: &str = r#"{
+    let f = |a: f64, b: f64| (a /? b, b /? b, (a *? f64:1e308)$ *? f64:10.0, a %? b, (a +? f64:1e308)$ +? f64:1e308);
+    let g = |a: f32, b: f32| (a /? b, (a *? f32:3e38)$ *? f32:10.0, a %? b);
+    (#[native] f(1.0, 0.0), #[native] g(f32:1.0, f32:0.0), f64:1.0 /? f64:0.0, f32:1.0 %? f32:0.0)
+}"#;
+run!(
+    checked_float_follows_ieee,
+    CHECKED_FLOAT_IEEE,
+    prints("[[f64:inf, f64:NaN, f64:inf, f64:NaN, f64:inf], [f32:inf, f32:inf, f32:NaN], f64:inf, f32:NaN]");
+    FuseExpect::Jit
+);
 
 // Unchecked overflow wraps.
 const UNCHECKED_OVERFLOW_WRAPS: &str = "i64:9223372036854775807 + i64:1";
