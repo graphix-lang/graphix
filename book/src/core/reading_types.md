@@ -293,7 +293,7 @@ itself during the type inference process.
 
 if we compile a function with no type constraints, such as:
 
-```graphix
+```graphix,repl
 let f = |x, y| x + y
 ```
 

@@ -1,18 +1,23 @@
 //! Build every example program under `book/src/examples` and every
 //! bench program against the full shell environment, as `graphix
-//! --expand` does: checked, elaborated and fused, never run. And parse
-//! every ```graphix fence written inline in the book.
+//! --expand` does: checked, elaborated and fused, never run. And
+//! check every ```graphix fence and REPL type readout written inline in the book.
 
 use anyhow::{Context, Result, anyhow};
+use compact_str::{CompactString, format_compact};
 use futures::{StreamExt, stream};
 use graphix_compiler::{
-    CFlag,
-    expr::{Load, Origin, parser},
+    CFlag, ExecState, Node, PrintFlag, Saved, Scope, compile_stmt,
+    expr::{Expr, Load, Origin, parser},
+    format_with_flags,
 };
-use graphix_rt::NoExt;
+use graphix_package::register_packages;
+use graphix_rt::{GXRt, NoExt};
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
+use poolshark::local::LPooled;
 use std::{
     collections::HashSet,
+    fmt::Write,
     fs,
     path::{Path, PathBuf},
 };
@@ -84,6 +89,7 @@ async fn examples_compile() -> Result<()> {
 /// its body, where it starts, and, for a `refused` fence followed by a
 /// transcript of the refusal, the transcript's last line.
 struct Fence {
+    page: PathBuf,
     at: String,
     tag: String,
     body: String,
@@ -122,6 +128,7 @@ fn book_fences(dir: &Path, fences: &mut Vec<Fence>) -> Result<()> {
                     (None, true) => {
                         open = Some(match line.strip_prefix("```graphix") {
                             Some(tag) => Open::Graphix(Fence {
+                                page: p.clone(),
                                 at: format!("{}:{}", p.display(), n + 1),
                                 tag: tag.trim().to_string(),
                                 body: String::new(),
@@ -174,6 +181,7 @@ async fn check(text: &str) -> Result<Result<()>> {
 enum Claim {
     /// `ignore`: a schematic fragment, nothing.
     Nothing,
+    ReplSetup,
     /// `sig`: an interface, which parses.
     Sig,
     /// `fragment`: a program that parses, written against names a page
@@ -182,7 +190,7 @@ enum Claim {
     /// `refused`: a program the check refuses.
     Refused,
     /// untagged: a program the check accepts, or a REPL transcript whose
-    /// inputs (lines after `〉`) each parse.
+    /// inputs are checked in their page's REPL session.
     Accepted,
 }
 
@@ -191,12 +199,145 @@ impl Claim {
         let has = |t| tag.split(',').any(|x| x.trim() == t);
         match () {
             () if has("ignore") => Self::Nothing,
+            () if has("repl") => Self::ReplSetup,
             () if has("sig") => Self::Sig,
             () if has("fragment") => Self::Fragment,
             () if has("refused") => Self::Refused,
             () => Self::Accepted,
         }
     }
+}
+
+struct Repl {
+    ctx: ExecState<GXRt<NoExt>>,
+    scope: Scope,
+    nodes: LPooled<Vec<Node<GXRt<NoExt>>>>,
+}
+
+impl Repl {
+    async fn new() -> Result<Self> {
+        let mut ctx = GXRt::new_state()?;
+        let packages = graphix_shell::stdlib_packages::<NoExt>();
+        let (resolver, root) =
+            register_packages(&mut ctx, packages.iter().map(|p| &**p))?;
+        let resolvers = std::sync::Arc::from([resolver]);
+        let mut repl = Self { ctx, scope: Scope::root(), nodes: LPooled::take() };
+        for e in parser::parse(Origin::unspecified(&root))?.iter() {
+            let e = e.resolve_modules(&resolvers, None).await?;
+            repl.statement(e)?;
+        }
+        Ok(repl)
+    }
+
+    fn statement(&mut self, e: Expr) -> Result<CompactString> {
+        let (n, scope) = compile_stmt(
+            &mut self.ctx.view(),
+            CFlag::CheckOnly | CFlag::FusionDisabled,
+            &self.scope,
+            e,
+        )?;
+        self.scope = scope;
+        let typ = n.typ().with_deref(|t| t.cloned()).unwrap_or_else(|| n.typ().clone());
+        let shown =
+            format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                format_compact!("{typ}")
+            });
+        self.nodes.push(n);
+        Ok(shown)
+    }
+
+    fn input(&mut self, text: &str) -> Result<CompactString> {
+        let exprs = parser::parse(Origin::unspecified(text))?;
+        let saved = Saved::take(&self.ctx);
+        let scope = self.scope.clone();
+        let before = self.nodes.len();
+        let mut shown = CompactString::default();
+        for e in exprs.iter() {
+            match self.statement(e.clone()) {
+                Ok(t) => shown = t,
+                Err(e) => {
+                    for mut node in self.nodes.drain(before..).rev() {
+                        node.delete(&mut self.ctx.view());
+                    }
+                    self.scope = scope;
+                    saved.restore(&mut self.ctx);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(shown)
+    }
+
+    fn transcript(&mut self, text: &str) -> Result<()> {
+        let mut lines = text.lines().peekable();
+        while let Some(line) = lines.next() {
+            let Some(input) = line.strip_prefix('〉') else { continue };
+            let mut shown = None;
+            let mut refused = false;
+            while let Some(line) = lines.next_if(|l| !l.starts_with('〉')) {
+                if let Some(typ) = line.strip_prefix("-:") {
+                    shown = Some(typ.trim());
+                }
+                refused |= line.starts_with("error:") || line.starts_with("Error:");
+            }
+            let result = self.input(input);
+            if let Some(shown) = shown {
+                let actual = result.with_context(|| format_compact!("input {input}"))?;
+                anyhow::ensure!(
+                    normalize_type(&actual) == normalize_type(shown),
+                    "input {input}: the page shows -: {shown}, the check says -: {actual}"
+                );
+            } else if refused {
+                anyhow::ensure!(
+                    result.is_err(),
+                    "input {input}: the page shows a refusal, but the check accepts it"
+                );
+            } else {
+                result.with_context(|| format_compact!("input {input}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Repl {
+    fn drop(&mut self) {
+        for mut node in self.nodes.drain(..).rev() {
+            node.delete(&mut self.ctx.view());
+        }
+    }
+}
+
+fn normalize_type(mut text: &str) -> CompactString {
+    let mut ids: LPooled<Vec<&str>> = LPooled::take();
+    let mut out = CompactString::default();
+    while let Some(at) = text.find("'_") {
+        out.push_str(&text[..at + 2]);
+        text = &text[at + 2..];
+        let n = text.bytes().take_while(u8::is_ascii_digit).count();
+        if n != 0 {
+            let id = &text[..n];
+            let i = ids.iter().position(|s| *s == id).unwrap_or_else(|| {
+                ids.push(id);
+                ids.len() - 1
+            });
+            write!(out, "{i}").unwrap();
+            text = &text[n..];
+        }
+    }
+    out.push_str(text);
+    out
+}
+
+#[tokio::test]
+async fn transcript_type_readouts_are_checked() -> Result<()> {
+    let mut repl = Repl::new().await?;
+    repl.transcript("〉let x = 1\n〉x\n-: i64\n1\n")?;
+    let error = repl.transcript("〉x\n-: string\n1\n").unwrap_err();
+    assert!(error.to_string().contains("the page shows -: string"));
+    assert_eq!(normalize_type("('_123, '_123, '_456)"), "('_0, '_0, '_1)");
+    assert_ne!(normalize_type("('_123, '_123)"), normalize_type("('_1, '_2)"));
+    Ok(())
 }
 
 /// Every ```graphix fence in the book holds what its tag claims
@@ -225,28 +366,36 @@ impl Claim {
 // ,refused fence with no transcript passes on any refusal. Remaining: compare each
 // transcript input's -: line with the checked type (or the printed value), or say in
 // the CR why that cannot be done.
+// 2026-10-27 codex: The requested REPL -: check is implemented. Each page has a
+// persistent check-only REPL context, explicitly seeded by ,repl fences; each prompt's
+// checked type is compared with the printed type, renaming only generated variable IDs
+// consistently. Values are not executed. Failed inputs restore the session. The new
+// transcript_type_readouts_are_checked pin rejects a deliberately wrong -: string for
+// an i64; observed it fail with the comparison disabled, then pass with comparison
+// enabled. The full examples_compile target passed its examples and pin but found
+// three stale book readouts: Error<'a> omitted the inferred `Foo constraint, and two
+// struct readouts omitted printer spaces. Corrected those; book_fences_check then
+// passed (direct current test executable), and mdbook build passed. Added three ,repl
+// setup tags for earlier declarations that transcripts use. Generated site output was
+// restored because the installed mdbook rewrites site-wide assets unrelated to this
+// edit. The older CR's separate issue remains: a ,refused fence without an error
+// transcript still accepts any refusal. Leaving the CR open for that remaining policy;
+// no image bytes changed.
 #[tokio::test(flavor = "multi_thread")]
 async fn book_fences_check() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src");
     let mut fences = vec![];
     book_fences(&root, &mut fences)?;
     assert!(fences.len() >= 400, "book looks wrong: only {} fences", fences.len());
-    let failures: Vec<String> = stream::iter(fences.iter())
+    let mut failures: Vec<String> = stream::iter(fences.iter())
         .filter(|f| std::future::ready(!f.body.contains("{{#include")))
         .map(|f| async move {
             let failed = match Claim::of(&f.tag) {
                 Claim::Nothing => return None,
                 Claim::Sig => parser::parse_sig(Origin::unspecified(&f.body)).err(),
                 Claim::Fragment => parser::parse(Origin::unspecified(&f.body)).err(),
-                Claim::Accepted if f.body.contains('〉') => {
-                    f.body.lines().filter_map(|l| l.strip_prefix('〉')).find_map(
-                        |input| {
-                            parser::parse(Origin::unspecified(input))
-                                .err()
-                                .map(|e| anyhow!("{input}: {e:#}"))
-                        },
-                    )
-                }
+                Claim::ReplSetup => return None,
+                Claim::Accepted if f.body.contains('〉') => return None,
                 Claim::Accepted => match check(&f.body).await {
                     Ok(r) => r.err(),
                     Err(e) => Some(e),
@@ -271,6 +420,29 @@ async fn book_fences_check() -> Result<()> {
         .filter_map(|r| async move { r })
         .collect()
         .await;
+    let mut page = None;
+    let mut repl = None;
+    for f in &fences {
+        let setup = matches!(Claim::of(&f.tag), Claim::ReplSetup);
+        if !setup
+            && !(matches!(Claim::of(&f.tag), Claim::Accepted) && f.body.contains('〉'))
+        {
+            continue;
+        }
+        if page.as_ref() != Some(&f.page) {
+            repl = Some(Repl::new().await?);
+            page = Some(f.page.clone());
+        }
+        let repl = repl.as_mut().unwrap();
+        let result = if setup {
+            repl.input(&f.body).map(|_| ())
+        } else {
+            repl.transcript(&f.body)
+        };
+        if let Err(e) = result {
+            failures.push(format!("{}: {e:#}", f.at));
+        }
+    }
     assert!(
         failures.is_empty(),
         "{} book fence(s) failed:\n{}",

@@ -86,7 +86,7 @@ error is, on stderr and in the log.
 With that out of the way, lets
 write a recursive function to add up pairs of numbers in an array,
 
-```graphix
+```graphix,repl
 let rec add_pairs = 'a: Number |a: Array<'a>| -> Array<'a> select a {
   [e0, e1, tl..] => array::push_front(add_pairs(tl), e0 + e1),
   a => a

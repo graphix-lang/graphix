@@ -12,7 +12,7 @@ defines a struct with two fields, `foo` and `bar`. `foo` has type `string` and
 `bar` has type `i64`. We can assign a struct of this type to a variable, and
 pass it around just like any other data object. For example,
 
-```graphix
+```graphix,repl
 let s = { foo: "I am foo", bar: 42 };
 println("the struct s is [s]")
 ```
@@ -87,7 +87,7 @@ Will create a new struct with all the same fields as `s` except `bar` which will
 
 ```graphix
 〉{ s with bar: 21 }
--: {bar: i64, foo: string}
+-: { bar: i64, foo: string }
 {bar: 21, foo: "I am foo"}
 ```
 
@@ -116,7 +116,7 @@ is a string to a struct type. For example,
 
 ```graphix
 〉cast<{foo: string, bar: i64}>([["foo", "I am foo"], ["bar", 42]])$
--: {bar: i64, foo: string}
+-: { bar: i64, foo: string }
 {bar: 42, foo: "I am foo"}
 ```
 

@@ -1455,10 +1455,12 @@ test is a result.
   once: each is included by a book page, and `graphix-shell/tests/
   examples_compile.rs` builds every one (check, elaboration, fusion, as
   `graphix --expand` does) in the plain gate, and checks every inline
-  ```` ```graphix ```` fence as a script (a REPL transcript's inputs only
-  parse; `,fragment` parses a program written against names its page
+  ```` ```graphix ```` fence as a script. REPL transcripts are checked in
+  a session per page, seeded by `,repl` fences; every `-:` type line must
+  match the check, with generated variable IDs renamed consistently.
+  `,fragment` parses a program written against names its page
   assumes, `,sig` an interface, `,ignore` nothing; `,refused` must be
-  refused, by the message a transcript after it shows); the tui package's
+  refused, by the message a transcript after it shows. The tui package's
   `examples_test` renders every TUI example and drives some with keys,
   and the GUI examples are run by hand
   (`cargo run --bin graphix -- examples/gui/<name>.gx`).
