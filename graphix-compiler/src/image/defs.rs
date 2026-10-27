@@ -130,7 +130,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         level,
     } = def;
     // a runtime-built definition exists only once a cycle ran
-    let DefOrigin::Source { body, flags, spec } = origin else {
+    let DefOrigin::Source { body, flags, spec, enclosing } = origin else {
         return Err(PackError::Application(super::NOT_QUIESCENT));
     };
     id.encode(buf)?;
@@ -146,6 +146,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
     body_encode(body, buf)?;
     flags_encode(*flags, buf)?;
     spec.encode(buf)?;
+    enclosing.encode(buf)?;
     tables_encode(table.get(), buf)?;
     shared_encode(&shared.lock(), buf)
 }
@@ -168,6 +169,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let body = body_decode(buf)?;
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;
+    let enclosing: Arc<[Arc<FnType>]> = Pack::decode(buf)?;
     let table = std::sync::Arc::new(tables_decode(buf)?);
     let shared = BodyShare::new(Mutex::new(shared_decode(buf)?));
     let init = make_init(
@@ -179,6 +181,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         argspec.clone(),
         Arc::new(spec.clone()),
         body.clone(),
+        enclosing.clone(),
         table.clone(),
         shared.clone(),
     );
@@ -196,7 +199,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         recursion: Mutex::new(recursion),
         no_loop: Mutex::new(None),
         source,
-        origin: DefOrigin::Source { body, flags, spec },
+        origin: DefOrigin::Source { body, flags, spec, enclosing },
         level,
     });
     Ok(id)

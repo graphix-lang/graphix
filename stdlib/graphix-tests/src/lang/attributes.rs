@@ -426,3 +426,16 @@ const CAPTURED_PARAM_CALL: &str = r#"
 
 run!(captured_param_call_sync_refused, &CAPTURED_PARAM_CALL.replace("ATTR", "sync"), refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 run!(captured_param_call_async_accepted, &CAPTURED_PARAM_CALL.replace("ATTR", "async"), |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+
+// A collection slot's instance names no formal for the parameter its
+// literal calls, so the call stays unresolved: async.
+const SLOT_CAPTURED_PARAM_CALL: &str = r#"
+{
+  let d = |fs: Array<fn(v: i64) -> bool>, v: i64| array::map(fs, |f| filter(v, |x| f(x)));
+  #[sync]
+  let h = |v: i64| d([|x| sys::time::after_idle(duration:1.ms, x) > 0], v);
+  h(1)
+}
+"#;
+
+run!(slot_captured_param_call_sync_refused, SLOT_CAPTURED_PARAM_CALL, refused("#[sync]: this function is async"); FuseExpect::None; build_only);

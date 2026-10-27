@@ -525,15 +525,9 @@ pub struct BodyShared {
     pub(crate) prototype: Option<ExprId>,
 }
 
-/// The body compiling now: what it shares, and whether this compile is
-/// its definition's check, which alone records specs.
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's.
-// CR claude for claude: [readability/low] The first two doc lines above ("The body
-// compiling now: what it shares, ...") describe BodyCompile, which has no doc of its
-// own. Here they become the start of this function's doc. Move them above `pub(crate)
-// struct BodyCompile`. Found by reading; not run. (c-lambda-06)
 pub(crate) fn body_annotation<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>, t: &Type) {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     enclosing_tvars(ctx, &mut known);
@@ -559,6 +553,8 @@ fn enclosing_tvars<R: Rt, E: UserEvent>(
     }
 }
 
+/// The body compiling now: what it shares, and whether this compile is
+/// its definition's check, which alone records specs.
 #[derive(Debug, Clone)]
 pub(crate) struct BodyCompile {
     pub(crate) share: BodyShare,
@@ -627,7 +623,14 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
 /// a function of these and which an image carries as data, or Rust
 /// code building an `Apply` at runtime, which no image can carry.
 pub enum DefOrigin {
-    Source { body: DefBody, flags: BitFlags<CFlag>, spec: Expr },
+    Source {
+        body: DefBody,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        /// The signatures of the definitions lexically around the literal,
+        /// innermost last, as the compile that met the literal held them.
+        enclosing: Arc<[Arc<FnType>]>,
+    },
     Runtime,
 }
 
@@ -659,6 +662,8 @@ impl DefBody {
 /// resolves (`CompileCtx::fn_forward_resolutions`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, netidx_derive::Pack)]
 pub struct ParamCalls {
+    /// It calls its own, or an enclosing instance's that the instance did
+    /// not name: resolved by no instance.
     pub own: bool,
     pub captured: SmallVec<[BindId; 2]>,
 }
@@ -1422,6 +1427,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
     def_argspec: Arc<[Arg]>,
     def_spec: Arc<Expr>,
     body: DefBody,
+    enclosing: Arc<[Arc<FnType>]>,
     table: SArc<DefTables>,
     shared: BodyShare,
 ) -> InitFn<R, E> {
@@ -1434,7 +1440,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
             Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
         ctx.with_restored(def_env.clone(), |ctx| match &body {
             DefBody::Expr(body) => {
-                // CR claude for claude: [bug/medium] `enclosing` comes from ctx.body
+                // XCR claude for claude: [bug/medium] `enclosing` comes from ctx.body
                 // where the instance is built, not from the definitions lexically
                 // around the literal. A type variable two lambdas inside its definition
                 // is therefore a fresh variable: `let mk = 'a: Number |k: 'a| |y: i64|
@@ -1443,7 +1449,15 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                 // the literal compiles (with def_env) and use those here. probe:
                 // design/review-2026-10-26/repro/x-rerun-5-nested-lambda-tvar.gx
                 // (x-rerun-5-02)
-                // CR claude for claude: [bug/medium] `ctx.body` here is whatever
+                // 2026-10-27 claude: The definitions around a literal are now captured
+                // when the literal compiles: Lambda::compile takes ctx.body.declared
+                // and hands it to make_init, which no longer reads ctx.body at init;
+                // DefOrigin::Source carries the chain (enclosing) and the image writes
+                // it (def_encode/def_decode; REGISTRATION_FORMAT 92), so a restored
+                // definition's run-time instances keep it. Pin:
+                // lang::types::a_signature_two_lambdas_down_names_the_enclosing_variable
+                // (fails with the init-time read restored).
+                // XCR claude for claude: [bug/medium] `ctx.body` here is whatever
                 // compile is in progress when `init` runs, not the definitions
                 // lexically around this one. A nested literal's definition check runs
                 // from Lambda::typecheck0, after the enclosing compile has put
@@ -1455,10 +1469,13 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                 // and pass it to make_init (def_decode passes an empty chain). probe:
                 // design/review-2026-10-26/repro/c-lambda-nested-body-annotation.gx
                 // (c-lambda-02)
-                let enclosing = match &ctx.body {
-                    Some(b) => b.declared.clone(),
-                    None => Arc::from_iter([]),
-                };
+                // 2026-10-27 claude: Fixed with x-rerun-5-02: make_init takes the
+                // enclosing chain Lambda::compile captured, so a nested literal's
+                // definition check (run from Lambda::typecheck0 after ctx.body is None)
+                // compiles its body under the enclosing signatures; def_decode reads
+                // the chain from the image instead of an empty one. Pin:
+                // lang::types::a_nested_body_annotation_names_the_enclosing_variable
+                // (fails with the init-time read restored).
                 let compiling = BodyCompile {
                     share: shared.clone(),
                     checking: matches!(mode, BindMode::Definition),
@@ -1761,7 +1778,7 @@ impl Lambda {
             // one does not, is theirs
             let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             enclosing_tvars(ctx, &mut known);
-            // CR claude for claude: [bug/medium] This removes only the names
+            // XCR claude for claude: [bug/medium] This removes only the names
             // `l.constraints` declares. The quantifiers this lambda derives for itself,
             // a trait-typed parameter's `#x` (trait_quantifiers) and a constructor
             // quantifier's `'c#elem` (ctors), are not removed, so they alias the
@@ -1773,18 +1790,30 @@ impl Lambda {
             // elem name) and pin both programs. probe:
             // design/review-2026-10-26/repro/c-lambda-nested-quantifier-name-capture.sh
             // (c-lambda-01)
-            known.retain(|name, _| !scoped.contains_key(name));
+            // 2026-10-27 claude: Lambda::compile now keeps out of the enclosing aliases
+            // every variable the signature introduces: each constraints entry (the
+            // declared quantifiers and the trait-typed parameters' #x) and each
+            // constructor quantifier's 'c#elem. Pin:
+            // lang::types::a_nested_lambdas_derived_quantifiers_are_its_own (both repro
+            // programs; fails with the old l.constraints-only retain).
+            known.retain(|name, _| {
+                !constraints.iter().any(|(tv, _)| tv.name == *name)
+                    && !ctors
+                        .iter()
+                        .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
+            });
             ft.alias_tvars(&mut known);
             Arc::new(ft.declaring(&constraints))
         };
         typ.lambda_ids.set_id(id);
         typ.claim(level);
         let table = SArc::new(DefTables::default());
-        let shared = match &ctx.body {
-            Some(outer) => {
-                outer.share.lock().literals.entry(spec.id).or_default().clone()
-            }
-            None => BodyShare::default(),
+        let (shared, enclosing) = match &ctx.body {
+            Some(outer) => (
+                outer.share.lock().literals.entry(spec.id).or_default().clone(),
+                outer.declared.clone(),
+            ),
+            None => (BodyShare::default(), Arc::from_iter([])),
         };
         let init = make_init(
             id,
@@ -1795,6 +1824,7 @@ impl Lambda {
             argspec.clone(),
             spec.clone(),
             body.clone(),
+            enclosing.clone(),
             table.clone(),
             shared.clone(),
         );
@@ -1819,7 +1849,7 @@ impl Lambda {
             recursion: Mutex::new(RecursionKind::NotRecursive),
             no_loop: Mutex::new(None),
             source: spec.id,
-            origin: DefOrigin::Source { body, flags, spec: (*spec).clone() },
+            origin: DefOrigin::Source { body, flags, spec: (*spec).clone(), enclosing },
             level,
         });
         ctx.lambda_defs.insert(id, def.clone());
@@ -2021,7 +2051,7 @@ fn check_defaults<R: Rt, E: UserEvent>(
                     .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
                 // a variable inside the type is checked as any instance of
                 // it: each omitting call checks the default again
-                // CR claude for claude: [bug/medium] A default that reads an enclosing
+                // CR claude for eric: [bug/medium] A default that reads an enclosing
                 // definition's open cell is tied to its parameter only when the
                 // parameter type is a bare variable (the arm above). Under a written
                 // type holding one (`#d: Array<'q> = [z]`, `{v: 'q}`, `[null, 'q]`) it
@@ -2033,6 +2063,30 @@ fn check_defaults<R: Rt, E: UserEvent>(
                 // whatever its shape. probe:
                 // design/review-2026-10-26/repro/x-typecheck-generics-default-enclosing-written-param.gx
                 // (x-typecheck-generics-04)
+                // 2026-10-27 claude: Not fixed; the root is wider than check_defaults and needs a typing
+                // rule. Traced (GRAPHIX_DBG_BIND, GRAPHIX_DBG_BIND_BT): the bottom comes from the
+                // omitting site, not the factory's check. CallSite::check_omitted_defaults compiles the
+                // default in g's definition env, where z is mk's GENERIC parameter cell; 'q_copy ⊇ z
+                // aliases the site's copy onto that generic cell, and the site's settle
+                // (FnType::settle_terminal in drain_pending_settles) binds mk's definition cell to
+                // bottom, so mk(1)'s elaboration then refuses its instance. The same leak breaks the
+                // already-pinned bare form with two factory instances: `let mk = |z| { let g = |#d = z,
+                // x| [d, x]; g }; let f = mk(1); let h = mk("s"); (f(2), h(3))` is refused 'string does
+                // not contain i64' (f(2)'s site check bound mk's generic z to i64). Tried the CR's fix
+                // (check a default holding an enclosing cell against at.typ itself whatever its shape):
+                // a written undeclared 'q is rigid in g's check (DefGate rigidifies every named sig
+                // var), so z binds to g's rigid 'q; one shape per program then works, but `|#d:
+                // Array<'q> = [z], #n: [null, 'q] = z, x|` (which runs today) is refused "'q: null does
+                // not contain i64", and two written variables tied to one z are refused as rigid apart;
+                // reverted. Question for Eric: what type does a default that reads an enclosing
+                // definition's open cell have at a site that cannot know which instance of the factory
+                // the callee came from? Options: (a) the site check instantiates the enclosing
+                // definitions' generic cells fresh (never writes them), and the definition ties a
+                // non-quantifier parameter to the cell (written undeclared vars would need to stop being
+                // rigid, or the tie stays for unannotated params only); (b) refuse a default that reads
+                // an enclosing open cell unless the parameter's type is closed, asking to annotate the
+                // factory's parameter; (c) carry the default's type in the callee's FnType so an
+                // instance's copy holds it.
                 t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
                 t => t.check_contains(&ctx.env, &typ),
             }
@@ -2184,7 +2238,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
-        // CR claude for claude: [bug/medium] `filter_map` drops each captured key
+        // XCR claude for claude: [bug/medium] `filter_map` drops each captured key
         // `instance_fn_params` has no entry for. Only a static bind
         // (CallSite::bind_instance) registers that map, so in every run-time bind
         // (build_bound, prebind) the nested literal's calls through the enclosing
@@ -2195,13 +2249,31 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // a key with no formal as unresolved rather than dropping it. probe:
         // design/review-2026-10-26/repro/c-lambda-sync-dynamic-captured-call.gx
         // (c-lambda-03)
-        let captured = tables
-            .table
-            .calls_captured
-            .iter()
-            .filter_map(|k| ctx.instance_fn_params.get(k).copied())
-            .collect();
-        *def.param_calls.lock() = ParamCalls { own: tables.table.calls_own, captured };
+        // 2026-10-27 claude: A run-time bind (CallSite::build_bound, so prebind too)
+        // now registers its instance's fn-typed formals around the instance's check and
+        // elaboration (setup_dynamic_bind -> register_fn_params, which takes the apply;
+        // unregistered after CallSite::elaborate_bound), so a nested literal's captured
+        // calls name the formal and resolve to the function the bind passed. A captured
+        // key no instance named (a collection slot's instance registers none) now sets
+        // ParamCalls::own, so callback_facts judges it async (the 'else async' rule)
+        // instead of dropping it. Trade-off for review: a #[sync] function whose slot
+        // callback calls a function-typed element through a nested literal is now
+        // refused even when every element is pure (e.g. d = |fs, v| array::map(fs, |f|
+        // filter(v, |x| f(x))) called with [|x| x > 0]), where before it passed and the
+        // async case passed too. Pins:
+        // graphix-shell/tests/bound_callee_assertion.rs::bound_callee_captured_param_call_is_judged
+        // (async callback reported, pure one not; fails both without the registration
+        // and without the fallback),
+        // lang::attributes::slot_captured_param_call_sync_refused (the fallback).
+        let mut own = tables.table.calls_own;
+        let mut captured = SmallVec::new();
+        for k in tables.table.calls_captured.iter() {
+            match ctx.instance_fn_params.get(k) {
+                Some(id) => captured.push(*id),
+                None => own = true,
+            }
+        }
+        *def.param_calls.lock() = ParamCalls { own, captured };
         def.join_facts(tables.table.facts);
         def.table.set(tables);
         Ok(())

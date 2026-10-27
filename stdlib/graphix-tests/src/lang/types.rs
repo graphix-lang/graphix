@@ -2179,6 +2179,35 @@ run!(
     FuseExpect::None
 );
 
+// The definitions around a literal are those its text sits in, however
+// deep, whichever compile meets it.
+run!(
+    a_signature_two_lambdas_down_names_the_enclosing_variable,
+    "{ let mk = 'a: Number |k: 'a| |y: i64| |x: 'a| [x, k]; mk(1)(0)(\"s\") }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_nested_body_annotation_names_the_enclosing_variable,
+    "{ let f = 'a: Number |x: 'a| -> 'a { let g = |y| { let v: 'a = 1; y }; g(x) }; \
+       f(f32:1.5) }",
+    refused("does not contain i64");
+    FuseExpect::None
+);
+
+// A nested lambda's own quantifiers, the ones a trait-typed parameter or a
+// constructor bound derives, are its own whatever their names.
+run!(a_nested_lambdas_derived_quantifiers_are_its_own, r#"{
+  use Collection::*;
+  let f = |x: Display| { let g = |x: Display| x; g(1) };
+  let c = 'c: Collection |xs: 'c| -> i64 {
+    let g = 'c: Collection |ys: 'c| -> i64 fold(ys, 0, |a, _| a + 1);
+    g([<"a", "b">]) + fold(xs, 0, |a, _| a + 1)
+  };
+  (f("s"), c([1, 2, 3]))
+}"#, prints("[i64:1, i64:5]"); FuseExpect::Jit);
+
 // A variable an abstract type, a type application or a reference holds is
 // fixed exactly there, so that argument is checked first, whatever the
 // order the call writes: "aa" fits the Bx's [string, i64] written after it.

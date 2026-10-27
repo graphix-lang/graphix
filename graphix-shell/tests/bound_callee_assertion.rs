@@ -43,3 +43,28 @@ fn bound_callee_assertion_survives_the_image() {
         );
     }
 }
+
+/// A literal a run-time bind's instance defines is judged with the
+/// function the bind passes for the parameter it calls: the async one
+/// fails the assertion, the pure one does not.
+const CAPTURED: &str = r#"
+#[sync]
+let d = |f: fn(v: i64) -> bool, v: i64| filter(v, |x| f(x));
+let e: fn(f: fn(v: i64) -> bool, v: i64) -> i64 = d;
+e <- never();
+println(e(|x| CALLBACK, 3));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))
+"#;
+
+#[test]
+fn bound_callee_captured_param_call_is_judged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (callback, fails) in
+        [("sys::time::after_idle(duration:10.ms, x) > 0", true), ("x > 0", false)]
+    {
+        let program = CAPTURED.replace("CALLBACK", callback);
+        let ran = graphix(dir.path(), &program, &["--no-cache"], &[]);
+        assert_eq!(ran.stderr.contains(MSG), fails, "{callback}:\n{}", ran.stderr);
+        assert!(ran.stdout.lines().any(|l| l == "3"), "{callback}:\n{}", ran.stderr);
+    }
+}

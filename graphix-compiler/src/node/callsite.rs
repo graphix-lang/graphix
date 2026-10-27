@@ -1908,7 +1908,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         scope: &Scope,
         flags: BitFlags<CFlag>,
         f: &LambdaDef<R, E>,
-    ) -> Result<(Box<dyn Apply<R, E>>, SmallVec<[BindId; 2]>)> {
+    ) -> Result<(Box<dyn Apply<R, E>>, SmallVec<[BindId; 2]>, FnParams)> {
         let mut refs = Refs::default();
         self.prepare_bind(ctx, scope, flags, f, &mut refs)?;
         let mut defaults = SmallVec::new();
@@ -1920,13 +1920,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let mut apply =
             self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
+        let params = self.register_fn_params(ctx, &*apply, &apply.typ(), f.id);
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
+            Self::unregister_fn_params(ctx, params);
             ctx.discard_apply(apply);
             return Err(
                 e.context(format!("a run-time bind at {} did not type", self.spec))
             );
         }
-        Ok((apply, defaults))
+        Ok((apply, defaults, params))
     }
 
     /// Elaborate the omitted defaults in `env`, their definition's.
@@ -2152,75 +2154,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // boundary will drain.
         let defaults = super::with_runtime_settles(ctx, |ctx| {
             let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
-            let (apply, defaults) = self.setup_dynamic_bind(ctx, &scope, flags, f)?;
+            let (apply, defaults, params) =
+                self.setup_dynamic_bind(ctx, &scope, flags, f)?;
             drop(setup_span);
-            // its defaults are elaborated as a static bind's are: trait
-            // dispatch resolves in typecheck1
-            if let Err(e) = self.typecheck_static_defaults(ctx, f) {
-                ctx.discard_apply(apply);
-                return Err(e);
-            }
-            // A def whose defining Lambda node was deleted has no
-            // `lambda_defs` entry; restore it for this elaboration only.
-            let restored_def = !ctx.lambda_defs.contains_key(&f.id);
-            if restored_def {
-                ctx.lambda_defs.insert(f.id, fv.clone());
-            }
-            self.callee = Callee::DynamicBound { def: fv, apply };
-            // The lazy-bound body postdates the program-wide typecheck1 and
-            // analysis passes: resolve its call sites and analyze it here.
-            let identity = self.fn_arg_identity(ctx);
-            if let Some(apply) = self.callee.apply_mut()
-                && let ApplyView::Lambda(g) = apply.view()
-            {
-                let instance = g.instance_id();
-                let instance_ftype = apply.typ();
-                // A recursive lazy bind: its body stays lazy.
-                let already_active = ctx.resolving(f.id, &identity).is_some();
-                ctx.push_resolving(
-                    f.id,
-                    ResolvingLambda {
-                        instance,
-                        ftype: instance_ftype.as_ref().clone(),
-                        identity,
-                    },
-                );
-                let elaborated = match already_active {
-                    true => Ok(()),
-                    false => {
-                        let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
-                        apply.typecheck1(ctx, &mut [], &instance_ftype)
-                    }
-                };
-                ctx.pop_resolving(f.id, instance);
-                if let Err(e) = elaborated {
-                    if restored_def {
-                        ctx.lambda_defs.remove(&f.id);
-                    }
-                    if let Callee::DynamicBound { def, apply } =
-                        mem::replace(&mut self.callee, Callee::DynamicUnbound)
-                    {
-                        ctx.discard_apply(apply);
-                        self.callee = Callee::Failed { def };
-                    }
-                    return Err(e.context(format!(
-                        "a run-time bind at {} did not elaborate",
-                        self.spec
-                    )));
-                }
-                if let ApplyView::Lambda(g) = apply.view() {
-                    let _an_span = perfdbg::span(&perfdbg::ANALYZE_NS);
-                    let self_bind = match self.fnode.view() {
-                        NodeView::Ref(r) => Some(r.id),
-                        _ => None,
-                    };
-                    analysis::analyze_bound_callee(g, self_bind, ctx);
-                }
-            }
-            if restored_def {
-                ctx.lambda_defs.remove(&f.id);
-            }
-            Ok(defaults)
+            let res = self.elaborate_bound(ctx, fv, f, apply);
+            Self::unregister_fn_params(ctx, params);
+            res.map(|()| defaults)
         })?;
         if let Some(share) = &self.share
             && let Some(apply) = self.callee.apply_mut()
@@ -2228,6 +2167,85 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx));
         }
         Ok(defaults)
+    }
+
+    /// Elaborate and analyze `apply`, this site's run-time instance of
+    /// `f` (the value `fv`), checked with its fn-typed formals registered,
+    /// leaving it `DynamicBound`.
+    fn elaborate_bound(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        fv: Value,
+        f: &LambdaDef<R, E>,
+        apply: Box<dyn Apply<R, E>>,
+    ) -> Result<()> {
+        // its defaults are elaborated as a static bind's are: trait
+        // dispatch resolves in typecheck1
+        if let Err(e) = self.typecheck_static_defaults(ctx, f) {
+            ctx.discard_apply(apply);
+            return Err(e);
+        }
+        // A def whose defining Lambda node was deleted has no
+        // `lambda_defs` entry; restore it for this elaboration only.
+        let restored_def = !ctx.lambda_defs.contains_key(&f.id);
+        if restored_def {
+            ctx.lambda_defs.insert(f.id, fv.clone());
+        }
+        self.callee = Callee::DynamicBound { def: fv, apply };
+        // The lazy-bound body postdates the program-wide typecheck1 and
+        // analysis passes: resolve its call sites and analyze it here.
+        let identity = self.fn_arg_identity(ctx);
+        if let Some(apply) = self.callee.apply_mut()
+            && let ApplyView::Lambda(g) = apply.view()
+        {
+            let instance = g.instance_id();
+            let instance_ftype = apply.typ();
+            // A recursive lazy bind: its body stays lazy.
+            let already_active = ctx.resolving(f.id, &identity).is_some();
+            ctx.push_resolving(
+                f.id,
+                ResolvingLambda {
+                    instance,
+                    ftype: instance_ftype.as_ref().clone(),
+                    identity,
+                },
+            );
+            let elaborated = match already_active {
+                true => Ok(()),
+                false => {
+                    let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
+                    apply.typecheck1(ctx, &mut [], &instance_ftype)
+                }
+            };
+            ctx.pop_resolving(f.id, instance);
+            if let Err(e) = elaborated {
+                if restored_def {
+                    ctx.lambda_defs.remove(&f.id);
+                }
+                if let Callee::DynamicBound { def, apply } =
+                    mem::replace(&mut self.callee, Callee::DynamicUnbound)
+                {
+                    ctx.discard_apply(apply);
+                    self.callee = Callee::Failed { def };
+                }
+                return Err(e.context(format!(
+                    "a run-time bind at {} did not elaborate",
+                    self.spec
+                )));
+            }
+            if let ApplyView::Lambda(g) = apply.view() {
+                let _an_span = perfdbg::span(&perfdbg::ANALYZE_NS);
+                let self_bind = match self.fnode.view() {
+                    NodeView::Ref(r) => Some(r.id),
+                    _ => None,
+                };
+                analysis::analyze_bound_callee(g, self_bind, ctx);
+            }
+        }
+        if restored_def {
+            ctx.lambda_defs.remove(&f.id);
+        }
+        Ok(())
     }
 
     /// Prime `defaults`, the outer variables a fresh bind's compiled
@@ -2364,7 +2382,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // Fn-typed args are registered under the instance's param
         // BindIds for the whole body typecheck (`register_fn_params`).
-        let param_binds = self.register_fn_params(ctx, &instance_ftype, def.id);
+        let param_binds = {
+            let apply = self.callee.apply().expect("static callee must have an apply");
+            self.register_fn_params(ctx, apply, &instance_ftype, def.id)
+        };
         if let Some(instance) = instance {
             ctx.push_resolving(
                 def.id,
@@ -2498,19 +2519,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Register this site's statically known fn-typed args under the
-    /// instance's param BindIds. Held for the whole body typecheck so calls
-    /// to and captures of a fn parameter resolve in one pass.
+    /// param BindIds of `apply`, its instance of `lid`. Held for the whole
+    /// body typecheck so calls to and captures of a fn parameter resolve
+    /// in one pass.
     fn register_fn_params(
         &self,
         ctx: &mut CompileCtx<R, E>,
+        apply: &dyn Apply<R, E>,
         ftype: &FnType,
         lid: LambdaId,
     ) -> FnParams {
         let mut params = FnParams::default();
-        let apply = match self.callee.apply() {
-            Some(a) => a,
-            None => return params,
-        };
         let ApplyView::Lambda(g) = apply.view() else {
             return params;
         };
