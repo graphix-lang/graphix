@@ -423,6 +423,16 @@ run!(net_write_survives_a_sleep_before_connect, r#"
 // re-fires without tearing down what it names: the subscription delivers
 // once, the standing value is written once, and the publication and the
 // rpc are published once.
+// CR claude for claude: [test-gap/medium] This fixture fails about once in 12 runs of
+// lib_tests::net on two CPUs (taskset -c 0,1), in a varying mode: the run ends at the
+// 30 s timeout with no value, so one of count(v), writes, count(p) or count(d) never
+// produced before ticks reached 10. It fails on the code before and after 08e9e666b
+// (sys::net's per-reader channels), so it is not that change. Probable cause: p and d
+// subscribe to paths first published or registered on the 20 ms timer's first tick, so
+// their first delivery is a resubscribe whose backoff can outlast the ten ticks
+// (200 ms), and the tuple then never fires. Find which count is missing, then derive
+// the end from the deliveries rather than the timer (causal ordering). repro: loop
+// `taskset -c 0,1 <graphix_tests binary> lib_tests::net`. (flake-net-canon-01)
 run!(net_noncanonical_path_refires, r#"
 {
   sys::net::publish("/local/pin/canon/s", 7);

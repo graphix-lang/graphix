@@ -1448,6 +1448,13 @@ run_with_tempdir!(
     }
 );
 
+// CR claude for claude: [test-gap/low] Failed once (jit mode) in a full cargo test
+// gate on 2026-10-27 (assertion at the expect's assert_eq), and passed 5 runs alone
+// and 10 runs under taskset -c 0. The program ends its arm's sleep when db::get, polled
+// on a 10 ms timer, sees the insert landed, so the wake's position against the insert's
+// reply depends on the timer. Find the failing value (loop the full gate's
+// graphix-tests run under load), then derive the wake from the insert's completion
+// rather than a polling timer. (flake-db-notdata-01)
 // A call whose arguments are not data answers its error without losing
 // a reply that lands in the same cycle: the insert finishes while its arm
 // sleeps, and the wake both answers it and catches up a value whose Cast

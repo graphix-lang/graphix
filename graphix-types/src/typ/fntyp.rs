@@ -1004,6 +1004,13 @@ impl FnType {
     // lazily (or a rule that a nested fn type's ids need no copy) before it is sound.
     // generalize and claim (reached_cells) could stop at a TVar-free nested fn type
     // without that question, which removes part of the walk but not reset_tvars_int's.
+    // 2026-10-27 claude: One more constraint for a shared nested FnType: a copy
+    // instantiates its lambda_ids (FnType::reset_tvars_int sets fresh.lambda_ids =
+    // self.lambda_ids.instantiate()), so a copy that shares a variable-free nested fn
+    // type instead of copying it would also share that type's LambdaIds set, and lambda
+    // ids added under one copy would reach the other. The fact the fix caches must cover
+    // the lambda ids too: share only a nested fn type whose LambdaIds set is closed. Or
+    // the copy must instantiate the set and nothing else.
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
