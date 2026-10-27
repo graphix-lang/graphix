@@ -126,20 +126,10 @@ run!(write_exact_zero, WRITE_EXACT_ZERO, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
 
-// CR claude for claude: [bug/low] This fixture arms two timers at init: the 10 ms
-// after_idle that writes the invalid timeout, and the 50 ms idle wait. It asserts the
-// wait fires after the write has landed. A stall of 40 ms or more across that window
-// delivers both in one batch. The result then fires while `timeout` is still 0.05 (the
-// write lands a cycle later), and the predicate reads false. Make the order causal:
-// `timeout <- once(timeout) ~ -1.0` writes the invalid timeout the cycle after the wait
-// is armed, with no second timer. probe:
-// design/review-2026-10-26/repro/tests-lib-b2-after-idle-two-timers.py (a 150 ms
-// SIGSTOP inside the window prints false at several offsets; the causal form prints
-// true at all). (tests-lib-b2-02)
 const AFTER_IDLE_INVALID_TIMEOUT: &str = r#"
 {
     let timeout = 0.05;
-    timeout <- sys::time::after_idle(duration:10.ms, -1.0);
+    timeout <- once(timeout) ~ -1.0;
     let result = sys::time::after_idle(timeout, 7);
     result ~ (result == 7 && timeout == -1.0)
 }

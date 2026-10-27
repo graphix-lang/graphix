@@ -866,25 +866,21 @@ run!(net_on_write_inferred_part_refused, r#"{
 
 // A write while the handler is null reaches nothing; one after it arrives
 // is taken.
-// CR claude for claude: [test-gap/low] The predicate reads n once, at 400 ms, after the
-// write of 7. Suppose the write of 5 made while the handler is null reached the handler
-// anyway, fed through or queued and delivered when the handler arrives. n would still
-// end at 7, so the "reaches nothing" half of the claim has no pin. Nothing else in the
-// tree pins a write to a publication with no handler. Record every value the handler
-// takes (`got <- v ~ array::push(got, v)`) and assert [7]; that holds today. probe:
-// design/review-2026-10-26/repro/tests-lib-b2-null-handler-write.gx (tests-lib-b2-03)
 run!(net_on_write_null_handler, r#"{
-    let n: i64 = 0;
+    let got: Array<i64> = [];
     let p = "/local/ow_null";
     let armed = false;
-    let h = select armed { false => null, true => |v: i64| n <- v };
+    let h = select armed { false => null, true => |v: i64| got <- v ~ array::push(got, v) };
     sys::net::publish(#on_write: h, p, 0);
     let s: i64 = sys::net::subscribe(p)$;
     sys::net::write(p, once(s) ~ 5);
     armed <- sys::time::after_idle(duration: 100.ms, once(s)) ~ true;
-    sys::net::write(p, sys::time::after_idle(duration: 200.ms, once(s)) ~ 7);
-    sys::time::after_idle(duration: 400.ms, s) ~ n
-}"#, is(Value::I64(7)); FuseExpect::None);
+    sys::net::write(p, select armed { true => 7, false => never() });
+    let taken = select array::len(got) { 0 => never(), _ => got };
+    sys::time::after_idle(duration: 200.ms, taken) ~ got
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(7)])
+}; FuseExpect::Jit);
 
 run!(net_on_write_function_refused, r#"{
     let got = 0;

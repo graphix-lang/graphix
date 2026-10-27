@@ -2,7 +2,8 @@ use crate::lib_tests::struct_field;
 use anyhow::Result;
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;
-use tokio::{fs, time::Duration};
+use std::time::{Duration, SystemTime};
+use tokio::fs;
 
 run_with_tempdir! {
     name: test_is_file_basic,
@@ -240,26 +241,32 @@ run_with_tempdir! {
     }
 }
 
-// CR claude for claude: [test-gap/low] test_metadata_timestamps asserts only that
-// accessed, created and modified exist. They are `[datetime, null]` fields, so they
-// always exist, and a metadata builtin that returned null or a constant for all three
-// would pass. Assert that `modified` is a Value::DateTime no earlier than a time taken
-// before the setup's write, and drop the sleep, which affects nothing. Found by
-// reading; the builtin's real output was checked with graphix (it returns datetimes
-// today). (tests-lib-b1-07)
+const ACCESSED: u64 = 1_000_000_000;
+const MODIFIED: u64 = 1_200_000_000;
+
 run_with_tempdir! {
     name: test_metadata_timestamps,
     code: r#"sys::fs::metadata("{}")"#,
     setup: |temp_dir| {
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "content").await?;
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        std::fs::File::options().write(true).open(&test_file)?.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(SystemTime::UNIX_EPOCH + Duration::from_secs(ACCESSED))
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(MODIFIED)),
+        )?;
         test_file
     },
     expect: |v: Value| -> Result<()> {
-        assert!(struct_field(&v, "accessed").is_some(), "missing accessed field");
-        assert!(struct_field(&v, "created").is_some(), "missing created field");
-        assert!(struct_field(&v, "modified").is_some(), "missing modified field");
-        Ok(())
+        let at = |name: &str, secs: u64| match struct_field(&v, name) {
+            Some(Value::DateTime(d)) => assert_eq!(d.timestamp(), secs as i64, "{name}"),
+            f => panic!("expected {name} to be a datetime, got: {f:?}"),
+        };
+        at("accessed", ACCESSED);
+        at("modified", MODIFIED);
+        match struct_field(&v, "created") {
+            Some(Value::DateTime(_) | Value::Null) => Ok(()),
+            f => panic!("expected created to be a datetime or null, got: {f:?}"),
+        }
     }
 }
