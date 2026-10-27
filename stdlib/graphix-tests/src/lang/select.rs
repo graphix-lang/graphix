@@ -3417,6 +3417,27 @@ run!(open_member_beside_an_error_refused, r#"{
   f(1)
 }"#, refused("annotate it"); FuseExpect::None);
 
+// A cell's bound holds every value of it, so a select over a bounded
+// parameter tests and covers against the bound.
+run!(select_over_a_bounded_quantifier, r#"{
+  let tp = 'a: (i64, string) |t: 'a| -> i64 select t { (n, _) => n };
+  let st = 'a: {x: i64} |s: 'a| -> i64 select s { {x} => x };
+  let vb = 'a: [`A(i64), `B] |v: 'a| -> i64 select v { `A(n) => n, `B => 0 };
+  let sl = 'a: Array<i64> |x: 'a| -> i64 select x { [h, ..] => h, [] => 0 };
+  tp((1, "z")) + st({x: 4}) + vb(`A(3)) + sl([3])
+}"#, is(Value::I64(11)); FuseExpect::Jit);
+
+run!(select_over_a_bounded_quantifier_still_tells_forms, r#"{
+  let f = 'a: Array<[&i64, &string]> |x: 'a| -> i64 select x { Array<&i64> as a => 1, _ => 2 };
+  let y = "s";
+  f([&y])
+}"#, refused("annotate it"); FuseExpect::None);
+
+run!(select_over_a_bounded_quantifier_still_covers, r#"{
+  let sl = 'a: Array<i64> |x: 'a| -> i64 select x { [h, ..] => h };
+  sl([3])
+}"#, refused("the slice arms leave length 0 of Array<i64> uncovered"); FuseExpect::None);
+
 // A result's success type is never an error (`NoError`), so its error arm
 // tells it apart.
 run!(open_result_success_told_from_its_error, r#"{

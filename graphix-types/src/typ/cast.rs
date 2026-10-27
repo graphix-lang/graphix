@@ -1999,7 +1999,7 @@ const SHARED_PRIMS: BitFlags<Typ> = make_bitflags!(Typ::{Map | Error | Array});
 // t-cast-setops-03 (L1-b04).
 fn shares_form(env: &Env, t: &Type) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
-        // CR claude for claude: [bug/high] A Rust-backed abstract's values carry only
+        // XCR claude for claude: [bug/high] A Rust-backed abstract's values carry only
         // its id, so another instantiation of it shares its form, as rep_collision's
         // Abstract arm already says. Answering false here makes open_collision accept
         // an open member beside one. `|x: [db::Tree<string, i64>, 'a]| select x {
@@ -2015,6 +2015,9 @@ fn shares_form(env: &Env, t: &Type) -> bool {
         // lang::select::open_member_beside_a_rust_abstract_refused and
         // open_member_beside_a_rust_abstract_in_a_dispatch_refused (db::Tree<string,
         // i64> beside an open member).
+        // 2026-10-26 claude: Verified 2026-10-26 on the lane1 tree: the pins named
+        // above are in stdlib/graphix-tests/src/lang/select.rs and pass; the review of
+        // this fix rides x-typecheck-patterns-04's XCR.
         Some(Type::Abstract { id, params }) => {
             !params.is_empty() && !env.abstract_reps.contains_key(id)
         }
@@ -2037,15 +2040,23 @@ pub enum Open {
     Unknown,
 }
 
-/// The pair `(a, b)` when one is an open cell [`Open::Unknown`] reads as
-/// colliding with the other.
-fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
+/// Why one of `a` and `b`, an open cell [`Open::Unknown`] reads as any
+/// type it may yet bind, collides with the other: it may share the
+/// other's form, or, `ordered`, be another numeric type. A bound that is
+/// a type holds every value of the cell, so a cell with such bounds
+/// collides only where each of them does.
+fn open_collision(
+    env: &Env,
+    seen: &mut RepSeen,
+    ordered: bool,
+    a: &Type,
+    b: &Type,
+) -> Option<Indiscernible> {
     let open = |t: &Type| match t {
         Type::TVar(tv) => tv.open_cell(),
         _ => None,
     };
-    // a `NoError` cell is never an error, so it shares no error's form
-    // CR claude for claude: [bug/medium] The open-member rule looks past a primitive
+    // XCR claude for claude: [bug/medium] The open-member rule looks past a primitive
     // bound only (prims_only). A cell with a structural bound is still read as any
     // type. `'a: (i64, string) |t: 'a| select t { (n, _) => n }` is refused with "a
     // type variable there isn't known here and may share (i64, Any)'s runtime form:
@@ -2058,47 +2069,62 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
     // deref_typ! does. probe:
     // design/review-2026-10-26/repro/x-rerun-3-bounded-quantifier-select.gx
     // (x-rerun-3-04)
-    let shares = |cell: &super::TVar, t: &Type| {
-        let bounds = cell.cell_constraints();
-        shares_form(env, t)
-            && !(bounds.contains(&Type::NoError) && error_only(env, t))
-            && !bounds
-                .iter()
-                .any(|b| prims_only(env, b).is_some_and(|p| !holds_prims(env, t, p)))
-    };
-    let collides = match (open(a), open(b)) {
-        (Some(x), Some(y)) => x.cell_addr() != y.cell_addr(),
-        (Some(x), None) => shares(&x, b),
-        (None, Some(y)) => shares(&y, a),
-        (None, None) => false,
-    };
-    collides.then(|| (a.clone(), b.clone()))
-}
-
-/// The primitive tags of `t` when every value of it is a primitive
-/// (`Number`, `Int`).
-fn prims_only(env: &Env, t: &Type) -> Option<BitFlags<Typ>> {
-    ensure_sufficient(|| match rep_head(env, t).as_deref() {
-        Some(Type::Primitive(p)) => Some(*p),
-        Some(Type::Set(ts)) => ts
-            .iter()
-            .try_fold(BitFlags::empty(), |acc, t| prims_only(env, t).map(|p| acc | p)),
-        _ => None,
-    })
-}
-
-/// Whether a value of `t` may carry one of the primitive tags `p`.
-fn holds_prims(env: &Env, t: &Type, p: BitFlags<Typ>) -> bool {
-    ensure_sufficient(|| match rep_head(env, t).as_deref() {
-        None => true,
-        Some(Type::Bottom) => false,
-        Some(Type::Primitive(q)) => q.intersects(p),
-        Some(Type::Set(ts)) => ts.iter().any(|t| holds_prims(env, t, p)),
-        Some(h @ (Type::Map { .. } | Type::Error(_) | Type::Array(_))) => {
-            rep_prims(h).intersects(p)
+    // 2026-10-26 claude: open_collision reads an open cell through its typed bounds
+    // (TVar::typed_bounds: its constraints a runtime test can see; a cell collides only
+    // where each bound does), which also replaces the prims_only filter there; Reach
+    // builds its slice ladders from an open cell's one typed bound. The repro prints
+    // (1, 4, 3, 3). Pins: lang::select::select_over_a_bounded_quantifier (fails with
+    // either half undone), select_over_a_bounded_quantifier_still_tells_forms,
+    // select_over_a_bounded_quantifier_still_covers. A whole capture over such a cell
+    // is still typed from the pattern, not the cell: bounded-capture-01.
+    let pair = || Some(Indiscernible::Pair(a.clone(), b.clone()));
+    let mut beside = |cell: &super::TVar, t: &Type| {
+        // a `NoError` cell is never an error, so it shares no error's form
+        if cell.cell_constraints().contains(&Type::NoError) && error_only(env, t) {
+            return None;
         }
-        Some(_) => p.intersects(SHARED_PRIMS | Typ::Abstract),
-    })
+        let typed = cell.typed_bounds(env);
+        if typed.is_empty() {
+            return match shares_form(env, t) {
+                true => pair(),
+                false => (ordered && holds_number(env, t))
+                    .then(|| Indiscernible::OpenNumber(t.clone())),
+            };
+        }
+        let mut why = None;
+        for b in typed.iter() {
+            why = Some(rep_collision(env, seen, Open::Unknown, ordered, t, b)?);
+        }
+        match why? {
+            Indiscernible::Numbers(_) => Some(Indiscernible::OpenNumber(t.clone())),
+            _ => pair(),
+        }
+    };
+    match (open(a), open(b)) {
+        (Some(x), Some(y)) => (x.cell_addr() != y.cell_addr()).then(pair).flatten(),
+        (Some(x), None) => beside(&x, b),
+        (None, Some(y)) => beside(&y, a),
+        (None, None) => None,
+    }
+}
+
+/// Whether a value of `t` may be a number.
+fn holds_number(env: &Env, t: &Type) -> bool {
+    match rep_head(env, t).as_deref() {
+        Some(Type::Primitive(p)) => p.intersects(Typ::number()),
+        _ => false,
+    }
+}
+
+impl TVar {
+    /// The bounds of this cell that are types, each holding every value
+    /// of it: its constraints less the marker bounds (`Concrete`, a
+    /// trait) a runtime test can't see.
+    pub fn typed_bounds(&self, env: &Env) -> SmallVec<[Type; 1]> {
+        let mut bounds = self.cell_constraints();
+        bounds.retain(|b| rep_head(env, b).is_some());
+        bounds
+    }
 }
 
 /// Whether every value of `t` is an error.
@@ -2124,14 +2150,62 @@ fn rep_prims(t: &Type) -> BitFlags<Typ> {
 
 /// The applications a walk has expanded, each once, and the path of
 /// applications it is inside, each with its parameters' size.
-struct Expanded<K: std::hash::Hash + Eq + 'static> {
+struct Expanded<
+    K: std::hash::Hash + Eq + 'static,
+    N: std::hash::Hash + Eq + 'static = usize,
+> {
     seen: LPooled<AHashSet<K>>,
     path: LPooled<Vec<((usize, usize), usize)>>,
+    /// The shared nodes (or pairs of them) the walk found nothing under,
+    /// so a type that shares them (a DAG) is walked once.
+    clear: LPooled<AHashSet<N>>,
+    /// The heads the walk built, alive until it ends: a node `clear`
+    /// holds keeps its address.
+    built: LPooled<Vec<Type>>,
 }
 
-impl<K: std::hash::Hash + Eq + 'static> Default for Expanded<K> {
+impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Default
+    for Expanded<K, N>
+{
     fn default() -> Self {
-        Self { seen: LPooled::take(), path: LPooled::take() }
+        Self {
+            seen: LPooled::take(),
+            path: LPooled::take(),
+            clear: LPooled::take(),
+            built: LPooled::take(),
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static>
+    Expanded<K, N>
+{
+    /// `body` over the node `node`, unless the walk found nothing under
+    /// it already. Whatever a node first found nothing under, it finds
+    /// nothing under again: every application in it was expanded then,
+    /// and is not again.
+    fn once<R>(
+        &mut self,
+        node: Option<N>,
+        body: impl FnOnce(&mut Self) -> Option<R>,
+    ) -> Option<R> {
+        if node.as_ref().is_some_and(|n| self.clear.contains(n)) {
+            return None;
+        }
+        let r = body(self);
+        if r.is_none()
+            && let Some(n) = node
+        {
+            self.clear.insert(n);
+        }
+        r
+    }
+
+    /// Keep a head the walk built alive until it ends.
+    fn keep(&mut self, head: Option<Cow<'_, Type>>) {
+        if let Some(Cow::Owned(t)) = head {
+            self.built.push(t)
+        }
     }
 }
 
@@ -2165,12 +2239,12 @@ const MAX_GROWTH: usize = 4;
 /// at every level does (`type N<'a> = [null, ('a, N<Array<'a>>)]`), which
 /// no walk finishes. Parameters that stop growing on a path come from
 /// finitely many types, so a walk ends.
-fn walk<K: std::hash::Hash + Eq + 'static, R>(
-    seen: &mut Expanded<K>,
+fn walk<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static, R>(
+    seen: &mut Expanded<K, N>,
     at: Option<At<K>>,
     again: R,
     grows: impl FnOnce() -> R,
-    body: impl FnOnce(&mut Expanded<K>) -> R,
+    body: impl FnOnce(&mut Expanded<K, N>) -> R,
 ) -> R {
     let Some((k, def, size)) = at else { return body(seen) };
     if !seen.seen.insert(k) {
@@ -2186,7 +2260,7 @@ fn walk<K: std::hash::Hash + Eq + 'static, R>(
 }
 
 /// Pairs already on the walk; a finite witness never revisits one.
-type RepSeen = Expanded<(Type, Type)>;
+type RepSeen = Expanded<(Type, Type), (usize, usize)>;
 
 fn pair_at(a: &Type, b: &Type) -> Option<At<(Type, Type)>> {
     (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_))).then(|| {
@@ -2242,10 +2316,14 @@ fn rep_overlaps(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// Two parts of `a` and `b` a runtime test can't tell apart, or,
+/// `ordered`, two numeric types at one position, whose values have no
+/// order between them.
 fn rep_collision(
     env: &Env,
     seen: &mut RepSeen,
     open: Open,
+    ordered: bool,
     a: &Type,
     b: &Type,
 ) -> Option<Indiscernible> {
@@ -2259,78 +2337,94 @@ fn rep_collision(
         walk(seen, pair_at(a, b), None, grows, |seen| {
             let pairs =
                 |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
-                    xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
+                    xs.map(|(x, y)| rep_collision(env, seen, open, ordered, x, y))
                         .find(Option::is_some)
                         .flatten()
                 };
             let (ha, hb) = (rep_head(env, a), rep_head(env, b));
-            let (Some(ha), Some(hb)) = (ha.as_deref(), hb.as_deref()) else {
-                // an open side meets each member of a union on the other
-                return match (open, ha.as_deref(), hb.as_deref()) {
-                    (Open::Benign, _, _) => None,
-                    (Open::Unknown, _, Some(Type::Set(ts))) => {
-                        pairs(seen, &mut ts.iter().map(|t| (a, t)))
-                    }
-                    (Open::Unknown, Some(Type::Set(ts)), _) => {
-                        pairs(seen, &mut ts.iter().map(|t| (t, b)))
-                    }
-                    (Open::Unknown, _, _) => {
-                        open_collision(env, a, b).map(|(a, b)| Indiscernible::Pair(a, b))
-                    }
+            let node = ha
+                .as_deref()
+                .and_then(super::node_addr)
+                .zip(hb.as_deref().and_then(super::node_addr));
+            let r = seen.once(node, |seen| {
+                let (Some(ha), Some(hb)) = (ha.as_deref(), hb.as_deref()) else {
+                    // an open side meets each member of a union on the other
+                    return match (open, ha.as_deref(), hb.as_deref()) {
+                        (Open::Benign, _, _) => None,
+                        (Open::Unknown, _, Some(Type::Set(ts))) => {
+                            pairs(seen, &mut ts.iter().map(|t| (a, t)))
+                        }
+                        (Open::Unknown, Some(Type::Set(ts)), _) => {
+                            pairs(seen, &mut ts.iter().map(|t| (t, b)))
+                        }
+                        (Open::Unknown, _, _) => open_collision(env, seen, ordered, a, b),
+                    };
                 };
-            };
-            let (a, b) = (ha, hb);
-            let mut pairs =
-                |xs: &mut dyn Iterator<Item = (&Type, &Type)>| pairs(seen, xs);
-            match (a, b) {
-                (Type::Bottom, _) | (_, Type::Bottom) => None,
-                (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
-                (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
-                (Type::Primitive(_), Type::Primitive(_)) => None,
-                (Type::Array(x), Type::Array(y))
-                | (Type::List(x), Type::List(y))
-                | (Type::Error(x), Type::Error(y)) => {
-                    pairs(&mut std::iter::once((&**x, &**y)))
+                let (a, b) = (ha, hb);
+                let mut pairs =
+                    |xs: &mut dyn Iterator<Item = (&Type, &Type)>| pairs(seen, xs);
+                match (a, b) {
+                    (Type::Bottom, _) | (_, Type::Bottom) => None,
+                    (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
+                    (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
+                    (Type::Primitive(p), Type::Primitive(q)) => {
+                        let numbers = (*p | *q) & Typ::number();
+                        (ordered && numbers.len() > 1)
+                            .then(|| Indiscernible::Numbers(Type::Primitive(numbers)))
+                    }
+                    (Type::Array(x), Type::Array(y))
+                    | (Type::List(x), Type::List(y))
+                    | (Type::Error(x), Type::Error(y)) => {
+                        pairs(&mut std::iter::once((&**x, &**y)))
+                    }
+                    (
+                        Type::Map { key: k0, value: v0 },
+                        Type::Map { key: k1, value: v1 },
+                    ) => pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter()),
+                    (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
+                        pairs(&mut x.iter().zip(y.iter()))
+                    }
+                    (Type::Struct(x), Type::Struct(y))
+                        if x.len() == y.len()
+                            && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
+                    {
+                        pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
+                    }
+                    (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
+                        if x == y && xa.len() == ya.len() =>
+                    {
+                        pairs(&mut xa.iter().zip(ya.iter()))
+                    }
+                    // the tag tells them apart
+                    (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
+                    // a Graphix-minted value carries its params and the test compares
+                    // them; a Rust-backed one carries only its id, so two of its
+                    // instantiations share one runtime form
+                    (
+                        a @ Type::Abstract { id: x, params: px },
+                        b @ Type::Abstract { id: y, params: py },
+                    ) if x == y => {
+                        let rust_backed = env.abstract_reps.get(x).is_none();
+                        let same = px.len() == py.len()
+                            && px
+                                .iter()
+                                .zip(py.iter())
+                                .all(|(p, q)| union_identical(p, q));
+                        (rust_backed && !same)
+                            .then(|| Indiscernible::Pair(a.clone(), b.clone()))
+                    }
+                    // a runtime test can't tell a reference's mutability
+                    (Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y => {
+                        None
+                    }
+                    (Type::Fn(x), Type::Fn(y)) if x == y => None,
+                    (a, b) => rep_overlaps(a, b)
+                        .then(|| Indiscernible::Pair(a.clone(), b.clone())),
                 }
-                (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                    pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter())
-                }
-                (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
-                    pairs(&mut x.iter().zip(y.iter()))
-                }
-                (Type::Struct(x), Type::Struct(y))
-                    if x.len() == y.len()
-                        && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
-                {
-                    pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
-                }
-                (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
-                    if x == y && xa.len() == ya.len() =>
-                {
-                    pairs(&mut xa.iter().zip(ya.iter()))
-                }
-                // the tag tells them apart
-                (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
-                // a Graphix-minted value carries its params and the test compares
-                // them; a Rust-backed one carries only its id, so two of its
-                // instantiations share one runtime form
-                (
-                    a @ Type::Abstract { id: x, params: px },
-                    b @ Type::Abstract { id: y, params: py },
-                ) if x == y => {
-                    let rust_backed = env.abstract_reps.get(x).is_none();
-                    let same = px.len() == py.len()
-                        && px.iter().zip(py.iter()).all(|(p, q)| union_identical(p, q));
-                    (rust_backed && !same)
-                        .then(|| Indiscernible::Pair(a.clone(), b.clone()))
-                }
-                // a runtime test can't tell a reference's mutability
-                (Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y => None,
-                (Type::Fn(x), Type::Fn(y)) if x == y => None,
-                (a, b) => {
-                    rep_overlaps(a, b).then(|| Indiscernible::Pair(a.clone(), b.clone()))
-                }
-            }
+            });
+            seen.keep(ha);
+            seen.keep(hb);
+            r
         })
     })
 }
@@ -2338,25 +2432,18 @@ fn rep_collision(
 impl Type {
     /// Two parts, one of `self` and one of `t`, that are different types
     /// with one runtime form: a value of either passes a runtime test for
-    /// the other (a tuple, struct, list or payload variant and an array; a
-    /// bare variant and a string; two references; two function types). A
-    /// test that tells them apart can't tell such a value's type.
-    // CR claude for claude: [doc-drift/low] The doc above still lists
-    // tuple/struct/list/variant against an array, and a bare variant against a string,
-    // as sharing a runtime form. Since the kind markers they are told apart, and a
-    // select testing each of them is accepted and runs correctly. List what collides
-    // now: two references, two function types, a Rust-backed abstract at two
-    // instantiations, a primitive against a head whose form holds it. probe:
-    // /home/eric/tmp/review-2026-10-26/review/work/x-typecheck-patterns/105_forms.gx
-    // (x-typecheck-patterns-08)
+    /// the other (two references; two function types; a Rust-backed
+    /// abstract at two instantiations; a primitive and a head whose values
+    /// carry it, `array` and `Array<i64>`). A test that tells them apart
+    /// can't tell such a value's type.
     pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), Open::Benign, self, t)
+        rep_collision(env, &mut RepSeen::default(), Open::Benign, false, self, t)
     }
 
     /// [`Self::rep_collision`] with an open cell read as any type it may
     /// yet bind ([`Open::Unknown`]): what a definition must rule out.
     pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), Open::Unknown, self, t)
+        rep_collision(env, &mut RepSeen::default(), Open::Unknown, false, self, t)
     }
 }
 
@@ -2369,6 +2456,9 @@ pub enum Indiscernible {
     /// A type holding two numeric types, under `Ordered`: their values
     /// have no order between them.
     Numbers(Type),
+    /// A numeric type beside an open cell, under `Ordered`: the cell may
+    /// yet be another numeric type.
+    OpenNumber(Type),
     /// The name of a definition whose parameters grow as it recurses, so
     /// no walk decides it.
     Grows(ModPath),
@@ -2395,7 +2485,9 @@ impl Indiscernible {
                 test.resolve_tvars(),
                 rest.resolve_tvars()
             ),
-            Indiscernible::Unordered(_) | Indiscernible::Numbers(_) => {
+            Indiscernible::Unordered(_)
+            | Indiscernible::Numbers(_)
+            | Indiscernible::OpenNumber(_) => {
                 unreachable!("a runtime test is no order")
             }
             Indiscernible::Abstract(_) => {
@@ -2419,6 +2511,11 @@ impl Indiscernible {
     pub const NUMBERS: &str = "more than one numeric type: values of two numeric \
                                types have no order between them; cast them to one";
 
+    /// Why a type holding a numeric type beside an open cell has no order.
+    pub const OPEN_NUMBER: &str = "beside a type variable that isn't known here and \
+                                   may be another numeric type, whose values have no \
+                                   order with these: annotate it";
+
     /// What an unordered type is, and how `==` and `!=` compare it.
     pub fn unordered_kind(t: &Type) -> (&'static str, &'static str) {
         match t {
@@ -2428,7 +2525,7 @@ impl Indiscernible {
     }
 }
 
-// CR claude for claude: [perf/medium] [perf/medium] This walk has no memo of shared
+// XCR claude for claude: [perf/medium] [perf/medium] This walk has no memo of shared
 // nodes: `Expanded` covers only Type::Ref expansion, so a DAG type is walked once per
 // path to each node. A let chain of pairs makes `xN == xN`, `uniq(xN)` or `{xN => 1}`
 // cost 2^N in the check: N=26 takes 3.4 s, while `[xN, xN]` stays at 0.03 s. Every
@@ -2437,6 +2534,15 @@ impl Indiscernible {
 // recursive decision, as Type::holds now does, and give rep_collision's RepSeen the
 // same treatment. probe: design/review-2026-10-26/repro/c-lib-discernible-dag.sh
 // (c-lib-02)
+// 2026-10-27 claude: rep_ambiguity and rep_collision remember the shared nodes (a pair
+// of them for rep_collision) a walk found nothing under (Expanded::once; sound because
+// a node walked to nothing has every application in it expanded, and an expanded one
+// is not walked again), and keep each head they build alive until the walk ends
+// (Expanded::keep). x60 == x60, x60 < x60, uniq(x60), {x60 => 1} and
+// array::sort([x60]) check in about 1.2 s, as the bare value does. Pin: graphix-shell
+// deep_nesting comparisons_over_a_shared_type_dag_check_in_linear_time (fails past 15
+// s with the memo undone). Not fixed: select x60 { v => 1 } still does not check in 30
+// s, a walk in the select's check the repro's header names.
 fn rep_ambiguity(
     env: &Env,
     seen: &mut Expanded<Type>,
@@ -2451,8 +2557,9 @@ fn rep_ambiguity(
             _ => unreachable!("only a reference expands"),
         };
         walk(seen, ref_at(t), None, grows, |seen| {
-            let t = rep_head(env, t)?;
-            let t = &*t;
+            let head = rep_head(env, t)?;
+            let r = seen.once(super::node_addr(&head), |seen| {
+            let t = &*head;
             let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
                 ts.map(|t| rep_ambiguity(env, seen, open, keys_only, refs, t))
                     .find(Option::is_some)
@@ -2477,7 +2584,7 @@ fn rep_ambiguity(
                 Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
                     Some(Indiscernible::Numbers(t.clone()))
                 }
-                // CR claude for claude: [bug/medium] The Numbers test sees only
+                // XCR claude for claude: [bug/medium] The Numbers test sees only
                 // primitive members, so a union whose members hold two numeric types at
                 // one position inside a constructor passes Ordered whenever
                 // normalization did not merge the members: [Array<i64>, Array<f64>],
@@ -2490,7 +2597,15 @@ fn rep_ambiguity(
                 // ordering_refuses_two_numeric_types. probe:
                 // design/review-2026-10-26/repro/c-data-map-ordered-union-numbers.gx
                 // (c-data-map-02)
-                // CR claude for claude: [bug/high] The two-numeric-types test counts
+                // 2026-10-27 claude: The Numbers test is pairwise: rep_collision takes
+                // ordered, and under it two primitives at one position whose numeric
+                // types number more than one are Numbers; the Set arm runs it over each
+                // pair of members (it already did for the form test), so members of one
+                // constructor are compared position by position and the prims_only fold
+                // is gone. Pins: lang::types::ordering_refuses_two_numeric_types gained
+                // the array, map and struct cases (each fails with the pairwise test
+                // undone).
+                // XCR claude for claude: [bug/high] The two-numeric-types test counts
                 // only members prims_only can read, so an open member beside a numeric
                 // one is dropped. [i64, 'y] then passes Ordered at a generic
                 // definition's settle, and the call that binds 'y to f64 is an
@@ -2502,18 +2617,15 @@ fn rep_ambiguity(
                 // it' refusal fires at the definition. probe:
                 // design/review-2026-10-26/repro/x-typecheck-generics-ordered-open-beside-number.gx
                 // (x-typecheck-generics-02)
-                Type::Set(ts)
-                    if ordered
-                        && (ts
-                            .iter()
-                            .filter_map(|m| prims_only(env, m))
-                            .fold(BitFlags::empty(), |acc, p| acc | p)
-                            & Typ::number())
-                        .len()
-                            > 1 =>
-                {
-                    Some(Indiscernible::Numbers(t.clone()))
-                }
+                // 2026-10-27 claude: Under Open::Unknown and an order, an open member beside a
+                // numeric one is Indiscernible::OpenNumber (open_collision: with no typed bound the
+                // cell may be any number; with typed bounds, only where each bound holds another
+                // numeric type), refused at the definition with 'may be another numeric type ...
+                // annotate it'; [i64, 'y: Int] is refused too, [i64, 'y: i64] and [string, 'y:
+                // string] are not. Pins:
+                // lang::types::ordering_refuses_an_open_member_beside_a_number (the repro's sort, <
+                // and map key, fails with the rule undone),
+                // ordering_takes_a_member_that_is_one_number.
                 Type::Set(ts) => {
                     if !keys_only {
                         for (i, a) in ts.iter().enumerate() {
@@ -2522,6 +2634,7 @@ fn rep_ambiguity(
                                     env,
                                     &mut RepSeen::default(),
                                     open,
+                                    ordered,
                                     a,
                                     b,
                                 );
@@ -2563,19 +2676,25 @@ fn rep_ambiguity(
                         None,
                         || None,
                         |seen| rep_ambiguity(env, seen, open, keys_only, refs, &rep),
-                    )?;
+                    );
+                    seen.keep(Some(Cow::Owned(rep)));
+                    let inside = inside?;
                     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
                     // an unknown part is judged as it would be outside
                     Some(match inside {
                         Indiscernible::Pair(a, b) if open(&a) || open(&b) => {
                             Indiscernible::Pair(a, b)
                         }
+                        Indiscernible::OpenNumber(n) => Indiscernible::OpenNumber(n),
                         Indiscernible::Grows(n) => Indiscernible::Grows(n),
                         _ => Indiscernible::Abstract(t.clone()),
                     })
                 }
                 _ => None,
             }
+            });
+            seen.keep(Some(head));
+            r
         })
     })
 }
@@ -2642,6 +2761,11 @@ impl Type {
                     n.resolve_tvars(),
                     Indiscernible::NUMBERS
                 ),
+                Indiscernible::OpenNumber(n) => anyhow::anyhow!(
+                    "{what} holds {}, {}",
+                    n.resolve_tvars(),
+                    Indiscernible::OPEN_NUMBER
+                ),
                 Indiscernible::Abstract(a) => {
                     anyhow::anyhow!(
                         "{what} holds {}",
@@ -2649,32 +2773,6 @@ impl Type {
                     )
                 }
             }
-        })
-    }
-
-    /// Hand `bound` (`Discernible` or `Ordered`) to every open cell a
-    /// comparison of this type reaches.
-    // CR claude for claude: [perf/medium] This walk follows every binding and child
-    // with no seen set, so a bind of a Discernible/Ordered cell to a shared type DAG
-    // takes time exponential in its depth. Type::indiscernible (rep_ambiguity), which
-    // judges the comparison, has the same problem. With `let x1 = (x0, x0); ..; let x24
-    // = (x23, x23)`, `uniq(x24)` checks in 1.7 s and `x24 == x24` in 0.9 s, doubling
-    // per level, while the bare value takes 40 ms. Give this walk a seen set of cells
-    // and shared nodes, as require_everywhere has, and give rep_ambiguity a memo of
-    // shared nodes judged benign, as Type::holds now has. probe:
-    // design/review-2026-10-26/repro/t-tvar-compared-dag-exponential.sh (t-tvar-04)
-    pub(crate) fn require_compared(
-        &self,
-        bound: &Type,
-        hand: &mut dyn FnMut(&TVar, Type),
-    ) {
-        ensure_sufficient(|| match self {
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_compared(bound, hand),
-                None => hand(tv, bound.clone()),
-            },
-            Type::ByRef(..) | Type::Fn(_) => (),
-            t => t.for_each_child(&mut |c| c.require_compared(bound, hand)),
         })
     }
 }
@@ -2861,15 +2959,7 @@ fn printed(v: &Value) -> Option<Value> {
         Value::Bool(b) => format_compact!("{b}"),
         Value::DateTime(d) => format_compact!("{}", d.to_rfc3339()),
         Value::Duration(d) => format_compact!("{}", d.as_secs_f64()),
-        // CR claude for claude: [bug/low] For a decimal this goes through
-        // netidx-value's literal printer, which appends a `.` to a whole decimal, so
-        // `cast<string>(decimal:5.)` is "5." while `cast<string>(5.0)` is "5" and json
-        // writes "5". CLAUDE.md promises a number prints plainly. Format
-        // `Value::Decimal` with rust_decimal's own Display here, as the
-        // decimal-to-float arms of `convert` already do; `parse` reads "5" back
-        // exactly. probe:
-        // design/review-2026-10-26/repro/x-formatter-decimal-string-trailing-dot.gx
-        // (x-formatter-04)
+        Value::Decimal(d) => format_compact!("{d}"),
         v if Typ::get(v).is_number() => format_compact!("{}", NakedValue(v)),
         _ => return None,
     };

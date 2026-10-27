@@ -669,7 +669,15 @@ impl Reach {
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();
-        let ladders = Ladder::of(env, &atype)?;
+        // an open cell's slices count against its typed bound
+        let bounds = match &atype {
+            Type::TVar(tv) => tv.open_cell().map(|c| c.typed_bounds(env)),
+            _ => None,
+        };
+        let ladders = match bounds.as_deref() {
+            Some([b]) => Ladder::of(env, b)?,
+            _ => Ladder::of(env, &atype)?,
+        };
         Ok(Self {
             atype,
             ladders,

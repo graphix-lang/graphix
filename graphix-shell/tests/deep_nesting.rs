@@ -663,6 +663,27 @@ fn shared_type_dags_check_in_linear_time() {
     }
 }
 
+/// Comparing, ordering and keying a value whose type is a pair DAG checks
+/// in time linear in its depth: the Discernible and Ordered judgments and
+/// the bounds they hand its cells walk each shared node once.
+#[test]
+fn comparisons_over_a_shared_type_dag_check_in_linear_time() {
+    const DEPTH: usize = 60;
+    let mut chain = String::from("let x0 = 1;\n");
+    for i in 1..=DEPTH {
+        chain.push_str(&format!("let x{i} = (x{}, x{});\n", i - 1, i - 1));
+    }
+    let x = format!("x{DEPTH}");
+    for use_ in [
+        format!("{x} == {x}"),
+        format!("{x} < {x}"),
+        format!("uniq({x})"),
+        format!("{{{x} => 1}}"),
+    ] {
+        checks_within(&format!("{chain}{use_}"), std::time::Duration::from_secs(15))
+    }
+}
+
 // An instance's types are its definition's, taken row by row: a shared
 // node is taken once, so a call of a definition building a DAG of pairs
 // elaborates in time linear in the DAG.

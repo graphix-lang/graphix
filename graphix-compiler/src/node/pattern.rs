@@ -2044,6 +2044,14 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// as they were before the narrowing, at a time, so it takes the
     /// union of its part of each member the arm can match, where a plain
     /// bind takes the union of its position's parts.
+    // CR claude for claude: [bug/medium] A whole capture over an open rigid cell
+    // with a typed bound takes the pattern's fresh cells, not the cell:
+    // `'a: (i64, string) |x: 'a| -> 'a select x { v@ (n, _) => v }` is refused
+    // ("'a: unbound within (i64, string) does not contain ('_1: unbound, '_2:
+    // unbound)"), though every value reaching the arm is an 'a. The select's form
+    // test and coverage read the cell through its bound (x-rerun-3-04); the
+    // narrowing here does not, since `reaching` has no members. A whole capture
+    // at the scrutinee's position should be the cell itself. (bounded-capture-01)
     pub(super) fn bind_narrowed(
         &self,
         env: &Env,

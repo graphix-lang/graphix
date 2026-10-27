@@ -857,12 +857,18 @@ pub fn require_bounds(cons: &[Type], t: &Type) {
 pub(crate) fn handed_bounds(cons: &[Type], t: &Type, hand: &mut dyn FnMut(&TVar, Type)) {
     for c in cons {
         match c {
-            Type::Concrete => t.require_everywhere(c, false, hand, &mut LPooled::take()),
-            Type::Data => t.require_everywhere(c, false, hand, &mut LPooled::take()),
+            Type::Concrete | Type::Data => {
+                let skips = |t: &Type| matches!(t, Type::Fn(_));
+                t.require_everywhere(c, &skips, hand, &mut LPooled::take())
+            }
             Type::Singleton => t.require_singleton(hand),
             Type::OneNumber => t.require_one_number(hand),
             Type::NoError => t.require_no_error(hand),
-            Type::Discernible | Type::Ordered => t.require_compared(c, hand),
+            // what a comparison of the type reaches
+            Type::Discernible | Type::Ordered => {
+                let skips = |t: &Type| matches!(t, Type::Fn(_) | Type::ByRef(..));
+                t.require_everywhere(c, &skips, hand, &mut LPooled::take())
+            }
             _ => (),
         }
     }
@@ -1893,28 +1899,40 @@ impl Type {
         !self.has_unbound() && self.concrete_holds(env)
     }
 
-    /// Hand `bound` to every open cell the type reaches, a function's
-    /// parts only when `in_fns`; each cell and shared node once.
+    /// Hand `bound` to every open cell the type reaches, never under a
+    /// part `skips` names; each cell and shared node once.
+    // XCR claude for claude: [perf/medium] This walk follows every binding and child
+    // with no seen set, so a bind of a Discernible/Ordered cell to a shared type DAG
+    // takes time exponential in its depth. Type::indiscernible (rep_ambiguity), which
+    // judges the comparison, has the same problem. With `let x1 = (x0, x0); ..; let x24
+    // = (x23, x23)`, `uniq(x24)` checks in 1.7 s and `x24 == x24` in 0.9 s, doubling
+    // per level, while the bare value takes 40 ms. Give this walk a seen set of cells
+    // and shared nodes, as require_everywhere has, and give rep_ambiguity a memo of
+    // shared nodes judged benign, as Type::holds now has. probe:
+    // design/review-2026-10-26/repro/t-tvar-compared-dag-exponential.sh (t-tvar-04)
+    // 2026-10-27 claude: require_compared is gone: a Discernible or Ordered bound goes
+    // through require_everywhere, which walks each cell and shared node once, with a
+    // skip predicate (Fn and ByRef for a comparison, Fn for Concrete and Data) in place
+    // of its dead in_fns flag. The rep_ambiguity half is c-lib-02. Pin: graphix-shell
+    // deep_nesting comparisons_over_a_shared_type_dag_check_in_linear_time (fails past
+    // 15 s with the shared-node skip undone).
     fn require_everywhere(
         &self,
         bound: &Type,
-        in_fns: bool,
+        skips: &dyn Fn(&Type) -> bool,
         hand: &mut dyn FnMut(&TVar, Type),
         seen: &mut AHashSet<usize>,
     ) {
         ensure_sufficient(|| match self {
+            t if skips(t) => (),
             Type::TVar(tv) if !seen.insert(tv.cell_addr()) => (),
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_everywhere(bound, in_fns, hand, seen),
+                Some(b) => b.require_everywhere(bound, skips, hand, seen),
                 None => hand(tv, bound.clone()),
             },
             t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
-            Type::Fn(ft) if in_fns => ft.for_each_part(&mut |t, _| {
-                t.require_everywhere(bound, in_fns, hand, seen)
-            }),
-            Type::Fn(_) => (),
             t => {
-                t.for_each_child(&mut |c| c.require_everywhere(bound, in_fns, hand, seen))
+                t.for_each_child(&mut |c| c.require_everywhere(bound, skips, hand, seen))
             }
         })
     }

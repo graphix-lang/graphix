@@ -2781,6 +2781,16 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
                 n.resolve_tvars(),
                 Indiscernible::NUMBERS
             ),
+            (Discerned::Compared { .. }, Indiscernible::OpenNumber(n)) => bail!(
+                "can't order values of {typ}: it holds {}, {}",
+                n.resolve_tvars(),
+                Indiscernible::OPEN_NUMBER
+            ),
+            (_, Indiscernible::OpenNumber(n)) => bail!(
+                "a map key type can't hold {}, {}",
+                n.resolve_tvars(),
+                Indiscernible::OPEN_NUMBER
+            ),
             (_, Indiscernible::Unordered(r)) => {
                 let (kind, _) = Indiscernible::unordered_kind(&r);
                 bail!(

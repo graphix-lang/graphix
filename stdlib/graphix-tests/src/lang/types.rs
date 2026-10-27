@@ -744,6 +744,16 @@ run!(
     )
 );
 
+// A decimal prints plainly, as a float does, and reads back exactly.
+run!(
+    cast_prints_a_decimal_plainly,
+    r#"{
+  let s = cast<string>(decimal:5.)$;
+  (s == "5") && (cast<string>(decimal:1.25)$ == "1.25") && (cast<decimal>(s)$ == decimal:5.)
+}"#,
+    is(Value::Bool(true))
+);
+
 // A union cast keeps a held variant in the member it inhabits, as it
 // keeps a held tuple, and a struct field the data omits reads as null
 // through its type's Cast where the type takes null only that way.
@@ -2267,6 +2277,9 @@ async fn ordering_refuses_two_numeric_types() -> Result<()> {
         "{ let f = |a: Number, b: Number| a >= b; f(2.5, 1.5) }",
         "{ let t: Array<(string, [i64, f64])> = [(\"a\", 1)]; array::sort(t) }",
         "{ let m: Map<[i64, f64], string> = {}; m }",
+        "{ let a: [Array<i64>, Array<f64>] = [1]; let b: [Array<i64>, Array<f64>] = [0.5]; a < b }",
+        "{ let a: [Map<i64, string>, Map<f64, string>] = {1 => \"a\"}; array::sort([a]) }",
+        "{ let a: [{x: i64, y: string}, {x: f64, y: bool}] = {x: 1, y: \"a\"}; {a => 1} }",
     ] {
         match eval_modes(src, crate::TEST_REGISTER).await? {
             Err(msg) => {
@@ -2277,6 +2290,40 @@ async fn ordering_refuses_two_numeric_types() -> Result<()> {
     }
     Ok(())
 }
+
+// An open member beside a numeric one may yet be another numeric type, so
+// a definition that orders or keys by them is refused, as an open member
+// beside a type of a shared form is.
+#[tokio::test(flavor = "current_thread")]
+async fn ordering_refuses_an_open_member_beside_a_number() -> Result<()> {
+    for src in [
+        "{ let g = |y| array::sort([3, y, 1]); g(2.5) }",
+        "{ let h = |y| [3, y] < [1, y]; h(2.5) }",
+        "{ let k = |y| map::insert({}, [1, y], \"v\"); k(2.5) }",
+        "{ let g = 'y: Int |y: 'y| array::sort([3, y]); g(i32:2) }",
+    ] {
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => {
+                assert!(msg.contains("may be another numeric type"), "{src}: {msg}")
+            }
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
+
+// An annotated member, or an open one with a bound of one numeric type
+// or none, orders.
+run!(
+    ordering_takes_a_member_that_is_one_number,
+    r#"{
+  let g = |y: i64| array::sort([3, y, 1]);
+  let h = 'y: string |y: 'y| array::sort([y, "a"]);
+  let k = 'y: i64 |y: 'y| array::sort([3, y]);
+  g(2) == [1, 2, 3] && h("b") == ["a", "b"] && k(1) == [1, 3]
+}"#,
+    is(Value::Bool(true))
+);
 
 // `OneNumber` admits a nullable number of one numeric type.
 const ONE_NUMBER: &str = r#"{
