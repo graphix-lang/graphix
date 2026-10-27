@@ -24,7 +24,7 @@ use crate::{
     },
     typ::{
         Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
-        tvar::{InTask, TaskContext, TaskId, current_task, new_task},
+        tvar::{AtLevel, InTask, Level, TaskContext, TaskId, current_task, new_task},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1408,7 +1408,8 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
 
 /// Run a runtime bind `f` as a compile task of its own, in a settle
 /// frame of its own, and settle what it deferred when it returns: no
-/// statement boundary follows a bind at run time. A refused settle is a
+/// statement boundary follows a bind at run time. Its cells are top
+/// level, as a static bind's are. A refused settle is a
 /// compiler bug, logged. Binds in parallel branches run concurrently:
 /// one that changes a cell the program's compile created is a race.
 pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
@@ -1418,6 +1419,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     ctx.pending_settles.push(crate::SettleFrame::default());
     let names = ctx.pending_names.len();
     let _task = InTask::enter(new_task());
+    let _level = AtLevel::enter(Level::TOP);
     let res = {
         let _restore = Restore::replace(&RUNTIME_BIND, true);
         f(ctx)

@@ -1848,7 +1848,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             let mut generic = cells
                 .iter()
                 .filter(|(_, tv)| {
-                    // CR claude for claude: [bug/high] This counts bound cells as
+                    // XCR claude for claude: [bug/high] This counts bound cells as
                     // generic: Type::reached_cells inserts every cell it walks, bound
                     // ones included. At a run-time bind (a collection slot, a call
                     // through a function value), `let y = i + 1` holds the operator's
@@ -1859,6 +1859,12 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
                     // operator-initialized local inside an array::map callback. probe:
                     // design/review-2026-10-26/repro/x-refs-catchup-runtime-bind-mut-ref-refused.gx
                     // (x-refs-catchup-01)
+                    // 2026-10-26 claude: Same bug as (c-bind-01), fixed there: the cell was unbound
+                    // (the instance had not been typechecked yet) and Generic because a run-time
+                    // bind compiled at the thread's default level; with_runtime_settles now enters
+                    // Level::TOP, so filtering bound cells here was not needed (tried: it did not
+                    // fix the repro). Pin:
+                    // lang::byref::mut_reference_to_an_inferred_local_at_a_run_time_bind.
                     tv.level() == typ::tvar::Level::GENERIC && !tv.is_quantifier_rigid()
                 })
                 .peekable();

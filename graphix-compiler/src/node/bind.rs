@@ -1565,7 +1565,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 // instead, and pin the lambda-body case. probe:
                 // design/review-2026-10-26/repro/c-node-mod-mut-ref-in-lambda.gx
                 // (c-node-mod-02)
-                // CR claude for claude: [bug/high] `&mut y` over an inferred let is
+                // XCR claude for claude: [bug/high] `&mut y` over an inferred let is
                 // refused at every run-time bind. In a collection slot or a dynamic
                 // call, `{ let y = i + 1; let r = &mut y; .. }` fails with 'binding the
                 // callee failed: y was made generic by an earlier compile' although the
@@ -1577,6 +1577,17 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 // and pin `&mut` over an inferred let inside an array::map callback.
                 // probe: design/review-2026-10-26/repro/c-bind-mut-ref-runtime-bind.gx
                 // (c-bind-01)
+                // 2026-10-26 claude: The cell &mut y saw was UNBOUND, not bound: ByRef
+                // compiles before the instance's typecheck substitutes its types, and a
+                // run-time bind compiled at the thread's default level, Generic, so
+                // every fresh cell of the instance looked generalized.
+                // with_runtime_settles (node/mod.rs, the one entry of build_bound,
+                // prebind and the core-trait hook sites) now enters Level::TOP, as
+                // compile_top and check_and_fuse_inner do for a static bind;
+                // generalized_earlier is unchanged. Pin:
+                // lang::byref::mut_reference_to_an_inferred_local_at_a_run_time_bind (a
+                // dynamic call and an array::map slot; fails with 'binding the callee
+                // failed: y was made generic' when the AtLevel is removed).
                 if ctx.generalized_earlier(r.id) {
                     bailat!(
                         spec,

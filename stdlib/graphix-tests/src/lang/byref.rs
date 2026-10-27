@@ -1003,6 +1003,31 @@ run!(
     FuseExpect::Jit
 );
 
+// `&mut` of a local an operator or a literal initializes, in a body bound
+// at run time: a call through a function value and a collection slot.
+run!(
+    mut_reference_to_an_inferred_local_at_a_run_time_bind,
+    r#"{
+  let f = |i: i64| {
+    let y = i + 1;
+    let r = &mut y;
+    *r <- i ~ 100 + i;
+    y
+  };
+  let g = never();
+  g <- f;
+  let rs = array::map([0, 1], |i: i64| {
+    let y = [i + 1];
+    let r = &mut y;
+    *r <- i ~ [100 + i];
+    y
+  });
+  array::group((rs, g(5)), |n, _| n == 2)
+}"#,
+    prints("[[[[i64:100], [i64:101]], i64:6], [[[i64:100], [i64:101]], i64:105]]");
+    FuseExpect::Jit
+);
+
 // A write through a moving reference, and a comparison of one, reach the
 // place the reference names this cycle, so neither runs beside the
 // statement that moves it.
