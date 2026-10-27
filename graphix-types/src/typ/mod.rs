@@ -25,6 +25,7 @@ use smallvec::SmallVec;
 use std::{
     cell::RefCell,
     cmp::Ordering,
+    collections::hash_map::Entry,
     fmt::Debug,
     hash::{Hash, Hasher},
     iter, mem,
@@ -2260,12 +2261,13 @@ impl Type {
     }
 
     /// [`Self::pre_unify_arg`], each pair of shared nodes (`seen`)
-    /// pre-unified once.
+    /// pre-unified once. `seen` holds each pair it keys, so an address
+    /// stays its node's for the whole walk.
     fn pre_unify_seen(
         env: &Env,
         declared: &Type,
         actual: &Type,
-        seen: &mut AHashSet<(usize, usize)>,
+        seen: &mut AHashMap<(usize, usize), (Type, Type)>,
     ) -> Result<()> {
         ensure_sufficient(|| {
             let d = match declared.deref_cloned() {
@@ -2273,14 +2275,18 @@ impl Type {
                 d => d,
             };
             let a = actual.deref_cloned();
-            if let (Some(dn), Some(an)) =
-                (d.as_ref().and_then(node_addr), a.as_ref().and_then(node_addr))
-                && !seen.insert((dn, an))
+            if let (Some(d), Some(a)) = (&d, &a)
+                && let (Some(dn), Some(an)) = (node_addr(d), node_addr(a))
             {
-                return Ok(());
+                match seen.entry((dn, an)) {
+                    Entry::Occupied(_) => return Ok(()),
+                    Entry::Vacant(e) => e.insert((d.clone(), a.clone())),
+                };
             }
             let each =
-                |ds: &[Type], as_: &[Type], seen: &mut AHashSet<(usize, usize)>| {
+                |ds: &[Type],
+                 as_: &[Type],
+                 seen: &mut AHashMap<(usize, usize), (Type, Type)>| {
                     ds.iter()
                         .zip(as_.iter())
                         .try_for_each(|(d, a)| Self::pre_unify_seen(env, d, a, seen))

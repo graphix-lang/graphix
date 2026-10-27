@@ -315,7 +315,10 @@ two sites) has no row and is checked in full, which
 `GRAPHIX_ELAB_AUDIT` reports.
 Every type name a definition
 writes, a typedef body's included, must name something by the check's
-end, expanded or not (`design/env_independent_typerefs.md`).
+end, expanded or not (`design/env_independent_typerefs.md`). A pattern
+naming a type a later statement of its block declares binds at that
+type as the block ends, and one that tests or takes such a type apart
+is refused (`node::later_typedef`).
 
 Key types: `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration — `fold`, the seq rewrite and
@@ -872,7 +875,7 @@ node graph IS the IR — there is no parallel typed IR
   value restriction, `CompileCtx::monomorphic`), except one an earlier compile
   generalized (a REPL input): it stays generic, a later write is held to
   a copy of its type with the variables rigid, and a later `&mut` of it
-  is refused (`CompileCtx::generalized_earlier`); a type written in a body (a `let`
+  is refused (`Env::poly_binds`); a type written in a body (a `let`
   annotation, `never<T>`, a nested lambda's signature) names one
   variable per name, and a name a definition around it declares, and
   the written place does not declare itself, is that definition's
