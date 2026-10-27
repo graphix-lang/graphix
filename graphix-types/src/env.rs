@@ -966,10 +966,25 @@ impl Env {
         depth: usize,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
+        let inside = scope_is_under(origin, mod_root(level));
+        self.lookup_in(origin, level, inside, n, depth, f)
+    }
+
+    /// [`Self::lookup_at`], with whether `origin` is inside the level's
+    /// module already known: one chain's levels share their module.
+    fn lookup_in<T>(
+        &self,
+        origin: &str,
+        level: &str,
+        inside: bool,
+        n: &str,
+        depth: usize,
+        f: &mut impl FnMut(&str, &str) -> Option<T>,
+    ) -> Result<Option<T>> {
         if let Some(t) = f(level, n) {
             return Ok(Some(t));
         }
-        if !scope_is_under(origin, mod_root(level)) {
+        if !inside {
             return Ok(None);
         }
         let Some(sn) = self.names.get(level) else { return Ok(None) };
@@ -1035,8 +1050,9 @@ impl Env {
         depth: usize,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
+        let inside = scope_is_under(origin, mod_root(from));
         for level in chain_levels(from) {
-            if let Some(t) = self.lookup_at(origin, level, n, depth, f)? {
+            if let Some(t) = self.lookup_in(origin, level, inside, n, depth, f)? {
                 return Ok(Some(t));
             }
         }

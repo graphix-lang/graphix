@@ -585,7 +585,7 @@ fn quantified_formal(
     typ: &Type,
 ) -> Option<(Type, LPooled<Vec<RigidGate>>, Quantified)> {
     let mut quantified = Quantified::new();
-    let formal = rank2_parts(env, typ, &mut SmallVec::new(), &mut quantified);
+    let formal = rank2_parts(env, typ, &mut Expanding::default(), &mut quantified);
     if quantified.is_empty() {
         return None;
     }
@@ -601,14 +601,48 @@ fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> 
     t.lookup_ref_probe(env).filter(|(key, _)| !expanding.contains(key))
 }
 
+/// A walk's typedef expansions: those in progress, each one it met in
+/// progress and so did not expand again, and each parameterless one whose
+/// expansion held nothing, with the ones in progress it met there.
+#[derive(Default)]
+struct Expanding {
+    stack: SmallVec<[usize; 4]>,
+    met: SmallVec<[usize; 4]>,
+    clean: AHashMap<usize, SmallVec<[usize; 2]>>,
+}
+
+impl Expanding {
+    /// `t` expanded, or `None` where it does not resolve or is in progress.
+    fn expand(&mut self, env: &Env, t: &Type) -> Option<(usize, Type)> {
+        let (key, whole) = t.lookup_ref_probe(env)?;
+        if self.stack.contains(&key) {
+            self.met.push(key);
+            return None;
+        }
+        Some((key, whole))
+    }
+
+    /// Whether `key`'s expansion held nothing while the ones in progress it
+    /// met are in progress again; met again for the walk's later records.
+    fn known_clean(&mut self, key: usize) -> bool {
+        match self.clean.get(&key) {
+            Some(met) if met.iter().all(|k| self.stack.contains(k)) => {
+                self.met.extend(met.iter().copied());
+                true
+            }
+            Some(_) | None => false,
+        }
+    }
+}
+
 /// Push to `out` the quantifiers of each function type at a data position
 /// of `t`; `t` rebuilt with every binding and typedef on the way to one
 /// expanded, `None` where it is unchanged. A typedef already being
-/// expanded (`expanding`, by definition) is not expanded again.
+/// expanded is not expanded again.
 fn rank2_parts(
     env: &Env,
     t: &Type,
-    expanding: &mut SmallVec<[usize; 4]>,
+    expanding: &mut Expanding,
     out: &mut Quantified,
 ) -> Option<Type> {
     ensure_sufficient(|| {
@@ -626,11 +660,26 @@ fn rank2_parts(
                 let r = rank2_parts(env, &b, expanding, out);
                 expanded(r, b, out)
             }
-            Type::Ref(_) => {
-                let (key, whole) = expansion(env, t, expanding)?;
-                expanding.push(key);
+            Type::Ref(tr) => {
+                let bare = tr.params.is_empty();
+                let (key, whole) = expanding.expand(env, t)?;
+                if bare && expanding.known_clean(key) {
+                    return None;
+                }
+                let met = expanding.met.len();
+                expanding.stack.push(key);
                 let r = rank2_parts(env, &whole, expanding, out);
-                expanding.pop();
+                expanding.stack.pop();
+                if bare && out.len() == before {
+                    let mut seen: SmallVec<[usize; 2]> = expanding.met[met..]
+                        .iter()
+                        .copied()
+                        .filter(|k| *k != key)
+                        .collect();
+                    seen.sort_unstable();
+                    seen.dedup();
+                    expanding.clean.insert(key, seen);
+                }
                 expanded(r, whole, out)
             }
             Type::Abstract { .. } => None,
@@ -984,16 +1033,30 @@ fn data_positions(
 /// fixes the variable exactly, so its argument is checked first and the
 /// order a call writes its arguments in decides nothing. A function's
 /// positions stay in order: an earlier argument types a callback's.
-fn holds_invariantly(env: &Env, t: &Type, expanding: &mut SmallVec<[usize; 4]>) -> bool {
+/// `clean` holds the parameterless typedefs whose expansion holds none, so
+/// a typedef the type reaches by many paths is walked once.
+fn holds_invariantly(
+    env: &Env,
+    t: &Type,
+    expanding: &mut SmallVec<[usize; 4]>,
+    clean: &mut AHashSet<usize>,
+) -> bool {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
-            tv.binding().is_some_and(|b| holds_invariantly(env, &b, expanding))
+            tv.binding().is_some_and(|b| holds_invariantly(env, &b, expanding, clean))
         }
         Type::Fn(_) => false,
-        Type::Ref(_) if let Some((key, whole)) = expansion(env, t, expanding) => {
+        Type::Ref(tr) if let Some((key, whole)) = expansion(env, t, expanding) => {
+            let bare = tr.params.is_empty();
+            if bare && clean.contains(&key) {
+                return false;
+            }
             expanding.push(key);
-            let r = holds_invariantly(env, &whole, expanding);
+            let r = holds_invariantly(env, &whole, expanding, clean);
             expanding.pop();
+            if bare && !r {
+                clean.insert(key);
+            }
             r
         }
         Type::Abstract { .. } | Type::App(..) | Type::Ref(_) | Type::ByRef(..) => {
@@ -1003,7 +1066,9 @@ fn holds_invariantly(env: &Env, t: &Type, expanding: &mut SmallVec<[usize; 4]>) 
         }
         t => {
             let mut any = false;
-            t.for_each_child(&mut |c| any = any || holds_invariantly(env, c, expanding));
+            t.for_each_child(&mut |c| {
+                any = any || holds_invariantly(env, c, expanding, clean)
+            });
             any
         }
     })
@@ -3359,12 +3424,15 @@ impl<R: Rt> CallSite<R> {
         };
         let mut widening = Widening::new(fresh);
         let mut expanding = SmallVec::new();
+        let mut clean: LPooled<AHashSet<usize>> = LPooled::take();
         let mut formals: SmallVec<[_; 8]> = ftype
             .args
             .iter()
             .zip(ArgKey::of_formals(&ftype.args))
             .map(|(farg, key)| {
-                (!holds_invariantly(&ctx.env, &farg.typ, &mut expanding), farg, key)
+                let fixed =
+                    holds_invariantly(&ctx.env, &farg.typ, &mut expanding, &mut clean);
+                (!fixed, farg, key)
             })
             .collect();
         formals.sort_by_key(|(later, ..)| *later);

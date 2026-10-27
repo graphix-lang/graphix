@@ -404,7 +404,7 @@ run!(typedef_dag_freezes_in_linear_time, {
 
 // The same chain as a lambda formal freezes once per level too, and the
 // formal has a kernel encoding however far the chain unfolds.
-// CR claude for claude: [perf/medium] The check of this program is exponential in
+// XCR claude for claude: [perf/medium] The check of this program is exponential in
 // the chain's depth: `--check` of the fixture's program takes 2.9 s at 20 levels and
 // 54 s at 24 (debug build), 1.9 s of the 20-level run in phase=Typecheck0, while the
 // same chain read as `let v: T0 = null; v` (typedef_dag_freezes_in_linear_time,
@@ -413,14 +413,22 @@ run!(typedef_dag_freezes_in_linear_time, {
 // the check walk that unfolds the two-wide typedef DAG as a tree and share it per
 // ref, then raise this fixture to 40 levels. probe: the fixture's program at 24
 // levels under graphix --check (typedef-dag-check-01)
+// 2026-10-27 claude: Two walks in callsite.rs unfolded the typedef DAG as a tree,
+// found by sampling stacks under gdb: holds_invariantly (the argument order) and
+// rank2_parts (a formal's rank-2 quantifiers). Each now remembers, for one walk, the
+// parameterless typedefs whose expansion held nothing. rank2_parts also remembers
+// the typedefs it met in progress there (Expanding), and reuses an entry only while
+// those are in progress again, since a cycle cut there is empty only beside its own
+// expansion. --check at 18/23/40 levels: 0.37 s/~8 s/hours before, 0.1/0.02/0.02 s
+// after. The fixture is raised to 40 levels, as tests-lang-rest-a-01 asked.
 run!(typedef_dag_formal_freezes_in_linear_time, {
     use std::fmt::Write;
     let mut src = poolshark::local::LPooled::<String>::take();
     src.push_str("{\n");
-    for i in 0..14 {
+    for i in 0..40 {
         writeln!(src, "type T{i} = [null, (T{}, T{})];", i + 1, i + 1).unwrap();
     }
-    src.push_str("type T14 = [null, (T0, T0)];\nlet f = |x: T0| -> T0 x;\n");
+    src.push_str("type T40 = [null, (T0, T0)];\nlet f = |x: T0| -> T0 x;\n");
     src.push_str("let v: T0 = null;\n#[native] f(v) }");
     arcstr::ArcStr::from(src.as_str())
 }, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);

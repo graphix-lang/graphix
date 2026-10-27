@@ -2310,7 +2310,7 @@ impl Indiscernible {
     }
 }
 
-// CR claude for claude: [perf/medium] [perf/medium] This walk has no memo of shared
+// XCR claude for claude: [perf/medium] [perf/medium] This walk has no memo of shared
 // nodes: `Expanded` covers only Type::Ref expansion, so a DAG type is walked once per
 // path to each node. A let chain of pairs makes `xN == xN`, `uniq(xN)` or `{xN => 1}`
 // cost 2^N in the check: N=26 takes 3.4 s, while `[xN, xN]` stays at 0.03 s. Every
@@ -2332,6 +2332,12 @@ impl Indiscernible {
 // (Expanded::once/keep, deep_nesting comparisons pin), but the repro's select x60 { v
 // => 1 } still does not check in 30 s, which this CR's probe covers. Back to CR for
 // that walk.
+// 2026-10-27 claude: The select's walk was Type::could_match (a select arm's form
+// test), which walked the pair DAG as a tree. could_match_int now remembers the pairs
+// of shared nodes it found could match (MatchHist::found, a NodePairs, as contains'
+// Link::equal and setops do; each pair is held for the walk). select x60 { v => 1 }
+// now checks in 0.02 s; it did not finish in 30 s before. Pin: deep_nesting
+// comparisons_over_a_shared_type_dag_check_in_linear_time now also checks the select.
 fn rep_ambiguity(
     env: &Env,
     seen: &mut Expanded<Type>,

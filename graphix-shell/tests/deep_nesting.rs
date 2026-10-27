@@ -199,12 +199,21 @@ fn program(shape: &str, d: usize) -> String {
             format!("let v = 1;\nlet r = {}v{}", "&mut (".repeat(d), ")".repeat(d))
         }
         "catch" => format!("let x = {}1{}", "{ catch(e) e; ".repeat(d), " }".repeat(d)),
-        // CR claude for claude: [perf/medium] Nested try blocks check in about cubic time:
+        // XCR claude for claude: [perf/medium] Nested try blocks check in about cubic time:
         // `graphix --check` of this shape takes 1.2 s at depth 125, 2.0 s at 250 and 7.6 s
         // at 500 (debug), and at its admitted depth of 993 every mode of this test spends
         // 95 s, the twin 180 s, which is most of the test's run. Find the walk the seq
         // lowering or its check repeats per enclosing try. Found by timing this test's
         // children. (seq-try-depth-01)
+        // 2026-10-27 claude: The time went to name lookup, not the seq lowering (found by
+        // sampling stacks under gdb). Every try body is a lexical scope, and each level of
+        // a lookup's chain recomputed mod_root(level), an O(depth) walk up the path, so a
+        // lookup cost O(depth^2). Env::chain_lookup now decides once per chain whether the
+        // origin is inside the chain's module (lookup_in); lookup_at still decides per
+        // call. --check at depth 250/500/993: 0.79/5.95 s before, 0.28/1.02/6.4 s after
+        // (debug). What remains is quadratic: each level's path is hashed once per lookup.
+        // Pin: deep_nesting::nested_trys_check_in_time (depth 993 within 30 s; about 95 s
+        // before).
         "trywith" => format!(
             "seq {{ {}1; 1{} }}",
             "try { 1; ".repeat(d),
@@ -566,6 +575,14 @@ fn exits_within(
 /// A type as deep as the program is long checks in time linear in the
 /// program: `flattype` at eight times `FLAT_DEPTH` checks well inside a
 /// budget a walk of each let's whole type blows several times over.
+/// Nested `try` blocks, each a lexical scope, check in time quadratic
+/// in their depth: a name's lookup consults its module's root once per
+/// scope chain, not once per level.
+#[test]
+fn nested_trys_check_in_time() {
+    checks_within(&program("trywith", 993), std::time::Duration::from_secs(30))
+}
+
 #[test]
 fn flat_type_chain_checks_in_linear_time() {
     checks_within(
@@ -649,9 +666,10 @@ fn shared_type_dags_check_in_linear_time() {
     }
 }
 
-/// Comparing, ordering and keying a value whose type is a pair DAG checks
-/// in time linear in its depth: the Discernible and Ordered judgments and
-/// the bounds they hand its cells walk each shared node once.
+/// Comparing, ordering, keying and selecting over a value whose type is a
+/// pair DAG checks in time linear in its depth: the Discernible and Ordered
+/// judgments, the bounds they hand its cells and an arm's match walk each
+/// shared node once.
 #[test]
 fn comparisons_over_a_shared_type_dag_check_in_linear_time() {
     const DEPTH: usize = 60;
@@ -665,6 +683,7 @@ fn comparisons_over_a_shared_type_dag_check_in_linear_time() {
         format!("{x} < {x}"),
         format!("uniq({x})"),
         format!("{{{x} => 1}}"),
+        format!("select {x} {{ v => 1 }}"),
     ] {
         checks_within(&format!("{chain}{use_}"), std::time::Duration::from_secs(15))
     }

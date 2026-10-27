@@ -4,7 +4,7 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, FnType, RefHist, RefPair, Type,
+        AndAc, FnType, NodePairs, RefHist, RefPair, Type,
         contains::{ContainsHist, find_open_cell},
         setops::strictly_identical,
     },
@@ -173,11 +173,16 @@ fn open_member(t: &Type) -> bool {
 pub(super) struct MatchHist {
     pub(super) hist: RefHist<AHashSet<RefPair>>,
     contains: ContainsHist,
+    found: NodePairs,
 }
 
 impl MatchHist {
     pub(super) fn new() -> Self {
-        MatchHist { hist: RefHist::new(), contains: ContainsHist::new() }
+        MatchHist {
+            hist: RefHist::new(),
+            contains: ContainsHist::new(),
+            found: NodePairs::default(),
+        }
     }
 }
 
@@ -202,7 +207,15 @@ impl Type {
         hist: &mut MatchHist,
         t: &Self,
     ) -> Result<bool> {
-        ensure_sufficient(|| self.could_match_inner(env, hist, t))
+        let pair = hist.found.key(self, t);
+        if pair.is_some_and(|pair| hist.found.contains(pair)) {
+            return Ok(true);
+        }
+        let could = ensure_sufficient(|| self.could_match_inner(env, hist, t))?;
+        if let Some(pair) = pair.filter(|_| could) {
+            hist.found.insert(pair, self, t)
+        }
+        Ok(could)
     }
 
     fn could_match_inner(
