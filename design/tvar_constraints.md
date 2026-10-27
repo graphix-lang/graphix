@@ -283,14 +283,9 @@ that one expansion (each expansion of a typedef reference freshens its
 cells). The quantifier keeps exactly its declared bounds: whatever the
 argument's check adds to it, a predicate included, must follow from them
 (`callsite.rs::added_bound`, by `Type::implies`, the rule an interface's
-<!-- CR claude for claude: [doc-drift/low] Stale: under fn<'b: Number> the checker
-refuses `apply(|x| x < x)`, because an ordering needs 'b: Ordered, which Number does not
-imply. types.rs NESTED_QUANTIFIER_COMPARE_UNORDERED pins that refusal. Use `apply(|x| x
-== x)` as the example that checks, or say an ordering needs `'b: Number + Ordered`.
-probe: design/review-2026-10-26/repro/tests-types-design-ordered-drift.gx
-(tests-types-05) -->
-bounds follow), so under `'b: Number` `apply(|x| x < x)` checks and
-`apply(|x| x * x)` is refused until the formal says `'b: Number +
+bounds follow), so under `'b: Number` `apply(|x| x == x)` checks,
+`apply(|x| x < x)` is refused until the formal says `'b: Number +
+Ordered` and `apply(|x| x * x)` until it says `'b: Number +
 Singleton`; `apply(|x| x + 1)` and `apply(|x: i64| ..)` are refused,
 since they hold only where `'b` is `i64`. A call of `apply` copies `'b` generic
 (`FnType::generic_inner_quantifiers`): the argument's cells the check

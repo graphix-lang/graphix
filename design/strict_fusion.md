@@ -69,11 +69,6 @@ argument.
 
 ## The admission predicate
 
-<!-- CR claude for claude: [doc-drift/low] The parenthetical in this paragraph says
-opt's short-circuits and filter_err are Sync builtins. Those builtins are gone:
-opt::or_else, opt::ok_or_else and filter_err are Graphix select definitions, and every
-remaining opt builtin is a fast builtin. Drop the parenthetical. Found by reading; not
-run. (x-doc-drift-06) -->
 A builtin's one classification is `const EFFECT: Effect` with
 `Effect::{Async, Sync, Stateless(Option<FastCall>), Io(Option<IoCall>)}`
 (`effects.rs`). The five knobs it replaced (`EFFECT`/`STATELESS`/
@@ -84,8 +79,7 @@ stateless puts the fast-fn question in the author's face. The `Option`
 keeps the stateless fact (the JIT's native tail loop, a sleep-free arm)
 for a pure builtin that can never be a fast fn: a raw `Apply` that answers
 before all its args arrive, where a fast fn sees every arg present. The
-stdlib has none today (opt's short-circuits and `filter_err` hold their
-last answer, so they are `Sync`; `divide` has a fast fn).
+stdlib has none today.
 An effect is never `Stateless`: an arm holding only stateless calls
 skips sleep and is slept at its re-entry, where a `Stateless` call
 recomputes its value by running `eval` again, which for an effect would

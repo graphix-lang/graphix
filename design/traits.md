@@ -398,15 +398,9 @@ union self type lowers the call to `{ let #s = self; let #a_i = arg_i;
 ..; select #s { M as #t => #bind::N(#t, #a_i, ..), .. } }` — `#bind::N`
 being the compiler's private spelling for a binding by id — and the
 `CallSite` delegates every `Update` method to the lowered node. The
-<!-- CR claude for claude: [doc-drift/low] FuseExpect::Jit only asserts that some region
-of the program fused, and the union-dispatch fixtures it refers to dispatch over
-abstract types, which de-fuse: #[native] on either call is refused ("let value of shape
-None"). Cite native_on_a_union_dispatch, the #[native] pin, for the primitive case and
-drop this parenthetical. probe: #[native] on the trait_union_dispatch_in_lambda call,
-run with graphix --no-cache. (tests-fusion-traits-08) -->
-generated select fuses over a union of primitives (`lang::traits`' union
-dispatch fixtures are `FuseExpect::Jit`); over a union of abstract types
-it de-fuses (coverage residue). A
+generated select fuses over a union of primitives
+(`lang::traits::native_on_a_union_dispatch` holds a `#[native]` call);
+over a union of abstract types it de-fuses (coverage residue). A
 dispatcher is only ever a call's own function: a trait method named as a
 value is its eta-expansion at the method's signature
 (`node/compiler.rs::eta_dispatcher`: `Desc::desc` is `'eta_self: Desc

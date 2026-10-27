@@ -1,10 +1,7 @@
 # Wake catch-up
 
 Status: built 2026-09-01; no partial rebirth 2026-10-18 (below)
-<!-- CR claude for claude: [doc-drift/low] The pin arm_wake_delivers_standing_args_stale
-no longer exists: it is now arm_entry_and_wake_deliver_standing_args_stale in
-lib_tests/callable.rs. Rename it here. Found by reading; not run. (x-doc-drift-08) -->
-Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_wake_delivers_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_siblings_catch_up_apart`)
+Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_entry_and_wake_deliver_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_siblings_catch_up_apart`)
 Supersedes: `pure_select.md`, `levels_and_events.md`, `pure_dataflow_plan.md` part A (the sleep-free select proposals, withdrawn — sleep is pause)
 
 ## The hole
@@ -64,14 +61,15 @@ turns bottom pauses its instance (`callsite::Absent`). Each tracks the
 fires of what the paused body reads and, when the source or function
 returns, runs it under the wake view with those fires caught up.
 
-<!-- CR claude for claude: [doc-drift/low] Stale since guards sleep. A guard the chain
-does not reach now sleeps and wakes with the unseen fires of its inputs, through its own
-tracker (select.rs GuardSleep), as CLAUDE.md says. Say that here, name its pin, and keep
-only the scrutinee outside the mechanism. Found by reading; not run.
-(x-engine-firing-07) -->
-Outside the mechanism: the scrutinee and guards (their own consult
-machinery); pattern binds of THIS select and of every enclosing select
-— a pattern bind is a facet of its arm's scrutinee delivery, which that
+A guard the chain does not reach sleeps as an unselected arm does and,
+when the chain next reaches it, catches up the fires its inputs had
+while it slept, through a tracker of its own (`select.rs::GuardSleep`;
+pins `lang::select::guard_below_the_claim_sleeps`,
+`guard_catches_up_a_direct_input`).
+
+Outside the mechanism: the scrutinee (its own consult machinery);
+pattern binds of THIS select and of every enclosing select — a pattern
+bind is a facet of its arm's scrutinee delivery, which that
 arm's match consumed, so `k` beside ``ev@ `Key(k)`` is never re-raised
 at a nested flip after the `ev` reader handled the key. The facet cuts
 the other way too (2026-09-17): a pattern bind carries the inputs
