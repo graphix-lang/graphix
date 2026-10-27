@@ -204,11 +204,11 @@ every site.
 use graphix_compiler::{Effect, FastCall};
 use graphix_package_core::fast_eval;
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyLenEv {
+impl<R: Rt> EvalCached<R> for MyLenEv {
     const NAME: &str = "mylib_len";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(my_len)));
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, my_len, from)
     }
 }
@@ -260,7 +260,7 @@ the `as` syntax in the builtins list:
 ```rust
 defpackage! {
     builtins => [
-        MyGeneric as MyGeneric<GXRt<X>, X::UserEvent>,
+        MyGeneric as MyGeneric<GXRt<X>>,
     ]
 }
 ```

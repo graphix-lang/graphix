@@ -5,7 +5,7 @@
 
 use super::lower::OwnCall;
 use crate::{
-    BindId, Node, NodeView, Rt, Update, UserEvent,
+    BindId, Node, NodeView, Rt, Update,
     env::Env,
     expr::{Expr, ExprId, ExprKind},
     fusion::{
@@ -258,12 +258,12 @@ pub(super) struct BodySource<'a> {
 /// Walks the region-root `Node` via `emit_clif` recursion and emits
 /// the kernel return. `return_type` comes from the `KernelSig` so the
 /// boundary marshalling agrees with the wrapper.
-pub(super) struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
-    pub(super) root: &'a Node<R, E>,
+pub(super) struct NodeBodyEmitter<'a, R: Rt> {
+    pub(super) root: &'a Node<R>,
     pub(super) return_type: &'a Type,
 }
 
-impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
+impl<R: Rt> BodyEmitter for NodeBodyEmitter<'_, R> {
     fn emit(
         &self,
         b: &mut FunctionBuilder,
@@ -799,8 +799,8 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 /// (a String read clones), grouping is transparent to its tail,
 /// everything else hands out an owned ref. Decides whether a clone is
 /// needed before the source's scope drops.
-pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> CompositeSource {
-    let mut n: &dyn Update<R, E> = &**node;
+pub fn node_composite_source<R: Rt>(node: &Node<R>) -> CompositeSource {
+    let mut n: &dyn Update<R> = &**node;
     loop {
         match n.view() {
             NodeView::Ref(_) => {
@@ -820,7 +820,7 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
 /// consumer typed from an external signature (HOF source, fold init,
 /// lambda-call arg) would read as a pointer; Bottom unifies with every
 /// signature type, so gate on the node itself and de-fuse.
-pub fn node_is_bottom<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+pub fn node_is_bottom<R: Rt>(node: &Node<R>) -> bool {
     node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
 }
 
@@ -873,11 +873,7 @@ enum SlotFit {
     Same,
 }
 
-fn slot_fit<R: Rt, E: UserEvent>(
-    cx: &BodyCx,
-    node: &Node<R, E>,
-    slot: LocalKind,
-) -> SlotFit {
+fn slot_fit<R: Rt>(cx: &BodyCx, node: &Node<R>, slot: LocalKind) -> SlotFit {
     match (cx.node_kind(node.typ()), slot) {
         (Some(AbiKind::Scalar(p)), LocalKind::Value) => SlotFit::Widen(p),
         (
@@ -899,9 +895,9 @@ pub(super) struct Slotted {
 
 /// Emit `node` into a slot of kind `slot`: an argument, a tail loop's
 /// rebind, a binding, a composite return or a fold's accumulator.
-pub(super) fn emit_into_slot<R: Rt, E: UserEvent>(
+pub(super) fn emit_into_slot<R: Rt>(
     cx: &mut BodyCx,
-    node: &Node<R, E>,
+    node: &Node<R>,
     slot: LocalKind,
 ) -> Result<Slotted> {
     let fit = slot_fit(cx, node, slot);
@@ -961,10 +957,10 @@ pub(super) fn emit_kernel_abort(cx: &mut BodyCx) -> Result<()> {
 /// through `emit_owned_value_operand_node`, since the body node's own
 /// shape may differ (a tuple-literal body under a `['b, null]`
 /// signature emits the composite convention).
-pub(super) fn emit_return_from_node<R: Rt, E: UserEvent>(
+pub(super) fn emit_return_from_node<R: Rt>(
     cx: &mut BodyCx,
     return_type: &Type,
-    node: &Node<R, E>,
+    node: &Node<R>,
 ) -> Result<()> {
     match kernel_abi::abi_kind(return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {

@@ -6,7 +6,7 @@
 //! a parent is suspended in the join until both of its branches return.
 
 use crate::{
-    BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue, UserEvent,
+    BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue,
     analysis::Sites,
     cost::{ForkSite, Meter, Plan, Siblings},
     expr::Expr,
@@ -635,16 +635,16 @@ impl<V: Clone> Layered<V> {
 /// A forked branch's compile state: its parent's, read through, until
 /// the branch first writes; then a compile fork of its own
 /// ([`CompileCtx::fork`]) that joins its parent's at the merge.
-pub struct ForkCx<R: Rt, E: UserEvent> {
-    parent: *const CxView<'static, R, E>,
-    own: Option<Box<CompileCtx<R, E>>>,
+pub struct ForkCx<R: Rt> {
+    parent: *const CxView<'static, R>,
+    own: Option<Box<CompileCtx<R>>>,
 }
 
 // SAFETY: `parent` is only read, and only while the parent is suspended
 // in the join that forked this branch.
-unsafe impl<R: Rt + Sync, E: UserEvent + Sync> Send for ForkCx<R, E> {}
+unsafe impl<R: Rt + Sync> Send for ForkCx<R> {}
 
-impl<R: Rt, E: UserEvent> ForkCx<R, E> {
+impl<R: Rt> ForkCx<R> {
     /// A branch forked from `parent`.
     ///
     /// # Safety
@@ -652,28 +652,28 @@ impl<R: Rt, E: UserEvent> ForkCx<R, E> {
     /// The parent is read through a pointer whose lifetime is erased: it
     /// must outlive this branch and must not be used, by its owner or
     /// another branch's merge, until this branch has merged back.
-    pub(crate) unsafe fn new(parent: &CxView<'_, R, E>) -> Self {
+    pub(crate) unsafe fn new(parent: &CxView<'_, R>) -> Self {
         Self {
-            parent: parent as *const CxView<'_, R, E> as *const CxView<'static, R, E>,
+            parent: parent as *const CxView<'_, R> as *const CxView<'static, R>,
             own: None,
         }
     }
 
-    fn parent(&self) -> &CxView<'_, R, E> {
+    fn parent(&self) -> &CxView<'_, R> {
         // SAFETY: see the type.
-        unsafe { &*(self.parent as *const CxView<'_, R, E>) }
+        unsafe { &*(self.parent as *const CxView<'_, R>) }
     }
 }
 
 /// The compile state as a branch sees it.
-pub enum CxView<'a, R: Rt, E: UserEvent> {
-    Root(&'a mut CompileCtx<R, E>),
-    Fork(&'a mut ForkCx<R, E>),
+pub enum CxView<'a, R: Rt> {
+    Root(&'a mut CompileCtx<R>),
+    Fork(&'a mut ForkCx<R>),
 }
 
-impl<'a, R: Rt, E: UserEvent> CxView<'a, R, E> {
+impl<'a, R: Rt> CxView<'a, R> {
     /// The same view, borrowed for a shorter time.
-    pub fn reborrow(&mut self) -> CxView<'_, R, E> {
+    pub fn reborrow(&mut self) -> CxView<'_, R> {
         match self {
             Self::Root(c) => CxView::Root(c),
             Self::Fork(f) => CxView::Fork(f),
@@ -681,19 +681,19 @@ impl<'a, R: Rt, E: UserEvent> CxView<'a, R, E> {
     }
 
     /// Take back what the forked branch `child` compiled.
-    pub(crate) fn merge(&mut self, child: ForkCx<R, E>) {
+    pub(crate) fn merge(&mut self, child: ForkCx<R>) {
         if let Some(cx) = child.own {
             self.join(*cx)
         }
     }
 }
 
-impl<'a, R: Rt, E: UserEvent> Deref for CxView<'a, R, E> {
-    type Target = CompileCtx<R, E>;
+impl<'a, R: Rt> Deref for CxView<'a, R> {
+    type Target = CompileCtx<R>;
 
     #[inline]
-    fn deref(&self) -> &CompileCtx<R, E> {
-        let mut view: &CxView<'_, R, E> = self;
+    fn deref(&self) -> &CompileCtx<R> {
+        let mut view: &CxView<'_, R> = self;
         loop {
             match view {
                 CxView::Root(c) => return c,
@@ -706,14 +706,14 @@ impl<'a, R: Rt, E: UserEvent> Deref for CxView<'a, R, E> {
     }
 }
 
-impl<'a, R: Rt, E: UserEvent> DerefMut for CxView<'a, R, E> {
+impl<'a, R: Rt> DerefMut for CxView<'a, R> {
     #[inline]
-    fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
+    fn deref_mut(&mut self) -> &mut CompileCtx<R> {
         match self {
             Self::Root(c) => c,
             Self::Fork(f) => {
                 if f.own.is_none() {
-                    let parent: &CompileCtx<R, E> = f.parent();
+                    let parent: &CompileCtx<R> = f.parent();
                     let mut own = Box::new(parent.fork());
                     own.def_assertions = parent.def_assertions.clone();
                     f.own = Some(own);
@@ -767,16 +767,15 @@ impl<K: Send, V: Send> Run for &mut indexmap::map::Slice<K, V> {
 /// says: in order, timed when it measures, or cut into the ranges it
 /// forks, each updated in order on a branch of its own, their results
 /// folded in order by `merge`.
-pub(crate) fn fork_point<R, E, S, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn fork_point<R, S, T>(
+    ctx: &mut ExecCtx<'_, R>,
     items: S,
     site: &mut ForkSite,
-    in_order: impl Fn(&mut ExecCtx<'_, R, E>, S, Option<&mut Meter<'_>>) -> T + Sync,
+    in_order: impl Fn(&mut ExecCtx<'_, R>, S, Option<&mut Meter<'_>>) -> T + Sync,
     merge: impl FnMut(T, T) -> T,
 ) -> T
 where
     R: Rt,
-    E: UserEvent,
     S: Run,
     T: Send,
 {
@@ -827,13 +826,13 @@ impl ForkFlags {
 
 /// A forked branch: its views of the compile state and the runtime, and
 /// its event.
-struct Branch<R: Rt, E: UserEvent> {
-    cx: ForkCx<R, E>,
+struct Branch<R: Rt> {
+    cx: ForkCx<R>,
     rt: ForkRt<R>,
-    event: Event<E>,
+    event: Event,
 }
 
-impl<R: Rt, E: UserEvent> Branch<R, E> {
+impl<R: Rt> Branch<R> {
     /// A branch forked from `ctx`.
     ///
     /// # Safety
@@ -841,7 +840,7 @@ impl<R: Rt, E: UserEvent> Branch<R, E> {
     /// The parent is read through a pointer whose lifetime is erased: it
     /// must outlive this branch and must not be used, by its owner or
     /// another branch's merge, until this branch has merged back.
-    unsafe fn new(ctx: &ExecCtx<'_, R, E>) -> Self {
+    unsafe fn new(ctx: &ExecCtx<'_, R>) -> Self {
         // SAFETY: the caller's contract is each view's
         unsafe {
             Branch {
@@ -854,10 +853,10 @@ impl<R: Rt, E: UserEvent> Branch<R, E> {
 }
 
 /// What every branch of one fork shares with the view it forked from.
-struct Shared<'a, R: Rt, E: UserEvent> {
+struct Shared<'a, R: Rt> {
     image_decoder: &'a std::sync::OnceLock<crate::image::SharedDecoder>,
     libstate: &'a crate::LibState,
-    core_hook_sites: &'a parking_lot::Mutex<crate::node::coretraits::CoreHookSites<R, E>>,
+    core_hook_sites: &'a parking_lot::Mutex<crate::node::coretraits::CoreHookSites<R>>,
     fork_depth: u8,
     par: graphix_types::stack::ParMode,
     fork: ForkFlags,
@@ -866,9 +865,9 @@ struct Shared<'a, R: Rt, E: UserEvent> {
     catch_up: Option<triomphe::Arc<crate::node::wake::CatchUp>>,
 }
 
-impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
+impl<'a, R: Rt> Shared<'a, R> {
     /// What `ctx`'s branches share, one fork level down.
-    fn of(ctx: &ExecCtx<'a, R, E>) -> Self {
+    fn of(ctx: &ExecCtx<'a, R>) -> Self {
         Shared {
             image_decoder: ctx.image_decoder,
             libstate: ctx.libstate,
@@ -883,7 +882,7 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
     }
 
     /// The view the branch `b` runs under.
-    fn ctx<'b>(&self, b: &'b mut Branch<R, E>) -> ExecCtx<'b, R, E>
+    fn ctx<'b>(&self, b: &'b mut Branch<R>) -> ExecCtx<'b, R>
     where
         'a: 'b,
     {
@@ -906,7 +905,7 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
 
 /// `GRAPHIX_PAR_AUDIT`: no branch read what an earlier one published in
 /// the same cycle, which serial evaluation would have shown it.
-fn audit_in_order<R: Rt, E: UserEvent>(branches: &[&Branch<R, E>]) {
+fn audit_in_order<R: Rt>(branches: &[&Branch<R>]) {
     for (i, b) in branches.iter().enumerate() {
         let Some(reads) = b.rt.reads.as_ref() else { continue };
         let reads = reads.lock();
@@ -920,9 +919,9 @@ fn audit_in_order<R: Rt, E: UserEvent>(branches: &[&Branch<R, E>]) {
 /// serial evaluation of the branches would leave it. What an earlier
 /// branch delivered first, a later one's delivery waits a cycle for,
 /// queued where serial evaluation would queue it.
-fn merge_in_order<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    branches: impl IntoIterator<Item = Branch<R, E>>,
+fn merge_in_order<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    branches: impl IntoIterator<Item = Branch<R>>,
 ) {
     let mut delivered: LPooled<IntSet<BindId>> = LPooled::take();
     for Branch { cx, mut rt, mut event } in branches {
@@ -943,9 +942,9 @@ fn merge_in_order<R: Rt, E: UserEvent>(
 /// merge it back: the event `f` sees holds as its own entries only what
 /// `f` published. With `f`'s result, every runtime call `f` queued that
 /// does more than register or drop a reader, by name.
-pub(crate) fn alone<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    f: impl FnOnce(&mut ExecCtx<'_, R, E>) -> T,
+pub(crate) fn alone<R: Rt, T>(
+    ctx: &mut ExecCtx<'_, R>,
+    f: impl FnOnce(&mut ExecCtx<'_, R>) -> T,
 ) -> (T, SmallVec<[&'static str; 4]>) {
     // SAFETY: `ctx` is borrowed for this call and used again only after
     // the branch merged, below
@@ -977,8 +976,8 @@ pub(crate) fn as_part<T>(
 }
 
 /// One part of a [`fork_each`]: its branch and its result.
-struct Part<R: Rt, E: UserEvent, P, T> {
-    branch: Branch<R, E>,
+struct Part<R: Rt, P, T> {
+    branch: Branch<R>,
     part: Option<P>,
     out: Option<T>,
 }
@@ -988,20 +987,19 @@ struct Part<R: Rt, E: UserEvent, P, T> {
 /// order: no part sees what another did, and `ctx` ends as the serial
 /// evaluation of the parts in order would leave it. The results, in
 /// order.
-pub fn fork_each<R, E, P, T, F>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub fn fork_each<R, P, T, F>(
+    ctx: &mut ExecCtx<'_, R>,
     parts: impl IntoIterator<Item = P>,
     f: F,
 ) -> Vec<T>
 where
     R: Rt,
-    E: UserEvent,
     P: Send,
     T: Send,
-    F: Fn(&mut ExecCtx<'_, R, E>, P) -> T + Sync,
+    F: Fn(&mut ExecCtx<'_, R>, P) -> T + Sync,
 {
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
-    let mut branches: Vec<Part<R, E, P, T>> = parts
+    let mut branches: Vec<Part<R, P, T>> = parts
         .into_iter()
         // SAFETY: `ctx` is borrowed for this call and used again only after
         // every branch merged, in order, below
@@ -1023,7 +1021,7 @@ where
         })
     });
     if branches.first().is_some_and(|b| b.branch.rt.reads.is_some()) {
-        let all: SmallVec<[&Branch<R, E>; 16]> =
+        let all: SmallVec<[&Branch<R>; 16]> =
             branches.iter().map(|b| &b.branch).collect();
         audit_in_order(&all);
     }
@@ -1044,23 +1042,22 @@ where
 /// instances of one function stand for each other. A fresh instance's
 /// call binds here first, so no branch compiles; `call` is an item's
 /// call.
-pub fn fork_instances<R, E, T, O, F>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub fn fork_instances<R, T, O, F>(
+    ctx: &mut ExecCtx<'_, R>,
     siblings: &mut Siblings,
     items: &mut [T],
-    call: for<'a> fn(&'a mut T) -> &'a mut Node<R, E>,
+    call: for<'a> fn(&'a mut T) -> &'a mut Node<R>,
     f: F,
 ) -> Vec<O>
 where
     R: Rt,
-    E: UserEvent,
     T: Send,
     O: Send,
-    F: Fn(&mut ExecCtx<'_, R, E>, &mut T) -> O + Sync,
+    F: Fn(&mut ExecCtx<'_, R>, &mut T) -> O + Sync,
 {
     for item in items.iter_mut() {
         if let Some(cs) =
-            call(item).downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+            call(item).downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
         {
             cs.prebind(ctx)
         }
@@ -1069,8 +1066,7 @@ where
         ctx.apply_deferred();
     }
     if !siblings.decided() {
-        let calls: LPooled<Vec<&Node<R, E>>> =
-            items.iter_mut().map(|i| &*call(i)).collect();
+        let calls: LPooled<Vec<&Node<R>>> = items.iter_mut().map(|i| &*call(i)).collect();
         siblings.decide(ctx, calls.len(), calls.iter().copied(), Sites::Slots);
     }
     // CR claude for eric: [perf/medium] Every update forks all running instances, with
@@ -1094,18 +1090,17 @@ where
 /// Run `f` over each of `parts` in a compile task of its own, every task
 /// forked from `ctx`'s compile state, on the evaluation pool, and join
 /// the tasks back in order. A task compiles; it evaluates nothing.
-pub(crate) fn compile_each<R, E, P, F>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn compile_each<R, P, F>(
+    ctx: &mut ExecCtx<'_, R>,
     parts: impl IntoIterator<Item = P>,
     f: F,
 ) where
     R: Rt,
-    E: UserEvent,
     P: Send,
-    F: Fn(&mut CompileCtx<R, E>, P) + Sync,
+    F: Fn(&mut CompileCtx<R>, P) + Sync,
 {
-    let mut tasks: Vec<(CompileCtx<R, E>, Option<P>)> = {
-        let cx: &mut CompileCtx<R, E> = ctx;
+    let mut tasks: Vec<(CompileCtx<R>, Option<P>)> = {
+        let cx: &mut CompileCtx<R> = ctx;
         parts.into_iter().map(|p| (cx.fork(), Some(p))).collect()
     };
     let control = ctx.control.clone();
@@ -1128,12 +1123,11 @@ pub(crate) fn compile_each<R, E, P, F>(
 /// Run `a` and `b` as two branches forked from `ctx` and merge them back,
 /// `a`'s first: neither sees what the other did, and `ctx` ends as the
 /// serial evaluation of `a` then `b` would leave it.
-pub fn fork_join<R, E, A, B, RA, RB>(ctx: &mut ExecCtx<'_, R, E>, a: A, b: B) -> (RA, RB)
+pub fn fork_join<R, A, B, RA, RB>(ctx: &mut ExecCtx<'_, R>, a: A, b: B) -> (RA, RB)
 where
     R: Rt,
-    E: UserEvent,
-    A: FnOnce(&mut ExecCtx<'_, R, E>) -> RA + Send,
-    B: FnOnce(&mut ExecCtx<'_, R, E>) -> RB + Send,
+    A: FnOnce(&mut ExecCtx<'_, R>) -> RA + Send,
+    B: FnOnce(&mut ExecCtx<'_, R>) -> RB + Send,
     RA: Send,
     RB: Send,
 {
@@ -1166,14 +1160,14 @@ where
 
 /// `GRAPHIX_PAR_AUDIT`: the right branch read nothing the left one
 /// published this cycle, which serial evaluation would have shown it.
-fn audit<R: Rt, E: UserEvent>(
+fn audit<R: Rt>(
     right_reads: &IntSet<BindId>,
-    left: &Event<E>,
+    left: &Event,
     left_rt: &ForkRt<R>,
-    right: &Event<E>,
+    right: &Event,
     right_rt: &ForkRt<R>,
 ) {
-    let own = |ev: &Event<E>, rt: &ForkRt<R>, id: &BindId| {
+    let own = |ev: &Event, rt: &ForkRt<R>, id: &BindId| {
         ev.variables.map.contains_key(id)
             || rt.store.contains_key(id)
             || rt.ref_paths.contains_key(id)
@@ -1268,17 +1262,16 @@ pub const MAX_FORK_DEPTH: u8 = 16;
 /// Run `a` then `b`, the two children of `site`, or fork them where the
 /// site's plan says.
 #[inline]
-pub fn join2<R, E, A, B, RA, RB>(
+pub fn join2<R, A, B, RA, RB>(
     site: &mut ForkSite,
-    ctx: &mut ExecCtx<'_, R, E>,
+    ctx: &mut ExecCtx<'_, R>,
     a: A,
     b: B,
 ) -> (RA, RB)
 where
     R: Rt,
-    E: UserEvent,
-    A: FnOnce(&mut ExecCtx<'_, R, E>) -> RA + Send,
-    B: FnOnce(&mut ExecCtx<'_, R, E>) -> RB + Send,
+    A: FnOnce(&mut ExecCtx<'_, R>) -> RA + Send,
+    B: FnOnce(&mut ExecCtx<'_, R>) -> RB + Send,
     RA: Send,
     RB: Send,
 {
@@ -1311,10 +1304,10 @@ pub fn timed<T>(
 /// from several threads at once: the raw links bypass the compiler's own
 /// check, so it is made here.
 #[allow(dead_code)]
-fn shared_across_branches<R: Rt, E: UserEvent>() {
+fn shared_across_branches<R: Rt>() {
     fn sync<T: Sync>() {}
-    sync::<CompileCtx<R, E>>();
+    sync::<CompileCtx<R>>();
     sync::<Layered<TagValue>>();
     sync::<RtView<'static, R>>();
-    sync::<Event<E>>();
+    sync::<Event>();
 }

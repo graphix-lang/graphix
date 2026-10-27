@@ -86,7 +86,7 @@ defpackage! {
     builtins => [
         Foo,
         submod::Bar,
-        Baz as Baz<R, E>,
+        Baz as Baz<R>,
     ],
     is_custom => |gx, env, e| {
         todo!()
@@ -311,7 +311,7 @@ fn register_builtins(c: &Crate, builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
         let reg_type = &entry.reg_type;
         quote! {
             {
-                let name: &str = <#reg_type as #p::graphix_compiler::BuiltIn<#p::graphix_rt::GXRt<X>, X::UserEvent>>::NAME;
+                let name: &str = <#reg_type as #p::graphix_compiler::BuiltIn<#p::graphix_rt::GXRt<X>>>::NAME;
                 if name.contains(|c: char| c != '_' && !c.is_ascii_alphanumeric()) {
                     #p::anyhow::bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", name)
                 }
@@ -467,7 +467,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         impl<X: #p::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
                 &self,
-                ctx: &mut #p::graphix_compiler::ExecState<#p::graphix_rt::GXRt<X>, X::UserEvent>,
+                ctx: &mut #p::graphix_compiler::ExecState<#p::graphix_rt::GXRt<X>>,
                 modules: &mut #p::ahash::AHashMap<
                     #p::netidx_core::path::Path,
                     #p::graphix_compiler::expr::VfsEntry,

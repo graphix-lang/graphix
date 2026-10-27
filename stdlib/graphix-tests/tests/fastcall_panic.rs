@@ -4,7 +4,7 @@
 // unwind aborts the process.
 
 use anyhow::{Result, bail};
-use graphix_compiler::{Effect, ExecCtx, FastCall, Rt, UserEvent};
+use graphix_compiler::{Effect, ExecCtx, FastCall, Rt};
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_eval,
     testing::{Mode, TestCtx, config},
@@ -26,11 +26,11 @@ struct PanicProbe;
 
 graphix_package_core::unit_image_state!(PanicProbe);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for PanicProbe {
+impl<R: Rt> EvalCached<R> for PanicProbe {
     const NAME: &str = "panic_probe";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_panic_at_three)));
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_panic_at_three, from)
     }
 }

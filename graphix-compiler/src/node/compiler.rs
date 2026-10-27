@@ -14,8 +14,7 @@ use super::{
     seq_machine::{SeqCapture, SeqMachine},
 };
 use crate::{
-    CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope,
-    UserEvent, bailat,
+    CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope, bailat,
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BinOp, Decorations, Expr, ExprId, ExprKind,
         LambdaBody, LambdaExpr, ModPath, ModuleKind, Name, SelectExpr, StructExpr,
@@ -42,37 +41,37 @@ use triomphe::Arc;
 /// [`compile_module`], so these two are where graph construction
 /// descends the program tree, and where it takes stack headroom for
 /// however deeply the program nests.
-pub(crate) fn compile<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn compile<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
     top_id: ExprId,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, false))
 }
 
 /// [`compile`] a statement: a `let` compiles here, and nowhere a value
 /// is expected.
-pub(crate) fn compile_statement_expr<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn compile_statement_expr<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
     top_id: ExprId,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, true))
 }
 
 /// The lambda a definition-asserting attribute annotates: the node's
 /// own, or its `let`'s value, seen through parentheses.
-fn annotated_lambda<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<crate::LambdaId> {
+fn annotated_lambda<R: Rt>(node: &Node<R>) -> Option<crate::LambdaId> {
     let mut view = node.view();
     loop {
         view = match view {
             NodeView::Bind(b) => b.node.view(),
             NodeView::ExplicitParens(p) => p.n.view(),
-            NodeView::Lambda(l) => return l.lambda_id::<R, E>(),
+            NodeView::Lambda(l) => return l.lambda_id::<R>(),
             _ => return None,
         }
     }
@@ -180,14 +179,14 @@ fn fork_on_body(spec: &Expr) -> Option<Expr> {
     Some(spec)
 }
 
-fn compile_inner<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn compile_inner<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
     top_id: ExprId,
     statement: bool,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     if ctx.env.ide.is_lsp() {
         ctx.env.push_scope_map_entry(ScopeMapEntry {
             pos: spec.pos,
@@ -286,8 +285,8 @@ fn compile_inner<R: Rt, E: UserEvent>(
 /// module body, [`crate::compile_stmt`]) or a dynamic module in value
 /// position. `predeclared`: the enclosing block registered the module's
 /// path already, so it is not a duplicate.
-pub(crate) fn compile_module<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn compile_module<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     spec: Arc<Expr>,
     scope: &Scope,
@@ -295,14 +294,14 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
     name: &Name,
     value: &ModuleKind,
     predeclared: bool,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     ensure_sufficient(|| {
         compile_module_inner(ctx, flags, spec, scope, top_id, name, value, predeclared)
     })
 }
 
-fn compile_module_inner<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn compile_module_inner<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     spec: Arc<Expr>,
     scope: &Scope,
@@ -310,7 +309,7 @@ fn compile_module_inner<R: Rt, E: UserEvent>(
     name: &Name,
     value: &ModuleKind,
     predeclared: bool,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     let enclosing = scope;
     let scope = scope.append(name);
     if !predeclared && ctx.env.modules.contains(&scope.lexical) {
@@ -371,7 +370,7 @@ fn compile_module_inner<R: Rt, E: UserEvent>(
 }
 
 /// The refusal of a declaration where a value is expected.
-fn not_an_expression<R: Rt, E: UserEvent>(spec: &Expr, what: &str) -> Result<Node<R, E>> {
+fn not_an_expression<R: Rt>(spec: &Expr, what: &str) -> Result<Node<R>> {
     bailat!(
         spec,
         "{what} is not an expression — it may only appear as a statement in a \
@@ -379,14 +378,14 @@ fn not_an_expression<R: Rt, E: UserEvent>(spec: &Expr, what: &str) -> Result<Nod
     )
 }
 
-fn compile_kind<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn compile_kind<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     spec: &Arc<Expr>,
     scope: &Scope,
     top_id: ExprId,
     statement: bool,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     macro_rules! binop {
         ($op:ident, $lhs:expr, $rhs:expr) => {
             $op::compile(ctx, flags, spec.clone(), scope, top_id, $lhs, $rhs)
@@ -531,7 +530,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
         ExprKind::Seq(_) => {
-            let lower = |ctx: &CompileCtx<R, E>| -> Result<Expr> {
+            let lower = |ctx: &CompileCtx<R>| -> Result<Expr> {
                 for u in crate::expr::seq::fixed_untils(spec) {
                     ctx.env.warn(
                         flags,
@@ -639,10 +638,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
 /// `lower`'s rewrite of `spec`, once per definition body: every compile of
 /// the body takes the first compile's, so its expression ids are the ones
 /// the check's table has rows for.
-pub(super) fn lowering<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub(super) fn lowering<R: Rt>(
+    ctx: &CompileCtx<R>,
     spec: &Expr,
-    lower: impl FnOnce(&CompileCtx<R, E>) -> Result<Option<Expr>>,
+    lower: impl FnOnce(&CompileCtx<R>) -> Result<Option<Expr>>,
 ) -> Result<Option<Expr>> {
     let Some(share) = ctx.body.as_ref().map(|b| &b.share) else { return lower(ctx) };
     let key = spec.id;
@@ -658,8 +657,8 @@ pub(super) fn lowering<R: Rt, E: UserEvent>(
 /// receiver. A call's own function stays a reference. `None` for any
 /// other name; a variadic method has no expansion (a lambda cannot pass
 /// its rest on) and is refused.
-pub(super) fn eta_dispatcher<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub(super) fn eta_dispatcher<R: Rt>(
+    ctx: &CompileCtx<R>,
     spec: &Expr,
     name: &ModPath,
     bind: &crate::env::Bind,

@@ -2,7 +2,7 @@
 //! what a fork point measures of its children under [`ParMode::Auto`],
 //! and where it forks.
 
-use crate::{ExecCtx, Node, Rt, UserEvent, analysis, branch::saturated};
+use crate::{ExecCtx, Node, Rt, analysis, branch::saturated};
 use bytes::{Buf, BufMut};
 use graphix_types::stack::ParMode;
 use netidx_core::pack::{Pack, PackError};
@@ -300,11 +300,11 @@ impl Siblings {
 
     /// Decide whether `n` siblings are independent, unless that is
     /// decided, or open with nothing bound since it was asked.
-    pub(crate) fn decide<'a, R: Rt, E: UserEvent>(
+    pub(crate) fn decide<'a, R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         n: usize,
-        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+        children: impl Iterator<Item = &'a Node<R>> + Clone,
         sites: analysis::Sites,
     ) {
         if self.decided() || n < 2 || ctx.fork_mode() == ParMode::Off {
@@ -371,11 +371,11 @@ impl ForkSite {
     /// Decide whether the site's `n` children are independent
     /// ([`Siblings::decide`]); dependent ones always run in order.
     #[inline]
-    pub fn decide_siblings<'a, R: Rt, E: UserEvent>(
+    pub fn decide_siblings<'a, R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         n: usize,
-        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+        children: impl Iterator<Item = &'a Node<R>> + Clone,
     ) {
         self.1.decide(ctx, n, children, analysis::Sites::Statements)
     }
@@ -395,11 +395,7 @@ impl ForkSite {
 
     /// What this update does with the site's `n` children.
     #[inline]
-    pub fn plan<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &ExecCtx<'_, R, E>,
-        n: usize,
-    ) -> Plan<'_> {
+    pub fn plan<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, n: usize) -> Plan<'_> {
         match ctx.fork_mode() {
             ParMode::Off => Plan::Serial,
             _ if n < 2 || !self.1.independent() => Plan::Serial,
@@ -667,11 +663,11 @@ impl SlotSite {
     /// Decide, once, whether the slots are independent: they share one
     /// callback, so two of them stand for all; dependent slots always
     /// run in order.
-    pub fn decide_siblings<'a, R: Rt, E: UserEvent>(
+    pub fn decide_siblings<'a, R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         n: usize,
-        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+        children: impl Iterator<Item = &'a Node<R>> + Clone,
     ) {
         self.siblings.decide(ctx, n, children, analysis::Sites::Slots)
     }
@@ -690,11 +686,7 @@ impl SlotSite {
 
     /// The plan for the `n` standing slots.
     #[inline]
-    pub fn plan<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &ExecCtx<'_, R, E>,
-        n: usize,
-    ) -> SlotPlan {
+    pub fn plan<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, n: usize) -> SlotPlan {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
             _ if n < 2 || !self.siblings.independent() => SlotPlan::Serial,
@@ -854,14 +846,14 @@ impl ProbeSite {
     /// items a probe left, forked in ranges of the size it is given, or
     /// in order without one. `None` when either returns `None` (an
     /// interrupt).
-    pub fn run<R: Rt, E: UserEvent, S, T>(
+    pub fn run<R: Rt, S, T>(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         items: &mut [S],
         at: usize,
         mut acc: T,
-        mut probe: impl FnMut(&mut ExecCtx<'_, R, E>, &mut S, usize) -> Option<T>,
-        rest: impl FnOnce(&mut ExecCtx<'_, R, E>, &mut [S], usize, Option<usize>) -> Option<T>,
+        mut probe: impl FnMut(&mut ExecCtx<'_, R>, &mut S, usize) -> Option<T>,
+        rest: impl FnOnce(&mut ExecCtx<'_, R>, &mut [S], usize, Option<usize>) -> Option<T>,
         join: impl Fn(T, T) -> T,
     ) -> Option<T> {
         let (mut items, mut at) = (items, at);

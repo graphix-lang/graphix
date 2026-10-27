@@ -170,7 +170,7 @@ pub trait Package<X: GXExt>: Send + Sync {
     /// package's dependency packages.
     fn register(
         &self,
-        ctx: &mut ExecState<GXRt<X>, X::UserEvent>,
+        ctx: &mut ExecState<GXRt<X>>,
         modules: &mut AHashMap<netidx_core::path::Path, VfsEntry>,
         root_mods: &mut IndexSet<ArcStr>,
     ) -> Result<()>;
@@ -213,7 +213,7 @@ pub trait Package<X: GXExt>: Send + Sync {
 /// `use`, the compiler's core prelude makes its root items visible
 /// everywhere).
 pub fn register_packages<'a, X: GXExt + 'a>(
-    ctx: &mut ExecState<GXRt<X>, X::UserEvent>,
+    ctx: &mut ExecState<GXRt<X>>,
     packages: impl IntoIterator<Item = &'a dyn Package<X>>,
 ) -> Result<(ResolverRef, ArcStr)> {
     let mut modules = AHashMap::default();

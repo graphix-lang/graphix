@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
-    SourcePosition, TagValue, Update, UserEvent, bailat,
+    SourcePosition, TagValue, Update, bailat,
     env::{Env, Glob, ImplDef, Map, TraitDef, TraitMethodRef, TraitMethodSig},
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
@@ -253,21 +253,21 @@ pub(crate) fn trait_ref(
 }
 
 #[derive(Debug)]
-pub struct Trait<R: Rt, E: UserEvent> {
+pub struct Trait<R: Rt> {
     spec: Arc<Expr>,
     def: Arc<TraitDef>,
-    defaults: Node<R, E>,
+    defaults: Node<R>,
 }
 
-impl<R: Rt, E: UserEvent> Trait<R, E> {
+impl<R: Rt> Trait<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         t: &TraitExpr,
         top_id: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         if netidx_core::path::Path::parts(&*scope.lexical).any(crate::is_fn_block) {
             bailat!(
                 spec,
@@ -341,11 +341,11 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Trait<R, E> {
+impl<R: Rt> Trait<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let def = Arc::<TraitDef>::decode(buf)?;
         let defaults = decode_node(ctx, buf)?;
@@ -353,21 +353,21 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
+impl<R: Rt> Update<R> for Trait<R> {
     /// An instance checks this node as its definition's check did.
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         _types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0(ctx)
     }
 
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.defaults)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.defaults)
     }
 
@@ -378,12 +378,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         self.defaults.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.defaults.update(ctx);
         TagValue::phantom_ref()
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
         // every written name in a method's signature must name something by
@@ -409,7 +409,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         &self.spec
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.defaults.delete(ctx);
         ctx.env.undeftrait(&self.def);
     }
@@ -420,11 +420,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
 
     /// A declaration has nothing of its own to walk: every view walker
     /// treats a trait exactly as its defaults' module block.
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         self.defaults.view()
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         self.defaults.fuse(ctx)
     }
 }
@@ -443,16 +443,16 @@ pub(crate) struct Fulfils {
 }
 
 #[derive(Debug)]
-pub struct Impl<R: Rt, E: UserEvent> {
+pub struct Impl<R: Rt> {
     spec: Arc<Expr>,
     pub(crate) def: Arc<ImplDef>,
     pub(crate) fulfils: Option<Fulfils>,
     trait_def: Arc<TraitDef>,
-    pub(crate) body: Node<R, E>,
+    pub(crate) body: Node<R>,
     /// For a core trait, one never-run call site per method so the
     /// analysis reaches the method's body and verifies its implicit
     /// `#[sync]`.
-    pub(crate) prototypes: Vec<SynthCall<R, E>>,
+    pub(crate) prototypes: Vec<SynthCall<R>>,
 }
 
 /// The orphan rule: an abstract type's impl belongs to the type's
@@ -637,15 +637,15 @@ pub(crate) fn impl_head(
     Ok((target, params))
 }
 
-impl<R: Rt, E: UserEvent> Impl<R, E> {
+impl<R: Rt> Impl<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         im: &ImplExpr,
         top_id: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         impl_outside_functions(&scope.lexical, &im.head.trait_name).at(&spec)?;
         let trait_id =
             match ctx.env.lookup_trait(&scope.lexical, &im.head.trait_name).at(&spec)? {
@@ -788,7 +788,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     // pin both the static and the dynamic case. probe:
     // design/review-2026-10-26/repro/tests-fusion-traits-trait-requirement-unchecked.gx
     // (tests-fusion-traits-01)
-    fn build_prototypes(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn build_prototypes(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());
         }
@@ -814,8 +814,8 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
 /// where the implementation registers, never in a module's check, which
 /// runs beside its siblings'.
 
-fn narrow_to_representation<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn narrow_to_representation<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     declared: Arc<ImplDef>,
     implementation: &ImplDef,
 ) -> Fulfils {
@@ -833,11 +833,11 @@ fn narrow_to_representation<R: Rt, E: UserEvent>(
     Fulfils { entry, narrowed: Some(declared) }
 }
 
-impl<R: Rt, E: UserEvent> Impl<R, E> {
+impl<R: Rt> Impl<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let def = Arc::<ImplDef>::decode(buf)?;
         let fulfils = Option::<Fulfils>::decode(buf)?;
@@ -854,22 +854,22 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
+impl<R: Rt> Update<R> for Impl<R> {
     /// An instance checks this node as its definition's check did.
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         _types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0(ctx)
     }
 
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.body);
         self.prototypes.iter().for_each(|p| f(&p.site))
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.body);
         self.prototypes.iter_mut().for_each(|p| f(&mut p.site))
     }
@@ -889,12 +889,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.body.update(ctx);
         TagValue::phantom_ref()
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         // the head's variables are the impl's declared ones: no method
         // decides them
         let _gates: LPooled<Vec<_>> =
@@ -930,7 +930,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.body, self.body.typecheck1(ctx))?;
         if self.prototypes.is_empty() {
             wrap!(self.body, self.build_prototypes(ctx))?;
@@ -942,7 +942,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         &self.spec
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.body.delete(ctx);
         for p in self.prototypes.iter_mut() {
             p.delete(ctx)
@@ -956,7 +956,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.body.sleep(ctx)
     }
 
@@ -964,25 +964,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         Type::BOTTOM
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Impl(self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         self.body.fuse(ctx)
     }
 }
 
-impl<R: Rt, E: UserEvent> CallSite<R, E> {
+impl<R: Rt> CallSite<R> {
     /// Resolve a trait method call to an implementation by the self
     /// argument's type. A self type nothing produced into settles to ⊥
     /// and the call is a standing bottom; a union self type lowers to a
     /// select.
     pub(super) fn resolve_trait_call(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         tm: TraitMethodRef,
-    ) -> Result<Option<Node<R, E>>> {
+    ) -> Result<Option<Node<R>>> {
         let Some(def) = ctx.env.trait_def(tm.trait_id).cloned() else {
             bailat!(self.spec, "trait method call through an unknown trait")
         };
@@ -1080,7 +1080,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.retarget(ctx, bind);
         let fv = ctx.bind_to_lambda.get(&bind).cloned();
         if let Some(fv) = fv
-            && let Some(ldef) = fv.downcast_ref::<LambdaDef<R, E>>()
+            && let Some(ldef) = fv.downcast_ref::<LambdaDef<R>>()
         {
             self.resolve_static(ctx, ldef)?;
         }
@@ -1089,10 +1089,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// A call whose self argument is never produced: `never(<args>)`,
     /// its arguments still live.
-    fn lower_bottom_self(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    fn lower_bottom_self(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         let (mut operands, names) = self.take_operands(None)?;
         let spec = (*self.spec).clone();
         let args = names.iter().map(|(_, n)| {
@@ -1118,9 +1115,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// `Ord::cmp(a, b)` tests `<` and `>`.
     fn lower_core_call(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         core: CoreTrait,
-    ) -> Result<Option<Node<R, E>>> {
+    ) -> Result<Option<Node<R>>> {
         let (mut operands, names) = self.take_operands(None)?;
         let spec = (*self.spec).clone();
         let mk = |kind: ExprKind| Expr::synth(&spec, kind);
@@ -1210,11 +1207,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// The implementation bindings are named by id (`#bind::N`).
     fn lower_trait_union(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         def: &TraitDef,
         index: usize,
         members: &[Type],
-    ) -> Result<Option<Node<R, E>>> {
+    ) -> Result<Option<Node<R>>> {
         let m = &def.methods[index];
         let mut targets: LPooled<Vec<(Type, BindId)>> = LPooled::take();
         for mem in members.iter() {

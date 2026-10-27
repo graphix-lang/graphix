@@ -10,33 +10,33 @@ macro_rules! born_builtin {
             out: ::graphix_compiler::TagValue,
         }
 
-        impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent> ::graphix_compiler::BuiltIn<R, E> for $name {
+        impl<R: ::graphix_compiler::Rt> ::graphix_compiler::BuiltIn<R> for $name {
             const EFFECT: ::graphix_compiler::effects::Effect =
                 ::graphix_compiler::effects::Effect::Sync;
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut ::graphix_compiler::CompileCtx<R, E>,
+                _ctx: &'a mut ::graphix_compiler::CompileCtx<R>,
                 _typ: &'a ::graphix_compiler::typ::FnType,
                 _resolved: Option<&'d ::graphix_compiler::typ::FnType>,
                 _scope: &'b ::graphix_compiler::Scope,
-                _from: &'c [::graphix_compiler::Node<R, E>],
+                _from: &'c [::graphix_compiler::Node<R>],
                 _top_id: ::graphix_compiler::expr::ExprId,
-            ) -> anyhow::Result<Box<dyn ::graphix_compiler::Apply<R, E>>> {
+            ) -> anyhow::Result<Box<dyn ::graphix_compiler::Apply<R>>> {
                 Ok(Box::new(Self { once: ::graphix_package_core::FireOnce::default(), out: ::graphix_compiler::TagValue::phantom() }))
             }
 
             fn image_decode(
-                _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
-                _from: &[::graphix_compiler::Node<R, E>],
+                _ctx: &mut ::graphix_compiler::ExecCtx<'_, R>,
+                _from: &[::graphix_compiler::Node<R>],
                 buf: &mut &[u8],
-            ) -> Result<Box<dyn ::graphix_compiler::Apply<R, E>>, ::netidx_core::pack::PackError> {
+            ) -> Result<Box<dyn ::graphix_compiler::Apply<R>>, ::netidx_core::pack::PackError> {
                 let once = <::graphix_package_core::FireOnce as ::netidx_core::pack::Pack>::decode(buf)?;
                 Ok(Box::new(Self { once, out: ::graphix_compiler::TagValue::phantom() }))
             }
         }
 
-        impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent> ::graphix_compiler::Apply<R, E> for $name {
+        impl<R: ::graphix_compiler::Rt> ::graphix_compiler::Apply<R> for $name {
             fn image_encode(&self, buf: &mut ::graphix_compiler::image::ImageBuf,
             ) -> Result<(), ::netidx_core::pack::PackError> {
                 ::netidx_core::pack::Pack::encode(&self.once, buf)
@@ -44,8 +44,8 @@ macro_rules! born_builtin {
 
             fn update(
                 &mut self,
-                ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
-                _from: &mut [::graphix_compiler::Node<R, E>],
+                ctx: &mut ::graphix_compiler::ExecCtx<'_, R>,
+                _from: &mut [::graphix_compiler::Node<R>],
             ) -> &::graphix_compiler::TagValue {
                 if ctx.event.born() && self.once.take() {
                     let $ctx = &mut *ctx;
@@ -56,11 +56,11 @@ macro_rules! born_builtin {
                 }
             }
 
-            fn delete(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>) {}
+            fn delete(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R>) {}
 
-            fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>) {}
+            fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R>) {}
 
-            fn reborn(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>) {
+            fn reborn(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R>) {
                 self.once.reset();
             }
         }

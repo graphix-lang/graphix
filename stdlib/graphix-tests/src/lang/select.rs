@@ -2949,7 +2949,7 @@ run!(
   let f = 'a: (i64, string) |x: 'a| -> 'a select x { v@ (n, _) => v };
   f((1, "a"))
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[1, "a"]"#)
+    prints(r#"[i64:1, "a"]"#)
 );
 
 const CAPTURE_UNION_MEMBER: &str = r#"

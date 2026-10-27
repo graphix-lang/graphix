@@ -2,7 +2,7 @@
 //! conditions, arm dispatch, and the merge-shape protocol.
 
 use crate::{
-    BindId, Node, NodeView, Refs, Rt, Update, UserEvent,
+    BindId, Node, NodeView, Refs, Rt, Update,
     expr::ExprId,
     fusion::{
         self,
@@ -244,9 +244,9 @@ fn retain_read(binds: &mut SmallVec<[SelectArmBind; 8]>, reads: &Refs) {
 /// explicit type predicate is tested; a guard runs after the pattern
 /// matches with its binds in scope, and a bottom guard stops the chain;
 /// the first matching arm wins.
-pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_select_node<R: Rt>(
     cx: &mut BodyCx,
-    sel: &Select<R, E>,
+    sel: &Select<R>,
 ) -> Result<CompiledExpr> {
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
@@ -349,9 +349,9 @@ pub(super) struct ScrutDrop {
 /// adopted as an env local, the returned [`ScrutDrop`]: every
 /// terminator drops the env, and a value-position select drops it at
 /// its merge.
-pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
+pub(super) fn classify_select_scrutinee<R: Rt>(
     cx: &mut BodyCx,
-    sel: &Select<R, E>,
+    sel: &Select<R>,
 ) -> Result<(SelectScrut, Type, Option<ScrutDrop>)> {
     let typ = sel.arg.node.typ();
     let scrut_typ = kernel_abi::freeze_for_abi_normalized(typ).ok_or_else(|| {
@@ -365,11 +365,11 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 /// stays a block local, dropped with the block's others. The pattern is
 /// irrefutable, so its test fails only over a bottom value, whose flags
 /// the binds already carry: they install unmasked.
-pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
+pub(super) fn emit_let_binds<R: Rt>(
     cx: &mut BodyCx,
     pattern: &StructPatternNode,
     typ: &Type,
-    value: &Node<R, E>,
+    value: &Node<R>,
     id: ExprId,
 ) -> Result<()> {
     let typ = freeze_node_typ(cx.ctx, typ)
@@ -398,9 +398,9 @@ pub(super) fn emit_composite_binds(
 
 /// [`classify_select_scrutinee`] for the value `node`, of the frozen
 /// type `scrut_typ`, of the expression `id`.
-fn classify_scrutinee<R: Rt, E: UserEvent>(
+fn classify_scrutinee<R: Rt>(
     cx: &mut BodyCx,
-    node: &Node<R, E>,
+    node: &Node<R>,
     scrut_typ: Type,
     id: ExprId,
 ) -> Result<(SelectScrut, Type, Option<ScrutDrop>)> {
@@ -923,9 +923,9 @@ enum Tested {
 /// block ([`emit_or_chain`]): a miss goes to `nomatch`, else binds
 /// standing placeholders; `pre` holds every alternative's test when a
 /// block dominating this one emitted them ([`emit_alt_matches`]).
-fn emit_arm_condition<R: Rt, E: UserEvent>(
+fn emit_arm_condition<R: Rt>(
     cx: &mut BodyCx,
-    pat: &PatternNode<R, E>,
+    pat: &PatternNode<R>,
     scrut: SelectScrut,
     scrut_typ: &Type,
     nomatch: Option<Block>,
@@ -977,14 +977,14 @@ fn emit_arm_condition<R: Rt, E: UserEvent>(
 /// nothing). `emit_miss` handles a tainted scrutinee, which makes no
 /// selection and consults no guard; `emit_undet` the undecidable
 /// outcome (a bottom consulted guard), given its STALE bits (0 = fresh).
-pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
+pub(super) fn emit_select_arms<R: Rt>(
     cx: &mut BodyCx,
-    sel: &Select<R, E>,
+    sel: &Select<R>,
     scrut: SelectScrut,
     scrut_typ: &Type,
     emit_arm: &mut dyn FnMut(
         &mut BodyCx,
-        &Node<R, E>,
+        &Node<R>,
         usize,
         usize,
         ClifValue,
@@ -1264,10 +1264,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
 /// binds and constants (comparisons, logicals, not, scalar +/-/*/neg;
 /// no div, indexing, calls or state). Such a guard is evaluated lazily
 /// in the chain instead of in the prologue.
-fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
-    pat: &PatternNode<R, E>,
-    guard: &Node<R, E>,
-) -> bool {
+fn guard_is_pure_of_binds<R: Rt>(pat: &PatternNode<R>, guard: &Node<R>) -> bool {
     let mut bind_ids: SmallVec<[BindId; 8]> = SmallVec::new();
     pat.structure_predicate.ids(&mut |id| bind_ids.push(id));
     let mut ok = true;
@@ -1338,9 +1335,9 @@ fn emit_inferred_guard_cond(
 /// Emit arm `pat`'s pattern condition against `scrut`: the type
 /// predicate (`tcond`) and the structure condition (`scond`), pushing
 /// the pattern's binds onto `binds`.
-fn emit_arm_cond<R: Rt, E: UserEvent>(
+fn emit_arm_cond<R: Rt>(
     cx: &mut BodyCx,
-    pat: &PatternNode<R, E>,
+    pat: &PatternNode<R>,
     scrut: SelectScrut,
     scrut_typ: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
@@ -1489,9 +1486,9 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
 /// Whether every value of the scrutinee's type passes an arm's written
 /// type test: the test holds the type, which holds no abstract type
 /// (whose test is nominal).
-fn type_test_is_trivial<R: Rt, E: UserEvent>(
+fn type_test_is_trivial<R: Rt>(
     cx: &BodyCx,
-    pat: &PatternNode<R, E>,
+    pat: &PatternNode<R>,
     scrut_typ: &Type,
 ) -> bool {
     let env = cx.ctx.type_env;
@@ -1764,9 +1761,9 @@ fn install_arm_binds(
 /// Value-position arm-body emission: widen the arm's result to the
 /// select's merge shape and jump to the merge block. `guards_stale` is
 /// the consulted guards' STALE fold at this arm.
-fn emit_select_value_arm<R: Rt, E: UserEvent>(
+fn emit_select_value_arm<R: Rt>(
     cx: &mut BodyCx,
-    body: &Node<R, E>,
+    body: &Node<R>,
     mark: usize,
     drops_from: usize,
     merge_shape: SelectMerge,
@@ -1815,9 +1812,9 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
 }
 
 /// An ordinary arm's result widened to the select's merge shape.
-fn emit_select_arm_value<R: Rt, E: UserEvent>(
+fn emit_select_arm_value<R: Rt>(
     cx: &mut BodyCx,
-    body: &Node<R, E>,
+    body: &Node<R>,
     body_frozen: &Type,
     merge_shape: SelectMerge,
 ) -> Result<(ClifValue, ClifValue)> {

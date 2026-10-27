@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
-    Node, Refs, Rt, Scope, Tag, TagValue, TagView, UserEvent, WriteTarget,
+    Node, Refs, Rt, Scope, Tag, TagValue, TagView, WriteTarget,
     effects::{LambdaFacts, RecursionKind},
     env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
@@ -142,10 +142,7 @@ impl QueueState {
     }
 }
 
-fn write_count<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    w: Option<(BindId, i64)>,
-) {
+fn write_count<R: Rt>(ctx: &mut ExecCtx<'_, R>, w: Option<(BindId, i64)>) {
     if let Some((r, depth)) = w {
         let v = Value::I64(depth);
         match ctx.write_target(r) {
@@ -156,7 +153,7 @@ fn write_count<R: Rt, E: UserEvent>(
     }
 }
 
-fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, e: Option<QueueEntry>) {
+fn release<R: Rt>(ctx: &mut ExecCtx<'_, R>, e: Option<QueueEntry>) {
     if let Some(mut e) = e {
         for (bid, v) in e.updates.drain(..) {
             ctx.rt.set_var(bid, v);
@@ -170,28 +167,24 @@ type StateRef = Arc<Mutex<QueueState>>;
 /// wrapper at a user call site goes through this. Push/pop coordination is
 /// done via `state` shared with the owning `QueueFn` node.
 #[derive(Debug)]
-struct WrapperApply<R: Rt, E: UserEvent> {
+struct WrapperApply<R: Rt> {
     site: SiteId,
     state: StateRef,
     /// The call of `f`, through the queuefn's binding of it, over one
     /// binding per argument of this site's (`from[i]` feeds the `i`th).
-    call: genn::Callback<R, E>,
+    call: genn::Callback<R>,
     typ: Arc<FnType>,
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
+impl<R: Rt> Apply<R> for WrapperApply<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         // the wrapper lambda is a runtime definition, built once a cycle ran
         let _ = buf;
         Err(PackError::Application(image::NOT_QUIESCENT))
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         // a site's paid calls are released one a cycle, each once the one
         // before lands; at a wake the credit banked while it slept pays its
         // calls, and a call it makes meanwhile queues behind them
@@ -261,8 +254,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
     ) -> Result<()> {
         self.call.typecheck0(ctx)
     }
@@ -276,13 +269,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     }
 
     /// The site's queued calls go with it, and so do its bindings.
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.call.delete(ctx);
         self.forget(ctx);
     }
 
     /// A pause: the site's calls keep their place, released once it wakes.
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.call.sleep(ctx);
         let mut s = self.state.lock();
         if !s.asleep.contains(&self.site) {
@@ -291,13 +284,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     }
 
     /// Born again, the site makes its calls afresh.
-    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.forget(ctx);
     }
 }
 
-impl<R: Rt, E: UserEvent> WrapperApply<R, E> {
-    fn forget(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+impl<R: Rt> WrapperApply<R> {
+    fn forget(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let count_write = {
             let mut s = self.state.lock();
             s.drop_site(self.site);
@@ -311,7 +304,7 @@ impl<R: Rt, E: UserEvent> WrapperApply<R, E> {
 /// is known, emits it as the call site's value, and on `#trigger` updates
 /// pops queued invocations.
 #[derive(Debug)]
-pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
+pub(crate) struct QueueFn<R: Rt> {
     state: StateRef,
     /// BindId holding the most recent value of `f`. The wrapper LambdaDef's
     /// preds reference this so they always call the current `f`.
@@ -326,15 +319,15 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
     scope: Scope,
     out: TagValue,
     /// `fn() ->` makes the PhantomData unconditionally Send + Sync.
-    _phantom: PhantomData<fn() -> (R, E)>,
+    _phantom: PhantomData<fn() -> R>,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
+impl<R: Rt> BuiltIn<R> for QueueFn<R> {
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let pop_count = i64::decode(buf)?;
         let count_ref = Option::<BindId>::decode(buf)?.map(|c| (c, ctx.write_target(c)));
         let last_written_depth = i64::decode(buf)?;
@@ -368,13 +361,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
     const ORDERED: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         if from.len() != 3 {
             bail!("queuefn: expected three arguments (#count, #trigger, f)")
         }
@@ -394,8 +387,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> QueueFn<R, E> {
-    fn build_lambda(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<Value> {
+impl<R: Rt> QueueFn<R> {
+    fn build_lambda(&mut self, ctx: &mut ExecCtx<'_, R>) -> Result<Value> {
         let ftyp = self
             .ftyp
             .clone()
@@ -425,10 +418,10 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
         let lambda_typ = ftyp.clone();
         let state = self.state.clone();
         let fid = self.fid;
-        let init: InitFn<R, E> = SArc::new(
+        let init: InitFn<R> = SArc::new(
             move |scope: &Scope,
-                  ctx: &mut CompileCtx<R, E>,
-                  args: &mut [Node<R, E>],
+                  ctx: &mut CompileCtx<R>,
+                  args: &mut [Node<R>],
                   _mode: BindMode<'_>,
                   tid: ExprId| {
                 build_wrapper_apply(
@@ -463,13 +456,13 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
         Ok(ctx.wrap_lambda(def))
     }
 
-    fn maybe_write_count(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn maybe_write_count(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let w = self.state.lock().count_write();
         write_count(ctx, w);
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
+impl<R: Rt> Apply<R> for QueueFn<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let s = self.state.lock();
         // the wrapper lambda and queued invocations exist only once a cycle ran
@@ -485,11 +478,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         image::scope_encode(&self.scope, buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
@@ -510,7 +499,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             // A lazily-built instance never saw typecheck1; the runtime
             // `f` value carries the LambdaDef to derive the type from.
             if self.ftyp.is_none() {
-                if let Some(def) = v.downcast_ref::<LambdaDef<R, E>>() {
+                if let Some(def) = v.downcast_ref::<LambdaDef<R>>() {
                     self.ftyp = Some(Arc::new(def.typ.reset_tvars()));
                 }
             }
@@ -546,8 +535,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
         let Some(ft) = extract_fn_arg_type(&ctx.env, resolved, 2) else {
@@ -559,19 +548,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         ctx.release_var(self.fid, self.top_id);
         if let Some(def) =
-            self.lambda.as_ref().and_then(|l| l.downcast_ref::<LambdaDef<R, E>>())
+            self.lambda.as_ref().and_then(|l| l.downcast_ref::<LambdaDef<R>>())
         {
             ctx.lambda_defs.remove(&def.id);
         }
     }
 
     /// A pause: the queued calls and the credit stay.
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 
-    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let w = {
             let mut s = self.state.lock();
             s.queue.clear();
@@ -584,15 +573,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     }
 }
 
-fn build_wrapper_apply<R: Rt, E: UserEvent>(
+fn build_wrapper_apply<R: Rt>(
     scope: &Scope,
-    ctx: &mut CompileCtx<R, E>,
-    _args: &mut [Node<R, E>],
+    ctx: &mut CompileCtx<R>,
+    _args: &mut [Node<R>],
     state: StateRef,
     fid: BindId,
     ftyp: Arc<FnType>,
     tid: ExprId,
-) -> Result<Box<dyn Apply<R, E>>> {
+) -> Result<Box<dyn Apply<R>>> {
     let scope = scope.append(&format_compact!("qfn{}", LambdaId::new().inner()));
     let names: LPooled<Vec<CompactString>> =
         (0..ftyp.args.len()).map(|i| format_compact!("qa{i}")).collect();

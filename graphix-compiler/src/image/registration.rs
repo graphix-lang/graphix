@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     BindId, BuiltinBindInfo, CompileCtx, DefAssertion, ExecCtx, ExecState, LambdaId,
-    LambdaInstanceId, Node, Rt, Saved, Scope, StaticCall, UserEvent,
+    LambdaInstanceId, Node, Rt, Saved, Scope, StaticCall,
     env::Env,
     expr::{Expr, ExprId, ModPath},
     image,
@@ -80,16 +80,16 @@ impl Pack for ProgramRoot {
 
 /// The root nodes and scope a restored registration hands back to the
 /// runtime, which owns them exactly as it owns compiled ones.
-pub struct Registration<R: Rt, E: UserEvent> {
-    pub nodes: Vec<(ExprId, Node<R, E>)>,
+pub struct Registration<R: Rt> {
+    pub nodes: Vec<(ExprId, Node<R>)>,
     pub scope: Scope,
     pub program: Option<ProgramRoot>,
 }
 
 /// The context's tables that registration fills and later compiles
 /// read; each is a plain list on the wire.
-struct Tables<'a, R: Rt, E: UserEvent> {
-    defs: Vec<&'a LambdaDef<R, E>>,
+struct Tables<'a, R: Rt> {
+    defs: Vec<&'a LambdaDef<R>>,
     bind_to_lambda: Vec<(BindId, LambdaId)>,
     builtin_bindings: Vec<(ModPath, CompactString, BuiltinBindInfo)>,
     fn_forward_resolutions: Vec<(BindId, LambdaId)>,
@@ -101,13 +101,13 @@ struct Tables<'a, R: Rt, E: UserEvent> {
     def_assertions: Vec<DefAssertion>,
 }
 
-impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
-    fn collect(ctx: &'a CompileCtx<R, E>) -> Result<Self, PackError> {
-        let mut defs: Vec<&LambdaDef<R, E>> = ctx
+impl<'a, R: Rt> Tables<'a, R> {
+    fn collect(ctx: &'a CompileCtx<R>) -> Result<Self, PackError> {
+        let mut defs: Vec<&LambdaDef<R>> = ctx
             .lambda_defs
             .iter()
             .map(|(_, v)| {
-                v.downcast_ref::<LambdaDef<R, E>>().ok_or(PackError::InvalidFormat)
+                v.downcast_ref::<LambdaDef<R>>().ok_or(PackError::InvalidFormat)
             })
             .collect::<Result<_, _>>()?;
         defs.sort_by_key(|d| d.id);
@@ -115,9 +115,8 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
             .bind_to_lambda
             .iter()
             .map(|(b, v)| {
-                let d = v
-                    .downcast_ref::<LambdaDef<R, E>>()
-                    .ok_or(PackError::InvalidFormat)?;
+                let d =
+                    v.downcast_ref::<LambdaDef<R>>().ok_or(PackError::InvalidFormat)?;
                 Ok((*b, d.id))
             })
             .collect::<Result<_, PackError>>()?;
@@ -175,8 +174,8 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
     }
 }
 
-fn restore_tables<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn restore_tables<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     buf: &mut impl Buf,
 ) -> Result<(), PackError> {
     let n = decode_varint(buf)? as usize;
@@ -205,12 +204,12 @@ fn restore_tables<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-impl<R: Rt, E: UserEvent> ExecState<R, E> {
+impl<R: Rt> ExecState<R> {
     /// The registration image of this session with `nodes` as the root
     /// nodes, or an error naming what the image cannot carry.
     pub fn write_registration(
         &self,
-        nodes: &[(ExprId, &Node<R, E>)],
+        nodes: &[(ExprId, &Node<R>)],
         scope: &Scope,
         program: Option<&ProgramRoot>,
     ) -> Result<Bytes, PackError> {
@@ -315,7 +314,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
+impl<R: Rt> ExecCtx<'_, R> {
     /// Restore a registration image into this session, which must have
     /// its builtins registered and nothing compiled. The decoder stays
     /// with the session for anything decoded later. A bad image fails
@@ -324,7 +323,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
     pub fn read_registration(
         &mut self,
         image: Bytes,
-    ) -> Result<Registration<R, E>, PackError> {
+    ) -> Result<Registration<R>, PackError> {
         let saved = Saved::take(self);
         let mark = self.fusion.restored_mark();
         let mut nodes = Vec::new();
@@ -350,7 +349,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
     fn decode_registration(
         &mut self,
         image: Bytes,
-        nodes: &mut Vec<(ExprId, Node<R, E>)>,
+        nodes: &mut Vec<(ExprId, Node<R>)>,
     ) -> Result<(SharedDecoder, Scope, Option<ProgramRoot>), PackError> {
         let mut bytes: &[u8] = &image;
         if bytes.len() < MAGIC.len() + 1 || &bytes[..MAGIC.len()] != MAGIC {

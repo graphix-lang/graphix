@@ -1,7 +1,6 @@
 use crate::{
     BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
     ParMode, PendingSettle, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update,
-    UserEvent,
     branch::{fork_point, timed},
     cost::{ForkSite, Meter},
     defer_unresolved_names, env, errf,
@@ -81,8 +80,8 @@ pub(crate) enum VarRead<'a> {
 
 /// Read a variable: the overlay, then the persistent store. `None`
 /// means the bind has never delivered.
-pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
-    ctx: &'a ExecCtx<'_, R, E>,
+pub(crate) fn read_var<'a, R: Rt>(
+    ctx: &'a ExecCtx<'_, R>,
     id: &BindId,
 ) -> Option<VarRead<'a>> {
     if let crate::branch::RtView::Fork(f) = &ctx.rt {
@@ -101,7 +100,7 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
 /// A standing entry as a reader sees it: fresh at a birth only. A wake
 /// or a step reads it stale: its value is a past event the graph
 /// already consumed.
-pub(crate) fn standing_view<E: UserEvent>(event: &Event<E>, tv: &TagValue) -> TagValue {
+pub(crate) fn standing_view(event: &Event, tv: &TagValue) -> TagValue {
     let tag = if event.view == crate::View::Birth {
         tv.tag().fresh()
     } else {
@@ -234,26 +233,26 @@ pub struct Nop {
 }
 
 impl Nop {
-    pub(crate) fn new<R: Rt, E: UserEvent>(typ: Type) -> Node<R, E> {
+    pub(crate) fn new<R: Rt>(typ: Type) -> Node<R> {
         Node::new(Nop { typ })
     }
 }
 
 impl Nop {
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+    pub(crate) fn image_decode<R: Rt>(
+        _ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         Ok(Self::new(Type::decode(buf)?))
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Nop {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         let _ = f;
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         let _ = f;
     }
 
@@ -262,7 +261,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         self.typ.encode(buf)
     }
 
-    fn update(&mut self, _ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, _ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         TagValue::phantom_ref()
     }
 
@@ -274,35 +273,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         &self.typ
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Nop(self)
     }
 }
 
 #[derive(Debug)]
-pub struct ExplicitParens<R: Rt, E: UserEvent> {
+pub struct ExplicitParens<R: Rt> {
     pub(crate) spec: Arc<Expr>,
-    pub n: Node<R, E>,
+    pub n: Node<R>,
 }
 
-impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
+impl<R: Rt> ExplicitParens<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
         Ok(Node::new(Self { spec, n }))
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         inner: Expr,
         scope: &Scope,
         top_id: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         // `spec` is the outer parens expression: it carries the position
         // and any `#[..]` decorations, so the node must own it
         let n = compile(ctx, flags, inner, scope, top_id)?;
@@ -310,12 +309,12 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for ExplicitParens<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.n)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
     }
 
@@ -325,7 +324,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // parens mean nothing to fusion, unless an attribute they carry
         // names the expression a region (`#[native] (e)`)
         match self.spec.dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
@@ -334,7 +333,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         }
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.n.update(ctx)
     }
 
@@ -348,7 +347,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         &self.n.typ()
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::ExplicitParens(self)
     }
 
@@ -363,7 +362,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 /// select scrutinee, a pattern guard's truth, and `~`'s held arg.
 /// Everything else reads its children's productions directly.
 #[derive(Debug)]
-pub struct Held<R: Rt, E: UserEvent> {
+pub struct Held<R: Rt> {
     /// The last value-bearing production (`Some` = there was once a
     /// real value; a bottom's placeholder never lands here).
     pub value: Option<Value>,
@@ -371,28 +370,28 @@ pub struct Held<R: Rt, E: UserEvent> {
     /// meaningful at rest; firedness belongs to a production, not to
     /// held memory.
     pub tag: Tag,
-    pub node: Node<R, E>,
+    pub node: Node<R>,
 }
 
-impl<R: Rt, E: UserEvent> Held<R, E> {
+impl<R: Rt> Held<R> {
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.node.image_encode(buf)
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         Ok(Self::new(decode_node(ctx, buf)?))
     }
 
-    pub fn new(node: Node<R, E>) -> Self {
+    pub fn new(node: Node<R>) -> Self {
         Self { value: None, tag: Tag::FIRED, node }
     }
 
     /// Update the node, returning the production's tag. A bottom
     /// production poisons the tag but never overwrites the value.
-    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Tag {
+    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> Tag {
         let tv = self.node.update(ctx);
         let tag = tv.tag();
         if !tag.is_bottom() {
@@ -404,7 +403,7 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
 
     /// Sleep is pause, not reset: the held value and its at-rest taint
     /// survive.
-    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.node.sleep(ctx)
     }
 }
@@ -414,9 +413,9 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
 /// when a child is; past the caller's [`dense_gate!`] it is the
 /// composite's own tag. The productions stay borrowed, so a value is
 /// cloned only once the gate let it through.
-pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    nodes: &'a mut [Node<R, E>],
+pub(crate) fn gather<'a, R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    nodes: &'a mut [Node<R>],
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
@@ -427,9 +426,9 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     })
 }
 
-fn gather_in_order<'a, R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    nodes: &'a mut [Node<R, E>],
+fn gather_in_order<'a, R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    nodes: &'a mut [Node<R>],
     mut meter: Option<&mut Meter<'_>>,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let mut tag = Tag::STALE;
@@ -476,13 +475,13 @@ pub(crate) use dense_gate;
 /// or over its children alone (`children`).
 macro_rules! typed_by_row {
     () => {
-        fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
             self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
         }
 
         fn typecheck0_instance(
             &mut self,
-            ctx: &mut CompileCtx<R, E>,
+            ctx: &mut CompileCtx<R>,
             types: &mut $crate::node::lambda::InstanceTypes,
         ) -> Result<()> {
             let row = types.settle(self.spec.id, &self.typ);
@@ -494,13 +493,13 @@ macro_rules! typed_by_row {
         }
     };
     (source) => {
-        fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
             self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
         }
 
         fn typecheck0_instance(
             &mut self,
-            ctx: &mut CompileCtx<R, E>,
+            ctx: &mut CompileCtx<R>,
             types: &mut $crate::node::lambda::InstanceTypes,
         ) -> Result<()> {
             self.typecheck0_with(
@@ -511,13 +510,13 @@ macro_rules! typed_by_row {
         }
     };
     (children) => {
-        fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
             self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
         }
 
         fn typecheck0_instance(
             &mut self,
-            ctx: &mut CompileCtx<R, E>,
+            ctx: &mut CompileCtx<R>,
             types: &mut $crate::node::lambda::InstanceTypes,
         ) -> Result<()> {
             self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
@@ -534,14 +533,14 @@ pub struct TypeDef {
 }
 
 impl TypeDef {
-    pub(crate) fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    pub(crate) fn compile<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         spec: Arc<Expr>,
         scope: &Scope,
         name: &Name,
         params: &Arc<[(TVar, Option<Type>)]>,
         body: &TypeDefBody,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let (params, body) = Type::reset_typedef_tvars(params, body);
         let parametric = !params.is_empty();
         let verdict = ctx
@@ -577,10 +576,10 @@ impl TypeDef {
 }
 
 impl TypeDef {
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+    pub(crate) fn image_decode<R: Rt>(
+        _ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let scope = ModPath::decode(buf)?;
         let name = ArcStr::decode(buf)?;
@@ -588,12 +587,12 @@ impl TypeDef {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for TypeDef {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         let _ = f;
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         let _ = f;
     }
 
@@ -604,7 +603,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         self.name.encode(buf)
     }
 
-    fn update(&mut self, _ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, _ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         TagValue::phantom_ref()
     }
 
@@ -612,7 +611,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         &self.spec
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         ctx.env.undeftype(&self.scope, &self.name)
     }
 
@@ -620,7 +619,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         Type::BOTTOM
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::TypeDef(self)
     }
 }
@@ -635,11 +634,7 @@ pub struct Constant {
 
 impl Constant {
     /// Construct a `Constant` node from its final components.
-    pub fn new<R: Rt, E: UserEvent>(
-        value: Value,
-        typ: Type,
-        spec: Arc<Expr>,
-    ) -> Node<R, E> {
+    pub fn new<R: Rt>(value: Value, typ: Type, spec: Arc<Expr>) -> Node<R> {
         // the resident starts Stale so an instance bound outside a birth
         // still computes; it fires only where it is born
         let resident = TagValue::stale(value.clone());
@@ -648,10 +643,10 @@ impl Constant {
 }
 
 impl Constant {
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+    pub(crate) fn image_decode<R: Rt>(
+        _ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let value = Value::decode(buf)?;
         let typ = Type::decode(buf)?;
@@ -661,8 +656,8 @@ impl Constant {
 
 /// A constant's production: fired where it is born, standing otherwise.
 /// Every argument-less literal is a constant.
-pub(crate) fn produce_constant<'a, E: UserEvent>(
-    event: &Event<E>,
+pub(crate) fn produce_constant<'a>(
+    event: &Event,
     resident: &'a mut TagValue,
     value: impl FnOnce() -> Value,
 ) -> &'a TagValue {
@@ -677,12 +672,12 @@ pub(crate) fn produce_constant<'a, E: UserEvent>(
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Constant {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         let _ = f;
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         let _ = f;
     }
 
@@ -693,7 +688,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         self.typ.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         produce_constant(ctx.event, &mut self.resident, || self.value.clone())
     }
 
@@ -705,7 +700,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         &self.spec
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Constant(self)
     }
 
@@ -715,10 +710,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
 }
 
 #[derive(Debug)]
-pub struct Block<R: Rt, E: UserEvent> {
+pub struct Block<R: Rt> {
     pub(crate) module: bool,
     pub(crate) spec: Arc<Expr>,
-    pub(crate) children: Box<[Node<R, E>]>,
+    pub(crate) children: Box<[Node<R>]>,
     /// Indices of `catch(e) expr` children, in syntactic order.
     /// update/typecheck run the covered children first, then catches in
     /// reverse syntactic order: an inner handler's rethrow delivers to
@@ -757,7 +752,7 @@ impl Runs {
     }
 
     /// Whether a block of `len` statements updates run by run.
-    fn forks<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, len: usize) -> bool {
+    fn forks<R: Rt>(ctx: &ExecCtx<'_, R>, len: usize) -> bool {
         len > 1 && ctx.fork_mode() != ParMode::Off
     }
 
@@ -765,10 +760,10 @@ impl Runs {
     /// site says, when the runtime forks, else in order; the catches last,
     /// in reverse syntactic order. The last child's production (a block
     /// never ends in a catch); `None` when there are no children.
-    pub(crate) fn update<R: Rt, E: UserEvent>(
+    pub(crate) fn update<R: Rt>(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        children: &mut [Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        children: &mut [Node<R>],
         catches: &[usize],
     ) -> Option<TagValue> {
         let last = children.len();
@@ -805,11 +800,10 @@ impl Runs {
     }
 }
 
-impl<R: Rt, E: UserEvent> Block<R, E> {
-    fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+impl<R: Rt> Block<R> {
+    fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for i in self.lets.iter() {
-            if let Some(b) = self.children[*i as usize].downcast_mut::<bind::Bind<R, E>>()
-            {
+            if let Some(b) = self.children[*i as usize].downcast_mut::<bind::Bind<R>>() {
                 b.take_back_reraised(ctx)
             }
         }
@@ -817,7 +811,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 
     /// Build a `Block` from compiled children. A module produces no
     /// value; a non-module block's value is its last child's.
-    pub fn new(module: bool, children: Box<[Node<R, E>]>, spec: Arc<Expr>) -> Node<R, E> {
+    pub fn new(module: bool, children: Box<[Node<R>]>, spec: Arc<Expr>) -> Node<R> {
         Node::new(Self {
             module,
             spec,
@@ -830,14 +824,14 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         module: bool,
         exprs: &Arc<[Expr]>,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let (children, catches) =
             compile_block_children(ctx, flags, scope, top_id, module, exprs.iter())?;
         Ok(Node::new(Self {
@@ -853,7 +847,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 }
 
 /// The indices of the `let`s among a block's children.
-fn lets_of<R: Rt, E: UserEvent>(children: &[Node<R, E>]) -> Box<[u32]> {
+fn lets_of<R: Rt>(children: &[Node<R>]) -> Box<[u32]> {
     let mut lets: SmallVec<[u32; 8]> = SmallVec::new();
     for (i, n) in children.iter().enumerate() {
         if matches!(n.view(), NodeView::Bind(_)) {
@@ -867,14 +861,14 @@ fn lets_of<R: Rt, E: UserEvent>(children: &[Node<R, E>]) -> Box<[u32]> {
 /// through [`error::Catch::compile`], which advances the dynamic scope
 /// for all subsequent siblings. Returns the children in syntactic order
 /// plus the catch indices.
-pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn compile_block_children<'a, R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
     module: bool,
     exprs: impl Iterator<Item = &'a Expr>,
-) -> Result<(Box<[Node<R, E>]>, Box<[usize]>)> {
+) -> Result<(Box<[Node<R>]>, Box<[usize]>)> {
     let exprs: SmallVec<[&'a Expr; 32]> = exprs.collect();
     // pre-register the block's `mod` names so resolution is independent
     // of declaration order; the `Module` arm is told, so its own
@@ -902,7 +896,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         ctx.block_typedefs.push((scope.lexical.clone(), typedefs));
     }
     let mut scope = scope.clone();
-    let mut children: LPooled<Vec<Node<R, E>>> = LPooled::take();
+    let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
     ctx.written_lets.push(written_lets(&exprs));
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
@@ -933,10 +927,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
 /// a later statement of a block being compiled declares: the block declares
 /// it and has not yet, and no scope between declares it either. What the
 /// name means now is not what it will mean.
-pub(crate) fn later_typedef<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
-    tr: &TypeRef,
-) -> bool {
+pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
     let (1, Some(name)) = (Path::levels(&*tr.name), Path::basename(&*tr.name)) else {
         return false;
     };
@@ -1099,9 +1090,9 @@ impl Writes {
 
 /// Defer the names a type definition's body writes (`defer_unresolved_names`),
 /// once every name its statement list declares is registered.
-pub(crate) fn defer_typedef_names<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    n: &Node<R, E>,
+pub(crate) fn defer_typedef_names<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    n: &Node<R>,
 ) -> Result<()> {
     let NodeView::TypeDef(td) = n.view() else { return Ok(()) };
     let Some(def) = ctx
@@ -1141,14 +1132,14 @@ pub(crate) enum StmtAt {
 /// which a `catch` covers. In a block's value slot a declaration other
 /// than a `let` compiles as an expression, which refuses it; a dynamic
 /// module is an expression.
-pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn compile_statement<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     e: &Expr,
     scope: &Scope,
     top_id: ExprId,
     at: StmtAt,
-) -> Result<(Node<R, E>, Scope)> {
+) -> Result<(Node<R>, Scope)> {
     let predeclared = matches!(at, StmtAt::Block { .. });
     // an attribute decorates a computation; a declaration has none
     let declaration = match &e.kind {
@@ -1218,17 +1209,17 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
 
 /// Update a run of independent statements in order, or forked where
 /// its site's plan says: the last statement's production.
-fn update_run<'a, R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    nodes: &'a mut [Node<R, E>],
+fn update_run<'a, R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    nodes: &'a mut [Node<R>],
     site: &mut ForkSite,
 ) -> &'a TagValue {
     fork_point(ctx, nodes, site, update_in_order, |_, last| last)
 }
 
-fn update_in_order<'a, R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    nodes: &'a mut [Node<R, E>],
+fn update_in_order<'a, R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    nodes: &'a mut [Node<R>],
     mut meter: Option<&mut Meter<'_>>,
 ) -> &'a TagValue {
     nodes
@@ -1253,16 +1244,12 @@ pub(crate) fn evaluation_order(
 /// How a node's check visits a child: `typecheck0`, or an instance's
 /// `typecheck0_instance`. A node whose check is the same either way
 /// writes it once over this.
-pub(crate) type Child<'a, R, E> =
-    dyn FnMut(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()> + 'a;
+pub(crate) type Child<'a, R> =
+    dyn FnMut(&mut Node<R>, &mut CompileCtx<R>) -> Result<()> + 'a;
 
 /// A statement's check result: its errors carry the statement, and in a
 /// module's body the module's origin.
-fn statement_result<R: Rt, E: UserEvent>(
-    r: Result<()>,
-    n: &Node<R, E>,
-    module: bool,
-) -> Result<()> {
+fn statement_result<R: Rt>(r: Result<()>, n: &Node<R>, module: bool) -> Result<()> {
     let r = wrap!(n, r);
     match module {
         true => r.with_context(|| n.spec().ori.clone()),
@@ -1273,11 +1260,11 @@ fn statement_result<R: Rt, E: UserEvent>(
 /// Run `check` over each statement of `work` in its compile task, in
 /// parallel, and join the tasks in order: the first error in order is
 /// the body's.
-fn check_in_tasks<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>, TaskId)>>,
+fn check_in_tasks<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    mut work: LPooled<Vec<(&mut Node<R>, CompileCtx<R>, TaskId)>>,
     module: bool,
-    check: impl Fn(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()> + Sync,
+    check: impl Fn(&mut Node<R>, &mut CompileCtx<R>) -> Result<()> + Sync,
 ) -> Result<()> {
     let cx = TaskContext::current();
     let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
@@ -1298,12 +1285,12 @@ fn check_in_tasks<R: Rt, E: UserEvent>(
 
 /// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
 /// body's errors also carry each statement's origin, the file it is in.
-pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    nodes: &mut [Node<R, E>],
+pub(crate) fn typecheck_in_order<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    nodes: &mut [Node<R>],
     catches: &[usize],
     module: bool,
-    mut pass: impl FnMut(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()>,
+    mut pass: impl FnMut(&mut Node<R>, &mut CompileCtx<R>) -> Result<()>,
 ) -> Result<()> {
     for i in evaluation_order(nodes.len(), catches) {
         let n = &mut nodes[i];
@@ -1319,16 +1306,16 @@ pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
 /// interfaces (an impl a sibling's body adds undeclared is hidden from
 /// it, `Env::hidden_impls`), so no module's check reads another's. The
 /// tasks join in order; the first error in order is the block's.
-pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    nodes: &mut [Node<R, E>],
+pub(crate) fn typecheck0_statements<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    nodes: &mut [Node<R>],
     catches: &[usize],
     module: bool,
 ) -> Result<()> {
     let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
-    let mut slots: LPooled<Vec<Option<&mut Node<R, E>>>> =
+    let mut slots: LPooled<Vec<Option<&mut Node<R>>>> =
         nodes.iter_mut().map(Some).collect();
-    let is_static_module = |n: &Option<&mut Node<R, E>>| {
+    let is_static_module = |n: &Option<&mut Node<R>>| {
         n.as_deref().is_some_and(|n| match n.view() {
             NodeView::Module(m) => m.static_task().is_some(),
             _ => false,
@@ -1370,7 +1357,7 @@ pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
 }
 
 /// The scope of a module statement.
-fn module_path<R: Rt, E: UserEvent>(n: &Node<R, E>) -> Option<ModPath> {
+fn module_path<R: Rt>(n: &Node<R>) -> Option<ModPath> {
     match n.view() {
         NodeView::Module(m) => Some(m.scope.lexical.clone()),
         _ => None,
@@ -1387,14 +1374,14 @@ fn hide_siblings(
 }
 
 /// Check each module of a run in a compile task forked before any runs.
-fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    run: impl Iterator<Item = &'a mut Node<R, E>>,
+fn typecheck0_modules<'a, R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    run: impl Iterator<Item = &'a mut Node<R>>,
     siblings: &[ModPath],
     module: bool,
 ) -> Result<()> {
-    let mut run: LPooled<Vec<&mut Node<R, E>>> = run.collect();
-    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>, TaskId)>> =
+    let mut run: LPooled<Vec<&mut Node<R>>> = run.collect();
+    let mut work: LPooled<Vec<(&mut Node<R>, CompileCtx<R>, TaskId)>> =
         run.iter_mut().map(|n| (&mut **n, ctx.fork(), current_task())).collect();
     for (n, task, _) in work.iter_mut() {
         let own = module_path(n).expect("a run is of modules");
@@ -1418,9 +1405,9 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
 /// level, as a static bind's are. A refused settle is a
 /// compiler bug, logged. Binds in parallel branches run concurrently:
 /// one that changes a cell the program's compile created is a race.
-pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
-    ctx: &mut CompileCtx<R, E>,
-    f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<T>,
+pub(crate) fn with_runtime_settles<R: Rt, T>(
+    ctx: &mut CompileCtx<R>,
+    f: impl FnOnce(&mut CompileCtx<R>) -> Result<T>,
 ) -> Result<T> {
     ctx.pending_settles.push(crate::SettleFrame::default());
     let names = ctx.pending_names.len();
@@ -1444,8 +1431,8 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
 /// Defer `settle` to the check's settle of the current frame. A
 /// definition's body defers nothing: its cells are its signature's,
 /// settled by each call.
-pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn defer_settle<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     settle: impl FnOnce() -> PendingSettle,
 ) {
     if ctx.def_gate_depth == 0 {
@@ -1457,8 +1444,8 @@ pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
 /// cast's target, a type test), takes keys of distinct runtime forms, as
 /// a literal's do: judged at the statement's settle. Every other map
 /// value comes from a producer judged already.
-pub(crate) fn defer_written_map_keys<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn defer_written_map_keys<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     t: &Type,
     spec: &Arc<Expr>,
 ) {
@@ -1473,18 +1460,12 @@ pub(crate) fn defer_written_map_keys<R: Rt, E: UserEvent>(
 /// Defer a judgment that only reads types to the check's settle of the
 /// current frame, a definition's body included: its open cells read as
 /// any type, and a later instance's types are its definition's.
-pub(crate) fn defer_judgment<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    judgment: PendingSettle,
-) {
+pub(crate) fn defer_judgment<R: Rt>(ctx: &mut CompileCtx<R>, judgment: PendingSettle) {
     ctx.pending_settles.last_mut().expect("settle frame").push(judgment)
 }
 
 /// A statement's `typecheck1`, then the settles it deferred.
-fn typecheck1_settled<R: Rt, E: UserEvent>(
-    n: &mut Node<R, E>,
-    ctx: &mut CompileCtx<R, E>,
-) -> Result<()> {
+fn typecheck1_settled<R: Rt>(n: &mut Node<R>, ctx: &mut CompileCtx<R>) -> Result<()> {
     n.typecheck1(ctx)?;
     crate::drain_pending_settles(ctx)
 }
@@ -1496,9 +1477,9 @@ fn typecheck1_settled<R: Rt, E: UserEvent>(
 /// body's. A bind at run time elaborates them in order on its own
 /// thread: an activation's body is small, and waking the pool for it
 /// costs more than its work.
-pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    nodes: &mut [Node<R, E>],
+pub(crate) fn typecheck1_statements<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    nodes: &mut [Node<R>],
     catches: &[usize],
     module: bool,
 ) -> Result<()> {
@@ -1506,9 +1487,9 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
     if order.len() < 2 || RUNTIME_BIND.get() {
         return typecheck_in_order(ctx, nodes, catches, module, typecheck1_settled);
     }
-    let mut slots: LPooled<Vec<Option<&mut Node<R, E>>>> =
+    let mut slots: LPooled<Vec<Option<&mut Node<R>>>> =
         nodes.iter_mut().map(Some).collect();
-    let work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>, TaskId)>> = order
+    let work: LPooled<Vec<(&mut Node<R>, CompileCtx<R>, TaskId)>> = order
         .iter()
         .map(|i| {
             let n = slots[*i].take().expect("an order visits each once");
@@ -1518,16 +1499,16 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
     check_in_tasks(ctx, work, module, typecheck1_settled)
 }
 
-impl<R: Rt, E: UserEvent> Block<R, E> {
+impl<R: Rt> Block<R> {
     /// Whether a `catch` covers the block's value, its last child.
     pub(crate) fn value_is_caught(&self) -> bool {
         !self.catches.is_empty()
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let module = bool::decode(buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
@@ -1545,12 +1526,12 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Block<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.children.iter().for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.children.iter_mut().for_each(f)
     }
 
@@ -1563,7 +1544,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.runs.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         if self.catches.is_empty()
             && self.lets.is_empty()
             && !Runs::forks(ctx, self.children.len())
@@ -1586,13 +1567,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.children.last().map(|n| n.typ()).unwrap_or(Type::BOTTOM)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         typecheck0_statements(ctx, &mut self.children, &self.catches, self.module)
     }
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
         typecheck_in_order(
@@ -1604,7 +1585,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         )
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         typecheck1_statements(ctx, &mut self.children, &self.catches, self.module)
     }
 
@@ -1612,7 +1593,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Block(self)
     }
 
@@ -1625,29 +1606,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         emit_block_node(cx, &self.children)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_each(ctx, self.children.iter_mut(), |n, _, ctx| fuse(n, ctx))?;
         Ok(None)
     }
 }
 
 #[derive(Debug)]
-pub struct StringInterpolate<R: Rt, E: UserEvent> {
+pub struct StringInterpolate<R: Rt> {
     /// set by `sleep()`, taken by the next update
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
-    pub args: Box<[Node<R, E>]>,
+    pub args: Box<[Node<R>]>,
     resident: TagValue,
     pub(crate) fork: ForkSite,
 }
 
-impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
+impl<R: Rt> StringInterpolate<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let typs = Vec::<Type>::decode(buf)?.into_boxed_slice();
@@ -1664,14 +1645,14 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[Expr],
-    ) -> Result<Node<R, E>> {
-        let args: Box<[Node<R, E>]> = args
+    ) -> Result<Node<R>> {
+        let args: Box<[Node<R>]> = args
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
@@ -1689,12 +1670,12 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for StringInterpolate<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.args.iter().for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.args.iter_mut().for_each(f)
     }
 
@@ -1707,7 +1688,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         self.fork.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         use std::fmt::Write;
         // rendered under the value-hook loan so a core `Display` impl on
         // an abstract part applies (`coretraits::with_display_hooks`)
@@ -1734,20 +1715,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         &self.typ
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         for n in &mut self.args {
             n.sleep(ctx);
         }
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts(self.args.iter_mut(), ctx)
     }
 
     typed_by_row!(children);
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck1(ctx))?;
             // a cell still open at tc0 is bound by now
@@ -1756,7 +1737,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::StringInterpolate(self)
     }
 
@@ -1775,9 +1756,9 @@ fn part_type(t: &Type) -> Type {
 }
 
 #[derive(Debug)]
-pub struct Connect<R: Rt, E: UserEvent> {
+pub struct Connect<R: Rt> {
     pub(crate) spec: Arc<Expr>,
-    pub(super) node: Node<R, E>,
+    pub(super) node: Node<R>,
     pub(crate) id: BindId,
 }
 
@@ -1789,11 +1770,11 @@ fn target_pos(spec: &Expr) -> crate::SourcePosition {
     }
 }
 
-impl<R: Rt, E: UserEvent> Connect<R, E> {
+impl<R: Rt> Connect<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let node = decode_node(ctx, buf)?;
         let id = BindId::decode(buf)?;
@@ -1801,14 +1782,14 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
         value: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let id =
             match ctx.env.lookup_bind(&scope.lexical, name).map_err(|e| e.at(&spec))? {
                 None => bailat!(spec, "{name} is undefined"),
@@ -1830,12 +1811,12 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Connect<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.node)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.node)
     }
 
@@ -1846,7 +1827,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         self.id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // only a fired RHS writes
         let tv = self.node.update(ctx);
         if tv.is_fired() {
@@ -1863,7 +1844,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         Type::BOTTOM
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.node], ctx)
     }
 
@@ -1871,7 +1852,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     // the check.
     typed_by_row!(source);
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Connect(self)
     }
 
@@ -1939,9 +1920,9 @@ pub enum WriteTarget {
 }
 
 #[derive(Debug)]
-pub struct ConnectDeref<R: Rt, E: UserEvent> {
+pub struct ConnectDeref<R: Rt> {
     pub(crate) spec: Arc<Expr>,
-    pub(super) rhs: Node<R, E>,
+    pub(super) rhs: Node<R>,
     pub(crate) src_id: BindId,
     /// The reference's cell; where it writes is resolved at each write,
     /// so a moving place writes where its key names then.
@@ -1955,11 +1936,11 @@ pub struct ConnectDeref<R: Rt, E: UserEvent> {
     slept: WakeBit,
 }
 
-impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
+impl<R: Rt> ConnectDeref<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let rhs = decode_node(ctx, buf)?;
         let src_id = BindId::decode(buf)?;
@@ -1977,14 +1958,14 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
         value: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let src_id =
             match ctx.env.lookup_bind(&scope.lexical, name).map_err(|e| e.at(&spec))? {
                 None => bailat!(spec, "{name} is undefined"),
@@ -2019,12 +2000,12 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for ConnectDeref<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.rhs)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.rhs)
     }
 
@@ -2040,7 +2021,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // a fired RHS writes; a write before the reference arrived lands at
         // its first target; a bottom RHS or address never writes
         let woke = self.slept.take();
@@ -2101,17 +2082,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         ctx.unref_var(self.src_id, self.top_id);
         self.rhs.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.rhs.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.rhs], ctx)
     }
 
@@ -2119,18 +2100,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     // the check.
     typed_by_row!(source);
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::ConnectDeref(self)
     }
 }
 
 #[derive(Debug)]
-pub struct TypeCast<R: Rt, E: UserEvent> {
+pub struct TypeCast<R: Rt> {
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub target: Type,
-    pub n: Node<R, E>,
+    pub n: Node<R>,
     /// The source can hold a reference: every value casts to the cast
     /// error. Known only once the source's type is, so the check refuses
     /// what it can see and an instance of a generic body fails here.
@@ -2138,11 +2119,11 @@ pub struct TypeCast<R: Rt, E: UserEvent> {
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> TypeCast<R, E> {
+impl<R: Rt> TypeCast<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let target = Type::decode(buf)?;
@@ -2160,14 +2141,14 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         expr: &Expr,
         typ: &Type,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let target = typ.scope_refs(&scope.lexical);
         target.check_cast(&ctx.env).at(&spec)?;
@@ -2184,12 +2165,12 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for TypeCast<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.n)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
     }
 
@@ -2201,7 +2182,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let tv = self.n.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
@@ -2223,16 +2204,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         &self.typ
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.n.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))?;
         if self.n.typ().holds_ref(&ctx.env) {
             bailat!(self.spec, "can't cast a reference")
@@ -2250,19 +2231,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         self.src_ref = self.n.typ().holds_ref(&ctx.env);
         Ok(())
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::TypeCast(self)
     }
 
@@ -2279,22 +2260,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 /// compile time, so a select unions it away and a field or argument
 /// carries the declared shape.
 #[derive(Debug)]
-pub struct Never<R: Rt, E: UserEvent> {
+pub struct Never<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub n: Box<[Node<R, E>]>,
+    pub n: Box<[Node<R>]>,
 }
 
-impl<R: Rt, E: UserEvent> Never<R, E> {
+impl<R: Rt> Never<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Option<Arc<Type>>,
         args: &[Expr],
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = args
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
@@ -2311,11 +2292,11 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Never<R, E> {
+impl<R: Rt> Never<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
@@ -2323,12 +2304,12 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Never<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.n.iter().for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.n.iter_mut().for_each(f)
     }
 
@@ -2339,7 +2320,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         encode_nodes(&self.n, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         for n in self.n.iter_mut() {
             n.update(ctx);
         }
@@ -2354,11 +2335,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         &self.typ
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         defer_unresolved_names(ctx, &self.typ, &self.spec)?;
         // each application of a definition T names holds its parameter
         // bounds, as where a contains expands it
@@ -2383,33 +2364,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Never(self)
     }
 }
 
 #[derive(Debug)]
-pub struct Any<R: Rt, E: UserEvent> {
+pub struct Any<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub n: Box<[Node<R, E>]>,
+    pub n: Box<[Node<R>]>,
     resident: TagValue,
     /// The child whose production the resident is.
     from: Option<usize>,
     slept: WakeBit,
 }
 
-impl<R: Rt, E: UserEvent> Any<R, E> {
+impl<R: Rt> Any<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
@@ -2424,13 +2405,13 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[Expr],
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = args
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
@@ -2446,12 +2427,12 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Any<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.n.iter().for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.n.iter_mut().for_each(f)
     }
 
@@ -2462,7 +2443,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         encode_nodes(&self.n, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // the first triggering value-bearing production wins; a
         // triggering bottom never beats one (`any(risky?, default)`); at a
         // wake, the child the resident came from standing bottom now
@@ -2503,18 +2484,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         &self.typ
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
     typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Any(self)
     }
 }
@@ -2552,21 +2533,21 @@ pub(crate) enum Owed {
 }
 
 #[derive(Debug)]
-pub struct Sample<R: Rt, E: UserEvent> {
+pub struct Sample<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     banking: Banking,
     pub typ: Type,
     top_id: ExprId,
-    pub trigger: Node<R, E>,
-    pub arg: Held<R, E>,
+    pub trigger: Node<R>,
+    pub arg: Held<R>,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> Sample<R, E> {
+impl<R: Rt> Sample<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
@@ -2592,7 +2573,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
@@ -2600,7 +2581,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         lhs: &Arc<Expr>,
         rhs: &Arc<Expr>,
         owed: Option<Owed>,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let banking = match owed {
             None => Banking::Strict,
             Some(Owed::One) => Banking::One { owed: false },
@@ -2633,13 +2614,13 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Sample<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.trigger);
         f(&self.arg.node)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.trigger);
         f(&mut self.arg.node)
     }
@@ -2662,7 +2643,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.arg.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // CR claude for eric: [bug/low] A bottom trigger is not `is_fired`, so both `~`
         // and `~!` ride their resident while the trigger is bottom. The sample keeps
         // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
@@ -2812,7 +2793,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(id) = self.pay_id() {
             ctx.release_var(id, self.top_id);
         }
@@ -2830,7 +2811,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     // that a banked trigger outlives its run and document it. probe:
     // design/review-2026-10-26/repro/x-seq-sampling-bank-survives-run.gx
     // (x-seq-sampling-04)
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         // what was paid and not yet received is owed again under a fresh
         // id, so a payment landing while asleep is not lost
         if let Banking::Each { owed, pay } = &mut self.banking
@@ -2845,7 +2826,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.trigger, &mut self.arg.node], ctx)
     }
 
@@ -2869,26 +2850,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
 
     typed_by_row!(children);
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Sample(self)
     }
 }
 
-impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
+impl<R: Rt> ExplicitParens<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
     ) -> Result<()> {
         wrap!(self.n, child(&mut self.n, ctx))
     }
 }
 
-impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
+impl<R: Rt> StringInterpolate<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
     ) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, child(a, ctx))?;
@@ -2898,11 +2879,11 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Connect<R, E> {
+impl<R: Rt> Connect<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.node, child(&mut self.node, ctx))?;
@@ -2981,11 +2962,11 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
+impl<R: Rt> ConnectDeref<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.rhs, child(&mut self.rhs, ctx))?;
@@ -3053,21 +3034,21 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> TypeCast<R, E> {
+impl<R: Rt> TypeCast<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
     ) -> Result<()> {
         Ok(wrap!(self.n, child(&mut self.n, ctx))?)
     }
 }
 
-impl<R: Rt, E: UserEvent> Never<R, E> {
+impl<R: Rt> Never<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, child(n, ctx))?
@@ -3076,11 +3057,11 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Any<R, E> {
+impl<R: Rt> Any<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
@@ -3100,11 +3081,11 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Sample<R, E> {
+impl<R: Rt> Sample<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut Child<'_, R>,
     ) -> Result<()> {
         wrap!(self.trigger, child(&mut self.trigger, ctx))?;
         wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;

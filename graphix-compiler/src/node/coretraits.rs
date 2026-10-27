@@ -10,7 +10,7 @@
 
 use super::genn::SynthCall;
 use crate::{
-    BindId, Event, ExecCtx, Rt, Scope, TagValue, UserEvent, View,
+    BindId, Event, ExecCtx, Rt, Scope, TagValue, View,
     abstract_value::{self, CastHook, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
     expr::ExprId,
@@ -213,29 +213,29 @@ pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
 /// One hook call site: a static call to the implementation's method
 /// binding over synthesized argument bindings the dispatch writes
 /// before each call.
-struct HookSite<R: Rt, E: UserEvent> {
-    call: SynthCall<R, E>,
+struct HookSite<R: Rt> {
+    call: SynthCall<R>,
     first: bool,
 }
 
 /// The hook of one implementation and a pool of sites bound at one
 /// concrete instantiation; a re-entrant dispatch uses a fresh site. No
 /// hook is the representation.
-struct Candidate<R: Rt, E: UserEvent> {
+struct Candidate<R: Rt> {
     hook: Option<Hook>,
-    pool: Vec<HookSite<R, E>>,
+    pool: Vec<HookSite<R>>,
 }
 
 /// The state for one `(trait, AbstractId)` pair, valid while the
 /// trait's implementation list is the one it was resolved against:
 /// per concrete instantiation met, the implementation that applies
 /// (`None` = structural).
-struct SiteEntry<R: Rt, E: UserEvent> {
+struct SiteEntry<R: Rt> {
     version: Version,
-    by_type: SmallVec<[(Type, Option<Candidate<R, E>>); 1]>,
+    by_type: SmallVec<[(Type, Option<Candidate<R>>); 1]>,
 }
 
-impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
+impl<R: Rt> SiteEntry<R> {
     /// The slot of the instantiation `typ`, resolved at its first sight.
     fn slot(&mut self, env: &Env, m: Method, typ: &Type) -> usize {
         match self.by_type.iter().position(|(seen, _)| seen == typ) {
@@ -256,7 +256,7 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
         }
     }
 
-    fn candidate(&mut self, i: usize, typ: &Type) -> Option<&mut Candidate<R, E>> {
+    fn candidate(&mut self, i: usize, typ: &Type) -> Option<&mut Candidate<R>> {
         match self.by_type.get_mut(i) {
             Some((seen, c)) if seen == typ => c.as_mut(),
             _ => None,
@@ -269,15 +269,15 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
 /// changes or a dynamic module loads ([`Version`]). The seam runs its sites over events of
 /// its own (`spare`, the ones not in a dispatch), never the caller's,
 /// so a loan lends the context to nothing but the dispatch.
-pub struct CoreHookSites<R: Rt, E: UserEvent> {
-    sites: AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
-    spare: Vec<Event<E>>,
+pub struct CoreHookSites<R: Rt> {
+    sites: AHashMap<(u8, AbstractId), SiteEntry<R>>,
+    spare: Vec<Event>,
     /// Bumped at each dynamic module load: a site built before it may
     /// call a method binding the load rebound.
     generation: u64,
 }
 
-impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
+impl<R: Rt> CoreHookSites<R> {
     pub(crate) fn is_empty(&self) -> bool {
         self.sites.is_empty()
     }
@@ -287,33 +287,33 @@ impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
         self.generation += 1
     }
 
-    fn take_event(&mut self, user: &E) -> Event<E> {
-        self.spare.pop().unwrap_or_else(|| Event::new(user.clone()))
+    fn take_event(&mut self) -> Event {
+        self.spare.pop().unwrap_or_else(Event::new)
     }
 
-    fn give_event(&mut self, mut event: Event<E>) {
+    fn give_event(&mut self, mut event: Event) {
         event.clear();
         self.spare.push(event);
     }
 }
 
-impl<R: Rt, E: UserEvent> Default for CoreHookSites<R, E> {
+impl<R: Rt> Default for CoreHookSites<R> {
     fn default() -> Self {
         Self { sites: AHashMap::new(), spare: Vec::new(), generation: 0 }
     }
 }
 
-impl<R: Rt, E: UserEvent> std::fmt::Debug for CoreHookSites<R, E> {
+impl<R: Rt> std::fmt::Debug for CoreHookSites<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "CoreHookSites({})", self.sites.len())
     }
 }
 
-fn build_site<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn build_site<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     m: Method,
     h: &Hook,
-) -> Result<HookSite<R, E>> {
+) -> Result<HookSite<R>> {
     let top_id = ExprId::new();
     let prefix = format_compact!("#seam{}", top_id.inner());
     let types = m.arg_types(&h.typ).into_iter();
@@ -357,13 +357,13 @@ impl Hooked {
 
 /// Run the method `m` of the implementation for the abstract type `typ`
 /// on `args`.
-fn call_hook<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn call_hook<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     m: Method,
     typ: &Type,
     args: &[Value],
 ) -> Hooked {
-    let mut event = ctx.core_hook_sites.lock().take_event(&ctx.event.user);
+    let mut event = ctx.core_hook_sites.lock().take_event();
     // a site outlives the walk that built it and runs on spare events
     // only: it registers, and so unregisters, under no boundary
     let boundary = ctx.boundary.take();
@@ -376,18 +376,18 @@ fn call_hook<R: Rt, E: UserEvent>(
 /// The site loaned out of the registry for one dispatch: its slot, so
 /// it returns to the pool it came from, or is deleted when the entry
 /// was rebuilt meanwhile.
-struct Loan<R: Rt, E: UserEvent> {
+struct Loan<R: Rt> {
     key: (u8, AbstractId),
     version: Version,
     slot: usize,
     typ: Type,
-    site: HookSite<R, E>,
+    site: HookSite<R>,
 }
 
-enum Taken<R: Rt, E: UserEvent> {
+enum Taken<R: Rt> {
     None,
     Representation,
-    Site(Loan<R, E>),
+    Site(Loan<R>),
 }
 
 /// Take a site for `typ` out of the registry, building one when the
@@ -395,11 +395,7 @@ enum Taken<R: Rt, E: UserEvent> {
 /// dispatch for the same tag finds it; a nested call takes another site.
 /// The registry is locked only while it is read or written: a site is
 /// built and run outside it.
-fn take_site<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    m: Method,
-    typ: &Type,
-) -> Taken<R, E> {
+fn take_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, typ: &Type) -> Taken<R> {
     let Type::Abstract { id, .. } = typ else { return Taken::None };
     let key = (m as u8, *id);
     let impls = ctx.env.impls.get(&m.of().id()).cloned();
@@ -453,7 +449,7 @@ fn take_site<R: Rt, E: UserEvent>(
     Taken::Site(Loan { key, version, slot, typ: typ.clone(), site })
 }
 
-fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, loan: Loan<R, E>) {
+fn return_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, loan: Loan<R>) {
     let rejected = {
         let mut reg = ctx.core_hook_sites.lock();
         let pool = reg
@@ -474,8 +470,8 @@ fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, loan: Loan<R, E
     }
 }
 
-fn call_hook_over<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn call_hook_over<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     m: Method,
     typ: &Type,
     args: &[Value],
@@ -505,8 +501,8 @@ fn call_hook_over<R: Rt, E: UserEvent>(
 /// # Safety
 /// `state` is that frame's context, the frame is live, and nothing else
 /// uses the context while the dispatch runs.
-unsafe fn lent<'s, R: Rt, E: UserEvent>(state: *mut u8) -> &'s mut ExecCtx<'s, R, E> {
-    unsafe { &mut *(state as *mut ExecCtx<'s, R, E>) }
+unsafe fn lent<'s, R: Rt>(state: *mut u8) -> &'s mut ExecCtx<'s, R> {
+    unsafe { &mut *(state as *mut ExecCtx<'s, R>) }
 }
 
 /// Re-wrap a `GxAbstract` (received by reference inside the vtable
@@ -528,8 +524,8 @@ fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
 /// Run the method `m` on a pair of one abstract type: `None` = no
 /// implementation, or a pair constructed at two instantiations, which
 /// takes the structural case.
-fn pair<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn pair<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     m: Method,
     a: &GxAbstract,
     b: &GxAbstract,
@@ -542,27 +538,19 @@ fn pair<R: Rt, E: UserEvent>(
 }
 
 /// Does the implementation bottom on the key `k`?
-fn key_bottoms<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    m: Method,
-    k: &GxAbstract,
-) -> bool {
+fn key_bottoms<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, k: &GxAbstract) -> bool {
     matches!(pair(ctx, m, k, k), Some(None))
 }
 
-fn dispatch_eq_applies<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> bool {
+fn dispatch_eq_applies<R: Rt>(state: *mut u8, a: &GxAbstract) -> bool {
     // SAFETY: with_hooks lent its context for this dispatch.
-    let ctx = unsafe { lent::<R, E>(state) };
+    let ctx = unsafe { lent::<R>(state) };
     impls_on(&ctx.env, CoreTrait::Eq, a.id).next().is_some()
 }
 
-fn dispatch_eq<R: Rt, E: UserEvent>(
-    state: *mut u8,
-    a: &GxAbstract,
-    b: &GxAbstract,
-) -> Option<bool> {
+fn dispatch_eq<R: Rt>(state: *mut u8, a: &GxAbstract, b: &GxAbstract) -> Option<bool> {
     // SAFETY: with_hooks lent its context for this dispatch.
-    let ctx = unsafe { lent::<R, E>(state) };
+    let ctx = unsafe { lent::<R>(state) };
     match pair(ctx, Method::Eq, a, b)? {
         Some(Value::Bool(x)) => Some(x),
         Some(v) => {
@@ -604,13 +592,13 @@ fn ordering_of(v: &Value) -> Option<Ordering> {
     }
 }
 
-fn dispatch_cmp<R: Rt, E: UserEvent>(
+fn dispatch_cmp<R: Rt>(
     state: *mut u8,
     a: &GxAbstract,
     b: &GxAbstract,
 ) -> Option<Ordering> {
     // SAFETY: with_hooks lent its context for this dispatch.
-    let ctx = unsafe { lent::<R, E>(state) };
+    let ctx = unsafe { lent::<R>(state) };
     match pair(ctx, Method::Cmp, a, b)? {
         Some(v) => match ordering_of(&v) {
             Some(o) => Some(o),
@@ -638,9 +626,9 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
     }
 }
 
-fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<ArcStr> {
+fn dispatch_fmt<R: Rt>(state: *mut u8, a: &GxAbstract) -> Option<ArcStr> {
     // SAFETY: with_hooks lent its context for this dispatch.
-    let ctx = unsafe { lent::<R, E>(state) };
+    let ctx = unsafe { lent::<R>(state) };
     match call_hook(ctx, Method::Fmt, &a.typ(), &[as_value(a)]).ran()? {
         Some(Value::String(s)) => Some(s),
         Some(v) => {
@@ -657,22 +645,19 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
     }
 }
 
-fn dispatch_to_value<R: Rt, E: UserEvent>(
-    state: *mut u8,
-    a: &GxAbstract,
-) -> Option<CastHook> {
+fn dispatch_to_value<R: Rt>(state: *mut u8, a: &GxAbstract) -> Option<CastHook> {
     // SAFETY: with_hooks lent its context for this dispatch.
-    let ctx = unsafe { lent::<R, E>(state) };
+    let ctx = unsafe { lent::<R>(state) };
     call_hook(ctx, Method::ToValue, &a.typ(), &[as_value(a)]).cast()
 }
 
-fn dispatch_from_value<R: Rt, E: UserEvent>(
+fn dispatch_from_value<R: Rt>(
     state: *mut u8,
     target: &Type,
     v: &Value,
 ) -> Option<CastHook> {
     // SAFETY: with_hooks lent its context for this dispatch.
-    let ctx = unsafe { lent::<R, E>(state) };
+    let ctx = unsafe { lent::<R>(state) };
     call_hook(ctx, Method::FromValue, target, std::slice::from_ref(v)).cast()
 }
 
@@ -688,21 +673,18 @@ pub fn hooks_live(env: &Env) -> bool {
 /// implementation. `f` sees no context, so the loan is exclusive; a
 /// hook dispatches through the context over an event of the seam's
 /// own. Loans nest.
-pub fn with_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    f: impl FnOnce() -> T,
-) -> T {
+pub fn with_hooks<R: Rt, T>(ctx: &mut ExecCtx<'_, R>, f: impl FnOnce() -> T) -> T {
     if !hooks_live(&ctx.env) {
         return f();
     }
     let handle = ValueHookDispatch {
-        state: ctx as *mut ExecCtx<'_, R, E> as *mut u8,
-        eq: dispatch_eq::<R, E>,
-        eq_applies: dispatch_eq_applies::<R, E>,
-        cmp: dispatch_cmp::<R, E>,
-        fmt: dispatch_fmt::<R, E>,
-        to_value: dispatch_to_value::<R, E>,
-        from_value: dispatch_from_value::<R, E>,
+        state: ctx as *mut ExecCtx<'_, R> as *mut u8,
+        eq: dispatch_eq::<R>,
+        eq_applies: dispatch_eq_applies::<R>,
+        cmp: dispatch_cmp::<R>,
+        fmt: dispatch_fmt::<R>,
+        to_value: dispatch_to_value::<R>,
+        from_value: dispatch_from_value::<R>,
     };
     abstract_value::with_value_hooks(&handle, f)
 }
@@ -712,8 +694,8 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
 /// (the maps are persistent, so a clone shares every node), so a hook
 /// that builds or runs its site through the context invalidates
 /// nothing `f` reads.
-pub fn with_display_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub fn with_display_hooks<R: Rt, T>(
+    ctx: &mut ExecCtx<'_, R>,
     f: impl FnOnce(&Env) -> T,
 ) -> T {
     if !hooks_live(&ctx.env) {

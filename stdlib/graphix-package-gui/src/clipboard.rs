@@ -1,6 +1,6 @@
 use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::{ExecCtx, Rt, UserEvent, errf, image::ImageBuf};
+use graphix_compiler::{ExecCtx, Rt, errf, image::ImageBuf};
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
 use netidx::publisher::Value;
 use netidx_core::pack::PackError;
@@ -47,8 +47,8 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
         Ok(())
     }
 
-    fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+    fn image_decode<R: Rt>(
+        _ctx: &mut ExecCtx<'_, R>,
         _buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         Ok(Self(PhantomData))

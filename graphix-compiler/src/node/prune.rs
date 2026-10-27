@@ -5,8 +5,8 @@
 //! children, spec and type are its child's.
 
 use crate::{
-    CompileCtx, ExecCtx, Node, NodeView, PruneMode, Refs, Rt, TagValue, Update,
-    UserEvent, View, branch,
+    CompileCtx, ExecCtx, Node, NodeView, PruneMode, Refs, Rt, TagValue, Update, View,
+    branch,
     expr::Expr,
     fusion::emit::{BodyCx, CompiledExpr},
     image::{
@@ -22,9 +22,9 @@ use graphix_types::BindId;
 use netidx_core::pack::PackError;
 
 #[derive(Debug)]
-pub struct Prune<R: Rt, E: UserEvent> {
+pub struct Prune<R: Rt> {
     boundary: BoundaryRef,
-    child: Node<R, E>,
+    child: Node<R>,
     /// What a cycle that skips the boundary rides; `None` for a boundary
     /// no cycle skips ([`Self::fence`]).
     ride: Option<Ride>,
@@ -37,24 +37,24 @@ struct Ride {
     walked: bool,
 }
 
-impl<R: Rt, E: UserEvent> Prune<R, E> {
+impl<R: Rt> Prune<R> {
     /// `child`, compiled by `f` inside a new boundary within the current one.
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
-        f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<Node<R, E>>,
-    ) -> Result<Node<R, E>> {
+        ctx: &mut CompileCtx<R>,
+        f: impl FnOnce(&mut CompileCtx<R>) -> Result<Node<R>>,
+    ) -> Result<Node<R>> {
         let boundary = Self::boundary(ctx);
         let child = ctx.in_boundary(Some(&boundary), f)?;
         Ok(Self::wrap(boundary, child))
     }
 
     /// A new boundary inside the current one.
-    pub(crate) fn boundary(ctx: &CompileCtx<R, E>) -> BoundaryRef {
+    pub(crate) fn boundary(ctx: &CompileCtx<R>) -> BoundaryRef {
         BoundaryRef::new(ctx.boundary.clone())
     }
 
     /// `child`, compiled inside `boundary`.
-    pub(crate) fn wrap(boundary: BoundaryRef, child: Node<R, E>) -> Node<R, E> {
+    pub(crate) fn wrap(boundary: BoundaryRef, child: Node<R>) -> Node<R> {
         let ride = Some(Ride { resident: TagValue::phantom(), walked: false });
         Node::new(Self { boundary, child, ride })
     }
@@ -64,9 +64,9 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     /// records, so a reply whose reader sits in a part an interrupt cut
     /// short is delivered again (a collection slot's call).
     pub(crate) fn fence(
-        ctx: &mut CompileCtx<R, E>,
-        f: impl FnOnce(&mut CompileCtx<R, E>) -> Node<R, E>,
-    ) -> Node<R, E> {
+        ctx: &mut CompileCtx<R>,
+        f: impl FnOnce(&mut CompileCtx<R>) -> Node<R>,
+    ) -> Node<R> {
         let boundary = Self::boundary(ctx);
         let child = ctx.in_boundary(Some(&boundary), f);
         Node::new(Self { boundary, child, ride: None })
@@ -75,31 +75,31 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     /// Run `f` over the child inside the boundary.
     pub(crate) fn within<T>(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        f: impl FnOnce(&mut CompileCtx<R, E>, &mut Node<R, E>) -> T,
+        ctx: &mut CompileCtx<R>,
+        f: impl FnOnce(&mut CompileCtx<R>, &mut Node<R>) -> T,
     ) -> T {
         ctx.in_boundary(Some(&self.boundary), |ctx| f(ctx, &mut self.child))
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let boundary = BoundaryRef::new(ctx.boundary.clone());
         let child = ctx.in_boundary(Some(&boundary), |ctx| decode_node(ctx, buf))?;
         Ok(Self::wrap(boundary, child))
     }
 
     /// Fuse the child, as a region or by its parts, inside the boundary.
-    pub(crate) fn fuse_child(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    pub(crate) fn fuse_child(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.within(ctx, |ctx, child| crate::fusion::fuse(child, ctx))
     }
 
-    pub(crate) fn child(&self) -> &Node<R, E> {
+    pub(crate) fn child(&self) -> &Node<R> {
         &self.child
     }
 
-    pub(crate) fn child_mut(&mut self) -> &mut Node<R, E> {
+    pub(crate) fn child_mut(&mut self) -> &mut Node<R> {
         &mut self.child
     }
 
@@ -108,8 +108,8 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     /// queue no effect.
     fn audit(
         boundary: &BoundaryRef,
-        child: &mut Node<R, E>,
-        ctx: &mut ExecCtx<'_, R, E>,
+        child: &mut Node<R>,
+        ctx: &mut ExecCtx<'_, R>,
         resident: &TagValue,
     ) -> TagValue {
         let mut expected = resident.clone();
@@ -155,8 +155,8 @@ impl<R: Rt, E: UserEvent> Prune<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Prune<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+impl<R: Rt> Update<R> for Prune<R> {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.boundary.visit(ctx.rt.cycle());
         let Self { boundary, child, ride } = self;
         let Some(ride) = ride else {
@@ -182,32 +182,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Prune<R, E> {
         ride.resident.set(tv)
     }
 
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.child.for_each_child(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.child.for_each_child_mut(f)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         ctx.in_boundary(Some(&self.boundary), |ctx| self.child.delete(ctx))
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(ride) = &mut self.ride {
             ride.walked = false;
         }
         ctx.in_boundary(Some(&self.boundary), |ctx| self.child.sleep(ctx))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         ctx.in_boundary(Some(&self.boundary), |ctx| self.child.typecheck0(ctx))
     }
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut InstanceTypes,
     ) -> Result<()> {
         ctx.in_boundary(Some(&self.boundary), |ctx| {
@@ -215,7 +215,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Prune<R, E> {
         })
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         ctx.in_boundary(Some(&self.boundary), |ctx| self.child.typecheck1(ctx))
     }
 
@@ -231,7 +231,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Prune<R, E> {
         self.child.spec()
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         self.child.view()
     }
 
@@ -249,7 +249,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Prune<R, E> {
         self.child.emit_clif(cx)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // reached through `descend`, which tries no region here
         ctx.in_boundary(Some(&self.boundary), |ctx| {
             crate::fusion::descend(&mut self.child, ctx)

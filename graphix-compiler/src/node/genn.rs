@@ -5,7 +5,7 @@ use super::{
 };
 use crate::SourcePosition;
 use crate::{
-    BindId, CompileCtx, ExecCtx, Node, Refs, Rt, Scope, TagValue, UserEvent,
+    BindId, CompileCtx, ExecCtx, Node, Refs, Rt, Scope, TagValue,
     expr::{ApplyExpr, Expr, ExprId, ExprKind, ModPath, Origin},
     image::ImageBuf,
     typ::{FnType, Type},
@@ -26,13 +26,13 @@ pub(crate) static SYNTHETIC: LazyLock<Arc<Origin>> =
     LazyLock::new(|| Arc::new(Origin::default()));
 
 /// bind a variable and return a node referencing it
-pub fn bind<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub fn bind<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     scope: &ModPath,
     name: &str,
     typ: Type,
     top_id: ExprId,
-) -> (BindId, Node<R, E>) {
+) -> (BindId, Node<R>) {
     let id = ctx
         .env
         .bind_variable(
@@ -56,67 +56,67 @@ pub(crate) fn name_spec(name: &str, pos: SourcePosition, ori: Arc<Origin>) -> Ex
 }
 
 /// generate a reference to a bind id
-pub fn reference<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub fn reference<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     id: BindId,
     typ: Type,
     top_id: ExprId,
-) -> Node<R, E> {
+) -> Node<R> {
     Ref::new(ctx, id, typ, top_id, NOP.clone())
 }
 
 /// A constant `v` of the Graphix type `typ`.
-pub fn constant<R: Rt, E: UserEvent>(v: Value, typ: Type) -> Node<R, E> {
+pub fn constant<R: Rt>(v: Value, typ: Type) -> Node<R> {
     Constant::new(v, typ, NOP.clone())
 }
 
 /// generate and return an apply node for the given lambda
-pub fn apply<R: Rt, E: UserEvent>(
-    fnode: Node<R, E>,
+pub fn apply<R: Rt>(
+    fnode: Node<R>,
     scope: Scope,
-    args: SmallVec<[Node<R, E>; 2]>,
+    args: SmallVec<[Node<R>; 2]>,
     typ: &FnType,
     top_id: ExprId,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     let ftype = typ.instantiate(&nohash::IntSet::default());
     apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id, None)
 }
 
 /// A call of the function value `f` over `args`: bound at its first
 /// update, or ahead of it by [`crate::branch::fork_instances`].
-pub fn apply_value<R: Rt, E: UserEvent>(
+pub fn apply_value<R: Rt>(
     f: Value,
     scope: Scope,
-    args: SmallVec<[Node<R, E>; 2]>,
+    args: SmallVec<[Node<R>; 2]>,
     typ: &Arc<FnType>,
     top_id: ExprId,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     apply_constant(f, NOP.clone(), scope, args, typ, top_id)
 }
 
 /// [`apply_value`], the function reporting `spec` as its source.
-pub(crate) fn apply_constant<R: Rt, E: UserEvent>(
+pub(crate) fn apply_constant<R: Rt>(
     f: Value,
     spec: Arc<Expr>,
     scope: Scope,
-    args: SmallVec<[Node<R, E>; 2]>,
+    args: SmallVec<[Node<R>; 2]>,
     typ: &Arc<FnType>,
     top_id: ExprId,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     let fnode = Constant::new(f, Type::Fn(typ.clone()), spec);
     apply(fnode, scope, args, typ, top_id)
 }
 
 /// A call whose dispatch its typecheck resolves; `id` is its expression's,
 /// which every compile of the body it is in shares.
-pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
-    fnode: Node<R, E>,
+pub(crate) fn apply_prototype<R: Rt>(
+    fnode: Node<R>,
     scope: Scope,
-    args: SmallVec<[Node<R, E>; 2]>,
+    args: SmallVec<[Node<R>; 2]>,
     typ: &FnType,
     top_id: ExprId,
     id: ExprId,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id, Some(id))
 }
 
@@ -131,16 +131,16 @@ fn check_arity(n: usize, typ: &FnType) -> Result<()> {
     Ok(())
 }
 
-fn apply_inner<R: Rt, E: UserEvent>(
-    fnode: Node<R, E>,
+fn apply_inner<R: Rt>(
+    fnode: Node<R>,
     scope: Scope,
-    args: SmallVec<[Node<R, E>; 2]>,
+    args: SmallVec<[Node<R>; 2]>,
     typ: &FnType,
     ftype: Option<FnType>,
     rtype: Type,
     top_id: ExprId,
     id: Option<ExprId>,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     check_arity(args.len(), typ)?;
     let mut spec = ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter(
@@ -155,7 +155,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
     if let Some(id) = id {
         spec.id = id;
     }
-    let args: ArgMap<R, E> = ArgKey::of_formals(&typ.args)
+    let args: ArgMap<R> = ArgKey::of_formals(&typ.args)
         .zip(args)
         .map(|(key, node)| {
             let spec = Arc::new(node.spec().clone());
@@ -177,16 +177,16 @@ fn apply_inner<R: Rt, E: UserEvent>(
 /// A static call to the function binding `bind` over argument bindings
 /// synthesized for it, each written by whoever drives the call.
 #[derive(Debug)]
-pub(crate) struct SynthCall<R: Rt, E: UserEvent> {
-    pub(crate) site: Node<R, E>,
+pub(crate) struct SynthCall<R: Rt> {
+    pub(crate) site: Node<R>,
     pub(crate) args: SmallVec<[BindId; 2]>,
 }
 
-impl<R: Rt, E: UserEvent> SynthCall<R, E> {
+impl<R: Rt> SynthCall<R> {
     /// Bind one argument per type in `arg_types`, named `{prefix}_{k}`
     /// in `scope`, and typecheck the call through both passes.
     pub(crate) fn build(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         prefix: &str,
         bind: BindId,
@@ -195,7 +195,7 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
         top_id: ExprId,
     ) -> Result<Self> {
         let mut args: SmallVec<[BindId; 2]> = SmallVec::new();
-        let mut nodes: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
+        let mut nodes: SmallVec<[Node<R>; 2]> = SmallVec::new();
         for (k, typ) in arg_types.into_iter().enumerate() {
             let name = format_compact!("{prefix}_{k}");
             let (id, n) = self::bind(ctx, &scope.lexical, &name, typ, top_id);
@@ -229,7 +229,7 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
     }
 
     /// Delete the site and its argument bindings.
-    pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.site.delete(ctx);
         for id in self.args.drain(..) {
             ctx.env.unbind_variable(id);
@@ -242,8 +242,8 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
 /// privately. The owner feeds them (with the tag its own policy gives
 /// them) and updates the call; delete drops every binding it owns.
 #[derive(Debug)]
-pub struct Callback<R: Rt, E: UserEvent> {
-    call: Node<R, E>,
+pub struct Callback<R: Rt> {
+    call: Node<R>,
     function: Function,
     args: SmallVec<[BindId; 2]>,
 }
@@ -259,11 +259,11 @@ enum Function {
     Value,
 }
 
-impl<R: Rt, E: UserEvent> Callback<R, E> {
+impl<R: Rt> Callback<R> {
     /// A call of a function of type `typ`, its arguments named `names`,
     /// through a binding of its own.
     pub fn new(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         typ: &Arc<FnType>,
         names: &[&str],
@@ -283,7 +283,7 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
     /// [`Self::new`] through the binding `fid`, which its owner holds and
     /// releases.
     pub fn through(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         typ: &Arc<FnType>,
         names: &[&str],
@@ -295,7 +295,7 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
 
     /// [`Self::new`] of the function value `f`.
     pub fn of_value(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         typ: &Arc<FnType>,
         names: &[&str],
@@ -308,7 +308,7 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
     }
 
     fn through_binding(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         typ: &Arc<FnType>,
         names: &[&str],
@@ -323,12 +323,12 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
     }
 
     fn bind_args(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         typ: &Arc<FnType>,
         names: &[&str],
         top_id: ExprId,
-    ) -> Result<(SmallVec<[BindId; 2]>, SmallVec<[Node<R, E>; 2]>)> {
+    ) -> Result<(SmallVec<[BindId; 2]>, SmallVec<[Node<R>; 2]>)> {
         check_arity(names.len(), typ)?;
         let mut args = SmallVec::new();
         let mut nodes = SmallVec::new();
@@ -342,21 +342,21 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
 
     /// Feed the function the call's binding holds; a call of a value has
     /// none.
-    pub fn feed_fn(&self, ctx: &mut ExecCtx<'_, R, E>, f: TagValue) {
+    pub fn feed_fn(&self, ctx: &mut ExecCtx<'_, R>, f: TagValue) {
         if let Function::Own(fid) | Function::Shared(fid) = self.function {
             ctx.deliver(fid, f)
         }
     }
 
-    pub fn feed_arg(&self, ctx: &mut ExecCtx<'_, R, E>, i: usize, v: TagValue) {
+    pub fn feed_arg(&self, ctx: &mut ExecCtx<'_, R>, i: usize, v: TagValue) {
         ctx.deliver(self.args[i], v)
     }
 
-    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.call.update(ctx)
     }
 
-    pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.call.typecheck0(ctx)
     }
 
@@ -364,7 +364,7 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         self.call.refs(refs)
     }
 
-    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.call.sleep(ctx)
     }
 
@@ -375,13 +375,13 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
     }
 
     /// The call, for an owner that walks it (a fork of instances).
-    pub fn call_mut(&mut self) -> &mut Node<R, E> {
+    pub fn call_mut(&mut self) -> &mut Node<R> {
         &mut self.call
     }
 
     /// Drop the call and every binding it owns, writes queued to them
     /// included.
-    pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.call.delete(ctx);
         if let Function::Own(fid) = self.function {
             ctx.rt.store_release(&fid);
@@ -410,7 +410,7 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
     }
 
     pub fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let call = crate::image::decode_node(ctx, buf)?;

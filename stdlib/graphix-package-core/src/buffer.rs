@@ -1,6 +1,6 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
-use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::Effect, errf, rep};
+use graphix_compiler::{BindId, ExecCtx, Rt, effects::Effect, errf, rep};
 use netidx_value::{PBytes, ValArray, Value};
 
 use crate::{CachedArgs, CachedVals, EvalCached, fast_get};
@@ -170,9 +170,9 @@ fn reference(r: &Value) -> Result<BindId, Value> {
 impl<'a> Decoder<'a> {
     /// The length a reference holds: this pass's write first, else the
     /// store; `None` when it has not arrived.
-    fn len<R: Rt, E: UserEvent>(
+    fn len<R: Rt>(
         &self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         r: &Value,
     ) -> Result<Option<usize>, Value> {
         let Some(target) = ctx.write_target(reference(r)?) else { return Ok(None) };
@@ -204,9 +204,9 @@ impl<'a> Decoder<'a> {
     }
 
     /// A write through `r`, to where `*r <- v` would land.
-    fn put<R: Rt, E: UserEvent>(
+    fn put<R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         r: &Value,
         v: Value,
     ) -> Result<(), Value> {
@@ -215,9 +215,9 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    fn fixed<const N: usize, R: Rt, E: UserEvent>(
+    fn fixed<const N: usize, R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         r: &Value,
         from: fn([u8; N]) -> Value,
     ) -> Result<(), Value> {
@@ -235,9 +235,9 @@ impl<'a> Decoder<'a> {
 
     /// Decode one spec element: `Ok(None)` when a length it needs has
     /// not arrived.
-    fn element<R: Rt, E: UserEvent>(
+    fn element<R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         tag: &str,
         a: &[Value],
     ) -> Result<Option<()>, Value> {
@@ -300,23 +300,23 @@ impl<'a> Decoder<'a> {
 pub(crate) struct DecodeEv;
 crate::unit_image_state!(DecodeEv);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
+impl<R: Rt> EvalCached<R> for DecodeEv {
     const EFFECT: Effect = Effect::Io(None);
     const NAME: &str = "core_buffer_decode";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         decode(ctx, from, true)
     }
 
-    fn quiet(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn quiet(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         decode(ctx, from, false)
     }
 }
 
 /// Decode `from`'s buffer by its spec, and when `commit`, write what the
 /// whole spec decoded to its references.
-fn decode<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn decode<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     from: &CachedVals,
     commit: bool,
 ) -> Option<Value> {

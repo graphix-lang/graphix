@@ -1,7 +1,7 @@
 use anyhow::Result;
 use graphix_compiler::{
     Apply, BuiltIn, CompileCtx, Effect, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    TagView, UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
+    TagView, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_derive::defpackage;
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached, fast_eval, unit_image_state};
@@ -15,7 +15,7 @@ struct ExampleBuiltin {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
+impl<R: Rt> BuiltIn<R> for ExampleBuiltin {
     const NAME: &str = "{{ident}}_example";
     // What a builtin's output depends on (graphix_compiler::effects):
     // - `Stateless(fast)`: its arguments alone, in the cycle they arrive; a
@@ -28,28 +28,28 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const EFFECT: Effect = Effect::Stateless(None);
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved_typ: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(ExampleBuiltin::default()))
     }
 
     // Restore what `image_encode` wrote; `from` is the argument list as
     // `init` saw it. The result slot is never imaged.
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         _buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(ExampleBuiltin::default()))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
+impl<R: Rt> Apply<R> for ExampleBuiltin {
     // The image is written before any cycle runs: encode exactly the state
     // `init` built (bind ids, generated nodes, configuration).
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -58,8 +58,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        from: &mut [Node<R>],
     ) -> &TagValue {
         // Every awake arg produces every cycle; match the view exhaustively.
         // A stateless builtin computes from a stale arg too, unfired: the
@@ -78,7 +78,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 // The one implementation the interpreter (through `fast_eval`) and the
@@ -90,11 +90,11 @@ fn example_any(args: &[Value]) -> Option<Value> {
 #[derive(Debug, Default)]
 struct ExampleCachedEv;
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ExampleCachedEv {
+impl<R: Rt> EvalCached<R> for ExampleCachedEv {
     const NAME: &str = "{{ident}}_example_cached";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(example_any)));
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, example_any, from)
     }
 }

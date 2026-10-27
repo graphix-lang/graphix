@@ -8,7 +8,6 @@ use arcstr::{ArcStr, literal};
 use enumflags2::BitFlags;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CFlag, CompileCtx, Effect, ExecCtx, Node, Rt, Scope,
-    UserEvent,
     expr::{
         Load, ModPath, ModuleResolver, Origin, Probes, Resolution, ResolverRef, VfsEntry,
         VfsResolver,
@@ -131,26 +130,26 @@ async fn a_panicking_check_leaves_the_runtime_checking() -> Result<()> {
 /// body.
 struct PanicsAtBind;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PanicsAtBind {
+impl<R: Rt> BuiltIn<R> for PanicsAtBind {
     const NAME: &str = "test_panics_at_bind";
     const EFFECT: Effect = Effect::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
-        _: &'a mut CompileCtx<R, E>,
+        _: &'a mut CompileCtx<R>,
         _: &'a FnType,
         _: Option<&'d FnType>,
         _: &'b Scope,
-        _: &'c [Node<R, E>],
+        _: &'c [Node<R>],
         _: graphix_compiler::expr::ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         panic!("a builtin bug")
     }
 
     fn image_decode(
-        _: &mut ExecCtx<'_, R, E>,
-        _: &[Node<R, E>],
+        _: &mut ExecCtx<'_, R>,
+        _: &[Node<R>],
         _: &mut &[u8],
-    ) -> std::result::Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> std::result::Result<Box<dyn Apply<R>>, PackError> {
         Err(PackError::InvalidFormat)
     }
 }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use bytes::{BufMut, Bytes};
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -268,34 +268,34 @@ pub(crate) struct IoLines<const BATCHED: bool> {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED> {
+impl<R: Rt, const BATCHED: bool> BuiltIn<R> for IoLines<BATCHED> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = if BATCHED { "sys_io_lines_batched" } else { "sys_io_lines" };
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         let var = RtVar::new(ctx, top_id);
         Ok(Box::new(Self { var, reading: None, out: TagValue::phantom() }))
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         Ok(Box::new(Self { var, reading: None, out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> {
+impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
     /// A started instance has a reader task holding the stream.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.reading.is_some() {
@@ -304,11 +304,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         self.var.image_encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         // One reader per stream: a re-delivery of the same handle is
         // ignored (the reader consumes it); another stream replaces the
         // reader, under a fresh id so the old one's lines land nowhere.
@@ -348,12 +344,12 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.reading = None;
         self.var.release(ctx);
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
     }
 }
@@ -516,13 +512,13 @@ macro_rules! stdio {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
 
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
+        impl<R: Rt> EvalCached<R> for $ev {
             const NAME: &str = $builtin;
             const EFFECT: Effect = Effect::Sync;
 
             fn eval(
                 &mut self,
-                _ctx: &mut ExecCtx<'_, R, E>,
+                _ctx: &mut ExecCtx<'_, R>,
                 cached: &CachedVals,
             ) -> Option<Value> {
                 cached.value(0)?;

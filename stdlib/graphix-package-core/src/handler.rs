@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
     BindId, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue, TagView,
-    UserEvent, branch,
+    branch,
     cost::Siblings,
     errf,
     expr::ExprId,
@@ -102,9 +102,9 @@ impl<T> Inbox<T> {
 /// raised, which also goes on to the handler covering the builtin. A
 /// request whose asker stopped waiting is dropped with its instance.
 #[derive(Debug)]
-pub struct Handler<R: Rt, E: UserEvent, Q> {
+pub struct Handler<R: Rt, Q> {
     /// The call the check types; requests run in instances like it.
-    proto: Request<R, E>,
+    proto: Request<R>,
     /// The function's value.
     pid: BindId,
     ftyp: Arc<FnType>,
@@ -112,7 +112,7 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
     top_id: ExprId,
     /// Requests not yet given an instance.
     pending: Vec<(Value, Q)>,
-    running: Vec<(Request<R, E>, Q)>,
+    running: Vec<(Request<R>, Q)>,
     /// Whether the running instances may run apart, once decided; a new
     /// function decides again.
     siblings: Siblings,
@@ -126,16 +126,16 @@ enum Answer {
 
 /// One call of the function over its own request binding.
 #[derive(Debug)]
-struct Request<R: Rt, E: UserEvent> {
-    call: genn::Callback<R, E>,
+struct Request<R: Rt> {
+    call: genn::Callback<R>,
     relay: ErrorRelay,
 }
 
-impl<R: Rt, E: UserEvent> Request<R, E> {
+impl<R: Rt> Request<R> {
     /// A call of the function, the binding `pid`'s value, or the value `f`
     /// it holds now.
     fn new(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         function: Result<BindId, Value>,
         ftyp: &Arc<FnType>,
         scope: &Scope,
@@ -156,7 +156,7 @@ impl<R: Rt, E: UserEvent> Request<R, E> {
     }
 
     /// The answer this cycle: the call's first fire, or what it raised.
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Option<Answer> {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> Option<Answer> {
         let out = match self.call.update(ctx).view() {
             TagView::Fired(tv) => Some(Answer::Fired(tv.value_cloned())),
             _ => None,
@@ -165,20 +165,20 @@ impl<R: Rt, E: UserEvent> Request<R, E> {
         out.or(raised)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.call.delete(ctx);
         self.relay.delete(ctx);
     }
 }
 
-fn call_of<R: Rt, E: UserEvent, Q>(running: &mut (Request<R, E>, Q)) -> &mut Node<R, E> {
+fn call_of<R: Rt, Q>(running: &mut (Request<R>, Q)) -> &mut Node<R> {
     running.0.call.call_mut()
 }
 
-impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
+impl<R: Rt, Q: Reply> Handler<R, Q> {
     /// A handler of type `ftyp` (a one-argument function type).
     pub fn new(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         ftyp: &Type,
         scope: &Scope,
         top_id: ExprId,
@@ -203,7 +203,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     }
 
     /// Take the function's value when its argument fires.
-    pub fn set_fn(&mut self, ctx: &mut ExecCtx<'_, R, E>, f: Option<Value>, fired: bool) {
+    pub fn set_fn(&mut self, ctx: &mut ExecCtx<'_, R>, f: Option<Value>, fired: bool) {
         if fired && let Some(v) = f {
             ctx.deliver(self.pid, TagValue::fired(v));
             self.siblings = Siblings::default();
@@ -222,7 +222,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     /// Start an instance of the function for each new request, then
     /// answer each request whose instance fired or raised. The instances
     /// run on branches of their own where they are independent.
-    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if !self.pending.is_empty()
             && let Some(function) = ctx.rt.store_value(&self.pid)
         {
@@ -268,7 +268,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         }
     }
 
-    pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.proto.call.typecheck0(ctx)
     }
 
@@ -277,14 +277,14 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     }
 
     /// Requests pending are dropped unanswered.
-    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.pending.clear();
         for (mut r, _) in self.running.drain(..) {
             r.delete(ctx)
         }
     }
 
-    pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.sleep(ctx);
         self.proto.delete(ctx);
         ctx.rt.store_remove(&self.pid);
@@ -304,7 +304,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     }
 
     pub fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let call = genn::Callback::image_decode(ctx, buf)?;

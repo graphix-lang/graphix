@@ -7,7 +7,7 @@ use super::dense_deltas::run_delta_with;
 use anyhow::Result;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, Effect, ExecCtx, Node, PruneMode, Rt, Scope,
-    TagValue, UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
+    TagValue, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_builtin,
@@ -76,11 +76,11 @@ pub(super) struct Note;
 
 graphix_package_core::unit_image_state!(Note);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for Note {
+impl<R: Rt> EvalCached<R> for Note {
     const NAME: &str = "test_note";
     const EFFECT: Effect = Effect::Stateless(None);
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         let v = from.value(0)?;
         if let (Some(notes), Value::String(s)) = (ctx.libstate.get::<Notes>(), v) {
             notes.0.lock().push(s.to_string());
@@ -116,36 +116,32 @@ impl UnmarkedEffect {
     }
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for UnmarkedEffect {
+impl<R: Rt> BuiltIn<R> for UnmarkedEffect {
     const NAME: &str = "test_unmarked_effect";
     const EFFECT: Effect = Effect::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Self::new())
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         _buf: &mut &[u8],
-    ) -> std::result::Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> std::result::Result<Box<dyn Apply<R>>, PackError> {
         Ok(Self::new())
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for UnmarkedEffect {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+impl<R: Rt> Apply<R> for UnmarkedEffect {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let tv = from[0].update(ctx).clone();
         ctx.rt.cancel_timer(self.id);
         self.out.set(tv)
@@ -155,7 +151,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for UnmarkedEffect {
         Ok(())
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 async fn run(code: &str, mode: Mode) -> Result<Vec<Value>> {

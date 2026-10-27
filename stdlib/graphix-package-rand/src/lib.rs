@@ -4,8 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, effects::Effect,
+    expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{CachedVals, Invocation, seam_tick};
 use netidx::subscriber::Value;
@@ -79,41 +79,37 @@ struct Rand {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
+impl<R: Rt> BuiltIn<R> for Rand {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Rand { args: CachedVals::new(from), out: TagValue::phantom() }))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let args = CachedVals::image_decode(buf)?;
         Ok(Box::new(Rand { args, out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
+impl<R: Rt> Apply<R> for Rand {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.args.image_encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         macro_rules! gen_cases {
             ($start:expr, $end:expr; $($ftyp:ident),+; $($typ:ident),+) => {
                 match ($start, $end) {
@@ -150,7 +146,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.args.clear()
     }
 }
@@ -160,40 +156,36 @@ struct Pick {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
+impl<R: Rt> BuiltIn<R> for Pick {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand_pick";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Pick { out: TagValue::phantom() }))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         _buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(Pick { out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
+impl<R: Rt> Apply<R> for Pick {
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         // a bottom input is a bottom output
         let tv = from[0].update(ctx);
         if tv.tag().is_bottom() {
@@ -211,7 +203,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 #[derive(Debug)]
@@ -219,40 +211,36 @@ struct Shuffle {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
+impl<R: Rt> BuiltIn<R> for Shuffle {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand_shuffle";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Shuffle { out: TagValue::phantom() }))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         _buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(Shuffle { out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
+impl<R: Rt> Apply<R> for Shuffle {
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         // a bottom input is a bottom output
         let tv = from[0].update(ctx);
         if tv.tag().is_bottom() {
@@ -272,7 +260,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 #[cfg(test)]

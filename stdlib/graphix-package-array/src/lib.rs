@@ -6,7 +6,6 @@ use ahash::AHashSet;
 use anyhow::{Result, bail};
 use graphix_compiler::{
     Apply, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue,
-    UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -201,26 +200,26 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
 graphix_package_core::fast_builtin!(Unzip, UnzipEv, "array_unzip", fc_unzip);
 
 #[derive(Debug)]
-struct Group<R: Rt, E: UserEvent> {
+struct Group<R: Rt> {
     queue: VecDeque<Value>,
     buf: SmallVec<[Value; 16]>,
-    pred: genn::Callback<R, E>,
+    pred: genn::Callback<R>,
     ready: bool,
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
+impl<R: Rt> BuiltIn<R> for Group<R> {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "array_group";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         match from {
             [_, _] => {
                 let scope = scope.append_block("fn", LambdaId::new().inner());
@@ -242,10 +241,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let pred = genn::Callback::image_decode(ctx, buf)?;
         Ok(Box::new(Self {
             queue: VecDeque::new(),
@@ -257,7 +256,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
+impl<R: Rt> Apply<R> for Group<R> {
     /// The queue, the group being built and the wait for an answer
     /// exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -267,11 +266,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.image_encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let x = from[0].update(ctx);
         let x_tag = x.tag();
         if let Some(tv) = seam_tick(x) {
@@ -328,8 +323,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
     ) -> anyhow::Result<()> {
         self.pred.typecheck0(ctx)
     }
@@ -338,15 +333,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.pred.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.pred.sleep(ctx);
     }
 
-    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.queue.clear();
         self.buf.clear();
         self.ready = true;
@@ -404,7 +399,7 @@ graphix_derive::defpackage! {
         Zip,
         Unzip,
         Flatten,
-        Group as Group<GXRt<X>, X::UserEvent>,
+        Group as Group<GXRt<X>>,
         Iter,
         IterQ,
         PushBack,

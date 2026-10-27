@@ -12,7 +12,7 @@ each node owns its case; there is no central walker, no region planner
 and no builtin side-trait.
 
 ```rust
-trait Update<R, E> {
+trait Update<R> {
     /// Emit this node's computation into the open kernel and return
     /// its SSA result. Default: Err — this node doesn't fuse, which is
     /// correct for every async node with no churn. CLIF is not
@@ -26,24 +26,24 @@ trait Update<R, E> {
     /// the parent (or `compile()`, for a root) deletes the original and
     /// swaps the replacement in. `None`: no replacement at this level;
     /// the impl already recursed into its own children.
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>>;
+    fn fuse(&mut self, ctx: &mut ExecCtx<R>) -> Result<Option<Node<R>>>;
 }
 
-trait Apply<R, E> {
+trait Apply<R> {
     /// The builtin emission hook. Ok(None) = shape not handled — the
     /// call site falls back to its next strategy (a fast fn, or no
     /// fusion); the impl MUST NOT have emitted before returning None.
     /// Err = abort the kernel build; the subtree node-walks (partial
     /// emission is fine — the function is discarded).
-    fn emit_clif(&self, cs: &CallSite<R, E>, cx: &mut BodyCx)
+    fn emit_clif(&self, cs: &CallSite<R>, cx: &mut BodyCx)
         -> Result<Option<CompiledExpr>> { Ok(None) }
 }
 
 /// Mechanics only, no policy: identity suppression, region inputs →
 /// KernelSig, compile under the jit lock (emit_clif recursion from
 /// `node`), a FusedKernel over the feeders. Ok(None) = didn't compile.
-pub fn try_fuse<R, E>(node: &Node<R, E>, ctx: &mut ExecCtx<R, E>)
-    -> Result<Option<Node<R, E>>>;
+pub fn try_fuse<R>(node: &Node<R>, ctx: &mut ExecCtx<R>)
+    -> Result<Option<Node<R>>>;
 ```
 
 Policy lives in each node's `fuse`. A sync-capable node tries

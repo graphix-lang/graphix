@@ -2,7 +2,7 @@ use crate::{BufferedRead, Halves, StreamKind, get_stream, wrap_tls};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    ExecCtx, Rt, UserEvent, errf,
+    ExecCtx, Rt, errf,
     image::{self, ImageBuf},
 };
 use graphix_package_core::{
@@ -105,8 +105,8 @@ macro_rules! started_image_state {
                 Ok(())
             }
 
-            fn image_decode<R: Rt, E: UserEvent>(
-                _ctx: &mut ExecCtx<'_, R, E>,
+            fn image_decode<R: Rt>(
+                _ctx: &mut ExecCtx<'_, R>,
                 _buf: &mut &[u8],
             ) -> Result<Self, PackError> {
                 Ok(Self::default())

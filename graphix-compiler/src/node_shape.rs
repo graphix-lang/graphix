@@ -5,9 +5,7 @@
 //! the first mismatch. Driven by `GXHandle::match_shape`;
 //! `GXHandle::describe_shape` renders the actual graph as an authoring aid.
 
-use crate::{
-    Node, NodeView, Rt, UserEvent, fusion::kernel_abi::KernelSig, stack, typ::Type,
-};
+use crate::{Node, NodeView, Rt, fusion::kernel_abi::KernelSig, stack, typ::Type};
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use smallvec::SmallVec;
@@ -131,15 +129,12 @@ impl fmt::Display for Why<'_> {
 
 /// Check a compiled node against a [`NodeShape`] spec, naming the first
 /// mismatch.
-pub fn match_node<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    spec: &NodeShape,
-) -> Result<()> {
+pub fn match_node<R: Rt>(node: &Node<R>, spec: &NodeShape) -> Result<()> {
     match_at(node, spec).map_err(|why| anyhow!("{why}"))
 }
 
-fn match_at<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
+fn match_at<'a, R: Rt>(
+    node: &'a Node<R>,
     spec: &'a NodeShape,
 ) -> std::result::Result<(), Why<'a>> {
     match spec {
@@ -166,7 +161,7 @@ fn match_at<'a, R: Rt, E: UserEvent>(
 
 /// True if `node` or any descendant matches `spec`. Used by
 /// [`NodeShape::Contains`].
-fn find_match<R: Rt, E: UserEvent>(node: &Node<R, E>, spec: &NodeShape) -> bool {
+fn find_match<R: Rt>(node: &Node<R>, spec: &NodeShape) -> bool {
     stack::ensure_sufficient(|| {
         match_at(node, spec).is_ok()
             || node_children(node).iter().any(|c| find_match(c, spec))
@@ -175,13 +170,13 @@ fn find_match<R: Rt, E: UserEvent>(node: &Node<R, E>, spec: &NodeShape) -> bool 
 
 /// Render a compiled node as an indented text tree, for writing a
 /// [`NodeShape`] spec.
-pub fn describe_node<R: Rt, E: UserEvent>(node: &Node<R, E>) -> String {
+pub fn describe_node<R: Rt>(node: &Node<R>) -> String {
     let mut out = String::new();
     describe_at(node, 0, &mut out);
     out
 }
 
-fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut String) {
+fn describe_at<R: Rt>(node: &Node<R>, depth: usize, out: &mut String) {
     stack::ensure_sufficient(|| {
         let view = node.view();
         let _ = write!(out, "{:w$}{}", "", kind_name(&view), w = depth * 2);
@@ -203,17 +198,15 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
 
 /// The child nodes of a view in a deterministic order; a kernel's are
 /// its input feeders.
-fn node_children<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-) -> SmallVec<[&'a Node<R, E>; 4]> {
-    let mut kids: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
+fn node_children<'a, R: Rt>(node: &'a Node<R>) -> SmallVec<[&'a Node<R>; 4]> {
+    let mut kids: SmallVec<[&'a Node<R>; 4]> = SmallVec::new();
     node.for_each_child(&mut |c| kids.push(c));
     kids
 }
 
 /// The name a [`NodeShape::Node`] kind matches: the `NodeView` variant
 /// name, `ModuleBlock` for a module's block.
-pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> &'static str {
+pub fn kind_name<R: Rt>(view: &NodeView<'_, R>) -> &'static str {
     use NodeView as V;
     match view {
         V::Bind(_) => "Bind",

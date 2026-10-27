@@ -6,7 +6,7 @@ use super::{
     dense_gate,
 };
 use crate::{
-    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update,
     cost::ForkSite,
     defetyp, err, errf,
     expr::{Expr, ExprId},
@@ -33,25 +33,20 @@ use triomphe::Arc;
 defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
 
 #[derive(Debug)]
-pub struct Map<R: Rt, E: UserEvent> {
+pub struct Map<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     /// Each entry's key then its value, in written order: the order
     /// they update in.
-    pub n: Box<[Node<R, E>]>,
+    pub n: Box<[Node<R>]>,
     resident: TagValue,
     pub(crate) fork: ForkSite,
 }
 
-impl<R: Rt, E: UserEvent> Map<R, E> {
-    fn with(
-        spec: Arc<Expr>,
-        typ: Type,
-        n: Box<[Node<R, E>]>,
-        fork: ForkSite,
-    ) -> Node<R, E> {
+impl<R: Rt> Map<R> {
+    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R>]>, fork: ForkSite) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -63,14 +58,14 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     }
 
     /// Each entry's key and value, in written order.
-    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Node<R, E>, &Node<R, E>)> {
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Node<R>, &Node<R>)> {
         self.n.chunks_exact(2).map(|kv| (&kv[0], &kv[1]))
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = crate::image::count_decode(buf)?;
@@ -81,13 +76,13 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &Arc<[(Expr, Expr)]>,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = args
             .iter()
             .flat_map(|(k, v)| [k, v])
@@ -101,7 +96,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
+impl<R: Rt> Update<R> for Map<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Map, buf);
         self.spec.encode(buf)?;
@@ -114,7 +109,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.fork.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let (mut vals, tag) = gathered!(self, ctx, Value::Map(CMap::new()));
         let m = with_hooks(ctx, || {
             let mut m = CMap::new();
@@ -135,11 +130,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Map<R, E> {
+impl<R: Rt> Map<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
@@ -224,11 +219,11 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
 }
 
 #[derive(Debug)]
-pub struct MapRef<R: Rt, E: UserEvent> {
+pub struct MapRef<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub source: Node<R, E>,
-    pub key: Node<R, E>,
+    pub source: Node<R>,
+    pub key: Node<R>,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub vtyp: Type,
@@ -249,11 +244,11 @@ pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
     }
 }
 
-impl<R: Rt, E: UserEvent> MapRef<R, E> {
+impl<R: Rt> MapRef<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
@@ -270,9 +265,9 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let source = decode_node(ctx, buf)?;
         let key = decode_node(ctx, buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
@@ -290,14 +285,14 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
         key: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let key = compile(ctx, flags, key.clone(), scope, top_id)?;
         let vtyp = match &source.typ() {
@@ -317,13 +312,13 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for MapRef<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.source);
         f(&self.key)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source);
         f(&mut self.key)
     }
@@ -337,7 +332,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.vtyp.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let s = self.source.update(ctx);
         let k = self.key.update(ctx);
         let tag = s.tag().join(k.tag());
@@ -358,17 +353,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         &self.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.source.sleep(ctx);
         self.key.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.source, &mut self.key], ctx)
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::MapRef(self)
     }
 

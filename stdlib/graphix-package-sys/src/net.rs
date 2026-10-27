@@ -4,7 +4,6 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
-    UserEvent,
     effects::Effect,
     env::Env,
     err, errf,
@@ -91,18 +90,18 @@ pub(crate) struct Write {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
+impl<R: Rt> BuiltIn<R> for Write {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_write";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Write {
             dv: Either::Right(VecDeque::new()),
             slept: WakeBit::default(),
@@ -111,10 +110,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let _ = buf;
         Ok(Box::new(Write {
             dv: Either::Right(VecDeque::new()),
@@ -133,7 +132,7 @@ impl Write {
     }
 
     /// Drop the target, if there is one; what fires next queues.
-    fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn release<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if self.dv.is_left()
             && let Either::Left((_, dv)) =
                 std::mem::replace(&mut self.dv, Either::Right(VecDeque::new()))
@@ -143,7 +142,7 @@ impl Write {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
+impl<R: Rt> Apply<R> for Write {
     /// A live subscription and queued values exist only once a cycle ran.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let _ = buf;
@@ -153,11 +152,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         }
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let woke = self.slept.take();
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (val, val_fired) = seam_arg(ctx, &mut from[1]);
@@ -211,11 +206,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         self.out.ride()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.release(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
         self.slept.set();
         self.release(ctx)
@@ -233,19 +228,19 @@ pub(crate) struct Subscribe {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
+impl<R: Rt> BuiltIn<R> for Subscribe {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_subscribe";
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         let _ = from;
         let var = RtVar::new(ctx, top_id);
         Ok(Box::new(Subscribe {
@@ -258,10 +253,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
         Ok(Box::new(Subscribe {
@@ -274,7 +269,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
+impl<R: Rt> Apply<R> for Subscribe {
     /// `cur` is a live subscription.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.cur.is_some() {
@@ -284,11 +279,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         self.target.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         static ERR_TAG: ArcStr = literal!("SubscribeError");
         let woke = self.slept.take();
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
@@ -347,28 +338,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        _ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
     ) -> Result<()> {
         Ok(())
     }
 
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
         self.target.refresh(&ctx.env, resolved);
         Ok(())
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.var.release(ctx);
         self.cur = None;
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
         self.slept.set();
         self.cur = None;
@@ -383,18 +374,18 @@ pub(crate) struct RpcCall {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
+impl<R: Rt> BuiltIn<R> for RpcCall {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_call";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         let var = RtVar::new(ctx, top_id);
         let _ = from;
         Ok(Box::new(RpcCall {
@@ -405,27 +396,23 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
         Ok(Box::new(RpcCall { var, target, out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
+impl<R: Rt> Apply<R> for RpcCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.var.image_encode(buf)?;
         self.target.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         fn parse_args(
             path: &Value,
             args: &Value,
@@ -496,33 +483,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        _ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
     ) -> Result<()> {
         Ok(())
     }
 
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
         self.target.refresh(&ctx.env, resolved);
         Ok(())
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.release(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.remint(ctx);
     }
 }
 
 impl RpcCall {
-    fn release<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn release<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(net) = ctx.libstate.get::<NetState>() {
             net.stop_request(self.var.id);
         }
@@ -530,7 +517,7 @@ impl RpcCall {
     }
 
     /// A fresh delivery id: a reply to an earlier call lands nowhere.
-    fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn remint<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(net) = ctx.libstate.get::<NetState>() {
             net.stop_request(self.var.id);
         }
@@ -559,41 +546,37 @@ macro_rules! list {
         }
 
         impl $name {
-            fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+            fn remint<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 self.stop(ctx);
                 self.var.remint(ctx);
             }
 
             /// Stop the listing in progress, if one is.
-            fn stop<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+            fn stop<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 if self.current.take().is_some() {
                     NetState::get(ctx).stop_list(self.var.id);
                 }
             }
 
-            fn list<R: Rt, E: UserEvent>(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                path: Path,
-            ) {
+            fn list<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>, path: Path) {
                 self.current = Some((path.clone(), Listing::InFlight));
                 NetState::get(ctx).list(ctx, self.var.id, path, $table);
             }
         }
 
-        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+        impl<R: Rt> BuiltIn<R> for $name {
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
             const RESUMES: bool = true;
 
             fn init<'a, 'b, 'c, 'd>(
-                ctx: &'a mut CompileCtx<R, E>,
+                ctx: &'a mut CompileCtx<R>,
                 _typ: &'a FnType,
                 _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
-                from: &'c [Node<R, E>],
+                from: &'c [Node<R>],
                 top_id: ExprId,
-            ) -> Result<Box<dyn Apply<R, E>>> {
+            ) -> Result<Box<dyn Apply<R>>> {
                 let _ = from;
                 let var = RtVar::new(ctx, top_id);
                 Ok(Box::new($name {
@@ -605,10 +588,10 @@ macro_rules! list {
             }
 
             fn image_decode(
-                ctx: &mut ExecCtx<'_, R, E>,
-                _from: &[Node<R, E>],
+                ctx: &mut ExecCtx<'_, R>,
+                _from: &[Node<R>],
                 buf: &mut &[u8],
-            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+            ) -> Result<Box<dyn Apply<R>>, PackError> {
                 let var = RtVar::image_decode(ctx, buf)?;
                 Ok(Box::new($name {
                     slept: WakeBit::default(),
@@ -619,7 +602,7 @@ macro_rules! list {
             }
         }
 
-        impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
+        impl<R: Rt> Apply<R> for $name {
             /// `current` is a list the resolver is serving.
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 if self.current.is_some() {
@@ -630,8 +613,8 @@ macro_rules! list {
 
             fn update(
                 &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &mut [Node<R, E>],
+                ctx: &mut ExecCtx<'_, R>,
+                from: &mut [Node<R>],
             ) -> &TagValue {
                 let woke = self.slept.take();
                 let (_, trigger_fired) = seam_arg(ctx, &mut from[0]);
@@ -682,12 +665,12 @@ macro_rules! list {
                 }
             }
 
-            fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+            fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 self.var.release(ctx);
                 self.stop(ctx);
             }
 
-            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 self.out = TagValue::phantom();
                 self.slept.set();
                 self.remint(ctx);
@@ -723,7 +706,7 @@ fn write_type(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Publish<R: Rt, E: UserEvent> {
+pub(crate) struct Publish<R: Rt> {
     /// Wake catch-up: `sleep()` unpublishes, so the first update after
     /// must republish from the present path/value.
     slept: WakeBit,
@@ -732,7 +715,7 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
     /// write requests on the published value arrive here as custom
     /// events (routed by the NetState pump)
     wid: BindId,
-    on_write: genn::Callback<R, E>,
+    on_write: genn::Callback<R>,
     /// None when no handler can arrive: the publication takes no writes.
     write_typ: Option<Type>,
     /// The handler is a function now, not null.
@@ -740,19 +723,19 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
+impl<R: Rt> BuiltIn<R> for Publish<R> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish";
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         match from {
             [_, _, _] => {
                 let typ = resolved.unwrap_or(typ);
@@ -779,10 +762,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let top_id = ExprId::decode(buf)?;
         let wid = BindId::decode(buf)?;
         let on_write = genn::Callback::image_decode(ctx, buf)?;
@@ -801,7 +784,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
+impl<R: Rt> Apply<R> for Publish<R> {
     /// `current` is a live publication.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.current.is_some() {
@@ -814,11 +797,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.write_typ.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         macro_rules! publish {
             ($path:expr, $v:expr) => {{
                 let path = Path::from($path.clone());
@@ -905,8 +884,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
     ) -> Result<()> {
         self.on_write.typecheck0(ctx)?;
         Ok(())
@@ -914,8 +893,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
         self.write_typ = write_type(&ctx.env, Some(resolved));
@@ -926,7 +905,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.on_write.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
@@ -934,7 +913,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.on_write.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
         self.slept.set();
         if let Some((_, val)) = self.current.take() {
@@ -1029,12 +1008,12 @@ impl Published {
 }
 
 #[derive(Debug)]
-pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
+pub(crate) struct PublishRpc<R: Rt> {
     /// Wake catch-up: `sleep()` drops the published proc, so the first
     /// update after must republish from the present path/doc/spec.
     slept: WakeBit,
     var: RtVar,
-    handler: Handler<R, E, RpcReply>,
+    handler: Handler<R, RpcReply>,
     /// Calls posted under `id`, taken at each wake.
     inbox: std::sync::Arc<Inbox<server::RpcCall>>,
     current: Option<Published>,
@@ -1048,7 +1027,7 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
+impl<R: Rt> PublishRpc<R> {
     fn handler_arg(resolved: &FnType) -> Option<Type> {
         match &resolved.args.get(4)?.typ {
             Type::Fn(ft) => Some(ft.args.first()?.typ.clone()),
@@ -1061,7 +1040,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
     /// its argument type; `Err` is the cast's refusal.
     fn arg(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         call: &server::RpcCall,
     ) -> Result<Value, Value> {
         let mut args: LPooled<Vec<(ArcStr, Value)>> = self
@@ -1082,7 +1061,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
 
     fn publish(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         path: &Value,
         doc: &Value,
         spec: &Value,
@@ -1115,19 +1094,19 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
+impl<R: Rt> BuiltIn<R> for PublishRpc<R> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish_rpc";
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         typ: &'a graphix_compiler::typ::FnType,
         resolved: Option<&FnType>,
         scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         let [_, _, _, _, _] = from else { bail!("expected five arguments") };
         let typ = resolved.unwrap_or(typ);
         let handler = Handler::new(ctx, &typ.args[4].typ, scope, top_id)?;
@@ -1146,10 +1125,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let handler = Handler::image_decode(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
@@ -1167,7 +1146,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
+impl<R: Rt> Apply<R> for PublishRpc<R> {
     /// `current` is a live procedure.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.current.is_some() {
@@ -1178,11 +1157,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.cast_typ.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let woke = self.slept.take();
         let (pathv, path_fired) = seam_arg(ctx, &mut from[0]);
         let (docv, doc_fired) = seam_arg(ctx, &mut from[1]);
@@ -1250,16 +1225,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
     ) -> Result<()> {
         self.handler.typecheck0(ctx)
     }
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        _ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
         self.cast_typ = Self::handler_arg(resolved);
@@ -1270,13 +1245,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.handler.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.var.release(ctx);
         self.current = None;
         self.handler.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
         self.slept.set();
         self.var.remint(ctx);

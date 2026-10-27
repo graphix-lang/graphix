@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use arcstr::format;
 use graphix_compiler::{
-    Event, NoUserEvent, Scope, Tag, TagValue, View, compile,
+    Event, Scope, Tag, TagValue, View, compile,
     expr::{ModPath, parser::parse_one},
 };
 use graphix_package_core::testing::{Collect, Mode, TestCtx, collect, config};
@@ -73,7 +73,7 @@ async fn strict_bottom(mode: Mode) -> Result<()> {
                         if sleep && i == 1 {
                             node.sleep(ctx);
                         }
-                        let mut event = Event::new(NoUserEvent);
+                        let mut event = Event::new();
                         event.view = if i == 0 { View::Birth } else { View::Cycle };
                         let payload =
                             if tag.is_bottom() { Value::Null } else { value.clone() };
@@ -120,7 +120,7 @@ async fn strict_bottom(mode: Mode) -> Result<()> {
             .into_iter()
             .enumerate()
             {
-                let mut event = Event::new(NoUserEvent);
+                let mut event = Event::new();
                 event.view = if i == 0 { View::Birth } else { View::Cycle };
                 let expected = if i == 0 { Tag::FIRED } else { Tag::STALE };
                 event.variables.insert(id, TagValue::tagged(value.clone(), expected));
@@ -211,7 +211,7 @@ async fn strict_sample(mode: Mode) -> Result<()> {
             .into_iter()
             .enumerate()
             {
-                let mut event = Event::new(NoUserEvent);
+                let mut event = Event::new();
                 event.view = if i == 0 { View::Birth } else { View::Cycle };
                 event.variables.insert(
                     bindings[0].1,
@@ -297,7 +297,7 @@ async fn bottom_scrutinee_consults_no_guard(mode: Mode) -> Result<()> {
             .into_iter()
             .enumerate()
             {
-                let mut event = Event::new(NoUserEvent);
+                let mut event = Event::new();
                 event.view = if i == 0 { View::Birth } else { View::Cycle };
                 event
                     .variables

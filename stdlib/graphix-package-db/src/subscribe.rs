@@ -3,7 +3,7 @@ use arcstr::literal;
 use futures::{channel::mpsc, future, prelude::*};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
-    Node, Rt, Scope, Tag, TagValue, UserEvent,
+    Node, Rt, Scope, Tag, TagValue,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -170,18 +170,18 @@ pub(crate) struct DbSubscribe {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
+impl<R: Rt> BuiltIn<R> for DbSubscribe {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "db_subscription_new";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(DbSubscribe {
             args: CachedVals::new(from),
             bind_id: BindId::new(),
@@ -192,10 +192,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(DbSubscribe {
             args: CachedVals::image_decode(buf)?,
             bind_id: BindId::new(),
@@ -216,7 +216,7 @@ impl DbSubscribe {
     /// Watch the cached tree under the cached prefix, reporting under the
     /// current bind id; a prefix no key can have watches nothing, and one
     /// that cannot be written as data is the error.
-    fn watch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<()> {
+    fn watch<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) -> Result<()> {
         self.stop();
         let Some(tree) = get_tree_inner(&self.args, 1) else { return Ok(()) };
         let prefix = match self.args.value(0).map(|v| write_marked_data(ctx, v)) {
@@ -233,7 +233,7 @@ impl DbSubscribe {
     }
 
     /// `e` as the subscription's one event.
-    fn report<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>, e: anyhow::Error) {
+    fn report<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>, e: anyhow::Error) {
         let (mut tx, rx) = mpsc::channel(1);
         let mut events = EVENT_POOL.take();
         events.push(Err(e));
@@ -242,7 +242,7 @@ impl DbSubscribe {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
+impl<R: Rt> Apply<R> for DbSubscribe {
     /// A running watch exists only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.abort.is_some() {
@@ -251,11 +251,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.args.image_encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let previous = [self.args.value(0).cloned(), self.args.value(1).cloned()];
         match self.args.update(ctx, from) {
             Invocation::Bottom { fresh } => {
@@ -286,12 +282,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.stop();
         self.slept.set();
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.stop();
     }
 }
@@ -303,9 +299,9 @@ fn extract_sub_bind_id(v: &Value) -> Option<BindId> {
     }
 }
 
-fn scan_db_events<E: UserEvent>(
+fn scan_db_events(
     bind_id: Option<BindId>,
-    event: &Event<E>,
+    event: &Event,
     convert: fn(&DbEvent) -> Option<Value>,
 ) -> Option<Value> {
     let bid = bind_id?;
@@ -337,18 +333,18 @@ macro_rules! db_event_accessor {
             out: TagValue,
         }
 
-        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+        impl<R: Rt> BuiltIn<R> for $name {
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin_name;
 
             fn init<'a, 'b, 'c, 'd>(
-                ctx: &'a mut CompileCtx<R, E>,
+                ctx: &'a mut CompileCtx<R>,
                 _typ: &'a FnType,
                 resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
-                from: &'c [Node<R, E>],
+                from: &'c [Node<R>],
                 top_id: ExprId,
-            ) -> Result<Box<dyn Apply<R, E>>> {
+            ) -> Result<Box<dyn Apply<R>>> {
                 Ok(Box::new($name {
                     top_id,
                     cached: CachedVals::new(from),
@@ -359,10 +355,10 @@ macro_rules! db_event_accessor {
             }
 
             fn image_decode(
-                _ctx: &mut ExecCtx<'_, R, E>,
-                _from: &[Node<R, E>],
+                _ctx: &mut ExecCtx<'_, R>,
+                _from: &[Node<R>],
                 buf: &mut &[u8],
-            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+            ) -> Result<Box<dyn Apply<R>>, PackError> {
                 let top_id = ExprId::decode(buf)?;
                 let cached = CachedVals::image_decode(buf)?;
                 let data = <Option<Type>>::decode(buf)?;
@@ -376,7 +372,7 @@ macro_rules! db_event_accessor {
             }
         }
 
-        impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
+        impl<R: Rt> Apply<R> for $name {
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 self.top_id.encode(buf)?;
                 // a subscription value, which a bind id follows, has no
@@ -387,8 +383,8 @@ macro_rules! db_event_accessor {
 
             fn typecheck1(
                 &mut self,
-                ctx: &mut CompileCtx<R, E>,
-                _from: &mut [Node<R, E>],
+                ctx: &mut CompileCtx<R>,
+                _from: &mut [Node<R>],
                 resolved: &FnType,
             ) -> Result<()> {
                 self.data = data_target(&ctx.env, Some(resolved));
@@ -397,8 +393,8 @@ macro_rules! db_event_accessor {
 
             fn update(
                 &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &mut [Node<R, E>],
+                ctx: &mut ExecCtx<'_, R>,
+                from: &mut [Node<R>],
             ) -> &TagValue {
                 match self.cached.update(ctx, from) {
                     Invocation::Bottom { fresh } => {
@@ -432,14 +428,14 @@ macro_rules! db_event_accessor {
                 }
             }
 
-            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 self.out = TagValue::phantom();
                 if let Some(bid) = self.bind_id.take() {
                     ctx.release_var(bid, self.top_id);
                 }
             }
 
-            fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+            fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 if let Some(bid) = self.bind_id {
                     ctx.release_var(bid, self.top_id);
                 }
@@ -503,7 +499,7 @@ mod test {
             let mut events = EVENT_POOL.take();
             push_event(Some(Typ::I64), change, &mut events);
             let id = BindId::new();
-            let event = Event::new(graphix_compiler::NoUserEvent);
+            let event = Event::new();
             event.custom.lock().insert(id, Box::new(DbEvents(events)));
             for convert in [
                 (|_: &DbEvent| None) as fn(&DbEvent) -> Option<Value>,

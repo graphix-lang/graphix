@@ -21,7 +21,7 @@ pub use kernel::FusedKernel;
 
 use crate::{
     AddrSet, ApplyView, BindId, CompileCtx, LambdaId, Node, NodeView, PrintFlag, Refs,
-    Rt, Update, UserEvent,
+    Rt, Update,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
@@ -663,9 +663,9 @@ pub(crate) struct FreeVarInput {
 /// which is what makes capture forwarding automatic. Slots with no
 /// kernel-input representation are skipped; emitting such a Ref later
 /// fails the build.
-pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
-    subtree: &dyn Update<R, E>,
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn collect_region_inputs<R: Rt>(
+    subtree: &dyn Update<R>,
+    ctx: &CompileCtx<R>,
 ) -> LPooled<Vec<FreeVarInput>> {
     let mut refs = Refs::default();
     subtree.refs(&mut refs);
@@ -688,9 +688,9 @@ pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
 
 /// Resolve binding `id` to its [`FreeVarInput`], or `None` if its type
 /// has no kernel-input representation.
-pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
+pub(crate) fn free_var_input<R: Rt>(
     id: BindId,
-    ctx: &CompileCtx<R, E>,
+    ctx: &CompileCtx<R>,
 ) -> Option<FreeVarInput> {
     let b = ctx.env.by_id.get(&id)?;
     // The feeder keeps the unresolved type; only the slot classification
@@ -710,16 +710,14 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
 /// a `catch` covers it), an `ExplicitParens`' inner node and every
 /// `Select` arm body, and stops at a `Leaf`. The analysis walks and the kernel emitter must agree on
 /// this set, so all of them match on this enum.
-pub(crate) enum TailPosition<'a, R: Rt, E: UserEvent> {
-    Block(&'a node::Block<R, E>),
-    Parens(&'a node::ExplicitParens<R, E>),
-    Select(&'a node::select::Select<R, E>),
-    Leaf(&'a Node<R, E>),
+pub(crate) enum TailPosition<'a, R: Rt> {
+    Block(&'a node::Block<R>),
+    Parens(&'a node::ExplicitParens<R>),
+    Select(&'a node::select::Select<R>),
+    Leaf(&'a Node<R>),
 }
 
-pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-) -> TailPosition<'a, R, E> {
+pub(crate) fn tail_position<'a, R: Rt>(node: &'a Node<R>) -> TailPosition<'a, R> {
     match node.view() {
         NodeView::Block(b) if !b.value_is_caught() => TailPosition::Block(b),
         NodeView::ExplicitParens(ep) => TailPosition::Parens(ep),
@@ -730,9 +728,9 @@ pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
 
 /// Call `f` on each tail-position leaf of `node`; returns whether any
 /// call returned true. Every Select arm is visited (no short-circuit).
-pub(crate) fn for_each_tail_leaf<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-    f: &mut impl FnMut(&'a Node<R, E>) -> bool,
+pub(crate) fn for_each_tail_leaf<'a, R: Rt>(
+    node: &'a Node<R>,
+    f: &mut impl FnMut(&'a Node<R>) -> bool,
 ) -> bool {
     match tail_position(node) {
         TailPosition::Block(b) => {
@@ -753,25 +751,22 @@ pub(crate) fn for_each_tail_leaf<'a, R: Rt, E: UserEvent>(
 /// Visit `node` and every reachable descendant, pre-order. The
 /// `NodeView` match is exhaustive on purpose. Lambda bodies are not
 /// descended (a body compiles per call site) and `FusedKernel` is opaque.
-pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-    f: &mut dyn FnMut(&'a Node<R, E>),
+pub(crate) fn for_each_node<'a, R: Rt>(
+    node: &'a Node<R>,
+    f: &mut dyn FnMut(&'a Node<R>),
 ) {
     crate::stack::ensure_sufficient(|| for_each_node_inner(node, f))
 }
 
-fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-    f: &mut dyn FnMut(&'a Node<R, E>),
-) {
+fn for_each_node_inner<'a, R: Rt>(node: &'a Node<R>, f: &mut dyn FnMut(&'a Node<R>)) {
     f(node);
-    for_each_child(node, &mut |c| for_each_node::<R, E>(c, f));
+    for_each_child(node, &mut |c| for_each_node::<R>(c, f));
 }
 
 /// A binary operator's operands and the fork point over them.
-pub(crate) fn binary_operands<'a, R: Rt, E: UserEvent>(
-    view: &NodeView<'a, R, E>,
-) -> Option<(&'a Node<R, E>, &'a Node<R, E>, &'a crate::cost::ForkSite)> {
+pub(crate) fn binary_operands<'a, R: Rt>(
+    view: &NodeView<'a, R>,
+) -> Option<(&'a Node<R>, &'a Node<R>, &'a crate::cost::ForkSite)> {
     use NodeView as V;
     Some(match view {
         V::Add(n) => (&n.lhs, &n.rhs, &n.fork),
@@ -799,9 +794,9 @@ pub(crate) fn binary_operands<'a, R: Rt, E: UserEvent>(
 /// The children of `node`, the one child step every walk takes, in a
 /// deterministic order. A kernel has none: its feeders are outside its
 /// region.
-pub(crate) fn for_each_child<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-    f: &mut dyn FnMut(&'a Node<R, E>),
+pub(crate) fn for_each_child<'a, R: Rt>(
+    node: &'a Node<R>,
+    f: &mut dyn FnMut(&'a Node<R>),
 ) {
     if let NodeView::FusedKernel(_) = node.view() {
         return;
@@ -809,14 +804,14 @@ pub(crate) fn for_each_child<'a, R: Rt, E: UserEvent>(
     node.for_each_child(f)
 }
 
-pub(crate) fn for_each_emitted_node<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-    f: &mut dyn FnMut(&'a Node<R, E>),
+pub(crate) fn for_each_emitted_node<'a, R: Rt>(
+    node: &'a Node<R>,
+    f: &mut dyn FnMut(&'a Node<R>),
 ) {
-    let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+    let mut stack: LPooled<Vec<&'a Node<R>>> = LPooled::take();
     stack.push(node);
     while let Some(node) = stack.pop() {
-        let mut inline: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+        let mut inline: LPooled<Vec<&'a Node<R>>> = LPooled::take();
         for_each_node(node, &mut |node| {
             f(node);
             let NodeView::CallSite(callsite) = node.view() else { return };
@@ -834,18 +829,18 @@ pub(crate) fn for_each_emitted_node<'a, R: Rt, E: UserEvent>(
 /// Every node a kernel built from `node` would run: the emitted nodes
 /// and, through each statically-resolved lambda call, the callee's
 /// body, each body once.
-pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
-    node: &'a Node<R, E>,
-    f: &mut dyn FnMut(&'a Node<R, E>),
+pub(crate) fn for_each_reachable_node<'a, R: Rt>(
+    node: &'a Node<R>,
+    f: &mut dyn FnMut(&'a Node<R>),
 ) {
     let mut seen: LPooled<AddrSet> = LPooled::take();
-    let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+    let mut stack: LPooled<Vec<&'a Node<R>>> = LPooled::take();
     stack.push(node);
     while let Some(body) = stack.pop() {
-        if !seen.insert(body as *const Node<R, E> as usize) {
+        if !seen.insert(body as *const Node<R> as usize) {
             continue;
         }
-        let mut callees: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+        let mut callees: LPooled<Vec<&'a Node<R>>> = LPooled::take();
         for_each_emitted_node(body, &mut |n| {
             f(n);
             let NodeView::CallSite(cs) = n.view() else { return };
@@ -858,14 +853,14 @@ pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
 }
 
 /// A `?` under a handler.
-pub(crate) fn raises_to_handler<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
+pub(crate) fn raises_to_handler<R: Rt>(n: &Node<R>) -> bool {
     matches!(n.view(), NodeView::Qop(q) if q.handler().is_some())
 }
 
 /// Whether evaluating `node` can raise to a handler: a `?` under one
 /// that it reaches through statically resolved calls, or a call with no
 /// static target, whose body no walk sees.
-pub(crate) fn may_raise_to_handler<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+pub(crate) fn may_raise_to_handler<R: Rt>(node: &Node<R>) -> bool {
     let mut any = false;
     for_each_reachable_node(node, &mut |n| {
         any |= raises_to_handler(n)
@@ -884,8 +879,8 @@ pub type LambdaCallInfo = triomphe::Arc<lowering::CachedKernel>;
 /// A discovered callee's body Node + self-call info. The body reference
 /// is live through this region's resolved `GXLambda` for the duration
 /// of `try_fuse`.
-pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
-    pub body: &'n Node<R, E>,
+pub struct CalleeBody<'n, R: Rt> {
+    pub body: &'n Node<R>,
     /// `Some((self_bind, info))` for a self-recursive callee: non-tail
     /// self-calls emit through the lambda-call path against the
     /// kernel's own FuncRef; tail-position ones become the rebind loop.
@@ -901,7 +896,7 @@ pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
 }
 
 /// What [`discover_lambda_calls`] found in a region.
-pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
+pub(crate) struct Discovery<'n, R: Rt> {
     /// The root's call sites.
     pub(crate) sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
     /// Every callee in the closure, in discovery order, by kernel
@@ -909,9 +904,9 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
     pub(crate) callees: LPooled<Vec<(kernel_abi::KernelKey, Arc<KernelSig>)>>,
     /// Each callee's body, self-call info and own call sites, by kernel
     /// identity.
-    pub(crate) bodies: BTreeMap<kernel_abi::KernelKey, CalleeBody<'n, R, E>>,
+    pub(crate) bodies: BTreeMap<kernel_abi::KernelKey, CalleeBody<'n, R>>,
     /// The decorated nodes a successful build absorbs.
-    pub(crate) decorated: LPooled<Vec<&'n Node<R, E>>>,
+    pub(crate) decorated: LPooled<Vec<&'n Node<R>>>,
     /// Call sites whose lambda has no kernel, with the reason.
     pub(crate) refused: LPooled<Vec<(&'n Expr, CompactString)>>,
     /// A site two instances of one callback in the region call with
@@ -940,10 +935,10 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
 // region tree, and later regions splice kernels into callee bodies), so the cache
 // would key by kernel and hold what build_lambda_kernel and the sites walk produce,
 // not node borrows.
-pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
-    root: &'n Node<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> Discovery<'n, R, E> {
+pub(crate) fn discover_lambda_calls<'n, R: Rt>(
+    root: &'n Node<R>,
+    ctx: &CompileCtx<R>,
+) -> Discovery<'n, R> {
     let collect_decorated = !ctx.attr_census.lock().is_empty();
     let mut d = Discovery {
         sites: LPooled::take(),
@@ -955,14 +950,14 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     };
     // The second field says where a body's discovered sites land:
     // `None` = the root, `Some(ptr)` = that callee's `CalleeBody.sites`.
-    let mut worklist: LPooled<Vec<(&'n Node<R, E>, Option<kernel_abi::KernelKey>)>> =
+    let mut worklist: LPooled<Vec<(&'n Node<R>, Option<kernel_abi::KernelKey>)>> =
         LPooled::take();
     worklist.push((root, None));
     let mut reads = lowering::ReadsMemo::default();
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
-        let mut enqueue: LPooled<Vec<(&'n Node<R, E>, kernel_abi::KernelKey)>> =
+        let mut enqueue: LPooled<Vec<(&'n Node<R>, kernel_abi::KernelKey)>> =
             LPooled::take();
         for_each_emitted_node(body, &mut |n| {
             if collect_decorated
@@ -1049,10 +1044,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
 /// replace itself behind `&mut self`. Top-down order gives maximality:
 /// the highest subtree that fuses is spliced and nothing below it is
 /// attempted. `FusionDisabled` is checked once in [`crate::compile`].
-pub fn fuse<R: Rt, E: UserEvent>(
-    child: &mut Node<R, E>,
-    ctx: &mut CompileCtx<R, E>,
-) -> anyhow::Result<()> {
+pub fn fuse<R: Rt>(child: &mut Node<R>, ctx: &mut CompileCtx<R>) -> anyhow::Result<()> {
     // a pruning boundary keeps its place: what fuses is its child, in it
     if let Some(p) = child.as_prune_mut() {
         return p.fuse_child(ctx);
@@ -1078,12 +1070,12 @@ static FED_ARGS: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["#fed"]));
 /// builtin) fuses with each such argument as a feeder: the node-walk
 /// runs it and the kernel reads its production as an input, as it would
 /// read a `let` bound to the argument.
-fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
-    child: &mut Node<R, E>,
-    ctx: &mut CompileCtx<R, E>,
-) -> anyhow::Result<Option<Node<R, E>>> {
+fn try_fuse_feeding_args<R: Rt>(
+    child: &mut Node<R>,
+    ctx: &mut CompileCtx<R>,
+) -> anyhow::Result<Option<Node<R>>> {
     let top_id = ctx.fusion.top_id.unwrap_or(child.spec().id);
-    let Some(cs) = child.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+    let Some(cs) = child.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
     else {
         return Ok(None);
     };
@@ -1129,7 +1121,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
             _ => (),
         }
     }
-    let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
+    let mut fed: LPooled<Vec<(BindId, Node<R>)>> = LPooled::take();
     for (arg, feed) in cs.args.values_mut().zip(feeds) {
         let Some(node) = arg.node.as_mut().filter(|_| feed) else { continue };
         let typ = node.typ().clone();
@@ -1154,18 +1146,17 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     r
 }
 
-fn fuse_fed<R: Rt, E: UserEvent>(
-    child: &mut Node<R, E>,
-    ctx: &mut CompileCtx<R, E>,
-    fed: &mut Vec<(BindId, Node<R, E>)>,
-) -> anyhow::Result<Option<Node<R, E>>> {
+fn fuse_fed<R: Rt>(
+    child: &mut Node<R>,
+    ctx: &mut CompileCtx<R>,
+    fed: &mut Vec<(BindId, Node<R>)>,
+) -> anyhow::Result<Option<Node<R>>> {
     // Every fed argument must be an input: an argument the kernel skips
     // would drop its effect.
     let kernel = match try_fuse(child, ctx)? {
         Some(mut new) => {
-            let k = new
-                .downcast_mut::<FusedKernel<R, E>>()
-                .expect("try_fuse builds a kernel");
+            let k =
+                new.downcast_mut::<FusedKernel<R>>().expect("try_fuse builds a kernel");
             if fed.iter().all(|(id, _)| k.has_input(*id)) {
                 Some(new)
             } else {
@@ -1177,7 +1168,7 @@ fn fuse_fed<R: Rt, E: UserEvent>(
     };
     match kernel {
         Some(mut new) => {
-            let kernel = new.downcast_mut::<FusedKernel<R, E>>().expect("checked above");
+            let kernel = new.downcast_mut::<FusedKernel<R>>().expect("checked above");
             for (id, mut node) in fed.drain(..) {
                 fuse_parts([&mut node], ctx)?;
                 kernel.feed(ctx, id, node);
@@ -1186,7 +1177,7 @@ fn fuse_fed<R: Rt, E: UserEvent>(
         }
         None => {
             let cs = child
-                .downcast_mut::<CallNode<R, E>>()
+                .downcast_mut::<CallNode<R>>()
                 .and_then(CallNode::call_mut)
                 .expect("still the call");
             for arg in cs.args.values_mut() {
@@ -1203,9 +1194,9 @@ fn fuse_fed<R: Rt, E: UserEvent>(
     }
 }
 
-pub(crate) fn descend<R: Rt, E: UserEvent>(
-    child: &mut Node<R, E>,
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn descend<R: Rt>(
+    child: &mut Node<R>,
+    ctx: &mut CompileCtx<R>,
 ) -> anyhow::Result<()> {
     if let Some(new) = child.fuse(ctx)? {
         ctx.discard(std::mem::replace(child, new));
@@ -1218,10 +1209,10 @@ pub(crate) fn descend<R: Rt, E: UserEvent>(
 /// other part only descends (arithmetic over a leaf is not worth a
 /// kernel). The `fuse` of every node with children that is not a
 /// container ends here.
-pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
-    parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
-    ctx: &mut CompileCtx<R, E>,
-) -> anyhow::Result<Option<Node<R, E>>> {
+pub(crate) fn fuse_parts<'a, R: Rt + 'a>(
+    parts: impl IntoIterator<Item = &'a mut Node<R>>,
+    ctx: &mut CompileCtx<R>,
+) -> anyhow::Result<Option<Node<R>>> {
     fuse_each(ctx, parts, |part, calls, ctx| {
         if calls.unwrap_or_else(|| calls_a_function(part)) || asserted_native(part) {
             fuse(part, ctx)
@@ -1238,12 +1229,12 @@ pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
 /// in order the result. A collection's prototype or slot walk matches
 /// its kernels by attempt order, so it runs in order. `visit` is told
 /// whether its part calls a function when the partition decided it.
-pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
-    ctx: &mut CompileCtx<R, E>,
-    parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
-    visit: fn(&mut Node<R, E>, Option<bool>, &mut CompileCtx<R, E>) -> anyhow::Result<()>,
+pub(crate) fn fuse_each<'a, R: Rt + 'a>(
+    ctx: &mut CompileCtx<R>,
+    parts: impl IntoIterator<Item = &'a mut Node<R>>,
+    visit: fn(&mut Node<R>, Option<bool>, &mut CompileCtx<R>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let mut parts: LPooled<Vec<&'a mut Node<R, E>>> = parts.into_iter().collect();
+    let mut parts: LPooled<Vec<&'a mut Node<R>>> = parts.into_iter().collect();
     if parts.len() < 2
         || ctx.fusion.share.is_some()
         || crate::dbgenv::graphix_fuse_serial()
@@ -1281,7 +1272,7 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     let census = ctx.attr_census.lock().clone();
     let memo = TypeMemo::current();
     let mut emission = ctx.fusion.emission()?;
-    let mut work: LPooled<Vec<(usize, &mut Node<R, E>, CompileCtx<R, E>)>> = parts
+    let mut work: LPooled<Vec<(usize, &mut Node<R>, CompileCtx<R>)>> = parts
         .drain(..)
         .map(|(i, p)| {
             let task = ctx.fork();
@@ -1319,16 +1310,16 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
 
 /// A part `#[native]` decorates is a region of its own, as a `let`
 /// initializer is, whatever it calls.
-fn asserted_native<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    let native = <crate::Native as crate::Attribute<R, E>>::NAME;
+fn asserted_native<R: Rt>(node: &Node<R>) -> bool {
+    let native = <crate::Native as crate::Attribute<R>>::NAME;
     let attrs = node.spec().dec.as_ref().map(|d| &*d.attrs).unwrap_or(&[]);
     attrs.iter().any(|a| a.name == native)
 }
 
 /// Does the subtree call a lambda or run a collection operation, the
 /// computations that can loop?
-fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    fn walk<R: Rt, E: UserEvent>(n: &Node<R, E>, calls: &mut bool) {
+fn calls_a_function<R: Rt>(node: &Node<R>) -> bool {
+    fn walk<R: Rt>(n: &Node<R>, calls: &mut bool) {
         *calls = match n.view() {
             NodeView::CallSite(cs) => {
                 matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_)))
@@ -1354,9 +1345,9 @@ fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
 /// `#[native]` passes; a node absorbed into a larger kernel is never
 /// visited, which is also a pass. Definition assertions
 /// (`#[tail_recursive]`/`#[sync]`/`#[async]`) verify in `analysis::analyze`.
-fn check_node_attributes<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    ctx: &CompileCtx<R, E>,
+fn check_node_attributes<R: Rt>(
+    node: &Node<R>,
+    ctx: &CompileCtx<R>,
 ) -> anyhow::Result<()> {
     if ctx.fusion.reusing() {
         return Ok(());
@@ -1378,9 +1369,9 @@ fn check_node_attributes<R: Rt, E: UserEvent>(
 
 /// The target half of the attribute checks on a node absorbed into a
 /// kernel ([`crate::AttributeTargetFn`]).
-fn check_attribute_targets<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    ctx: &CompileCtx<R, E>,
+fn check_attribute_targets<R: Rt>(
+    node: &Node<R>,
+    ctx: &CompileCtx<R>,
 ) -> anyhow::Result<()> {
     if let Some(dec) = &node.spec().dec {
         for attr in dec.attrs.iter() {
@@ -1399,10 +1390,10 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
 /// `Ok(None)`: the root type has no kernel representation, the subtree
 /// is an identity passthrough, or some node does not emit CLIF.
 /// Discovery rejects known effects; emission validates the remaining shapes.
-pub fn try_fuse<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    ctx: &mut CompileCtx<R, E>,
-) -> anyhow::Result<Option<Node<R, E>>> {
+pub fn try_fuse<R: Rt>(
+    node: &Node<R>,
+    ctx: &mut CompileCtx<R>,
+) -> anyhow::Result<Option<Node<R>>> {
     if !region_is_candidate(node) {
         return Ok(None);
     }
@@ -1434,27 +1425,27 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
 /// input. Feeders register under the real top id: `Rt::ref_var` is keyed
 /// `(BindId, top_id)`, and the region's interior id would strand the top
 /// expression at ref count zero.
-pub(crate) fn kernel_node<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    node: &Node<R, E>,
+pub(crate) fn kernel_node<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    node: &Node<R>,
     facts: crate::analysis::RegionFacts,
     inputs: &[FreeVarInput],
     kernel: Arc<KernelSig>,
     jit: emit::WrappedKernel,
-) -> Node<R, E> {
+) -> Node<R> {
     let top = ctx.fusion.top_id.unwrap_or(node.spec().id);
-    let feeders: Box<[Node<R, E>]> = inputs
+    let feeders: Box<[Node<R>]> = inputs
         .iter()
-        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), top))
+        .map(|fv| genn::reference::<R>(ctx, fv.bind_id, fv.typ.clone(), top))
         .collect();
     FusedKernel::new(node.spec().clone(), node.typ().clone(), facts, kernel, jit, feeders)
 }
 
-fn build_region<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    ctx: &mut CompileCtx<R, E>,
+fn build_region<R: Rt>(
+    node: &Node<R>,
+    ctx: &mut CompileCtx<R>,
     return_type: Type,
-) -> anyhow::Result<Option<Node<R, E>>> {
+) -> anyhow::Result<Option<Node<R>>> {
     ctx.fusion.stats.attempted += 1;
     let phase = profile::phase(Phase::Builtins);
     // `apply_sites` lets `CallSite::emit_clif` lower a registered site
@@ -1570,11 +1561,11 @@ fn build_region<R: Rt, E: UserEvent>(
 
 /// De-fuse the region, recording the reason so `attempted` and
 /// `failed` agree.
-fn refuse<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn refuse<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     spec: &Expr,
     reason: &str,
-) -> anyhow::Result<Option<Node<R, E>>> {
+) -> anyhow::Result<Option<Node<R>>> {
     ctx.fusion.stats.record_failure(spec, reason);
     Ok(None)
 }
@@ -1598,9 +1589,7 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
 /// Why a node can never be inside a kernel: an effect or a declaration.
 /// Block emission keeps every statement containing one, and discovery
 /// rejects a region containing one before collecting inputs.
-pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-) -> Option<&'static str> {
+pub(crate) fn effect_blocker<R: Rt>(node: &Node<R>) -> Option<&'static str> {
     match node.view() {
         NodeView::Connect(_) | NodeView::ConnectDeref(_) => Some("connect is an effect"),
         NodeView::Catch(_) => Some("catch installs an error handler"),
@@ -1621,8 +1610,8 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
 }
 
 /// Whether `node`, under any parentheses, is a constant.
-pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    let mut n: &dyn Update<R, E> = &**node;
+pub(crate) fn is_constant<R: Rt>(node: &Node<R>) -> bool {
+    let mut n: &dyn Update<R> = &**node;
     loop {
         match n.view() {
             NodeView::ExplicitParens(p) => n = &*p.n,
@@ -1635,8 +1624,8 @@ pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
 /// A region root must emit a value. Declarations stay in the graph;
 /// a bare binding read forwards an input and a constant holds its value,
 /// neither computing anything.
-pub(crate) fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    let mut n: &dyn Update<R, E> = &**node;
+pub(crate) fn region_is_candidate<R: Rt>(node: &Node<R>) -> bool {
+    let mut n: &dyn Update<R> = &**node;
     loop {
         match n.view() {
             NodeView::Ref(_)

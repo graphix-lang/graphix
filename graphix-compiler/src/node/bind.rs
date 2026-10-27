@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs,
-    Rt, Scope, Tag, TagValue, Update, UserEvent, bailat,
+    Rt, Scope, Tag, TagValue, Update, bailat,
     compiler::compile,
     dbgenv,
     env::{self, Env},
@@ -56,7 +56,7 @@ enum Deferred {
 }
 
 #[derive(Debug)]
-pub struct Bind<R: Rt, E: UserEvent> {
+pub struct Bind<R: Rt> {
     slept: WakeBit,
     /// The last cycle its readers were walked before it slept: a write
     /// landing after it is a fire no reader saw, re-raised at the wake.
@@ -67,7 +67,7 @@ pub struct Bind<R: Rt, E: UserEvent> {
     /// The pattern's fit to a value whose type the compile did not know,
     /// judged at the check.
     deferred: Option<Deferred>,
-    pub(crate) node: Node<R, E>,
+    pub(crate) node: Node<R>,
     ever_published: bool,
     /// The ids a wake re-raised into this cycle's event, absent from it
     /// before: the enclosing block takes them back after its last
@@ -79,19 +79,19 @@ pub struct Bind<R: Rt, E: UserEvent> {
 /// `let <name> = <node>` binding (moved, never recompiled) and `body`,
 /// an expression over those names compiled under a block scope of its
 /// own below `scope`, is the value.
-pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn lower_over_operands<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     spec: &Expr,
     top_id: ExprId,
-    operands: impl IntoIterator<Item = (ArcStr, Node<R, E>)>,
+    operands: impl IntoIterator<Item = (ArcStr, Node<R>)>,
     body: Expr,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     // named by the lowered node's spec, which an image writes, as a
     // block's scope is
     let scope = scope.append_block("op", spec.id.inner());
-    let mut children: Vec<Node<R, E>> = Vec::new();
+    let mut children: Vec<Node<R>> = Vec::new();
     for (name, node) in operands {
         let typ = node.typ().clone();
         let pattern = StructPatternNode::compile(
@@ -140,16 +140,13 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
 
 /// What `let name = |..| 'builtin` records of the builtin it binds;
 /// `None` for any other binding.
-fn builtin_binding<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    value: &Expr,
-) -> Option<BuiltinBindInfo> {
+fn builtin_binding<R: Rt>(node: &Node<R>, value: &Expr) -> Option<BuiltinBindInfo> {
     let (Some(l), ExprKind::Lambda(lam), Type::Fn(typ)) =
         (lambda_value(node), &value.unparen().kind, node.typ())
     else {
         return None;
     };
-    let def = l.def_value().downcast_ref::<LambdaDef<R, E>>()?;
+    let def = l.def_value().downcast_ref::<LambdaDef<R>>()?;
     let DefOrigin::Source { body: DefBody::BuiltIn(name), .. } = &def.origin else {
         return None;
     };
@@ -161,13 +158,13 @@ fn builtin_binding<R: Rt, E: UserEvent>(
     })
 }
 
-impl<R: Rt, E: UserEvent> Bind<R, E> {
+impl<R: Rt> Bind<R> {
     /// A write that landed while the binding slept (one queued before the
     /// sleep, a seq machine's reset) was seen by none of the readers that
     /// slept with it: deliver it to them fired, once, at the wake. A reader
     /// outside (a `&mut` that escaped) saw it live, so the enclosing block
     /// takes the delivery back after its last statement.
-    fn reraise_writes_while_asleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn reraise_writes_while_asleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let slept_at = self.slept_at;
         let mut late: SmallVec<[(BindId, TagValue); 2]> = SmallVec::new();
         self.pattern.ids(&mut |id| {
@@ -187,20 +184,20 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     }
 
     /// Take back what the wake re-raised ([`Self::reraised`]).
-    pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub(crate) fn take_back_reraised(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for id in self.reraised.drain(..) {
             ctx.event.variables.remove(&id);
         }
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         b: &expr::BindExpr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let annotation = match annotation {
             Some(t) => {
@@ -210,7 +207,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             }
             None => None,
         };
-        let compile_pattern = |ctx: &mut CompileCtx<R, E>, typ: &Type| {
+        let compile_pattern = |ctx: &mut CompileCtx<R>, typ: &Type| {
             StructPatternNode::compile(ctx, typ, pat, scope, spec.pos, spec.ori.clone())
                 .at(&spec)
         };
@@ -366,7 +363,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     }
 
     /// Fit the pattern to the value's type, which must be known by now.
-    fn complete_deferred(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn complete_deferred(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match self.deferred.take() {
             None => Ok(()),
             Some(Deferred::Partial(ptyp)) => self.complete_partial(ctx, ptyp),
@@ -377,7 +374,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// Hold `pred`, the predicate the pattern compiled against, to every
     /// member of the value's type, and type each name, a fresh cell, by
     /// its part of each member.
-    fn complete_shape(&mut self, ctx: &mut CompileCtx<R, E>, pred: Type) -> Result<()> {
+    fn complete_shape(&mut self, ctx: &mut CompileCtx<R>, pred: Type) -> Result<()> {
         let spec = &self.spec;
         let mut narrowed = None;
         if !fits_every_member(ctx, &pred, &self.typ, &mut narrowed, || Ok(pred.clone()))
@@ -401,7 +398,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 
     /// Complete a pattern that leaves struct fields out against the
     /// value's type.
-    fn complete_partial(&mut self, ctx: &mut CompileCtx<R, E>, ptyp: Type) -> Result<()> {
+    fn complete_partial(&mut self, ctx: &mut CompileCtx<R>, ptyp: Type) -> Result<()> {
         let ExprKind::Bind(b) = &self.spec.kind else { return Ok(()) };
         let spec = &self.spec;
         let t = b.pattern.complete_type_predicate(&ctx.env, &ptyp, &self.typ).at(spec)?;
@@ -426,7 +423,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     }
 
     /// The binding holds its value's type, unless it forwards it.
-    fn check_value(&self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let forwards = match &self.spec.kind {
             ExprKind::Bind(b) => forwards(&ctx.env, b, &self.node),
             _ => false,
@@ -463,7 +460,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 
     /// What the binding tells the rest of the check: the settle of a
     /// `let` over ⊥, and the lambda a name binds.
-    fn publish(&self, ctx: &mut CompileCtx<R, E>) {
+    fn publish(&self, ctx: &mut CompileCtx<R>) {
         if let Type::TVar(tv) = &self.typ {
             super::defer_settle(ctx, || crate::PendingSettle::LetOverBottom {
                 tv: tv.clone(),
@@ -483,7 +480,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 
     /// The LambdaDef `Value` of the binding this one aliases (`let h =
     /// f`), when `f` resolves statically and no `<-` writes it.
-    fn aliased_lambda(&self, ctx: &mut CompileCtx<R, E>) -> Option<Value> {
+    fn aliased_lambda(&self, ctx: &mut CompileCtx<R>) -> Option<Value> {
         match ungrouped(&self.node) {
             NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => {
                 let fv = ctx.bind_to_lambda.get(&r.id).cloned();
@@ -503,11 +500,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Bind<R, E> {
+impl<R: Rt> Bind<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let pattern = StructPatternNode::decode(buf)?;
@@ -526,12 +523,12 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Bind<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.node)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.node)
     }
 
@@ -543,7 +540,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.node.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke {
             // CR claude for eric: [bug/low] At a wake the write that landed during the
@@ -637,7 +634,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.node.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         // The static-resolution index outlives batches; a deleted
         // bind's entry must go with it.
         self.pattern.ids(&mut |id| {
@@ -647,7 +644,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             ctx.batch_connect_targets.remove(&id);
         });
         if let Some(l) = lambda_value(&self.node)
-            && let Some(lambda) = l.lambda_id::<R, E>()
+            && let Some(lambda) = l.lambda_id::<R>()
             && let Some(id) = self.pattern.single_bind_id()
             && let Some(b) = ctx.env.by_id.get(&id)
         {
@@ -661,7 +658,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.pattern.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if !self.slept.is_set() {
             let cycle = ctx.rt.cycle();
             let walked = ctx.boundary.as_ref().is_some_and(|b| b.visited(cycle));
@@ -679,7 +676,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         &self.spec
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if let ExprKind::Bind(b) = &self.spec.kind
             && b.typ.is_some()
         {
@@ -741,7 +738,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         wrap!(self.node, self.node.typecheck0_instance(ctx, types))?;
@@ -753,11 +750,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Bind(self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // The Bind stays live to publish the fused value to its BindId.
         fuse(&mut self.node, ctx)?;
         Ok(None)
@@ -797,11 +794,7 @@ fn instance(ft: &FnType, open: &nohash::IntSet<crate::LambdaId>) -> FnType {
 
 /// `let g = f` with `f` generalized and no annotation: `g` shares `f`'s
 /// scheme; unifying with a fresh instance would pin it.
-fn forwards<R: Rt, E: UserEvent>(
-    env: &Env,
-    b: &expr::BindExpr,
-    node: &Node<R, E>,
-) -> bool {
+fn forwards<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
     b.typ.is_none()
         && match ungrouped(node) {
             NodeView::Ref(r) => env.poly_binds.contains(&r.id),
@@ -821,24 +814,24 @@ fn synthesized_bind_ref(name: &ModPath) -> Option<BindId> {
 impl Ref {
     /// A reference to `id`, registered with the runtime; `delete`
     /// unregisters it.
-    pub(crate) fn new<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    pub(crate) fn new<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         id: BindId,
         typ: Type,
         top_id: ExprId,
         spec: impl Into<Arc<Expr>>,
-    ) -> Node<R, E> {
+    ) -> Node<R> {
         Self::with_signature(ctx, id, typ, Signature::Binding, top_id, spec)
     }
 
-    fn with_signature<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    fn with_signature<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         id: BindId,
         typ: Type,
         signature: Signature,
         top_id: ExprId,
         spec: impl Into<Arc<Expr>>,
-    ) -> Node<R, E> {
+    ) -> Node<R> {
         ctx.record_ref(id, top_id);
         Node::new(Self {
             spec: spec.into(),
@@ -851,37 +844,37 @@ impl Ref {
     }
 
     /// A reference to `name`, as a call's own function names it.
-    pub(crate) fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    pub(crate) fn compile<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         Self::compile_as(ctx, None, spec, scope, top_id, name)
     }
 
     /// A value occurrence of `name`: a trait method named is its
     /// eta-expansion, compiled under `flags`.
-    pub(crate) fn compile_value<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    pub(crate) fn compile_value<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         Self::compile_as(ctx, Some(flags), spec, scope, top_id, name)
     }
 
-    fn compile_as<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    fn compile_as<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         value: Option<BitFlags<CFlag>>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         // `#bind::N` is the compiler's spelling for a synthesized
         // reference; no source can write it.
         if let Some(id) = synthesized_bind_ref(name) {
@@ -940,8 +933,8 @@ impl Ref {
 
 /// The refusal of a `let` whose pattern `ptyp` does not hold its value
 /// type `typ`.
-fn misfit<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn misfit<R: Rt>(
+    ctx: &CompileCtx<R>,
     spec: &Expr,
     ptyp: &Type,
     typ: &Type,
@@ -961,8 +954,8 @@ fn misfit<R: Rt, E: UserEvent>(
 /// predicate with each cell the union of its parts, as a select arm's is:
 /// `binds` infers it afresh, at the binds' level (`ptyp`'s cells are the
 /// shape check's). A bare name takes the value's type.
-fn fits_every_member<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn fits_every_member<R: Rt>(
+    ctx: &CompileCtx<R>,
     ptyp: &Type,
     typ: &Type,
     narrowed: &mut Option<Type>,
@@ -991,11 +984,7 @@ impl Ref {
     /// definition's own cells in a rec knot or a gate parameter, the
     /// innermost active instance (a bare value reference has no
     /// arguments to key an instance identity on), else fresh cells.
-    fn decide<R: Rt, E: UserEvent>(
-        &self,
-        ctx: &CompileCtx<R, E>,
-        ft: Arc<FnType>,
-    ) -> Arc<FnType> {
+    fn decide<R: Rt>(&self, ctx: &CompileCtx<R>, ft: Arc<FnType>) -> Arc<FnType> {
         let rec_knot = !ctx.rec_defs.is_empty()
             && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
         if rec_knot || ctx.def_gate_params.contains_key(&self.id) {
@@ -1008,10 +997,10 @@ impl Ref {
     }
 
     /// Replays the reference registration `compile` made with the runtime.
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<'_, R, E>,
+    pub(crate) fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let id = BindId::decode(buf)?;
@@ -1020,21 +1009,21 @@ impl Ref {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
+impl<R: Rt> Update<R> for Ref {
     /// An instance checks this node as its definition's check did.
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         _types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0(ctx)
     }
 
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         let _ = f;
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         let _ = f;
     }
 
@@ -1046,7 +1035,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // Overlays first, then the store; a store miss rides the resident.
         let dbg = dbgenv::gxdbg_ref();
         let r = match read_var(ctx, &self.id) {
@@ -1097,7 +1086,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         refs.read(self.id);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         ctx.unref_var(self.id, self.top_id)
     }
 
@@ -1114,7 +1103,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     /// self-reference inside the definition's gate, a fn-typed
     /// parameter during its gate, and a reference to the instance
     /// being elaborated, which must share the definition's cells.
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let poly = ctx.env.poly_binds.contains(&self.id);
         let def = match self.signature {
             Signature::Decided => return Ok(()),
@@ -1141,7 +1130,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         Ok(())
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Ref(self)
     }
 
@@ -1153,11 +1142,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 /// One accessor of a place reference's path, with its key expression
 /// where the key is dynamic.
 #[derive(Debug)]
-enum PlaceStep<R: Rt, E: UserEvent> {
-    Index(Node<R, E>),
+enum PlaceStep<R: Rt> {
+    Index(Node<R>),
     Tuple(usize),
     Field(expr::Name),
-    Key(Node<R, E>),
+    Key(Node<R>),
 }
 
 /// The place a `&root[i].f` reference stands for: the root node (a
@@ -1165,14 +1154,14 @@ enum PlaceStep<R: Rt, E: UserEvent> {
 /// (design/place_references.md), typed from `scope`. `path` is the path
 /// as last resolved.
 #[derive(Debug)]
-struct Place<R: Rt, E: UserEvent> {
-    root: Node<R, E>,
-    steps: Vec<PlaceStep<R, E>>,
+struct Place<R: Rt> {
+    root: Node<R>,
+    steps: Vec<PlaceStep<R>>,
     scope: ModPath,
     path: Path,
 }
 
-impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
+impl<R: Rt> PlaceStep<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         match self {
             PlaceStep::Index(n) => {
@@ -1195,7 +1184,7 @@ impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         if !buf.has_remaining() {
@@ -1219,9 +1208,7 @@ enum PlaceSpec {
 }
 
 /// The lambda `node` is, seen through grouping parentheses.
-fn lambda_value<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-) -> Option<&super::lambda::Lambda> {
+fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     match ungrouped(node) {
         NodeView::Lambda(l) => Some(l),
         _ => None,
@@ -1229,7 +1216,7 @@ fn lambda_value<R: Rt, E: UserEvent>(
 }
 
 /// What `node` is under its grouping parentheses.
-fn ungrouped<R: Rt, E: UserEvent>(node: &Node<R, E>) -> NodeView<'_, R, E> {
+fn ungrouped<R: Rt>(node: &Node<R>) -> NodeView<'_, R> {
     let mut view = node.view();
     while let NodeView::ExplicitParens(p) = view {
         view = p.n.view();
@@ -1261,20 +1248,18 @@ struct Resolved<'a> {
 /// The binding a place's root stands for and the path already under
 /// it (a dereferenced place reference composes); `None` while a
 /// dereferenced reference is bottom.
-fn root_place<R: Rt, E: UserEvent>(
-    root: &Node<R, E>,
-) -> Option<(BindId, &[place::Step])> {
+fn root_place<R: Rt>(root: &Node<R>) -> Option<(BindId, &[place::Step])> {
     let any = &**root as &dyn Any;
     match any.downcast_ref::<Ref>() {
         Some(r) => Some((r.id, &[])),
         None => {
-            let a = any.downcast_ref::<Deref<R, E>>()?.addr.as_ref()?;
+            let a = any.downcast_ref::<Deref<R>>()?.addr.as_ref()?;
             Some((a.id, &a.path))
         }
     }
 }
 
-impl<R: Rt, E: UserEvent> Place<R, E> {
+impl<R: Rt> Place<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.root.image_encode(buf)?;
         encode_varint(self.steps.len() as u64, buf);
@@ -1285,7 +1270,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let root = decode_node(ctx, buf)?;
@@ -1319,7 +1304,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     }
 
     fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         scope: &Scope,
         top_id: ExprId,
@@ -1345,7 +1330,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         Ok(Place { root, steps, scope: scope.lexical.clone(), path: Path::new() })
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Resolved<'_> {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> Resolved<'_> {
         let root = self.root.update(ctx).clone();
         let mut moved = root.tag().triggers();
         self.path.clear();
@@ -1394,7 +1379,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         Resolved { address, root, moved }
     }
 
-    fn each(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn each(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.root);
         for step in &mut self.steps {
             match step {
@@ -1404,7 +1389,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         }
     }
 
-    fn each_ref<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn each_ref<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.root);
         for step in &self.steps {
             match step {
@@ -1416,7 +1401,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
 
     /// The keys fuse as parts; the root only descends, so it stays the
     /// variable or dereference `root_place` reads.
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         descend(&mut self.root, ctx)?;
         let keys = self.steps.iter_mut().filter_map(|s| match s {
             PlaceStep::Index(n) | PlaceStep::Key(n) => Some(n),
@@ -1431,7 +1416,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     /// one type, so a write keeps the root in its own member.
     fn elem_type(
         &self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         spec: &Expr,
         writable: bool,
     ) -> Result<Type> {
@@ -1496,20 +1481,20 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
 /// What a reference stands for: a binding's value channel (`&x`, or a
 /// derived channel for any other expression), or a place.
 #[derive(Debug)]
-enum Referent<R: Rt, E: UserEvent> {
-    Channel(Node<R, E>),
-    Place(Place<R, E>),
+enum Referent<R: Rt> {
+    Channel(Node<R>),
+    Place(Place<R>),
 }
 
-impl<R: Rt, E: UserEvent> Referent<R, E> {
-    fn each(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+impl<R: Rt> Referent<R> {
+    fn each(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         match self {
             Referent::Channel(n) => f(n),
             Referent::Place(p) => p.each(f),
         }
     }
 
-    fn each_ref<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn each_ref<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         match self {
             Referent::Channel(n) => f(n),
             Referent::Place(p) => p.each_ref(f),
@@ -1518,10 +1503,10 @@ impl<R: Rt, E: UserEvent> Referent<R, E> {
 }
 
 #[derive(Debug)]
-pub struct ByRef<R: Rt, E: UserEvent> {
+pub struct ByRef<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    referent: Referent<R, E>,
+    referent: Referent<R>,
     pub id: BindId,
     resident: TagValue,
     /// What the runtime holds the cell stands for, when it holds anything.
@@ -1531,11 +1516,11 @@ pub struct ByRef<R: Rt, E: UserEvent> {
     keep: Option<triomphe::Arc<crate::reference::Keep>>,
 }
 
-impl<R: Rt, E: UserEvent> ByRef<R, E> {
+impl<R: Rt> ByRef<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let id = BindId::decode(buf)?;
@@ -1555,18 +1540,18 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         mutability: Mutability,
         expr: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let id = BindId::new();
         // A place reference types as a reference to the element and
         // still mints a cell so embedders keep reading the mirror.
-        let (referent, typ) = match Place::<R, E>::of(expr) {
+        let (referent, typ) = match Place::<R>::of(expr) {
             Some((root, specs)) => {
                 let place = Place::compile(ctx, flags, scope, top_id, root, specs)?;
                 (
@@ -1639,7 +1624,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     /// embedders read directly: a fire this cycle, bottoms included, as a
     /// `let` publishes; a quiet production under an init view stands in
     /// it, so the cell exists from the reference's birth.
-    fn publish(&self, ctx: &mut ExecCtx<'_, R, E>, tv: TagValue) {
+    fn publish(&self, ctx: &mut ExecCtx<'_, R>, tv: TagValue) {
         let tag = tv.tag();
         if tag.triggers() {
             let stored = if tag.is_bottom() {
@@ -1656,14 +1641,14 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 
     /// Drop the place registration.
-    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if self.registered.take().is_some() {
             ctx.rt.clear_ref_path(&self.id);
         }
     }
 
     /// The cell when the place has no element: bottom.
-    fn bottom_mirror(&self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn bottom_mirror(&self, ctx: &mut ExecCtx<'_, R>) {
         ctx.rt.store_insert(self.id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
     }
 }
@@ -1676,8 +1661,8 @@ pub(crate) fn ref_cell(v: &Value) -> Option<BindId> {
 /// What the reference `cell` names: its registered place, else the
 /// binding at the end of its byref chain, else the cell itself (a
 /// chainless reference's own cell is its only storage).
-pub(crate) fn ref_target<'a, R: Rt, E: UserEvent>(
-    ctx: &'a ExecCtx<'_, R, E>,
+pub(crate) fn ref_target<'a, R: Rt>(
+    ctx: &'a ExecCtx<'_, R>,
     cell: BindId,
 ) -> (BindId, &'a [place::Step]) {
     match ctx.rt.ref_path(&cell) {
@@ -1687,12 +1672,12 @@ pub(crate) fn ref_target<'a, R: Rt, E: UserEvent>(
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for ByRef<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.referent.each_ref(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.referent.each(f)
     }
 
@@ -1713,7 +1698,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         }
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // the reference fires when its address changes; a write of its
         // root only refreshes the mirror
         let retargeted = match &mut self.referent {
@@ -1793,7 +1778,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         match self.keep.take() {
             // the references it published keep the cell, its place and what
             // it names until the last one drops (ExecCtx::release_references)
@@ -1819,7 +1804,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         &self.typ
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         match &mut self.referent {
             Referent::Channel(n) => fuse_parts([n], ctx),
             Referent::Place(p) => p.fuse(ctx).map(|()| None),
@@ -1828,16 +1813,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
 
     super::typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::ByRef(self)
     }
 }
 
 #[derive(Debug)]
-pub struct Deref<R: Rt, E: UserEvent> {
+pub struct Deref<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub child: Node<R, E>,
+    pub child: Node<R>,
     pub(super) top_id: ExprId,
     resident: TagValue,
     /// Where the reference points; `None` while it is bottom.
@@ -1867,11 +1852,11 @@ enum Moved {
     First,
 }
 
-impl<R: Rt, E: UserEvent> Deref<R, E> {
+impl<R: Rt> Deref<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let child = decode_node(ctx, buf)?;
@@ -1894,13 +1879,13 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         expr: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
         Ok(Node::new(Self {
@@ -1917,7 +1902,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// binding at the end of its byref chain (`&x`'s cell mirrors x a
     /// cycle late, the referent does not; a chainless reference's own
     /// cell is its only storage). Returns the binding and how it moved.
-    fn address(&mut self, ctx: &mut ExecCtx<'_, R, E>, cell: BindId) -> (BindId, Moved) {
+    fn address(&mut self, ctx: &mut ExecCtx<'_, R>, cell: BindId) -> (BindId, Moved) {
         let (id, path) = ref_target(ctx, cell);
         let (same_id, same_path) = match &self.addr {
             Some(a) => (a.id == id, a.id == id && &a.path[..] == path),
@@ -1952,12 +1937,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     }
 
     /// Follow another reference cell to the same binding.
-    fn swap_cell(
-        ctx: &mut ExecCtx<'_, R, E>,
-        a: &mut Addr,
-        cell: BindId,
-        top_id: ExprId,
-    ) {
+    fn swap_cell(ctx: &mut ExecCtx<'_, R>, a: &mut Addr, cell: BindId, top_id: ExprId) {
         if a.cell == cell {
             return;
         }
@@ -1970,7 +1950,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         a.cell = cell;
     }
 
-    fn release(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn release(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(a) = self.addr.take() {
             ctx.unref_var(a.id, self.top_id);
             if a.cell != a.id {
@@ -1980,12 +1960,12 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Deref<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.child)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.child)
     }
 
@@ -1998,7 +1978,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         self.addr.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let tv = self.child.update(ctx);
         let addr = tv.tag();
         let cell = match addr.is_bottom() {
@@ -2063,7 +2043,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.release(ctx);
         self.child.delete(ctx);
     }
@@ -2084,22 +2064,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fuse_parts([&mut self.child], ctx)
     }
 
     super::typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Deref(self)
     }
 }
 
-impl<R: Rt, E: UserEvent> ByRef<R, E> {
+impl<R: Rt> ByRef<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         let mut res = Ok(());
@@ -2133,7 +2113,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             Referent::Place(p) => {
                 // a writable place through `*r` writes through `r`
                 if *mutability == Mutability::Mut
-                    && let Some(d) = (&*p.root as &dyn Any).downcast_ref::<Deref<R, E>>()
+                    && let Some(d) = (&*p.root as &dyn Any).downcast_ref::<Deref<R>>()
                 {
                     let through =
                         Type::ByRef(Mutability::Mut, Arc::new(Type::empty_tvar()));
@@ -2150,7 +2130,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Deref<R, E> {
+impl<R: Rt> Deref<R> {
     // CR claude for eric: [bug/low] A read through a union of writable references is
     // refused where a write through the same union is accepted. With `x: i64`, `y:
     // f64` and `let r = select b { true => &mut x, false => &mut y }`, `*r <- ..` is
@@ -2166,8 +2146,8 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     // (fuzz-gen-a-06), which now mint only named targets. (deref-union-01)
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.child, child(&mut self.child, ctx))?;

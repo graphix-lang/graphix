@@ -9,7 +9,7 @@ use compact_str::format_compact;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, ExecCtx, Node,
-    Rt, Scope, TagValue, UserEvent,
+    Rt, Scope, TagValue,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -159,15 +159,11 @@ static DEFAULT_CLIENT: LazyLock<Arc<reqwest::Client>> = LazyLock::new(|| {
 #[derive(Debug, Default)]
 pub(crate) struct HttpClientEv;
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
+impl<R: Rt> EvalCached<R> for HttpClientEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_client";
 
-    fn eval(
-        &mut self,
-        _ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R>, cached: &CachedVals) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
         let default_headers = cached.value(1)?;
         let redirect_limit = cached.get::<u32>(2)?;
@@ -209,15 +205,11 @@ pub(crate) type HttpClient = CachedArgs<HttpClientEv>;
 #[derive(Debug, Default)]
 pub(crate) struct HttpDefaultClientEv;
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
+impl<R: Rt> EvalCached<R> for HttpDefaultClientEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_default_client";
 
-    fn eval(
-        &mut self,
-        _ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R>, cached: &CachedVals) -> Option<Value> {
         cached.value(0)?;
         Some(CLIENT_WRAPPER.wrap(ClientValue { inner: DEFAULT_CLIENT.clone() }))
     }
@@ -228,15 +220,11 @@ pub(crate) type HttpDefaultClient = CachedArgs<HttpDefaultClientEv>;
 #[derive(Debug, Default)]
 pub(crate) struct HttpServerAddrEv;
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
+impl<R: Rt> EvalCached<R> for HttpServerAddrEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_server_addr";
 
-    fn eval(
-        &mut self,
-        _ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R>, cached: &CachedVals) -> Option<Value> {
         let sv = cached.abstract_arg::<ServerValue>(0)?;
         Some(Value::String(ArcStr::from(sv.inner.addr.to_string().as_str())))
     }
@@ -336,8 +324,8 @@ impl<B: BodyKind> ImageState for HttpRequestEv<B> {
         Ok(())
     }
 
-    fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+    fn image_decode<R: Rt>(
+        _ctx: &mut ExecCtx<'_, R>,
         _buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         Ok(Self(PhantomData))
@@ -803,9 +791,9 @@ impl Drop for Listening {
 }
 
 #[derive(Debug)]
-pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
+pub(crate) struct HttpServe<R: Rt> {
     var: RtVar,
-    handler: Handler<R, E, oneshot::Sender<Value>>,
+    handler: Handler<R, oneshot::Sender<Value>>,
     /// Requests posted under `id`, taken at each wake.
     inbox: Arc<Inbox<Asked>>,
     listening: Option<Listening>,
@@ -815,18 +803,18 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
+impl<R: Rt> BuiltIn<R> for HttpServe<R> {
     const NAME: &str = "http_serve";
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         let [_, _, _, _, _, _, _, _] = from else { bail!("expected eight arguments") };
         let typ = resolved.unwrap_or(typ);
         let handler = Handler::new(ctx, &typ.args[7].typ, scope, top_id)?;
@@ -843,10 +831,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let handler = Handler::image_decode(ctx, buf)?;
         Ok(Box::new(HttpServe {
@@ -861,7 +849,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> HttpServe<R, E> {
+impl<R: Rt> HttpServe<R> {
     fn stop(&mut self) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
@@ -870,7 +858,7 @@ impl<R: Rt, E: UserEvent> HttpServe<R, E> {
 
     fn start(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         s: Settings,
     ) -> std::result::Result<Value, Value> {
         self.stop();
@@ -911,7 +899,7 @@ impl<R: Rt, E: UserEvent> HttpServe<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
+impl<R: Rt> Apply<R> for HttpServe<R> {
     /// `abort` is a running server.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.abort.is_some() {
@@ -921,11 +909,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         self.handler.image_encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let woke = self.slept.take();
         let (addr, mut fired) = seam_arg(ctx, &mut from[0]);
         fired |= woke;
@@ -975,8 +959,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
     ) -> Result<()> {
         self.handler.typecheck0(ctx)
     }
@@ -985,7 +969,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         self.handler.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.var.release(ctx);
         self.stop();
         self.inbox.close();
@@ -996,7 +980,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     /// The server stops, its pending requests answered 500 and its
     /// connections closed, and starts again at the wake on the socket it
     /// keeps.
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.var.remint(ctx);
         self.stop();
         self.inbox.close();
@@ -1017,6 +1001,6 @@ graphix_derive::defpackage! {
         HttpServerAddr,
         HttpRequest,
         HttpRequestBin,
-        HttpServe as HttpServe<GXRt<X>, X::UserEvent>,
+        HttpServe as HttpServe<GXRt<X>>,
     ],
 }

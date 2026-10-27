@@ -4,7 +4,7 @@
 
 use super::lower::OwnCall;
 use crate::{
-    Node, Rt, UserEvent,
+    Node, Rt,
     expr::ExprId,
     fusion::{
         LambdaCallInfo,
@@ -43,10 +43,10 @@ use super::{
 /// the production's tag from the arg taint/stale masks and returns it
 /// in-band on the disc: a bottomed or quiet result rides to its
 /// consumers as data, never as a whole-kernel abort.
-pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_builtin_call_node<R: Rt>(
     cx: &mut BodyCx,
     info: &BuiltinCallSiteInfo,
-    args: &[&Node<R, E>],
+    args: &[&Node<R>],
     order: &[usize],
 ) -> Result<CompiledExpr> {
     let ret_abi = kernel_abi::abi_kind(&info.return_type);
@@ -348,12 +348,12 @@ pub(super) fn release_owned(cx: &mut BodyCx, n: usize) {
 /// One entry in the flat formals+captures list [`emit_lambda_call_node`]
 /// marshals: a call-site arg Node or a capture read from the calling
 /// kernel's env.
-enum LambdaCallSlot<'a, R: Rt, E: UserEvent> {
-    Arg(&'a Node<R, E>, Type),
+enum LambdaCallSlot<'a, R: Rt> {
+    Arg(&'a Node<R>, Type),
     Cap(&'a CaptureSlot),
 }
 
-impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
+impl<R: Rt> LambdaCallSlot<'_, R> {
     fn typ(&self) -> &Type {
         match self {
             LambdaCallSlot::Arg(_, t) => t,
@@ -587,10 +587,10 @@ fn callee_results(
 /// callee (`info.arg_types`): those types were resolved and frozen at
 /// build time, and env is unavailable at emit time to resolve the
 /// caller-side node type.
-fn call_slots<'a, R: Rt, E: UserEvent>(
-    cs: &'a CallSite<R, E>,
+fn call_slots<'a, R: Rt>(
+    cs: &'a CallSite<R>,
     info: &'a LambdaCallInfo,
-) -> Result<LPooled<Vec<LambdaCallSlot<'a, R, E>>>> {
+) -> Result<LPooled<Vec<LambdaCallSlot<'a, R>>>> {
     let fn_name = &info.kernel.fn_name;
     let ftype = cs
         .resolved_ftype()
@@ -612,7 +612,7 @@ fn call_slots<'a, R: Rt, E: UserEvent>(
             skipped.len()
         ));
     }
-    let mut slots: LPooled<Vec<LambdaCallSlot<R, E>>> = LPooled::take();
+    let mut slots: LPooled<Vec<LambdaCallSlot<R>>> = LPooled::take();
     let mut sig_idx = 0usize;
     for i in 0..ftype.args.len() {
         let node = formal_arg(cs, &ftype, i).ok_or_else(|| {
@@ -664,16 +664,16 @@ fn call_slots<'a, R: Rt, E: UserEvent>(
 /// Emit each slot as the pair the callee's param expects
 /// ([`emit_into_slot`]). Args pass borrowed, so the owned ones are
 /// returned to drop after the call.
-fn marshal_args<R: Rt, E: UserEvent>(
+fn marshal_args<R: Rt>(
     cx: &mut BodyCx,
-    cs: &CallSite<R, E>,
-    slots: &[LambdaCallSlot<R, E>],
+    cs: &CallSite<R>,
+    slots: &[LambdaCallSlot<R>],
     fn_name: &str,
 ) -> Result<(SmallVec<[CompiledExpr; 12]>, SmallVec<[OwnedDrop; 8]>)> {
     let mut cvs: SmallVec<[Option<CompiledExpr>; 12]> =
         smallvec::smallvec![None; slots.len()];
     let mut drops: SmallVec<[OwnedDrop; 8]> = SmallVec::new();
-    let nodes: SmallVec<[Option<&Node<R, E>>; 12]> = slots
+    let nodes: SmallVec<[Option<&Node<R>>; 12]> = slots
         .iter()
         .map(|s| match s {
             LambdaCallSlot::Arg(n, _) => Some(*n),
@@ -782,9 +782,9 @@ pub(crate) enum Called<'a> {
     Own(OwnCall<'a>),
 }
 
-pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_lambda_call_node<R: Rt>(
     cx: &mut BodyCx,
-    cs: &CallSite<R, E>,
+    cs: &CallSite<R>,
     called: Called<'_>,
 ) -> Result<CompiledExpr> {
     let (info, own) = match called {

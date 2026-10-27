@@ -277,8 +277,7 @@ impl Mode {
 /// created [`ExecState`] before anything compiles. The place to seed
 /// package libstate entries (the CLI seeds sys::net's `NetConfig`
 /// and `NetTimeouts` here); embedders can do whatever they need.
-pub type SetupContext<X> =
-    Box<dyn FnOnce(&mut ExecState<GXRt<X>, <X as GXExt>::UserEvent>) + Send + 'static>;
+pub type SetupContext<X> = Box<dyn FnOnce(&mut ExecState<GXRt<X>>) + Send + 'static>;
 
 /// What a run does with the session image cache.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

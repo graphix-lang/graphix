@@ -6,7 +6,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -748,40 +748,36 @@ dirs_mod::born_builtin!(Args, "sys_args", |ctx| {
 #[derive(Debug)]
 pub(crate) struct Exit;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
+impl<R: Rt> BuiltIn<R> for Exit {
     const EFFECT: Effect = Effect::Io(None);
     const NAME: &str = "sys_exit";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
+    ) -> anyhow::Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Self))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         _buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(Self))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
+impl<R: Rt> Apply<R> for Exit {
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         if let Some(Value::I64(code)) = from
             .get_mut(0)
             .and_then(|n| seam_tick(n.update(ctx)))
@@ -799,9 +795,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 graphix_derive::defpackage! {
@@ -860,8 +856,8 @@ graphix_derive::defpackage! {
         net::RpcCall,
         net::List,
         net::ListTable,
-        net::Publish as net::Publish<GXRt<X>, X::UserEvent>,
-        net::PublishRpc as net::PublishRpc<GXRt<X>, X::UserEvent>,
+        net::Publish as net::Publish<GXRt<X>>,
+        net::PublishRpc as net::PublishRpc<GXRt<X>>,
         time::AfterIdle,
         time::Timer,
         time::Now,

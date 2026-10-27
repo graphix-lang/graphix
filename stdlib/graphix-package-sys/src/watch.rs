@@ -9,7 +9,7 @@ use extended_notify::{
 use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, ExecCtx, Node,
-    Rt, Scope, TagValue, UserEvent,
+    Rt, Scope, TagValue,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -230,18 +230,18 @@ pub(crate) struct CreateWatcher {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
+impl<R: Rt> BuiltIn<R> for CreateWatcher {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_create";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _fntyp: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _args: &'c [Node<R, E>],
+        _args: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(CreateWatcher {
             poll_interval: None,
             batch_size: None,
@@ -250,10 +250,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let poll_interval = Pack::decode(buf)?;
         let batch_size = Pack::decode(buf)?;
         Ok(Box::new(CreateWatcher {
@@ -264,17 +264,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
+impl<R: Rt> Apply<R> for CreateWatcher {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.poll_interval.encode(buf)?;
         self.batch_size.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let (poll_interval, pi_fired) = seam_arg(ctx, &mut from[0]);
         let (batch_size, bs_fired) = seam_arg(ctx, &mut from[1]);
         let trigger = seam_tick(from[2].update(ctx)).is_some();
@@ -332,7 +328,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 #[derive(Debug)]
@@ -344,19 +340,19 @@ pub(crate) struct WatchApply {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
+impl<R: Rt> BuiltIn<R> for WatchApply {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_watch";
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(WatchApply {
             slept: WakeBit::default(),
             interest: None,
@@ -367,10 +363,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let interest = Pack::decode(buf)?;
         let path = Pack::decode(buf)?;
         Ok(Box::new(WatchApply {
@@ -383,7 +379,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
+impl<R: Rt> Apply<R> for WatchApply {
     /// `watcher_val` holds a live OS watcher.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.watcher_val.is_some() {
@@ -393,11 +389,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         self.path.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let woke = self.slept.take();
         let (interest, interest_fired) = seam_arg(ctx, &mut from[0]);
         let (watcher, watcher_fired) = seam_arg(ctx, &mut from[1]);
@@ -445,7 +437,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         self.out.ride()
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
         self.slept.set();
         self.interest = None;
@@ -531,19 +523,19 @@ pub(crate) struct WatchStream<K: WatchKind> {
     kind: PhantomData<K>,
 }
 
-impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
+impl<R: Rt, K: WatchKind> BuiltIn<R> for WatchStream<K> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = K::NAME;
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Self {
             var: RtVar::new(ctx, top_id),
             cached: CachedVals::new(from),
@@ -555,10 +547,10 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
         let cached = CachedVals::image_decode(buf)?;
         Ok(Box::new(Self {
@@ -573,14 +565,14 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
 }
 
 impl<K: WatchKind> WatchStream<K> {
-    fn unwatch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn unwatch<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for bid in self.bind_ids.drain(..) {
             ctx.unref_var(bid, self.var.top_id());
         }
     }
 }
 
-impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
+impl<R: Rt, K: WatchKind> Apply<R> for WatchStream<K> {
     /// `bind_ids` are registered watches on live OS watchers.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.bind_ids.is_empty() {
@@ -590,11 +582,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         self.cached.image_encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let invocation = self.cached.update(ctx, from);
         if let Invocation::Bottom { fresh } = invocation {
             return self.out.set_bottom(fresh);
@@ -628,14 +616,14 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
         self.unwatch(ctx);
         self.slept.set();
         self.var.remint(ctx);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.unwatch(ctx);
         self.var.release(ctx);
     }

@@ -3,7 +3,7 @@ use arcstr::literal;
 
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue,
     effects::Effect,
     err,
     expr::ExprId,
@@ -32,18 +32,18 @@ pub(crate) struct AfterIdle {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
+impl<R: Rt> BuiltIn<R> for AfterIdle {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_time_after_idle";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(AfterIdle {
             timeout_v: None,
             last_v: None,
@@ -55,10 +55,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         let timeout_v = Pack::decode(buf)?;
         let last_v = Pack::decode(buf)?;
         let eid = ExprId::decode(buf)?;
@@ -73,7 +73,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
+impl<R: Rt> Apply<R> for AfterIdle {
     /// `id` is an armed runtime timer.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.id.is_some() {
@@ -84,11 +84,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         self.eid.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let resume = self.slept.take();
         let mut timeout_up = false;
         if let Some(tv) = seam_value(from[0].update(ctx)) {
@@ -137,13 +133,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(id) = self.id.take() {
             ctx.release_var(id, self.eid)
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.out = TagValue::phantom();
         if let Some(id) = self.id.take() {
             ctx.release_var(id, self.eid);
@@ -151,7 +147,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         }
     }
 
-    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.slept = WakeBit::default();
         self.timeout_v = None;
         self.last_v = None;
@@ -186,27 +182,27 @@ pub(crate) struct Timer {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
+impl<R: Rt> BuiltIn<R> for Timer {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_time_timer";
     const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Self::new(top_id)))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(Self::new(ExprId::decode(buf)?)))
     }
 }
@@ -223,14 +219,14 @@ impl Timer {
         }
     }
 
-    fn stop<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn stop<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(id) = self.id.take() {
             ctx.release_var(id, self.eid);
         }
     }
 
     /// Arm the next fire of the run, if it has one.
-    fn arm<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn arm<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.stop(ctx);
         if let Some(dur) = self.timeout
             && self.left != Some(0)
@@ -243,7 +239,7 @@ impl Timer {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
+impl<R: Rt> Apply<R> for Timer {
     /// A run exists only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.timeout.is_some() {
@@ -252,11 +248,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         self.eid.encode(buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         if self.slept.take() {
             self.arm(ctx);
         }
@@ -293,11 +285,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.stop(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         // CR claude for eric: [bug/medium] Clearing the output here, as every event
         // source's sleep does, makes the source bottom at the wake. A bottomed argument
         // bottoms its consumer, so state built on the event is hidden until the next
@@ -337,7 +329,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         self.stop(ctx)
     }
 
-    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         self.slept = WakeBit::default();
         self.timeout = None;
         self.out = TagValue::phantom();
@@ -349,40 +341,36 @@ pub(crate) struct Now {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
+impl<R: Rt> BuiltIn<R> for Now {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "sys_time_now";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         _buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
+impl<R: Rt> Apply<R> for Now {
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         if seam_tick(from[0].update(ctx)).is_some() {
             self.out.set(TagValue::fired(Value::from(Utc::now())))
         } else {
@@ -390,9 +378,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
         }
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 macro_rules! time_fn {

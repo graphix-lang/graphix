@@ -1,7 +1,7 @@
 use super::{WakeBit, compiler::compile, dense_gate};
 use crate::cost::ForkSite;
 use crate::{
-    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update,
     abstract_value, bailat, deref_typ,
     expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     fusion::{
@@ -42,24 +42,24 @@ macro_rules! composite_plumbing {
             &self.typ
         }
 
-        fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
             self.n.iter().for_each(f)
         }
 
-        fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
             self.n.iter_mut().for_each(f)
         }
 
-        fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
             self.slept.set();
             self.n.iter_mut().for_each(|n| n.sleep(ctx))
         }
 
-        fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
             fusion::fuse_parts(self.n.iter_mut(), ctx)
         }
 
-        fn view(&self) -> NodeView<'_, R, E> {
+        fn view(&self) -> NodeView<'_, R> {
             NodeView::$name(self)
         }
     };
@@ -85,26 +85,26 @@ macro_rules! gathered {
 pub(super) use {composite_plumbing, gathered};
 
 #[derive(Debug)]
-pub struct Struct<R: Rt, E: UserEvent> {
+pub struct Struct<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub names: Box<[ArcStr]>,
-    pub n: Box<[Node<R, E>]>,
+    pub n: Box<[Node<R>]>,
     resident: TagValue,
     pub(crate) fork: ForkSite,
 }
 
-impl<R: Rt, E: UserEvent> Struct<R, E> {
+impl<R: Rt> Struct<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[(ArcStr, Expr)],
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let names: Box<[ArcStr]> = args.iter().map(|(n, _)| ctx.tag(n)).collect();
         let n = args
             .iter()
@@ -127,11 +127,11 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Struct<R, E> {
+impl<R: Rt> Struct<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let names: Box<[ArcStr]> =
@@ -149,7 +149,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
+impl<R: Rt> Update<R> for Struct<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Struct, buf);
         self.spec.encode(buf)?;
@@ -161,7 +161,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 
     composite_plumbing!(Struct);
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let fields = self.n.len();
         let (tag, prods) = super::gather(ctx, &mut self.n, &mut self.fork);
         let woke = self.slept.take();
@@ -194,15 +194,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 }
 
 #[derive(Debug)]
-pub struct Replace<R: Rt, E: UserEvent> {
+pub struct Replace<R: Rt> {
     /// The field's position in the struct's sorted layout, resolved by
     /// typecheck0.
     pub(crate) index: Option<usize>,
     pub name: ArcStr,
-    pub n: Node<R, E>,
+    pub n: Node<R>,
 }
 
-impl<R: Rt, E: UserEvent> Replace<R, E> {
+impl<R: Rt> Replace<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.index.encode(buf)?;
         self.name.encode(buf)?;
@@ -210,7 +210,7 @@ impl<R: Rt, E: UserEvent> Replace<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let index = Option::<usize>::decode(buf)?;
@@ -221,21 +221,21 @@ impl<R: Rt, E: UserEvent> Replace<R, E> {
 }
 
 #[derive(Debug)]
-pub struct StructWith<R: Rt, E: UserEvent> {
+pub struct StructWith<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub source: Node<R, E>,
-    pub replace: Box<[Replace<R, E>]>,
+    pub source: Node<R>,
+    pub replace: Box<[Replace<R>]>,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> StructWith<R, E> {
+impl<R: Rt> StructWith<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let source = decode_node(ctx, buf)?;
@@ -255,14 +255,14 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
         replace: &[(ArcStr, Expr)],
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let replace = replace
             .iter()
@@ -286,13 +286,13 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for StructWith<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.source);
         self.replace.iter().for_each(|r| f(&r.n))
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source);
         self.replace.iter_mut().for_each(|r| f(&mut r.n))
     }
@@ -309,7 +309,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let index: SmallVec<[Option<usize>; 8]> =
             self.replace.iter().map(|r| r.index).collect();
         let src = self.source.update(ctx);
@@ -342,13 +342,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         &self.typ
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts(
             iter::once(&mut self.source).chain(self.replace.iter_mut().map(|r| &mut r.n)),
             ctx,
@@ -357,7 +357,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 
     super::typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::StructWith(self)
     }
 
@@ -367,20 +367,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 }
 
 #[derive(Debug)]
-pub struct StructRef<R: Rt, E: UserEvent> {
+pub struct StructRef<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub source: Node<R, E>,
+    pub source: Node<R>,
     pub sorted_field_idx: Option<usize>,
     pub field_name: ArcStr,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> StructRef<R, E> {
+impl<R: Rt> StructRef<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let source = decode_node(ctx, buf)?;
@@ -397,14 +397,14 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
         field_name: &ArcStr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         // what the source's type says now; the check decides the rest
         let (typ, sorted_field_idx) =
@@ -424,12 +424,12 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for StructRef<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.source)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source)
     }
 
@@ -442,7 +442,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.field_name.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let tv = self.source.update(ctx);
         let tag = tv.tag();
         if tag.is_bottom() {
@@ -458,7 +458,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         }
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
 
@@ -472,7 +472,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 
     super::typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::StructRef(self)
     }
 
@@ -485,25 +485,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 }
 
 #[derive(Debug)]
-pub struct Tuple<R: Rt, E: UserEvent> {
+pub struct Tuple<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub n: Box<[Node<R, E>]>,
+    pub n: Box<[Node<R>]>,
     resident: TagValue,
     pub(crate) fork: ForkSite,
 }
 
-impl<R: Rt, E: UserEvent> Tuple<R, E> {
+impl<R: Rt> Tuple<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[Expr],
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = args
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
@@ -520,11 +520,11 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Tuple<R, E> {
+impl<R: Rt> Tuple<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
@@ -539,7 +539,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
+impl<R: Rt> Update<R> for Tuple<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Tuple, buf);
         self.spec.encode(buf)?;
@@ -549,7 +549,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     }
     composite_plumbing!(Tuple);
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let (vals, tag) = gathered!(self, ctx, rep::tuple([]));
         let v = rep::tuple(vals);
         self.resident.set(TagValue::tagged(v, tag))
@@ -563,27 +563,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
 }
 
 #[derive(Debug)]
-pub struct Variant<R: Rt, E: UserEvent> {
+pub struct Variant<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub tag: ArcStr,
-    pub n: Box<[Node<R, E>]>,
+    pub n: Box<[Node<R>]>,
     resident: TagValue,
     pub(crate) fork: ForkSite,
 }
 
-impl<R: Rt, E: UserEvent> Variant<R, E> {
+impl<R: Rt> Variant<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         tag: &ArcStr,
         args: &[Expr],
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = args
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
@@ -603,11 +603,11 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Variant<R, E> {
+impl<R: Rt> Variant<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let tag = ctx.tag(&ArcStr::decode(buf)?);
@@ -624,7 +624,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
+impl<R: Rt> Update<R> for Variant<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Variant, buf);
         self.spec.encode(buf)?;
@@ -635,7 +635,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     }
     composite_plumbing!(Variant);
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let (vals, tag) = gathered!(self, ctx, rep::make_variant(self.tag.clone(), []));
         let v = rep::make_variant(self.tag.clone(), vals);
         self.resident.set(TagValue::tagged(v, tag))
@@ -651,7 +651,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
 /// `T(v)`: the constructor of an abstract type — boxes its argument with
 /// the type's tag. Compiles only where the definition is visible.
 #[derive(Debug)]
-pub struct Construct<R: Rt, E: UserEvent> {
+pub struct Construct<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub id: AbstractId,
@@ -659,7 +659,7 @@ pub struct Construct<R: Rt, E: UserEvent> {
     /// The representation at this instance's parameters — what `arg`
     /// must be contained by.
     pub rep: Type,
-    pub arg: Node<R, E>,
+    pub arg: Node<R>,
     /// `typ`'s parameters as the checker left them, taken at the first
     /// construction: what every value minted here carries.
     params: Option<Arc<[Type]>>,
@@ -668,11 +668,11 @@ pub struct Construct<R: Rt, E: UserEvent> {
     slept: WakeBit,
 }
 
-impl<R: Rt, E: UserEvent> Construct<R, E> {
+impl<R: Rt> Construct<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let id = AbstractId::decode(buf)?;
@@ -693,14 +693,14 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
         arg: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let arg = compile(ctx, flags, arg.clone(), scope, top_id)?;
         let td = ctx
             .env
@@ -734,12 +734,12 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Construct<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.arg)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.arg)
     }
 
@@ -753,7 +753,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         self.arg.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let tv = self.arg.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
@@ -779,18 +779,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         &self.typ
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.arg.sleep(ctx)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.arg], ctx)
     }
 
     super::typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Construct(self)
     }
 
@@ -802,8 +802,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
 /// The type of `.field` over `source`: a tuple's field, an error's
 /// payload, or an abstract type's payload where its definition is
 /// visible from `scope`.
-pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn tuple_field_type<R: Rt>(
+    ctx: &CompileCtx<R>,
     scope: &ModPath,
     source: &Type,
     field: usize,
@@ -815,8 +815,8 @@ pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
 
 /// [`tuple_field_type`] per member of a union source (one type for any
 /// other): what a write through the field must fit, each of them.
-pub(crate) fn tuple_field_types<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn tuple_field_types<R: Rt>(
+    ctx: &CompileCtx<R>,
     scope: &ModPath,
     source: &Type,
     field: usize,
@@ -872,8 +872,8 @@ pub(crate) fn tuple_field_types<R: Rt, E: UserEvent>(
 
 /// The sorted position and type of the field `name` over `source`, a
 /// struct.
-pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn struct_field_type<R: Rt>(
+    ctx: &CompileCtx<R>,
     source: &Type,
     name: &ArcStr,
 ) -> Result<(usize, Type)> {
@@ -884,8 +884,8 @@ pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
 
 /// [`struct_field_type`] per member of a union source (one type for any
 /// other): what a write through the field must fit, each of them.
-pub(crate) fn struct_field_types<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn struct_field_types<R: Rt>(
+    ctx: &CompileCtx<R>,
     source: &Type,
     name: &ArcStr,
 ) -> Result<(usize, LPooled<Vec<Type>>)> {
@@ -927,8 +927,8 @@ pub(crate) fn struct_field_types<R: Rt, E: UserEvent>(
 
 /// The members of `t`, a union once expanded, each expanded and taken
 /// apart by `part`, when every one of them is that.
-fn union_of<R: Rt, E: UserEvent, T>(
-    ctx: &CompileCtx<R, E>,
+fn union_of<R: Rt, T>(
+    ctx: &CompileCtx<R>,
     t: &Type,
     part: impl Fn(&Type) -> Option<T>,
 ) -> Result<Option<LPooled<Vec<T>>>> {
@@ -956,20 +956,20 @@ fn same_names(a: &[(ArcStr, Type, WrittenAt)], b: &[(ArcStr, Type, WrittenAt)]) 
 }
 
 #[derive(Debug)]
-pub struct TupleRef<R: Rt, E: UserEvent> {
+pub struct TupleRef<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub source: Node<R, E>,
+    pub source: Node<R>,
     pub field: usize,
     scope: ModPath,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> TupleRef<R, E> {
+impl<R: Rt> TupleRef<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let source = decode_node(ctx, buf)?;
@@ -986,14 +986,14 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
         field: &usize,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
         // what the source's type says now; the check decides the rest
@@ -1011,12 +1011,12 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for TupleRef<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.source)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source)
     }
 
@@ -1029,7 +1029,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.scope.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let tv = self.source.update(ctx);
         let tag = tv.tag();
         if tag.is_bottom() {
@@ -1060,13 +1060,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         &self.typ
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
 
     super::typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::TupleRef(self)
     }
 
@@ -1084,11 +1084,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Struct<R, E> {
+impl<R: Rt> Struct<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
@@ -1116,12 +1116,12 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> StructWith<R, E> {
+impl<R: Rt> StructWith<R> {
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
@@ -1162,12 +1162,12 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> StructRef<R, E> {
+impl<R: Rt> StructRef<R> {
     /// The field's index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
@@ -1191,11 +1191,11 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Tuple<R, E> {
+impl<R: Rt> Tuple<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
@@ -1219,11 +1219,11 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Variant<R, E> {
+impl<R: Rt> Variant<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
@@ -1250,11 +1250,11 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Construct<R, E> {
+impl<R: Rt> Construct<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.arg, child(&mut self.arg, ctx))?;
@@ -1265,11 +1265,11 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> TupleRef<R, E> {
+impl<R: Rt> TupleRef<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;

@@ -5,7 +5,7 @@
 
 use crate::{
     AddrSet, ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag,
-    Refs, Rt, UserEvent,
+    Refs, Rt,
     effects::NoLoop,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
@@ -157,13 +157,13 @@ impl BuiltinCallDiscovery {
 /// anywhere, a [`root_blocker`] at the root, or a builtin without a
 /// fast-call entry rejects the region. Other unsupported sites are
 /// omitted and checked by emission.
-pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn walk_node_for_builtin_calls<R: Rt>(
+    node: &Node<R>,
+    ctx: &CompileCtx<R>,
     out: &mut BuiltinCallDiscovery,
 ) -> Result<(), FusionBlocker> {
     let mut failure = None;
-    let mut selects: LPooled<Vec<&Node<R, E>>> = LPooled::take();
+    let mut selects: LPooled<Vec<&Node<R>>> = LPooled::take();
     fusion::for_each_emitted_node(node, &mut |n| {
         if failure.is_some() {
             return;
@@ -205,10 +205,10 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// so the raise node-walks, as does a guard [`unfollowed_guard`] finds.
 /// `selects` are the region's selects in pre-order; one nested in
 /// another's arm is covered by the outer walk.
-fn arm_raise_blocker<R: Rt, E: UserEvent>(
-    root: &Node<R, E>,
-    selects: &[&Node<R, E>],
-    ctx: &CompileCtx<R, E>,
+fn arm_raise_blocker<R: Rt>(
+    root: &Node<R>,
+    selects: &[&Node<R>],
+    ctx: &CompileCtx<R>,
 ) -> Option<FusionBlocker> {
     // CR claude for eric: [bug/medium] Only handler-ful raises count here and in
     // `claims_no_site_memory`. A handler-less `?` or a `$` over a constant error also
@@ -271,19 +271,19 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
         return None;
     }
     let mut nested: LPooled<AddrSet> = LPooled::take();
-    let mut found: Option<&Node<R, E>> = None;
+    let mut found: Option<&Node<R>> = None;
     for s in selects {
         let NodeView::Select(sel) = s.view() else { continue };
         if found.is_some() {
             break;
         }
-        if nested.contains(&(*s as *const Node<R, E> as usize)) {
+        if nested.contains(&(*s as *const Node<R> as usize)) {
             continue;
         }
         for (_, body) in sel.arms.iter() {
             fusion::for_each_reachable_node(body, &mut |n| match n.view() {
                 NodeView::Select(_) => {
-                    nested.insert(n as *const Node<R, E> as usize);
+                    nested.insert(n as *const Node<R> as usize);
                 }
                 _ if found.is_none() && fusion::raises_to_handler(n) => found = Some(n),
                 _ => (),
@@ -308,11 +308,11 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
 /// (a guard re-enters an arm under a standing scrutinee) and the
 /// argument reads the scrutinee or one of the arm's binds, at every
 /// select it sits under. `selects` are the region's selects.
-fn arm_io_blocker<R: Rt, E: UserEvent>(
-    selects: &[&Node<R, E>],
-    ctx: &CompileCtx<R, E>,
+fn arm_io_blocker<R: Rt>(
+    selects: &[&Node<R>],
+    ctx: &CompileCtx<R>,
 ) -> Option<FusionBlocker> {
-    let mut found: Option<&Node<R, E>> = None;
+    let mut found: Option<&Node<R>> = None;
     for s in selects {
         let NodeView::Select(sel) = s.view() else { continue };
         let guarded = sel.arms.iter().any(|(p, _)| p.guard.is_some());
@@ -346,10 +346,10 @@ fn arm_io_blocker<R: Rt, E: UserEvent>(
 /// the node-walk runs only those the chain reaches. So a raise to a handler
 /// whose operand, or a performing call whose trigger, does not fire with
 /// those binds (and is not bottom with them) makes the guard node-walk.
-fn unfollowed_guard<'a, R: Rt, E: UserEvent>(
-    pat: &'a crate::node::pattern::PatternNode<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> Option<&'a Node<R, E>> {
+fn unfollowed_guard<'a, R: Rt>(
+    pat: &'a crate::node::pattern::PatternNode<R>,
+    ctx: &CompileCtx<R>,
+) -> Option<&'a Node<R>> {
     let g = &pat.guard.as_ref()?.node;
     let mut binds: LPooled<IntSet<BindId>> = LPooled::take();
     pat.structure_predicate.ids(&mut |id| {
@@ -365,7 +365,7 @@ fn unfollowed_guard<'a, R: Rt, E: UserEvent>(
 }
 
 /// Whether `n` makes a performing call.
-fn performs<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) -> bool {
+fn performs<R: Rt>(n: &Node<R>, ctx: &CompileCtx<R>) -> bool {
     let mut performs = false;
     fusion::for_each_emitted_node(n, &mut |x| {
         performs = performs
@@ -374,7 +374,7 @@ fn performs<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) -> bool
     performs
 }
 
-fn io_blocker<R: Rt, E: UserEvent>(n: &Node<R, E>) -> FusionBlocker {
+fn io_blocker<R: Rt>(n: &Node<R>) -> FusionBlocker {
     FusionBlocker {
         spec: n.spec().clone(),
         reason: "an effect under a select arm whose trigger may not fire when the arm \
@@ -386,10 +386,10 @@ fn io_blocker<R: Rt, E: UserEvent>(n: &Node<R, E>) -> FusionBlocker {
 /// When `cs` performs, the arguments whose fire can make it perform:
 /// an `Effect::Io` builtin's trigger, or every argument of a function
 /// that reaches one.
-pub(crate) fn performing_args<'a, R: Rt, E: UserEvent>(
-    cs: &'a CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> Option<SmallVec<[&'a Node<R, E>; 4]>> {
+pub(crate) fn performing_args<'a, R: Rt>(
+    cs: &'a CallSite<R>,
+    ctx: &CompileCtx<R>,
+) -> Option<SmallVec<[&'a Node<R>; 4]>> {
     let builtin = match cs.fnode().view() {
         NodeView::Ref(r) => ctx.env.by_id.get(&r.id).and_then(|bind| {
             ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone()))
@@ -417,7 +417,7 @@ pub(crate) fn performing_args<'a, R: Rt, E: UserEvent>(
 
 /// A root that can never emit a value. Nested, the same node may sit
 /// in a statement block emission discards, so only the root rejects.
-fn root_blocker<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&'static str> {
+fn root_blocker<R: Rt>(node: &Node<R>) -> Option<&'static str> {
     match node.view() {
         NodeView::Sample(_) => Some("sample keeps cross-cycle state"),
         NodeView::Any(_) => Some("any depends on partial argument delivery"),
@@ -486,8 +486,8 @@ fn frozen_or_blocked(t: &Type, spec: &Expr, what: &str) -> Result<Type, FusionBl
 }
 
 /// Register a cast that is not emitted inline.
-fn try_register_cast<R: Rt, E: UserEvent>(
-    tc: &crate::node::TypeCast<R, E>,
+fn try_register_cast<R: Rt>(
+    tc: &crate::node::TypeCast<R>,
     out: &mut BuiltinCallDiscovery,
 ) -> Result<(), FusionBlocker> {
     let source = tc.n.typ();
@@ -514,9 +514,9 @@ fn try_register_cast<R: Rt, E: UserEvent>(
 /// come from the CallSite's resolved FnType and its compiled arg and
 /// return nodes, never the AST, which is unresolved for generic
 /// builtins.
-fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
+fn try_register_builtin_call_from_callsite<R: Rt>(
+    cs: &CallSite<R>,
+    ctx: &CompileCtx<R>,
     out: &mut BuiltinCallDiscovery,
 ) -> Option<FusionBlocker> {
     let apply_expr = cs.spec();
@@ -691,11 +691,11 @@ pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
 
 /// The constant `Value` of a node, seeing through `ExplicitParens`.
 /// `None` for anything that isn't a compile-time-known literal.
-pub(crate) fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
+pub(crate) fn node_const_value<R: Rt>(node: &Node<R>) -> Option<Value> {
     crate::stack::ensure_sufficient(|| node_const_value_inner(node))
 }
 
-fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
+fn node_const_value_inner<R: Rt>(node: &Node<R>) -> Option<Value> {
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),
         NodeView::ExplicitParens(ep) => node_const_value(&ep.n),
@@ -724,15 +724,13 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
 
 /// Fold element nodes into a constant `Value::Array` (the runtime shape
 /// of array and tuple literals), or `None` if any element isn't constant.
-fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
+fn const_valarray<R: Rt>(elems: &[Node<R>]) -> Option<Value> {
     let mut vals = const_values(elems)?;
     Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
 }
 
 /// The constant value of each node, or `None` if one isn't constant.
-fn const_values<R: Rt, E: UserEvent>(
-    elems: &[Node<R, E>],
-) -> Option<LPooled<Vec<Value>>> {
+fn const_values<R: Rt>(elems: &[Node<R>]) -> Option<LPooled<Vec<Value>>> {
     let mut vals: LPooled<Vec<Value>> = LPooled::take();
     for c in elems.iter() {
         vals.push(node_const_value(c)?);
@@ -742,7 +740,7 @@ fn const_values<R: Rt, E: UserEvent>(
 
 /// Fold a map literal's entries (each key, then its value) into a
 /// constant `Value::Map`, or `None` if any entry isn't constant.
-pub(crate) fn const_map<R: Rt, E: UserEvent>(entries: &[Node<R, E>]) -> Option<Value> {
+pub(crate) fn const_map<R: Rt>(entries: &[Node<R>]) -> Option<Value> {
     let mut map = netidx_value::Map::new();
     for kv in entries.chunks_exact(2) {
         map.insert_cow(node_const_value(&kv[0])?, node_const_value(&kv[1])?);
@@ -753,7 +751,7 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(entries: &[Node<R, E>]) -> Option<V
 /// Whether a value of an abstract type, or of `Any`, can pass through a
 /// kernel built from `n`, its callees included: a core-trait impl may
 /// run on it.
-pub(crate) fn meets_abstract<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
+pub(crate) fn meets_abstract<R: Rt>(n: &Node<R>, env: &Env) -> bool {
     let mut meets = false;
     fusion::for_each_reachable_node(n, &mut |x| {
         meets = meets || x.typ().holds_abstract(env)
@@ -1149,9 +1147,9 @@ pub(crate) type QopCoverage = SmallVec<[u64; 4]>;
 /// cache key, because a kernel bakes those resolutions as CLIF calls.
 pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 
-fn body_fingerprint<R: Rt, E: UserEvent>(
-    body: &Node<R, E>,
-    ec: &CompileCtx<R, E>,
+fn body_fingerprint<R: Rt>(
+    body: &Node<R>,
+    ec: &CompileCtx<R>,
 ) -> (QopCoverage, FnResolutions) {
     let mut cov = QopCoverage::new();
     let mut res = FnResolutions::new();
@@ -1168,18 +1166,17 @@ fn body_fingerprint<R: Rt, E: UserEvent>(
                 return;
             };
             res.push(callee.id().inner());
-            each_arg_node(cs, &mut |a: &Node<R, E>| {
+            each_arg_node(cs, &mut |a: &Node<R>| {
                 if !is_fn_shaped(a.typ(), &ec.env) {
                     return;
                 }
                 let id = match a.view() {
-                    NodeView::Lambda(l) => l.lambda_id::<R, E>().map(|id| id.inner()),
+                    NodeView::Lambda(l) => l.lambda_id::<R>().map(|id| id.inner()),
                     NodeView::Ref(r) => ec
                         .bind_to_lambda
                         .get(&r.id)
                         .and_then(|v| {
-                            v.downcast_ref::<crate::LambdaDef<R, E>>()
-                                .map(|d| d.id.inner())
+                            v.downcast_ref::<crate::LambdaDef<R>>().map(|d| d.id.inner())
                         })
                         // A forwarded fn formal's `bind_to_lambda` entry
                         // is gone by fingerprint time; the snapshot keeps it.
@@ -1197,10 +1194,7 @@ fn body_fingerprint<R: Rt, E: UserEvent>(
 }
 
 /// Visit a call site's arg nodes in source order.
-fn each_arg_node<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    f: &mut impl FnMut(&Node<R, E>),
-) {
+fn each_arg_node<R: Rt>(cs: &CallSite<R>, f: &mut impl FnMut(&Node<R>)) {
     let mut pos = 0usize;
     for (label, _) in cs.spec_args().clone().iter() {
         let n = match label {
@@ -1232,8 +1226,8 @@ fn is_fn_shaped(t: &Type, env: &Env) -> bool {
 /// every self-call the body emits? Such a formal needs no rebind slot.
 /// Vacuously true with no self-calls; a destructured formal is never
 /// invariant.
-pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+pub(crate) fn invariant_formals<R: Rt>(
+    g: &GXLambda<R>,
     self_bind: Option<BindId>,
 ) -> SmallVec<[bool; 8]> {
     let ids: SmallVec<[Option<BindId>; 8]> =
@@ -1265,11 +1259,11 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
 
 /// The argument a call passes formal `i` of `ftype`: a labeled one by
 /// its name, a positional one by its place among the positionals.
-pub(crate) fn formal_arg<'a, R: Rt, E: UserEvent>(
-    cs: &'a CallSite<R, E>,
+pub(crate) fn formal_arg<'a, R: Rt>(
+    cs: &'a CallSite<R>,
     ftype: &FnType,
     i: usize,
-) -> Option<&'a Node<R, E>> {
+) -> Option<&'a Node<R>> {
     match &ftype.args.get(i)?.kind {
         FnArgKind::Labeled { name, .. } => cs.arg_named(name),
         FnArgKind::Positional { .. } => {
@@ -1283,8 +1277,8 @@ pub(crate) fn formal_arg<'a, R: Rt, E: UserEvent>(
 /// `g`'s own ids for the formal parameters of `kernel`, which may have
 /// been built for another instance of `g`'s definition: each pair the
 /// kernel's id and `g`'s where they differ.
-pub(crate) fn rebound_formals<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+pub(crate) fn rebound_formals<R: Rt>(
+    g: &GXLambda<R>,
     kernel: &KernelSig,
 ) -> SmallVec<[(BindId, BindId); 4]> {
     let formals =
@@ -1305,11 +1299,11 @@ pub(crate) type Refusal = CompactString;
 /// lambda `g` at the call site's resolved type. Signature derivation
 /// only: the body is validated by the compile attempt. `kernel_name`
 /// labels a fresh kernel's symbols.
-pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+pub(crate) fn build_lambda_kernel<R: Rt>(
+    g: &GXLambda<R>,
     site_ftype: &FnType,
     kernel_name: &ArcStr,
-    ec: &CompileCtx<R, E>,
+    ec: &CompileCtx<R>,
     reads: &mut ReadsMemo,
 ) -> Result<triomphe::Arc<CachedKernel>, Refusal> {
     // The key is the site's type, not `g.typ()`: the instance shares
@@ -1386,10 +1380,10 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
 /// disagrees with the site would emit a kernel whose CLIF types
 /// mismatch the call. Constraint lists differ benignly; compare only
 /// args, vargs and return.
-fn instance_agrees<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+fn instance_agrees<R: Rt>(
+    g: &GXLambda<R>,
     site: &FnType,
-    ec: &CompileCtx<R, E>,
+    ec: &CompileCtx<R>,
 ) -> Result<(), Refusal> {
     let gt = g.typ().resolve_tvars();
     let args_agree = gt.args.len() == site.args.len()
@@ -1423,10 +1417,10 @@ struct FormalSlots {
 /// Slots carry the formal's BindId because a declared fn type's
 /// parameter names may differ from the lambda literal's own; body
 /// `Ref`s resolve by id first.
-fn formal_slots<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+fn formal_slots<R: Rt>(
+    g: &GXLambda<R>,
     self_bind: Option<BindId>,
-    ec: &CompileCtx<R, E>,
+    ec: &CompileCtx<R>,
 ) -> Result<FormalSlots, Refusal> {
     let inv = invariant_formals(g, self_bind);
     let mut out = FormalSlots {
@@ -1497,11 +1491,7 @@ impl ReadsMemo {
     /// A function-valued binding is called, never captured, and an id
     /// with no binding (a banked `~`'s debt) is runtime state, not a
     /// value the caller could forward.
-    fn captured<R: Rt, E: UserEvent>(
-        &mut self,
-        id: BindId,
-        ec: &CompileCtx<R, E>,
-    ) -> bool {
+    fn captured<R: Rt>(&mut self, id: BindId, ec: &CompileCtx<R>) -> bool {
         *self.captured.entry(id).or_insert_with(|| {
             ec.env
                 .by_id
@@ -1515,9 +1505,9 @@ impl ReadsMemo {
 /// callees' bodies included: its own reads (a builtin callee's walked
 /// whole) joined with each lambda callee's, each instance walked once
 /// (`memo`).
-fn external_reads<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
-    ec: &CompileCtx<R, E>,
+fn external_reads<R: Rt>(
+    g: &GXLambda<R>,
+    ec: &CompileCtx<R>,
     memo: &mut ReadsMemo,
 ) -> Arc<[BindId]> {
     if let Some(r) = memo.reads.get(&g.instance_id()) {
@@ -1533,7 +1523,7 @@ fn external_reads<R: Rt, E: UserEvent>(
         let mut refs = Refs::stopping_at_callees();
         g.body().refs(&mut refs);
         let callees = refs.take_callees();
-        let mut by_id: LPooled<nohash::IntMap<LambdaInstanceId, &GXLambda<R, E>>> =
+        let mut by_id: LPooled<nohash::IntMap<LambdaInstanceId, &GXLambda<R>>> =
             LPooled::take();
         if !callees.is_empty() {
             fusion::for_each_node(g.body(), &mut |n| {
@@ -1578,10 +1568,10 @@ fn external_reads<R: Rt, E: UserEvent>(
 /// params the caller forwards from its own env. A self-reference lowers
 /// as a call and a statically-resolved fn capture as a call, never as a
 /// value, so neither takes a slot.
-fn capture_slots<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+fn capture_slots<R: Rt>(
+    g: &GXLambda<R>,
     self_bind: Option<BindId>,
-    ec: &CompileCtx<R, E>,
+    ec: &CompileCtx<R>,
     memo: &mut ReadsMemo,
 ) -> Result<LPooled<Vec<(CaptureSlot, ParamKind)>>, Refusal> {
     let mut external: LPooled<Vec<BindId>> = external_reads(g, ec, memo)
@@ -1608,10 +1598,10 @@ fn capture_slots<R: Rt, E: UserEvent>(
 /// variadic, every loop-carried formal is a kernel-encodable kind, and a
 /// self-call sits in tail position. Not sync-gated; the interpreter's
 /// `analyze` adds that gate.
-pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+pub(crate) fn tail_loop_blocker<R: Rt>(
+    g: &GXLambda<R>,
     self_bind: BindId,
-    ec: &CompileCtx<R, E>,
+    ec: &CompileCtx<R>,
 ) -> Option<NoLoop> {
     let mut refs = Refs::default();
     g.body().refs(&mut refs);
@@ -1653,13 +1643,13 @@ pub(crate) fn tail_loop_blocker<R: Rt, E: UserEvent>(
 /// activation raises it at its birth, a pass never does), a callee whose
 /// body holds any; `None` when it holds none. Such a body recurses
 /// natively.
-fn site_memory<R: Rt, E: UserEvent>(
-    body: &Node<R, E>,
+fn site_memory<R: Rt>(
+    body: &Node<R>,
     self_bind: Option<BindId>,
     formals: &IntSet<BindId>,
     visiting: &mut LPooled<Vec<LambdaInstanceId>>,
 ) -> Option<NoLoop> {
-    let is_self = |cs: &CallSite<R, E>| {
+    let is_self = |cs: &CallSite<R>| {
         self_bind
             .is_some_and(|sb| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb))
     };
@@ -1711,10 +1701,7 @@ fn site_memory<R: Rt, E: UserEvent>(
 /// [`fusion::for_each_tail_leaf`] defines it)? A tail call is emitted
 /// only when this said so, so a kernel never emits one without its loop
 /// head; a rejected tail call leaves a harmless vestigial head.
-pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    self_bind: BindId,
-) -> bool {
+pub(crate) fn body_has_self_tail_call<R: Rt>(node: &Node<R>, self_bind: BindId) -> bool {
     fusion::for_each_tail_leaf(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
             matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind)
@@ -1727,11 +1714,11 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
 /// value whose frozen type fits that formal's slot type? Conservative:
 /// an unfreezable arg or a self-call that does not map 1:1 onto the
 /// formals counts as inconsistent.
-fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+fn self_calls_abi_consistent<R: Rt>(
+    g: &GXLambda<R>,
     self_bind: BindId,
     formal_slot_types_by_position: &[(usize, Type)],
-    ec: &CompileCtx<R, E>,
+    ec: &CompileCtx<R>,
 ) -> bool {
     let mut ok = true;
     let ftype = g.typ();

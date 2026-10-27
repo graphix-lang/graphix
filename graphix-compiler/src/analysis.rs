@@ -9,7 +9,7 @@
 
 use crate::{
     AddrMap, ApplyView, BindId, CompileCtx, DefAssertion, DefAssertionKind, LambdaId,
-    LambdaInstanceId, Node, NodeView, Refs, Rt, Update, UserEvent,
+    LambdaInstanceId, Node, NodeView, Refs, Rt, Update,
     cost::{ForkSite, Siblings},
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
     effects::{LambdaFacts, NoLoop, RecursionKind},
@@ -39,10 +39,10 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{cell::OnceCell, collections::hash_map::Entry, ptr, sync::atomic::Ordering};
 
-struct StaticEdge<'a, R: Rt, E: UserEvent> {
+struct StaticEdge<'a, R: Rt> {
     caller: Option<LambdaInstanceId>,
     callee: LambdaInstanceId,
-    site: &'a CallSite<R, E>,
+    site: &'a CallSite<R>,
 }
 
 /// The instance a node belongs to; `None` outside every instance.
@@ -56,27 +56,27 @@ type Holder = Option<LambdaInstanceId>;
 /// the `seqq` captures by the id of their machine and the instance that
 /// holds them (every instance of a definition shares the machine's id),
 /// with the bind each is the value of.
-struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
-    instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R, E>>>,
-    edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
+struct StaticCallGraph<'a, R: Rt> {
+    instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R>>>,
+    edges: LPooled<Vec<StaticEdge<'a, R>>>,
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
-    machines: LPooled<Vec<(&'a SeqMachine<R, E>, Holder)>>,
+    machines: LPooled<Vec<(&'a SeqMachine<R>, Holder)>>,
     /// Statement lists of two or more statements (a block's, a module's)
     /// with their runs to plan.
-    blocks: LPooled<Vec<(&'a [Node<R, E>], &'a [usize], &'a Runs)>>,
+    blocks: LPooled<Vec<(&'a [Node<R>], &'a [usize], &'a Runs)>>,
     /// The `#[parallel]` sites.
-    parallels: LPooled<Vec<&'a ForkControl<R, E>>>,
+    parallels: LPooled<Vec<&'a ForkControl<R>>>,
     /// Fork points other than blocks whose siblings nothing decided yet.
-    forks: LPooled<Vec<(&'a Siblings, ForkKids<'a, R, E>)>>,
+    forks: LPooled<Vec<(&'a Siblings, ForkKids<'a, R>)>>,
     captures: LPooled<
         AHashMap<
             (crate::expr::ExprId, Holder),
-            SmallVec<[(BindId, &'a SeqCapture<R, E>); 4]>,
+            SmallVec<[(BindId, &'a SeqCapture<R>); 4]>,
         >,
     >,
 }
 
-impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {
+impl<'a, R: Rt> StaticCallGraph<'a, R> {
     fn new() -> Self {
         StaticCallGraph {
             instances: LPooled::take(),
@@ -100,13 +100,13 @@ impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {
 
 /// Walk `root` (or `seed`'s body) and every resolved callee's instance
 /// body once.
-fn collect_static_graph<'a, R: Rt, E: UserEvent>(
-    root: &'a Node<R, E>,
-    seed: Option<&'a GXLambda<R, E>>,
-) -> StaticCallGraph<'a, R, E> {
+fn collect_static_graph<'a, R: Rt>(
+    root: &'a Node<R>,
+    seed: Option<&'a GXLambda<R>>,
+) -> StaticCallGraph<'a, R> {
     let _profile = profile::phase(Phase::CallGraph);
     let mut graph = StaticCallGraph::new();
-    let mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>> =
+    let mut stack: LPooled<Vec<(&'a Node<R>, Option<LambdaInstanceId>)>> =
         LPooled::take();
     match seed {
         Some(g) => {
@@ -120,17 +120,17 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
 }
 
 /// [`collect_static_graph`] from several roots.
-fn collect_static_graph_of<'a, R: Rt, E: UserEvent>(
-    roots: impl IntoIterator<Item = &'a Node<R, E>>,
-) -> StaticCallGraph<'a, R, E> {
+fn collect_static_graph_of<'a, R: Rt>(
+    roots: impl IntoIterator<Item = &'a Node<R>>,
+) -> StaticCallGraph<'a, R> {
     let mut graph = StaticCallGraph::new();
     walk_static_graph(&mut graph, roots.into_iter().map(|r| (r, None)).collect());
     graph
 }
 
-fn walk_static_graph<'a, R: Rt, E: UserEvent>(
-    graph: &mut StaticCallGraph<'a, R, E>,
-    mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>>,
+fn walk_static_graph<'a, R: Rt>(
+    graph: &mut StaticCallGraph<'a, R>,
+    mut stack: LPooled<Vec<(&'a Node<R>, Option<LambdaInstanceId>)>>,
 ) {
     while let Some((node, caller)) = stack.pop() {
         fusion::for_each_node(node, &mut |n| {
@@ -213,9 +213,7 @@ impl Components {
     }
 }
 
-fn strongly_connected<R: Rt, E: UserEvent>(
-    graph: &StaticCallGraph<'_, R, E>,
-) -> Components {
+fn strongly_connected<R: Rt>(graph: &StaticCallGraph<'_, R>) -> Components {
     let mut forward: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
         LPooled::take();
     for id in graph.instances.keys().copied() {
@@ -306,10 +304,7 @@ pub struct TailLoops(LPooled<Vec<DefAssertion>>);
 
 /// Run the analysis over the whole compiled program. Results land via
 /// interior mutability on the nodes reached.
-pub fn analyze<R: Rt, E: UserEvent>(
-    root: &Node<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> Result<TailLoops> {
+pub fn analyze<R: Rt>(root: &Node<R>, ctx: &CompileCtx<R>) -> Result<TailLoops> {
     let _profile = profile::phase(Phase::Analysis);
     let graph = collect_static_graph(root, None);
     let facts = infer_effects(&graph, ctx);
@@ -328,10 +323,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
 
 /// Refuse each passed `#[tail_recursive]` whose loop fusion did not
 /// build: only a fused kernel runs a tail recursion as a loop.
-pub fn check_tail_loops<R: Rt, E: UserEvent>(
-    due: TailLoops,
-    ctx: &CompileCtx<R, E>,
-) -> Result<()> {
+pub fn check_tail_loops<R: Rt>(due: TailLoops, ctx: &CompileCtx<R>) -> Result<()> {
     match due.0.iter().find(|a| !ctx.fusion.has_tail_loop(a.id)) {
         None => Ok(()),
         Some(a) => Err(anyhow!(
@@ -348,10 +340,10 @@ pub fn check_tail_loops<R: Rt, E: UserEvent>(
 /// `(callee, self_bind)` pair. A definition assertion first reached
 /// here is checked here; the program already runs, so a failure is
 /// reported as an unhandled error is.
-pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
+pub(crate) fn analyze_bound_callee<R: Rt>(
+    g: &GXLambda<R>,
     self_bind: Option<BindId>,
-    ctx: &CompileCtx<R, E>,
+    ctx: &CompileCtx<R>,
 ) {
     let _profile = profile::phase(Phase::Analysis);
     let mut graph = collect_static_graph(g.body(), Some(g));
@@ -373,9 +365,9 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
 /// Check every pending assertion whose definition this analysis
 /// reached, retiring all but a `#[sync]`, a passed `#[tail_recursive]`
 /// into `due`. Stops at the first failure.
-fn check_def_assertions<R: Rt, E: UserEvent>(
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn check_def_assertions<R: Rt>(
+    graph: &StaticCallGraph<'_, R>,
+    ctx: &CompileCtx<R>,
     due: &mut TailLoops,
 ) -> Result<()> {
     let mut pending = ctx.def_assertions.lock();
@@ -438,9 +430,9 @@ pub fn build_only_refusal(msg: &str) -> bool {
     BUILD_ONLY_REFUSALS.iter().any(|h| msg.contains(h))
 }
 
-fn assertion_failure<R: Rt, E: UserEvent>(
+fn assertion_failure<R: Rt>(
     kind: DefAssertionKind,
-    d: &LambdaDef<R, E>,
+    d: &LambdaDef<R>,
 ) -> Option<CompactString> {
     let effect = d.facts.lock().effect;
     let said = |s: &str| Some(CompactString::from(s));
@@ -536,9 +528,9 @@ struct BodyFacts {
 /// until stable; a definition's stored facts are the join over its
 /// instances and never improve (an instance analyzed later is one more
 /// instance, not a better view of the definition).
-fn infer_effects<R: Rt, E: UserEvent>(
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn infer_effects<R: Rt>(
+    graph: &StaticCallGraph<'_, R>,
+    ctx: &CompileCtx<R>,
 ) -> InstanceFacts {
     let _profile = profile::phase(Phase::Effects);
     let mut bodies: LPooled<IntMap<LambdaInstanceId, BodyFacts>> = LPooled::take();
@@ -573,17 +565,17 @@ fn infer_effects<R: Rt, E: UserEvent>(
     eff
 }
 
-fn def_facts<R: Rt, E: UserEvent>(d: &LambdaDef<R, E>) -> LambdaFacts {
+fn def_facts<R: Rt>(d: &LambdaDef<R>) -> LambdaFacts {
     *d.facts.lock()
 }
 
 /// Reduce one instance body (nested lambda bodies excluded) to its
 /// [`BodyFacts`]. A `<-` counts as state only when its target is one
 /// of the body's own bindings.
-fn body_facts<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn body_facts<R: Rt>(
+    g: &GXLambda<R>,
+    graph: &StaticCallGraph<'_, R>,
+    ctx: &CompileCtx<R>,
 ) -> BodyFacts {
     let mut callees = SmallVec::new();
     let known = walk_body(g, &mut |cs| {
@@ -598,9 +590,9 @@ fn body_facts<R: Rt, E: UserEvent>(
 /// function parameters, or a builtin handed one, contributes nothing,
 /// since the caller's argument joins at the call, nor does a call not
 /// resolved yet (a `let rec`'s own), which an instance's analysis judges.
-pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn def_body_facts<R: Rt>(
+    g: &GXLambda<R>,
+    ctx: &CompileCtx<R>,
 ) -> (LambdaFacts, ParamCalls) {
     let mut params: LPooled<IntSet<BindId>> = LPooled::take();
     for p in g.args().iter() {
@@ -613,7 +605,7 @@ pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
     // caller's to judge, and a recursive call (to a definition whose check
     // is open) an instance's analysis judges; any other call it cannot
     // resolve may be async
-    let recursive = |cs: &CallSite<R, E>| {
+    let recursive = |cs: &CallSite<R>| {
         cs.fnode().typ().with_deref(|t| match t {
             Some(Type::Fn(ft)) => {
                 ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id))
@@ -660,9 +652,9 @@ pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
 /// One body's facts, nested lambda bodies excluded, a call's from
 /// `call`. A `<-` counts as state only when its target is one of the
 /// body's own bindings.
-fn walk_body<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
-    call: &mut dyn FnMut(&CallSite<R, E>) -> LambdaFacts,
+fn walk_body<R: Rt>(
+    g: &GXLambda<R>,
+    call: &mut dyn FnMut(&CallSite<R>) -> LambdaFacts,
 ) -> LambdaFacts {
     let body = g.body();
     let local: OnceCell<LPooled<IntSet<BindId>>> = OnceCell::new();
@@ -698,7 +690,7 @@ fn walk_body<R: Rt, E: UserEvent>(
 
 /// A dynamic module runs code its source delivers at run time, whose
 /// effects nothing here can see.
-fn is_dynamic_module<R: Rt, E: UserEvent>(m: &Module<R, E>) -> bool {
+fn is_dynamic_module<R: Rt>(m: &Module<R>) -> bool {
     matches!(&m.spec().kind, ExprKind::Module { value, .. }
         if matches!(&**value, ModuleKind::Dynamic { .. }))
 }
@@ -716,10 +708,10 @@ enum OwnTargets<'a> {
 /// variable write is not async: the write happens this cycle and the
 /// cross-cycle boundary is the read. Exhaustive on purpose: a new node
 /// variant must decide.
-fn node_facts<R: Rt, E: UserEvent>(
-    n: &Node<R, E>,
+fn node_facts<R: Rt>(
+    n: &Node<R>,
     own: OwnTargets,
-    call: &mut dyn FnMut(&CallSite<R, E>) -> LambdaFacts,
+    call: &mut dyn FnMut(&CallSite<R>) -> LambdaFacts,
 ) -> LambdaFacts {
     match n.view() {
         NodeView::CallSite(cs) => call(cs),
@@ -800,10 +792,7 @@ fn node_facts<R: Rt, E: UserEvent>(
 }
 
 /// A call's facts, its callee's joined with every function argument's.
-pub(crate) fn call_facts<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> LambdaFacts {
+pub(crate) fn call_facts<R: Rt>(cs: &CallSite<R>, ctx: &CompileCtx<R>) -> LambdaFacts {
     callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
 }
 
@@ -813,10 +802,10 @@ pub(crate) fn call_facts<R: Rt, E: UserEvent>(
 /// facts, a builtin its declared `EFFECT` joined with its function
 /// arguments' facts (`callback_facts`), an unresolved callee
 /// `unresolved.facts`.
-fn callee_facts<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    graph: Option<&StaticCallGraph<'_, R, E>>,
-    ctx: &CompileCtx<R, E>,
+fn callee_facts<R: Rt>(
+    cs: &CallSite<R>,
+    graph: Option<&StaticCallGraph<'_, R>>,
+    ctx: &CompileCtx<R>,
     unresolved: &Unresolved,
     pending: &mut dyn FnMut(LambdaInstanceId),
 ) -> LambdaFacts {
@@ -841,10 +830,10 @@ impl Unresolved<'_> {
 }
 
 /// The definition `cs` calls, where the check resolved it.
-fn callee_def<'a, R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ctx: &'a CompileCtx<R, E>,
-) -> Option<&'a LambdaDef<R, E>> {
+fn callee_def<'a, R: Rt>(
+    cs: &CallSite<R>,
+    ctx: &'a CompileCtx<R>,
+) -> Option<&'a LambdaDef<R>> {
     let lid = cs
         .static_target()
         .map(|t| t.definition)
@@ -855,17 +844,14 @@ fn callee_def<'a, R: Rt, E: UserEvent>(
         .or_else(|| {
             let NodeView::Ref(r) = cs.fnode().view() else { return None };
             let v = ctx.bind_to_lambda.get(&r.id)?;
-            v.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
+            v.downcast_ref::<LambdaDef<R>>().map(|d| d.id)
         })?;
     lambda_def(ctx, lid)
 }
 
 /// Whether `cs` calls a builtin, which calls back the functions it is
 /// handed at run time, where no analysis sees them.
-fn calls_builtin<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> bool {
+fn calls_builtin<R: Rt>(cs: &CallSite<R>, ctx: &CompileCtx<R>) -> bool {
     match callee_def(cs, ctx) {
         Some(d) => d.is_builtin(),
         None => match cs.fnode().view() {
@@ -894,10 +880,7 @@ enum Reach {
 /// value can hold a reference or a function, at a parameter its declared
 /// signature types as one, as `Any` or by a bounded variable (a builtin
 /// has nothing else to reach through).
-fn builtin_reach<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> Reach {
+fn builtin_reach<R: Rt>(cs: &CallSite<R>, ctx: &CompileCtx<R>) -> Reach {
     let env = &ctx.env;
     let ft = callee_def(cs, ctx).map(|d| &d.typ);
     let formal = |ft: &FnType, key: &ArgKey| -> Option<Type> {
@@ -921,7 +904,7 @@ fn builtin_reach<R: Rt, E: UserEvent>(
     };
     // a function handed back to the builtin, or a reference, may be
     // called or written through there
-    let handed = |n: &Node<R, E>| {
+    let handed = |n: &Node<R>| {
         let source = handed_def(n, ctx).and_then(|d| match &d.origin {
             DefOrigin::Source { spec, body: DefBody::Expr(_), .. }
                 if !d.typ.rtype.reaches_out(env) =>
@@ -1011,14 +994,14 @@ fn writes_nothing(e: &Expr) -> bool {
 
 /// The facts of the functions a builtin call is handed: each argument of
 /// function type, by the definition it is, else `unresolved`'s.
-fn callback_facts<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
+fn callback_facts<R: Rt>(
+    cs: &CallSite<R>,
+    ctx: &CompileCtx<R>,
     unresolved: &Unresolved,
 ) -> LambdaFacts {
     // a definition handed over: its own facts, joined with those of the
     // function parameters its body calls, which its check left open
-    let of_def = |d: &LambdaDef<R, E>| -> LambdaFacts {
+    let of_def = |d: &LambdaDef<R>| -> LambdaFacts {
         let calls = d.param_calls.lock();
         // the builtin supplies the definition's own parameters from data;
         // an enclosing definition's resolve per instance, or are its
@@ -1038,7 +1021,7 @@ fn callback_facts<R: Rt, E: UserEvent>(
         let base = def_facts(d).join(own);
         calls.captured.iter().map(captured).fold(base, |a, f| a.join(f))
     };
-    let function = |n: &Node<R, E>| -> LambdaFacts {
+    let function = |n: &Node<R>| -> LambdaFacts {
         match n.view() {
             NodeView::Ref(r) if (unresolved.params)(r.id) => LambdaFacts::PURE,
             _ => handed_def(n, ctx).map_or(unresolved.facts, of_def),
@@ -1053,18 +1036,18 @@ fn callback_facts<R: Rt, E: UserEvent>(
 
 /// The definition a function argument `n` is: a lambda literal, bare or
 /// sampled (a seq step's inline callback), or a binding resolved to one.
-fn handed_def<'a, R: Rt, E: UserEvent>(
-    n: &'a Node<R, E>,
-    ctx: &'a CompileCtx<R, E>,
-) -> Option<&'a LambdaDef<R, E>> {
+fn handed_def<'a, R: Rt>(
+    n: &'a Node<R>,
+    ctx: &'a CompileCtx<R>,
+) -> Option<&'a LambdaDef<R>> {
     if let Some(l) = lambda_literal(n) {
-        return l.def_value().downcast_ref::<LambdaDef<R, E>>();
+        return l.def_value().downcast_ref::<LambdaDef<R>>();
     }
     let lid = match n.view() {
         NodeView::Ref(r) => ctx
             .bind_to_lambda
             .get(&r.id)
-            .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+            .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
             .map(|d| d.id)
             .or_else(|| ctx.fn_forward_resolutions.get(&r.id).copied()),
         _ => None,
@@ -1073,10 +1056,10 @@ fn handed_def<'a, R: Rt, E: UserEvent>(
 }
 
 /// A call's facts by its callee alone.
-fn callee_own_facts<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    graph: Option<&StaticCallGraph<'_, R, E>>,
-    ctx: &CompileCtx<R, E>,
+fn callee_own_facts<R: Rt>(
+    cs: &CallSite<R>,
+    graph: Option<&StaticCallGraph<'_, R>>,
+    ctx: &CompileCtx<R>,
     unresolved: LambdaFacts,
     pending: &mut dyn FnMut(LambdaInstanceId),
 ) -> LambdaFacts {
@@ -1101,10 +1084,8 @@ fn callee_own_facts<R: Rt, E: UserEvent>(
             ids.iter().for_each(|iid| pending(*iid));
             return LambdaFacts::PURE;
         }
-        if let Some(d) = ctx
-            .bind_to_lambda
-            .get(&r.id)
-            .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+        if let Some(d) =
+            ctx.bind_to_lambda.get(&r.id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
         {
             return of_def(d.id);
         }
@@ -1121,10 +1102,10 @@ fn callee_own_facts<R: Rt, E: UserEvent>(
     unresolved
 }
 
-fn mark_recursion<R: Rt, E: UserEvent>(
-    graph: &StaticCallGraph<'_, R, E>,
+fn mark_recursion<R: Rt>(
+    graph: &StaticCallGraph<'_, R>,
     facts: &InstanceFacts,
-    ctx: &CompileCtx<R, E>,
+    ctx: &CompileCtx<R>,
 ) {
     let _profile = profile::phase(Phase::Recursion);
     let components = strongly_connected(graph);
@@ -1199,12 +1180,12 @@ fn mark_recursion<R: Rt, E: UserEvent>(
 }
 
 /// An instance's self-calls in tail position ([`fusion::for_each_tail_leaf`]).
-struct TailSelfCalls<'a, R: Rt, E: UserEvent> {
-    sites: SmallVec<[&'a CallSite<R, E>; 4]>,
+struct TailSelfCalls<'a, R: Rt> {
+    sites: SmallVec<[&'a CallSite<R>; 4]>,
 }
 
-impl<'a, R: Rt, E: UserEvent> TailSelfCalls<'a, R, E> {
-    fn collect(body: &'a Node<R, E>, instance: LambdaInstanceId) -> Self {
+impl<'a, R: Rt> TailSelfCalls<'a, R> {
+    fn collect(body: &'a Node<R>, instance: LambdaInstanceId) -> Self {
         let mut res = Self { sites: SmallVec::new() };
         fusion::for_each_tail_leaf(body, &mut |n| match n.view() {
             NodeView::CallSite(cs) if is_call_to(cs, instance) => {
@@ -1217,7 +1198,7 @@ impl<'a, R: Rt, E: UserEvent> TailSelfCalls<'a, R, E> {
     }
 
     /// Whether a self-call sits outside tail position.
-    fn misses_one(&self, body: &Node<R, E>, instance: LambdaInstanceId) -> bool {
+    fn misses_one(&self, body: &Node<R>, instance: LambdaInstanceId) -> bool {
         let mut missed = false;
         fusion::for_each_node(body, &mut |n| {
             if let NodeView::CallSite(cs) = n.view()
@@ -1231,27 +1212,21 @@ impl<'a, R: Rt, E: UserEvent> TailSelfCalls<'a, R, E> {
     }
 }
 
-fn is_call_to<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    instance: LambdaInstanceId,
-) -> bool {
+fn is_call_to<R: Rt>(cs: &CallSite<R>, instance: LambdaInstanceId) -> bool {
     cs.static_target().map(|target| target.instance) == Some(instance)
 }
 
-fn lambda_def<'a, R: Rt, E: UserEvent>(
-    ctx: &'a CompileCtx<R, E>,
+fn lambda_def<'a, R: Rt>(
+    ctx: &'a CompileCtx<R>,
     lid: LambdaId,
-) -> Option<&'a LambdaDef<R, E>> {
-    ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+) -> Option<&'a LambdaDef<R>> {
+    ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
 }
 
 /// Whether an untaken arm must sleep: pure computation with no
 /// recursive call has nothing to pause. Anything [`node_facts`] calls
 /// stateful or async sleeps, every `<-` in the arm included.
-pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
-    node: &Node<R, E>,
-) -> bool {
+pub(crate) fn arm_sleeps_on_deselect<R: Rt>(ctx: &CompileCtx<R>, node: &Node<R>) -> bool {
     let mut sleeps = false;
     arm_sleeps(ctx, node, &mut sleeps);
     sleeps
@@ -1260,11 +1235,7 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
 /// An arm sleeps when it holds state, an effect, a raise to a handler (an
 /// event as a write is) or a recursive call; a kernel by the facts of the
 /// region it replaced and its feeders, so fusion decides nothing here.
-fn arm_sleeps<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
-    node: &Node<R, E>,
-    sleeps: &mut bool,
-) {
+fn arm_sleeps<R: Rt>(ctx: &CompileCtx<R>, node: &Node<R>, sleeps: &mut bool) {
     fusion::for_each_node(node, &mut |n| {
         if *sleeps {
             return;
@@ -1398,8 +1369,8 @@ impl Summary {
 /// Whether `n` itself may run a core-trait impl (`Eq`, `Ord`,
 /// `Display`): a comparison or a print of a value that can hold an
 /// abstract one, or a kernel whose region holds one.
-fn runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
-    let holds = |n: &Node<R, E>| n.typ().holds_abstract(env);
+fn runs_hooks<R: Rt>(n: &Node<R>, env: &Env) -> bool {
+    let holds = |n: &Node<R>| n.typ().holds_abstract(env);
     match n.view() {
         NodeView::Eq(o) => holds(&o.lhs) || holds(&o.rhs),
         NodeView::Ne(o) => holds(&o.lhs) || holds(&o.rhs),
@@ -1415,7 +1386,7 @@ fn runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
 
 /// Whether `n` is an `==` or `!=` over references, which compares what
 /// each names where it stands this cycle.
-fn compares_places<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
+fn compares_places<R: Rt>(n: &Node<R>, env: &Env) -> bool {
     match n.view() {
         NodeView::Eq(o) => compared_refs(env, o.lhs.typ(), o.rhs.typ()).is_some(),
         NodeView::Ne(o) => compared_refs(env, o.lhs.typ(), o.rhs.typ()).is_some(),
@@ -1465,10 +1436,7 @@ impl Pack for RegionFacts {
 }
 
 /// The [`RegionFacts`] of the region `n`.
-pub(crate) fn region_facts<R: Rt, E: UserEvent>(
-    n: &Node<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> RegionFacts {
+pub(crate) fn region_facts<R: Rt>(n: &Node<R>, ctx: &CompileCtx<R>) -> RegionFacts {
     let mut f = RegionFacts::default();
     fusion::for_each_node(n, &mut |x| {
         f.hooks |= runs_hooks(x, &ctx.env);
@@ -1482,7 +1450,7 @@ pub(crate) fn region_facts<R: Rt, E: UserEvent>(
     f
 }
 
-fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) -> bool {
+fn calls_recursive<R: Rt>(n: &Node<R>, ctx: &CompileCtx<R>) -> bool {
     let NodeView::CallSite(cs) = n.view() else { return false };
     callee_def(cs, ctx)
         .is_some_and(|d| *d.recursion.lock() != RecursionKind::NotRecursive)
@@ -1497,11 +1465,11 @@ fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) 
 /// any bind. Only `current`, a slot site's own call, which the site
 /// decides again when its callback rebinds, counts as the instance it
 /// calls now.
-fn local_summary<R: Rt, E: UserEvent>(
-    n: &Node<R, E>,
-    current: Option<&Node<R, E>>,
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn local_summary<R: Rt>(
+    n: &Node<R>,
+    current: Option<&Node<R>>,
+    graph: &StaticCallGraph<'_, R>,
+    ctx: &CompileCtx<R>,
     detail: Detail,
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
@@ -1518,10 +1486,7 @@ fn local_summary<R: Rt, E: UserEvent>(
 
 /// The children an access summary walks: a kernel reads only through
 /// its feeders.
-fn access_children<'a, R: Rt, E: UserEvent>(
-    n: &'a Node<R, E>,
-    f: &mut dyn FnMut(&'a Node<R, E>),
-) {
+fn access_children<'a, R: Rt>(n: &'a Node<R>, f: &mut dyn FnMut(&'a Node<R>)) {
     match n.view() {
         NodeView::FusedKernel(k) => k.feeders().iter().for_each(f),
         _ => fusion::for_each_child(n, f),
@@ -1529,11 +1494,11 @@ fn access_children<'a, R: Rt, E: UserEvent>(
 }
 
 /// [`local_summary`] of `x` alone, its children aside.
-fn own_access<R: Rt, E: UserEvent>(
-    x: &Node<R, E>,
-    current: Option<&Node<R, E>>,
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn own_access<R: Rt>(
+    x: &Node<R>,
+    current: Option<&Node<R>>,
+    graph: &StaticCallGraph<'_, R>,
+    ctx: &CompileCtx<R>,
     detail: Detail,
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
@@ -1667,9 +1632,9 @@ fn own_access<R: Rt, E: UserEvent>(
 /// The summary of every instance `roots` reach: its body's reads and
 /// writes joined with its callees', less its own bindings (its formals and
 /// what its body binds), which only a fresh activation of it reaches.
-fn instance_summaries<R: Rt, E: UserEvent>(
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn instance_summaries<R: Rt>(
+    graph: &StaticCallGraph<'_, R>,
+    ctx: &CompileCtx<R>,
     detail: Detail,
     roots: impl IntoIterator<Item = LambdaInstanceId>,
 ) -> LPooled<IntMap<LambdaInstanceId, Summary>> {
@@ -1726,20 +1691,20 @@ fn instance_summaries<R: Rt, E: UserEvent>(
 /// dispatches to) no summary sees. A seq's abort and its machine are
 /// ordered: the abort fails the machine's guards through its handler,
 /// which no summary sees either.
-pub(crate) fn plan_block<R: Rt, E: UserEvent>(
-    children: &[Node<R, E>],
+pub(crate) fn plan_block<R: Rt>(
+    children: &[Node<R>],
     catches: &[usize],
-    ctx: &CompileCtx<R, E>,
+    ctx: &CompileCtx<R>,
 ) -> Box<[(u32, u32)]> {
     plan_block_explained(children, catches, ctx, &mut |_, _| ())
 }
 
 /// What each of `children` reads, writes and calls, its callees
 /// included, over `graph`, theirs.
-fn accesses<'a, R: Rt, E: UserEvent>(
-    children: impl Iterator<Item = &'a Node<R, E>>,
-    graph: &StaticCallGraph<'a, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn accesses<'a, R: Rt>(
+    children: impl Iterator<Item = &'a Node<R>>,
+    graph: &StaticCallGraph<'a, R>,
+    ctx: &CompileCtx<R>,
     detail: Detail,
     sites: Sites,
 ) -> LPooled<Vec<Summary>> {
@@ -1762,10 +1727,10 @@ pub(crate) enum Sites {
 }
 
 /// Each of `children`'s own reads, writes and calls, and its callees.
-fn local_summaries<'a, R: Rt, E: UserEvent>(
-    children: impl Iterator<Item = &'a Node<R, E>>,
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
+fn local_summaries<'a, R: Rt>(
+    children: impl Iterator<Item = &'a Node<R>>,
+    graph: &StaticCallGraph<'_, R>,
+    ctx: &CompileCtx<R>,
     detail: Detail,
     sites: Sites,
 ) -> LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> {
@@ -1804,10 +1769,7 @@ fn with_callees(
 /// instance holding it (an activation's call to the next one is not
 /// bound yet), and a warm start, whose callees are still imaged; and
 /// each would walk everything below it again.
-fn plan_forks<R: Rt, E: UserEvent>(
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
-) {
+fn plan_forks<R: Rt>(graph: &StaticCallGraph<'_, R>, ctx: &CompileCtx<R>) {
     let mut cx = ForkCx::new(graph, ctx);
     for (children, catches, runs) in graph.blocks.iter() {
         if runs.planned.get().is_some() {
@@ -1820,7 +1782,7 @@ fn plan_forks<R: Rt, E: UserEvent>(
         let plan = plan_runs(children, catches, &accesses, &mut |_, _| ());
         let _ = runs.planned.set(plan);
     }
-    let mut kids: SmallVec<[&Node<R, E>; 8]> = SmallVec::new();
+    let mut kids: SmallVec<[&Node<R>; 8]> = SmallVec::new();
     for (siblings, of) in graph.forks.iter() {
         kids.clear();
         of.collect(&mut kids);
@@ -1830,16 +1792,16 @@ fn plan_forks<R: Rt, E: UserEvent>(
 
 /// The instance summaries a [`plan_forks`] computes once, at each detail
 /// it needs, and each subtree's [`Shallow`] facts it needed.
-struct ForkCx<'g, 'a, R: Rt, E: UserEvent> {
-    graph: &'g StaticCallGraph<'a, R, E>,
-    ctx: &'g CompileCtx<R, E>,
+struct ForkCx<'g, 'a, R: Rt> {
+    graph: &'g StaticCallGraph<'a, R>,
+    ctx: &'g CompileCtx<R>,
     ids: Option<LPooled<IntMap<LambdaInstanceId, Summary>>>,
     flags: Option<LPooled<IntMap<LambdaInstanceId, Summary>>>,
     shallow: LPooled<AddrMap<Shallow>>,
 }
 
-impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {
-    fn new(graph: &'g StaticCallGraph<'a, R, E>, ctx: &'g CompileCtx<R, E>) -> Self {
+impl<'g, 'a, R: Rt> ForkCx<'g, 'a, R> {
+    fn new(graph: &'g StaticCallGraph<'a, R>, ctx: &'g CompileCtx<R>) -> Self {
         Self { graph, ctx, ids: None, flags: None, shallow: LPooled::take() }
     }
 
@@ -1856,7 +1818,7 @@ impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {
     }
 
     /// [`independent`] over the graph's summaries.
-    fn independent(&mut self, children: &[&'a Node<R, E>]) -> Option<bool> {
+    fn independent(&mut self, children: &[&'a Node<R>]) -> Option<bool> {
         if !two_work(children.iter().copied()) {
             return Some(true);
         }
@@ -1880,7 +1842,7 @@ impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {
 
     /// The [`Shallow`] facts of the subtree `n`, its callees included,
     /// each subtree's once.
-    fn shallow_of(&mut self, n: &'a Node<R, E>) -> Shallow {
+    fn shallow_of(&mut self, n: &'a Node<R>) -> Shallow {
         let key = ptr::from_ref(n) as usize;
         if let Some(s) = self.shallow.get(&key) {
             return *s;
@@ -1922,10 +1884,10 @@ impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {
 /// with arguments that each do performs only Io that follows its own
 /// formals. A native loop's pass, which runs under the kernel's one init
 /// view, then performs as the node-walk's fresh activation does.
-pub(crate) fn io_follows<R: Rt, E: UserEvent>(
-    body: &Node<R, E>,
+pub(crate) fn io_follows<R: Rt>(
+    body: &Node<R>,
     formals: &IntSet<BindId>,
-    ctx: &CompileCtx<R, E>,
+    ctx: &CompileCtx<R>,
     seen: &mut IntSet<LambdaInstanceId>,
 ) -> bool {
     unfollowed_io(body, formals, ctx, seen).is_none()
@@ -1933,10 +1895,10 @@ pub(crate) fn io_follows<R: Rt, E: UserEvent>(
 
 /// The first call in `body` that breaks [`io_follows`]: an Io call, or a
 /// call of a function performing Io that does not follow its formals.
-fn unfollowed_io<R: Rt, E: UserEvent>(
-    body: &Node<R, E>,
+fn unfollowed_io<R: Rt>(
+    body: &Node<R>,
     formals: &IntSet<BindId>,
-    ctx: &CompileCtx<R, E>,
+    ctx: &CompileCtx<R>,
     seen: &mut IntSet<LambdaInstanceId>,
 ) -> Option<Expr> {
     let mut first = None;
@@ -1964,10 +1926,7 @@ fn unfollowed_io<R: Rt, E: UserEvent>(
 /// Whether `n` fires whenever one of `ids` does: a read of one of them,
 /// or a part that reads one, a select through its scrutinee only. A
 /// constant does not, and neither, here, does a function's result.
-pub(crate) fn fires_with<R: Rt, E: UserEvent>(
-    n: &Node<R, E>,
-    ids: &IntSet<BindId>,
-) -> bool {
+pub(crate) fn fires_with<R: Rt>(n: &Node<R>, ids: &IntSet<BindId>) -> bool {
     crate::stack::ensure_sufficient(|| match n.view() {
         NodeView::Ref(r) => ids.contains(&r.id),
         NodeView::Constant(_) => false,
@@ -1988,7 +1947,7 @@ pub(crate) fn fires_with<R: Rt, E: UserEvent>(
 /// ids it binds, each module's signature bindings, and each reference's
 /// cell, which a reference (and a moving place its path) publishes in
 /// the cycle it fires for a later `*r` to read.
-fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
+fn publishes<R: Rt>(n: &Node<R>, published: &mut Vars) {
     let mut refs = Refs::without_callees();
     n.refs(&mut refs);
     refs.with_bound(|id| {
@@ -2015,9 +1974,9 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// one, to ask again once it is bound. A call site decides its arguments
 /// again at each bind (`CallSite::clear_prepared_bind`), a collection its
 /// slots once they are bound to a new callback (`update_slots`).
-pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
-    children: impl Iterator<Item = &'a Node<R, E>> + Clone,
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn independent<'a, R: Rt>(
+    children: impl Iterator<Item = &'a Node<R>> + Clone,
+    ctx: &CompileCtx<R>,
     sites: Sites,
 ) -> Option<bool> {
     if !two_work(children.clone()) {
@@ -2047,11 +2006,9 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
 /// Whether two of `children` are more than a constant or a variable
 /// read, which publish nothing and call nothing: beside at most one child
 /// that is, there is nothing to decide.
-pub(crate) fn two_work<'a, R: Rt, E: UserEvent>(
-    children: impl Iterator<Item = &'a Node<R, E>>,
-) -> bool {
+pub(crate) fn two_work<'a, R: Rt>(children: impl Iterator<Item = &'a Node<R>>) -> bool {
     let inert =
-        |n: &&Node<R, E>| matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
+        |n: &&Node<R>| matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
     children.filter(|n| !inert(n)).nth(1).is_some()
 }
 
@@ -2102,8 +2059,8 @@ fn shallow_verdict(siblings: &[Shallow]) -> Option<Option<bool>> {
 }
 
 /// The verdict on `children` from what each accesses.
-fn ids_verdict<'a, R: Rt, E: UserEvent>(
-    children: impl Iterator<Item = &'a Node<R, E>>,
+fn ids_verdict<'a, R: Rt>(
+    children: impl Iterator<Item = &'a Node<R>>,
     accesses: &[Summary],
 ) -> Option<bool> {
     let mut published = Vars::default();
@@ -2130,14 +2087,14 @@ fn unbound_or_dependent(unbound: bool) -> Option<bool> {
 
 /// What a fork point other than a block's runs as siblings.
 #[derive(Clone, Copy)]
-enum ForkKids<'a, R: Rt, E: UserEvent> {
-    Args(&'a CallSite<R, E>),
-    Nodes(&'a [Node<R, E>]),
-    Pair(&'a Node<R, E>, &'a Node<R, E>),
+enum ForkKids<'a, R: Rt> {
+    Args(&'a CallSite<R>),
+    Nodes(&'a [Node<R>]),
+    Pair(&'a Node<R>, &'a Node<R>),
 }
 
-impl<'a, R: Rt, E: UserEvent> ForkKids<'a, R, E> {
-    fn collect(&self, out: &mut SmallVec<[&'a Node<R, E>; 8]>) {
+impl<'a, R: Rt> ForkKids<'a, R> {
+    fn collect(&self, out: &mut SmallVec<[&'a Node<R>; 8]>) {
         match *self {
             Self::Args(cs) => {
                 out.extend(cs.args.values().filter_map(|a| a.node.as_ref()))
@@ -2150,9 +2107,7 @@ impl<'a, R: Rt, E: UserEvent> ForkKids<'a, R, E> {
 
 /// `n` as a fork point other than a block's: its siblings verdict and
 /// the children it decides it over.
-fn fork_point<'a, R: Rt, E: UserEvent>(
-    n: &'a Node<R, E>,
-) -> Option<(&'a Siblings, ForkKids<'a, R, E>)> {
+fn fork_point<'a, R: Rt>(n: &'a Node<R>) -> Option<(&'a Siblings, ForkKids<'a, R>)> {
     use NodeView as V;
     let (site, kids): (&ForkSite, _) = match n.view() {
         V::CallSite(cs) => (&cs.fork, ForkKids::Args(cs)),
@@ -2188,10 +2143,10 @@ pub(crate) enum RunBreak {
 
 /// [`plan_block`], telling `explain` each statement that starts a run
 /// after another, and why.
-pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
-    children: &[Node<R, E>],
+pub(crate) fn plan_block_explained<R: Rt>(
+    children: &[Node<R>],
     catches: &[usize],
-    ctx: &CompileCtx<R, E>,
+    ctx: &CompileCtx<R>,
     explain: &mut dyn FnMut(usize, RunBreak),
 ) -> Box<[(u32, u32)]> {
     let graph = collect_static_graph_of(children.iter());
@@ -2200,8 +2155,8 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
 }
 
 /// The runs of `children` given what each accesses.
-fn plan_runs<R: Rt, E: UserEvent>(
-    children: &[Node<R, E>],
+fn plan_runs<R: Rt>(
+    children: &[Node<R>],
     catches: &[usize],
     accesses: &[Summary],
     explain: &mut dyn FnMut(usize, RunBreak),
@@ -2267,10 +2222,7 @@ fn plan_runs<R: Rt, E: UserEvent>(
 /// since the last next-cycle boundary is still carrying there
 /// (`design/dependency_summaries.md` §3). A `seqq` capture of a variable
 /// some step writes is live (§4).
-fn plan_machines<R: Rt, E: UserEvent>(
-    graph: &StaticCallGraph<'_, R, E>,
-    ctx: &CompileCtx<R, E>,
-) {
+fn plan_machines<R: Rt>(graph: &StaticCallGraph<'_, R>, ctx: &CompileCtx<R>) {
     let StaticCallGraph { machines, captures, .. } = graph;
     if machines.is_empty() {
         return;
@@ -2388,7 +2340,7 @@ fn plan_machines<R: Rt, E: UserEvent>(
 
 /// Whether `n` is work to run beside something else: not a constant, a
 /// variable read, a function literal or a declaration.
-fn is_work<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
+fn is_work<R: Rt>(n: &Node<R>) -> bool {
     let n = match n.view() {
         NodeView::Bind(b) => &b.node,
         _ => n,
@@ -2405,12 +2357,12 @@ fn is_work<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
 
 /// Whether a fork point's siblings fork: two of them are work, and they
 /// are [`independent`].
-fn forks_two<'a, R: Rt, E: UserEvent>(
+fn forks_two<'a, R: Rt>(
     siblings: &Siblings,
-    of: ForkKids<'a, R, E>,
-    ctx: &CompileCtx<R, E>,
+    of: ForkKids<'a, R>,
+    ctx: &CompileCtx<R>,
 ) -> bool {
-    let mut kids: SmallVec<[&Node<R, E>; 8]> = SmallVec::new();
+    let mut kids: SmallVec<[&Node<R>; 8]> = SmallVec::new();
     of.collect(&mut kids);
     kids.iter().filter(|n| is_work(n)).nth(1).is_some()
         && match siblings.decided() {
@@ -2423,13 +2375,13 @@ fn forks_two<'a, R: Rt, E: UserEvent>(
 
 /// Whether a run of `runs` over `children` holds two statements that
 /// are work.
-fn runs_fork<R: Rt, E: UserEvent>(children: &[Node<R, E>], runs: &[(u32, u32)]) -> bool {
+fn runs_fork<R: Rt>(children: &[Node<R>], runs: &[(u32, u32)]) -> bool {
     runs.iter()
         .any(|&(a, z)| (a..z).filter(|i| is_work(&children[*i as usize])).count() >= 2)
 }
 
 /// The collection loop `n` is, or the one its call runs.
-fn collection_of<R: Rt, E: UserEvent>(n: &Node<R, E>) -> Option<&MapQBase<R, E>> {
+fn collection_of<R: Rt>(n: &Node<R>) -> Option<&MapQBase<R>> {
     match n.view() {
         NodeView::MapQ(m) => Some(m),
         NodeView::CallSite(cs) => match cs.resolved_apply() {
@@ -2445,7 +2397,7 @@ fn collection_of<R: Rt, E: UserEvent>(n: &Node<R, E>) -> Option<&MapQBase<R, E>>
 
 /// Whether a collection's slots may fork: two of them, which call one
 /// callback, are not known dependent.
-fn slots_fork<R: Rt, E: UserEvent>(m: &MapQBase<R, E>, ctx: &CompileCtx<R, E>) -> bool {
+fn slots_fork<R: Rt>(m: &MapQBase<R>, ctx: &CompileCtx<R>) -> bool {
     let slot = &m.prototype;
     independent([slot, slot].into_iter(), ctx, Sites::Slots) != Some(false)
 }
@@ -2455,10 +2407,10 @@ fn slots_fork<R: Rt, E: UserEvent>(m: &MapQBase<R, E>, ctx: &CompileCtx<R, E>) -
 /// a `let`'s value) needs a run of two statements, and the error names
 /// why its first break was made; anything else needs a fork point with
 /// two children that are more than a constant or a variable read.
-pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
+pub(crate) fn check_parallel<R: Rt>(
     spec: &crate::expr::Expr,
-    node: &Node<R, E>,
-    ctx: &CompileCtx<R, E>,
+    node: &Node<R>,
+    ctx: &CompileCtx<R>,
 ) -> Result<()> {
     let mut target = node;
     loop {

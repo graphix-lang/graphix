@@ -101,3 +101,4 @@ cc f3115ee3e8a6a8ecf7b48e0db6684697051c08d030d4e63373cc5e48f6f27c18 # shrinks to
 cc 8d8cc9a38e2fe1bd773ada3b4e9f52bd61fc8051627e9ca92797568f05e259e1
 cc a26d5f930c827d0307ddc27756b1a7770eda1b5cacd58d7718fc48be34a67a9c # shrinks to s = BinOp { op: Eq, lhs: ExplicitParens(Lambda(LambdaExpr { args: [], vargs: None, rtype: None, constraints: [], throws: None, body: Expr(Constant(I8(0))) })), rhs: Constant(I8(0)) }
 cc 1f5661ab2b48eb566a902124c5a3e53ab4a2380d62fc578d6ce74dad2a56b149 # shrinks to s = ArraySlice { source: OrNever(ExplicitParens(Lambda(LambdaExpr { args: [], vargs: None, rtype: None, constraints: [], throws: None, body: Expr(Constant(I8(0))) }))), start: None, end: None }
+cc 758d012c52819b20e4a17a2ec04c2d5dad2cff07a88a154971226381d14340fb # shrinks to s = OrNever(ExplicitParens(BinOp { op: Eq, lhs: Lambda(LambdaExpr { args: [], vargs: None, rtype: None, constraints: [], throws: None, body: Expr(Constant(I8(0))) }), rhs: Constant(I8(0)) }))

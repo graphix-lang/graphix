@@ -478,8 +478,7 @@ pub async fn compile_named_callable(
 }
 
 /// The state a test's setup closure is handed before the runtime starts.
-pub type TestState =
-    graphix_compiler::ExecState<GXRt<NoExt>, <NoExt as graphix_rt::GXExt>::UserEvent>;
+pub type TestState = graphix_compiler::ExecState<GXRt<NoExt>>;
 
 /// What every widget harness holds beside its widget tree: the runtime, the
 /// program `/test.gx` compiled as `test::result`, its update channel, the

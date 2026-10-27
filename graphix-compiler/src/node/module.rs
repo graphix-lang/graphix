@@ -1,6 +1,6 @@
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, PrintFlag, Refs, Rt, Saved,
-    Scope, Tag, TagValue, Update, UserEvent, View,
+    Scope, Tag, TagValue, Update, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -179,14 +179,14 @@ pub(crate) fn compile_use_items(
 
 /// Compile a `use` statement: every item registers in the namespace
 /// table; the graph gets a [`Nop`].
-pub(crate) fn compile_use<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn compile_use<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     spec: Arc<Expr>,
     scope: &Scope,
     reexport: bool,
     items: &Arc<[UseItem]>,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     compile_use_items(
         &mut ctx.env,
         &mut ctx.pending_imports,
@@ -448,10 +448,10 @@ fn check_impl_head(
 /// already, spliced into its body from the interface: the body's own
 /// definition of one is refused, but for a hidden type's, an abstract with
 /// the declared parameters.
-fn check_redefinition<R: Rt, E: UserEvent>(
+fn check_redefinition<R: Rt>(
     scope: &ModPath,
     si: &crate::expr::SigItem,
-    nodes: &[Node<R, E>],
+    nodes: &[Node<R>],
 ) -> Result<()> {
     // a spliced item shares the interface item's origin
     let own = |name: &dyn Fn(&ExprKind) -> bool| {
@@ -632,14 +632,14 @@ fn sig_binds(env: &Env, scope: &Scope) -> Map<CompactString, BindId> {
 /// Check the implementation against `sig`, adding the proxies it links;
 /// their references are recorded once every item matched, and a refused
 /// check adds none.
-fn check_sig<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn check_sig<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     top_id: ExprId,
     proxy: &mut Vec<Proxy>,
     scope: &Scope,
     sig: &Sig,
     sig_binds: &Map<CompactString, BindId>,
-    nodes: &[Node<R, E>],
+    nodes: &[Node<R>],
 ) -> Result<()> {
     let _profile = profile::phase(Phase::ModuleSignature);
     let first_proxy = proxy.len();
@@ -654,13 +654,13 @@ fn check_sig<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-fn check_sig_items<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn check_sig_items<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     proxy: &mut Vec<Proxy>,
     scope: &Scope,
     sig: &Sig,
     sig_binds: &Map<CompactString, BindId>,
-    nodes: &[Node<R, E>],
+    nodes: &[Node<R>],
 ) -> Result<()> {
     // the interface's types and traits first: a val's type names them
     let view = interface_env(&ctx.env, &scope.lexical, sig)?;
@@ -680,7 +680,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     // a name a later `let` shadows is not the one the interface exports
     let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
     for n in nodes {
-        if let Some(bind) = n.downcast_ref::<Bind<R, E>>() {
+        if let Some(bind) = n.downcast_ref::<Bind<R>>() {
             bind.pattern.ids(&mut |id| {
                 if let Some(b) = ctx.env.by_id.get(&id) {
                     effective.insert(b.name.clone(), id);
@@ -690,7 +690,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     }
     for n in nodes {
         let mut check_node = || -> Result<()> {
-            if let Some(bind) = n.downcast_ref::<Bind<R, E>>() {
+            if let Some(bind) = n.downcast_ref::<Bind<R>>() {
                 // every name the `let` binds, each with its own binding; a
                 // single name's type is the whole pattern's
                 let single = bind.pattern.single_bind_id();
@@ -740,7 +740,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                 let declared =
                     ctx.env.impl_entry(trait_id, &target)?.expect("bound by bind_sig");
                 let mut fulfilled = nodes.iter().filter_map(|n| {
-                    n.downcast_ref::<traits::Impl<R, E>>().filter(|i| {
+                    n.downcast_ref::<traits::Impl<R>>().filter(|i| {
                         i.fulfils.as_ref().is_some_and(|f| Arc::ptr_eq(&f.entry, &declared))
                     })
                 });
@@ -808,11 +808,11 @@ fn check_sig_items<R: Rt, E: UserEvent>(
 /// implemented, under the declared head; and the script's own types and
 /// traits agree with the declared ones, as a module's do (the
 /// interface's others were spliced into the script).
-pub fn check_script_sig<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub fn check_script_sig<R: Rt>(
+    ctx: &CompileCtx<R>,
     sig: &Sig,
     scope: &ModPath,
-    nodes: &[Node<R, E>],
+    nodes: &[Node<R>],
 ) -> Result<()> {
     let view = interface_env(&ctx.env, scope, sig)?;
     for si in sig.items.iter() {
@@ -906,20 +906,20 @@ static DYNAMIC_TYP: LazyLock<Type> = LazyLock::new(|| {
 
 /// Where a module's body comes from.
 #[derive(Debug)]
-enum Body<R: Rt, E: UserEvent> {
+enum Body<R: Rt> {
     /// Compiled with the program.
     Static,
     /// Loaded at run time from the text `source` produces. The load's
     /// signature check runs in `sig_env`: a dynamic module not exported
     /// from its parent would otherwise lose its bound signature.
-    Dynamic { source: Node<R, E>, sig_env: Env },
+    Dynamic { source: Node<R>, sig_env: Env },
 }
 
 #[derive(Debug)]
-pub struct Module<R: Rt, E: UserEvent> {
+pub struct Module<R: Rt> {
     spec: Arc<Expr>,
     flags: BitFlags<CFlag>,
-    body: Body<R, E>,
+    body: Body<R>,
     env: Env,
     /// The signature's bindings at the module's scope, which the check
     /// pairs with the body's: the env a statement checks under may not
@@ -929,7 +929,7 @@ pub struct Module<R: Rt, E: UserEvent> {
     sig: Sig,
     pub(crate) scope: Scope,
     proxy: Vec<Proxy>,
-    pub(crate) nodes: Box<[Node<R, E>]>,
+    pub(crate) nodes: Box<[Node<R>]>,
     /// catch-statement indices in `nodes` (see `Block::catches`).
     pub(crate) catches: Box<[usize]>,
     /// The statements as runs for forking, as a block's are.
@@ -943,11 +943,7 @@ pub struct Module<R: Rt, E: UserEvent> {
 
 /// Store a production for `id` as the binding that made it does, a
 /// bottom included.
-fn store_production<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    id: BindId,
-    tv: &TagValue,
-) {
+fn store_production<R: Rt>(ctx: &mut ExecCtx<'_, R>, id: BindId, tv: &TagValue) {
     let stored = match tv.is_bottom() {
         true => TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
         false => TagValue::fired(tv.value_cloned()),
@@ -955,11 +951,11 @@ fn store_production<R: Rt, E: UserEvent>(
     ctx.rt.store_insert(id, stored);
 }
 
-impl<R: Rt, E: UserEvent> Module<R, E> {
+impl<R: Rt> Module<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let flags = image::flags_decode(buf)?;
         let body = match u8::decode(buf)? {
@@ -1003,7 +999,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     pub(super) fn compile_dynamic(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         enclosing: &Scope,
@@ -1012,7 +1008,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         sig: Sig,
         source: Arc<Expr>,
         top_id: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         if let Some(si) =
             sig.items.iter().find(|si| matches!(si.kind, SigKind::Module(_)))
         {
@@ -1058,14 +1054,14 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     pub(super) fn compile_static(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         sig: Sig,
         exprs: Arc<[Expr]>,
         top_id: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let task = new_task();
         let _task = InTask::enter(task);
         let mut env = ctx.env.lexical();
@@ -1102,11 +1098,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     /// reaches. A loaded body is never fused, so no fusion pass
     /// reconciles its registry attributes. A failure leaves nothing it
     /// registered.
-    fn compile_source(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        text: ArcStr,
-    ) -> Result<()> {
+    fn compile_source(&mut self, ctx: &mut ExecCtx<'_, R>, text: ArcStr) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
         let exprs = add_interface_modules(parser::parse((*ori).clone())?, &self.sig);
         // `names` is a global registry: a recompile must scrub the
@@ -1151,11 +1143,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     /// Compile the body. A static body is checked with its module
     /// statement (`typecheck0`), a loaded one here.
-    fn compile_inner(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        exprs: &[Expr],
-    ) -> Result<()> {
+    fn compile_inner(&mut self, ctx: &mut CompileCtx<R>, exprs: &[Expr]) -> Result<()> {
         let flags = match self.body {
             Body::Static => self.flags,
             Body::Dynamic { .. } => self.flags | CFlag::NoBuiltins,
@@ -1195,7 +1183,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     /// Check the body's statements under the module's env, then the body
     /// against the signature.
-    fn check_body(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn check_body(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let _profile = profile::phase(Phase::ModuleCheck);
         let Self {
             env, nodes, catches, body, top_id, proxy, scope, sig, sig_binds, ..
@@ -1243,7 +1231,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     /// Map each signature `BindId` to its impl binding's `LambdaDef` so
     /// cross-module calls resolve statically.
-    pub(crate) fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R, E>) {
+    pub(crate) fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R>) {
         // a dynamic body's outer bindings are rebound at each load, so a
         // call through one dispatches dynamically
         if let Body::Dynamic { .. } = self.body {
@@ -1263,7 +1251,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     /// Run the children's `typecheck1` under the module's private env,
     /// its typedefs seeded there before (the check has ended) and after
     /// (for what elaboration defined), as the root's are.
-    fn typecheck1_nodes(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1_nodes(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let Self { env, nodes, catches, scope, .. } = self;
         let _module = profile::module(&scope.lexical);
         ctx.with_restored_mut(env, |ctx| {
@@ -1274,7 +1262,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         })
     }
 
-    fn clear_compiled(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn clear_compiled(&mut self, ctx: &mut ExecCtx<'_, R>) {
         for Proxy { inner, outer, .. } in self.proxy.drain(..) {
             ctx.unref_var(inner, self.top_id);
             ctx.unref_var(outer, self.top_id);
@@ -1286,7 +1274,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         })
     }
 
-    fn sleep_nodes(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep_nodes(&mut self, ctx: &mut ExecCtx<'_, R>) {
         ctx.with_restored_mut(&mut self.env, |ctx| {
             for n in &mut self.nodes {
                 n.sleep(ctx);
@@ -1295,12 +1283,12 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
+impl<R: Rt> Update<R> for Module<R> {
     /// A static body's statements take their definition's types, as a
     /// block's do; its signature is checked against them again.
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
         if let Body::Dynamic { .. } = self.body {
@@ -1319,14 +1307,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         Ok(())
     }
 
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         if let Body::Dynamic { source, .. } = &self.body {
             f(source)
         }
         self.nodes.iter().for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             f(source)
         }
@@ -1356,7 +1344,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let mut compiled = false;
         let mut primed: LPooled<Vec<BindId>> = LPooled::take();
         let mut src_tag = Tag::FIRED;
@@ -1477,14 +1465,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.delete(ctx);
         }
         self.clear_compiled(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.sleep(ctx);
         }
@@ -1502,7 +1490,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match &mut self.body {
             Body::Dynamic { source, .. } => {
                 wrap!(source, source.typecheck0(ctx))?;
@@ -1530,18 +1518,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if let Body::Dynamic { source, .. } = &mut self.body {
             wrap!(source, source.typecheck1(ctx))?;
         }
         self.typecheck1_nodes(ctx)
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
+    fn view(&self) -> crate::NodeView<'_, R> {
         crate::NodeView::Module(self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // A dynamic module's body compiles at run time (`compile_source`),
         // after fusion, and is never fused; its loader is not fused here.
         let _module = profile::module(&self.scope.lexical);
@@ -1555,8 +1543,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
 /// The bindings around `module` whose types hold what its check wrote,
 /// by position, for the refusal of its statement in `at`: each named
 /// with its file where that is not `at`'s.
-fn decided_binds<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn decided_binds<R: Rt>(
+    ctx: &CompileCtx<R>,
     module: &ModPath,
     at: &Origin,
     w: &ForeignWrite,

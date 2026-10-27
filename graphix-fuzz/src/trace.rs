@@ -11,7 +11,7 @@
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    BindId, NoUserEvent, abstract_value,
+    BindId, abstract_value,
     expr::ExprId,
     node::lambda::{DefOrigin, LambdaDef},
     reference, rep,
@@ -49,7 +49,7 @@ struct RunIds {
 fn is_handle(v: &Value) -> bool {
     matches!(v, Value::Abstract(_))
         && rep::marker_kind(v).is_none()
-        && v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>().is_none()
+        && v.downcast_ref::<LambdaDef<GXRt<NoExt>>>().is_none()
 }
 
 /// Fn values normalize to the lambda's printed source (`LambdaDef::src`)
@@ -108,7 +108,7 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
                 )))
             }
             Task::Visit(v) => {
-                out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>() {
+                out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>>>() {
                     Some(def) => match &def.origin {
                         DefOrigin::Source { spec, .. } => {
                             Value::String(ArcStr::from(spec.to_string()))

@@ -1,7 +1,6 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather, list, produce_constant};
 use crate::{
-    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent,
-    defetyp,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, defetyp,
     env::Env,
     err,
     expr::{Expr, ExprId},
@@ -81,30 +80,30 @@ pub(super) fn bind_element(cell: &Type, t: &Type) -> bool {
 
 /// An array index or slice bound: any integer. An open cell is narrowed
 /// to the integers, as an arithmetic operand is to the numbers.
-pub(super) fn check_index<R: Rt, E: UserEvent>(env: &Env, i: &Node<R, E>) -> Result<()> {
+pub(super) fn check_index<R: Rt>(env: &Env, i: &Node<R>) -> Result<()> {
     wrap!(i, super::op::constrain_operand(env, &Type::Primitive(Typ::integer()), i.typ()))
 }
 
 #[derive(Debug)]
-pub struct ArrayRef<R: Rt, E: UserEvent> {
+pub struct ArrayRef<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub source: Node<R, E>,
-    pub i: Node<R, E>,
+    pub source: Node<R>,
+    pub i: Node<R>,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub etyp: Type,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
+impl<R: Rt> ArrayRef<R> {
     fn with(
         spec: Arc<Expr>,
         typ: Type,
         etyp: Type,
-        source: Node<R, E>,
-        i: Node<R, E>,
-    ) -> Node<R, E> {
+        source: Node<R>,
+        i: Node<R>,
+    ) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
             source,
@@ -117,9 +116,9 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let source = decode_node(ctx, buf)?;
         let i = decode_node(ctx, buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
@@ -144,14 +143,14 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
         i: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let i = compile(ctx, flags, i.clone(), scope, top_id)?;
         let etyp = match &source.typ() {
@@ -250,13 +249,13 @@ pub(crate) fn array_slice(src: &Value, start: Option<i64>, end: Option<i64>) -> 
     v.unwrap_or_else(|| err!(ERR_TAG, "slice out of bounds"))
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for ArrayRef<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.source);
         f(&self.i)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source);
         f(&mut self.i)
     }
@@ -270,7 +269,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.etyp.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let s = self.source.update(ctx);
         let i = self.i.update(ctx);
         let tag = s.tag().join(i.tag());
@@ -294,17 +293,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         &self.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.source.sleep(ctx);
         self.i.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.source, &mut self.i], ctx)
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::ArrayRef(self)
     }
 
@@ -314,25 +313,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
 }
 
 #[derive(Debug)]
-pub struct ArraySlice<R: Rt, E: UserEvent> {
+pub struct ArraySlice<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub source: Node<R, E>,
-    pub start: Option<Node<R, E>>,
-    pub end: Option<Node<R, E>>,
+    pub source: Node<R>,
+    pub start: Option<Node<R>>,
+    pub end: Option<Node<R>>,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
+impl<R: Rt> ArraySlice<R> {
     fn with(
         spec: Arc<Expr>,
         typ: Type,
-        source: Node<R, E>,
-        start: Option<Node<R, E>>,
-        end: Option<Node<R, E>>,
-    ) -> Node<R, E> {
+        source: Node<R>,
+        start: Option<Node<R>>,
+        end: Option<Node<R>>,
+    ) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
             source,
@@ -345,9 +344,9 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let source = decode_node(ctx, buf)?;
         let start = opt_node_decode(ctx, buf)?;
         let end = opt_node_decode(ctx, buf)?;
@@ -357,7 +356,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
@@ -365,7 +364,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
         source: &Expr,
         start: &Option<Arc<Expr>>,
         end: &Option<Arc<Expr>>,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let start = start
             .as_ref()
@@ -380,13 +379,13 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for ArraySlice<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.source);
         self.start.iter().chain(self.end.iter()).for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source);
         self.start.iter_mut().chain(self.end.iter_mut()).for_each(f)
     }
@@ -400,7 +399,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         self.typ.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let s = self.source.update(ctx);
         let start = self.start.as_mut().map(|n| n.update(ctx));
         let end = self.end.as_mut().map(|n| n.update(ctx));
@@ -420,7 +419,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     // index needs no judging.
     super::typed_by_row!(source);
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.source.sleep(ctx);
         if let Some(start) = &mut self.start {
@@ -431,7 +430,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts(
             iter::once(&mut self.source)
                 .chain(self.start.as_mut())
@@ -448,7 +447,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::ArraySlice(self)
     }
 
@@ -470,14 +469,11 @@ pub trait SeqKind: Debug + Send + Sync + 'static {
 
     fn empty() -> Value;
 
-    fn view<R: Rt, E: UserEvent>(n: &SeqLit<R, E, Self>) -> NodeView<'_, R, E>
+    fn view<R: Rt>(n: &SeqLit<R, Self>) -> NodeView<'_, R>
     where
         Self: Sized;
 
-    fn emit<R: Rt, E: UserEvent>(
-        cx: &mut BodyCx,
-        n: &[Node<R, E>],
-    ) -> Result<CompiledExpr>;
+    fn emit<R: Rt>(cx: &mut BodyCx, n: &[Node<R>]) -> Result<CompiledExpr>;
 }
 
 #[derive(Debug)]
@@ -498,14 +494,11 @@ impl SeqKind for ArrayKind {
         Value::Array(ValArray::from([]))
     }
 
-    fn view<R: Rt, E: UserEvent>(n: &Array<R, E>) -> NodeView<'_, R, E> {
+    fn view<R: Rt>(n: &Array<R>) -> NodeView<'_, R> {
         NodeView::Array(n)
     }
 
-    fn emit<R: Rt, E: UserEvent>(
-        cx: &mut BodyCx,
-        n: &[Node<R, E>],
-    ) -> Result<CompiledExpr> {
+    fn emit<R: Rt>(cx: &mut BodyCx, n: &[Node<R>]) -> Result<CompiledExpr> {
         emit_seq_new_node(cx, None, n)
     }
 }
@@ -528,41 +521,38 @@ impl SeqKind for ListKind {
         list::nil()
     }
 
-    fn view<R: Rt, E: UserEvent>(n: &ListLit<R, E>) -> NodeView<'_, R, E> {
+    fn view<R: Rt>(n: &ListLit<R>) -> NodeView<'_, R> {
         NodeView::ListLit(n)
     }
 
-    fn emit<R: Rt, E: UserEvent>(
-        cx: &mut BodyCx,
-        n: &[Node<R, E>],
-    ) -> Result<CompiledExpr> {
+    fn emit<R: Rt>(cx: &mut BodyCx, n: &[Node<R>]) -> Result<CompiledExpr> {
         emit_list_new_node(cx, n)
     }
 }
 
-pub type Array<R, E> = SeqLit<R, E, ArrayKind>;
-pub type ListLit<R, E> = SeqLit<R, E, ListKind>;
+pub type Array<R> = SeqLit<R, ArrayKind>;
+pub type ListLit<R> = SeqLit<R, ListKind>;
 
 /// An array or list literal, `[a, b]` or `[<a, b>]`.
 #[derive(Debug)]
-pub struct SeqLit<R: Rt, E: UserEvent, K: SeqKind> {
+pub struct SeqLit<R: Rt, K: SeqKind> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub n: Box<[Node<R, E>]>,
+    pub n: Box<[Node<R>]>,
     resident: TagValue,
     kind: PhantomData<K>,
     pub(crate) fork: crate::cost::ForkSite,
 }
 
-impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
+impl<R: Rt, K: SeqKind> SeqLit<R, K> {
     fn with(
         spec: Arc<Expr>,
         typ: Type,
-        n: Box<[Node<R, E>]>,
+        n: Box<[Node<R>]>,
         fork: crate::cost::ForkSite,
-    ) -> Node<R, E> {
+    ) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -575,13 +565,13 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &Arc<[Expr]>,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = args
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
@@ -590,9 +580,9 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
@@ -600,12 +590,12 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
     }
 }
 
-impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt, K: SeqKind> Update<R> for SeqLit<R, K> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.n.iter().for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.n.iter_mut().for_each(f)
     }
 
@@ -617,7 +607,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         self.fork.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         if self.n.is_empty() {
             return produce_constant(ctx.event, &mut self.resident, K::empty);
         }
@@ -635,18 +625,18 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         &self.typ
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
     super::typed_by_row!();
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         K::view(self)
     }
 
@@ -655,11 +645,11 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
     }
 }
 
-impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
+impl<R: Rt> ArrayRef<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
@@ -679,11 +669,11 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
+impl<R: Rt> ArraySlice<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
@@ -706,11 +696,11 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
+impl<R: Rt, K: SeqKind> SeqLit<R, K> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         for n in &mut self.n {

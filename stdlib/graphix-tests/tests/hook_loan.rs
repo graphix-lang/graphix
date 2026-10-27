@@ -3,7 +3,7 @@
 // too, where the dispatch that ran it had a loan installed.
 
 use anyhow::Result;
-use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
+use graphix_compiler::{Effect, ExecCtx, Rt};
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, testing::eval_with_setup,
 };
@@ -14,11 +14,11 @@ struct Probe;
 
 graphix_package_core::unit_image_state!(Probe);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for Probe {
+impl<R: Rt> EvalCached<R> for Probe {
     const NAME: &str = "hook_loan_probe";
     const EFFECT: Effect = Effect::Stateless(None);
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         Some(Value::Bool(from.value(0)? == from.value(1)?))
     }
 }

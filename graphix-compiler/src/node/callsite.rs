@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, ResolvingLambda, Rt,
-    Scope, Tag, TagValue, Update, UserEvent, View, analysis, bailat, dbgenv, deref_typ,
+    Scope, Tag, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     format_with_flags,
@@ -70,8 +70,8 @@ use triomphe::Arc as TArc;
 /// Reject a direct call to a sync variadic builtin with no positional
 /// arguments (`str::concat()`, `sum()`): the node has no data inputs and
 /// can never fire. Only a direct `Ref` to the builtin is checkable.
-fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn reject_dead_variadic_call<R: Rt>(
+    ctx: &CompileCtx<R>,
     scope: &Scope,
     f: &Expr,
     args: &TArc<[(Option<ArcStr>, Expr)]>,
@@ -166,21 +166,21 @@ struct FnParams {
 /// The call's argument nodes, keyed for signature lookups and iterating
 /// in source order: the written arguments, then the defaults a bind
 /// added. A forked update merges its parts in that order.
-pub(crate) type ArgMap<R, E> = IndexMap<ArgKey, Arg<R, E>, ahash::RandomState>;
+pub(crate) type ArgMap<R> = IndexMap<ArgKey, Arg<R>, ahash::RandomState>;
 
 #[derive(Debug)]
-pub(crate) struct Arg<R: Rt, E: UserEvent> {
+pub(crate) struct Arg<R: Rt> {
     pub id: BindId,
-    pub node: Option<Node<R, E>>,
+    pub node: Option<Node<R>>,
     pub stage: ArgStage,
     /// The argument's expression, which a reference to it shows.
     pub spec: TArc<Expr>,
 }
 
-impl<R: Rt, E: UserEvent> Arg<R, E> {
+impl<R: Rt> Arg<R> {
     pub(crate) fn new(
         id: BindId,
-        node: Option<Node<R, E>>,
+        node: Option<Node<R>>,
         stage: ArgStage,
         spec: TArc<Expr>,
     ) -> Self {
@@ -221,18 +221,18 @@ impl ArgStage {
 /// own parameter, and then against the label of `value`, the function as
 /// the site holds it, which it narrows.
 #[allow(clippy::too_many_arguments)]
-fn checked_default<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn checked_default<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
-    f: &LambdaDef<R, E>,
+    f: &LambdaDef<R>,
     name: &ArcStr,
     expr: &Expr,
     defaults: &mut Refs,
     site: Option<&FnType>,
     value: Option<&FnType>,
-) -> Result<Node<R, E>> {
+) -> Result<Node<R>> {
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
@@ -268,8 +268,8 @@ fn checked_default<R: Rt, E: UserEvent>(
 
 /// The labeled defaults of the lambdas `value` may hold that `formal`
 /// hides or makes optional, each judged at `formal`'s view.
-fn judge_hidden_defaults<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn judge_hidden_defaults<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
@@ -278,8 +278,7 @@ fn judge_hidden_defaults<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     for id in value.lambda_ids.ids().iter() {
         let def = ctx.lambda_defs.get(id).cloned();
-        let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
-        else {
+        let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()) else {
             continue;
         };
         for (a, spec) in f.typ.args.iter().zip(f.argspec.iter()) {
@@ -325,8 +324,8 @@ pub(crate) enum Narrowing {
 /// member built by the value's constructor.
 /// What a call's formal, a `let`'s annotation, a `<-` target and a
 /// declared return type hold.
-pub(crate) fn check_hidden_defaults<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn check_hidden_defaults<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
@@ -370,8 +369,8 @@ fn may_hold_fn(t: &Type, seen: &mut AHashSet<usize>) -> bool {
 /// `t` outside any function type, through bindings: what
 /// [`hidden_defaults_at`] can judge. Each shared node is asked once
 /// (`seen`).
-fn holds_defaulted<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn holds_defaulted<R: Rt>(
+    ctx: &CompileCtx<R>,
     t: &Type,
     seen: &mut AHashSet<usize>,
 ) -> bool {
@@ -380,7 +379,7 @@ fn holds_defaulted<R: Rt, E: UserEvent>(
         Type::Fn(ft) => ft.lambda_ids.ids().iter().any(|id| {
             ctx.lambda_defs
                 .get(id)
-                .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+                .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
                 .is_some_and(|f| f.argspec.iter().any(|a| a.kind.default().is_some()))
         }),
         Type::TVar(tv) => tv.binding().is_some_and(|b| holds_defaulted(ctx, &b, seen)),
@@ -406,8 +405,8 @@ type Visited = AHashMap<(usize, usize), (Type, Type)>;
 /// holds the pairs of shared nodes walked already, so a type that shares
 /// a part is walked once per part.
 #[allow(clippy::too_many_arguments)]
-fn hidden_defaults_at<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn hidden_defaults_at<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
@@ -443,7 +442,7 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
             Entry::Vacant(e) => e.insert((d.clone(), v.clone())),
         };
     }
-    let mut at = |ctx: &mut CompileCtx<R, E>, d: &Type, v: &Type| {
+    let mut at = |ctx: &mut CompileCtx<R>, d: &Type, v: &Type| {
         hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded, visited)
     };
     ensure_sufficient(|| match (&d, &v) {
@@ -549,14 +548,14 @@ fn printed_deref(t: &Type) -> String {
     crate::format_with_flags(crate::PrintFlag::DerefTVars, || t.to_string())
 }
 
-fn compile_apply_args<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn compile_apply_args<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
     spec: &Expr,
     args: &TArc<[(Option<ArcStr>, Expr)]>,
-) -> Result<ArgMap<R, E>> {
+) -> Result<ArgMap<R>> {
     let mut res = ArgMap::default();
     for ((_, expr), key) in args.iter().zip(ArgKey::of_written(args)) {
         let arg_spec = ctx.shared_spec(expr.clone());
@@ -674,10 +673,7 @@ fn carries(env: &Env, t: &Type) -> bool {
 /// Fit a site's arguments to its signature: a placeholder for each
 /// defaulted label it omits; a missing or unknown label, or a wrong
 /// positional count, is refused.
-fn fill_omitted<R: Rt, E: UserEvent>(
-    args: &mut ArgMap<R, E>,
-    ftype: &FnType,
-) -> Result<()> {
+fn fill_omitted<R: Rt>(args: &mut ArgMap<R>, ftype: &FnType) -> Result<()> {
     for arg in ftype.args.iter() {
         if let FnArgKind::Labeled { name, has_default } = &arg.kind {
             match args.entry(ArgKey::Named(name.clone())) {
@@ -727,12 +723,12 @@ enum ArgFit {
 
 /// Check a call's argument node against its formal's type `typ`; an
 /// argument holding an undecided cell is [`ArgFit::Open`] when `waits`.
-fn typecheck_arg<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn typecheck_arg<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     typ: &Type,
     hint: Option<&Type>,
     waits: bool,
-    n: &mut Node<R, E>,
+    n: &mut Node<R>,
 ) -> Result<ArgFit> {
     // A reference instantiates its signature in its own typecheck0,
     // which must precede the pre-unify.
@@ -812,9 +808,9 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
 /// arguments of a copy of the site's, and whose result and throws fit
 /// the copy's, so a variable the site fixes through another parameter,
 /// its result or its throws fixes this one.
-fn callee_param<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
-    f: &LambdaDef<R, E>,
+fn callee_param<R: Rt>(
+    ctx: &CompileCtx<R>,
+    f: &LambdaDef<R>,
     name: &ArcStr,
     site: Option<&FnType>,
     gates: &mut LPooled<Vec<RigidGate>>,
@@ -1120,14 +1116,14 @@ impl Widening {
 
     /// The argument for `key` met `formal`: widen, wait, or the mismatch
     /// error.
-    fn fit<R: Rt, E: UserEvent>(
+    fn fit<R: Rt>(
         &mut self,
         env: &Env,
         def: &Type,
         inst: &FnType,
         key: &ArgKey,
         formal: &Type,
-        n: &Node<R, E>,
+        n: &Node<R>,
         fit: ArgFit,
     ) -> Result<()> {
         match fit {
@@ -1139,14 +1135,14 @@ impl Widening {
 
     /// The argument `n` for `key` did not fit `formal`: widen, defer, or
     /// the mismatch error.
-    fn misfit<R: Rt, E: UserEvent>(
+    fn misfit<R: Rt>(
         &mut self,
         env: &Env,
         def: &Type,
         inst: &FnType,
         key: &ArgKey,
         formal: &Type,
-        n: &Node<R, E>,
+        n: &Node<R>,
     ) -> Result<()> {
         let check = || wrap!(n, formal.check_contains(env, n.typ()));
         if !self.fresh || n.typ().has_unbound() {
@@ -1196,12 +1192,12 @@ impl Widening {
 }
 
 /// A `Ref` to `arg`'s id, typed and placed by its node, else by `typ`.
-fn arg_ref<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn arg_ref<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     top_id: ExprId,
-    arg: &Arg<R, E>,
+    arg: &Arg<R>,
     typ: &Type,
-) -> Node<R, E> {
+) -> Node<R> {
     let (typ, spec) = match &arg.node {
         Some(n) => (n.typ().clone(), arg.spec.clone()),
         None => (typ.clone(), NOP.clone()),
@@ -1211,17 +1207,17 @@ fn arg_ref<R: Rt, E: UserEvent>(
 
 /// What a [`CallSite`] knows about its callee.
 #[derive(Debug)]
-pub(crate) enum Callee<R: Rt, E: UserEvent> {
+pub(crate) enum Callee<R: Rt> {
     /// No callee bound yet. `fnode` is re-evaluated every cycle; the
     /// first cycle it yields a `LambdaDef`, `update()` binds.
     DynamicUnbound,
     /// Bound to a callee that may change cycle-to-cycle; `def` is kept
     /// for the per-cycle identity check against `fnode.update()`.
-    DynamicBound { def: Value, apply: Box<dyn Apply<R, E>> },
+    DynamicBound { def: Value, apply: Box<dyn Apply<R>> },
     /// `def`'s instance, built before the first dispatch
     /// ([`CallSite::prebind`]), which primes `defaults`, the outer
     /// variables the defaults it compiled read, and binds it.
-    Prebound { def: Value, apply: Box<dyn Apply<R, E>>, defaults: SmallVec<[BindId; 2]> },
+    Prebound { def: Value, apply: Box<dyn Apply<R>>, defaults: SmallVec<[BindId; 2]> },
     /// Binding `def` failed: the call is bottom until `fnode` yields
     /// another definition.
     Failed { def: Value },
@@ -1231,7 +1227,7 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// instance's first dispatch: it keeps every quiet production,
     /// delivers its arguments and defaults fired and dispatches under
     /// `View::Birth`.
-    Static { apply: Box<dyn Apply<R, E>>, first_update: bool },
+    Static { apply: Box<dyn Apply<R>>, first_update: bool },
     /// A statically bound instance the image holds in its heap, decoded
     /// by the first dispatch; `refs` is the body's summary until then,
     /// whose reads the site holds registered while it is imaged.
@@ -1296,8 +1292,8 @@ pub(crate) struct StaticCallTarget {
     pub ftype: TArc<FnType>,
 }
 
-impl<R: Rt, E: UserEvent> Callee<R, E> {
-    fn apply(&self) -> Option<&dyn Apply<R, E>> {
+impl<R: Rt> Callee<R> {
+    fn apply(&self) -> Option<&dyn Apply<R>> {
         match self {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
                 None
@@ -1308,7 +1304,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
         }
     }
 
-    pub(crate) fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R, E> + 'static)> {
+    pub(crate) fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R> + 'static)> {
         match self {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
                 None
@@ -1321,7 +1317,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 
     /// Reset to `DynamicUnbound`, returning the bound apply for deletion;
     /// an imaged instance has nothing to delete and stays imaged.
-    fn take_apply(&mut self) -> Option<Box<dyn Apply<R, E>>> {
+    fn take_apply(&mut self) -> Option<Box<dyn Apply<R>>> {
         if matches!(self, Callee::Imaged { .. }) {
             return None;
         }
@@ -1337,15 +1333,15 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 }
 
 #[derive(Debug)]
-pub struct CallSite<R: Rt, E: UserEvent> {
+pub struct CallSite<R: Rt> {
     pub(super) slept: WakeBit,
     pub(super) spec: TArc<Expr>,
     pub(super) ftype: Option<TArc<FnType>>,
     pub(super) rtype: Type,
-    pub(crate) fnode: Node<R, E>,
-    pub(crate) args: ArgMap<R, E>,
-    pub(super) arg_refs: Vec<Node<R, E>>,
-    pub(crate) callee: Callee<R, E>,
+    pub(crate) fnode: Node<R>,
+    pub(crate) args: ArgMap<R>,
+    pub(super) arg_refs: Vec<Node<R>>,
+    pub(crate) callee: Callee<R>,
     pub(crate) static_target: Option<StaticCallTarget>,
     pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
@@ -1366,15 +1362,15 @@ pub struct CallSite<R: Rt, E: UserEvent> {
 /// The registered builtin a site calls by name: its function is a
 /// binding the index resolves to a builtin's definition, or one bound to
 /// the builtin directly.
-pub(crate) fn static_builtin<'a, R: Rt, E: UserEvent>(
-    ctx: &'a CompileCtx<R, E>,
-    cs: &CallSite<R, E>,
+pub(crate) fn static_builtin<'a, R: Rt>(
+    ctx: &'a CompileCtx<R>,
+    cs: &CallSite<R>,
 ) -> Option<&'a ArcStr> {
     let NodeView::Ref(r) = cs.fnode().view() else { return None };
     if let Some(d) = ctx
         .bind_to_lambda
         .get(&r.id)
-        .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
+        .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R>>())
     {
         return d.builtin_name();
     }
@@ -1382,15 +1378,15 @@ pub(crate) fn static_builtin<'a, R: Rt, E: UserEvent>(
     ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone())).map(|i| &i.name)
 }
 
-impl<R: Rt, E: UserEvent> CallSite<R, E> {
+impl<R: Rt> CallSite<R> {
     /// An unbound site over compiled parts; `ftype` is `None` until
     /// `typecheck0` instantiates it.
     pub(crate) fn unbound(
         spec: TArc<Expr>,
         ftype: Option<FnType>,
         rtype: Type,
-        fnode: Node<R, E>,
-        args: ArgMap<R, E>,
+        fnode: Node<R>,
+        args: ArgMap<R>,
         scope: Scope,
         flags: BitFlags<CFlag>,
         top_id: ExprId,
@@ -1457,12 +1453,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Look up a positional argument's compiled sub-Node.
-    pub fn arg_positional(&self, idx: usize) -> Option<&Node<R, E>> {
+    pub fn arg_positional(&self, idx: usize) -> Option<&Node<R>> {
         self.arg(&ArgKey::Positional(idx))
     }
 
     /// Every argument the call wrote, compiled.
-    pub(crate) fn arg_nodes(&self) -> impl Iterator<Item = &Node<R, E>> {
+    pub(crate) fn arg_nodes(&self) -> impl Iterator<Item = &Node<R>> {
         self.args.values().filter_map(|a| a.node.as_ref())
     }
 
@@ -1473,9 +1469,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// raises reach a handler.
     pub(crate) fn update_order(
         &self,
-        nodes: &[Option<&Node<R, E>>],
+        nodes: &[Option<&Node<R>>],
     ) -> SmallVec<[usize; 12]> {
-        let rank = |n: Option<&Node<R, E>>| {
+        let rank = |n: Option<&Node<R>>| {
             n.and_then(|n| self.arg_nodes().position(|a| std::ptr::eq(a, n)))
                 .unwrap_or(usize::MAX)
         };
@@ -1485,35 +1481,35 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Look up a labeled argument's compiled sub-Node.
-    pub fn arg_named(&self, name: &ArcStr) -> Option<&Node<R, E>> {
+    pub fn arg_named(&self, name: &ArcStr) -> Option<&Node<R>> {
         self.arg(&ArgKey::Named(name.clone()))
     }
 
-    fn arg(&self, key: &ArgKey) -> Option<&Node<R, E>> {
+    fn arg(&self, key: &ArgKey) -> Option<&Node<R>> {
         self.args.get(key).and_then(|a| a.node.as_ref())
     }
 
     /// The function expression's compiled Node.
-    pub fn fnode(&self) -> &Node<R, E> {
+    pub fn fnode(&self) -> &Node<R> {
         &self.fnode
     }
 
     /// View the [`Apply`] this CallSite is bound to; `None` until a
     /// runtime bind or `try_static_resolve` has populated `self.callee`.
-    pub fn resolved_apply(&self) -> Option<ApplyView<'_, R, E>> {
+    pub fn resolved_apply(&self) -> Option<ApplyView<'_, R>> {
         self.callee.apply().map(|a| a.view())
     }
 
     /// The call `spec` compiled: its function and arguments, unbound.
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: TArc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &TArc<[(Option<ArcStr>, Expr)]>,
         f: &TArc<Expr>,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         reject_dead_variadic_call(ctx, scope, f, args).at(&spec)?;
         // a call's function is compiled as written: a trait method named
         // here is the dispatcher itself, never its eta-expansion
@@ -1535,7 +1531,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(Node::new(CallNode::Call(site)))
     }
 
-    fn clear_prepared_bind(&mut self, ctx: &mut CompileCtx<R, E>) {
+    fn clear_prepared_bind(&mut self, ctx: &mut CompileCtx<R>) {
         if let Some(apply) = self.callee.take_apply() {
             ctx.discard_apply(apply);
         }
@@ -1561,10 +1557,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// defaults it omits; `defaults` collects what those read.
     fn prepare_bind(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
-        f: &LambdaDef<R, E>,
+        f: &LambdaDef<R>,
         defaults: &mut Refs,
     ) -> Result<()> {
         let mut flags = flags;
@@ -1611,14 +1607,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// instantiates it.
     fn checked_default(
         &self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         scope: &Scope,
-        f: &LambdaDef<R, E>,
+        f: &LambdaDef<R>,
         name: &ArcStr,
         expr: &Expr,
         defaults: &mut Refs,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let entered = ctx.enter_default(f.id, name);
         let node = checked_default(
             ctx,
@@ -1644,7 +1640,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// the parameter as the formal instantiates it.
     fn check_value_defaults(
         &self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         ftype: &FnType,
     ) -> Result<()> {
         let mut flags = self.flags;
@@ -1673,7 +1669,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// catch, `check` judges it an unhandled error.
     fn raise_throws(
         &self,
-        ctx: &CompileCtx<R, E>,
+        ctx: &CompileCtx<R>,
         ftype: &FnType,
         check: bool,
     ) -> Result<()> {
@@ -1693,7 +1689,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Some(h) => join_raised(&ctx.env, &h, &t),
             // it doesn't throw any errors
             None if t == Type::Bottom || !check => Ok(()),
-            None => Qop::<R, E>::check_unhandled(
+            None => Qop::<R>::check_unhandled(
                 &ctx.env,
                 self.flags,
                 &self.spec,
@@ -1708,7 +1704,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// labels whose default can carry a value of a cell its type holds.
     fn check_omitted_defaults(
         &self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         ftype: &FnType,
         carriers: &mut SmallVec<[ArcStr; 2]>,
     ) -> Result<bool> {
@@ -1736,7 +1732,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let mut known = !defs.is_empty();
         for def in defs.iter() {
-            let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+            let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
             else {
                 known = false;
                 continue;
@@ -1806,11 +1802,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn init_prepared_bind(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
-        f: &LambdaDef<R, E>,
+        f: &LambdaDef<R>,
         mode: BindMode<'_>,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)
     }
 
@@ -1818,11 +1814,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// variables the defaults it compiled read.
     fn setup_dynamic_bind(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
-        f: &LambdaDef<R, E>,
-    ) -> Result<(Box<dyn Apply<R, E>>, SmallVec<[BindId; 2]>, FnParams)> {
+        f: &LambdaDef<R>,
+    ) -> Result<(Box<dyn Apply<R>>, SmallVec<[BindId; 2]>, FnParams)> {
         let mut refs = Refs::default();
         self.prepare_bind(ctx, scope, flags, f, &mut refs)?;
         let mut defaults = SmallVec::new();
@@ -1848,8 +1844,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// Elaborate the omitted defaults in `env`, their definition's.
     fn typecheck_static_defaults(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        def: &LambdaDef<R, E>,
+        ctx: &mut CompileCtx<R>,
+        def: &LambdaDef<R>,
     ) -> Result<()> {
         ctx.with_restored(def.env.clone(), |ctx| {
             for (key, arg) in self.args.iter_mut() {
@@ -1918,10 +1914,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// The resolution half of `typecheck1`, run under the caller's cell
     /// protection so it unwinds on every error path.
-    fn typecheck1_resolve(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    fn typecheck1_resolve(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         if let Some(lowered) = self.try_static_resolve(ctx)? {
             return Ok(Some(lowered));
         }
@@ -1931,11 +1924,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn setup_static_bind(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
-        f: &LambdaDef<R, E>,
-    ) -> Result<(Box<dyn Apply<R, E>>, FnType)> {
+        f: &LambdaDef<R>,
+    ) -> Result<(Box<dyn Apply<R>>, FnType)> {
         let _profile = profile::phase(Phase::StaticBind);
         self.prepare_bind(ctx, scope, flags, f, &mut Refs::default())?;
         if self.ftype.is_none() {
@@ -1991,9 +1984,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn bind(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         fv: Value,
-        f: &LambdaDef<R, E>,
+        f: &LambdaDef<R>,
         set: &mut Published,
     ) -> Result<()> {
         // the previous binding leaves in a batch of its own, so the build's
@@ -2020,13 +2013,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// Build this site's instance of the slot callee its function is the
     /// constant of, in the compile task `ctx`, ahead of its first
     /// dispatch. A no-op for any other site.
-    pub(crate) fn prebind(&mut self, ctx: &mut CompileCtx<R, E>) {
+    pub(crate) fn prebind(&mut self, ctx: &mut CompileCtx<R>) {
         if !matches!(self.callee, Callee::DynamicUnbound) {
             return;
         }
         let NodeView::Constant(c) = self.fnode.view() else { return };
         let fv = c.value.clone();
-        let Some(f) = fv.downcast_ref::<LambdaDef<R, E>>() else { return };
+        let Some(f) = fv.downcast_ref::<LambdaDef<R>>() else { return };
         if !ctx.lambda_defs.contains_key(&f.id) {
             return;
         }
@@ -2055,9 +2048,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// for [`Self::prime_bound`].
     fn build_bound(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         fv: Value,
-        f: &LambdaDef<R, E>,
+        f: &LambdaDef<R>,
     ) -> Result<SmallVec<[BindId; 2]>> {
         let _bind_span = perfdbg::span(&perfdbg::BIND_NS);
         if perfdbg::enabled() {
@@ -2088,10 +2081,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// leaving it `DynamicBound`.
     fn elaborate_bound(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         fv: Value,
-        f: &LambdaDef<R, E>,
-        apply: Box<dyn Apply<R, E>>,
+        f: &LambdaDef<R>,
+        apply: Box<dyn Apply<R>>,
     ) -> Result<()> {
         // its defaults are elaborated as a static bind's are: trait
         // dispatch resolves in typecheck1
@@ -2167,7 +2160,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// the first time, under the init view.
     fn prime_bound(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         defaults: &[BindId],
         set: &mut Published,
     ) {
@@ -2198,8 +2191,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// time, replacing the lazy bind `update()` would run. Idempotent.
     pub fn resolve_static(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        def: &LambdaDef<R, E>,
+        ctx: &mut CompileCtx<R>,
+        def: &LambdaDef<R>,
     ) -> Result<()> {
         if matches!(self.callee, Callee::Static { .. }) || self.static_target.is_some() {
             return Ok(());
@@ -2217,8 +2210,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// defaults.
     fn resolve_static_entered(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        def: &LambdaDef<R, E>,
+        ctx: &mut CompileCtx<R>,
+        def: &LambdaDef<R>,
     ) -> Result<()> {
         // A site reached while an instantiation with the same fn-arg
         // identity is resolving is a self-call and shares that instance;
@@ -2249,7 +2242,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// The labels of `def` with a default this site does not pass.
-    fn omitted_labels(&self, def: &LambdaDef<R, E>) -> SmallVec<[ArcStr; 2]> {
+    fn omitted_labels(&self, def: &LambdaDef<R>) -> SmallVec<[ArcStr; 2]> {
         def.typ
             .args
             .iter()
@@ -2269,8 +2262,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// identity is `identity`, in the compile task `ctx`.
     fn bind_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        def: &LambdaDef<R, E>,
+        ctx: &mut CompileCtx<R>,
+        def: &LambdaDef<R>,
         identity: FnArgIdentity,
     ) -> Result<()> {
         let scope = self.scope.clone();
@@ -2355,10 +2348,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// known `LambdaDef` (a `Ref` to a non-`<-`-target lambda binding, or a
     /// lambda literal), or dispatch a trait method by its self type.
     /// No-op for dynamic call sites.
-    fn try_static_resolve(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    fn try_static_resolve(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         if matches!(self.callee, Callee::Static { .. }) {
             return Ok(None);
         }
@@ -2399,7 +2389,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 return Ok(None);
             }
         };
-        let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
+        let Some(def) = fv.downcast_ref::<LambdaDef<R>>() else {
             return Ok(None);
         };
         self.resolve_static(ctx, def).map(|()| None)
@@ -2410,7 +2400,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// its own source; a `Ref` goes through `bind_to_lambda`; a `<-`
     /// target is dynamic). A default is the definition's, not the site's,
     /// so it is left out wherever the bind has got to.
-    fn fn_arg_identity(&self, ctx: &CompileCtx<R, E>) -> FnArgIdentity {
+    fn fn_arg_identity(&self, ctx: &CompileCtx<R>) -> FnArgIdentity {
         let mut identity: FnArgIdentity = self
             .args
             .iter()
@@ -2421,7 +2411,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
                         .bind_to_lambda
                         .get(&r.id)
-                        .and_then(|fv| fv.downcast_ref::<LambdaDef<R, E>>())
+                        .and_then(|fv| fv.downcast_ref::<LambdaDef<R>>())
                         .map(|def| def.source),
                     _ => None,
                 });
@@ -2438,8 +2428,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// in one pass.
     fn register_fn_params(
         &self,
-        ctx: &mut CompileCtx<R, E>,
-        apply: &dyn Apply<R, E>,
+        ctx: &mut CompileCtx<R>,
+        apply: &dyn Apply<R>,
         ftype: &FnType,
         lid: LambdaId,
     ) -> FnParams {
@@ -2464,7 +2454,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             match arg_node.view() {
                 _ if let Some(l) = lambda_literal(arg_node) => {
                     let fv = l.def_value().clone();
-                    if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
+                    if let Some(def) = fv.downcast_ref::<LambdaDef<R>>() {
                         ctx.fn_forward_resolutions.insert(id, def.id);
                     }
                     ctx.bind_to_lambda.insert(id, fv);
@@ -2476,7 +2466,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                     if let Some(fv) = ctx.bind_to_lambda.get(&r.id).cloned() {
                         ctx.record_static_callee(r.id, &self.spec);
-                        if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
+                        if let Some(def) = fv.downcast_ref::<LambdaDef<R>>() {
                             ctx.fn_forward_resolutions.insert(id, def.id);
                         }
                         ctx.bind_to_lambda.insert(id, fv);
@@ -2491,7 +2481,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// Undo [`Self::register_fn_params`]; the `fn_forward_resolutions`
     /// snapshot stays for the kernel cache fingerprint.
-    fn unregister_fn_params(ctx: &mut CompileCtx<R, E>, mut params: FnParams) {
+    fn unregister_fn_params(ctx: &mut CompileCtx<R>, mut params: FnParams) {
         for id in params.binds.drain(..) {
             ctx.bind_to_lambda.remove(&id);
         }
@@ -2513,14 +2503,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     pub(super) fn take_operands(
         &mut self,
         self_key: Option<&ArgKey>,
-    ) -> Result<(
-        LPooled<Vec<(ArcStr, Node<R, E>)>>,
-        LPooled<Vec<(Option<ArcStr>, ArcStr)>>,
-    )> {
+    ) -> Result<(LPooled<Vec<(ArcStr, Node<R>)>>, LPooled<Vec<(Option<ArcStr>, ArcStr)>>)>
+    {
         let ExprKind::Apply(ApplyExpr { args, .. }) = &self.spec.kind else {
             bail!("call site without an apply spec: {}", self.spec)
         };
-        let mut operands: LPooled<Vec<(ArcStr, Node<R, E>)>> = LPooled::take();
+        let mut operands: LPooled<Vec<(ArcStr, Node<R>)>> = LPooled::take();
         let mut names: LPooled<Vec<(Option<ArcStr>, ArcStr)>> = LPooled::take();
         for (i, ((label, _), key)) in
             args.iter().zip(ArgKey::of_written(args)).enumerate()
@@ -2544,9 +2532,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// nodes are discarded.
     pub(super) fn lowering(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        node: Node<R, E>,
-    ) -> Result<Node<R, E>> {
+        ctx: &mut CompileCtx<R>,
+        node: Node<R>,
+    ) -> Result<Node<R>> {
         wrap!(node, self.rtype.check_contains(&ctx.env, node.typ()))?;
         for arg in self.args.values_mut() {
             if let Some(n) = arg.node.take() {
@@ -2562,7 +2550,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Re-point this call's function node at binding `bind`.
-    pub(super) fn retarget(&mut self, ctx: &mut CompileCtx<R, E>, bind: BindId) {
+    pub(super) fn retarget(&mut self, ctx: &mut CompileCtx<R>, bind: BindId) {
         let typ = ctx
             .env
             .by_id
@@ -2579,8 +2567,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> CallSite<R, E> {
-    fn update_call(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+impl<R: Rt> CallSite<R> {
+    fn update_call(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         if woke
             && ctx.event.born()
@@ -2743,7 +2731,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// whose bind failed; true when a fresh callee was bound.
     fn rebind(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         v: Value,
         set: &mut Published,
     ) -> bool {
@@ -2775,7 +2763,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if same {
             return false;
         }
-        let Some(lb) = v.downcast_ref::<LambdaDef<R, E>>() else {
+        let Some(lb) = v.downcast_ref::<LambdaDef<R>>() else {
             panic!("value {v:?} is not a function")
         };
         match self.bind(ctx, v.clone(), lb, set) {
@@ -2798,7 +2786,7 @@ const CALLEE_UNBOUND: u8 = 0;
 const CALLEE_INSTANCE: u8 = 1;
 const CALLEE_BUILTIN: u8 = 2;
 
-impl<R: Rt, E: UserEvent> Arg<R, E> {
+impl<R: Rt> Arg<R> {
     fn image_encode(&self, key: &ArgKey, buf: &mut ImageBuf) -> Result<(), PackError> {
         key.encode(buf)?;
         self.id.encode(buf)?;
@@ -2813,7 +2801,7 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<(ArgKey, Self), PackError> {
         let key = ArgKey::decode(buf)?;
@@ -2850,7 +2838,7 @@ impl RefsSummary {
     }
 }
 
-impl<R: Rt, E: UserEvent> CallSite<R, E> {
+impl<R: Rt> CallSite<R> {
     fn callee_mode(&self) -> Result<u8, PackError> {
         match &self.callee {
             Callee::DynamicUnbound => Ok(CALLEE_UNBOUND),
@@ -2868,7 +2856,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// Record what `apply`'s body reads, its callees by instance, once
     /// per instance however many sites write it.
-    fn record_instance_refs(apply: &dyn Apply<R, E>) -> Result<(), PackError> {
+    fn record_instance_refs(apply: &dyn Apply<R>) -> Result<(), PackError> {
         let ApplyView::Lambda(g) = apply.view() else {
             return Err(PackError::Application(image::NOT_IMAGED));
         };
@@ -2892,7 +2880,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Release what this site registered for an imaged tree.
-    fn release_held(&self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn release_held(&self, ctx: &mut ExecCtx<'_, R>) {
         if let Callee::Imaged { instance, refs, .. } = &self.callee {
             for id in refs.flat(*instance).refed.iter() {
                 ctx.unref_var(*id, self.top_id)
@@ -2901,7 +2889,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Decode the instance the image holds for this site and bind it.
-    fn materialize(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<()> {
+    fn materialize(&mut self, ctx: &mut ExecCtx<'_, R>) -> Result<()> {
         let Callee::Imaged { instance, .. } = &self.callee else { return Ok(()) };
         let instance = *instance;
         let shared =
@@ -2935,7 +2923,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         });
         drop(dec);
-        let apply: Box<dyn Apply<R, E>> = match decoded {
+        let apply: Box<dyn Apply<R>> = match decoded {
             Ok(g) => {
                 ctx.apply_deferred();
                 self.release_held(ctx);
@@ -2957,9 +2945,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = TArc::new(Expr::decode(buf)?);
         let ftype = Option::<FnType>::decode(buf)?;
         let rtype = Type::decode(buf)?;
@@ -2979,7 +2967,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 let arg_refs = decode_nodes(ctx, buf)?;
                 let callee = match bool::decode(buf)? {
                     false => {
-                        let apply: Box<dyn Apply<R, E>> =
+                        let apply: Box<dyn Apply<R>> =
                             Box::new(GXLambda::image_decode(ctx, buf)?);
                         Callee::Static { apply, first_update: bool::decode(buf)? }
                     }
@@ -2998,7 +2986,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             CALLEE_BUILTIN => {
                 let arg_refs = decode_nodes(ctx, buf)?;
-                let apply: Box<dyn Apply<R, E>> =
+                let apply: Box<dyn Apply<R>> =
                     Box::new(BuiltInLambda::image_decode(ctx, &arg_refs, buf)?);
                 (arg_refs, Callee::Static { apply, first_update: bool::decode(buf)? })
             }
@@ -3066,16 +3054,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 /// trait call over a union self, a self never produced), the node that
 /// stands for it, with no call parts left to reach.
 #[derive(Debug)]
-pub(crate) enum CallNode<R: Rt, E: UserEvent> {
-    Call(CallSite<R, E>),
+pub(crate) enum CallNode<R: Rt> {
+    Call(CallSite<R>),
     /// The call's lowering, under the call's own spec: errors and the
     /// attribute walk name the user's call.
-    Lowered(Node<R, E>, TArc<Expr>),
+    Lowered(Node<R>, TArc<Expr>),
 }
 
-impl<R: Rt, E: UserEvent> CallNode<R, E> {
+impl<R: Rt> CallNode<R> {
     /// The call, unless it was lowered.
-    pub(crate) fn call_mut(&mut self) -> Option<&mut CallSite<R, E>> {
+    pub(crate) fn call_mut(&mut self) -> Option<&mut CallSite<R>> {
         match self {
             Self::Call(c) => Some(c),
             Self::Lowered(..) => None,
@@ -3083,8 +3071,8 @@ impl<R: Rt, E: UserEvent> CallNode<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for CallNode<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         match self {
             Self::Call(c) => {
                 c.args.values().filter_map(|a| a.node.as_ref()).for_each(&mut *f);
@@ -3094,7 +3082,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         }
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         match self {
             Self::Call(c) => {
                 c.args.values_mut().filter_map(|a| a.node.as_mut()).for_each(&mut *f);
@@ -3112,21 +3100,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         }
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         match self {
             Self::Call(c) => c.update(ctx),
             Self::Lowered(n, _) => n.update(ctx),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         match self {
             Self::Call(c) => c.delete(ctx),
             Self::Lowered(n, _) => n.delete(ctx),
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         match self {
             Self::Call(c) => c.sleep(ctx),
             Self::Lowered(n, _) => n.sleep(ctx),
@@ -3147,7 +3135,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match self {
             Self::Call(c) => c.typecheck0(ctx),
             Self::Lowered(n, _) => n.typecheck0(ctx),
@@ -3156,7 +3144,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut InstanceTypes,
     ) -> Result<()> {
         match self {
@@ -3166,7 +3154,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         }
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match self {
             Self::Call(c) => {
                 if let Some(lowered) = c.typecheck1(ctx)? {
@@ -3186,14 +3174,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         }
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         match self {
             Self::Call(c) => c.view(),
             Self::Lowered(n, _) => n.view(),
         }
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         match self {
             Self::Call(c) => c.fuse(ctx),
             Self::Lowered(n, _) => n.fuse(ctx),
@@ -3209,7 +3197,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
 }
 
 /// The call's half of [`CallNode`]'s `Update`.
-impl<R: Rt, E: UserEvent> CallSite<R, E> {
+impl<R: Rt> CallSite<R> {
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let mode = self.callee_mode()?;
         put_tag(NodeTag::CallSite, buf);
@@ -3239,8 +3227,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     Self::record_instance_refs(&**apply)?;
                     // The session borrows every node it encodes for its
                     // whole length; the heap is written before it ends.
-                    let body: &'static dyn Apply<R, E> =
-                        unsafe { mem::transmute::<&dyn Apply<R, E>, _>(&**apply) };
+                    let body: &'static dyn Apply<R> =
+                        unsafe { mem::transmute::<&dyn Apply<R>, _>(&**apply) };
                     image::encoding(|e| {
                         e.ext::<image::Compiled>()
                             .deferred
@@ -3266,11 +3254,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.fork.image_encode(buf)
     }
 
-    pub(crate) fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    pub(crate) fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.update_call(ctx)
     }
 
-    pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.release_held(ctx);
         if let Some(mut f) = self.callee.take_apply() {
             f.delete(ctx)
@@ -3287,7 +3275,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
     }
 
-    pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // A recursive edge deselected by a shrink is deleted, so
         // re-reaching this depth binds a fresh activation.
@@ -3328,7 +3316,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &self.spec
     }
 
-    pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let mut fresh = false;
         let ftype = match self.ftype.as_ref() {
@@ -3481,7 +3469,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     pub(crate) fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut InstanceTypes,
     ) -> Result<()> {
         let ftype = match self.ftype.is_none() {
@@ -3532,8 +3520,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// stands for the call.
     pub(crate) fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+        ctx: &mut CompileCtx<R>,
+    ) -> Result<Option<Node<R>>> {
         wrap!(self.fnode, self.fnode.typecheck1(ctx))?;
         for arg in self.args.values_mut() {
             if let Some(n) = arg.node.as_mut() {
@@ -3584,14 +3572,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
     }
 
-    pub(crate) fn view(&self) -> NodeView<'_, R, E> {
+    pub(crate) fn view(&self) -> NodeView<'_, R> {
         NodeView::CallSite(self)
     }
 
-    pub(crate) fn fuse(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    pub(crate) fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // Reached when this call did not inline: fuse its args in source
         // order, then give the callee its hook.
         fusion::fuse_parts(self.args.values_mut().filter_map(|a| a.node.as_mut()), ctx)?;
@@ -3663,7 +3648,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.arg(&key)
                     .ok_or_else(|| anyhow!("emit_clif: missing call-site arg node"))
             })
-            .collect::<Result<SmallVec<[&Node<R, E>; 8]>>>()?;
+            .collect::<Result<SmallVec<[&Node<R>; 8]>>>()?;
         let arg_nodes = info
             .marshal_args
             .iter()
@@ -3716,7 +3701,7 @@ struct Absent {
 impl Absent {
     /// Record this cycle's fires: the arguments published in `set`, and
     /// the captured inputs.
-    fn observe<R: Rt, E: UserEvent>(&mut self, ctx: &ExecCtx<'_, R, E>, set: &Published) {
+    fn observe<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, set: &Published) {
         for id in set.iter() {
             let fired = ctx.event.variables.get(id).is_some_and(|tv| tv.tag().triggers());
             if fired && !self.missed.contains(id) {
@@ -3729,10 +3714,10 @@ impl Absent {
     /// Run `update` under the wake view with one catch-up fire for each
     /// argument and captured input that fired unseen and is not delivered
     /// live this cycle, at its current value.
-    fn wake<R: Rt, E: UserEvent, T>(
+    fn wake<R: Rt, T>(
         mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        update: impl FnOnce(&mut ExecCtx<'_, R, E>) -> T,
+        ctx: &mut ExecCtx<'_, R>,
+        update: impl FnOnce(&mut ExecCtx<'_, R>) -> T,
     ) -> T {
         let mut injected = super::wake::Injected::new();
         for id in self.missed.drain(..) {
@@ -3774,15 +3759,15 @@ struct Pass {
 
 /// Update `args` and publish each production on its argument's id into
 /// `out`, in order or forked where the site's plan says.
-fn update_args<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
+fn update_args<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    args: &mut indexmap::map::Slice<ArgKey, Arg<R>>,
     site: &mut ForkSite,
     pass: Pass,
 ) -> ArgsOut {
     let n = args.len();
     site.decide_siblings(ctx, n, args.values().filter_map(|a| a.node.as_ref()));
-    let in_order = |c: &mut ExecCtx<'_, R, E>, p, m: Option<&mut Meter<'_>>| {
+    let in_order = |c: &mut ExecCtx<'_, R>, p, m: Option<&mut Meter<'_>>| {
         update_args_in_order(c, p, m, pass)
     };
     crate::branch::fork_point(ctx, args, site, in_order, |mut a, b| {
@@ -3793,9 +3778,9 @@ fn update_args<R: Rt, E: UserEvent>(
     })
 }
 
-fn update_args_in_order<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
+fn update_args_in_order<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    args: &mut indexmap::map::Slice<ArgKey, Arg<R>>,
     mut meter: Option<&mut Meter<'_>>,
     pass: Pass,
 ) -> ArgsOut {
@@ -3839,8 +3824,8 @@ pub(crate) enum QuietAtRoot {
 /// on the overlay; a quiet one per `root`. `born` delivers a quiet value FIRED: a fresh
 /// callee's first dispatch reads its arguments as new. Returns whether
 /// the overlay was written.
-pub(crate) fn publish_production<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn publish_production<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     feeds: Feeds<'_>,
     tv: &TagValue,
     born: bool,
@@ -3885,7 +3870,7 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
 
 /// The lambda literal an argument is: bare, or sampled (a seq step's
 /// inline callback, `pc ~! |x| ..`), whose value is the literal's.
-pub(crate) fn lambda_literal<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&Lambda> {
+pub(crate) fn lambda_literal<R: Rt>(node: &Node<R>) -> Option<&Lambda> {
     match node.view() {
         NodeView::Lambda(l) => Some(l),
         NodeView::Sample(s) => match s.arg.node.view() {

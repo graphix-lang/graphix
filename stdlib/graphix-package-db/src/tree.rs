@@ -4,7 +4,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
+    CompileCtx, ExecCtx, Node, Rt, Scope,
     env::Env,
     errf,
     expr::ExprId,
@@ -382,8 +382,8 @@ impl ImageState for TreeTypes {
         self.val_str.encode(buf)
     }
 
-    fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+    fn image_decode<R: Rt>(
+        _ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let key = <Option<u64>>::decode(buf)?
@@ -957,8 +957,8 @@ impl<O: TreeOpener> ImageState for OpenTreeEv<O> {
         self.types.image_encode(buf)
     }
 
-    fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<'_, R, E>,
+    fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         Ok(Self { types: TreeTypes::image_decode(ctx, buf)?, opener: PhantomData })
@@ -971,21 +971,21 @@ impl<O: TreeOpener> EvalCachedAsync for OpenTreeEv<O> {
     const NAME: &str = O::NAME;
     const CANCEL_SAFE: bool = false;
 
-    fn init<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    fn init<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
-        _from: &[Node<R, E>],
+        _from: &[Node<R>],
         _top_id: ExprId,
     ) -> Self {
         Self { types: TreeTypes::of(resolved, &ctx.env), opener: PhantomData }
     }
 
-    fn typecheck1<R: Rt, E: UserEvent>(
+    fn typecheck1<R: Rt>(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
         self.types = TreeTypes::of(Some(resolved), &ctx.env);

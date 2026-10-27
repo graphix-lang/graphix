@@ -7,7 +7,7 @@
 
 use super::lower::OwnCall;
 use crate::{
-    LambdaId, Node, Rt, UserEvent,
+    LambdaId, Node, Rt,
     env::Env,
     expr::ExprId,
     fusion::{
@@ -1821,14 +1821,14 @@ struct CachedBody {
 /// callee emits from its `callee_bodies` entry with its own lambda and
 /// builtin sites. A callee without a recorded body fails the whole
 /// region.
-pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
+pub(crate) fn compile_kernel_with_callees_direct<R: Rt>(
     em: &mut Emission,
     kernel: &Arc<KernelSig>,
     callees: &[(KernelKey, Arc<KernelSig>)],
-    root: &Node<R, E>,
+    root: &Node<R>,
     apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     lambda_sites: &nohash::IntMap<ExprId, LambdaCallInfo>,
-    callee_bodies: &BTreeMap<KernelKey, CalleeBody<'_, R, E>>,
+    callee_bodies: &BTreeMap<KernelKey, CalleeBody<'_, R>>,
     type_env: &Env,
 ) -> Result<WrappedKernel> {
     let parent = NodeBodyEmitter { root, return_type: &kernel.return_type };
@@ -1842,7 +1842,7 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         },
         hook: &parent,
     };
-    let callee_emitters: LPooled<Vec<(KernelKey, NodeBodyEmitter<R, E>, BodySpec)>> =
+    let callee_emitters: LPooled<Vec<(KernelKey, NodeBodyEmitter<R>, BodySpec)>> =
         callees
             .iter()
             .filter_map(|(key, k)| {

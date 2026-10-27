@@ -316,12 +316,9 @@ impl<X: GXExt> GXRt<X> {
             || self.var_watches.len() > 1
     }
 
-    /// An execution state over a new runtime, its event's user part
-    /// the extension's empty event.
-    pub fn new_state() -> anyhow::Result<ExecState<Self, X::UserEvent>> {
-        let mut rt = Self::new();
-        let user = rt.ext.empty_event();
-        ExecState::new(rt, user)
+    /// An execution state over a new runtime.
+    pub fn new_state() -> anyhow::Result<ExecState<Self>> {
+        ExecState::new(Self::new())
     }
 
     /// A runtime with no network; packages deliver external events

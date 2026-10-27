@@ -1,7 +1,7 @@
 use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue, UserEvent,
+    BindId, CFlag, CompileCtx, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue,
     env::Env,
     expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt, union_members},
     format_with_flags,
@@ -156,8 +156,8 @@ struct PatCx<'a> {
     inferred: bool,
 }
 
-fn leaf_bind<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn leaf_bind<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     cx: PatCx,
     name: &Name,
     typ: &Type,
@@ -165,7 +165,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
 ) -> Result<BindId> {
     let pos = name.pos_or(cx.pos);
     let name = &name.name;
-    let fresh = |ctx: &mut CompileCtx<R, E>| {
+    let fresh = |ctx: &mut CompileCtx<R>| {
         ctx.env
             .bind_variable(&cx.scope.lexical, name, typ.clone(), pos, cx.ori.clone())
             .id
@@ -202,8 +202,8 @@ fn leaf_bind<R: Rt, E: UserEvent>(
 }
 
 /// Bind a `name@` capture: the whole value at this position.
-fn bind_all<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn bind_all<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     cx: PatCx,
     all: &Option<Name>,
     typ: &Type,
@@ -822,8 +822,8 @@ impl StructPatternNode {
 
     /// Compile `spec` against the explicit type `type_predicate` (a
     /// `let` or lambda parameter's type).
-    pub fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    pub fn compile<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         type_predicate: &Type,
         spec: &StructurePattern,
         scope: &Scope,
@@ -834,8 +834,8 @@ impl StructPatternNode {
         Self::compile_with(ctx, cx, type_predicate, spec)
     }
 
-    fn compile_with<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    fn compile_with<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
@@ -846,8 +846,8 @@ impl StructPatternNode {
         Self::compile_int(ctx, cx, type_predicate, spec, BindMode::Fresh)
     }
 
-    fn compile_int<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    fn compile_int<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
@@ -861,8 +861,8 @@ impl StructPatternNode {
     /// A slice pattern's parts against an `Array`/`List` type: the
     /// `all@` capture, the `rest..` bind (array-typed) and the elements,
     /// each against its own member of an inferred element Set.
-    fn compile_slice<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    fn compile_slice<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         cx: PatCx,
         typ: &Type,
         list: bool,
@@ -906,8 +906,8 @@ impl StructPatternNode {
         Ok((all, rest, elems))
     }
 
-    fn compile_int_inner<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    fn compile_int_inner<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
@@ -1289,9 +1289,9 @@ impl StructPatternNode {
     /// Retype each name a `let`'s pattern, compiled against `shape`, the
     /// value's type `typ` narrowed per member, binds by
     /// [`Self::names_by_member`].
-    pub(super) fn retype_by_member<R: Rt, E: UserEvent>(
+    pub(super) fn retype_by_member<R: Rt>(
         &self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         typ: &Type,
         shape: &Type,
     ) -> Result<()> {
@@ -1781,7 +1781,7 @@ impl StructPatternNode {
     // alive, enforced by pinning a closure's captured ids as Lives pins referenced
     // ones. probe: design/review-2026-10-26/repro/core-aux-closure-outlives-slot.gx
     // (core-aux-02)
-    pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn delete<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
         self.ids(&mut |id| {
             // a reference that names it keeps its value
             if !ctx.control.lives().orphan_if_pinned(id) {
@@ -1805,14 +1805,14 @@ pub(super) enum ArmMatch {
 }
 
 #[derive(Debug)]
-pub struct PatternNode<R: Rt, E: UserEvent> {
+pub struct PatternNode<R: Rt> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
     pub structure_predicate: StructPatternNode,
-    pub guard: Option<Held<R, E>>,
+    pub guard: Option<Held<R>>,
 }
 
-impl<R: Rt, E: UserEvent> PatternNode<R, E> {
+impl<R: Rt> PatternNode<R> {
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.explicit_type_predicate.encode(buf)?;
         self.type_predicate.encode(buf)?;
@@ -1825,7 +1825,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let explicit_type_predicate = bool::decode(buf)?;
@@ -2016,7 +2016,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     pub(super) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: &Pattern,
         scope: &Scope,
@@ -2109,7 +2109,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// stale leaves, never fired ones.
     pub(super) fn bind_event(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         v: &Value,
         tag: crate::Tag,
     ) {
@@ -2123,7 +2123,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// entries it replaced for [`Self::retract`].
     pub(super) fn bind_tentative(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         v: &Value,
         tag: crate::Tag,
     ) -> SmallVec<[(BindId, Option<(TagValue, u64)>); 4]> {
@@ -2138,7 +2138,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// they were, so an arm not taken leaves no value behind.
     pub(super) fn retract(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         saved: SmallVec<[(BindId, Option<(TagValue, u64)>); 4]>,
     ) {
         for (id, prev) in saved {
@@ -2150,7 +2150,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// Update the guard, which the chain reaches, and return its
     /// production tag (`None` = no guard). The caller reads channel
     /// bottomness off `guard.tag`.
-    pub(super) fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Option<Tag> {
+    pub(super) fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> Option<Tag> {
         match &mut self.guard {
             None => None,
             Some(g) => Some(g.update(ctx)),
@@ -2158,7 +2158,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     /// The chain no longer reaches the guard: it sleeps.
-    pub(super) fn sleep_guard(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub(super) fn sleep_guard(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(g) = &mut self.guard {
             g.sleep(ctx)
         }
@@ -2252,7 +2252,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    pub(super) fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub(super) fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(n) = &mut self.guard {
             n.node.delete(ctx)
         }

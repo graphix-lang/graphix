@@ -7,7 +7,7 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    BindId, CompileCtx, ExecCtx, Node, NodeView, Rt, Update, UserEvent,
+    BindId, CompileCtx, ExecCtx, Node, NodeView, Rt, Update,
     analysis::RegionFacts,
     cost::ForkSite,
     expr::Expr,
@@ -40,7 +40,7 @@ static EMPTY_ARRAY: LazyLock<Value> = LazyLock::new(|| Value::Array(EMPTY_ARR.cl
 static EMPTY_STRING: Value = Value::String(arcstr::literal!(""));
 
 /// An `Update` node over a compiled kernel and its input feeders.
-pub struct FusedKernel<R: Rt, E: UserEvent> {
+pub struct FusedKernel<R: Rt> {
     spec: Expr,
     /// Owns the typedefs it names: one the replaced region declared is
     /// deleted with it.
@@ -48,7 +48,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// What the region it replaced did (`analysis::region_facts`).
     facts: RegionFacts,
     /// One feeder Node per kernel input slot.
-    feeders: Box<[Node<R, E>]>,
+    feeders: Box<[Node<R>]>,
     pub(crate) fork: ForkSite,
     /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 1.
     slept: WakeBit,
@@ -76,13 +76,13 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     redirects: Redirects,
 }
 
-impl<R: Rt, E: UserEvent> Drop for FusedKernel<R, E> {
+impl<R: Rt> Drop for FusedKernel<R> {
     fn drop(&mut self) {
         self.free_state();
     }
 }
 
-impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
+impl<R: Rt> std::fmt::Debug for FusedKernel<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FusedKernel")
             .field("fn_name", &self.kernel.fn_name)
@@ -91,7 +91,7 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
+impl<R: Rt> FusedKernel<R> {
     fn free_state(&mut self) {
         // Only instance death frees the slot chains and activation trees;
         // `sleep` does not touch them.
@@ -113,8 +113,8 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         facts: RegionFacts,
         kernel: Arc<KernelSig>,
         jit: WrappedKernel,
-        feeders: Box<[Node<R, E>]>,
-    ) -> Node<R, E> {
+        feeders: Box<[Node<R>]>,
+    ) -> Node<R> {
         debug_assert_eq!(feeders.len(), kernel.params.len(), "one feeder per param");
         let state = vec![0u64; jit.state_words].into_boxed_slice();
         Node::new(Self {
@@ -166,27 +166,22 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
 
     /// Feed the input a read of `id` feeds ([`Self::has_input`]) from
     /// `node` instead.
-    pub(crate) fn feed(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        id: BindId,
-        node: Node<R, E>,
-    ) {
+    pub(crate) fn feed(&mut self, ctx: &mut CompileCtx<R>, id: BindId, node: Node<R>) {
         let i = self.input(id).expect("an input read from the id");
         ctx.discard(std::mem::replace(&mut self.feeders[i], node));
     }
 
     /// The feeder nodes, one per kernel input slot.
-    pub fn feeders(&self) -> &[Node<R, E>] {
+    pub fn feeders(&self) -> &[Node<R>] {
         &self.feeders
     }
 
     /// Rebuild a region from an image: the wrapper record installs into
     /// the context's module and the node allocates fresh state.
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
         let facts = RegionFacts::decode(buf)?;
@@ -268,25 +263,25 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
+impl<R: Rt> Update<R> for FusedKernel<R> {
     /// An instance checks this node as its definition's check did.
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         _types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0(ctx)
     }
 
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.feeders.iter().for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         self.feeders.iter_mut().for_each(f)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         crate::stack::with_control(&ctx.control, || self.free_state());
         self.for_each_child_mut(&mut |node| node.delete(ctx));
     }
@@ -304,7 +299,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         w.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         // the feeders are a fork point, as a call's arguments are
         let (_, mut polled) = crate::node::gather(ctx, &mut self.feeders, &mut self.fork);
@@ -502,7 +497,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
         }
@@ -513,11 +508,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R>) -> Result<()> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R>) -> Result<()> {
         Ok(())
     }
 
@@ -529,7 +524,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::FusedKernel(self)
     }
 }

@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent, View, bailat,
+    TagValue, Update, View, bailat,
     env::Env,
     expr::{At, Expr, ExprId, ExprKind, Pattern, union_members},
     format_with_flags,
@@ -43,11 +43,11 @@ fn pattern_site(pat: &Pattern, body: &Expr) -> Expr {
     }
 }
 #[derive(Debug)]
-pub struct Select<R: Rt, E: UserEvent> {
+pub struct Select<R: Rt> {
     /// The selected arm. Semantic state: survives sleep.
     selected: Option<usize>,
-    pub arg: Held<R, E>,
-    pub arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
+    pub arg: Held<R>,
+    pub arms: Vec<(PatternNode<R>, Node<R>)>,
     pub typ: Type,
     pub(crate) spec: Arc<Expr>,
     /// Bit i = arm i's guard was consulted by the last re-match. Quiet
@@ -133,17 +133,14 @@ impl GuardRun {
     }
 }
 
-fn guard_refs<R: Rt, E: UserEvent>(pat: &PatternNode<R, E>, r: &mut Refs) {
+fn guard_refs<R: Rt>(pat: &PatternNode<R>, r: &mut Refs) {
     if let Some(g) = &pat.guard {
         g.node.refs(r)
     }
 }
 
 impl LazyArmFacts {
-    fn build<R: Rt, E: UserEvent>(
-        ctx: &ExecCtx<'_, R, E>,
-        arms: &[(PatternNode<R, E>, Node<R, E>)],
-    ) -> Self {
+    fn build<R: Rt>(ctx: &ExecCtx<'_, R>, arms: &[(PatternNode<R>, Node<R>)]) -> Self {
         LazyArmFacts {
             tracked: TrackedFires::new(&ctx.env, ctx.rt.cycle(), arms.len(), |i, r| {
                 arm_refs(&arms[i], r)
@@ -277,11 +274,11 @@ impl EmissionPlanes {
 
 /// Evaluate the taken arm, consuming its tracked fire bits with the
 /// catch-up deliveries scoped to it.
-fn evaluate_arm<R: Rt, E: UserEvent>(
+fn evaluate_arm<R: Rt>(
     tracked: &mut TrackedFires,
-    arm: &mut (PatternNode<R, E>, Node<R, E>),
+    arm: &mut (PatternNode<R>, Node<R>),
     i: usize,
-    ctx: &mut ExecCtx<'_, R, E>,
+    ctx: &mut ExecCtx<'_, R>,
 ) -> (Tag, Option<Value>) {
     let injected = tracked.deliver(ctx, i);
     let scope = tracked.open(ctx, i);
@@ -294,14 +291,14 @@ fn evaluate_arm<R: Rt, E: UserEvent>(
     (t, v)
 }
 
-impl<R: Rt, E: UserEvent> Select<R, E> {
+impl<R: Rt> Select<R> {
     fn new(
-        arg: Held<R, E>,
-        arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
+        arg: Held<R>,
+        arms: Vec<(PatternNode<R>, Node<R>)>,
         typ: Type,
         spec: Arc<Expr>,
         flags: BitFlags<CFlag>,
-    ) -> Node<R, E> {
+    ) -> Node<R> {
         Node::new(Self {
             selected: None,
             arg,
@@ -317,9 +314,9 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let arg = Held::image_decode(ctx, buf)?;
         let n = crate::image::count_decode(buf)?;
         let mut arms = Vec::with_capacity(n);
@@ -338,14 +335,14 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         arg: &Expr,
         arms: &[(Pattern, Expr)],
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let own = flags & CFlag::RunEvent;
         let flags = flags & !CFlag::RunEvent;
         let arg = Held::new(compile(ctx, flags, arg.clone(), scope, top_id)?);
@@ -383,12 +380,12 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
 /// variable read). Constants fire at an arm's birth, its first entry, and
 /// stand at every later entry, which resumes the arm, so these act once.
 /// Nested lambdas, selects and seq machines are left to their own checks.
-fn warn_birth_only<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn warn_birth_only<R: Rt>(
+    ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
-    n: &Node<R, E>,
+    n: &Node<R>,
 ) -> Result<()> {
-    let reads_nothing = |n: &Node<R, E>| {
+    let reads_nothing = |n: &Node<R>| {
         let mut refs = Refs::default();
         n.refs(&mut refs);
         let mut any = false;
@@ -436,9 +433,9 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
 /// Whether the call acts: an async or Io builtin given an argument (one
 /// given none produces at its birth and stands), or a function whose body
 /// performs Io, raises or writes a binding it does not own.
-fn acts_on_the_world<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
-    cs: &super::callsite::CallSite<R, E>,
+fn acts_on_the_world<R: Rt>(
+    ctx: &CompileCtx<R>,
+    cs: &super::callsite::CallSite<R>,
 ) -> bool {
     if let Some(b) = super::callsite::static_builtin(ctx, cs) {
         return cs.arg_nodes().next().is_some()
@@ -451,7 +448,7 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
     let NodeView::Ref(r) = cs.fnode().view() else { return false };
     ctx.bind_to_lambda
         .get(&r.id)
-        .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
+        .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R>>())
         .is_some_and(|d| {
             let facts = d.facts.lock();
             facts.io || facts.event
@@ -461,8 +458,8 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
 /// Warn where an arm holds a `seq` or `seqq` with no trigger, or one that
 /// names no variable: it runs at its birth, the arm's first entry, and not
 /// at a later one.
-fn warn_triggerless_seq<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn warn_triggerless_seq<R: Rt>(
+    ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
     e: &Expr,
 ) -> Result<()> {
@@ -547,16 +544,13 @@ fn same_test(a: &StructPatternNode, b: &StructPatternNode) -> bool {
     })
 }
 
-fn type_test<R: Rt, E: UserEvent>(p: &PatternNode<R, E>) -> Option<&Type> {
+fn type_test<R: Rt>(p: &PatternNode<R>) -> Option<&Type> {
     p.explicit_type_predicate.then_some(&p.type_predicate)
 }
 
 /// Refuse a refutable atom that tests what an earlier unguarded one does,
 /// under the same type test: it matches nothing new.
-fn check_repeats<R: Rt, E: UserEvent>(
-    env: &Env,
-    arms: &[(PatternNode<R, E>, Node<R, E>)],
-) -> Result<()> {
+fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result<()> {
     for (i, (pat, body)) in arms.iter().enumerate() {
         for (sp, at) in pat.atoms() {
             if sp.covers(env, &at, !pat.explicit_type_predicate) {
@@ -605,10 +599,10 @@ impl Reach {
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
-    fn new<R: Rt, E: UserEvent>(
+    fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
-        arms: &[(PatternNode<R, E>, Node<R, E>)],
+        arms: &[(PatternNode<R>, Node<R>)],
     ) -> Result<Self> {
         let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
         // an arm that matches anything before narrowing steers only the
@@ -663,11 +657,11 @@ impl Reach {
     /// The arm `pat`, whose body is `site`, against what reaches it
     /// (refused when it is dead and `checking`), then less what it
     /// covers.
-    fn arm<R: Rt, E: UserEvent>(
+    fn arm<R: Rt>(
         &mut self,
         env: &Env,
         scrut: &Type,
-        pat: &PatternNode<R, E>,
+        pat: &PatternNode<R>,
         site: &Expr,
         checking: bool,
     ) -> Result<()> {
@@ -920,7 +914,7 @@ impl Reach {
 /// delivers: its triggering free refs (a level under a sample's right
 /// side is banked, never fired through), with a pattern bind among
 /// them standing for its own inputs.
-fn scrutinee_inputs<R: Rt, E: UserEvent>(env: &Env, arg: &Node<R, E>) -> Arc<[BindId]> {
+fn scrutinee_inputs<R: Rt>(env: &Env, arg: &Node<R>) -> Arc<[BindId]> {
     let mut r = Refs::default();
     arg.refs(&mut r);
     let mut out: LPooled<IntSet<BindId>> = LPooled::take();
@@ -999,11 +993,11 @@ impl Ladder {
 /// tracked refs. Under [`super::deselecting_arm`] a recursive-edge callee inside
 /// the arm is deleted, not retained (`CallSite::sleep`), so unreached
 /// activations are shed.
-fn deselect<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn deselect<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     tracked: &mut TrackedFires,
     j: usize,
-    arm: &mut (PatternNode<R, E>, Node<R, E>),
+    arm: &mut (PatternNode<R>, Node<R>),
     sleep: bool,
 ) {
     if sleep {
@@ -1014,15 +1008,12 @@ fn deselect<R: Rt, E: UserEvent>(
 }
 
 /// An arm's free reads: its body's refs less its pattern's binds.
-fn arm_refs<R: Rt, E: UserEvent>(
-    (pat, body): &(PatternNode<R, E>, Node<R, E>),
-    r: &mut Refs,
-) {
+fn arm_refs<R: Rt>((pat, body): &(PatternNode<R>, Node<R>), r: &mut Refs) {
     body.refs(r);
     bound_by(pat, r)
 }
 
-fn bound_by<R: Rt, E: UserEvent>(pat: &PatternNode<R, E>, r: &mut Refs) {
+fn bound_by<R: Rt>(pat: &PatternNode<R>, r: &mut Refs) {
     pat.structure_predicate.ids(&mut |id| {
         r.bound.insert(id);
     });
@@ -1505,8 +1496,8 @@ impl PoolGroup {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Select<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.arg.node);
         for (pat, body) in self.arms.iter() {
             if let Some(g) = &pat.guard {
@@ -1516,7 +1507,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.arg.node);
         for (pat, body) in self.arms.iter_mut() {
             if let Some(g) = &mut pat.guard {
@@ -1544,7 +1535,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         self.flags.contains(CFlag::RunEvent).encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         if self.arm_facts.is_none() {
             self.arm_facts = Some(LazyArmFacts::build(ctx, &self.arms));
         }
@@ -1810,7 +1801,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         resident.set(tv)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let Self {
             selected: _,
             arg,
@@ -1830,7 +1821,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let Self {
             selected: _,
             arg,
@@ -1882,7 +1873,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?;
         if self.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) {
             return Ok(());
@@ -1900,7 +1891,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         match types.aux(self.spec.id) {
@@ -1913,7 +1904,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.arg.node.typecheck1(ctx)?;
         for (pat, n) in self.arms.iter_mut() {
             if let Some(guard) = &mut pat.guard {
@@ -1932,7 +1923,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Select(self)
     }
 
@@ -1940,7 +1931,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         emit_select_node(cx, self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // Reached only when no enclosing region fused this select whole.
         // The scrutinee, each guard and each arm body get their own
         // region passes; constant bodies are skipped.
@@ -1959,7 +1950,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Select<R, E> {
+impl<R: Rt> Select<R> {
     /// What the check derived for the arms ([`super::lambda::DefTable`]):
     /// each arm's completed predicate, then the types of its pattern's
     /// binds in [`StructPatternNode::ids`] order.
@@ -1978,7 +1969,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     /// recorded: the arms' predicates and binds are read, not narrowed.
     fn typecheck0_rows(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
         rows: &[Type],
     ) -> Result<()> {
@@ -2024,8 +2015,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         checking: bool,
     ) -> Result<()> {
         wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;

@@ -6,7 +6,7 @@
 //! caller supplies the body as a closure over the [`BodyCx`].
 
 use crate::{
-    ApplyView, BindId, Node, NodeView, Refs, Rt, UserEvent,
+    ApplyView, BindId, Node, NodeView, Refs, Rt,
     expr::ExprId,
     fusion::{
         self,
@@ -1510,7 +1510,7 @@ pub(crate) struct LoopBody {
     pub(super) reads: LPooled<IntSet<BindId>>,
 }
 
-pub(crate) fn loop_body<R: Rt, E: UserEvent>(cx: &BodyCx, node: &Node<R, E>) -> LoopBody {
+pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
     let mut sites: LPooled<Vec<ExprId>> = LPooled::take();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {

@@ -344,8 +344,8 @@ impl<N> Roots<N> {
 }
 
 pub(super) struct GX<X: GXExt> {
-    ctx: ExecState<GXRt<X>, X::UserEvent>,
-    nodes: Roots<Node<GXRt<X>, X::UserEvent>>,
+    ctx: ExecState<GXRt<X>>,
+    nodes: Roots<Node<GXRt<X>>>,
     callables: IntMap<CallableId, CallableInt>,
     /// Calls whose arguments have not landed, oldest first: a call is
     /// made in the cycle its first argument is delivered, which a write
@@ -496,8 +496,7 @@ impl<X: GXExt> GX<X> {
     }
 
     fn registration_image(&self) -> Result<Bytes> {
-        let nodes: Vec<(ExprId, &Node<GXRt<X>, X::UserEvent>)> =
-            self.nodes.iter().collect();
+        let nodes: Vec<(ExprId, &Node<GXRt<X>>)> = self.nodes.iter().collect();
         self.ctx
             .write_registration(
                 &nodes,
@@ -618,9 +617,6 @@ impl<X: GXExt> GX<X> {
             } else {
                 self.deliver_custom(id, u, Via::Reply);
             }
-        }
-        if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.ctx.event) {
-            error!("could not marshall user events {e:?}")
         }
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
@@ -1085,7 +1081,6 @@ impl<X: GXExt> GX<X> {
             || !self.ctx.rt.updated.is_empty()
             || !self.ctx.rt.var_updates.is_empty()
             || !self.ctx.rt.custom_updates.is_empty()
-            || self.ctx.rt.ext.is_ready()
     }
 
     async fn compile_root(&mut self, flags: BitFlags<CFlag>, text: ArcStr) -> Result<()> {
@@ -1224,7 +1219,7 @@ impl<X: GXExt> GX<X> {
             Some(v) => std::sync::Arc::from(v),
             None => self.resolvers.clone(),
         };
-        let mut nodes: LPooled<Vec<Node<GXRt<X>, X::UserEvent>>> = LPooled::take();
+        let mut nodes: LPooled<Vec<Node<GXRt<X>>>> = LPooled::take();
         let go = async {
             let st = Instant::now();
             // A package root is the body of `mod <package>`, recompiled
@@ -1410,7 +1405,7 @@ impl<X: GXExt> GX<X> {
 
     fn compile_callable(&mut self, v: Value, rt: GXHandle<X>) -> Result<Callable<X>> {
         let lb = v
-            .downcast_ref::<LambdaDef<GXRt<X>, X::UserEvent>>()
+            .downcast_ref::<LambdaDef<GXRt<X>>>()
             .ok_or_else(|| anyhow!("invalid lambda {v}"))?;
         let eid = ExprId::new();
         // the call's own instance: typing the argument references with the

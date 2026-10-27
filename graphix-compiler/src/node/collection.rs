@@ -13,7 +13,7 @@ use super::{
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
     ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope,
-    SourcePosition, Tag, TagValue, Update, UserEvent, View,
+    SourcePosition, Tag, TagValue, Update, View,
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
@@ -85,17 +85,17 @@ pub enum CollectionIntrinsic {
 macro_rules! by_collection {
     ($intrinsic:expr, $f:ident($($arg:expr),*)) => {
         match $intrinsic {
-            CollectionIntrinsic::Map(MapOp::Init, _) => MapQ::<R, E, IndexRange>::$f($($arg),*),
-            CollectionIntrinsic::Map(_, Flavor::Array) => MapQ::<R, E, ValArray>::$f($($arg),*),
+            CollectionIntrinsic::Map(MapOp::Init, _) => MapQ::<R, IndexRange>::$f($($arg),*),
+            CollectionIntrinsic::Map(_, Flavor::Array) => MapQ::<R, ValArray>::$f($($arg),*),
             CollectionIntrinsic::Map(_, Flavor::List) => {
-                MapQ::<R, E, ListCollection>::$f($($arg),*)
+                MapQ::<R, ListCollection>::$f($($arg),*)
             }
-            CollectionIntrinsic::Map(_, Flavor::CMap) => MapQ::<R, E, ValueMap>::$f($($arg),*),
-            CollectionIntrinsic::Fold(Flavor::Array) => FoldQ::<R, E, ValArray>::$f($($arg),*),
+            CollectionIntrinsic::Map(_, Flavor::CMap) => MapQ::<R, ValueMap>::$f($($arg),*),
+            CollectionIntrinsic::Fold(Flavor::Array) => FoldQ::<R, ValArray>::$f($($arg),*),
             CollectionIntrinsic::Fold(Flavor::List) => {
-                FoldQ::<R, E, ListCollection>::$f($($arg),*)
+                FoldQ::<R, ListCollection>::$f($($arg),*)
             }
-            CollectionIntrinsic::Fold(Flavor::CMap) => FoldQ::<R, E, ValueMap>::$f($($arg),*),
+            CollectionIntrinsic::Fold(Flavor::CMap) => FoldQ::<R, ValueMap>::$f($($arg),*),
         }
     };
 }
@@ -132,23 +132,23 @@ impl CollectionIntrinsic {
         }
     }
 
-    pub(crate) fn build<R: Rt, E: UserEvent>(
+    pub(crate) fn build<R: Rt>(
         self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
         prototype: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         by_collection!(self, new(self, ctx, spec, scope, top_id, typ, args, prototype))
     }
 
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<'_, R, E>,
+    pub(crate) fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let intrinsic = Self::decode(buf)?;
         by_collection!(intrinsic, image_decode(intrinsic, ctx, buf))
     }
@@ -458,8 +458,8 @@ impl Callback {
         self.arg.as_deref().cloned().encode(buf)
     }
 
-    fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<'_, R, E>,
+    fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let scope = scope_decode(buf)?;
@@ -474,7 +474,7 @@ impl Callback {
         Ok(Self { scope, id, typ, top_id, share, arg })
     }
 
-    fn see_arg<R: Rt, E: UserEvent>(&mut self, ctx: &CompileCtx<R, E>) {
+    fn see_arg<R: Rt>(&mut self, ctx: &CompileCtx<R>) {
         if let Some(arg) = ctx.fn_param_args.get(&self.id) {
             self.arg = Some(arg.clone());
         }
@@ -482,12 +482,12 @@ impl Callback {
 
     /// A slot's argument: a variable only the slot's call reads, so no
     /// name in the environment.
-    fn slot_arg<R: Rt, E: UserEvent>(
+    fn slot_arg<R: Rt>(
         &self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         name: &str,
         typ: &Type,
-    ) -> (BindId, Node<R, E>) {
+    ) -> (BindId, Node<R>) {
         let id = BindId::new();
         let spec = match &self.arg {
             Some(arg) => genn::name_spec(name, arg.pos, arg.ori.clone()),
@@ -500,7 +500,7 @@ impl Callback {
 
     /// The callback parameter as written, the source a slot's call of a
     /// resolved definition reports.
-    fn spec<R: Rt, E: UserEvent>(&self, ctx: &CompileCtx<R, E>) -> Arc<Expr> {
+    fn spec<R: Rt>(&self, ctx: &CompileCtx<R>) -> Arc<Expr> {
         match ctx.env.by_id.get(&self.id) {
             Some(b) => Arc::new(genn::name_spec(&b.name, b.pos, b.ori.clone())),
             None => NOP.clone(),
@@ -514,19 +514,19 @@ impl Callback {
     /// a lambda's instance body does: an interrupt stops the slot loop
     /// between slots, and a reply to a slot it kept the walk from is
     /// delivered again.
-    fn call<R: Rt, E: UserEvent>(
+    fn call<R: Rt>(
         &self,
-        ctx: &mut CompileCtx<R, E>,
-        args: SmallVec<[Node<R, E>; 2]>,
+        ctx: &mut CompileCtx<R>,
+        args: SmallVec<[Node<R>; 2]>,
         kind: CallKind,
-    ) -> Node<R, E> {
+    ) -> Node<R> {
         match kind {
             CallKind::Prototype(id) => {
                 self.build_call(ctx, args, CallKind::Prototype(id))
             }
             CallKind::Slot(Some(def))
                 if def
-                    .downcast_ref::<LambdaDef<R, E>>()
+                    .downcast_ref::<LambdaDef<R>>()
                     .is_some_and(|d| !d.is_builtin()) =>
             {
                 self.build_call(ctx, args, CallKind::Slot(Some(def)))
@@ -535,12 +535,12 @@ impl Callback {
         }
     }
 
-    fn build_call<R: Rt, E: UserEvent>(
+    fn build_call<R: Rt>(
         &self,
-        ctx: &mut CompileCtx<R, E>,
-        args: SmallVec<[Node<R, E>; 2]>,
+        ctx: &mut CompileCtx<R>,
+        args: SmallVec<[Node<R>; 2]>,
         kind: CallKind,
-    ) -> Node<R, E> {
+    ) -> Node<R> {
         let (Self { scope, id, typ, top_id, share, arg: _ }, fty) =
             (self, Type::Fn(self.typ.clone()));
         let call = match kind {
@@ -560,7 +560,7 @@ impl Callback {
                 genn::apply_constant(def, spec, scope.clone(), args, typ, *top_id).map(
                     |mut call| {
                         if let Some(cs) = call
-                            .downcast_mut::<CallNode<R, E>>()
+                            .downcast_mut::<CallNode<R>>()
                             .and_then(CallNode::call_mut)
                         {
                             cs.share = share.clone();
@@ -590,10 +590,7 @@ enum CallKind {
 
 impl CallKind {
     /// The slot call a prototype settled on.
-    fn slot<R: Rt, E: UserEvent>(
-        ctx: &ExecCtx<'_, R, E>,
-        prototype: &Node<R, E>,
-    ) -> Self {
+    fn slot<R: Rt>(ctx: &ExecCtx<'_, R>, prototype: &Node<R>) -> Self {
         let NodeView::CallSite(site) = prototype.view() else { return Self::Slot(None) };
         let def = site
             .static_target
@@ -605,12 +602,12 @@ impl CallKind {
 
 /// Resize `slots` to `n`, deleting the excess and adding with `add`:
 /// true when the length changed.
-fn resize<R: Rt, E: UserEvent, S>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn resize<R: Rt, S>(
+    ctx: &mut ExecCtx<'_, R>,
     slots: &mut Vec<S>,
     n: usize,
-    delete: fn(&mut S, &mut ExecCtx<'_, R, E>),
-    mut add: impl FnMut(&mut ExecCtx<'_, R, E>) -> S,
+    delete: fn(&mut S, &mut ExecCtx<'_, R>),
+    mut add: impl FnMut(&mut ExecCtx<'_, R>) -> S,
 ) -> bool {
     let old = slots.len();
     for mut s in slots.drain(n.min(old)..) {
@@ -628,9 +625,9 @@ fn resize<R: Rt, E: UserEvent, S>(
 
 /// Run a check pass `f` over `nodes` in order, each error in its node's
 /// context.
-fn each<R: Rt, E: UserEvent, const N: usize>(
-    nodes: [&mut Node<R, E>; N],
-    mut f: impl FnMut(&mut Node<R, E>) -> Result<()>,
+fn each<R: Rt, const N: usize>(
+    nodes: [&mut Node<R>; N],
+    mut f: impl FnMut(&mut Node<R>) -> Result<()>,
 ) -> Result<()> {
     nodes.into_iter().try_for_each(|n| {
         let r = f(n);
@@ -667,9 +664,9 @@ enum SourceSeen {
 }
 
 /// What a collection's slots are to [`take_source`].
-struct SlotKind<R: Rt, E: UserEvent, S> {
-    delete: fn(&mut S, &mut ExecCtx<'_, R, E>),
-    call: fn(&mut S) -> &mut Node<R, E>,
+struct SlotKind<R: Rt, S> {
+    delete: fn(&mut S, &mut ExecCtx<'_, R>),
+    call: fn(&mut S) -> &mut Node<R>,
     element: fn(&S) -> BindId,
 }
 
@@ -681,16 +678,16 @@ struct SlotKind<R: Rt, E: UserEvent, S> {
 /// paused when it turns bottom (`kind.call`'s sleep, as a deselected arm's)
 /// and woken, caught up, when it returns ([`SourceSeen::Paused`]).
 #[allow(clippy::too_many_arguments)]
-fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    source: &mut Node<R, E>,
-    prototype: &Node<R, E>,
+fn take_source<R: Rt, C: MapCollection, S: Send>(
+    ctx: &mut ExecCtx<'_, R>,
+    source: &mut Node<R>,
+    prototype: &Node<R>,
     slots: &mut Vec<S>,
     seen: &mut SourceSeen,
     woke: bool,
     build: &mut ProbeSite,
-    kind: SlotKind<R, E, S>,
-    mut make: impl FnMut(&mut ExecCtx<'_, R, E>, CallKind) -> S,
+    kind: SlotKind<R, S>,
+    mut make: impl FnMut(&mut ExecCtx<'_, R>, CallKind) -> S,
 ) -> Sourced<C> {
     let old_len = slots.len();
     let (tag, sval) = {
@@ -746,13 +743,13 @@ fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
 }
 
 #[derive(Debug)]
-struct Slot<R: Rt, E: UserEvent> {
+struct Slot<R: Rt> {
     id: BindId,
-    call: Node<R, E>,
+    call: Node<R>,
     state: SlotState,
 }
 
-impl<R: Rt, E: UserEvent> Slot<R, E> {
+impl<R: Rt> Slot<R> {
     // CR claude for eric: [perf/medium] Every slot is a full run-time bind: an env
     // binding for the synthetic `collection_element` argument, a fresh instantiate of
     // the callback type, and at first dispatch build_bound (compile, typecheck0/1,
@@ -783,7 +780,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
     // the node-graph sharing question left open (not ruled out, not advocated).
     // Readdressed for that decision.
     fn new(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         callback: &Callback,
         element_type: &Type,
         kind: CallKind,
@@ -798,16 +795,16 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
         self.state.value().expect("finish runs once every slot holds a value")
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.call.delete(ctx);
         ctx.rt.store_release(&self.id);
     }
 }
 
 #[derive(Debug)]
-pub struct MapQBase<R: Rt, E: UserEvent> {
-    pub(crate) source: Node<R, E>,
-    pub(crate) prototype: Node<R, E>,
+pub struct MapQBase<R: Rt> {
+    pub(crate) source: Node<R>,
+    pub(crate) prototype: Node<R>,
     op: MapOp,
     flavor: Flavor,
     element_type: Type,
@@ -816,16 +813,16 @@ pub struct MapQBase<R: Rt, E: UserEvent> {
     typ: Type,
 }
 
-impl<R: Rt, E: UserEvent> MapQBase<R, E> {
+impl<R: Rt> MapQBase<R> {
     /// The source and the prototype, in check order.
-    fn nodes_mut(&mut self) -> [&mut Node<R, E>; 2] {
+    fn nodes_mut(&mut self) -> [&mut Node<R>; 2] {
         [&mut self.source, &mut self.prototype]
     }
 
     /// The fused loop for a call site's intrinsic call.
     pub(crate) fn emit_clif_call(
         &self,
-        callsite: &CallSite<R, E>,
+        callsite: &CallSite<R>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         let Some(source) = callsite.arg_positional(0) else {
@@ -839,7 +836,7 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
 
     fn emit(
         &self,
-        source: &Node<R, E>,
+        source: &Node<R>,
         spec: &Expr,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
@@ -864,13 +861,13 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
         }
     }
 
-    pub(crate) fn callback_body(&self) -> Option<&Node<R, E>> {
+    pub(crate) fn callback_body(&self) -> Option<&Node<R>> {
         callback(&self.prototype).map(GXLambda::body)
     }
 
     /// The traversal's result once every slot holds a value.
-    fn finish<C: MapCollection>(&self, slots: &[Slot<R, E>], source: &C) -> Value {
-        let taken = |slot: &Slot<R, E>| matches!(slot.value(), Value::Bool(true));
+    fn finish<C: MapCollection>(&self, slots: &[Slot<R>], source: &C) -> Value {
+        let taken = |slot: &Slot<R>| matches!(slot.value(), Value::Bool(true));
         let not_null = |v: &&Value| !matches!(v, Value::Null);
         let mut elems: LPooled<Vec<Value>> = match self.op {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
@@ -916,19 +913,19 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
 }
 
 #[derive(Debug)]
-struct MapQ<R: Rt, E: UserEvent, C: MapCollection> {
+struct MapQ<R: Rt, C: MapCollection> {
     slept: WakeBit,
-    base: MapQBase<R, E>,
+    base: MapQBase<R>,
     callback: Callback,
-    slots: LPooled<Vec<Slot<R, E>>>,
+    slots: LPooled<Vec<Slot<R>>>,
     current: C,
     seen: SourceSeen,
     resident: TagValue,
     fork: SlotSite,
 }
 
-impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
-    fn with(base: MapQBase<R, E>, callback: Callback) -> Node<R, E> {
+impl<R: Rt, C: MapCollection> MapQ<R, C> {
+    fn with(base: MapQBase<R>, callback: Callback) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
             base,
@@ -943,14 +940,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
 
     fn new(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
         prototype: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let CollectionIntrinsic::Map(op, flavor) = intrinsic else {
             bail!("{intrinsic:?} is not a map intrinsic")
         };
@@ -977,9 +974,9 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
 
     fn image_decode(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let CollectionIntrinsic::Map(op, flavor) = intrinsic else {
             return Err(PackError::InvalidFormat);
         };
@@ -996,7 +993,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
         Ok(Self::with(base, Callback::image_decode(ctx, buf)?))
     }
 
-    fn finish(&self, ctx: &mut ExecCtx<'_, R, E>) -> Value {
+    fn finish(&self, ctx: &mut ExecCtx<'_, R>) -> Value {
         with_hooks(ctx, || self.base.finish(&self.slots, &self.current))
     }
 }
@@ -1015,9 +1012,9 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 /// first dispatch runs under a forced init view. The slots run in order
 /// when `rebound`, the cycle their callback changes, and are decided again
 /// once they are bound to it.
-fn update_slots<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    slots: &mut [Slot<R, E>],
+fn update_slots<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    slots: &mut [Slot<R>],
     site: &mut SlotSite,
     views: SlotViews,
     rebound: bool,
@@ -1065,11 +1062,11 @@ fn merge_tags(a: Option<Tag>, b: Option<Tag>) -> Option<Tag> {
 /// Run `update` over a collection's slots, `old_len` of them standing:
 /// when the source `paused` them, they wake with one catch-up fire for
 /// each input they read that fired meanwhile.
-fn woken_slots<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn woken_slots<R: Rt, T>(
+    ctx: &mut ExecCtx<'_, R>,
     old_len: usize,
     paused: Option<TrackedFires>,
-    update: impl FnOnce(&mut ExecCtx<'_, R, E>, SlotViews) -> T,
+    update: impl FnOnce(&mut ExecCtx<'_, R>, SlotViews) -> T,
 ) -> T {
     let Some(mut missed) = paused else {
         return update(ctx, SlotViews { old_len, standing: View::Cycle });
@@ -1103,9 +1100,9 @@ impl SlotViews {
 
 /// Update `slots`, the first at index `at`, in sibling branches of
 /// `grain` slots each.
-fn update_ranges<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    slots: &mut [Slot<R, E>],
+fn update_ranges<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    slots: &mut [Slot<R>],
     at: usize,
     views: SlotViews,
     grain: usize,
@@ -1136,23 +1133,22 @@ fn ranges(n: usize, grain: usize) -> LPooled<Vec<(usize, usize)>> {
 /// ahead of their first updates, where `site` says the builds pay for
 /// it; a slot built in order binds at its first update. `call` is a
 /// slot's call.
-fn build_fresh<R: Rt, E: UserEvent, S: Send>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn build_fresh<R: Rt, S: Send>(
+    ctx: &mut ExecCtx<'_, R>,
     fresh: &mut [S],
     site: &mut ProbeSite,
-    call: fn(&mut S) -> &mut Node<R, E>,
+    call: fn(&mut S) -> &mut Node<R>,
 ) {
     if fresh.is_empty() {
         return;
     }
-    let prebind_call = |ctx: &mut CompileCtx<R, E>, call: &mut Node<R, E>| {
-        if let Some(cs) =
-            call.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+    let prebind_call = |ctx: &mut CompileCtx<R>, call: &mut Node<R>| {
+        if let Some(cs) = call.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
         {
             cs.prebind(ctx)
         }
     };
-    let prebind = |ctx: &mut CompileCtx<R, E>, slots: &mut [S]| {
+    let prebind = |ctx: &mut CompileCtx<R>, slots: &mut [S]| {
         for slot in slots {
             let call = call(slot);
             match call.as_prune_mut() {
@@ -1183,9 +1179,9 @@ fn build_fresh<R: Rt, E: UserEvent, S: Send>(
     ctx.apply_deferred();
 }
 
-fn update_slots_in_order<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    slots: &mut [Slot<R, E>],
+fn update_slots_in_order<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    slots: &mut [Slot<R>],
     at: usize,
     views: SlotViews,
 ) -> Option<Option<Tag>> {
@@ -1225,13 +1221,13 @@ fn update_slots_in_order<R: Rt, E: UserEvent>(
     Some(production)
 }
 
-impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.base.source);
         f(&self.base.prototype)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.base.source);
         f(&mut self.base.prototype)
     }
@@ -1253,21 +1249,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         self.callback.image_encode(buf)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         let old_len = self.slots.len();
         let mut production = None;
         let (callback, element_type) = (&self.callback, &self.base.element_type);
-        let Sourced { tag, source, resized, back, paused, moved } = take_source::<
-            _,
-            _,
-            C,
-            _,
-        >(
+        let Sourced { tag, source, resized, back, paused, moved } = take_source::<_, C, _>(
             ctx,
             &mut self.base.source,
             &self.base.prototype,
@@ -1331,7 +1322,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let Self { base, slots, .. } = self;
         base.source.delete(ctx);
         base.prototype.delete(ctx);
@@ -1341,11 +1332,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.callback.see_arg(ctx);
         each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
     }
@@ -1370,7 +1361,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         &self.base.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // Slot values survive sleep: sleep is pause.
         self.base.source.sleep(ctx);
@@ -1379,7 +1370,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         }
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::MapQ(&self.base)
     }
 
@@ -1391,16 +1382,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
 }
 
 #[derive(Debug)]
-struct FoldSlot<R: Rt, E: UserEvent> {
+struct FoldSlot<R: Rt> {
     acc_id: BindId,
     element_id: BindId,
-    call: Node<R, E>,
+    call: Node<R>,
     state: SlotState,
 }
 
-impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
+impl<R: Rt> FoldSlot<R> {
     fn new(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         callback: &Callback,
         acc_type: &Type,
         element_type: &Type,
@@ -1413,7 +1404,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
         Self { acc_id, element_id, call, state: SlotState::Bottom }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.call.delete(ctx);
         for id in [self.acc_id, self.element_id] {
             ctx.rt.store_release(&id);
@@ -1422,10 +1413,10 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
 }
 
 #[derive(Debug)]
-pub struct FoldQBase<R: Rt, E: UserEvent> {
-    pub(crate) source: Node<R, E>,
-    pub(crate) init: Node<R, E>,
-    pub(crate) prototype: Node<R, E>,
+pub struct FoldQBase<R: Rt> {
+    pub(crate) source: Node<R>,
+    pub(crate) init: Node<R>,
+    pub(crate) prototype: Node<R>,
     flavor: Flavor,
     element_type: Type,
     prototype_ids: [BindId; 2],
@@ -1433,16 +1424,16 @@ pub struct FoldQBase<R: Rt, E: UserEvent> {
     typ: Type,
 }
 
-impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
+impl<R: Rt> FoldQBase<R> {
     /// The source, the init and the prototype, in check order.
-    fn nodes_mut(&mut self) -> [&mut Node<R, E>; 3] {
+    fn nodes_mut(&mut self) -> [&mut Node<R>; 3] {
         [&mut self.source, &mut self.init, &mut self.prototype]
     }
 
     /// The fused loop for a call site's intrinsic call.
     pub(crate) fn emit_clif_call(
         &self,
-        callsite: &CallSite<R, E>,
+        callsite: &CallSite<R>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         let (Some(source), Some(init)) =
@@ -1458,8 +1449,8 @@ impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
 
     fn emit(
         &self,
-        source: &Node<R, E>,
-        init: &Node<R, E>,
+        source: &Node<R>,
+        init: &Node<R>,
         spec: &Expr,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
@@ -1485,26 +1476,26 @@ impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
         )
     }
 
-    pub(crate) fn callback_body(&self) -> Option<&Node<R, E>> {
+    pub(crate) fn callback_body(&self) -> Option<&Node<R>> {
         callback(&self.prototype).map(GXLambda::body)
     }
 }
 
 #[derive(Debug)]
-struct FoldQ<R: Rt, E: UserEvent, C: MapCollection> {
+struct FoldQ<R: Rt, C: MapCollection> {
     slept: WakeBit,
-    base: FoldQBase<R, E>,
+    base: FoldQBase<R>,
     callback: Callback,
     acc_type: Type,
-    slots: LPooled<Vec<FoldSlot<R, E>>>,
+    slots: LPooled<Vec<FoldSlot<R>>>,
     seen: SourceSeen,
     collection: PhantomData<C>,
     resident: TagValue,
     build: ProbeSite,
 }
 
-impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
-    fn with(base: FoldQBase<R, E>, callback: Callback, acc_type: Type) -> Node<R, E> {
+impl<R: Rt, C: MapCollection> FoldQ<R, C> {
+    fn with(base: FoldQBase<R>, callback: Callback, acc_type: Type) -> Node<R> {
         Node::new(Self {
             slept: WakeBit::default(),
             base,
@@ -1520,14 +1511,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
     fn new(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
         prototype: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let CollectionIntrinsic::Fold(flavor) = intrinsic else {
             bail!("{intrinsic:?} is not a fold intrinsic")
         };
@@ -1564,9 +1555,9 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
     fn image_decode(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let CollectionIntrinsic::Fold(flavor) = intrinsic else {
             return Err(PackError::InvalidFormat);
         };
@@ -1586,14 +1577,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
     }
 }
 
-impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.base.source);
         f(&self.base.init);
         f(&self.base.prototype)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.base.source);
         f(&mut self.base.init);
         f(&mut self.base.prototype)
@@ -1618,31 +1609,30 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         self.acc_type.encode(buf)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
         let old_len = self.slots.len();
         let (callback, acc, elt) =
             (&self.callback, &self.acc_type, &self.base.element_type);
-        let Sourced { tag, source, resized, back, paused, moved } =
-            take_source::<_, _, C, _>(
-                ctx,
-                &mut self.base.source,
-                &self.base.prototype,
-                &mut self.slots,
-                &mut self.seen,
-                woke,
-                &mut self.build,
-                SlotKind {
-                    delete: FoldSlot::delete,
-                    call: |s| &mut s.call,
-                    element: |s| s.element_id,
-                },
-                |ctx, kind| FoldSlot::new(ctx, callback, acc, elt, kind),
-            );
+        let Sourced { tag, source, resized, back, paused, moved } = take_source::<_, C, _>(
+            ctx,
+            &mut self.base.source,
+            &self.base.prototype,
+            &mut self.slots,
+            &mut self.seen,
+            woke,
+            &mut self.build,
+            SlotKind {
+                delete: FoldSlot::delete,
+                call: |s| &mut s.call,
+                element: |s| s.element_id,
+            },
+            |ctx, kind| FoldSlot::new(ctx, callback, acc, elt, kind),
+        );
         // A bottom init is a poisoned delivery to slot 0's acc, not a
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
@@ -1662,7 +1652,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // a quiet acc is news to no slot: it only stands, unless the
         // slots read their accs anew
         let anew = moved || woke || back;
-        let pass_acc = |ctx: &mut ExecCtx<'_, R, E>, id, tv: TagValue| {
+        let pass_acc = |ctx: &mut ExecCtx<'_, R>, id, tv: TagValue| {
             if tv.tag().triggers() || anew {
                 ctx.deliver(id, tv)
             } else {
@@ -1741,7 +1731,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let Self { base, slots, .. } = self;
         base.source.delete(ctx);
         base.init.delete(ctx);
@@ -1754,11 +1744,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.callback.see_arg(ctx);
         each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
     }
@@ -1784,7 +1774,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         &self.base.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         // The slot states survive sleep: sleep is pause.
         self.slept.set();
         self.base.source.sleep(ctx);
@@ -1794,7 +1784,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         }
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::FoldQ(&self.base)
     }
 
@@ -1805,7 +1795,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     }
 }
 
-fn callback<R: Rt, E: UserEvent>(prototype: &Node<R, E>) -> Option<&GXLambda<R, E>> {
+fn callback<R: Rt>(prototype: &Node<R>) -> Option<&GXLambda<R>> {
     let NodeView::CallSite(site) = prototype.view() else { return None };
     let ApplyView::Lambda(callback) = site.resolved_apply()? else { return None };
     Some(callback)
@@ -1813,13 +1803,12 @@ fn callback<R: Rt, E: UserEvent>(prototype: &Node<R, E>) -> Option<&GXLambda<R, 
 
 /// Fuse the prototype's instance of a statically resolved callback,
 /// whose kernels the slots' instances share.
-fn fuse_callback<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    prototype: &mut Node<R, E>,
+fn fuse_callback<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    prototype: &mut Node<R>,
     callback: &mut Callback,
-) -> Result<Option<Node<R, E>>> {
-    let Some(site) =
-        prototype.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+) -> Result<Option<Node<R>>> {
+    let Some(site) = prototype.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
     else {
         return Ok(None);
     };

@@ -110,7 +110,7 @@ off-topic failure is discussed with Eric before it is fixed.
 ## Architecture
 
 **Pipeline.** Parse (`graphix-types/src/expr/parser/`) → `Expr` AST
-with positions → compile (`node/compiler.rs`) → `Node<R, E>` graph →
+with positions → compile (`node/compiler.rs`) → `Node<R>` graph →
 typecheck (two passes, `typecheck0`/`typecheck1` on every node) → fuse
 (`fusion/`, when enabled). `typecheck0` also builds `ctx.bind_to_lambda`;
 `CallSite::typecheck1` pre-binds statically resolvable calls and
@@ -139,11 +139,11 @@ is refused (`node::later_typedef`).
 Key types: `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration — `fold`, the seq rewrite and
 the fuzzer's preorder all ride them, so a new `ExprKind` child is added
-there and nowhere else), `Node<R, E>` (a newtype over `Box<dyn Update>`;
-construct with `Node::new`), `ExecState<R, E>` (what an embedder owns: a
+there and nowhere else), `Node<R>` (a newtype over `Box<dyn Update>`;
+construct with `Node::new`), `ExecState<R>` (what an embedder owns: a
 `CompileCtx` (the registry, the program's state and the compile's scratch,
 which it derefs to), the runtime `rt`, `libstate`, `control` and the
-cycle's `Event`), `ExecCtx<'a, R, E>` (the view `update`, `delete`,
+cycle's `Event`), `ExecCtx<'a, R>` (the view `update`, `delete`,
 `sleep` and image decode take, `ExecState::view`: borrows of those
 fields, derefs to the `CompileCtx`; the event is `ctx.event`, and
 `with_event` runs a subtree over another event),
@@ -461,7 +461,7 @@ when the typecheck ends (`node::with_runtime_settles`): no statement
 boundary follows it, and an undrained frame pins every cell it
 reaches.
 
-**Builtins** implement `BuiltIn<R, E>` (`NAME`, `init()`, `EFFECT`) and
+**Builtins** implement `BuiltIn<R>` (`NAME`, `init()`, `EFFECT`) and
 register with `ExecCtx::register_builtin::<T>()`; the Graphix signature
 lives in the package's `.gx` with every argument and the return type
 annotated. `EFFECT` is the one classification (`effects.rs`):

@@ -269,7 +269,7 @@ impl LibState {
 }
 
 /// A registry of abstract type UUIDs with a string tag per type. Each
-/// monomorphization over Rt/UserEvent is a distinct type id and needs
+/// monomorphization over Rt is a distinct type id and needs
 /// its own UUID; the tag lets non-parameterized code (printers) know
 /// what a value generally is.
 #[derive(Default)]

@@ -3,9 +3,7 @@
 //! a collection whose source went bottom and a call whose function did.
 
 use super::{VarRead, read_var};
-use crate::{
-    BindId, Event, ExecCtx, Refs, Rt, TagValue, UserEvent, branch::Prior, env::Env,
-};
+use crate::{BindId, Event, ExecCtx, Refs, Rt, TagValue, branch::Prior, env::Env};
 use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -53,7 +51,7 @@ impl CatchUp {
 
 /// Whether the catch-up scope owes `id` a fire: it was written while the
 /// arm slept, is not delivered this cycle, and no reader saw its fire.
-pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) -> bool {
+pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
     let Some(scope) = &ctx.catch_up else { return false };
     !ctx.event.variables.contains_key(id)
         && ctx
@@ -65,8 +63,8 @@ pub(crate) fn owed<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, id: &BindId) ->
 
 /// Deliver, fired at its standing value, each input `fill` names that the
 /// catch-up scope owes; the deliveries are for [`TrackedFires::restore`].
-pub(crate) fn deliver_owed<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn deliver_owed<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     fill: impl FnOnce(&mut Refs),
 ) -> Injected {
     let mut injected = Injected::new();
@@ -87,8 +85,8 @@ pub(crate) fn deliver_owed<R: Rt, E: UserEvent>(
 /// `injected`, unless it fires live this cycle (a live fire delivers
 /// itself), is bottom (a bottom input is bottom at the wake) or never
 /// delivered.
-pub(crate) fn inject<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn inject<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     id: BindId,
     injected: &mut Injected,
 ) {
@@ -337,7 +335,7 @@ impl TrackedFires {
     /// Record this cycle's sound fires of tracked inputs. Runs before
     /// routing, so the taken arm consumes same-cycle fires immediately
     /// and no-arm cycles accumulate them for a future waker.
-    pub(crate) fn observe<R: Rt, E: UserEvent>(&mut self, ctx: &ExecCtx<'_, R, E>) {
+    pub(crate) fn observe<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>) {
         self.observe_except(ctx, &[], None)
     }
 
@@ -346,9 +344,9 @@ impl TrackedFires {
     /// run; what an evaluated arm reads it saw, except the `carried`
     /// inputs (a seq step's `let`s), whose fire is also the entry of the
     /// first arm to read them in a later cycle.
-    pub(crate) fn observe_except<R: Rt, E: UserEvent>(
+    pub(crate) fn observe_except<R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         evaluated: &[usize],
         carried: Option<&IntSet<BindId>>,
     ) {
@@ -402,9 +400,9 @@ impl TrackedFires {
 
     /// Arm `i` runs: under a wake or step view, open the catch-up scope
     /// for what it learns as it runs; what to put back, for [`Self::ran`].
-    pub(crate) fn open<R: Rt, E: UserEvent>(
+    pub(crate) fn open<R: Rt>(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         i: usize,
     ) -> Option<Option<Arc<CatchUp>>> {
         if !ctx.event.init() {
@@ -427,9 +425,9 @@ impl TrackedFires {
     }
 
     /// Arm `i` ran this cycle: close the scope [`Self::open`] opened.
-    pub(crate) fn ran<R: Rt, E: UserEvent>(
+    pub(crate) fn ran<R: Rt>(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         i: usize,
         outer: Option<Option<Arc<CatchUp>>>,
     ) {
@@ -480,9 +478,9 @@ impl TrackedFires {
     /// delivered live this cycle. Returns the injected entries for
     /// [`Self::restore`]; a bottomed or vanished input spends its bit
     /// and injects nothing.
-    pub(crate) fn deliver<R: Rt, E: UserEvent>(
+    pub(crate) fn deliver<R: Rt>(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         i: usize,
     ) -> Injected {
         let mut injected = Injected::new();
@@ -509,7 +507,7 @@ impl TrackedFires {
         injected
     }
 
-    pub(crate) fn restore<E: UserEvent>(event: &mut Event<E>, injected: Injected) {
+    pub(crate) fn restore(event: &mut Event, injected: Injected) {
         for (id, prior) in injected {
             event.variables.put_back(id, prior)
         }

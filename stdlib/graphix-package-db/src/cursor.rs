@@ -3,7 +3,7 @@ use crate::{
     tree::{Reaped, Tree, blocking, get_tree_inner},
 };
 use anyhow::{Result, bail};
-use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect, rep};
+use graphix_compiler::{ExecCtx, Rt, effects::Effect, rep};
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
     write_marked_data,
@@ -71,11 +71,11 @@ fn get_cursor(cached: &CachedVals) -> Option<Cursor> {
 #[derive(Debug, Default)]
 pub(crate) struct DbCursorNewEv;
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
+impl<R: Rt> EvalCached<R> for DbCursorNewEv {
     const NAME: &str = "db_cursor_new";
     const EFFECT: Effect = Effect::Sync;
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 1)?;
         let iter = write_marked_data(ctx, from.value(0)?).map(|prefix| match prefix {
             Value::Null => Some(tree.tree.iter()),
@@ -106,11 +106,11 @@ fn parse_bound(key_typ: Option<Typ>, v: &Value) -> Option<Option<Bound<Vec<u8>>>
 #[derive(Debug, Default)]
 pub(crate) struct DbCursorRangeEv;
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorRangeEv {
+impl<R: Rt> EvalCached<R> for DbCursorRangeEv {
     const NAME: &str = "db_cursor_range";
     const EFFECT: Effect = Effect::Sync;
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 2)?;
         let lo = write_marked_data(ctx, from.value(0)?);
         let hi = write_marked_data(ctx, from.value(1)?);

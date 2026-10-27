@@ -29,7 +29,7 @@ use triomphe::Arc;
 #[doc(hidden)]
 pub struct ValueHookDispatch {
     /// Type-erased pointer to the context the dispatch borrows
-    /// (`ExecCtx<R, E>`).
+    /// (`ExecCtx<R>`).
     #[doc(hidden)]
     pub state: *mut u8,
     /// `None` means no implementation: take the structural case.

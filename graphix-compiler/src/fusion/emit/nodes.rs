@@ -3,7 +3,7 @@
 //! producers/accessors (tuple/struct/variant/array/map).
 
 use crate::{
-    BindId, Node, NodeView, Rt, UserEvent,
+    BindId, Node, NodeView, Rt,
     expr::{Expr, ExprId},
     fusion::{
         kernel_abi::{self, AbiKind, PrimType},
@@ -101,9 +101,9 @@ pub(crate) fn emit_const_node(
 /// compile-time constant is built here and emitted as an interned Value
 /// constant; otherwise its keys and values, alternating, go into a value
 /// buf that `graphix_map_finalize` turns into the map.
-pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_map_new_node<R: Rt>(
     cx: &mut BodyCx,
-    entries: &[Node<R, E>],
+    entries: &[Node<R>],
     typ: &Type,
 ) -> Result<CompiledExpr> {
     if let Some(v) = lowering::const_map(entries) {
@@ -203,12 +203,12 @@ fn widen_to_declared_repr(
 /// Arithmetic: `compile_bin` on register scalars with the integer
 /// div/mod guard; a numeric type with no register form (a decimal, a
 /// varint) through the Value helpers.
-pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_arith_node<R: Rt>(
     cx: &mut BodyCx,
     op: ArithOp,
     out_typ: &Type,
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
+    lhs: &Node<R>,
+    rhs: &Node<R>,
 ) -> Result<CompiledExpr> {
     if cx.node_kind(lhs.typ()) == Some(AbiKind::Value) {
         return emit_value_arith_node(cx, op, false, lhs, rhs);
@@ -296,9 +296,9 @@ struct ValueOperand {
     owned: Option<LocalKind>,
 }
 
-fn emit_value_operand_node<R: Rt, E: UserEvent>(
+fn emit_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
-    node: &Node<R, E>,
+    node: &Node<R>,
 ) -> Result<ValueOperand> {
     let kind = cx.node_kind(node.typ());
     let cv = match kind {
@@ -321,10 +321,10 @@ fn emit_value_operand_node<R: Rt, E: UserEvent>(
 
 /// Two operands for a borrowing helper, the first held while the
 /// second emits, so a pending exit there frees it.
-fn emit_value_pair<R: Rt, E: UserEvent>(
+fn emit_value_pair<R: Rt>(
     cx: &mut BodyCx,
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
+    lhs: &Node<R>,
+    rhs: &Node<R>,
 ) -> Result<(ValueOperand, ValueOperand)> {
     let l = emit_value_operand_node(cx, lhs)?;
     let r = with_held(cx, l, |cx| emit_value_operand_node(cx, rhs))?;
@@ -362,11 +362,11 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 /// core; over one float prim it is the unchecked operation, since float
 /// arithmetic follows IEEE and never fails; any other operands take
 /// that helper every time, borrowed.
-pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_checked_arith_node<R: Rt>(
     cx: &mut BodyCx,
     op: ArithOp,
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
+    lhs: &Node<R>,
+    rhs: &Node<R>,
 ) -> Result<CompiledExpr> {
     match (cx.node_kind(lhs.typ()), cx.node_kind(rhs.typ())) {
         (Some(AbiKind::Scalar(p)), Some(AbiKind::Scalar(q)))
@@ -391,12 +391,12 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
 /// [`emit_checked_arith_node`] over two integers of `prim`: the operation
 /// and whether it fails (an overflow, a zero divisor, `MIN / -1`) in
 /// plain instructions every host lowers.
-fn emit_checked_int_arith<R: Rt, E: UserEvent>(
+fn emit_checked_int_arith<R: Rt>(
     cx: &mut BodyCx,
     op: ArithOp,
     prim: PrimType,
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
+    lhs: &Node<R>,
+    rhs: &Node<R>,
 ) -> Result<CompiledExpr> {
     let lcv = lhs.emit_clif(cx)?;
     let rcv = rhs.emit_clif(cx)?;
@@ -505,12 +505,12 @@ fn emit_checked_int_arith<R: Rt, E: UserEvent>(
 }
 
 /// `lhs op rhs` through the Value helpers, which borrow both operands.
-fn emit_value_arith_node<R: Rt, E: UserEvent>(
+fn emit_value_arith_node<R: Rt>(
     cx: &mut BodyCx,
     op: ArithOp,
     checked: bool,
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
+    lhs: &Node<R>,
+    rhs: &Node<R>,
 ) -> Result<CompiledExpr> {
     let (l, r) = emit_value_pair(cx, lhs, rhs)?;
     let helper = match (op, checked) {
@@ -536,11 +536,11 @@ fn emit_value_arith_node<R: Rt, E: UserEvent>(
 /// Comparison: `compile_cmp` on scalar operands; on others, `==`/`!=`
 /// by `Value` equality and the orderings by the total order of values,
 /// through helpers that borrow both operands.
-pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_cmp_node<R: Rt>(
     cx: &mut BodyCx,
     op: CmpOp,
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
+    lhs: &Node<R>,
+    rhs: &Node<R>,
 ) -> Result<CompiledExpr> {
     if [lhs.typ(), rhs.typ()].iter().any(|t| t.compares_refs(cx.ctx.type_env)) {
         return Err(anyhow!(
@@ -601,11 +601,11 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
 
 /// Strict `band`/`bor`: both operands always evaluated, like the
 /// node-walk's `bool_op!`.
-pub(crate) fn emit_bool_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_bool_node<R: Rt>(
     cx: &mut BodyCx,
     op: BoolOp,
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
+    lhs: &Node<R>,
+    rhs: &Node<R>,
 ) -> Result<CompiledExpr> {
     let lcv = lhs.emit_clif(cx)?;
     let rcv = rhs.emit_clif(cx)?;
@@ -619,9 +619,9 @@ pub(crate) fn emit_bool_node<R: Rt, E: UserEvent>(
 }
 
 /// Logical NOT.
-pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_not_node<R: Rt>(
     cx: &mut BodyCx,
-    inner: &Node<R, E>,
+    inner: &Node<R>,
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
     let one = cx.b.ins().iconst(types::I8, 1);
@@ -632,9 +632,9 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
 }
 
 /// `-x` on a register scalar or a borrowed Value.
-pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_neg_node<R: Rt>(
     cx: &mut BodyCx,
-    inner: &Node<R, E>,
+    inner: &Node<R>,
     out_typ: &Type,
 ) -> Result<CompiledExpr> {
     let Some(prim) = freeze_node_typ(cx.ctx, inner.typ())
@@ -661,9 +661,9 @@ pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
 }
 
 /// `cast<T>(x)`.
-pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_cast_node<R: Rt>(
     cx: &mut BodyCx,
-    inner: &Node<R, E>,
+    inner: &Node<R>,
     target: &Type,
     expr_id: ExprId,
 ) -> Result<CompiledExpr> {
@@ -697,9 +697,9 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
 /// `String` (string parts consumed, scalars Display-rendered, any other
 /// part rendered at its type `typs[i]` as the node-walk renders it) and
 /// finalize to an owned ArcStr.
-pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_string_interpolate_node<R: Rt>(
     cx: &mut BodyCx,
-    args: &[Node<R, E>],
+    args: &[Node<R>],
     typs: &[Type],
 ) -> Result<CompiledExpr> {
     let call = cx.call_helper("graphix_string_buf_new", &[])?;
@@ -750,9 +750,9 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
 /// consuming helper. A scalar widens its payload (its disc is already
 /// the Value disc); String/composite bits are already the Value payload
 /// word, so only the disc is minted with the source's flags folded on.
-pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_owned_value_operand_node<R: Rt>(
     cx: &mut BodyCx,
-    node: &Node<R, E>,
+    node: &Node<R>,
 ) -> Result<CompiledExpr> {
     // Normalized: a select's type is its raw arm union, its emission
     // follows the normalized one.
@@ -880,10 +880,10 @@ pub(crate) fn call_result_needs_value_widening(
 
 /// Compile one producer field and push it into `buf`
 /// ([`scaffold::push_field`]); returns the field's disc.
-fn emit_push_field_node<R: Rt, E: UserEvent>(
+fn emit_push_field_node<R: Rt>(
     cx: &mut BodyCx,
     buf: ClifValue,
-    field: &Node<R, E>,
+    field: &Node<R>,
 ) -> Result<ClifValue> {
     let typ = freeze_node_typ(cx.ctx, field.typ()).ok_or_else(|| {
         anyhow!("emit_clif: producer field of type {} — not representable", field.typ())
@@ -895,9 +895,9 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
 
 /// Emit `fields` into a fresh registered value buf; returns the buf
 /// and the fields' discs.
-fn emit_fields_into_buf<R: Rt, E: UserEvent>(
+fn emit_fields_into_buf<R: Rt>(
     cx: &mut BodyCx,
-    fields: &[Node<R, E>],
+    fields: &[Node<R>],
 ) -> Result<(ClifValue, SmallVec<[ClifValue; 8]>)> {
     let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
     let buf = open_value_buf(cx, cap)?;
@@ -925,9 +925,9 @@ fn producer_disc(
 
 /// `[<a, b, c>]`: the elements are pushed into a value buf that
 /// `graphix_list_finalize` turns into the list.
-pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_list_new_node<R: Rt>(
     cx: &mut BodyCx,
-    fields: &[Node<R, E>],
+    fields: &[Node<R>],
 ) -> Result<CompiledExpr> {
     let (buf, field_discs) = emit_fields_into_buf(cx, fields)?;
     close_buf(cx);
@@ -951,10 +951,10 @@ pub(super) fn push_marker(
 
 /// Tuple literal (`kind` is the tuple marker) or array literal (none):
 /// push each field, finalize into an owned ValArray.
-pub(crate) fn emit_seq_new_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_seq_new_node<R: Rt>(
     cx: &mut BodyCx,
     kind: Option<rep::Kind>,
-    fields: &[Node<R, E>],
+    fields: &[Node<R>],
 ) -> Result<CompiledExpr> {
     let cap =
         cx.b.ins().iconst(types::I64, (fields.len() + kind.is_some() as usize) as i64);
@@ -992,15 +992,15 @@ fn push_struct_pair(
 
 /// Struct literal: an outer ValArray of `[name, value]` pairs sorted by
 /// name (the canonical struct layout).
-pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_struct_new_node<R: Rt>(
     cx: &mut BodyCx,
     names: &[ArcStr],
-    fields: &[Node<R, E>],
+    fields: &[Node<R>],
 ) -> Result<CompiledExpr> {
     if names.len() != fields.len() {
         return Err(anyhow!("emit_clif: struct literal name/field arity mismatch"));
     }
-    let mut indexed: SmallVec<[(&ArcStr, &Node<R, E>); 8]> =
+    let mut indexed: SmallVec<[(&ArcStr, &Node<R>); 8]> =
         names.iter().zip(fields.iter()).collect();
     indexed.sort_by(|a, b| a.0.cmp(b.0));
     let cap = cx.b.ins().iconst(types::I64, indexed.len() as i64 + 1);
@@ -1025,10 +1025,10 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
 /// replacement. `Replace.index` is the field's sorted position. The bufs
 /// and an owned source are registered for pending-exit cleanup so a
 /// may-bottom replacement does not leak them.
-pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_struct_with_node<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    replace: &[crate::node::data::Replace<R, E>],
+    source: &Node<R>,
+    replace: &[crate::node::data::Replace<R>],
 ) -> Result<CompiledExpr> {
     // Cloned out of the deref before emitting (lock discipline).
     let fields: poolshark::local::LPooled<Vec<(ArcStr, Type)>> =
@@ -1081,10 +1081,10 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
 
 /// Variant constructor: `[marker, tag, p0, ...]`. With no payload it is
 /// a constant and fires at init only; else iff any payload fired.
-pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_variant_new_node<R: Rt>(
     cx: &mut BodyCx,
     tag: &ArcStr,
-    payloads: &[Node<R, E>],
+    payloads: &[Node<R>],
 ) -> Result<CompiledExpr> {
     let tag_ptr = cx.interned_str(tag)?;
     let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 2) as i64);
@@ -1101,9 +1101,9 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, bits))
 }
 
-fn emit_accessor_source_node<R: Rt, E: UserEvent>(
+fn emit_accessor_source_node<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
+    source: &Node<R>,
     want: AbiKind,
 ) -> Result<ArraySrc> {
     if cx.node_kind(source.typ()) != Some(want) {
@@ -1148,9 +1148,9 @@ pub(super) fn emit_bottom_placeholder_of_kind(
 /// `never(args)` as a value of ABI kind `kind`: its arguments run and
 /// are discarded, and it is a STALE bottom, so its fire is the
 /// enclosing select's scrutinee and consulted guards alone.
-pub(super) fn emit_never<R: Rt, E: UserEvent>(
+pub(super) fn emit_never<R: Rt>(
     cx: &mut BodyCx,
-    args: &[Node<R, E>],
+    args: &[Node<R>],
     kind: AbiKind,
 ) -> Result<CompiledExpr> {
     let cv = emit_bottom_of_kind(cx, kind)?;
@@ -1230,11 +1230,11 @@ pub(super) fn emit_taint_guarded_read(
 }
 
 /// `T(v)`: box an owned Value operand with the abstract type's tag.
-pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_construct_node<R: Rt>(
     cx: &mut BodyCx,
     typ: &Type,
     name: &ArcStr,
-    arg: &Node<R, E>,
+    arg: &Node<R>,
 ) -> Result<CompiledExpr> {
     let cv = emit_owned_value_operand_node(cx, arg)?;
     // the type as Construct::update stores it: its params frozen
@@ -1253,9 +1253,9 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
 /// `x.0` on a Graphix-minted abstract value: a taint-guarded read of the
 /// payload at the representation's shape `rep` that borrows the source
 /// and returns an owned clone.
-pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_abstract_ref_node<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
+    source: &Node<R>,
     rep: &Type,
 ) -> Result<CompiledExpr> {
     let rep = resolve_node_typ(cx.ctx, rep);
@@ -1289,9 +1289,9 @@ pub(crate) enum FieldOf {
 }
 
 /// `t.<idx>` and `s.field`: a field read of a tuple or a struct.
-pub(crate) fn emit_field_ref_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_field_ref_node<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
+    source: &Node<R>,
     idx: usize,
     elem_typ: &Type,
     of: FieldOf,
@@ -1326,10 +1326,10 @@ pub(crate) fn emit_field_ref_node<R: Rt, E: UserEvent>(
 /// `a[i]` / `bytes[i]`: always `Nullable<elem>` (out-of-bounds is the
 /// `ArrayIndexError` Value) via the bounds-checked helpers the
 /// node-walk shares.
-pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_array_ref_node<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    idx: &Node<R, E>,
+    source: &Node<R>,
+    idx: &Node<R>,
 ) -> Result<CompiledExpr> {
     let idx_prim = kernel_abi::scalar_prim(idx.typ())
         .filter(|p| p.is_integer())
@@ -1376,10 +1376,10 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
 
 /// `m{key}`: `graphix_map_ref` borrows both operands, shares
 /// `node::map::map_get` and returns `Nullable<V>`.
-pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_map_ref_node<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    key: &Node<R, E>,
+    source: &Node<R>,
+    key: &Node<R>,
 ) -> Result<CompiledExpr> {
     if !lowering::is_map(source.typ()) {
         return Err(anyhow!(
@@ -1403,11 +1403,11 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
 /// `a[i..j]` — the source as a Value the helper borrows, present bounds as integer scalars with a flag bit each, absent
 /// bounds pass 0 with the bit cleared. Result is `Nullable<source>`
 /// (shared `node::array::array_slice` semantics).
-pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_array_slice_node<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    start: Option<&Node<R, E>>,
-    end: Option<&Node<R, E>>,
+    source: &Node<R>,
+    start: Option<&Node<R>>,
+    end: Option<&Node<R>>,
 ) -> Result<CompiledExpr> {
     if !(cx.node_kind(source.typ()) == Some(AbiKind::Array)
         || lowering::is_bytes(source.typ()))
@@ -1421,7 +1421,7 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     let scv = src.cv;
     let mut taint_discs: SmallVec<[ClifValue; 8]> = smallvec![scv.disc];
     let emit_bound = |cx: &mut BodyCx,
-                      n: Option<&Node<R, E>>,
+                      n: Option<&Node<R>>,
                       flag: i64,
                       flags: &mut i64,
                       taint: &mut SmallVec<[ClifValue; 8]>|
@@ -1466,11 +1466,8 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
 /// Whether an integer `/` or `%` needs its divisor guarded: false only
 /// when the divisor is a constant that provably cannot be zero or meet
 /// a MIN dividend as -1. Sees through `ExplicitParens`.
-fn node_int_div_may_bottom<R: Rt, E: UserEvent>(
-    lhs: &Node<R, E>,
-    rhs: &Node<R, E>,
-) -> bool {
-    fn const_value<'a, R: Rt, E: UserEvent>(n: &'a Node<R, E>) -> Option<&'a Value> {
+fn node_int_div_may_bottom<R: Rt>(lhs: &Node<R>, rhs: &Node<R>) -> bool {
+    fn const_value<'a, R: Rt>(n: &'a Node<R>) -> Option<&'a Value> {
         match n.view() {
             NodeView::Constant(c) => Some(&c.value),
             NodeView::ExplicitParens(p) => const_value(&p.n),

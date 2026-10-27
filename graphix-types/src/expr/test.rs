@@ -1805,7 +1805,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             1 => byref!(inner.clone().prop_map(add_parens)),
             1 => deref!(inner.clone().prop_map(add_parens)),
             1 => neg!(inner.clone().prop_map(add_parens)),
-            1 => (inner.clone(), any::<bool>()).prop_map(|(e, qop)| {
+            1 => (inner.clone().prop_map(add_parens), any::<bool>()).prop_map(|(e, qop)| {
                 let arg = Arc::new(e);
                 let kind = match qop {
                     true => ExprKind::Qop { written: None, arg },
@@ -2535,7 +2535,7 @@ proptest! {
         // every layout: all broken, the usual width, and anywhere between
         for w in [0, 80, width] {
             let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(w));
-            let e = parse_one(st.as_str()).unwrap();
+            let e = parse_one(st.as_str()).unwrap_or_else(|e| panic!("{e:#}\n{st}"));
             prop_assert!(check(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}");
             prop_assert!(same_str_forms(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}")
         }

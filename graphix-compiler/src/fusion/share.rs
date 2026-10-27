@@ -6,7 +6,7 @@
 //! with fresh state, where the region bakes nothing that differs.
 
 use crate::{
-    ApplyView, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, Rt, UserEvent,
+    ApplyView, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, Rt,
     analysis::RegionFacts,
     expr::ExprId,
     fusion::{
@@ -30,7 +30,7 @@ struct RegionPrint {
 }
 
 impl RegionPrint {
-    fn of<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Self {
+    fn of<R: Rt>(node: &Node<R>) -> Self {
         let mut print = Self { callees: Vec::new(), raises: Vec::new() };
         for_each_reachable_node(node, &mut |n| match n.view() {
             NodeView::CallSite(cs) => {
@@ -115,14 +115,14 @@ impl std::fmt::Debug for SlotShare {
 }
 
 /// Record a prototype walk's attempt at `node`, which built `fused`.
-pub(crate) fn record<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    node: &Node<R, E>,
-    fused: Option<&mut Node<R, E>>,
+pub(crate) fn record<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    node: &Node<R>,
+    fused: Option<&mut Node<R>>,
 ) {
     let Some(Share::Collect(attempts)) = &mut ctx.fusion.share else { return };
     let entry =
-        fused.and_then(|n| n.downcast_mut::<FusedKernel<R, E>>()).map(|k| SharedRegion {
+        fused.and_then(|n| n.downcast_mut::<FusedKernel<R>>()).map(|k| SharedRegion {
             root: node.spec().id,
             kernel: k.kernel().clone(),
             jit: k.jit().clone(),
@@ -136,11 +136,11 @@ pub(crate) fn record<R: Rt, E: UserEvent>(
 /// the slot's own inputs, when the region is the one the prototype
 /// fused: the same root, inputs of the same names and kinds in the same
 /// order, the same return and the same print.
-pub(crate) fn reuse<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    node: &Node<R, E>,
+pub(crate) fn reuse<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    node: &Node<R>,
     return_type: &Type,
-) -> Option<Node<R, E>> {
+) -> Option<Node<R>> {
     let Some(Share::Reuse { table, next }) = &mut ctx.fusion.share else { return None };
     let (table, at) = (table.clone(), *next);
     *next += 1;
@@ -186,7 +186,7 @@ pub(crate) fn reuse<R: Rt, E: UserEvent>(
         entry.jit.clone(),
     );
     if !redirects.is_empty() {
-        let k = fused.downcast_mut::<FusedKernel<R, E>>().expect("a kernel");
+        let k = fused.downcast_mut::<FusedKernel<R>>().expect("a kernel");
         k.redirect(redirects);
     }
     Some(fused)
@@ -194,9 +194,9 @@ pub(crate) fn reuse<R: Rt, E: UserEvent>(
 
 /// Fuse a collection's prototype through `f`: the table its slots
 /// share, or `None` when no slot would find a kernel in it.
-pub(crate) fn fuse_prototype<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<()>,
+pub(crate) fn fuse_prototype<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    f: impl FnOnce(&mut CompileCtx<R>) -> Result<()>,
 ) -> Result<Option<SlotShare>> {
     match ctx.fusion.share.take() {
         None => {
@@ -229,11 +229,11 @@ pub(crate) fn fuse_prototype<R: Rt, E: UserEvent>(
 
 /// Fuse a slot's freshly bound instance through `f` from its
 /// collection's table. A region the table does not answer node-walks.
-pub(crate) fn fuse_slot<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+pub(crate) fn fuse_slot<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     share: &SlotShare,
     top_id: ExprId,
-    f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<()>,
+    f: impl FnOnce(&mut CompileCtx<R>) -> Result<()>,
 ) {
     let reuse = Share::Reuse { table: share.table.clone(), next: share.base };
     let saved = ctx.fusion.share.replace(reuse);
@@ -270,8 +270,8 @@ impl SlotShare {
     }
 
     /// Each kernel installs into the context's module from its record.
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<'_, R, E>,
+    pub(crate) fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let base = decode_varint(buf)? as usize;

@@ -10,7 +10,7 @@ use crate::SourcePosition;
 use crate::{
     AddrSet, Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, HandlerKind,
     InitFn, LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue,
-    Update, UserEvent, dbgenv,
+    Update, dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
@@ -140,8 +140,8 @@ impl DefTable {
     /// a name up by a scope only this check had (an image relocates the
     /// ids a block's scope is named by, never the names). The body's own
     /// binds are in `checked`, the check's environment.
-    fn record<R: Rt, E: UserEvent>(
-        body: &Node<R, E>,
+    fn record<R: Rt>(
+        body: &Node<R>,
         env: &Env,
         checked: &Env,
         facts: LambdaFacts,
@@ -162,7 +162,7 @@ impl DefTable {
                     }
                 }
                 NodeView::Lambda(l) => {
-                    let def = l.def_value().downcast_ref::<LambdaDef<R, E>>();
+                    let def = l.def_value().downcast_ref::<LambdaDef<R>>();
                     if let Some(t) = def.and_then(|d| d.table.get()) {
                         table.lambdas.insert(id, t.table.clone());
                     }
@@ -430,8 +430,8 @@ pub struct InstanceTypes {
 impl InstanceTypes {
     /// `None` when the instance's signature does not hold the
     /// definition's: a type-system bug, which `instance_types` refuses.
-    fn new<R: Rt, E: UserEvent>(
-        ctx: &CompileCtx<R, E>,
+    fn new<R: Rt>(
+        ctx: &CompileCtx<R>,
         tables: Tables,
         def: &FnType,
         instance: &FnType,
@@ -528,7 +528,7 @@ pub struct BodyShared {
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's.
-pub(crate) fn body_annotation<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>, t: &Type) {
+pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     enclosing_tvars(ctx, &mut known);
     t.alias_tvars(&mut known);
@@ -536,10 +536,7 @@ pub(crate) fn body_annotation<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>, t: &T
 
 /// The variables the definitions around the body being compiled declare,
 /// by name, the innermost's where two share one.
-fn enclosing_tvars<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
-    known: &mut AHashMap<ArcStr, TVar>,
-) {
+fn enclosing_tvars<R: Rt>(ctx: &CompileCtx<R>, known: &mut AHashMap<ArcStr, TVar>) {
     if let Some(body) = &ctx.body {
         for typ in body.declared.iter().rev() {
             let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
@@ -580,13 +577,13 @@ impl BodyShared {
     }
 }
 
-pub struct LambdaDef<R: Rt, E: UserEvent> {
+pub struct LambdaDef<R: Rt> {
     pub id: LambdaId,
     pub env: Env,
     pub scope: Scope,
     pub argspec: Arc<[Arg]>,
     pub typ: Arc<FnType>,
-    pub init: InitFn<R, E>,
+    pub init: InitFn<R>,
     /// What the definition's check settled, for its instances; shared
     /// with `init`, which hands it to each instance.
     pub table: SArc<DefTables>,
@@ -668,7 +665,7 @@ pub struct ParamCalls {
     pub captured: SmallVec<[BindId; 2]>,
 }
 
-impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
+impl<R: Rt> LambdaDef<R> {
     /// Degrade the facts by `facts`; they never improve.
     pub(crate) fn join_facts(&self, facts: LambdaFacts) {
         let mut f = self.facts.lock();
@@ -689,7 +686,7 @@ impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
+impl<R: Rt> fmt::Debug for LambdaDef<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.origin {
             DefOrigin::Source { spec, .. } => write!(f, "{spec}"),
@@ -698,35 +695,35 @@ impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
+impl<R: Rt> PartialEq for LambdaDef<R> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
+impl<R: Rt> Eq for LambdaDef<R> {}
 
 /// Functions have no order (`Ordered` refuses them); under `Any` one orders
 /// by its id, minted in run order, so such an order is nondeterministic.
-impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
+impl<R: Rt> PartialOrd for LambdaDef<R> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))
     }
 }
 
-impl<R: Rt, E: UserEvent> Ord for LambdaDef<R, E> {
+impl<R: Rt> Ord for LambdaDef<R> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.id.cmp(&other.id)
     }
 }
 
-impl<R: Rt, E: UserEvent> Hash for LambdaDef<R, E> {
+impl<R: Rt> Hash for LambdaDef<R> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state)
     }
 }
 
-impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
+impl<R: Rt> Pack for LambdaDef<R> {
     fn encoded_len(&self) -> usize {
         0
     }
@@ -745,13 +742,13 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 /// runtime or statically in `typecheck1`). Fusion reaches the body
 /// through [`ApplyView::Lambda`].
 #[derive(Debug)]
-pub struct GXLambda<R: Rt, E: UserEvent> {
+pub struct GXLambda<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by the next update
     slept: WakeBit,
     id: LambdaId,
     instance_id: LambdaInstanceId,
     args: Box<[StructPatternNode]>,
-    body: Node<R, E>,
+    body: Node<R>,
     typ: Arc<FnType>,
     /// How the body calls itself ([`SelfCall`]), when it does.
     self_call: Mutex<Option<SelfCall>>,
@@ -783,7 +780,7 @@ pub(crate) enum Typing {
     Restored,
 }
 
-impl<R: Rt, E: UserEvent> GXLambda<R, E> {
+impl<R: Rt> GXLambda<R> {
     /// The definition's id, shared by every instance of it.
     pub fn id(&self) -> LambdaId {
         self.id
@@ -805,11 +802,11 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 
     /// The compiled body.
-    pub fn body(&self) -> &Node<R, E> {
+    pub fn body(&self) -> &Node<R> {
         &self.body
     }
 
-    pub(crate) fn inline_callback_body(&self) -> Option<&Node<R, E>> {
+    pub(crate) fn inline_callback_body(&self) -> Option<&Node<R>> {
         match self.body.view() {
             NodeView::MapQ(map) => map.callback_body(),
             NodeView::FoldQ(fold) => fold.callback_body(),
@@ -854,11 +851,11 @@ pub struct SelfCall {
     pub tail_loop: bool,
 }
 
-impl<R: Rt, E: UserEvent> GXLambda<R, E> {
+impl<R: Rt> GXLambda<R> {
     /// The types an instance takes from its definition's check; `None`
     /// for the definition's own check, which checks the body. An
     /// instance its definition's check cannot type is a compiler bug.
-    fn instance_types(&self, ctx: &CompileCtx<R, E>) -> Result<Option<InstanceTypes>> {
+    fn instance_types(&self, ctx: &CompileCtx<R>) -> Result<Option<InstanceTypes>> {
         let (table, def) = match &self.typing {
             Typing::Definition => return Ok(None),
             Typing::Restored => {
@@ -884,7 +881,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
+impl<R: Rt> Apply<R> for GXLambda<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.id.encode(buf)?;
         self.instance_id.encode(buf)?;
@@ -895,15 +892,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         lexical_encode(&self.env, buf)
     }
 
-    fn view(&self) -> ApplyView<'_, R, E> {
+    fn view(&self) -> ApplyView<'_, R> {
         ApplyView::Lambda(self)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let woke = self.slept.take();
         let first = mem::replace(&mut self.first_dispatch, false);
         // the formals' value channel seeds from a quiet arg production on
@@ -928,8 +921,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        args: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        args: &mut [Node<R>],
     ) -> Result<()> {
         let mut p = profile::phase(Phase::InstanceCheck);
         profile::instance(&mut p, self.instance_id, self.id, self.body.spec());
@@ -983,8 +976,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     /// already walked the args.
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        _from: &mut [Node<R>],
         _resolved: &FnType,
     ) -> Result<()> {
         let _elaboration = profile::elaboration(self.instance_id);
@@ -998,7 +991,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
 
     fn emit_clif(
         &self,
-        callsite: &CallSite<R, E>,
+        callsite: &CallSite<R>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         let res = match self.body.view() {
@@ -1022,7 +1015,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if dbgenv::gxdbg_instance_fusion() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
@@ -1053,7 +1046,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         self.body.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if self.charged.take() == Some(Arc::as_ptr(&ctx.control) as usize) {
             ctx.control.activation_died()
         }
@@ -1066,7 +1059,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // a recursion shrinking one level does not shrink the external
         // calls it made
@@ -1074,33 +1067,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> GXLambda<R, E> {
+impl<R: Rt> GXLambda<R> {
     pub(super) fn new(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         id: LambdaId,
         typ: Arc<FnType>,
         typing: Typing,
         argspec: Arc<[Arg]>,
-        args: &[Node<R, E>],
+        args: &[Node<R>],
         scope: &Scope,
         tid: ExprId,
         body: Expr,
     ) -> Result<Self> {
         let origin = body.ori.clone();
-        let build = |ctx: &mut CompileCtx<R, E>, _: &[StructPatternNode]| {
+        let build = |ctx: &mut CompileCtx<R>, _: &[StructPatternNode]| {
             compile(ctx, flags, body, scope, tid)
         };
         Self::new_with_body(ctx, id, typ, typing, argspec, args, scope, origin, build)
     }
 
     pub(super) fn new_collection(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         id: LambdaId,
         typ: Arc<FnType>,
         typing: Typing,
         argspec: Arc<[Arg]>,
-        args: &[Node<R, E>],
+        args: &[Node<R>],
         scope: &Scope,
         tid: ExprId,
         spec: Arc<Expr>,
@@ -1143,18 +1136,15 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     // hundred more bytes per activation fail the plain gate. Choose that ceiling with
     // this decision (tests-shell-compiler-04).
     fn new_with_body(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         id: LambdaId,
         typ: Arc<FnType>,
         typing: Typing,
         argspec: Arc<[Arg]>,
-        args: &[Node<R, E>],
+        args: &[Node<R>],
         scope: &Scope,
         origin: Arc<Origin>,
-        build_body: impl FnOnce(
-            &mut CompileCtx<R, E>,
-            &[StructPatternNode],
-        ) -> Result<Node<R, E>>,
+        build_body: impl FnOnce(&mut CompileCtx<R>, &[StructPatternNode]) -> Result<Node<R>>,
     ) -> Result<Self> {
         if args.len() != argspec.len() {
             bail!("arity mismatch, expected {} arguments", argspec.len())
@@ -1211,7 +1201,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let id = LambdaId::decode(buf)?;
@@ -1240,16 +1230,16 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct BuiltInLambda<R: Rt, E: UserEvent> {
+pub(crate) struct BuiltInLambda<R: Rt> {
     typ: Arc<FnType>,
     name: ArcStr,
-    apply: Box<dyn Apply<R, E> + Send + Sync + 'static>,
+    apply: Box<dyn Apply<R> + Send + Sync + 'static>,
 }
 
-impl<R: Rt, E: UserEvent> BuiltInLambda<R, E> {
+impl<R: Rt> BuiltInLambda<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &[Node<R, E>],
+        ctx: &mut ExecCtx<'_, R>,
+        from: &[Node<R>],
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let typ = Arc::new(FnType::decode(buf)?);
@@ -1271,20 +1261,20 @@ impl<R: Rt, E: UserEvent> BuiltInLambda<R, E> {
 struct UnknownBuiltIn(TagValue);
 
 impl UnknownBuiltIn {
-    fn init<R: Rt, E: UserEvent>(
-        _: &mut CompileCtx<R, E>,
+    fn init<R: Rt>(
+        _: &mut CompileCtx<R>,
         _: &FnType,
         _: Option<&FnType>,
         _: &Scope,
-        _: &[Node<R, E>],
+        _: &[Node<R>],
         _: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+    ) -> Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Self(TagValue::phantom())))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for UnknownBuiltIn {
-    fn update(&mut self, _: &mut ExecCtx<'_, R, E>, _: &mut [Node<R, E>]) -> &TagValue {
+impl<R: Rt> Apply<R> for UnknownBuiltIn {
+    fn update(&mut self, _: &mut ExecCtx<'_, R>, _: &mut [Node<R>]) -> &TagValue {
         &self.0
     }
 
@@ -1292,10 +1282,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for UnknownBuiltIn {
         Err(PackError::Application(crate::image::NOT_IMAGED))
     }
 
-    fn sleep(&mut self, _: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _: &mut ExecCtx<'_, R>) {}
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
+impl<R: Rt> Apply<R> for BuiltInLambda<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.typ.encode(buf)?;
         self.name.encode(buf)?;
@@ -1303,7 +1293,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     }
 
     /// Fusion sees the wrapped builtin's own view, named.
-    fn view(&self) -> ApplyView<'_, R, E> {
+    fn view(&self) -> ApplyView<'_, R> {
         match self.apply.view() {
             ApplyView::BuiltIn(_) | ApplyView::Opaque => ApplyView::BuiltIn(&self.name),
             v => v,
@@ -1312,29 +1302,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
     fn emit_clif(
         &self,
-        callsite: &CallSite<R, E>,
+        callsite: &CallSite<R>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         // the trait default's `Ok(None)` would silently de-fuse every builtin
         self.apply.emit_clif(callsite, cx)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.apply.fuse(ctx)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         self.apply.update(ctx, from)
     }
 
     fn typecheck0(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        args: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        args: &mut [Node<R>],
     ) -> Result<()> {
         if args.len() < self.typ.args.len()
             || (args.len() > self.typ.args.len() && self.typ.vargs.is_none())
@@ -1361,8 +1347,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        args: &mut [Node<R, E>],
+        ctx: &mut CompileCtx<R>,
+        args: &mut [Node<R>],
         resolved: &FnType,
     ) -> Result<()> {
         self.apply.typecheck1(ctx, args, resolved)
@@ -1376,15 +1362,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.apply.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.apply.sleep(ctx);
     }
 
-    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.apply.reborn(ctx);
     }
 }
@@ -1399,8 +1385,8 @@ pub struct Lambda {
 
 impl Lambda {
     /// The definition's `LambdaId`.
-    pub fn lambda_id<R: Rt, E: UserEvent>(&self) -> Option<LambdaId> {
-        self.def.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
+    pub fn lambda_id<R: Rt>(&self) -> Option<LambdaId> {
+        self.def.downcast_ref::<LambdaDef<R>>().map(|d| d.id)
     }
 
     /// The wrapped `LambdaDef` `Value`, which this node emits at init.
@@ -1418,7 +1404,7 @@ impl Lambda {
 /// the source body (or a builtin) in the definition's environment and
 /// its `fn` block under `scope`, the definition's own. A function of
 /// its data, so an image can rebuild it.
-pub(crate) fn make_init<R: Rt, E: UserEvent>(
+pub(crate) fn make_init<R: Rt>(
     id: LambdaId,
     flags: BitFlags<CFlag>,
     def_env: Env,
@@ -1430,7 +1416,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
     enclosing: Arc<[Arc<FnType>]>,
     table: SArc<DefTables>,
     shared: BodyShare,
-) -> InitFn<R, E> {
+) -> InitFn<R> {
     // named by the expression, which every compile of a literal shares,
     // so what is keyed by scope (a seq's lowering) is found again
     let def_scope = scope.append_block("fn", def_spec.id.inner());
@@ -1513,13 +1499,13 @@ pub(crate) fn same_parameters(a: &FnType, b: &FnType) -> bool {
 }
 
 /// Build an instance at the signature `mode` names ([`instance_type`]).
-fn instantiate<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn instantiate<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     mode: BindMode<'_>,
     def_typ: &Arc<FnType>,
     table: &SArc<DefTables>,
-    build: impl FnOnce(&mut CompileCtx<R, E>, Arc<FnType>, Typing) -> Result<GXLambda<R, E>>,
-) -> Result<Box<dyn Apply<R, E>>> {
+    build: impl FnOnce(&mut CompileCtx<R>, Arc<FnType>, Typing) -> Result<GXLambda<R>>,
+) -> Result<Box<dyn Apply<R>>> {
     let typing = match mode {
         BindMode::Definition => Typing::Definition,
         BindMode::Static { .. } | BindMode::Dynamic(_) => {
@@ -1534,8 +1520,8 @@ fn instantiate<R: Rt, E: UserEvent>(
 /// bind's runtime callee lists other parameters than the site's view (a
 /// label the site omits, defaulted): then a call's copy of the
 /// definition's, fitted to the site's view as a call fits it.
-fn instance_type<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
+fn instance_type<R: Rt>(
+    ctx: &mut CompileCtx<R>,
     mode: BindMode<'_>,
     def_typ: &Arc<FnType>,
 ) -> Result<Arc<FnType>> {
@@ -1550,8 +1536,8 @@ fn instance_type<R: Rt, E: UserEvent>(
 /// A call's copy of the definition's signature `def_typ`, fitted to the
 /// site's view `site` of it as a call fits it: the one rule a static and
 /// a dynamic bind both take when the views list other parameters.
-pub(crate) fn fit_callee<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+pub(crate) fn fit_callee<R: Rt>(
+    ctx: &CompileCtx<R>,
     site: &FnType,
     def_typ: &FnType,
 ) -> Result<FnType> {
@@ -1561,14 +1547,14 @@ pub(crate) fn fit_callee<R: Rt, E: UserEvent>(
 }
 
 impl Lambda {
-    pub(crate) fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    pub(crate) fn compile<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         l: &expr::LambdaExpr,
         _top_id: ExprId,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let mut flags = flags;
         flags.remove(CFlag::SeqStep);
         let mut s: LPooled<Vec<&ArcStr>> = LPooled::take();
@@ -1810,10 +1796,10 @@ impl Lambda {
 }
 
 impl Lambda {
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<'_, R, E>,
+    pub(crate) fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let id = LambdaId::decode(buf)?;
         let typ = Type::decode(buf)?;
@@ -1827,19 +1813,19 @@ impl Lambda {
 /// declared tvars are rigid (the body must be well-typed for any 'a;
 /// anonymous '_N inference cells stay bindable) and a self-call knots to
 /// its own cells (`CompileCtx::rec_defs`). Every path leaves by `close`.
-struct DefGate<R: Rt, E: UserEvent> {
+struct DefGate<R: Rt> {
     def: LambdaId,
     depth: u32,
     _at: AtLevel,
     sig: Arc<FnType>,
     faux_id: BindId,
-    args: LPooled<Vec<Node<R, E>>>,
+    args: LPooled<Vec<Node<R>>>,
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
 }
 
-impl<R: Rt, E: UserEvent> DefGate<R, E> {
-    fn open(ctx: &mut CompileCtx<R, E>, def: &LambdaDef<R, E>) -> Self {
+impl<R: Rt> DefGate<R> {
+    fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
         let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
         let faux_id = BindId::new();
@@ -1889,7 +1875,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
 
     /// What the body raised: ⊥ when nothing joined the faux catch; an
     /// open callback's `throws 'e` stays the cell.
-    fn thrown(&self, ctx: &CompileCtx<R, E>) -> Type {
+    fn thrown(&self, ctx: &CompileCtx<R>) -> Type {
         match ctx.env.by_id.get(&self.faux_id).map(|b| &b.typ) {
             Some(Type::TVar(tv)) => tv.binding().unwrap_or(Type::Bottom),
             Some(t) => t.clone(),
@@ -1899,11 +1885,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
 
     /// The body's sites settle with the enclosing statement, all but the
     /// cells this signature reaches: those stay open, generalized.
-    fn close(
-        mut self,
-        ctx: &mut CompileCtx<R, E>,
-        table: Option<(SArc<DefTable>, &Expr)>,
-    ) {
+    fn close(mut self, ctx: &mut CompileCtx<R>, table: Option<(SArc<DefTable>, &Expr)>) {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
         self.sig.generalize(self.depth);
@@ -1958,9 +1940,9 @@ fn holds_enclosing_cell(t: &Type, depth: u32) -> bool {
 /// Against a declared tvar it must fit the tvar's constraints, not the
 /// variable, since a default is allowed to instantiate the variable at
 /// a site that omits the argument (`CallSite::check_omitted_defaults`).
-fn check_defaults<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    def: &LambdaDef<R, E>,
+fn check_defaults<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    def: &LambdaDef<R>,
     scope: &Scope,
 ) -> Result<()> {
     let flags = match &def.origin {
@@ -2044,24 +2026,24 @@ fn check_defaults<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Lambda {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         let _ = f;
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         let _ = f;
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Lambda, buf);
         self.spec.encode(buf)?;
-        self.lambda_id::<R, E>().ok_or(PackError::InvalidFormat)?.encode(buf)?;
+        self.lambda_id::<R>().ok_or(PackError::InvalidFormat)?.encode(buf)?;
         self.typ.encode(buf)
     }
 
     /// A lambda literal is a constant.
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         produce_constant(ctx.event, &mut self.resident, || self.def.clone())
     }
 
@@ -2069,10 +2051,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.spec
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         // a retained def keeps its `LambdaIds` link-graph nodes alive, and
         // `typecheck1`'s `ids()` walks grow with them
-        if let Some(def) = self.def.downcast_ref::<LambdaDef<R, E>>() {
+        if let Some(def) = self.def.downcast_ref::<LambdaDef<R>>() {
             ctx.lambda_defs.remove(&def.id);
             ctx.def_assertions.lock().retain(|a| a.id != def.id);
             ctx.fusion.forget_def(def.id);
@@ -2083,10 +2065,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let def = self
             .def
-            .downcast_ref::<LambdaDef<R, E>>()
+            .downcast_ref::<LambdaDef<R>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         let spec: &Expr = &self.spec;
         crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec)?;
@@ -2158,12 +2140,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
     /// as its gate would; its instances read its table from there too.
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut InstanceTypes,
     ) -> Result<()> {
         let def = self
             .def
-            .downcast_ref::<LambdaDef<R, E>>()
+            .downcast_ref::<LambdaDef<R>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         let tables = match def.is_builtin() {
             false => types.lambda(self.spec.id),
@@ -2198,7 +2180,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         Ok(())
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Lambda(self)
     }
 }

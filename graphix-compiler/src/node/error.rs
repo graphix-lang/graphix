@@ -1,7 +1,7 @@
 use super::{VarRead, read_var};
 use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, HandlerKind, Node, NodeView,
-    PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent, View,
+    PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, View,
     compiler::compile,
     defetyp,
     env::Env,
@@ -101,10 +101,10 @@ impl SiteValues {
 }
 
 #[derive(Debug)]
-pub struct Catch<R: Rt, E: UserEvent> {
+pub struct Catch<R: Rt> {
     pub(crate) spec: Arc<Expr>,
-    pub handler: Node<R, E>,
-    pub(crate) action: Option<CatchAction<R, E>>,
+    pub handler: Node<R>,
+    pub(crate) action: Option<CatchAction<R>>,
     own_handler: ErrorHandler,
     receipts: Receipts,
     constraint: Option<Type>,
@@ -120,21 +120,21 @@ pub struct Catch<R: Rt, E: UserEvent> {
 /// A seq machine's handler, or a `try` body arm's jump: the action run
 /// once every error of a failure has arrived.
 #[derive(Debug)]
-pub(crate) struct CatchAction<R: Rt, E: UserEvent> {
-    pub(crate) node: Node<R, E>,
-    role: AbortRole<R, E>,
+pub(crate) struct CatchAction<R: Rt> {
+    pub(crate) node: Node<R>,
+    role: AbortRole<R>,
     /// A failure is being collected: the abort stamp of the covering
     /// seq machine when it began ([`ErrorHandler::abort_stamp`]).
     pending: Option<u64>,
 }
 
 #[derive(Debug)]
-enum AbortRole<R: Rt, E: UserEvent> {
+enum AbortRole<R: Rt> {
     Machine {
         /// The `abort(..)` event, which a [`SeqAbort`] counted into
         /// the handler's generation before the machine updated: a fired
         /// production runs `node` with no error in flight.
-        manual: Option<Node<R, E>>,
+        manual: Option<Node<R>>,
         /// The step variable, written idle when the machine sleeps.
         pc: BindId,
         /// A `seqq`'s queue clock, and whether a sleep aborted a run
@@ -146,15 +146,15 @@ enum AbortRole<R: Rt, E: UserEvent> {
     Try { capture: BindId },
 }
 
-impl<R: Rt, E: UserEvent> CatchAction<R, E> {
-    pub(crate) fn manual(&self) -> Option<&Node<R, E>> {
+impl<R: Rt> CatchAction<R> {
+    pub(crate) fn manual(&self) -> Option<&Node<R>> {
         match &self.role {
             AbortRole::Machine { manual, .. } => manual.as_ref(),
             AbortRole::Try { .. } => None,
         }
     }
 
-    fn manual_mut(&mut self) -> Option<&mut Node<R, E>> {
+    fn manual_mut(&mut self) -> Option<&mut Node<R>> {
         match &mut self.role {
             AbortRole::Machine { manual, .. } => manual.as_mut(),
             AbortRole::Try { .. } => None,
@@ -228,16 +228,16 @@ pub(crate) fn join_open_raised(
     }
 }
 
-impl<R: Rt, E: UserEvent> Catch<R, E> {
+impl<R: Rt> Catch<R> {
     /// The covering seq machine's abort stamp, 0 outside one.
     fn run_stamp(&self) -> u64 {
         self.own_handler.machine().map_or(0, |m| m.abort_stamp())
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let handler = decode_node(ctx, buf)?;
         let action = match opt_node_decode(ctx, buf)? {
@@ -278,13 +278,13 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         c: &Arc<expr::CatchExpr>,
-    ) -> Result<(Node<R, E>, Scope)> {
+    ) -> Result<(Node<R>, Scope)> {
         let catch_scope = scope.append_block("ca", spec.id.inner());
         // an ascribed catch takes its type now, so a raise it covers writes
         // nothing, from whatever task checks the raise
@@ -317,7 +317,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 CatchRole::Machine { .. } => HandlerKind::Machine,
             },
         );
-        let lookup = |ctx: &CompileCtx<R, E>, name: &ArcStr| {
+        let lookup = |ctx: &CompileCtx<R>, name: &ArcStr| {
             let path = ModPath::from([name.as_str()]);
             match ctx.env.lookup_bind(&scope.lexical, &path)? {
                 Some((_, b)) => Ok(b.id),
@@ -375,8 +375,8 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Catch<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.handler);
         if let Some(abort) = &self.action {
             f(&abort.node);
@@ -384,7 +384,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.handler);
         if let Some(abort) = &mut self.action {
             f(&mut abort.node);
@@ -417,7 +417,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let _ = self.handler.update(ctx);
         let capture = self
             .action
@@ -465,7 +465,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.give_up_in_flight(ctx.rt.cycle());
         self.own_handler.unpolled_by(&self.polled);
         ctx.release_var(self.bind_id, self.top_id);
@@ -477,7 +477,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.give_up_in_flight(ctx.rt.cycle());
         self.handler.sleep(ctx);
         if let Some(abort) = &mut self.action {
@@ -498,7 +498,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
@@ -507,7 +507,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     /// region's throws was judged there.
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         match types.aux(self.spec.id) {
@@ -550,11 +550,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Catch(self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // a catch is a fusion boundary; the handler's own subtrees fuse
         fuse(&mut self.handler, ctx)?;
         if let Some(abort) = &mut self.action {
@@ -578,11 +578,7 @@ pub(crate) enum Strip {
 }
 
 impl Strip {
-    fn of<R: Rt, E: UserEvent>(
-        ctx: &CompileCtx<R, E>,
-        op: char,
-        typ: &Type,
-    ) -> Result<Self> {
+    fn of<R: Rt>(ctx: &CompileCtx<R>, op: char, typ: &Type) -> Result<Self> {
         // an open operand would take the error form here and fail an
         // instance whose type has neither: its type must be known
         if typ.with_deref(|t| t.is_none()) {
@@ -663,8 +659,8 @@ impl Strip {
 /// never produces: bottom, which a select absorbs, not an empty union
 /// no pattern could match. An instance strips what its definition
 /// decided, whatever its operand became.
-fn strip_typ<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+fn strip_typ<R: Rt>(
+    ctx: &CompileCtx<R>,
     op: char,
     operand: &Type,
     decided: Option<Strip>,
@@ -755,8 +751,8 @@ pub(crate) use report_ignored;
 /// `Qop::update` and the fused kernel's delivery drain: same-top
 /// deliveries land in this cycle's event, cross-top ones go through
 /// `rt.set_var`.
-pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn deliver_error<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     handler: &ErrorHandler,
     own_top: ExprId,
     spec: &Expr,
@@ -780,10 +776,7 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
 /// an `ErrChain`, once. A raise of chains extends them rather than
 /// nesting them (`wrap_error`), so a chain arriving from a callee's
 /// throws keeps its type.
-fn fix_echain_typ<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
-    etyp: &Type,
-) -> Result<Type> {
+fn fix_echain_typ<R: Rt>(ctx: &CompileCtx<R>, etyp: &Type) -> Result<Type> {
     let Some(payload) = raised_payload(&ctx.env, etyp)? else {
         return format_with_flags(PrintFlag::DerefTVars, || {
             bail!("expected error not {etyp}")
@@ -888,10 +881,10 @@ impl QopMode {
 /// `?` and `$`: the operand less what `strip` takes, which goes where
 /// `mode` says.
 #[derive(Debug)]
-pub struct Qop<R: Rt, E: UserEvent> {
+pub struct Qop<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub n: Node<R, E>,
+    pub n: Node<R>,
     pub(crate) strip: Strip,
     pub(crate) mode: QopMode,
     /// What a raise carries ([`Self::raised_typ`]).
@@ -899,11 +892,11 @@ pub struct Qop<R: Rt, E: UserEvent> {
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> Qop<R, E> {
+impl<R: Rt> Qop<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
@@ -922,13 +915,13 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         e: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let mode = match spec.kind {
             ExprKind::OrNever(_) => QopMode::Ignore,
@@ -985,7 +978,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     }
 
     /// The type of what a raise here carries.
-    fn raised_typ(strip: Strip, n: &Node<R, E>) -> Type {
+    fn raised_typ(strip: Strip, n: &Node<R>) -> Type {
         match strip {
             Strip::Error => n.typ().clone(),
             Strip::Null => NULL_ERR.clone(),
@@ -1001,12 +994,12 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Qop<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.n)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
     }
 
@@ -1019,7 +1012,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.mode.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let tv = self.n.update(ctx);
         let (spec, mode, raised) = (&self.spec, &self.mode, &self.raised);
         strip_production(self.strip, tv, &mut self.resident, |v| match mode {
@@ -1053,17 +1046,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         &self.spec
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true, None)
     }
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         let row = types.settle(self.spec.id, &self.typ);
@@ -1076,7 +1069,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         )
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::Qop(self)
     }
 
@@ -1129,9 +1122,9 @@ enum GuardState {
 }
 
 #[derive(Debug)]
-pub struct SeqGuard<R: Rt, E: UserEvent> {
+pub struct SeqGuard<R: Rt> {
     spec: Arc<Expr>,
-    pub(crate) n: Node<R, E>,
+    pub(crate) n: Node<R>,
     handler: ErrorHandler,
     /// The machine's handler: an `abort(..)` fails the run there, and a
     /// try-body arm's nearest handler is its jump.
@@ -1142,11 +1135,11 @@ pub struct SeqGuard<R: Rt, E: UserEvent> {
     polled: Option<BoundaryRef>,
 }
 
-impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
+impl<R: Rt> SeqGuard<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
         let handler = image::handler_decode(buf)?;
@@ -1165,13 +1158,13 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         e: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let handler =
             scope.dynamic.handler().ok_or_else(|| anyhow!("BUG: seq handler"))?;
         let machine = handler.machine().ok_or_else(|| anyhow!("BUG: seq machine"))?;
@@ -1190,16 +1183,16 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for SeqGuard<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.n)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.handler.unpolled_by(&self.polled);
         self.n.delete(ctx)
     }
@@ -1212,7 +1205,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         image::handler_encode(&self.machine, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let current = (self.handler.generation(), self.machine.generation());
         let (generation, passed, owed) = match self.state {
             GuardState::Sleeping if self.machine.aborted_in(ctx.rt.cycle()) => {
@@ -1270,7 +1263,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         self.resident.set_bottom(true)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.state = GuardState::Sleeping;
         self.n.sleep(ctx);
     }
@@ -1285,11 +1278,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         self.n.typ()
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::SeqGuard(self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fuse(&mut self.n, ctx)?;
         Ok(None)
     }
@@ -1300,17 +1293,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
 /// under the machine passes a completion that cycle. A block updates its
 /// catches after their covered children, which is too late for that.
 #[derive(Debug)]
-pub struct SeqAbort<R: Rt, E: UserEvent> {
+pub struct SeqAbort<R: Rt> {
     spec: Arc<Expr>,
-    pub(crate) n: Node<R, E>,
+    pub(crate) n: Node<R>,
     machine: ErrorHandler,
 }
 
-impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
+impl<R: Rt> SeqAbort<R> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
         let machine = image::handler_decode(buf)?;
@@ -1318,13 +1311,13 @@ impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         e: &Expr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let machine = scope
             .dynamic
             .handler()
@@ -1335,12 +1328,12 @@ impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for SeqAbort<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.n)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
     }
 
@@ -1351,7 +1344,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
         image::handler_encode(&self.machine, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         if self.n.update(ctx).is_fired() {
             self.machine.abort(ctx.rt.cycle());
         }
@@ -1368,19 +1361,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
         Type::BOTTOM
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::SeqAbort(self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fuse(&mut self.n, ctx)?;
         Ok(None)
     }
 }
 
-impl<R: Rt, E: UserEvent> Catch<R, E> {
+impl<R: Rt> Catch<R> {
     /// The error bind, then a `try` arm's capture cell.
-    fn bind_ids(&self) -> impl Iterator<Item = BindId> + use<R, E> {
+    fn bind_ids(&self) -> impl Iterator<Item = BindId> + use<R> {
         let capture = self.action.as_ref().and_then(|a| a.capture());
         std::iter::once(self.bind_id).chain(capture)
     }
@@ -1395,8 +1388,8 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
         // siblings typecheck first, so the region's throws are already
@@ -1489,13 +1482,13 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Qop<R, E> {
+impl<R: Rt> Qop<R> {
     /// The raise joined into the handler's bind is state: an instance
     /// computes it too, over the strip its definition `decided`.
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
         check: bool,
         decided: Option<Strip>,
     ) -> Result<()> {
@@ -1534,21 +1527,21 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
+impl<R: Rt> SeqGuard<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
     ) -> Result<()> {
         child(&mut self.n, ctx)
     }
 }
 
-impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
+impl<R: Rt> SeqAbort<R> {
     fn typecheck0_with(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
+        ctx: &mut CompileCtx<R>,
+        child: &mut super::Child<'_, R>,
     ) -> Result<()> {
         child(&mut self.n, ctx)
     }
@@ -1581,9 +1574,9 @@ struct Receipts {
 impl Receipts {
     /// This cycle's error, when one of `handler`'s raises arrived and was
     /// not given up.
-    fn take<R: Rt, E: UserEvent>(
+    fn take<R: Rt>(
         &mut self,
-        ctx: &ExecCtx<'_, R, E>,
+        ctx: &ExecCtx<'_, R>,
         handler: &ErrorHandler,
     ) -> Option<Value> {
         let (bind_id, _) = handler.id();
@@ -1656,8 +1649,8 @@ impl Receipts {
 
 impl ErrorRelay {
     /// The relay, and the scope the function it covers compiles under.
-    pub fn new<R: Rt, E: UserEvent>(
-        ctx: &mut CompileCtx<R, E>,
+    pub fn new<R: Rt>(
+        ctx: &mut CompileCtx<R>,
         scope: &Scope,
         top_id: ExprId,
     ) -> (Self, Scope) {
@@ -1684,10 +1677,7 @@ impl ErrorRelay {
     }
 
     /// The error the function raised this cycle, which also goes on.
-    pub fn update<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-    ) -> Option<Value> {
+    pub fn update<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) -> Option<Value> {
         let e = self.receipts.take(ctx, &self.handler)?;
         match self.handler.parent().handler() {
             Some(parent) => {
@@ -1709,7 +1699,7 @@ impl ErrorRelay {
         self.receipts.give_up(&self.handler, cycle)
     }
 
-    pub fn delete<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn delete<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.give_up_in_flight(ctx.rt.cycle());
         let (bind_id, top_id) = self.handler.id();
         ctx.release_var(bind_id, top_id);
@@ -1720,8 +1710,8 @@ impl ErrorRelay {
         image::handler_encode(&self.handler, buf)
     }
 
-    pub fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<'_, R, E>,
+    pub fn image_decode<R: Rt>(
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let handler = image::handler_decode(buf)?;

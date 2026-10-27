@@ -6,7 +6,7 @@
 //! compile performed. A kind without a codec fails the write with
 //! [`NOT_IMAGED`]; nothing is skipped.
 
-use crate::{ExecCtx, Node, Rt, UserEvent, image::ImageBuf, node};
+use crate::{ExecCtx, Node, Rt, image::ImageBuf, node};
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{PackError, encode_varint};
 
@@ -43,8 +43,8 @@ pub(crate) fn put_tag(tag: NodeTag, buf: &mut ImageBuf) {
     buf.put_u8(tag as u8)
 }
 
-pub fn encode_nodes<R: Rt, E: UserEvent>(
-    nodes: &[Node<R, E>],
+pub fn encode_nodes<R: Rt>(
+    nodes: &[Node<R>],
     buf: &mut ImageBuf,
 ) -> Result<(), PackError> {
     encode_varint(nodes.len() as u64, buf);
@@ -54,8 +54,8 @@ pub fn encode_nodes<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-pub(crate) fn opt_node_encode<R: Rt, E: UserEvent>(
-    node: Option<&Node<R, E>>,
+pub(crate) fn opt_node_encode<R: Rt>(
+    node: Option<&Node<R>>,
     buf: &mut ImageBuf,
 ) -> Result<(), PackError> {
     match node {
@@ -70,10 +70,10 @@ pub(crate) fn opt_node_encode<R: Rt, E: UserEvent>(
     }
 }
 
-pub(crate) fn opt_node_decode<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn opt_node_decode<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     buf: &mut &[u8],
-) -> Result<Option<Node<R, E>>, PackError> {
+) -> Result<Option<Node<R>>, PackError> {
     if !buf.has_remaining() {
         return Err(PackError::BufferShort);
     }
@@ -84,10 +84,10 @@ pub(crate) fn opt_node_decode<R: Rt, E: UserEvent>(
     }
 }
 
-pub fn decode_nodes<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub fn decode_nodes<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     buf: &mut &[u8],
-) -> Result<Vec<Node<R, E>>, PackError> {
+) -> Result<Vec<Node<R>>, PackError> {
     // every node is one tag byte at least
     let n = crate::image::count_decode(buf)?;
     let mut out = Vec::with_capacity(n);
@@ -99,17 +99,17 @@ pub fn decode_nodes<R: Rt, E: UserEvent>(
 
 /// Decode one node: its tag, then its kind's codec. Recurses once per
 /// node level, under the stack guard like every other node walk.
-pub fn decode_node<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub fn decode_node<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     buf: &mut &[u8],
-) -> Result<Node<R, E>, PackError> {
+) -> Result<Node<R>, PackError> {
     crate::stack::ensure_sufficient(|| decode_tagged(ctx, buf))
 }
 
-fn decode_tagged<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn decode_tagged<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     buf: &mut &[u8],
-) -> Result<Node<R, E>, PackError> {
+) -> Result<Node<R>, PackError> {
     use node::{
         array::{Array, ArrayRef, ArraySlice, ListLit},
         bind::{Bind, ByRef, Deref, Ref},

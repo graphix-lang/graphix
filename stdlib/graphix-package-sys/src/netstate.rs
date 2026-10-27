@@ -12,9 +12,7 @@ use futures::{
     future::{AbortHandle, Abortable},
     stream::{self, SelectAll},
 };
-use graphix_compiler::{
-    BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent, branch::RtView,
-};
+use graphix_compiler::{BindId, CustomBuiltinType, ExecCtx, Rt, branch::RtView};
 use graphix_package_core::{Inbox, NetConfig, NetTimeouts};
 use netidx::{
     path::Path,
@@ -303,7 +301,7 @@ impl NetState {
     /// pump and flusher tasks spawn and their delivery channels
     /// register with the runtime — which is why this needs `ctx`.
     /// Branches of a cycle may ask at once: one creates it.
-    pub fn get<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>) -> NetState {
+    pub fn get<R: Rt>(ctx: &mut ExecCtx<'_, R>) -> NetState {
         if let Some(st) = ctx.libstate.get::<NetState>() {
             return st;
         }
@@ -445,10 +443,7 @@ impl NetState {
     /// The netidx handles, materializing on first touch per [`NetConfig`].
     /// Self-hosted/config builds run on a dedicated side thread, so this is
     /// legal from sync builtin code; the caller blocks for the spinup once.
-    fn handles<R: Rt, E: UserEvent>(
-        &self,
-        ctx: &mut ExecCtx<'_, R, E>,
-    ) -> Result<&Handles> {
+    fn handles<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) -> Result<&Handles> {
         if let Some(handles) = self.0.handles.get() {
             return Ok(handles);
         }
@@ -561,9 +556,9 @@ impl NetState {
     // because each On window ends at its first delivery, and that delivery is netidx's
     // last-known value of the path while the publisher's newer one is still in flight.
     // That is publish latency, not this mechanism, so the fixture keeps its timer.
-    pub(crate) fn subscribe<R: Rt, E: UserEvent>(
+    pub(crate) fn subscribe<R: Rt>(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         flags: UpdatesFlags,
         path: Path,
         id: BindId,
@@ -576,9 +571,9 @@ impl NetState {
     }
 
     /// The path's Dval for writing alone: no updates.
-    pub(crate) fn write_target<R: Rt, E: UserEvent>(
+    pub(crate) fn write_target<R: Rt>(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         path: Path,
     ) -> Result<Dval> {
         Ok(self.handles(ctx)?.subscriber.subscribe(path))
@@ -597,9 +592,9 @@ impl NetState {
         }
     }
 
-    pub(crate) fn publish<R: Rt, E: UserEvent>(
+    pub(crate) fn publish<R: Rt>(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         path: Path,
         value: Value,
         write_id: Option<BindId>,
@@ -639,9 +634,9 @@ impl NetState {
         drop(val)
     }
 
-    fn spawn_request<R: Rt, E: UserEvent>(
+    fn spawn_request<R: Rt>(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         id: BindId,
         future: impl Future<Output = Value> + Send + 'static,
     ) {
@@ -656,9 +651,9 @@ impl NetState {
         self.0.requests.lock().remove(&id);
     }
 
-    pub(crate) fn call_rpc<R: Rt, E: UserEvent>(
+    pub(crate) fn call_rpc<R: Rt>(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         path: Path,
         args: Vec<(arcstr::ArcStr, Value)>,
         id: BindId,
@@ -714,9 +709,9 @@ impl NetState {
         }
     }
 
-    pub(crate) fn publish_rpc<R: Rt, E: UserEvent>(
+    pub(crate) fn publish_rpc<R: Rt>(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         path: Path,
         doc: Value,
         spec: Vec<netidx_protocols::rpc::server::ArgSpec>,
@@ -743,9 +738,9 @@ impl NetState {
     /// One-shot resolver list/table. The `flushed` barrier is
     /// read-your-writes: this process's own publishes must be
     /// registered with the resolver before the list runs.
-    pub(crate) fn list<R: Rt, E: UserEvent>(
+    pub(crate) fn list<R: Rt>(
         &self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         id: BindId,
         path: Path,
         table: bool,
@@ -825,10 +820,7 @@ impl NetState {
 
     /// The raw subscriber for embedder-side consumers (the gui
     /// data_table). Materializes on first call.
-    pub fn subscriber<R: Rt, E: UserEvent>(
-        &self,
-        ctx: &mut ExecCtx<'_, R, E>,
-    ) -> Result<Subscriber> {
+    pub fn subscriber<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) -> Result<Subscriber> {
         Ok(self.handles(ctx)?.subscriber.clone())
     }
 }

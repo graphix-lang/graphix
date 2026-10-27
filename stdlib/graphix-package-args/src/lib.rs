@@ -6,8 +6,8 @@ use arcstr::ArcStr;
 use clap::error::ErrorKind;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::Effect, errf, expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, effects::Effect,
+    errf, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;
@@ -223,40 +223,36 @@ struct Parse {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
+impl<R: Rt> BuiltIn<R> for Parse {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "args_parse";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        _from: &'c [Node<R>],
         _top_id: ExprId,
-    ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
+    ) -> anyhow::Result<Box<dyn Apply<R>>> {
         Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
         _buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+    ) -> Result<Box<dyn Apply<R>>, PackError> {
         Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
+impl<R: Rt> Apply<R> for Parse {
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let Some(tv) = graphix_package_core::seam_tick(from[0].update(ctx)) else {
             return self.out.ride();
         };
@@ -301,9 +297,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         self.out.set(TagValue::fired(res))
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
 graphix_derive::defpackage! {

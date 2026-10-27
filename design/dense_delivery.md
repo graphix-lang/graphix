@@ -34,7 +34,7 @@ fired error logs n times; standing bottoms never log).
 ### The signature
 
 ```rust
-fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue
+fn update(&mut self, ctx: &mut ExecCtx<R>, event: &mut Event) -> &TagValue
 ```
 
 A borrowed production, no `Option`. Every computing node owns one

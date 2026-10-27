@@ -1,6 +1,6 @@
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::{
-    CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent, defetyp,
+    CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, defetyp,
     env::Env,
     expr::{Expr, ExprId},
     fusion::{
@@ -61,11 +61,11 @@ pub enum BoolOp {
 macro_rules! binary_node {
     ($name:ident, $typ:expr, $(state: $state:ty,)? $(settles: $settles:literal,)? { $($methods:tt)* }) => {
         #[derive(Debug)]
-        pub struct $name<R: Rt, E: UserEvent> {
+        pub struct $name<R: Rt> {
             pub(crate) spec: Arc<Expr>,
             pub typ: Type,
-            pub lhs: Node<R, E>,
-            pub rhs: Node<R, E>,
+            pub lhs: Node<R>,
+            pub rhs: Node<R>,
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
             slept: WakeBit,
@@ -76,25 +76,25 @@ macro_rules! binary_node {
             )?
         }
 
-        impl<R: Rt, E: UserEvent> $name<R, E> {
+        impl<R: Rt> $name<R> {
             pub(crate) fn compile(
-                ctx: &mut CompileCtx<R, E>,
+                ctx: &mut CompileCtx<R>,
                 flags: BitFlags<CFlag>,
                 spec: Arc<Expr>,
                 scope: &Scope,
                 top_id: ExprId,
                 lhs: &Expr,
                 rhs: &Expr,
-            ) -> Result<Node<R, E>> {
+            ) -> Result<Node<R>> {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 Ok(Self::node(spec, $typ, lhs, rhs, Default::default()))
             }
 
             pub(crate) fn image_decode(
-                ctx: &mut ExecCtx<'_, R, E>,
+                ctx: &mut ExecCtx<'_, R>,
                 buf: &mut &[u8],
-            ) -> Result<Node<R, E>, PackError> {
+            ) -> Result<Node<R>, PackError> {
                 let spec = Arc::new(Expr::decode(buf)?);
                 let typ = Type::decode(buf)?;
                 let lhs = decode_node(ctx, buf)?;
@@ -106,10 +106,10 @@ macro_rules! binary_node {
             fn node(
                 spec: Arc<Expr>,
                 typ: Type,
-                lhs: Node<R, E>,
-                rhs: Node<R, E>,
+                lhs: Node<R>,
+                rhs: Node<R>,
                 fork: crate::cost::ForkSite,
-            ) -> Node<R, E> {
+            ) -> Node<R> {
                 Node::new(Self {
                     spec,
                     typ,
@@ -123,7 +123,7 @@ macro_rules! binary_node {
             }
         }
 
-        impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
+        impl<R: Rt> Update<R> for $name<R> {
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 put_tag(NodeTag::$name, buf);
                 self.spec.encode(buf)?;
@@ -141,7 +141,7 @@ macro_rules! binary_node {
                 &self.typ
             }
 
-            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+            fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 self.typecheck_own(ctx)
@@ -149,7 +149,7 @@ macro_rules! binary_node {
 
             fn typecheck0_instance(
                 &mut self,
-                ctx: &mut CompileCtx<R, E>,
+                ctx: &mut CompileCtx<R>,
                 types: &mut super::lambda::InstanceTypes,
             ) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
@@ -160,27 +160,27 @@ macro_rules! binary_node {
                 Ok(())
             }
 
-            fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+            fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
                 f(&self.lhs);
                 f(&self.rhs)
             }
 
-            fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+            fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
                 f(&mut self.lhs);
                 f(&mut self.rhs)
             }
 
-            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
                 self.slept.set();
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx);
             }
 
-            fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+            fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
                 fusion::fuse_parts([&mut self.lhs, &mut self.rhs], ctx)
             }
 
-            fn view(&self) -> NodeView<'_, R, E> {
+            fn view(&self) -> NodeView<'_, R> {
                 NodeView::$name(self)
             }
 
@@ -282,7 +282,7 @@ fn refuse_mixed_numeric(env: &Env, t: &Type) -> Result<()> {
 macro_rules! compare_op {
     ($name:ident, $op:tt, $ordered:literal) => {
         binary_node!($name, Type::boolean(), state: Equality, {
-            fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+            fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
                 if matches!(self.state, Equality::Undecided) {
                     self.state = Equality::of(&ctx.env, self.lhs.typ(), self.rhs.typ());
                 }
@@ -308,8 +308,8 @@ macro_rules! compare_op {
             }
         });
 
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        impl<R: Rt> $name<R> {
+            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
                     Some(t) => {
@@ -400,7 +400,7 @@ macro_rules! bool_op {
     ($name:ident, $op:tt) => {
         binary_node!($name, Type::boolean(), {
             // Strict, not short-circuit: `false && ⊥ = ⊥`.
-            fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+            fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
                 let (l, r, _, tag) = gated_operands!(self, ctx);
                 let v = l.with_value(|lv| {
                     r.with_value(|rv| match (lv, rv) {
@@ -419,8 +419,8 @@ macro_rules! bool_op {
             }
         });
 
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        impl<R: Rt> $name<R> {
+            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
                 let bt = Type::boolean();
                 wrap!(self.lhs, bt.check_contains(&ctx.env, self.lhs.typ()))?;
                 wrap!(self.rhs, bt.check_contains(&ctx.env, self.rhs.typ()))
@@ -440,26 +440,26 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug)]
-pub struct Unary<R: Rt, E: UserEvent> {
+pub struct Unary<R: Rt> {
     pub op: UnaryOp,
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    pub n: Node<R, E>,
+    pub n: Node<R>,
     resident: TagValue,
     /// wake catch-up: set by `sleep()`, taken by the next update
     slept: WakeBit,
 }
 
-impl<R: Rt, E: UserEvent> Unary<R, E> {
+impl<R: Rt> Unary<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         n: &Expr,
         op: UnaryOp,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let n = compile(ctx, flags, n.clone(), scope, top_id)?;
         let typ = match op {
             UnaryOp::Not => Type::boolean(),
@@ -469,17 +469,17 @@ impl<R: Rt, E: UserEvent> Unary<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
         op: UnaryOp,
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         Ok(Self::node(op, spec, typ, n))
     }
 
-    fn node(op: UnaryOp, spec: Arc<Expr>, typ: Type, n: Node<R, E>) -> Node<R, E> {
+    fn node(op: UnaryOp, spec: Arc<Expr>, typ: Type, n: Node<R>) -> Node<R> {
         Node::new(Self {
             op,
             spec,
@@ -495,7 +495,7 @@ impl<R: Rt, E: UserEvent> Unary<R, E> {
     }
 
     /// The operand is a bool, or negatable once the check settles its cell.
-    fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck_own(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match self.op {
             UnaryOp::Not => {
                 wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
@@ -518,12 +518,12 @@ impl<R: Rt, E: UserEvent> Unary<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Unary<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for Unary<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.n)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
     }
 
@@ -540,7 +540,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Unary<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let tv = self.n.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
@@ -564,23 +564,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Unary<R, E> {
         &self.typ
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         self.n.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         self.typecheck_own(ctx)
     }
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
@@ -590,7 +590,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Unary<R, E> {
         }
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         match self.op {
             UnaryOp::Not => NodeView::Not(self),
             UnaryOp::Neg => NodeView::Neg(self),
@@ -799,7 +799,7 @@ pub(crate) fn arith_rule(
 }
 
 /// Defer an operator's settle of the operand `n` to the check's settle.
-fn defer_operand<R: Rt, E: UserEvent>(ctx: &mut CompileCtx<R, E>, n: &Node<R, E>) {
+fn defer_operand<R: Rt>(ctx: &mut CompileCtx<R>, n: &Node<R>) {
     if let Type::TVar(tv) = n.typ() {
         super::defer_settle(ctx, || crate::PendingSettle::Operand {
             tv: tv.clone(),
@@ -813,7 +813,7 @@ macro_rules! arith_op {
         binary_node!($name, Type::empty_tvar(), settles: true, {
             arith_emit_clif!($checked, $base);
 
-            fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+            fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
                 let (l, r, trig, tag) = gated_operands!(self, ctx);
                 let v = l.with_value(|lv| {
                     r.with_value(|rv| {
@@ -837,8 +837,8 @@ macro_rules! arith_op {
 
         });
 
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        impl<R: Rt> $name<R> {
+            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 wrap!(
                     self,

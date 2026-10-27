@@ -9,7 +9,7 @@ use super::{
     scope_encode,
 };
 use crate::{
-    ExecCtx, LambdaId, Rt, UserEvent,
+    ExecCtx, LambdaId, Rt,
     effects::LambdaFacts,
     expr::{Arg, Expr, ExprId},
     node::lambda::{
@@ -94,8 +94,8 @@ fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
     Ok(shared)
 }
 
-pub(crate) fn def_encode<R: Rt, E: UserEvent>(
-    def: &LambdaDef<R, E>,
+pub(crate) fn def_encode<R: Rt>(
+    def: &LambdaDef<R>,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
     let LambdaDef {
@@ -138,8 +138,8 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
 }
 
 /// Rebuild a definition and register it in `ctx.lambda_defs`.
-pub(crate) fn def_decode<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+pub(crate) fn def_decode<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     buf: &mut impl Buf,
 ) -> Result<LambdaId, PackError> {
     let id = LambdaId::decode(buf)?;

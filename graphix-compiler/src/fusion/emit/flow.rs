@@ -4,7 +4,7 @@
 
 use super::lower::{OwnCall, freeze_node_typ};
 use crate::{
-    BindId, Node, NodeView, Refs, Rt, UserEvent,
+    BindId, Node, NodeView, Refs, Rt,
     expr::ExprKind,
     fusion::{
         self,
@@ -45,7 +45,7 @@ use super::{
 
 /// True only when no node in the subtree could carry an effect or
 /// diagnostic. CallSite and Qop (`?` and `$`) keep their statements live.
-pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+pub(super) fn stmt_subtree_effect_free<R: Rt>(node: &Node<R>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| {
         let delivers = matches!(n.view(), NodeView::CallSite(_) | NodeView::Qop(_));
@@ -57,7 +57,7 @@ pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -
 /// Which statements of a block emit: the tail, every statement that
 /// may carry an effect, and every one binding a name a later emitted
 /// statement reads. A skipped statement's reads keep nothing alive.
-fn block_live<R: Rt, E: UserEvent>(children: &[Node<R, E>]) -> LPooled<Vec<bool>> {
+fn block_live<R: Rt>(children: &[Node<R>]) -> LPooled<Vec<bool>> {
     let mut needed: LPooled<IntSet<BindId>> = LPooled::take();
     let mut live: LPooled<Vec<bool>> = LPooled::take();
     live.resize(children.len(), false);
@@ -79,9 +79,9 @@ fn block_live<R: Rt, E: UserEvent>(children: &[Node<R, E>]) -> LPooled<Vec<bool>
 
 /// A block: bind each let, compile the tail, clone it out if it
 /// borrows a local about to drop, emit the scope drops.
-pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_block_node<R: Rt>(
     cx: &mut BodyCx,
-    children: &[Node<R, E>],
+    children: &[Node<R>],
 ) -> Result<CompiledExpr> {
     let Some((tail, init)) = children.split_last() else {
         bail!("emit_clif: empty block");
@@ -127,10 +127,7 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
 
 /// Emit one non-tail block child: a `let` binds, declarations are
 /// skipped, anything else evaluates and discards.
-fn emit_block_stmt<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    child: &Node<R, E>,
-) -> Result<()> {
+fn emit_block_stmt<R: Rt>(cx: &mut BodyCx, child: &Node<R>) -> Result<()> {
     match child.view() {
         NodeView::Bind(bind) => {
             let bspec = match &bind.spec.kind {
@@ -177,9 +174,9 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
 /// positions are [`fusion::TailPosition`]'s; a self-call leaf becomes
 /// the rebind-and-jump loop, every other leaf returns. Every path
 /// leaves the current block terminated.
-pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
+pub(super) fn emit_body_tail<R: Rt>(
     cx: &mut BodyCx,
-    node: &Node<R, E>,
+    node: &Node<R>,
     ret: &Type,
 ) -> Result<()> {
     use fusion::TailPosition;
@@ -239,9 +236,9 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
 /// TERMINATE (return or self tail-call jump) instead of widening to a
 /// merge block. An adopted owned scrutinee is dropped by every
 /// terminator with the rest of the env.
-fn emit_select_node_tail<R: Rt, E: UserEvent>(
+fn emit_select_node_tail<R: Rt>(
     cx: &mut BodyCx,
-    sel: &Select<R, E>,
+    sel: &Select<R>,
     ret: &Type,
 ) -> Result<()> {
     if sel.arms.is_empty() {
@@ -293,10 +290,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
 /// A self-call in tail position: evaluate the new formal values in the
 /// order the node-walk updates them, rebind the leading tail-call slots
 /// via `emit_tail_rebind_jump`, and jump to the loop head.
-fn emit_self_tail_call<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    cs: &CallSite<R, E>,
-) -> Result<()> {
+fn emit_self_tail_call<R: Rt>(cx: &mut BodyCx, cs: &CallSite<R>) -> Result<()> {
     let Some(OwnCall { info, .. }) = cx.ctx.self_call else {
         bail!("emit_clif: a self tail-call outside a self-recursive body");
     };
@@ -306,7 +300,7 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         .ok_or_else(|| anyhow!("emit_clif: self tail-call has no FnType"))?;
     let (skipped, invariant) = (&info.kernel.skipped_args, &info.kernel.tail_invariant);
     // per rebound formal, its slot and its argument
-    let mut carried: SmallVec<[(usize, &Node<R, E>); 8]> = SmallVec::new();
+    let mut carried: SmallVec<[(usize, &Node<R>); 8]> = SmallVec::new();
     let mut slot_idx = 0usize;
     for i in 0..ftype.args.len() {
         let iu = i as u32;
@@ -324,7 +318,7 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
         carried.push((slot, arg));
     }
-    let nodes: SmallVec<[Option<&Node<R, E>>; 8]> =
+    let nodes: SmallVec<[Option<&Node<R>>; 8]> =
         carried.iter().map(|(_, n)| Some(*n)).collect();
     let mut rebinds: SmallVec<[TailRebind; 8]> = SmallVec::new();
     // an owned value is held while the later args emit
@@ -347,12 +341,12 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
 /// Bind `value` as a local of the binding's type `typ`, in that type's
 /// representation; a borrowed composite or value source is cloned so
 /// this scope owns it.
-fn emit_let_node<R: Rt, E: UserEvent>(
+fn emit_let_node<R: Rt>(
     cx: &mut BodyCx,
     name: &ArcStr,
     bind_id: Option<BindId>,
     typ: &Type,
-    value: &Node<R, E>,
+    value: &Node<R>,
 ) -> Result<()> {
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
@@ -424,7 +418,7 @@ fn emit_let_node<R: Rt, E: UserEvent>(
 }
 
 /// Is `node` a lambda literal, seen through grouping parentheses?
-fn is_lambda_literal<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+fn is_lambda_literal<R: Rt>(node: &Node<R>) -> bool {
     let mut view = node.view();
     loop {
         view = match view {
@@ -438,9 +432,9 @@ fn is_lambda_literal<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
 /// Drop a discarded statement's result if it owns an allocation.
 /// Borrowed reads (a bare `Ref` statement) own nothing; strings are
 /// always owned at production (reads clone).
-pub(super) fn emit_discard_result<R: Rt, E: UserEvent>(
+pub(super) fn emit_discard_result<R: Rt>(
     cx: &mut BodyCx,
-    node: &Node<R, E>,
+    node: &Node<R>,
     cv: CompiledExpr,
 ) -> Result<()> {
     let source = node_composite_source(node);
@@ -574,9 +568,9 @@ fn emit_qop_error_disposal(
 /// `?`/`$` over an inner that is always what the site strips: a fresh
 /// one goes to its sink; the result is a fresh bottom, stale iff the
 /// inner was.
-fn emit_qop_always_bad<R: Rt, E: UserEvent>(
+fn emit_qop_always_bad<R: Rt>(
     cx: &mut BodyCx,
-    inner: &Node<R, E>,
+    inner: &Node<R>,
     result_typ: &Type,
     sink: QopSink,
 ) -> Result<CompiledExpr> {
@@ -601,9 +595,9 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
 /// through. `result_typ` is the qop node's static type, which selects
 /// the arm: the typechecker strips every error member of the flattened
 /// inner union, so it can differ from the inner's one-layer success type.
-pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_qop_node<R: Rt>(
     cx: &mut BodyCx,
-    inner: &Node<R, E>,
+    inner: &Node<R>,
     result_typ: &Type,
     sink: QopSink,
 ) -> Result<CompiledExpr> {

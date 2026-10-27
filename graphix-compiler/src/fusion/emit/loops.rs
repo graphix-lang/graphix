@@ -6,7 +6,7 @@ use super::{
     body::emit_into_slot, scaffold,
 };
 use crate::{
-    BindId, Node, NodeView, Rt, UserEvent,
+    BindId, Node, NodeView, Rt,
     expr::Expr,
     fusion::{
         self,
@@ -51,8 +51,8 @@ impl CallbackParam<'_> {
 /// The callback's `index`-th positional parameter. A callback with
 /// labeled parameters, which the collection interprets, is a blocker
 /// naming the first.
-pub(crate) fn callback_param<'c, R: Rt, E: UserEvent>(
-    callback: &'c GXLambda<R, E>,
+pub(crate) fn callback_param<'c, R: Rt>(
+    callback: &'c GXLambda<R>,
     index: usize,
     fallback: ArcStr,
     spec: &Expr,
@@ -156,9 +156,9 @@ fn frozen_may_be_null(t: &Type) -> bool {
 /// Emit a List/Map HOF source: marshal the collection Value owned and
 /// flatten it to a fresh ValArray through `helper`, which consumes it:
 /// the [`scaffold::ArraySrc`] that owns the flattened array.
-fn emit_flattened_source<R: Rt, E: UserEvent>(
+fn emit_flattened_source<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
+    source: &Node<R>,
     helper: &'static str,
 ) -> Result<scaffold::ArraySrc> {
     let value = emit::emit_owned_value_operand_node(cx, source)?;
@@ -182,10 +182,10 @@ fn convert_collection_result(
 impl Flavor {
     /// Emit the loop source as the scaffold's ValArray, whose disc drives
     /// the firing wrap.
-    fn emit_source<R: Rt, E: UserEvent>(
+    fn emit_source<R: Rt>(
         self,
         cx: &mut BodyCx,
-        source: &Node<R, E>,
+        source: &Node<R>,
     ) -> Result<scaffold::ArraySrc> {
         match self {
             Self::Array => {
@@ -214,7 +214,7 @@ impl Flavor {
 }
 
 /// The filter/find gate: the callback must compile to a bool scalar.
-fn predicate_is_bool<R: Rt, E: UserEvent>(body: &Node<R, E>) -> bool {
+fn predicate_is_bool<R: Rt>(body: &Node<R>) -> bool {
     kernel_abi::freeze_for_abi_normalized(body.typ())
         .as_ref()
         .and_then(|typ| kernel_abi::scalar_prim(typ))
@@ -223,9 +223,9 @@ fn predicate_is_bool<R: Rt, E: UserEvent>(body: &Node<R, E>) -> bool {
 
 /// Emit a loop over `source` built by `emit`, which gets the flattened
 /// source; the source's firing folds into the loop's result.
-fn emit_loop<'a, 'f, 'c, R: Rt, E: UserEvent>(
+fn emit_loop<'a, 'f, 'c, R: Rt>(
     cx: &mut BodyCx<'a, 'f, 'c>,
-    source: &Node<R, E>,
+    source: &Node<R>,
     flavor: Flavor,
     emit: impl FnOnce(
         &mut BodyCx<'a, 'f, 'c>,
@@ -238,10 +238,10 @@ fn emit_loop<'a, 'f, 'c, R: Rt, E: UserEvent>(
     Ok(Some(flags.apply(cx, result, disc)))
 }
 
-pub(crate) fn emit_init_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_init_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
+    source: &Node<R>,
+    body: &Node<R>,
     param: &CallbackParam,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
@@ -281,10 +281,10 @@ pub(crate) fn emit_init_kind<R: Rt, E: UserEvent>(
     Ok(Some(flags.apply(cx, result, count_disc)))
 }
 
-pub(crate) fn emit_map_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_map_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
+    source: &Node<R>,
+    body: &Node<R>,
     param: &CallbackParam,
     element_type: &Type,
     flavor: Flavor,
@@ -315,10 +315,10 @@ pub(crate) fn emit_map_kind<R: Rt, E: UserEvent>(
     })
 }
 
-pub(crate) fn emit_filter_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_filter_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
+    source: &Node<R>,
+    body: &Node<R>,
     param: &CallbackParam,
     element_type: &Type,
     flavor: Flavor,
@@ -343,10 +343,10 @@ pub(crate) fn emit_filter_kind<R: Rt, E: UserEvent>(
     })
 }
 
-pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_filter_map_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
+    source: &Node<R>,
+    body: &Node<R>,
     param: &CallbackParam,
     element_type: &Type,
     flavor: Flavor,
@@ -386,10 +386,10 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     })
 }
 
-pub(crate) fn emit_flat_map_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_flat_map_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
+    source: &Node<R>,
+    body: &Node<R>,
     param: &CallbackParam,
     element_type: &Type,
     flavor: Flavor,
@@ -444,10 +444,10 @@ pub(crate) fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     })
 }
 
-pub(crate) fn emit_find_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_find_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
+    source: &Node<R>,
+    body: &Node<R>,
     param: &CallbackParam,
     element_type: &Type,
     flavor: Flavor,
@@ -472,10 +472,10 @@ pub(crate) fn emit_find_kind<R: Rt, E: UserEvent>(
     })
 }
 
-pub(crate) fn emit_find_map_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_find_map_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
+    source: &Node<R>,
+    body: &Node<R>,
     param: &CallbackParam,
     element_type: &Type,
     flavor: Flavor,
@@ -511,9 +511,9 @@ pub(crate) fn emit_find_map_kind<R: Rt, E: UserEvent>(
 }
 
 /// A fold's callback parts: its init, body and parameters.
-pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
-    pub(crate) init: &'a Node<R, E>,
-    pub(crate) body: &'a Node<R, E>,
+pub(crate) struct FoldParts<'a, R: Rt> {
+    pub(crate) init: &'a Node<R>,
+    pub(crate) body: &'a Node<R>,
     pub(crate) acc: &'a CallbackParam<'a>,
     pub(crate) element: &'a CallbackParam<'a>,
 }
@@ -521,11 +521,11 @@ pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
 /// A fold's acc carried one register per field: a tuple of scalars
 /// built by a tuple literal, its parameter destructured into names or
 /// one name read only field by field (`p.0`).
-fn unpackable_acc<R: Rt, E: UserEvent>(
+fn unpackable_acc<R: Rt>(
     cx: &BodyCx,
     acc_type: &Type,
     acc: &CallbackParam,
-    body: &Node<R, E>,
+    body: &Node<R>,
 ) -> Option<(scaffold::AccNames, SmallVec<[PrimType; 4]>)> {
     let Type::Tuple(ts) = acc_type else { return None };
     let prims: SmallVec<[PrimType; 4]> = ts
@@ -564,10 +564,10 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
 
 /// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
 /// carry and stays interpreted.
-pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
+pub(crate) fn emit_fold_kind<R: Rt>(
     cx: &mut BodyCx,
-    source: &Node<R, E>,
-    fold: FoldParts<R, E>,
+    source: &Node<R>,
+    fold: FoldParts<R>,
     acc_type: &Type,
     element_type: &Type,
     flavor: Flavor,
@@ -642,7 +642,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
         _ => return Ok(None),
     };
     let acc_kind = acc_shape.local_kind();
-    let operand = move |cx: &mut BodyCx, n: &Node<R, E>| match acc_kind {
+    let operand = move |cx: &mut BodyCx, n: &Node<R>| match acc_kind {
         LocalKind::Value => {
             Ok((emit::emit_owned_value_operand_node(cx, n)?, CompositeSource::Owned))
         }

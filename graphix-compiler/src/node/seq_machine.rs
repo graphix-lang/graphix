@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue,
-    Update, UserEvent, View,
+    Update, View,
     expr::{Expr, ExprId, SeqCaptureExpr, SeqMachineExpr},
     fusion::{
         self,
@@ -40,12 +40,12 @@ use std::{
 use triomphe::Arc;
 
 #[derive(Debug)]
-pub(crate) struct Step<R: Rt, E: UserEvent> {
+pub(crate) struct Step<R: Rt> {
     label: ArcStr,
     until: bool,
     /// The statement's items: its handlers, a lambda a step's `let`
     /// names, the `let` of its value, then what completion writes.
-    pub(crate) nodes: Box<[Node<R, E>]>,
+    pub(crate) nodes: Box<[Node<R>]>,
     catches: Box<[usize]>,
     /// The index of the value's `let` in `nodes`.
     value: usize,
@@ -56,7 +56,7 @@ pub(crate) struct Step<R: Rt, E: UserEvent> {
     pub(crate) same_cycle: AtomicBool,
 }
 
-impl<R: Rt, E: UserEvent> Step<R, E> {
+impl<R: Rt> Step<R> {
     fn refs(&self, refs: &mut Refs) {
         for n in self.nodes.iter() {
             n.refs(refs)
@@ -67,7 +67,7 @@ impl<R: Rt, E: UserEvent> Step<R, E> {
     fn new(
         label: ArcStr,
         until: bool,
-        nodes: Box<[Node<R, E>]>,
+        nodes: Box<[Node<R>]>,
         catches: Box<[usize]>,
         value: usize,
         next: Option<usize>,
@@ -95,13 +95,13 @@ impl<R: Rt, E: UserEvent> Step<R, E> {
 }
 
 #[derive(Debug)]
-pub struct SeqMachine<R: Rt, E: UserEvent> {
+pub struct SeqMachine<R: Rt> {
     spec: Arc<Expr>,
     /// The seq's id, which its `seqq` captures name.
     pub(crate) id: ExprId,
-    pub(crate) pc: Node<R, E>,
+    pub(crate) pc: Node<R>,
     pub(crate) pc_id: BindId,
-    pub(crate) steps: Box<[Step<R, E>]>,
+    pub(crate) steps: Box<[Step<R>]>,
     /// The awake step. A sleeping machine is reset.
     current: Option<usize>,
     /// Built on the first update, when the steps are materialized: the
@@ -111,15 +111,15 @@ pub struct SeqMachine<R: Rt, E: UserEvent> {
     pub(crate) expand: bool,
 }
 
-fn pc_id<R: Rt, E: UserEvent>(pc: &Node<R, E>) -> Result<BindId> {
+fn pc_id<R: Rt>(pc: &Node<R>) -> Result<BindId> {
     match pc.view() {
         NodeView::Ref(r) => Ok(r.id),
         _ => bail!("BUG: a seq machine's pc is not a variable"),
     }
 }
 
-impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
-    fn update_serial(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+impl<R: Rt> SeqMachine<R> {
+    fn update_serial(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
         let (tracked, lets) = tracked.get_or_insert_with(|| {
             let tracked =
@@ -191,13 +191,13 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         m: &SeqMachineExpr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let pc = compile(ctx, flags, (*m.pc).clone(), scope, top_id)?;
         let pc_id = pc_id(&pc)?;
         let mut scopes: SmallVec<[Scope; 2]> = SmallVec::new();
@@ -250,9 +250,9 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let id = ExprId::decode(buf)?;
         let pc = decode_node(ctx, buf)?;
@@ -284,7 +284,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
+impl<R: Rt> SeqMachine<R> {
     /// Each step's boundary: `S0 -> S1 same`, `S1 -> S2 next`, `S2 -> end`.
     pub(crate) fn plan(&self) -> LPooled<String> {
         let mut out: LPooled<String> = LPooled::take();
@@ -306,11 +306,11 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
 
 /// Put step `j` to sleep and re-collect what it reads, as a select
 /// deselects an arm (`select.rs::deselect`).
-fn deselect<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn deselect<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     tracked: &mut TrackedFires,
     j: usize,
-    step: &mut Step<R, E>,
+    step: &mut Step<R>,
 ) {
     super::deselecting_arm(true, || {
         for n in step.nodes.iter_mut() {
@@ -324,11 +324,11 @@ fn deselect<R: Rt, E: UserEvent>(
 /// Update step `k`, under the step view when it is being `entered` (a
 /// run's entry is its constants' birth), with its catch-up deliveries; its completion writes run only in the cycle
 /// it completes. Whether it completed.
-fn evaluate<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+fn evaluate<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
     tracked: &mut TrackedFires,
     k: usize,
-    step: &mut Step<R, E>,
+    step: &mut Step<R>,
     entered: bool,
 ) -> bool {
     let view = if entered { View::Step } else { View::Cycle };
@@ -358,13 +358,13 @@ fn evaluate<R: Rt, E: UserEvent>(
     })
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for SeqMachine<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.pc);
         self.steps.iter().flat_map(|s| s.nodes.iter()).for_each(f)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.pc);
         self.steps.iter_mut().flat_map(|s| s.nodes.iter_mut()).for_each(f)
     }
@@ -391,12 +391,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let flags = crate::branch::ForkFlags { seq: true, ..ctx.fork };
         ctx.with_fork_flags(flags, |ctx| self.update_serial(ctx))
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.pc.sleep(ctx);
         for s in self.steps.iter_mut() {
             for n in s.nodes.iter_mut() {
@@ -420,7 +420,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         Type::BOTTOM
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.pc.typecheck0(ctx)?;
         for s in self.steps.iter_mut() {
             typecheck_in_order(ctx, &mut s.nodes, &s.catches, false, |n, ctx| {
@@ -432,7 +432,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
 
     fn typecheck0_instance(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         self.pc.typecheck0_instance(ctx, types)?;
@@ -444,7 +444,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.pc.typecheck1(ctx)?;
         for s in self.steps.iter_mut() {
             typecheck1_statements(ctx, &mut s.nodes, &s.catches, false)?;
@@ -456,7 +456,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::SeqMachine(self)
     }
 
@@ -464,7 +464,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         bail!("emit_clif: a seq machine sequences across cycles")
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         for s in self.steps.iter_mut() {
             for n in s.nodes.iter_mut() {
                 fusion::fuse(n, ctx)?;
@@ -478,24 +478,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
 /// or the variable itself when the analysis finds that a step of its
 /// machine writes it (`live`, set before the first update).
 #[derive(Debug)]
-pub struct SeqCapture<R: Rt, E: UserEvent> {
+pub struct SeqCapture<R: Rt> {
     spec: Arc<Expr>,
     pub(crate) machine: ExprId,
-    pub(crate) snapshot: Node<R, E>,
-    pub(crate) live: Node<R, E>,
+    pub(crate) snapshot: Node<R>,
+    pub(crate) live: Node<R>,
     pub(crate) live_id: BindId,
     pub(crate) is_live: AtomicBool,
 }
 
-impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
+impl<R: Rt> SeqCapture<R> {
     pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         c: &SeqCaptureExpr,
-    ) -> Result<Node<R, E>> {
+    ) -> Result<Node<R>> {
         let snapshot = compile(ctx, flags, (*c.snapshot).clone(), scope, top_id)?;
         let live = compile(ctx, flags, (*c.live).clone(), scope, top_id)?;
         let live_id = pc_id(&live)?;
@@ -505,9 +505,9 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let machine = ExprId::decode(buf)?;
         let snapshot = decode_node(ctx, buf)?;
@@ -517,18 +517,18 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
         Ok(Node::new(Self { spec, machine, snapshot, live, live_id, is_live }))
     }
 
-    fn chosen(&mut self) -> &mut Node<R, E> {
+    fn chosen(&mut self) -> &mut Node<R> {
         if self.is_live.load(Relaxed) { &mut self.live } else { &mut self.snapshot }
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for SeqCapture<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.snapshot);
         f(&self.live)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.snapshot);
         f(&mut self.live)
     }
@@ -542,7 +542,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
         self.is_live.load(Relaxed).encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         self.chosen().update(ctx)
     }
 
@@ -550,7 +550,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
         self.snapshot.typ()
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.snapshot.typecheck0(ctx)?;
         self.live.typecheck0(ctx)
     }
@@ -559,7 +559,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::SeqCapture(self)
     }
 

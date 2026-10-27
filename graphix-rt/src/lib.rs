@@ -15,8 +15,7 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent,
-    ParMode, Scope, UserEvent, cost,
+    BindId, CFlag, Control, ExecState, FusionStats, LambdaId, ParMode, Scope, cost,
     env::Env,
     expr::{BufferOverrides, ExprId, Load, ModPath, Probe, ResolverFactory, ResolverRef},
     ide::Ide,
@@ -48,85 +47,24 @@ use gx::GX;
 pub use reconcile::{keep_equal, reconcile};
 pub use rt::GXRt;
 
-/// Trait to extend the event loop
-///
-/// The Graphix event loop has two steps,
-/// - update event sources, polls external async event sources like
-///   netidx, sockets, files, etc
-/// - do cycle, collects all the events and delivers them to the dataflow
-///   graph as a batch of "everything that happened"
-///
-/// As such to extend the event loop you must implement two things. A function
-/// to poll your own external event sources, and a function to take the events
-/// you got from those sources and represent them to the dataflow graph, in the
-/// custom structures you define as part of your UserEvent implementation.
-/// `do_cycle` runs after the cycle's variables were delivered, so it fills the
-/// user event only; a payload that fits a `Value` goes through a variable the
-/// runtime delivers (`Rt::watch_var`, `Rt::spawn_var`), which stores it and
-/// wakes its readers.
-///
-/// Your Graphix builtins can access both your custom structure, to register new
-/// event sources, etc, and your custom user event structure, to receive events
-/// whose types do not fit nicely as `Value`.
+/// Trait to extend the event loop: `update_sources` polls the
+/// embedder's own async event sources between cycles. Packages deliver
+/// what they receive through variables the runtime watches
+/// (`Rt::watch_var`, `Rt::spawn_var`), which store it and wake its
+/// readers.
 pub trait GXExt: Default + fmt::Debug + Send + Sync + 'static {
-    type UserEvent: UserEvent + Send + Sync + 'static;
-
     /// Update your custom event sources
     ///
     /// Your `update_sources` MUST be cancel safe.
     fn update_sources(&mut self) -> impl Future<Output = Result<()>> + Send;
-
-    /// Collect events that happened and marshal them into the event structure
-    ///
-    /// for delivery to the dataflow graph. `do_cycle` will be called, and a
-    /// batch of events delivered to the graph until `is_ready` returns false.
-    /// It is possible that a call to `update_sources` will result in
-    /// multiple calls to `do_cycle`, but it is not guaranteed that
-    /// `update_sources` will not be called again before `is_ready`
-    /// returns false.
-    // CR claude for claude: [risk/low] This adds to c-lib-05. A user event filled in here
-    // reaches no node. GX::do_cycle updates only the roots in `rt.updated`, which an
-    // extension cannot add to, so a cycle driven by is_ready runs nothing and
-    // Event::clear discards the event. If user events stay, do_cycle has to name the
-    // BindIds whose readers must wake (GX::wake_readers); otherwise delete the
-    // extension point along with UserEvent. Found by reading; not run. (rt-06)
-    // 2026-10-24 claude: Eric ruled (2026-10-24): delete UserEvent, Event::user and the
-    // E parameter. He also wants to look at removing the custom netidx parts of Event
-    // and rt, so rt only runs async jobs and netidx is a stdlib library delivering by
-    // bind ids like the others (a follow-on project).
-    // 2026-10-27 claude: Not done (L4-b10): it is the c-lib-05 deletion (UserEvent,
-    // Event::user, the E parameter), about 1090 UserEvent mentions over 85 files plus
-    // netidx-admin, which conflicts with every lane editing node code; it wants the solo
-    // batch noted on c-lib-05.
-    fn do_cycle(&mut self, event: &mut Event<Self::UserEvent>) -> Result<()>;
-
-    /// Return true if there are events ready to deliver
-    fn is_ready(&self) -> bool;
-
-    /// Create and return an empty custom event structure
-    fn empty_event(&mut self) -> Self::UserEvent;
 }
 
 #[derive(Debug, Default)]
 pub struct NoExt;
 
 impl GXExt for NoExt {
-    type UserEvent = NoUserEvent;
-
     async fn update_sources(&mut self) -> Result<()> {
         future::pending().await
-    }
-
-    fn do_cycle(&mut self, _event: &mut Event<Self::UserEvent>) -> Result<()> {
-        Ok(())
-    }
-
-    fn is_ready(&self) -> bool {
-        false
-    }
-
-    fn empty_event(&mut self) -> Self::UserEvent {
-        NoUserEvent
     }
 }
 
@@ -379,8 +317,7 @@ impl<X: GXExt> Callable<X> {
 
     /// Whether this call site was compiled for the lambda `v`
     pub fn is_for(&self, v: &Value) -> bool {
-        v.downcast_ref::<LambdaDef<GXRt<X>, X::UserEvent>>()
-            .is_some_and(|l| l.id == self.lambda)
+        v.downcast_ref::<LambdaDef<GXRt<X>>>().is_some_and(|l| l.id == self.lambda)
     }
 
     /// Call the lambda with args
@@ -432,7 +369,7 @@ enum ToGX<X: GXExt> {
     /// Run a closure with the runtime's ExecState; the bridge for
     /// handle-side consumers that need `ctx.libstate`.
     WithCtx {
-        f: Box<dyn FnOnce(&mut ExecState<GXRt<X>, X::UserEvent>) + Send>,
+        f: Box<dyn FnOnce(&mut ExecState<GXRt<X>>) + Send>,
     },
     Delete {
         id: ExprId,
@@ -645,7 +582,7 @@ impl<X: GXExt> GXHandle<X> {
     pub async fn with_ctx<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(&mut ExecState<GXRt<X>, X::UserEvent>) -> T + Send + 'static,
+        F: FnOnce(&mut ExecState<GXRt<X>>) -> T + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         self.0
@@ -1132,7 +1069,7 @@ pub struct GXConfig<X: GXExt> {
     #[builder(setter(strip_option), default)]
     trace: Option<(usize, u64)>,
     /// The execution context with any builtins already registered
-    ctx: ExecState<GXRt<X>, X::UserEvent>,
+    ctx: ExecState<GXRt<X>>,
     /// The text of the root module
     #[builder(setter(strip_option), default)]
     root: Option<ArcStr>,
@@ -1156,7 +1093,7 @@ pub struct GXConfig<X: GXExt> {
 impl<X: GXExt> GXConfig<X> {
     /// Create a new config
     pub fn builder(
-        ctx: ExecState<GXRt<X>, X::UserEvent>,
+        ctx: ExecState<GXRt<X>>,
         sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     ) -> GXConfigBuilder<X> {
         GXConfigBuilder::default().ctx(ctx).sub(sub)

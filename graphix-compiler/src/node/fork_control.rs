@@ -2,7 +2,7 @@
 //! that runs its child under fork flags of its own.
 
 use crate::{
-    CompileCtx, ExecCtx, Node, NodeView, Rt, TagValue, Update, UserEvent,
+    CompileCtx, ExecCtx, Node, NodeView, Rt, TagValue, Update,
     branch::ForkFlags,
     expr::Expr,
     fusion::{
@@ -50,21 +50,21 @@ impl ForkKind {
 }
 
 #[derive(Debug)]
-pub struct ForkControl<R: Rt, E: UserEvent> {
+pub struct ForkControl<R: Rt> {
     pub(crate) spec: Arc<Expr>,
     pub(crate) kind: ForkKind,
-    pub(crate) n: Node<R, E>,
+    pub(crate) n: Node<R>,
 }
 
-impl<R: Rt, E: UserEvent> ForkControl<R, E> {
-    pub(crate) fn new(spec: Arc<Expr>, kind: ForkKind, n: Node<R, E>) -> Node<R, E> {
+impl<R: Rt> ForkControl<R> {
+    pub(crate) fn new(spec: Arc<Expr>, kind: ForkKind, n: Node<R>) -> Node<R> {
         Node::new(Self { spec, kind, n })
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
+    ) -> Result<Node<R>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let kind = match Option::<u32>::decode(buf)? {
             None => ForkKind::Serial,
@@ -75,12 +75,12 @@ impl<R: Rt, E: UserEvent> ForkControl<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+impl<R: Rt> Update<R> for ForkControl<R> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.n)
     }
 
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
     }
 
@@ -91,13 +91,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         // a boundary: the interior gets its own region pass
         fuse(&mut self.n, ctx)?;
         Ok(None)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let flags = match self.kind {
             ForkKind::Serial => ForkFlags { inhibit: true, ..ctx.fork },
             ForkKind::Parallel(grain) => ForkFlags { forced: Some(grain), ..ctx.fork },
@@ -105,11 +105,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
         ctx.with_fork_flags(flags, |ctx| self.n.update(ctx))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         match self.kind {
             // checked by the analysis, once the blocks under it are planned
@@ -140,7 +140,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
         self.n.typ()
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
+    fn view(&self) -> NodeView<'_, R> {
         NodeView::ForkControl(self)
     }
 

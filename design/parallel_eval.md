@@ -187,10 +187,10 @@ its views is the root's state or a forked branch's layer over its
 parent's.
 
 ```rust
-pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
-    pub cx: branch::CxView<'a, R, E>,   // the compile state: root, or a fork's view
+pub struct ExecCtx<'a, R: Rt> {
+    pub cx: branch::CxView<'a, R>,   // the compile state: root, or a fork's view
     pub rt: branch::RtView<'a, R>,      // the runtime: root, or a ForkRt
-    pub event: &'a mut Event<E>,        // its overlay a Layered map
+    pub event: &'a mut Event,        // its overlay a Layered map
     pub libstate: &'a LibState,         // shared (§6)
     pub control: &'a Arc<Control>,      // shared
     fork_depth: u8, par: ParMode, fork: ForkFlags,
