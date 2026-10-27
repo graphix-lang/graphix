@@ -234,6 +234,22 @@ pub struct StructWith<R: Rt> {
 }
 
 impl<R: Rt> StructWith<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        source: Node<R>,
+        replace: Box<[Replace<R>]>,
+    ) -> Node<R> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            source,
+            replace,
+            resident: TagValue::phantom(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -246,14 +262,7 @@ impl<R: Rt> StructWith<R> {
         for _ in 0..n {
             replace.push(Replace::image_decode(ctx, buf)?);
         }
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            spec,
-            typ,
-            source,
-            replace: replace.into_boxed_slice(),
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, source, replace.into_boxed_slice()))
     }
 
     pub(crate) fn compile(
@@ -277,14 +286,7 @@ impl<R: Rt> StructWith<R> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let typ = source.typ().clone();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            source,
-            replace,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, typ, source, replace))
     }
 }
 
