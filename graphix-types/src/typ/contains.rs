@@ -1224,9 +1224,10 @@ impl Type {
         None
     }
 
-    /// The members a dispatch over `t` tests, a union of primitives split
-    /// into its primitives and an open cell kept as one member.
-    fn dispatch_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
+    /// The members a dispatch over `t` tests: a union flattened through
+    /// its type references, a union of primitives split into its
+    /// primitives and an open cell kept as one member.
+    pub fn dispatch_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
         fn go(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => match tv.binding() {

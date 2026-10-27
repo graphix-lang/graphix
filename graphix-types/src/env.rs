@@ -1482,6 +1482,16 @@ impl Env {
         Ok(None)
     }
 
+    /// Put `new` in the place of the registered `old`, the same
+    /// definition.
+    pub fn replace_impl(&mut self, old: &Arc<ImplDef>, new: Arc<ImplDef>) {
+        let Some(mut list) = self.impls.get(&old.trait_id).cloned() else { return };
+        for o in Arc::make_mut(&mut list).iter_mut().filter(|o| o.same_definition(old)) {
+            *o = new.clone()
+        }
+        self.impls.insert(old.trait_id, list);
+    }
+
     pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) {
         let Some(list) = self.impls.get(&im.trait_id) else { return };
         let list: Vec<Arc<ImplDef>> =

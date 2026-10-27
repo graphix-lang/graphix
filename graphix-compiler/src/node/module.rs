@@ -775,7 +775,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                     ctx.env.impl_entry(trait_id, &target)?.expect("bound by bind_sig");
                 let mut fulfilled = nodes.iter().filter_map(|n| {
                     n.downcast_ref::<traits::Impl<R, E>>().filter(|i| {
-                        i.fulfils.as_ref().is_some_and(|d| Arc::ptr_eq(d, &declared))
+                        i.fulfils.as_ref().is_some_and(|f| Arc::ptr_eq(&f.entry, &declared))
                     })
                 });
                 match (fulfilled.next(), fulfilled.next()) {

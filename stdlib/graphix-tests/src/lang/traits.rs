@@ -170,6 +170,22 @@ run!(
     ; FuseExpect::Jit
 );
 
+// A union member that names a union dispatches on that union's members.
+run!(
+    trait_union_dispatch_through_alias,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(1) str a int 3"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Counter = Abstract<i64>;
+        type U = [i64, string];
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        impl Show for i64 { let show = |x| "int [x]" };
+        impl Show for string { let show = |x| "str [x]" };
+        let pick = |n: i64| -> [U, Counter] select n { 0 => Counter(1), 1 => "a", n => n };
+        let result = "[Show::show(pick(0))] [Show::show(pick(1))] [Show::show(pick(3))]"
+    "#
+);
+
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,
@@ -2533,7 +2549,10 @@ run!(impl_method_does_not_narrow_the_head, r#"{
   type Box<'a> = Abstract<'a>;
   impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
   "[Box(41)]"
-}"#, refused("method fmt of impl Display for Box<'a> has type"); FuseExpect::None);
+}"#, refused(
+    "method fmt of impl Display for Box<'a> has type fn(self: Box<i64>) -> string, \
+     the trait declares fn(self: Box<'a>) -> string"
+); FuseExpect::None);
 
 // A core-trait hook site a dynamic load retires is deleted by whichever
 // dispatch finds it stale: its references are registered, and released,

@@ -22,39 +22,50 @@ use crate::{
     typ::Type,
     wrap,
 };
+use ahash::AHashSet;
 use anyhow::Result;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{fmt::Debug, iter, marker::PhantomData, ops::Range};
+use std::{fmt::Debug, iter, marker::PhantomData, mem, ops::Range};
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
+
+/// What makes two of a literal's element types the very same type: a
+/// primitive by value, a cell by its binding cell, a composite by the
+/// parts it shares, anything else by address.
+#[derive(PartialEq, Eq, Hash)]
+struct SameType(mem::Discriminant<Type>, u64, u64);
+
+impl SameType {
+    fn of(t: &Type) -> Self {
+        fn at<T: ?Sized>(p: *const T) -> u64 {
+            p.cast::<u8>().addr() as u64
+        }
+        let (a, b) = match t {
+            Type::Primitive(p) => (p.bits(), 0),
+            Type::TVar(tv) => (tv.cell_addr() as u64, 0),
+            Type::Array(e) | Type::List(e) => (at(Arc::as_ptr(e)), 0),
+            Type::Map { key, value } => (at(Arc::as_ptr(key)), at(Arc::as_ptr(value))),
+            Type::Tuple(ts) => (at(Arc::as_ptr(ts)), 0),
+            Type::Struct(fs) => (at(Arc::as_ptr(fs)), 0),
+            t => (at(t), 0),
+        };
+        Self(mem::discriminant(t), a, b)
+    }
+}
 
 /// The union of a literal's element types `ts`, `⊥` first: an element of
 /// the very type of an earlier one adds nothing, and one type left is its
 /// own union. A call through an element accepts each alike: functions
 /// meet.
 pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
-    let same = |a: &Type, b: &Type| {
-        std::ptr::eq(a, b)
-            || match (a, b) {
-                (Type::TVar(a), Type::TVar(b)) => a.same_cell(b),
-                (Type::Array(a), Type::Array(b)) | (Type::List(a), Type::List(b)) => {
-                    Arc::ptr_eq(a, b)
-                }
-                (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                    Arc::ptr_eq(k0, k1) && Arc::ptr_eq(v0, v1)
-                }
-                (Type::Tuple(a), Type::Tuple(b)) => Arc::ptr_eq(a, b),
-                (Type::Struct(a), Type::Struct(b)) => Arc::ptr_eq(a, b),
-                _ => false,
-            }
-    };
+    let mut seen: LPooled<AHashSet<SameType>> = LPooled::take();
     let mut distinct: LPooled<Vec<&Type>> = LPooled::take();
-    // CR claude for claude: [perf/low] [perf/low] This dedupe is a linear scan, and
+    // XCR claude for claude: [perf/low] [perf/low] This dedupe is a linear scan, and
     // `same` never equates two primitive types (each literal element carries its own
     // Type) or two separately built structs. Every element counts as distinct and the
     // loop is O(n^2) in the literal's length. `[0, 1, ..]` checks in 0.34 / 0.86 / 2.55
@@ -64,11 +75,15 @@ pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
     // scanning. probe:
     // design/review-2026-10-26/repro/x-perf-compile-literal-element-union.sh
     // (x-perf-compile-08)
-    for t in ts {
-        if !distinct.iter().any(|d| same(d, t)) {
-            distinct.push(t)
-        }
-    }
+    // 2026-10-27 claude: element_union dedupes through a pooled hash set keyed by
+    // SameType (discriminant plus a primitive's bits, a cell's address or the shared
+    // parts' addresses, else the type's address), so equal primitives are one member
+    // and the dedupe is linear; [0, 1, ..] at 80k now checks its literal in a few ms
+    // (debug). Separately built structs stay distinct members, as before: only content
+    // comparison would merge them, and union_of_alternatives handles them. Pin
+    // node::array::tests::a_literals_element_union_is_linear (400k i64 elements under 2
+    // s; the old scan takes 20 s).
+    distinct.extend(ts.iter().copied().filter(|t| seen.insert(SameType::of(t))));
     match &distinct[..] {
         [_, one] => Ok((*one).clone()),
         ts => Type::union_of_alternatives(env, ts),
@@ -101,6 +116,24 @@ pub struct ArrayRef<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        etyp: Type,
+        source: Node<R, E>,
+        i: Node<R, E>,
+    ) -> Node<R, E> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            source,
+            i,
+            spec,
+            typ,
+            etyp,
+            resident: TagValue::phantom(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
@@ -119,15 +152,13 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
         // a cold-versus-warm divergence. Give each kind one constructor over its
         // encoded parts, as Select::new does, and call it from both paths. Found by
         // reading; not run. (x-dup-03)
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            source,
-            i,
-            spec,
-            typ,
-            etyp,
-            resident: TagValue::phantom(),
-        }))
+        // 2026-10-27 claude: Partial: ArrayRef and ArraySlice now build through one
+        // constructor (with) from compile and image_decode, as SeqLit already did. The
+        // other kinds this CR lists (MapRef, the error.rs and data.rs nodes, Bind,
+        // LambdaInstance, Module, CachedArgsAsync, Filter/Queue/Hold/Throttle, the
+        // net/time/watch/http builtins) still repeat their literal; each is its own
+        // edit across many files, left for a batch of its own.
+        Ok(Self::with(spec, typ, etyp, source, i))
     }
 
     pub(crate) fn compile(
@@ -147,15 +178,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([etyp.clone(), ERR.clone()]));
-        Ok(Node::new(Self {
-            source,
-            i,
-            spec,
-            typ,
-            etyp,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, typ, etyp, source, i))
     }
 }
 
@@ -321,6 +344,24 @@ pub struct ArraySlice<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        source: Node<R, E>,
+        start: Option<Node<R, E>>,
+        end: Option<Node<R, E>>,
+    ) -> Node<R, E> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            source,
+            start,
+            end,
+            spec,
+            typ,
+            resident: TagValue::phantom(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
@@ -330,15 +371,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
         let end = opt_node_decode(ctx, buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            source,
-            start,
-            end,
-            spec,
-            typ,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, source, start, end))
     }
 
     pub(crate) fn compile(
@@ -361,15 +394,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
             .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
             .transpose()?;
         let typ = Type::Set(Arc::from_iter([source.typ().clone(), ERR.clone()]));
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            spec,
-            typ,
-            source,
-            start,
-            end,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, source, start, end))
     }
 }
 
@@ -727,5 +752,26 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
             t => K::typ(t),
         };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // each literal element carries a type of its own; equal primitives
+    // are one member however many elements there are
+    #[test]
+    fn a_literals_element_union_is_linear() {
+        let env = Env::default();
+        let ts: Vec<Type> =
+            (0..400_000).map(|_| Type::Primitive(Typ::I64.into())).collect();
+        let refs: Vec<&Type> = iter::once(Type::BOTTOM).chain(ts.iter()).collect();
+        let start = Instant::now();
+        let union = element_union(&env, &refs).unwrap();
+        let took = start.elapsed();
+        assert!(matches!(union, Type::Primitive(p) if p == Typ::I64), "{union}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
     }
 }

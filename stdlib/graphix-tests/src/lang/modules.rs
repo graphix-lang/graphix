@@ -52,6 +52,26 @@ const DYNAMIC_MODULE_SOURCE_ERROR: &str = r#"
 
 run!(dynamic_module_source_error_keeps_the_load, DYNAMIC_MODULE_SOURCE_ERROR, is(Value::String("kept".into())); FuseExpect::Jit);
 
+// A reload whose Cast impl writes a method the first load left to the
+// representation writes through it: the interface's declaration is
+// narrowed afresh at each load.
+run!(
+    dynamic_cast_reload_gains_a_method,
+    r#"{
+    let source = "type C = Abstract<i64>; impl Cast for C {}; let make = |x: i64| C(x)";
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { type C; impl Cast for C; val make: fn(x: i64) -> C };
+        source source
+    };
+    source <- once(status) ~ "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)";
+    let w = select status { error as e => never(dbg(e)), null as _ => json::write_str(foo::make(3))$ };
+    select w { "30" => "reloaded", _ => never() }
+}"#,
+    is(Value::String("reloaded".into()));
+    FuseExpect::Jit
+);
+
 // A statement reading a dynamic module's val runs after the statement
 // holding the module, which publishes it at each load.
 run!(

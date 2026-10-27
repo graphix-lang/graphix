@@ -1,6 +1,6 @@
 //! Declarative graph-shape assertions for tests. A [`NodeShape`]
-//! specifies a compiled (sub)graph — a node kind with child shapes, a
-//! fused kernel matched by [`KernelMatcher`], or a wildcard — and
+//! specifies a compiled (sub)graph — a node kind, a fused kernel
+//! matched by [`KernelMatcher`], or a subtree holding either — and
 //! [`match_node`] checks a live post-fusion `Node` against it, naming
 //! the first mismatch. Driven by `GXHandle::match_shape`;
 //! `GXHandle::describe_shape` renders the actual graph as an authoring aid.
@@ -16,13 +16,8 @@ use std::fmt::{self, Write};
 /// A declarative specification of a (sub)graph's shape.
 #[derive(Debug, Clone)]
 pub enum NodeShape {
-    /// Matches any single node/subtree. Don't-care.
-    Any,
-    /// A non-fused node. `kind` (a [`kind_name`]) must match when
-    /// `Some`; `None` matches any kind. `children` match the node's
-    /// children positionally — use [`NodeShape::Any`] to skip a child
-    /// you don't care about.
-    Node { kind: Option<ArcStr>, children: Vec<NodeShape> },
+    /// A non-fused node of this kind (a [`kind_name`]).
+    Node(ArcStr),
     /// A fused kernel matched against partial [`KernelMatcher`] criteria.
     Fused(KernelMatcher),
     /// Matches if any node in the subtree matches the inner spec.
@@ -30,23 +25,9 @@ pub enum NodeShape {
 }
 
 impl NodeShape {
-    /// A `Node` of the given `NodeView` kind, no child constraints
-    /// (must still match child *count* — add children via [`child`]).
-    ///
-    /// [`child`]: NodeShape::child
+    /// A non-fused node of the given `NodeView` kind.
     pub fn node(kind: &str) -> Self {
-        NodeShape::Node { kind: Some(ArcStr::from(kind)), children: vec![] }
-    }
-
-    /// A `Node` of any kind.
-    // CR claude for claude: [dead/low] Nothing in this repo or ../netidx calls any_node
-    // or child, or builds NodeShape::Any. Every user writes node(kind) with no
-    // children, fused or contains, so match_at's positional child matching only ever
-    // runs with zero child specs, and GXHandle::describe_shape has no caller. Delete
-    // the unused API (Node keeps only its kind), or add a test that uses child specs.
-    // Found by reading; not run. (c-cost-misc-05)
-    pub fn any_node() -> Self {
-        NodeShape::Node { kind: None, children: vec![] }
+        NodeShape::Node(ArcStr::from(kind))
     }
 
     /// A fused kernel matching `m`.
@@ -62,14 +43,6 @@ impl NodeShape {
     /// `contains(fused(m))`.
     pub fn contains_fused(m: KernelMatcher) -> Self {
         NodeShape::contains(NodeShape::fused(m))
-    }
-
-    /// Append a child shape (only meaningful on a `Node`).
-    pub fn child(mut self, c: NodeShape) -> Self {
-        if let NodeShape::Node { children, .. } = &mut self {
-            children.push(c);
-        }
-        self
     }
 }
 
@@ -120,9 +93,8 @@ impl KernelMatcher {
 enum Why<'a> {
     NotContained,
     ExpectedFused { got: &'static str },
-    ExpectedNode { kind: Option<&'a str> },
+    ExpectedNode { kind: &'a str },
     Kind { expected: &'a str, got: &'static str },
-    Children { kind: &'static str, got: usize, expected: usize },
     ReturnType { expected: &'a Type, got: &'a Type },
     ParamNames { expected: &'a [ArcStr], got: &'a KernelSig },
 }
@@ -137,17 +109,10 @@ impl fmt::Display for Why<'_> {
                 write!(f, "expected a Fused kernel, got a {got} node")
             }
             Why::ExpectedNode { kind } => {
-                write!(
-                    f,
-                    "expected a {} node, got a Fused kernel",
-                    kind.unwrap_or("(any)")
-                )
+                write!(f, "expected a {kind} node, got a Fused kernel")
             }
             Why::Kind { expected, got } => {
                 write!(f, "expected kind {expected}, got {got}")
-            }
-            Why::Children { kind, got, expected } => {
-                write!(f, "{kind} has {got} children, spec expects {expected}")
             }
             Why::ReturnType { expected, got } => {
                 write!(f, "return type: expected {expected:?}, got {got:?}")
@@ -164,78 +129,39 @@ impl fmt::Display for Why<'_> {
     }
 }
 
-/// A mismatch and where it is: child indices from the matched root.
-struct Mismatch<'a> {
-    at: SmallVec<[usize; 8]>,
-    why: Why<'a>,
-}
-
-impl<'a> Mismatch<'a> {
-    fn here(why: Why<'a>) -> Self {
-        Self { at: SmallVec::new(), why }
-    }
-}
-
-/// Check a compiled node against a [`NodeShape`] spec, naming the path
-/// and the first mismatch.
+/// Check a compiled node against a [`NodeShape`] spec, naming the first
+/// mismatch.
 pub fn match_node<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     spec: &NodeShape,
 ) -> Result<()> {
-    match_at(node, spec).map_err(|m| {
-        let mut path = compact_str::CompactString::const_new("root");
-        for i in m.at.iter().rev() {
-            let _ = write!(path, "/{i}");
-        }
-        anyhow!("at {path}: {}", m.why)
-    })
+    match_at(node, spec).map_err(|why| anyhow!("{why}"))
 }
 
 fn match_at<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
     spec: &'a NodeShape,
-) -> std::result::Result<(), Mismatch<'a>> {
-    stack::ensure_sufficient(|| match spec {
-        NodeShape::Any => Ok(()),
+) -> std::result::Result<(), Why<'a>> {
+    match spec {
         NodeShape::Contains(inner) => match find_match(node, inner) {
             true => Ok(()),
-            false => Err(Mismatch::here(Why::NotContained)),
+            false => Err(Why::NotContained),
         },
         NodeShape::Fused(gm) => match node.view() {
             NodeView::FusedKernel(fk) => match gm.mismatch(fk.kernel()) {
                 None => Ok(()),
-                Some(why) => Err(Mismatch::here(why)),
+                Some(why) => Err(why),
             },
-            other => Err(Mismatch::here(Why::ExpectedFused { got: kind_name(&other) })),
+            other => Err(Why::ExpectedFused { got: kind_name(&other) }),
         },
-        NodeShape::Node { kind, children } => {
-            let view = node.view();
-            if let NodeView::FusedKernel(_) = view {
-                return Err(Mismatch::here(Why::ExpectedNode { kind: kind.as_deref() }));
-            }
-            let got = kind_name(&view);
-            if let Some(expected) = kind
-                && got != expected.as_str()
-            {
-                return Err(Mismatch::here(Why::Kind { expected, got }));
-            }
-            let kids = node_children(node);
-            if kids.len() != children.len() {
-                return Err(Mismatch::here(Why::Children {
-                    kind: got,
-                    got: kids.len(),
-                    expected: children.len(),
-                }));
-            }
-            for (i, (child, cspec)) in kids.iter().zip(children).enumerate() {
-                match_at(child, cspec).map_err(|mut m| {
-                    m.at.push(i);
-                    m
-                })?;
-            }
-            Ok(())
-        }
-    })
+        NodeShape::Node(kind) => match node.view() {
+            NodeView::FusedKernel(_) => Err(Why::ExpectedNode { kind }),
+            view => match kind_name(&view) {
+                got if got == kind.as_str() => Ok(()),
+                got => Err(Why::Kind { expected: kind, got }),
+            },
+        },
+    }
 }
 
 /// True if `node` or any descendant matches `spec`. Used by

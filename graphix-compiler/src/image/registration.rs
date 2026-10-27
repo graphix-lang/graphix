@@ -16,9 +16,8 @@ use super::{
     Restored, SharedDecoder, defs, nodes, scope_decode, scope_encode,
 };
 use crate::{
-    BindId, BitFlags, BuiltinBindInfo, CompileCtx, DefAssertion, DefAssertionKind,
-    ExecCtx, ExecState, LambdaId, LambdaInstanceId, Node, Rt, Saved, Scope, StaticCall,
-    UserEvent,
+    BindId, BuiltinBindInfo, CompileCtx, DefAssertion, ExecCtx, ExecState, LambdaId,
+    LambdaInstanceId, Node, Rt, Saved, Scope, StaticCall, UserEvent,
     env::Env,
     expr::{Expr, ExprId, ModPath},
     image,
@@ -37,7 +36,7 @@ use triomphe::Arc;
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 90;
+pub const REGISTRATION_FORMAT: u8 = 91;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -172,13 +171,7 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
             spec.encode(buf)?;
         }
         self.tags.encode(buf)?;
-        encode_varint(self.def_assertions.len() as u64, buf);
-        for DefAssertion { id, kind, spec, .. } in &self.def_assertions {
-            id.encode(buf)?;
-            kind.encode(buf)?;
-            spec.encode(buf)?;
-        }
-        Ok(())
+        self.def_assertions.encode(buf)
     }
 }
 
@@ -208,25 +201,23 @@ fn restore_tables<R: Rt, E: UserEvent>(
         ctx.static_callees.insert(b, StaticCall(Arc::new(Expr::decode(buf)?)));
     }
     ctx.tags.extend(<Vec<ArcStr> as Pack>::decode(buf)?);
-    let n = decode_varint(buf)? as usize;
-    let mut pending = ctx.def_assertions.lock();
-    for _ in 0..n {
-        let id = LambdaId::decode(buf)?;
-        let kind = DefAssertionKind::decode(buf)?;
-        let spec = Expr::decode(buf)?;
-        // CR claude for claude: [bug/low] A restored assertion gets empty flags and
-        // warned false, because Tables::encode writes only id, kind and spec. A pending
-        // #[pure] assertion is checked again at run-time binds, so a warm #[pure]
-        // function that calls dbg warns twice: once replayed from
-        // ProgramRoot::warnings, then again at its first run-time bind. Under -W error,
-        // that bind reports a plain warning where the cold run reports an error. Fix:
-        // write the flags (flags_encode) and the warned bit with the rest, preferably
-        // by deriving Pack for DefAssertion so a new field cannot be dropped. probe:
-        // design/review-2026-10-26/repro/c-image-def-assertion-flags.sh Also reported
-        // as (x-image-02). (c-image-02)
-        let (flags, warned) = (BitFlags::empty(), false);
-        pending.push(DefAssertion { id, kind, spec, flags, warned });
-    }
+    // XCR claude for claude: [bug/low] A restored assertion gets empty flags and
+    // warned false, because Tables::encode writes only id, kind and spec. A pending
+    // #[pure] assertion is checked again at run-time binds, so a warm #[pure]
+    // function that calls dbg warns twice: once replayed from
+    // ProgramRoot::warnings, then again at its first run-time bind. Under -W error,
+    // that bind reports a plain warning where the cold run reports an error. Fix:
+    // write the flags (flags_encode) and the warned bit with the rest, preferably
+    // by deriving Pack for DefAssertion so a new field cannot be dropped. probe:
+    // design/review-2026-10-26/repro/c-image-def-assertion-flags.sh Also reported
+    // as (x-image-02). (c-image-02)
+    // 2026-10-27 claude: DefAssertion derives Pack (unwrapped) and the tables
+    // encode the whole Vec, flags and warned included, so a new field cannot be
+    // dropped; REGISTRATION_FORMAT 91. The block moved with the decode loop it sat
+    // in. Pin graphix-shell/tests/program_cache_key.rs
+    // a_restored_pure_assertion_warns_as_cold (warm warns once and errs under -W
+    // error, as cold).
+    ctx.def_assertions.lock().extend(<Vec<DefAssertion> as Pack>::decode(buf)?);
     Ok(())
 }
 

@@ -983,7 +983,8 @@ impl DefAssertionKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, netidx_derive::Pack)]
+#[pack(unwrapped)]
 pub(crate) struct DefAssertion {
     pub(crate) id: LambdaId,
     pub(crate) kind: DefAssertionKind,

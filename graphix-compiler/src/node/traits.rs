@@ -429,14 +429,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
     }
 }
 
+/// The interface declaration (`impl T for X;`) an implementation
+/// fulfils: the registered impl, whose bindings the implementation's
+/// methods proxy to.
+#[derive(Debug, Clone, netidx_derive::Pack)]
+pub(crate) struct Fulfils {
+    /// The registered entry.
+    pub(crate) entry: Arc<ImplDef>,
+    /// The interface's declaration, when `entry` narrows it to the
+    /// methods the implementation writes; the implementation's delete
+    /// registers it again.
+    narrowed: Option<Arc<ImplDef>>,
+}
+
 #[derive(Debug)]
 pub struct Impl<R: Rt, E: UserEvent> {
     spec: Arc<Expr>,
     pub(crate) def: Arc<ImplDef>,
-    /// The interface declaration (`impl T for X;`) this implementation
-    /// fulfils, when there is one; the declaration is the registered
-    /// impl and `def`'s methods proxy to its bindings.
-    pub(crate) fulfils: Option<Arc<ImplDef>>,
+    pub(crate) fulfils: Option<Fulfils>,
     trait_def: Arc<TraitDef>,
     pub(crate) body: Node<R, E>,
     /// For a core trait, one never-run call site per method so the
@@ -746,12 +756,13 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             pos: spec.pos,
             ori: spec.ori.clone(),
         });
-        let fulfils = match ctx.env.register_impl(def.clone()).at(&spec)? {
-            Some(declared) if CoreTrait::representation_default(trait_id) => {
-                Some(narrow_to_representation(ctx, declared, &def).at(&spec)?)
+        let fulfils = ctx.env.register_impl(def.clone()).at(&spec)?.map(|declared| {
+            if CoreTrait::representation_default(trait_id) {
+                narrow_to_representation(ctx, declared, &def)
+            } else {
+                Fulfils { entry: declared, narrowed: None }
             }
-            fulfils => fulfils,
-        };
+        });
         Ok(Node::new(Self {
             spec,
             def,
@@ -807,8 +818,8 @@ fn narrow_to_representation<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     declared: Arc<ImplDef>,
     implementation: &ImplDef,
-) -> Result<Arc<ImplDef>> {
-    // CR claude for claude: [bug/medium] This narrows the registered declaration, which
+) -> Fulfils {
+    // XCR claude for claude: [bug/medium] This narrows the registered declaration, which
     // may already be a narrowed copy, and Impl::delete never puts the full declaration
     // back. After a dynamic module reload whose Cast impl gains a method, the new
     // method can never return: check_sig_items proxies only the narrowed methods, and
@@ -817,6 +828,13 @@ fn narrow_to_representation<R: Rt, E: UserEvent>(
     // re-register it when it removes a narrowed copy. probe:
     // design/review-2026-10-26/repro/c-module-traits-dyn-cast-reload.gx
     // (c-module-traits-01)
+    // 2026-10-27 claude: Impl keeps Fulfils { entry, narrowed }: the registered entry
+    // and, when narrow_to_representation narrowed it, the interface's declaration,
+    // which Impl::delete puts back in the entry's place (Env::replace_impl), so each
+    // load narrows the full declaration. Pin
+    // lang::modules::dynamic_cast_reload_gains_a_method (times out with the restore
+    // undone). Relies on a reload deleting the old body before compiling the new
+    // (x-rerun-5-09 may change that order).
     let mut methods = declared.methods.clone();
     for (name, _) in declared.methods.into_iter() {
         if !implementation.methods.contains_key(name) {
@@ -824,12 +842,11 @@ fn narrow_to_representation<R: Rt, E: UserEvent>(
         }
     }
     if methods.len() == declared.methods.len() {
-        return Ok(declared);
+        return Fulfils { entry: declared, narrowed: None };
     }
-    let narrowed = Arc::new(ImplDef { methods, ..(*declared).clone() });
-    ctx.env.unregister_impl(&declared);
-    ctx.env.register_impl(narrowed.clone())?;
-    Ok(narrowed)
+    let entry = Arc::new(ImplDef { methods, ..(*declared).clone() });
+    ctx.env.replace_impl(&declared, entry.clone());
+    Fulfils { entry, narrowed: Some(declared) }
 }
 
 impl<R: Rt, E: UserEvent> Impl<R, E> {
@@ -839,7 +856,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let def = Arc::<ImplDef>::decode(buf)?;
-        let fulfils = Option::<Arc<ImplDef>>::decode(buf)?;
+        let fulfils = Option::<Fulfils>::decode(buf)?;
         let trait_def = Arc::<TraitDef>::decode(buf)?;
         let body = decode_node(ctx, buf)?;
         let n = crate::image::count_decode(buf)?;
@@ -905,26 +922,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
             let expected =
                 Type::Fn(Arc::new(method_sig_at(&d.typ.reset_tvars(), &self.def.target)));
-            // CR claude for claude: [readability/low] This context prints bind.typ and
-            // expected without dereferencing type variables. When the method's
-            // annotation bound the head's 'a, both print as fn(self: Box<'a>) ->
-            // string, so the refusal names two identical types and only the next line
-            // of the chain shows the difference. The `does not implement the declared`
-            // context below has the same problem. Format all three with
-            // format_with_flags(PrintFlag::DerefTVars, ..) or resolve_tvars(). probe:
-            // design/review-2026-10-26/repro/x-rerun-6-impl-method-type-message.gx
-            // (x-rerun-6-03)
             expected.check_contains(&ctx.env, &bind.typ).with_context(|| {
                 format!(
-                    "method {} of impl {} for {} has type {}, the trait declares {expected}",
-                    d.name, self.trait_def.name, self.def.target, bind.typ
+                    "method {} of impl {} for {} has type {}, the trait declares {}",
+                    d.name,
+                    self.trait_def.name,
+                    self.def.target,
+                    bind.typ.resolve_tvars(),
+                    expected.resolve_tvars()
                 )
             })?;
             let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
             implements(&ctx.env, &declared, &bind.typ).with_context(|| {
                 format!(
-                    "method {} of impl {} for {} does not implement the declared {declared}",
-                    d.name, self.trait_def.name, self.def.target
+                    "method {} of impl {} for {} does not implement the declared {}",
+                    d.name,
+                    self.trait_def.name,
+                    self.def.target,
+                    declared.resolve_tvars()
                 )
             })?;
         }
@@ -948,8 +963,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         for p in self.prototypes.iter_mut() {
             p.delete(ctx)
         }
-        if self.fulfils.is_none() {
-            ctx.env.unregister_impl(&self.def);
+        match &self.fulfils {
+            None => ctx.env.unregister_impl(&self.def),
+            Some(Fulfils { entry, narrowed: Some(declared) }) => {
+                ctx.env.replace_impl(entry, declared.clone())
+            }
+            Some(Fulfils { narrowed: None, .. }) => (),
         }
     }
 
@@ -1037,9 +1056,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Some(core) = CoreTrait::of_id(def.id).filter(|c| c.structural()) {
             return self.lower_core_call(ctx, core);
         }
-        // a union self dispatches per member, a union of primitives (one
-        // multi-flag Primitive) per primitive
-        // CR claude for claude: [bug/medium] A union member that is a ref to a union
+        // a union self dispatches per member, as the check judged it
+        // XCR claude for claude: [bug/medium] A union member that is a ref to a union
         // (`type U = [i64, string]` inside `[U, Counter]`) reaches find_impl
         // unexpanded, which finds no impl. Elaboration refuses ("no implementation of
         // Show for U") what the check accepted, and GRAPHIX_ELAB_AUDIT reports it.
@@ -1047,23 +1065,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // not only multi-flag primitives, before lower_trait_union. probe:
         // design/review-2026-10-26/repro/c-module-traits-union-alias-self.gx
         // (c-module-traits-02)
+        // 2026-10-27 claude: resolve_trait_call lowers a union self over
+        // Type::dispatch_members, the member list the check's trait_contains and
+        // dispatch_collision judge, so a member that names a union is expanded and
+        // flattened before lower_trait_union; pin
+        // lang::traits::trait_union_dispatch_through_alias.
         let union = match &self_t {
-            Type::Set(members) => Some(&members[..]),
-            Type::Primitive(p) if p.len() > 1 => Some(std::slice::from_ref(&self_t)),
-            _ => None,
+            Type::Set(_) => true,
+            Type::Primitive(p) => p.len() > 1,
+            _ => false,
         };
-        if let Some(members) = union
-            && !def.hole
-        {
-            let members: LPooled<Vec<Type>> = members
-                .iter()
-                .flat_map(|m| match m {
-                    Type::Primitive(p) if p.len() > 1 => {
-                        p.iter().map(|t| Type::Primitive(t.into())).collect()
-                    }
-                    m => SmallVec::<[Type; 4]>::from_iter([m.clone()]),
-                })
-                .collect();
+        if union && !def.hole {
+            let members = Type::dispatch_members(&ctx.env, &self_t)?;
             return self.lower_trait_union(ctx, &def, tm.index, &members);
         }
         // A constructor trait selects by the receiver's outermost form.
