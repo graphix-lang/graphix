@@ -196,6 +196,22 @@ impl<R: Rt> Map<R> {
         // walk and ignores open cells). Map has no node_addr either; the key would be
         // its value Arc. Needs that design first; the shape is a chain of thousands of
         // nested map literals.
+        // 2026-10-27 codex: Reproduced with the existing target/debug/graphix
+        // --no-cache --check binary and the probe's generated chains (Python monotonic
+        // timer because bc is unavailable): array n=1000/2000/4000/8000 took
+        // 0.203/0.214/0.298/0.462 s; map took 0.388/1.254/4.671/19.703 s, all exit 0.
+        // The original shell probe also completed all nine checks but printed no
+        // durations because bc is missing. Investigated a block-scoped key-judgment
+        // memo. The literal's key/value Arcs hold TVars; caching only syntactically
+        // immutable subtrees would miss this chain. Merely remembering a successful
+        // walk is unsafe: Expanded::once currently forgets whether success passed an
+        // open cell, and TVar::bind explicitly replaces an existing binding. A proof
+        // must propagate unresolved/mutable dependencies through memo hits and
+        // ordered-key subwalks, and account for later cell changes and
+        // abstract/typedef environment changes. Did not introduce an unproved
+        // cross-statement cache or weaken Keys to inspect only the outer key. No fix
+        // or passing regression pin in this commit; the CR remains open for that
+        // design and implementation.
         let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
         let bound = match &self.typ {
             Type::Map { key, value } => {
