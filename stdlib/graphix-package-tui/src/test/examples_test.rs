@@ -206,3 +206,16 @@ async fn block_focus_tabs() -> Result<()> {
     assert_eq!(borders(&mut h)?, (Color::Red, Color::Yellow));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn layout_nested_focus_scrolls_to_the_last_line() -> Result<()> {
+    let mut h = harness("layout_nested_focus").await?;
+    h.drain().await?;
+    assert!(shows(&mut h, "1 I've got")?);
+    h.dispatch_event(key(KeyCode::Tab)).await?;
+    h.dispatch_events((0..60).map(|_| key(KeyCode::Down))).await?;
+    let lines = h.render_lines()?;
+    let at = |n: usize| lines.iter().position(|l| l.contains(&format!("│{n} I've got")));
+    assert!(at(50).is_some() && at(49).is_none(), "{lines:#?}");
+    Ok(())
+}

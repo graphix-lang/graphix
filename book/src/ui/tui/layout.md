@@ -59,8 +59,10 @@ The `layout` widget arranges child widgets in horizontal or vertical layouts wit
 
 ### Nested Layout with Focus and Scrolling
 
-Nested layouts whose focused pane is highlighted, with a long paragraph
-scrolled beside a scrollbar.
+Nested layouts whose focused pane is highlighted, with a paragraph of 50
+lines scrolled beside a scrollbar. The paragraph does not wrap, so its
+length in rows is its number of lines, which the scrollbar and the Down
+key's bound both read.
 
 ```graphix
 {{#include ../../examples/tui/layout_nested_focus.gx}}

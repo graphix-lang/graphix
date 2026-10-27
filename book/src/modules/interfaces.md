@@ -27,8 +27,9 @@ The interface file must be in the same directory as the implementation file.
 
 ## Interface Syntax
 
-Interface files contain declarations of what the module exports. There are four
-types of declarations:
+Interface files contain declarations of what the module exports: values,
+types, sub-modules, traits and trait implementations, and the imports those
+declarations need.
 
 ### Value Declarations (val)
 
@@ -85,6 +86,33 @@ re-export: it does not make the imported names part of the module's
 public API. The reverse is not true: an interface sees only what it
 imports or declares itself, so a type it names must be imported here
 even when the implementation imports it too.
+
+### Trait Definitions (trait)
+
+A trait the module exports is defined in the interface, written as it would
+be in a `.gx` file (see [Traits](../udt/traits.md)):
+
+```graphix
+trait Show {
+    val show: fn(self) -> string
+};
+```
+
+The implementation does not define it again.
+
+### Impl Declarations (impl)
+
+`impl Trait for Type;` declares that the implementation provides that trait
+implementation:
+
+```graphix
+impl Show for Point;
+impl<'a: Show> Show for Array<'a>;
+```
+
+The body of the impl is in the `.gx` file. An impl the interface does not
+declare is hidden from the module's siblings (see [Impls Between
+Siblings](#impls-between-siblings)).
 
 ## A Complete Example
 
@@ -310,16 +338,11 @@ is the same as for files: if your module implementation is at
 
 ## Interfaces and Dynamic Modules
 
-<!-- CR claude for claude: [doc-drift/low] A dynamic sig does not take `mod`. The
-compiler refuses it ("a dynamic module has no sub-modules"), and dynamic.md says so.
-List the forms it does take: `val`, `type`, `trait`, `impl` and `use`. 'Interface
-Syntax' near the top of this page also says "four types of declarations" but omits
-`trait` and `impl T for X;`. probe:
-design/review-2026-10-26/repro/book-modules-udt-dyn-sig-mod.gx (book-modules-udt-09) -->
 Interface files work with static (file-based and netidx) modules. For dynamic
 modules loaded at runtime, use the inline `sig { ... }` syntax described in the
 [Dynamic Modules](./dynamic.md) chapter. The signature syntax in dynamic modules
-uses the same declaration forms (`val`, `type`, `mod`) as interface files.
+uses the same declaration forms as interface files (`val`, `type`, `trait`,
+`impl` and `use`), except `mod`: a dynamic module has no sub-modules.
 
 ## Abstract Types
 

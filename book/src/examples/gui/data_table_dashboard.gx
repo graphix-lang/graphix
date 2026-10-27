@@ -20,19 +20,14 @@ mod icon;
 // * Progress column for uptime %
 // * Button column that fires an action callback
 // * Regex row filter wired to a text input
-// * Column sort driven by pick_list widgets in the sidebar
+// * Column sort driven by pick_list widgets in the controls row
 // * Selection echoed in the footer
 
 let t = cast<f64>(count(time::timer(duration:1.s, true)))$;
 
 type State = [`Healthy, `Degraded, `Down];
 
-// Publish a tiny fleet of services. state is writable (Combo).
-// CR claude for claude: [readability/low] The comment above calls this 'a tiny fleet',
-// but the array::init below publishes 1024 services, 4096 cells. The header list puts
-// the sort pick-lists 'in the sidebar', but they are in the `controls` row above the
-// table. Say 1024 services and 'controls row'. data_table_filter_sort.gx's 'sidebar
-// controls' needs the same fix. Found by reading; not run. (examples-gui-02)
+// Publish a fleet of 1024 services. state is writable (Combo).
 let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
     net::publish(
         #on_write: |v: State| state <- v,

@@ -21,35 +21,27 @@ let base = "/local/graphix/data_table_scrolling";
 // Drive every metric off one clock so all rows update in lockstep.
 let tick = time::timer(duration:2.s, true);
 
+// A progress column draws a fraction in [0, 1].
 let rand01 = || rand::rand(#start: 0., #end: 1., #clock: tick);
-let rand100 = || rand::rand(#start: 0., #end: 100., #clock: tick);
 let rand_mbps = || rand::rand(#start: 0., #end: 1000., #clock: tick);
+let rand_count = |n: i64| rand::rand(#start: 0, #end: n, #clock: tick);
 
 let publish_host = |name: string| {
-    net::publish("[base]/host-[name]/cpu_pct", rand100());
-    net::publish("[base]/host-[name]/mem_pct", rand100());
-    net::publish("[base]/host-[name]/disk_pct", rand100());
+    net::publish("[base]/host-[name]/cpu_pct", rand01());
+    net::publish("[base]/host-[name]/mem_pct", rand01());
+    net::publish("[base]/host-[name]/disk_pct", rand01());
     net::publish("[base]/host-[name]/net_in_mbps", rand_mbps());
     net::publish("[base]/host-[name]/net_out_mbps", rand_mbps());
     net::publish("[base]/host-[name]/load_1m", rand01());
     net::publish("[base]/host-[name]/load_5m", rand01());
     net::publish("[base]/host-[name]/load_15m", rand01());
-    net::publish("[base]/host-[name]/error_count", rand100());
-    net::publish("[base]/host-[name]/request_count", rand_mbps())
+    net::publish("[base]/host-[name]/error_count", rand_count(100));
+    net::publish("[base]/host-[name]/request_count", rand_count(1000))
 };
 
 array::map(host_ids, publish_host);
 
 let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
-    // CR claude for claude: [bug/low] The three progress columns get rand100() values
-    // (0..100), but a Progress column draws ProgressBar(0.0..=1.0, val.clamp(0.0, 1.0))
-    // (data_table render.rs, ColumnType::Progress; data_table.gxi says values clamp to
-    // [0, 1]). So every bar is full on almost every tick and the columns show nothing.
-    // Publish the percentages as fractions (rand01(), or rand100() / 100.0). While
-    // here, give error_count and request_count integer ranges so a count does not show
-    // as 57.12345. probe:
-    // design/review-2026-10-26/repro/examples-gui-scrolling-progress-scale.gx
-    // (examples-gui-01)
     "cpu_pct"       => progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &90.),
     "mem_pct"       => progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &90.),
     "disk_pct"      => progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &90.),

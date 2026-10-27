@@ -113,11 +113,6 @@ struct Point {
 }
 ```
 
-<!-- CR claude for claude: [doc-drift/low] The match below covers only `Updated` and
-`Env`, but `GXEvent` also has `Idle`, so the snippet is a non-exhaustive match and does
-not compile. Add an `Idle` arm, and document `GXHandle::notify_idle` / `GXEvent::Idle`
-on this page: it is how an embedder learns the runtime went idle after its requests.
-Found by reading; not run. (book-modules-udt-10) -->
 ```rust
 // assume we got id from a data structure and its type is &i64
 let mut r = handle.compile_ref(id).await?;
@@ -136,7 +131,7 @@ for ev in batch.drain(..) {
                 println!("current value {v}")
             }
         },
-        graphix_rt::GXEvent::Env(_) => ()
+        graphix_rt::GXEvent::Env(_) | graphix_rt::GXEvent::Idle => ()
     }
 }
 ```
@@ -157,6 +152,37 @@ let mut r = handle.compile_ref_by_name(
 
 // the rest of the code is exactly the same
 ```
+
+## Knowing When the Runtime Is Idle
+
+An embedder that sends the program some input (a ref set, a call) and
+wants to know when everything that input caused has arrived calls
+[`notify_idle`](https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.notify_idle).
+The next time the runtime has no cycle ready it sends `GXEvent::Idle`
+on the channel, after every update of the cycles before it, so the
+updates read before the `Idle` are all the input caused. Several
+`notify_idle` calls made before the `Idle` is sent are answered by one.
+A pending timer, IO or spawned task does not keep the runtime busy:
+what it brings later comes after the `Idle`.
+
+```rust
+r.set(42)?;
+handle.notify_idle()?;
+'idle: loop {
+    let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
+    for ev in batch.drain(..) {
+        match ev {
+            graphix_rt::GXEvent::Updated(id, v) => println!("{id:?} = {v}"),
+            graphix_rt::GXEvent::Env(e) => env = e,
+            graphix_rt::GXEvent::Idle => break 'idle,
+        }
+    }
+}
+```
+
+[`wait_idle`](https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.wait_idle)
+answers the same question as a future: when it returns, the updates
+are on the channel, still to be read.
 
 ## Calling Graphix Functions
 

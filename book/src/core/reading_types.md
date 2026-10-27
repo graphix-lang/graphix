@@ -223,7 +223,7 @@ So a function signature like:
 val parse: fn(s: string) -> Result<i64, `ParseError>
 ```
 
-Returns either an `i64` (success) or an `Error<`ParseError>` (failure).
+Returns either an `i64` (success) or an `` Error<`ParseError> `` (failure).
 
 The `NoError` bound says the success type holds no error itself, so the
 error member is the only error in a result and `error as e` always picks
@@ -428,12 +428,6 @@ Breaking it down:
 - `-> Array<'b>` - returns array of transformed type
 - `throws 'e` - propagates errors from the transform function
 
-<!-- CR claude for claude: [doc-drift/low] The table's Error and Result examples write
-`Error<\`ParseError>` and `Result<i64, \`Err>`. A code span takes no backslash escape,
-so the built page shows `Error<\` as code followed by the plain text ParseError>`. Write
-them as `` Error<`ParseError> `` and `` Result<i64, `Err> ``, as book-ui-b-04's fix did
-elsewhere, and rebuild the book. probe:
-design/review-2026-10-26/repro/x-rerun-2-reading-types-code-span.sh (x-rerun-2-06) -->
 ## Quick Reference Table
 
 | Notation | Meaning | Example |
@@ -450,8 +444,8 @@ design/review-2026-10-26/repro/x-rerun-2-reading-types-code-span.sh (x-rerun-2-0
 | `->` | Returns | `fn(x: i64) -> string` |
 | `Array<T>` | Array of T | `Array<string>` |
 | `Map<K, V>` | Map with keys K, values V | `Map<string, i64>` |
-| `Error<'e>` | Error containing type 'e | `Error<\`ParseError>` |
-| `Result<'r, 'e>` | Success 'r or Error 'e | `Result<i64, \`Err>` |
+| `Error<'e>` | Error containing type 'e | `` Error<`ParseError> `` |
+| `Result<'r, 'e>` | Success 'r or Error 'e | `` Result<i64, `Err> `` |
 | `Option<'a>` | Value 'a or null | `Option<string>` |
 
 ## Tips for Reading Signatures
