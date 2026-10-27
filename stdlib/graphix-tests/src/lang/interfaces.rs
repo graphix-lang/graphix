@@ -512,7 +512,7 @@ run!(
 // Error: extra type parameter in the implementation.
 run!(
     abstract_type_extra_param,
-    refused("signature mismatch in T, missing parameter b"),
+    refused("signature mismatch in T, the interface declares 1 parameters, the implementation 2"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -523,6 +523,41 @@ run!(
     "#,
     "/test/inner.gx" => r#"
         type T<'a, 'b> = Abstract<('a, 'b)>;
+        let x = 42
+    "#
+; FuseExpect::None);
+
+run!(
+    abstract_type_missing_param,
+    refused("signature mismatch in T, the interface declares 2 parameters, the implementation 1"),
+    "/test.gx" => r#"
+        mod inner;
+        let b: inner::T<i64, string> = never();
+        let result = inner::x
+    "#,
+    "/test/inner.gxi" => r#"
+        type T<'a, 'b>;
+        val x: i64
+    "#,
+    "/test/inner.gx" => r#"
+        type T<'a> = Abstract<'a>;
+        let x = 42
+    "#
+; FuseExpect::None);
+
+run!(
+    abstract_type_reordered_params,
+    refused("signature mismatch in T, parameter b where the interface declares a"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::x
+    "#,
+    "/test/inner.gxi" => r#"
+        type T<'a, 'b: Number>;
+        val x: i64
+    "#,
+    "/test/inner.gx" => r#"
+        type T<'b: Number, 'a> = Abstract<('a, 'b)>;
         let x = 42
     "#
 ; FuseExpect::None);

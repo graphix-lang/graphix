@@ -17,6 +17,7 @@ use crate::{
     },
     node::{Nop, Runs, bind::Bind, traits},
     profile::{self, Phase},
+    shared_map::SharedMap,
     typ::{
         FnArgKind, FnArgType, FnType, TVar, Type,
         tvar::{AtLevel, ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task},
@@ -50,15 +51,8 @@ enum UseInstall {
     Nothing,
 }
 
-/// Resolve one item of a `use` against the namespace table
-/// ([`crate::env::Env::names`]): its module prefix, then a glob source
-/// or an explicit [`ImportEntry`].
 /// The glob the `use` item `item` installs at `scope`; `None` when it
 /// is no glob.
-// CR claude for claude: [readability/low] This doc opens with resolve_use_item's
-// summary (explicit ImportEntry resolution), which use_glob never does. Move that
-// paragraph to resolve_use_item. coretraits::Version's doc likewise holds two
-// overlapping summaries; keep one. Found by reading; not run. (c-module-traits-08)
 fn use_glob(env: &Env, scope: &ModPath, item: &UseItem) -> Result<Option<Glob>> {
     if !item.is_glob() {
         return Ok(None);
@@ -72,6 +66,9 @@ fn use_glob(env: &Env, scope: &ModPath, item: &UseItem) -> Result<Option<Glob>> 
     }))
 }
 
+/// Resolve one item of a `use` against the namespace table
+/// ([`crate::env::Env::names`]): its module prefix, then a glob source
+/// or an explicit [`ImportEntry`].
 fn resolve_use_item(
     env: &mut Env,
     pos: crate::SourcePosition,
@@ -423,6 +420,34 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
+/// Refuse an implementation of `val name` whose type `typ` is not the
+/// declared `declared`.
+fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
+    declared.sig_matches(env, typ).map_err(|e| {
+        let typ = format_with_flags(PrintFlag::DerefTVars, || format_compact!("{typ}"));
+        anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}")
+    })
+}
+
+/// Refuse `implemented`, the implementation of the declared impl
+/// `trait_name` for `target`, unless its head is the declared head
+/// `declared` ([`impl_sig`]).
+fn check_impl_head(
+    env: &Env,
+    trait_name: &ModPath,
+    target: &Type,
+    declared: &FnType,
+    implemented: &ImplDef,
+) -> Result<()> {
+    declared.sig_matches(env, &head_sig(implemented)).map_err(|e| {
+        anyhow!(
+            "impl {trait_name} for {} does not implement the declared impl \
+             {trait_name} for {target}: {e:#}",
+            implemented.target
+        )
+    })
+}
+
 /// A type or trait the interface `si` declares is the implementation's
 /// already, spliced into its body from the interface: the body's own
 /// definition of one is refused, but for a hidden type's, an abstract with
@@ -474,35 +499,47 @@ fn check_hidden_typedef(
         bail!("{} is defined by its interface; delete this definition", td.name)
     }
     let sig_params = scope_params(&sig_td.params, scope);
-    // CR claude for claude: [bug/low] Parameters are paired by name and only from the
+    // XCR claude for claude: [bug/low] Parameters are paired by name and only from the
     // implementation's side, so `type Box<'a> = Abstract<'a>` implements a declared
     // `type Box<'a, 'b>;`, and a reordered head compares constraints at the wrong
     // positions. Require equal arity and compare position by position. probe:
     // design/review-2026-10-26/repro/c-module-traits-hidden-type-arity.sh
     // (c-module-traits-06)
-    for (tv0, con0) in scope_params(&td.params, scope).iter() {
-        match sig_params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
-            Some((_, con1)) if con0 != con1 => {
-                let con0 = match con0 {
-                    None => "missing",
-                    Some(t) => &format_compact!("{t}"),
-                };
-                let con1 = match con1 {
-                    None => "missing",
-                    Some(t) => &format_compact!("{t}"),
-                };
-                bail!(
-                    "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
-                    td.name,
-                    tv0.name
-                )
-            }
-            None => bail!(
-                "signature mismatch in {}, missing parameter {}",
-                sig_td.name,
-                tv0.name
-            ),
-            Some(_) => (),
+    // 2026-10-27 claude: check_hidden_typedef now requires the implementation's
+    // parameter count to equal the interface's and compares name and constraint
+    // position by position. Pins: lang::interfaces::abstract_type_missing_param (the
+    // repro's shape) and abstract_type_reordered_params; abstract_type_extra_param's
+    // message changed with it.
+    let params = scope_params(&td.params, scope);
+    if params.len() != sig_params.len() {
+        bail!(
+            "signature mismatch in {}, the interface declares {} parameters, the implementation {}",
+            td.name,
+            sig_params.len(),
+            params.len()
+        )
+    }
+    for ((tv0, con0), (tv1, con1)) in params.iter().zip(sig_params.iter()) {
+        if tv0.name != tv1.name {
+            bail!(
+                "signature mismatch in {}, parameter {} where the interface declares {}",
+                td.name,
+                tv0.name,
+                tv1.name
+            )
+        }
+        if con0 != con1 {
+            let show = |c: &Option<Type>| match c {
+                None => CompactString::const_new("missing"),
+                Some(t) => format_compact!("{t}"),
+            };
+            bail!(
+                "signature mismatch in {}, constraint mismatch on {}, signature constraint {} vs implementation constraint {}",
+                td.name,
+                tv0.name,
+                show(con1),
+                show(con0)
+            )
         }
     }
     if !matches!(&td.body, TypeDefBody::Abstract(_)) {
@@ -602,6 +639,11 @@ fn check_interface_names(
     }
 }
 
+/// The bindings `bind_sig` made at the module's own scope.
+fn sig_binds(env: &Env, scope: &Scope) -> Map<CompactString, BindId> {
+    env.binds.get(&scope.lexical).cloned().unwrap_or_default()
+}
+
 /// Check the implementation against `sig`, adding the proxies it links;
 /// their references are recorded once every item matched, and a refused
 /// check adds none.
@@ -611,11 +653,12 @@ fn check_sig<R: Rt, E: UserEvent>(
     proxy: &mut Vec<Proxy>,
     scope: &Scope,
     sig: &Sig,
+    sig_binds: &Map<CompactString, BindId>,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
     let _profile = profile::phase(Phase::ModuleSignature);
     let first_proxy = proxy.len();
-    if let Err(e) = check_sig_items(ctx, proxy, scope, sig, nodes) {
+    if let Err(e) = check_sig_items(ctx, proxy, scope, sig, sig_binds, nodes) {
         proxy.truncate(first_proxy);
         return Err(e);
     }
@@ -631,17 +674,15 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     proxy: &mut Vec<Proxy>,
     scope: &Scope,
     sig: &Sig,
+    sig_binds: &Map<CompactString, BindId>,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
     // the interface's types and traits first: a val's type names them
     let view = interface_env(&ctx.env, &scope.lexical, sig)?;
     for si in sig.items.iter() {
         let val = match &si.kind {
-            SigKind::Bind(BindSig { name, .. }) => ctx
-                .env
-                .binds
-                .get(&scope.lexical)
-                .and_then(|m| m.get(name.name.as_str()))
+            SigKind::Bind(BindSig { name, .. }) => sig_binds
+                .get(name.name.as_str())
                 .and_then(|id| ctx.env.by_id.get(id))
                 .map(|b| &b.typ),
             _ => None,
@@ -650,7 +691,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
             .and_then(|()| check_interface_names(&view, &scope.lexical, si, val))
             .placed(&si.ori, si.pos)?;
     }
-    // CR claude for claude: [bug/medium] A file module with a .gxi declared in a
+    // XCR claude for claude: [bug/medium] A file module with a .gxi declared in a
     // function body is refused: with m.gx `let y = 2` and m.gxi `val y: i64;`, `let h =
     // |k: i64| -> i64 { mod m; m::y + k }` fails here with 'sig item val y: i64 is
     // missing an implementation'. The same `mod m;` at the top level or in a top-level
@@ -660,6 +701,15 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     // module in a body in lang/modules.rs. probe:
     // design/review-2026-10-26/repro/x-rerun-4-interfaced-module-in-body.sh
     // (x-rerun-4-01)
+    // 2026-10-27 claude: The root cause was the env the check ran in: a lambda
+    // instance's env holds only the binds from before its body, so the signature's
+    // bindings at the module's scope were missing from it. Module now keeps
+    // sig_binds, the bindings bind_sig made at its scope, and check_sig pairs the
+    // body's bindings with them instead of looking them up in the env. The module
+    // image carries them (REGISTRATION_FORMAT 90). The check itself still runs in
+    // the statement's env: a snapshot taken at bind_sig misses a type a later module
+    // defines (annotation_names_from_a_later_module). Pin:
+    // lang::modules::interfaced_module_in_a_lambda_body (two instances).
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
     // a name a later `let` shadows is not the one the interface exports
     let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
@@ -674,9 +724,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     }
     for n in nodes {
         let mut check_node = || -> Result<()> {
-            if let Some(bind) = n.downcast_ref::<Bind<R, E>>()
-                && let Some(binds) = ctx.env.binds.get(&scope.lexical)
-            {
+            if let Some(bind) = n.downcast_ref::<Bind<R, E>>() {
                 // every name the `let` binds, each with its own binding; a
                 // single name's type is the whole pattern's
                 let single = bind.pattern.single_bind_id();
@@ -688,19 +736,11 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                     if effective.get(&name) != Some(&id) {
                         continue;
                     }
-                    let Some(proxy_id) = binds.get(&name) else { continue };
+                    let Some(proxy_id) = sig_binds.get(&name) else { continue };
                     let Some(proxy_bind) = ctx.env.by_id.get(proxy_id) else { continue };
                     let typ = if single.is_some() { bind.typ() } else { &inner.typ };
                     proxy_bind.typ.unbind_tvars();
-                    if let Err(e) = proxy_bind.typ.sig_matches(&ctx.env, typ) {
-                        let typ = format_with_flags(PrintFlag::DerefTVars, || {
-                            format_compact!("{typ}")
-                        });
-                        bail!(
-                            "val {name} is declared {} but implemented {typ}: {e:#}",
-                            proxy_bind.typ
-                        )
-                    }
+                    check_val(&ctx.env, &name, &proxy_bind.typ, typ)?;
                     proxy.push(Proxy {
                         inner: id,
                         outer: *proxy_id,
@@ -751,17 +791,14 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                             .trait_def(trait_id)
                             .cloned()
                             .expect("bound by bind_sig");
-                        head_sig(&declared)
-                            .sig_matches(&ctx.env, &head_sig(&i.def))
-                            .map_err(|e| {
-                                anyhow!(
-                                    "impl {} for {} does not implement the declared impl {} for {target}: {e:#}",
-                                    im.trait_name,
-                                    i.def.target,
-                                    im.trait_name
-                                )
-                                .at(i.spec())
-                            })?;
+                        check_impl_head(
+                            &ctx.env,
+                            &im.trait_name,
+                            &target,
+                            &head_sig(&declared),
+                            &i.def,
+                        )
+                        .at(i.spec())?;
                         for (name, outer) in declared.methods.into_iter() {
                             let (inner, private_inner) = match i.def.methods.get(name) {
                                 Some(id) => (*id, true),
@@ -805,12 +842,17 @@ fn check_sig_items<R: Rt, E: UserEvent>(
 /// implemented, under the declared head; and the script's own types and
 /// traits agree with the declared ones, as a module's do (the
 /// interface's others were spliced into the script).
-// CR claude for claude: [structure/low] This repeats check_sig_items' interface checks
+// XCR claude for claude: [structure/low] This repeats check_sig_items' interface checks
 // (val type match, declared impl head match, names and redefinition), with copies of
 // their messages, and has already drifted (no refusal of an impl implemented twice).
 // Share one val check and one impl-head check between the two, leaving each caller only
 // the lookup of what implements the item. Found by reading; not run.
 // (c-module-traits-07)
+// 2026-10-27 claude: check_val and check_impl_head are now shared by check_sig_items
+// and check_script_sig, one message each. The impl implemented twice needs no check in
+// check_script_sig: a script's second impl is already refused at registration
+// ('conflicting implementation', checked by hand with and without a .gxi). Refactor
+// only; the interfaces, modules and traits fixtures cover both callers' messages.
 pub fn check_script_sig<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     sig: &Sig,
@@ -841,15 +883,8 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                     ft.generalize(0)
                 }
                 check_interface_names(&view, scope, si, Some(&declared)).map_err(at)?;
-                if let Err(e) = declared.sig_matches(&ctx.env, &bind.typ) {
-                    let typ = format_with_flags(PrintFlag::DerefTVars, || {
-                        format_compact!("{}", bind.typ)
-                    });
-                    return Err(anyhow!(
-                        "val {name} is declared {declared} but implemented {typ}: {e:#}"
-                    )
-                    .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos }));
-                }
+                check_val(&ctx.env, name.name.as_str(), &declared, &bind.typ)
+                    .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding
                 // of its own, with its doc, linked to the script's
                 if ctx.env.ide.is_lsp() {
@@ -886,17 +921,14 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                 let trait_def = ctx.env.trait_def(tid).cloned().expect("a trait's def");
                 let (st, sp) = traits::impl_head(&ctx.env, scope, &trait_def, im, true)
                     .map_err(at)?;
-                impl_sig(&st, &sp).sig_matches(&ctx.env, &head_sig(&entry)).map_err(
-                    |e| {
-                        at(anyhow!(
-                            "impl {} for {} does not implement the declared impl {} for \
-                         {target}: {e:#}",
-                            im.trait_name,
-                            entry.target,
-                            im.trait_name
-                        ))
-                    },
-                )?;
+                check_impl_head(
+                    &ctx.env,
+                    &im.trait_name,
+                    &target,
+                    &impl_sig(&st, &sp),
+                    &entry,
+                )
+                .map_err(at)?;
             }
             SigKind::TypeDef(_) | SigKind::Trait(_) => {
                 check_redefinition(scope, si, nodes).map_err(at)?
@@ -934,6 +966,11 @@ pub struct Module<R: Rt, E: UserEvent> {
     flags: BitFlags<CFlag>,
     body: Body<R, E>,
     env: Env,
+    /// The signature's bindings at the module's scope, which the check
+    /// pairs with the body's: the env a statement checks under may not
+    /// hold them (a lambda instance's holds only the binds from before
+    /// its body).
+    sig_binds: Map<CompactString, BindId>,
     sig: Sig,
     pub(crate) scope: Scope,
     proxy: Vec<Proxy>,
@@ -979,6 +1016,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             _ => return Err(PackError::UnknownTag),
         };
         let env = image::lexical_decode(buf)?;
+        let sig_binds = SharedMap::decode(buf)?.0;
         let sig = Sig::decode(buf)?;
         let scope = image::scope_decode(buf)?;
         let proxy = Vec::<Proxy>::decode(buf)?;
@@ -996,6 +1034,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             flags,
             body,
             env,
+            sig_binds,
             sig,
             scope,
             proxy,
@@ -1049,6 +1088,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             spec,
             flags,
             env: env.lexical(),
+            sig_binds: sig_binds(&ctx.env, scope),
             sig,
             body: Body::Dynamic { source, sig_env: ctx.env.lexical() },
             scope: scope.clone(),
@@ -1083,6 +1123,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             spec,
             flags,
             env,
+            sig_binds: sig_binds(&ctx.env, scope),
             sig,
             body: Body::Static,
             scope: scope.clone(),
@@ -1201,14 +1242,16 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     /// against the signature.
     fn check_body(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let _profile = profile::phase(Phase::ModuleCheck);
-        let Self { env, nodes, catches, body, top_id, proxy, scope, sig, .. } = self;
+        let Self {
+            env, nodes, catches, body, top_id, proxy, scope, sig, sig_binds, ..
+        } = self;
         ctx.with_restored_mut(env, |ctx| {
             super::typecheck0_statements(ctx, nodes, catches, false)
         })?;
         match body {
-            Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, nodes),
+            Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes),
             Body::Dynamic { sig_env, .. } => ctx.with_restored_mut(sig_env, |ctx| {
-                check_sig(ctx, *top_id, proxy, scope, sig, nodes)
+                check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes)
             }),
         }
     }
@@ -1309,13 +1352,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             return self.typecheck0(ctx);
         }
         let _task = InTask::enter(self.task);
-        let Self { env, nodes, catches, top_id, proxy, scope, sig, .. } = self;
+        let Self { env, nodes, catches, top_id, proxy, scope, sig, sig_binds, .. } = self;
         ctx.with_restored_mut(env, |ctx| {
             super::typecheck_in_order(ctx, nodes, catches, false, |n, ctx| {
                 n.typecheck0_instance(ctx, types)
             })
         })
-        .and_then(|()| check_sig(ctx, *top_id, proxy, scope, sig, nodes))
+        .and_then(|()| check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes))
         .with_context(|| format_compact!("compiling module {}", scope.lexical))?;
         self.proxy_lambda_defs(ctx);
         Ok(())
@@ -1348,6 +1391,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             }
         }
         image::lexical_encode(&self.env, buf)?;
+        SharedMap(self.sig_binds.clone()).encode(buf)?;
         self.sig.encode(buf)?;
         image::scope_encode(&self.scope, buf)?;
         self.proxy.encode(buf)?;
@@ -1362,6 +1406,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         let mut primed: LPooled<Vec<BindId>> = LPooled::take();
         let mut src_tag = Tag::FIRED;
         let mut bottom = false;
+        let mut failed = None;
         let src = match &mut self.body {
             Body::Static => None,
             Body::Dynamic { source, .. } => {
@@ -1396,17 +1441,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     // design/review-2026-10-26/repro/x-rerun-5-dyn-module-bad-source.gx
                     // (x-rerun-5-09)
                     self.clear_compiled(ctx);
-                    let compiled = self.compile_source(ctx, s);
+                    let res = self.compile_source(ctx, s);
                     ctx.apply_deferred();
-                    if let Err(e) = compiled {
-                        return self.resident.set(TagValue::tagged(
-                            errf!(ERR_TAG, "compile error {e:?}"),
-                            tag,
-                        ));
+                    match res {
+                        Err(e) => failed = Some(errf!(ERR_TAG, "compile error {e:?}")),
+                        Ok(()) => compiled = true,
                     }
-                    ctx.core_hook_sites.lock().reloaded();
                 }
-                // CR claude for claude: [bug/medium] Returning here skips this cycle's
+                // XCR claude for claude: [bug/medium] Returning here skips this cycle's
                 // outer-to-inner forwarding, the body's update and the publication of
                 // its productions. A write to a val landing with the bad source never
                 // reaches the body: foo::x reads 5 while foo::y stays at the old 0. Set
@@ -1414,14 +1456,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 // update, as the bottom path does. probe:
                 // design/review-2026-10-26/repro/c-module-traits-dyn-error-drops-cycle.gx
                 // (c-module-traits-03)
+                // 2026-10-27 claude: Module::update now records a load failure (an error
+                // value, or a source that does not compile) as the status and falls
+                // through to the proxy forwarding and the body update. Pin:
+                // lang::modules::source_error_keeps_the_body_running (55, not 5). The
+                // teardown on a bad source string is x-rerun-5-09, Eric's call, and is
+                // left as it was.
                 v => {
-                    return self.resident.set(TagValue::tagged(
-                        errf!(ERR_TAG, "unexpected {}", crate::typ::Naked(&v)),
-                        tag,
-                    ));
+                    failed = Some(errf!(ERR_TAG, "unexpected {}", crate::typ::Naked(&v)))
                 }
             }
-            compiled = true;
+        }
+        if compiled {
+            ctx.core_hook_sites.lock().reloaded();
             // prime the fresh nodes' external refs from the store: the
             // events that carried those values are long gone
             let mut refs = Refs::default();
@@ -1478,7 +1525,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             store_production(ctx, *outer, &tv);
             ctx.event.variables.insert(*outer, tv);
         }
-        if bottom {
+        if let Some(e) = failed {
+            self.resident.set(TagValue::tagged(e, src_tag))
+        } else if bottom {
             self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else if compiled {
             self.resident.set(TagValue::tagged(Value::Null, src_tag))
@@ -1527,7 +1576,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     Some(w) => bail!(
                         "the check decides a type the code around the module \
                          left open: annotate {}",
-                        decided_binds(ctx, &self.scope.lexical, &w)
+                        decided_binds(ctx, &self.scope.lexical, &self.spec.ori, &w)
                     ),
                     None => Ok(()),
                 });
@@ -1562,19 +1611,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 }
 
-/// The bindings outside `module` whose types hold what its check wrote,
-/// by position, for its refusal.
+/// The bindings around `module` whose types hold what its check wrote,
+/// by position, for the refusal of its statement in `at`: each named
+/// with its file where that is not `at`'s.
 fn decided_binds<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     module: &ModPath,
+    at: &Origin,
     w: &ForeignWrite,
 ) -> CompactString {
-    let mut held: LPooled<Vec<(crate::SourcePosition, &str)>> = ctx
+    let mut held: LPooled<Vec<(bool, crate::SourcePosition, &str, &Source)>> = ctx
         .env
         .by_id
         .iter()
         .map(|(_, b)| b)
-        // CR claude for claude: [bug/low] This keeps every binding outside the refused
+        // XCR claude for claude: [bug/low] This keeps every binding outside the refused
         // module, including a sibling module's locals whose cell merged into the
         // parent's. For `mod n` writing `super::x`, the refusal reads "annotate `x`
         // (line 1, column 5), `v` (line 1, column 15)". `v` is a local of sibling m in
@@ -1582,7 +1633,12 @@ fn decided_binds<R: Rt, E: UserEvent>(
         // reader looks in the parent. Keep only bindings whose scope is an ancestor of
         // the module, and print each one's file. probe:
         // design/review-2026-10-26/repro/t-tvar-decided-binds-sibling.sh (t-tvar-06)
-        // CR claude for claude: [bug/medium] This keeps every binding outside the
+        // 2026-10-27 claude: decided_binds keeps only bindings whose scope is a strict
+        // ancestor of the module, and names a binding's source when it differs from
+        // the module statement's origin. Pins:
+        // lang::modules::module_check_refusal_names_no_sibling_local (this repro) and
+        // module_check_refusal_names_the_file.
+        // XCR claude for claude: [bug/medium] This keeps every binding outside the
         // module, a sibling module's included, and prints each one's line and column
         // with no file. With `let x = never(); mod a; mod b;` and both modules reading
         // `super::x`, a's refusal says "annotate `x` (line 1, column 5), `w` (line 3,
@@ -1593,15 +1649,27 @@ fn decided_binds<R: Rt, E: UserEvent>(
         // should pin the whole hint. probe:
         // design/review-2026-10-26/repro/tests-modules-image-left-open-names-sibling.sh
         // (tests-modules-image-02)
-        .filter(|b| !Path::is_parent(&*module.0, &*b.scope.0) && w.held_by(&b.typ))
-        .map(|b| (b.pos, b.name.as_str()))
+        // 2026-10-27 claude: Fixed with t-tvar-06: decided_binds keeps only ancestors
+        // and names another file's source. module_check_refusal_is_the_first_in_order
+        // now pins the whole hint (ends_with); module_check_refusal_names_the_file pins
+        // the file naming.
+        .filter(|b| {
+            b.scope != *module
+                && Path::is_parent(&*b.scope.0, &*module.0)
+                && w.held_by(&b.typ)
+        })
+        .map(|b| {
+            let src = &b.ori.source;
+            (*src != at.source, b.pos, b.name.as_str(), src)
+        })
         .collect();
-    held.sort();
+    held.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
     held.dedup();
     let mut out = CompactString::new("");
-    for (i, (pos, name)) in held.iter().take(3).enumerate() {
+    for (i, (elsewhere, pos, name, src)) in held.iter().take(3).enumerate() {
         let sep = if i == 0 { "" } else { ", " };
-        let _ = write!(out, "{sep}`{name}` (line {}, column {})", pos.line, pos.column);
+        let _ = write!(out, "{sep}`{name}` (line {}, column {}", pos.line, pos.column);
+        let _ = if *elsewhere { write!(out, " in {src})") } else { write!(out, ")") };
     }
     if out.is_empty() {
         out.push_str("the binding it decides");

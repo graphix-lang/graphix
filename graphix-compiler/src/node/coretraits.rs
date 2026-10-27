@@ -119,10 +119,9 @@ fn hook_of(
     }))
 }
 
-/// The trait's implementation list, whose identity is the version an
-/// entry was resolved against: a registration or removal replaces it.
-/// What a cached site was built against: the trait's impl list and the
-/// registry's reload generation.
+/// What a cached site was built against: the trait's impl list, which
+/// a registration or removal replaces, and the registry's reload
+/// generation.
 #[derive(Clone)]
 struct Version {
     impls: Option<Arc<Vec<Arc<ImplDef>>>>,

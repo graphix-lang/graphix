@@ -383,8 +383,8 @@ let y = super::x + 1
 // and the first in order is the one reported, whatever ran first.
 run!(
     module_check_refusal_is_the_first_in_order,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("left open")
-        && format!("{e:#}").contains("::a")),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("::a")
+        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5)")),
     "/test.gx" => r#"
 let x = never();
 mod a;
@@ -405,6 +405,58 @@ let y = super::x + 2
 "#
     ; FuseExpect::None);
 
+// The refusal names only the bindings around the module, never a
+// sibling's local whose type the same write holds.
+run!(
+    module_check_refusal_names_no_sibling_local,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("::n")
+        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5)")),
+    "/test.gx" => r#"
+let x = never();
+mod m;
+mod n;
+x <- 1;
+let result = (m::y, n::z)
+"#,
+    "/test/m.gxi" => r#"
+val y: i64;
+"#,
+    "/test/m.gx" => r#"
+let y = { let v = super::x; 1 }
+"#,
+    "/test/n.gxi" => r#"
+val z: string;
+"#,
+    "/test/n.gx" => r#"
+let z = { super::x <- "a"; "b" }
+"#
+    ; FuseExpect::None);
+
+// A binding the refusal names in another file than the module
+// statement's is named with its file.
+run!(
+    module_check_refusal_names_the_file,
+    |v: Result<&Value>| matches!(v, Err(e)
+        if format!("{e:#}").ends_with("annotate `x` (line 2, column 5 in module /test)")),
+    "/test.gx" => r#"
+let x = never();
+mod p;
+let result = p::q::y
+"#,
+    "/test/p.gxi" => r#"
+mod q;
+"#,
+    "/test/p.gx" => r#"
+mod q;
+"#,
+    "/test/p/q.gxi" => r#"
+val y: i64;
+"#,
+    "/test/p/q.gx" => r#"
+let y = super::super::x + 1
+"#
+    ; FuseExpect::None);
+
 // Annotated, the outer binding's type is the module's to read.
 run!(
     module_check_reads_an_annotated_outer_type,
@@ -420,6 +472,28 @@ val y: i64;
 "#,
     "/test/m.gx" => r#"
 let y = super::x + 1
+"#
+);
+
+// A module with an interface declared in a function body checks its body
+// against the interface in each instance.
+run!(
+    interfaced_module_in_a_lambda_body,
+    is(Value::I64(33)),
+    "/test.gx" => r#"
+let h = |k: i64| -> i64 {
+    mod m;
+    m::f(m::y) + k
+};
+let result = h(1) + h(20)
+"#,
+    "/test/m.gxi" => r#"
+val y: i64;
+val f: fn(x: i64) -> i64
+"#,
+    "/test/m.gx" => r#"
+let y = 2;
+let f = |x: i64| -> i64 x * 3
 "#
 );
 
@@ -938,6 +1012,26 @@ const RELOAD_CHANGES_A_REPRESENTATION: &str = r#"
 
 run!(reload_changes_a_representation, RELOAD_CHANGES_A_REPRESENTATION,
     load_refused("representation cannot change"); FuseExpect::Jit);
+
+// A source that is no program reports, and the loaded body runs on: a
+// write to a val in that cycle reaches it.
+const SOURCE_ERROR_KEEPS_THE_BODY_RUNNING: &str = r#"
+{
+    let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val x: i64; val y: i64 };
+        source src
+    };
+    let go = once(status);
+    src <- go ~ error(`E);
+    foo::x <- go ~ 5;
+    select status { error as _ => foo::x + foo::y, null as _ => never() }
+}
+"#;
+
+run!(source_error_keeps_the_body_running, SOURCE_ERROR_KEEPS_THE_BODY_RUNNING,
+    is(Value::I64(55)); FuseExpect::Jit);
 
 // A value bound after its `mod` is not visible to the module.
 run!(
