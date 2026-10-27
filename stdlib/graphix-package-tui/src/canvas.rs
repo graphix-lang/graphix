@@ -128,6 +128,13 @@ impl ShapeV {
     // 'draws nothing' and extend this test and the breaks to the clipper's products.
     // Either way, add an UPSTREAM.md entry. probe:
     // design/review-2026-10-26/repro/tui-widgets-canvas-line-clip.sh (tui-widgets-02)
+    // 2026-10-26 claude: 2026-10-26 lane7: an_overflowing_pair_breaks_the_line now pins
+    // only that each finite segment's cells are drawn (compared with a chart of that
+    // segment alone), which holds under either option. Its render today also shows the
+    // clipper's garbage: (4,4)->(-1e308,-1e308) and (1e308,1e308)->(6,6) draw a V from
+    // the top-left corner through (4.5,5), lines no data names. Breaking where (dx *
+    // dy) overflows would stop it, since the clipper's products are bounded by
+    // |dx|*|dy|.
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {

@@ -346,4 +346,13 @@ let result = layout(&[
         tokio::time::timeout(Duration::from_millis(100), stopped).await???;
         Ok(())
     }
+
+    #[tokio::test]
+    async fn exit_never_returns_a_value() -> Result<()> {
+        TuiTestHarness::new(
+            "let n: i64 = tui::exit(never()); let result = tui::text::text(&\"[n]\")",
+        )
+        .await?;
+        Ok(())
+    }
 }

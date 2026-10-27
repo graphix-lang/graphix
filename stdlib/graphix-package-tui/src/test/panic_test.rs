@@ -4,6 +4,7 @@
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
+use compact_str::format_compact;
 
 // gauge / line_gauge: a ratio outside [0, 1] must be clamped
 // (ratatui's Gauge::ratio / LineGauge::ratio assert).
@@ -625,28 +626,36 @@ let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
     Ok(())
 }
 
+/// The rows a line chart over 0..10 draws for `data`.
+async fn line_chart_lines(data: &str) -> Result<Vec<String>> {
+    let code = format_compact!(
+        r#"
+use tui::chart::{{axis, chart, dataset}};
+let result = chart(#x_axis: &axis({{min: 0.0, max: 10.0}}),
+    #y_axis: &axis({{min: 0.0, max: 10.0}}),
+    &[dataset(#graph_type: &`Line, &[{data}])])
+"#
+    );
+    TuiTestHarness::new(&code).await?.render_lines()
+}
+
 /// A line breaks at a pair whose difference overflows; the finite
 /// segments on either side still draw.
 #[tokio::test]
 async fn an_overflowing_pair_breaks_the_line() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        r#"
-use tui::chart::{axis, chart, dataset};
-let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
-    #y_axis: &axis({min: 0.0, max: 10.0}),
-    &[dataset(#graph_type: &`Line, &[(1.0, 1.0), (4.0, 4.0), (-1e308, -1e308), (1e308, 1e308), (6.0, 6.0), (9.0, 9.0)])])
-"#,
+    let drawn = line_chart_lines(
+        "(1.0, 1.0), (4.0, 4.0), (-1e308, -1e308), (1e308, 1e308), (6.0, 6.0), (9.0, 9.0)",
     )
     .await?;
-    let drawn = h.render_lines()?;
-    // CR claude for claude: [test-gap/low] This only checks that some row drew, but the
-    // test is named for the segments on both sides of the break. The (1,1)-(4,4)
-    // segment alone satisfies it, so a DatasetW::build change that drops every segment
-    // after the first break still passes. Pin both sides: a drawn cell from the
-    // (6,6)-(9,9) segment near the top-right and one from the (1,1)-(4,4) segment near
-    // the bottom-left, or the exact rows via assert_lines. Found by reading; not run.
-    // (tests-tui-01)
-    assert!(drawn.iter().any(|l| !l.trim().is_empty()), "{drawn:?}");
+    for segment in ["(1.0, 1.0), (4.0, 4.0)", "(6.0, 6.0), (9.0, 9.0)"] {
+        let alone = line_chart_lines(segment).await?;
+        assert!(alone.iter().any(|l| !l.trim().is_empty()), "{segment}: {alone:?}");
+        for (row, (a, d)) in alone.iter().zip(&drawn).enumerate() {
+            for (col, (a, d)) in a.chars().zip(d.chars()).enumerate() {
+                assert!(a == ' ' || a == d, "{segment} at ({col}, {row}): {drawn:?}");
+            }
+        }
+    }
     Ok(())
 }
 
