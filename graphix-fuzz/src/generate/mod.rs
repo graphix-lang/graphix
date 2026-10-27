@@ -221,6 +221,10 @@ pub struct GenStats {
     pub unannotated_ret: bool,
     /// A reference shape was emitted (`&`/`*`/ref param/`*r <-`).
     pub ref_op: bool,
+    /// A reference was minted to a select arm's own `let`.
+    pub ref_in_arm: bool,
+    /// A reference was minted to a callback slot's parameter.
+    pub ref_in_slot: bool,
     /// A shape template was emitted (primitive union, option of a
     /// composite, nested variant, recursive typedef).
     pub shape: bool,
@@ -740,6 +744,23 @@ mod test {
         let keeps =
             (0..N).filter(|_| gen_program(&mut rng).contains("=> `Keep(")).count();
         assert!(keeps >= 3, "`Keep bodies in {keeps}/{N}");
+    }
+
+    /// References minted to a select arm's own `let` and to a callback
+    /// slot's parameter reach a campaign.
+    #[test]
+    fn minted_ref_presence() {
+        let mut rng = Rng::new(0x3ef5);
+        let cfg = GenCfg::default();
+        let (mut arm, mut slot) = (0usize, 0usize);
+        const N: usize = 1000;
+        for _ in 0..N {
+            let (_, stats) = gen_program_stats(&cfg, &mut rng);
+            arm += stats.ref_in_arm as usize;
+            slot += stats.ref_in_slot as usize;
+        }
+        assert!(arm >= 10, "arm-minted refs in {arm}/{N}");
+        assert!(slot >= 10, "slot-minted refs in {slot}/{N}");
     }
 
     /// A healthy fraction of default-profile programs embed a nested

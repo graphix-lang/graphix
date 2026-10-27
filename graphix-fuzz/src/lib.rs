@@ -7299,6 +7299,38 @@ mod tests {
         assert!(refused.is_empty(), "refused:\n{}", refused.join("\n\n"));
     }
 
+    /// Generated programs that mint a reference in a select arm or a
+    /// callback slot pass the check and agree across modes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn generated_minted_refs_agree() {
+        let mut rng = mutate::Rng::new(0x3ef5);
+        let cfg = generate::GenCfg::default();
+        let (mut arm, mut slot) = (Vec::new(), Vec::new());
+        for _ in 0..20_000 {
+            if arm.len() == 4 && slot.len() == 4 {
+                break;
+            }
+            let (p, s) = generate::gen_program_stats(&cfg, &mut rng);
+            if s.ref_in_arm && arm.len() < 4 {
+                arm.push(p);
+            } else if s.ref_in_slot && slot.len() < 4 {
+                slot.push(p);
+            }
+        }
+        assert_eq!((arm.len(), slot.len()), (4, 4));
+        let minted = arm.iter().chain(&slot);
+        let t = Duration::from_secs(30);
+        let mut failed = Vec::new();
+        for p in minted {
+            if let Err(e) = check_only(p, t).await {
+                failed.push(format!("{p}\nrefused: {e}"));
+            } else if let Some(d) = check(p, t).await {
+                failed.push(format!("{p}\ndiverged: {d:?}"));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n\n"));
+    }
+
     /// Every scheduled hand seed agrees across modes at trace strength:
     /// the injection driver's permanent gate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -120,7 +120,7 @@ fn try_accessor(
                         cands.push(format!("{name}[{nt}:1]$"));
                     }
                 }
-                // ref arrays are built 2 long, so 0/-1 always hit
+                // ref arrays are never empty, so 0/-1 always hit
                 if refers_to(e, ty) {
                     let idx = if rng.below(2) == 0 { "0" } else { "-1" };
                     cands.push(format!("*({name}[{idx}]$)"));
@@ -395,7 +395,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
             // filter_map keeps the payloads its callback does not null
-            // CR claude for claude: [test-gap/low] The callback here only ever returns
+            // XCR claude for claude: [test-gap/low] The callback here only ever returns
             // `e` or null; filter_map's `` `Keep(v) `` member, which has its own
             // node-walk rule, is never generated. Likewise no generator in generate/
             // emits `~!` or `live(`, and none mints a reference inside a select arm or
@@ -414,6 +414,19 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // the check), generate::reactive::test::reactive_composition_presence
             // (strict samples). Remains: no generator mints a reference inside a
             // select arm or a callback slot whose deletion releases it.
+            // 2026-10-27 claude: The remainder is done: funcs::gen_ref_stmts mints a
+            // writable reference to a select arm's own let (the other arm names a
+            // visible binding or its own let), over a bool written to its negation in
+            // the second cycle so the arm sleeps holding it, and a read-only one to an
+            // array::map callback slot's parameter over a source written from 3
+            // elements to 1, so the slots the read copy names are deleted
+            // (GenStats::ref_in_arm, ref_in_slot). Pins:
+            // generate::test::minted_ref_presence (both forms in at least 1% of
+            // default programs), tests::generated_minted_refs_agree (4 programs of
+            // each form pass the check and agree across modes); both fail with the two
+            // branches removed. The arm form first minted &mut (lit) in the other arm,
+            // which the checker refuses to read through (deref-union-01, a new CR for
+            // eric).
             3 if e.is_scalar() => {
                 let HofParts { src, binder, body } =
                     filter_map_parts(ctx, rng, e, GenType::Array, d);

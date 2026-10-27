@@ -508,10 +508,13 @@ pub(super) fn gen_catch_slot(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<String> {
 }
 
 /// Reference statements: `let r = &<target>` (a visible scalar binding,
-/// else a fresh literal), then sometimes store the ref in a tuple or
-/// write through it with a literal RHS (a self-reading RHS re-fires
-/// every cycle and never quiesces). Reads are organic vocabulary from
-/// the binding alone.
+/// a place, a moving element, a select arm's own `let` or a callback
+/// slot's parameter, else a fresh literal), then sometimes store the
+/// ref in a tuple or write through it with a literal RHS (a
+/// self-reading RHS re-fires every cycle and never quiesces). The arm
+/// sleeps and the slot is deleted in the second cycle while the ref
+/// may still hold them. Reads are organic vocabulary from the binding
+/// alone.
 pub(super) fn gen_ref_stmts(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -534,6 +537,29 @@ pub(super) fn gen_ref_stmts(
         (format!("&mut {}", places[rng.below(places.len())]), true)
     } else if !tgts.is_empty() && rng.below(3) != 0 {
         (format!("&mut {}", tgts[rng.below(tgts.len())]), true)
+    } else if rng.below(3) == 0 {
+        stats.ref_in_arm = true;
+        let tgt = (!tgts.is_empty()).then(|| tgts[rng.below(tgts.len())].to_string());
+        let mut local = || {
+            let y = ctx.fresh();
+            format!("{{ let {y} = {}; &mut {y} }}", types::literal(rng, &inner))
+        };
+        let (on, off) = (local(), tgt.map_or_else(&mut local, |t| format!("&mut {t}")));
+        let sel = ctx.fresh();
+        let first = rng.below(2) == 0;
+        stmts.push(format!("let {sel} = {first}"));
+        stmts.push(format!("{sel} <- {}", !first));
+        (format!("select {sel} {{ true => {on}, false => {off} }}"), true)
+    } else if rng.below(2) == 0 {
+        stats.ref_in_slot = true;
+        let (src, refs, x) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
+        let mut lit = || types::literal(rng, &inner);
+        stmts.push(format!("let {src} = [{}, {}, {}]", lit(), lit(), lit()));
+        stmts.push(format!("{src} <- [{}]", lit()));
+        stmts.push(format!("let {refs} = array::map({src}, |{x}| &{x})"));
+        let rty = GenType::Ref { inner: Box::new(inner.clone()), mutable: false };
+        ctx.push(refs.clone(), GenType::Array(Box::new(rty)));
+        (format!("{refs}[-1]$"), false)
     } else {
         (format!("&{}", types::literal(rng, &inner)), false)
     };

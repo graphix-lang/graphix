@@ -2304,6 +2304,19 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
+    // CR claude for eric: [bug/low] A read through a union of writable references is
+    // refused where a write through the same union is accepted. With `x: i64`, `y:
+    // f64` and `let r = select b { true => &mut x, false => &mut y }`, `*r <- ..` is
+    // checked against every member (ConnectDeref::typecheck0_with) but `*r` fails
+    // "expected a reference not [&mut i64, &mut f64]". `select b { true => &mut x,
+    // false => &mut (i64:2) }` fails the same way, as `[&mut i64, &mut '_: unbound]`:
+    // the fresh cell is still open when the arms join, so the two members do not
+    // merge. A union of `&` references reads, since `&` merges covariantly. Question:
+    // does `*r` over a union of references read the union of their referents (the
+    // natural dual of the write rule)? If so, share ConnectDeref's member expansion
+    // (typedefs included) and take the union here; if not, the write should be
+    // refused too. Found by the fuzz generator's arm-minted references
+    // (fuzz-gen-a-06), which now mint only named targets. (deref-union-01)
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
