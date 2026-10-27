@@ -978,6 +978,16 @@ pub struct TupleRef<R: Rt> {
 }
 
 impl<R: Rt> TupleRef<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        source: Node<R>,
+        field: usize,
+        scope: ModPath,
+    ) -> Node<R> {
+        Node::new(Self { spec, typ, source, field, scope, resident: TagValue::phantom() })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -987,14 +997,7 @@ impl<R: Rt> TupleRef<R> {
         let source = decode_node(ctx, buf)?;
         let field = usize::decode(buf)?;
         let scope = ModPath::decode(buf)?;
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            source,
-            field,
-            scope,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, source, field, scope))
     }
 
     pub(crate) fn compile(
@@ -1012,14 +1015,7 @@ impl<R: Rt> TupleRef<R> {
         let typ = tuple_field_type(ctx, &scope.lexical, source.typ(), field)
             .unwrap_or_else(|_| Type::empty_tvar());
         let scope = scope.lexical.clone();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            source,
-            field,
-            scope,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, source, field, scope))
     }
 }
 
