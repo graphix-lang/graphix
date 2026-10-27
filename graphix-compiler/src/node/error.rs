@@ -594,21 +594,11 @@ impl Strip {
             })?
         }
         // what `?` raises is the operand's error part, which Any does not say
-        let any = |t: &Type| matches!(t, Type::Any);
-        // CR claude for claude: [readability/low] with_deref does not expand a
-        // Type::Ref, so `x?` over `[A, Error<`E>]` with `type A = Any` misses this
-        // test. It is then refused by fix_echain_typ as "expected error not []" (the
-        // diff through A left no error), where `[Any, Error<`E>]` written out gets the
-        // cast-or-use-$ message. Test through refs (the Type::holds walk holds_abstract
-        // uses) so both reach this refusal. probe:
-        // design/review-2026-10-26/repro/c-error-op-any-typedef-qop-msg.gx
-        // (c-error-op-04)
-        let holds_any = typ.with_deref(|t| match t {
-            Some(Type::Set(ts)) => ts.iter().any(any),
-            Some(t) => any(t),
-            None => false,
-        });
-        if op == '?' && holds_any {
+        if op == '?'
+            && Type::dispatch_members(&ctx.env, typ)?
+                .iter()
+                .any(|t| matches!(t, Type::Any))
+        {
             format_with_flags(PrintFlag::DerefTVars, || {
                 bail!(
                     "the operand of ? has type {typ}, so the error it raises is not \

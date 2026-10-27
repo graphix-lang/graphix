@@ -1024,3 +1024,15 @@ run!(
         let result = { catch(e) println("[e]"); x? }
     "#
 );
+
+// A union member that names Any through a typedef is Any as written out.
+run!(
+    qop_on_a_typedef_of_any_refused,
+    refused("so the error it raises is not known"),
+    "/test.gx" => r#"
+        type A = Any;
+        let a: Any = error(`Other);
+        let x: [A, Error<`E>] = a;
+        let result = { catch(e) println("[e]"); x? }
+    "#
+);

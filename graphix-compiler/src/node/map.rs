@@ -187,6 +187,20 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
         // needed. Keep the rule (a value's map type is judged); make the judgment
         // linear, e.g. memoize map_key_failure per type content key.
+        // 2026-10-27 claude: Measured again (debug, --check, lets of {1 => x_(i-1)}):
+        // 1.1 / 1.7 / 4.0 / 10.9 s at n = 1000 / 2000 / 4000 / 8000, against 1.0-1.1 s
+        // for [x_(i-1)]; with Map's defer_judgment removed the map chain is 1.1 / 1.2
+        // s at 4000 / 8000, so the Discernible(Keys) judgment is all of what stands.
+        // Not fixed: a memo across literals has to outlive one statement's settle
+        // (each let settles alone), so it is state held across statements (a
+        // CompileCtx field, which the no-ctx-globals rule pushes back on, or a
+        // thread-local that a compile task scopes and that keeps the types it names
+        // alive), and a node judged clear may hold an open cell a later statement
+        // binds to an unjudged key type, so only a node with no open cell under it may
+        // be remembered, which the walk does not report today (Expanded::clear is per
+        // walk and ignores open cells). Map has no node_addr either; the key would be
+        // its value Arc. Needs that design first; the shape is a chain of thousands of
+        // nested map literals.
         let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
         let bound = match &self.typ {
             Type::Map { key, value } => {
@@ -240,7 +254,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
-        _check: bool,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.key, child(&mut self.key, ctx))?;
@@ -249,13 +263,10 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
         let mt =
             Type::Map { key: Arc::new(kt.clone()), value: Arc::new(self.vtyp.clone()) };
         wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
-        // CR claude for claude: [readability/low] typecheck0_with ignores `_check`, so
-        // this key judgment runs again in every instance, though the comment on
-        // typed_by_row!(source) below says the index needs no judging. ArrayRef does
-        // skip check_index there. Run the key judgment only when `check`, as ArrayRef
-        // does, and keep the source binding that fills vtyp unconditional. Found by
-        // reading; not run. (c-data-map-04)
-        wrap!(self.key, kt.check_contains(&ctx.env, self.key.typ()))
+        match check {
+            true => wrap!(self.key, kt.check_contains(&ctx.env, self.key.typ())),
+            false => Ok(()),
+        }
     }
 
     pub(crate) fn image_decode(
