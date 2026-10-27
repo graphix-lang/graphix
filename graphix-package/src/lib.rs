@@ -1687,27 +1687,6 @@ impl GraphixPM {
     /// Build and install `packages` from an unpacked source tree, the record
     /// reconciled with what the source ships first, and back up the current
     /// binary.
-    // XCR claude for claude: [test-gap/low] No test runs this path or replace_exe. The
-    // slow test builds only a standalone with a source override, and `exe` is always
-    // current_exe(), so a test could not rebuild without replacing itself. Take the exe
-    // as a GraphixPM::new argument and add a slow test that rebuilds the vendored
-    // source into a temp exe path, checking the backup, the new binary and the written
-    // packages.toml. Found by reading; not run. (package-10)
-    // 2026-10-26 claude: GraphixPM holds target_dir (shared_target_dir by default)
-    // beside exe; the test module sets both. New slow test
-    // test::install_from_source_replaces_the_exe rebuilds the vendored shell with str
-    // and a created path package that depends on array (removed in the record) into a
-    // temp exe: array is installed again, the old exe is backed up, the new one checks
-    // use str/array/testpkg and refuses use http. Ran once 2026-10-26 with
-    // CARGO_PROFILE_RELEASE_OPT_LEVEL=0 CARGO_PROFILE_RELEASE_LTO=false (2.5 min); the
-    // full release profile costs as build_standalone_produces_working_binary does.
-    // 2026-10-27 claude: The new slow test does what the CR asks. GraphixPM's exe and
-    // target_dir can be set; the test rebuilds the vendored shell into a temp exe and
-    // checks the backup, the reinstalled array, and that the new binary accepts
-    // str/array/testpkg and refuses http. It is read-correct but has not been run here,
-    // and the note records a single run with a reduced release profile. Delete this
-    // once the release gate (cargo test --workspace --features slow-tests) has passed
-    // it.
     async fn install_from_source(
         &self,
         source_dir: &Path,

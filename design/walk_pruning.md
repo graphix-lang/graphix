@@ -215,8 +215,10 @@ Pruning changes no output, so it has an exact oracle.
 - **The fuzzer**'s `Pair::Prune` compares the pruned node-walk with
   `Mode::Unpruned`, per-cycle trace, bit for bit; the other pairs run
   pruned.
-- **`run!`** audits every skip in all four modes
-  (`testing::Mode::fixture_prune`, unless `GRAPHIX_PRUNE` is set), so
+- **`run!`** skips for real in `jit` and `par` and audits every skip in
+  `interp` and `jit_par` (`testing::Mode::fixture_prune`, unless
+  `GRAPHIX_PRUNE` is set), so each engine and each fork mode holds a
+  predicate both to pruned runs and to the walk of every boundary, and
   the plain gate hunts missing marks; a fixture that measures pruning
   sets `Mode::prune` in its setup.
 - **Pins.** A runtime counter of boundaries walked and skipped

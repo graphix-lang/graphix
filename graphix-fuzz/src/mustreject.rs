@@ -475,10 +475,8 @@ fn abstract_widen(
         let boxed_i64 = types.of(&b.value).first().is_some_and(|t| {
             t.to_string() == "B<i64>" && matches!(t, Type::Abstract { .. })
         });
-        // an annotation decides a parameter a use-typed leaf left open;
-        // a call's own result is such a cell, and no annotation reaches it
-        let open = |e: &Expr| !matches!(e.kind, ExprKind::Apply(_)) && types.cell(e);
-        if !boxed_i64 || mutate::preorder(&b.value).iter().any(open) {
+        // an annotation decides a parameter an open initializer left open
+        if !boxed_i64 || open_init(types, stmts, si, &b.value) {
             continue;
         }
         let module = match &modules[..] {
@@ -644,7 +642,7 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         | ExprKind::Tuple { args }
         | ExprKind::Variant { args, .. } => args.iter().any(open),
         ExprKind::Struct(st) => st.args.iter().any(|(_, a)| open(a)),
-        // CR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
+        // XCR claude for claude: [bug/medium] `ExprTypeSite::cell` is true for any node
         // whose own type is a TVar, bound or not. So this fallback calls an operator's,
         // a negation's and a `$`/`?` result open, and retype, widen-hop, shared-var and
         // ref-widen (and abstract_widen's own `types.cell` test) skip every let over `a
@@ -680,6 +678,12 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         // abstract-widen site. Remains: decide abstract_widen's skip with open_init
         // (its Apply arm already treats an open argument as open), and pin a B<i64> let
         // over an operator argument.
+        // 2026-10-27 claude: abstract_widen now skips a let only when open_init says
+        // its initializer is open (the rule retype and the others use), not when any
+        // preorder node's type is a cell, bound or not. Pin:
+        // must_reject_families_are_refused_where_their_rules_say's new case, B<i64>
+        // over m0::mkb(x + i64:1) gets an abstract-widen site (the old per-node test
+        // skipped it).
         _ => types.cell(value),
     }
 }

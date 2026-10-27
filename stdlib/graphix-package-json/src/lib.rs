@@ -160,16 +160,6 @@ impl<'de> Visitor<'de> for JsonValue {
             // arbitrary_precision hands a number over as a one-entry map
             // under NUMBER_TOKEN, so an object whose first key is it reads as
             // a number
-            // CR claude for eric: [bug/low] The visitor cannot tell serde_json's number
-            // map from a real object whose first key is the token, whether written
-            // plainly or as $. So json::read of {"$serde_json::private::Number": "42"}
-            // into i64 gives 42, and a Map<string, i64> holding that key fails to
-            // parse. With user-controlled keys this lets input change a document's
-            // shape or make it fail. Decide whether the key is reserved (refuse and
-            // document it), or read exact numbers without arbitrary_precision so no
-            // object can read as a number. probe:
-            // design/review-2026-10-26/repro/x-security-json-number-token.gx
-            // (x-security-06)
             if pairs.is_empty() && &*k == NUMBER_TOKEN {
                 let n: CompactString = a.next_value()?;
                 let n = n.parse::<serde_json::Number>().map_err(de::Error::custom)?;

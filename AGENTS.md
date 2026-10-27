@@ -396,8 +396,9 @@ is transparent to analyses (view, children, spec, `downcast_*`);
 and panics where a skip would have changed a production, published or
 queued a runtime call;
 the fuzzer's `Pair::Prune` compares against `Mode::Unpruned`; a test
-fixture audits every skip (`testing::Mode::fixture_prune`), and a test
-that measures pruning sets `Mode::prune` in its setup.
+fixture prunes for real in `jit` and `par` and audits every skip in
+`interp` and `jit_par` (`testing::Mode::fixture_prune`), and a test that
+measures pruning sets `Mode::prune` in its setup.
 
 **Session images** (`design/program_image.md`): the shell caches the
 session state before any cycle (`graphix-compiler/src/image/` over

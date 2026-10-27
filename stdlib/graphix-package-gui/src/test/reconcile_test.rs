@@ -119,8 +119,8 @@ async fn a_changed_cell_keeps_its_row_siblings() -> Result<()> {
     .await?;
     let first = |h: &GuiTestHarness| {
         let t = h.root.w.as_any().downcast_ref::<TableW<NoExt>>().expect("a table");
-        assert_eq!(t.rows.cells.len(), 2);
-        let a = t.rows.cells[0].1.as_any().downcast_ref::<TextW<NoExt>>().expect("text");
+        assert_eq!(t.rows.ws.len(), 2);
+        let a = t.rows.ws[0].1.as_any().downcast_ref::<TextW<NoExt>>().expect("text");
         a.content_ref()
     };
     let before = first(&h);

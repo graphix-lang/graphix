@@ -344,14 +344,32 @@ impl<X: GXExt> Item<X> for GuiW<X> {
     }
 }
 
-/// A list property: its ref, and each item beside the value it compiled
-/// from, so a new list keeps the items it still holds.
-pub struct Children<X: GXExt, T = GuiW<X>> {
-    pub(crate) r: Ref<X>,
-    pub(crate) ws: Vec<(Value, T)>,
+/// How a list property's value lays out its items, and what of that
+/// layout a `Children` keeps beside them.
+pub(crate) trait Shape: Default + Send + Sized {
+    /// The items `v` holds, in order, and its layout.
+    fn items(v: Value) -> Result<(LPooled<Vec<Value>>, Self)>;
 }
 
-impl<X: GXExt, T: Item<X>> Children<X, T> {
+/// A list whose elements are its items.
+#[derive(Default)]
+pub(crate) struct Flat;
+
+impl Shape for Flat {
+    fn items(v: Value) -> Result<(LPooled<Vec<Value>>, Self)> {
+        Ok((v.cast_to::<LPooled<Vec<Value>>>()?, Flat))
+    }
+}
+
+/// A list property: its ref, and each item beside the value it compiled
+/// from, so a new list keeps the items it still holds.
+pub struct Children<X: GXExt, T = GuiW<X>, S = Flat> {
+    pub(crate) r: Ref<X>,
+    pub(crate) ws: Vec<(Value, T)>,
+    pub(crate) shape: S,
+}
+
+impl<X: GXExt, T: Item<X>, S: Shape> Children<X, T, S> {
     /// The list the widget value `v`'s field `name` refers to.
     pub(crate) fn field(
         gx: &GXHandle<X>,
@@ -369,13 +387,13 @@ impl<X: GXExt, T: Item<X>> Children<X, T> {
         r: Ref<X>,
     ) -> impl Future<Output = Result<Self>> + Send {
         async move {
-            let vals = match r.last.as_ref() {
-                None => LPooled::take(),
-                Some(v) => v.clone().cast_to::<LPooled<Vec<Value>>>()?,
+            let (vals, shape) = match r.last.as_ref() {
+                None => (LPooled::take(), S::default()),
+                Some(v) => S::items(v.clone())?,
             };
             let mut ws = Vec::new();
             reconcile(&mut ws, vals, |v| T::compile(gx, v)).await?;
-            Ok(Self { r, ws })
+            Ok(Self { r, ws, shape })
         }
     }
 
@@ -391,7 +409,7 @@ impl<X: GXExt, T: Item<X>> Children<X, T> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        // CR claude for claude: [structure/low] This recompile-on-change block is
+        // XCR claude for claude: [structure/low] This recompile-on-change block is
         // copied by hand in MenuItems::update, MenuBarW::handle_update and twice in
         // TableW::handle_update. The matching None-or-cast at compile time is copied in
         // MenuItems::compile, MenuBarW::compile and TableW::compile. Children is
@@ -418,9 +436,17 @@ impl<X: GXExt, T: Item<X>> Children<X, T> {
         // for example, give Children a hook for how a list value becomes its flat items
         // (rows flatten and record ends), or make Rows a Children over the flattened
         // cells plus its ends.
+        // 2026-10-27 claude: Children takes a Shape (how a list value lays out its
+        // items, and what of that layout it keeps): Flat for every list but table rows,
+        // whose RowEnds flattens rows into cells and keeps where each row ends;
+        // table::Rows is Children<X, GuiW<X>, RowEnds> with len and row, so Rows' copy
+        // of the recompile-on-change block and of the None-or-cast seeding are gone. A
+        // failed reconcile keeps the old layout with the old items. Covered by the gui
+        // reconcile and table tests (335 pass).
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
-            let vals = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
+            let (vals, shape) = S::items(v.clone())?;
             rt.block_on(reconcile(&mut self.ws, vals, |v| T::compile(gx, v)))?;
+            self.shape = shape;
             self.r.last = Some(v.clone());
             changed = true;
         }

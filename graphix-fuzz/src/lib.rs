@@ -5996,6 +5996,12 @@ mod tests {
                  type B<'a> = Abstract<'a>;\nlet mkb = |x| B(x);\nlet unb = |b: B<'a>| b.0\n",
                 "abstract-widen#",
             ),
+            // an operator argument is no open cell
+            (
+                "{ let x = i64:2; let v = m0::mkb(x + i64:1); m0::unb(v) }\n// file-v1: m0.gx\n\
+                 type B<'a> = Abstract<'a>;\nlet mkb = |x| B(x);\nlet unb = |b: B<'a>| b.0\n",
+                "abstract-widen#",
+            ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");

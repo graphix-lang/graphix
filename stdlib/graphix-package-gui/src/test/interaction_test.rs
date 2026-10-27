@@ -1336,7 +1336,7 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/medium] These echo tests judge a rejected send
+// XCR claude for claude: [test-gap/medium] These echo tests judge a rejected send
 // through GuiTestHarness::drain, which calls root.w.idle() after every drain whether or
 // not a widget asked. testing::drain_idle drops GXEvent::Idle. A real window runs
 // idle() only on GXEvent::Idle, which the runtime sends only after a widget's ask_idle
@@ -1369,6 +1369,12 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
 // is now wrong too. Fix in the runtime: when an Idle is owed, answer the idle waiters
 // only after the Idle batch is sent (in the reserve arm), or try_reserve and send
 // before answering, deferring only when the channel is full.
+// 2026-10-27 claude: The runtime now sends a verdict's owed Idle before it answers that
+// verdict's idle waiters (gx.rs: try_reserve and send at the verdict; when the channel
+// is full the Idle stays owed and the waiters are answered at the verdict after its
+// send), so GXHandle::wait_idle's doc holds again and drain_events always sees the
+// Idle. No pin: a test of the old order passed too, because the runtime reaches its
+// send before the waiter's caller is scheduled; the order is now by construction.
 async fn rejected_toggles_return_to_the_program_value() -> Result<()> {
     for kind in ["checkbox", "toggler"] {
         let code = format_compact!(

@@ -1,9 +1,9 @@
-use super::{Child, Children, GuiW, GuiWidget, IcedElement, Item, compile};
+use super::{Child, Children, GuiW, GuiWidget, IcedElement, Item, Shape};
 use crate::types::{HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
 use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, reconcile};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use poolshark::local::LPooled;
@@ -29,68 +29,35 @@ graphix_rt::props! {
     }
 }
 
-/// The rows property: every row's cells in one list, beside the values
-/// they compiled from, so a new table keeps each cell whose value it
-/// still holds, wherever it moved, and compiles only the cells it did not.
-pub(crate) struct Rows<X: GXExt> {
-    r: Ref<X>,
-    pub(crate) cells: Vec<(Value, GuiW<X>)>,
-    /// Where each row ends in `cells`.
-    ends: LPooled<Vec<usize>>,
-}
+/// The rows property's layout: every row's cells in one list, so a new
+/// table keeps each cell whose value it still holds, wherever it moved,
+/// and compiles only the cells it did not.
+#[derive(Default)]
+pub(crate) struct RowEnds(LPooled<Vec<usize>>);
 
-impl<X: GXExt> Rows<X> {
-    async fn field(gx: &GXHandle<X>, source: &Value) -> Result<Self> {
-        let r = gx.compile_field(source, "rows").await?;
-        let mut rows = Self { r, cells: Vec::new(), ends: LPooled::take() };
-        if let Some(v) = rows.r.last.clone() {
-            rows.set(gx, v).await?;
-        }
-        Ok(rows)
-    }
-
-    /// Take the rows `v`. The cells stay as they were unless every new
-    /// cell compiles.
-    async fn set(&mut self, gx: &GXHandle<X>, v: Value) -> Result<()> {
+impl Shape for RowEnds {
+    fn items(v: Value) -> Result<(LPooled<Vec<Value>>, Self)> {
         let mut items: LPooled<Vec<Value>> = LPooled::take();
         let mut ends: LPooled<Vec<usize>> = LPooled::take();
         for row in v.cast_to::<LPooled<Vec<Value>>>()?.drain(..) {
             items.extend(row.cast_to::<LPooled<Vec<Value>>>()?.drain(..));
             ends.push(items.len());
         }
-        reconcile(&mut self.cells, items, |v| compile(gx.clone(), v)).await?;
-        self.ends = ends;
-        Ok(())
+        Ok((items, RowEnds(ends)))
     }
+}
 
+type Rows<X> = Children<X, GuiW<X>, RowEnds>;
+
+impl<X: GXExt> Rows<X> {
     fn len(&self) -> usize {
-        self.ends.len()
+        self.shape.0.len()
     }
 
     fn row(&self, i: usize) -> &[(Value, GuiW<X>)] {
-        let start = i.checked_sub(1).map_or(0, |j| self.ends[j]);
-        &self.cells[start..self.ends[i]]
-    }
-
-    /// Take an update for the ref or for a cell. Returns whether the
-    /// window should redraw.
-    fn update(
-        &mut self,
-        rt: &tokio::runtime::Handle,
-        gx: &GXHandle<X>,
-        id: ExprId,
-        v: &Value,
-    ) -> Result<bool> {
-        let mut changed = false;
-        if id == self.r.id && self.r.last.as_ref() != Some(v) {
-            rt.block_on(self.set(gx, v.clone()))?;
-            self.r.last = Some(v.clone());
-            changed = true;
-        }
-        for (_, cell) in &mut self.cells {
-            changed |= cell.handle_update(rt, id, v)?;
-        }
-        Ok(changed)
+        let ends = &self.shape.0;
+        let start = i.checked_sub(1).map_or(0, |j| ends[j]);
+        &self.ws[start..ends[i]]
     }
 }
 
@@ -127,7 +94,7 @@ impl<X: GXExt> TableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let (columns, rows, p) = try_join!(
             Children::field(&gx, &source, "columns"),
-            async { Rows::field(&gx, &source).await.context("table rows") },
+            async { Children::field(&gx, &source, "rows").await.context("table rows") },
             Props::compile(&gx, &source),
         )
         .context("table")?;
@@ -155,7 +122,7 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
         self.columns.ws.iter_mut().for_each(|(_, c)| f(&mut c.header.w));
-        self.rows.cells.iter_mut().for_each(|(_, cell)| f(cell))
+        self.rows.ws.iter_mut().for_each(|(_, cell)| f(cell))
     }
 
     fn view(&self) -> IcedElement<'_> {

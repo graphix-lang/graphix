@@ -279,8 +279,8 @@ fn sst_unique_count(e: &BytesStart) -> Option<u64> {
 
 /// calamine's xlsx open reserves room for as many shared strings as the
 /// `sst` element declares, and a reservation that cannot be met aborts the
-/// process. Refuse a count past the bytes the part holds, every string
-/// taking more than one; a zip without the part passes.
+/// process. Refuse a count past the `si` elements the part holds; a zip
+/// without the part passes.
 fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(), String> {
     for i in 0..zip.len() {
         let Ok(part) = zip.by_index(i) else { continue };
@@ -302,18 +302,18 @@ fn check_shared_strings<RS: Read + Seek>(zip: &mut ZipArchive<RS>) -> Result<(),
             }
         };
         let Some(declared) = declared else { continue };
-        let mut held = reader.buffer_position();
-        let mut rest = reader.into_inner();
-        while let Ok(read) = rest.fill_buf()
-            && !read.is_empty()
-        {
-            let n = read.len();
-            held += n as u64;
-            rest.consume(n);
+        let mut held: u64 = 0;
+        loop {
+            buf.clear();
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"si" => held += 1,
+                Ok(Event::Eof) | Err(_) => break,
+                Ok(_) => (),
+            }
         }
         if declared > held {
             return Err(format!(
-                "the shared strings part declares {declared} strings in {held} bytes"
+                "the shared strings part declares {declared} strings and holds {held}"
             ));
         }
     }
@@ -335,7 +335,7 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     {
         return Err(errf!("XlsErr", "{e}"));
     }
-    // CR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
+    // XCR claude for claude: [bug/high] calamine's xlsx open reserves the strings vector
     // to sharedStrings.xml's uniqueCount attribute, unchecked. A 1 KB xlsx declaring
     // uniqueCount="100000000000" makes xls::read fail to allocate 2.4 TB and abort the
     // process; spawn_blocking cannot contain an abort. Guard xlsx as check_ods guards
@@ -362,6 +362,11 @@ fn open<RS: Read + Seek + Clone>(rs: RS) -> Result<Sheets<RS>, Value> {
     // then bounded by strings calamine builds anyway. Alternatively, cap the count at a
     // fixed bound tied to MAX_CELLS. Pin a small, highly compressed part whose byte
     // count exceeds its declared count but whose `<si>` count does not.
+    // 2026-10-27 claude: check_shared_strings now counts the part's si elements as it
+    // streams it and refuses a declared uniqueCount above that count, so whitespace
+    // padding no longer raises the bound (the reservation calamine makes is at most the
+    // strings the part holds). Pin: test::xlsx_refuses_a_count_its_padding_would_cover
+    // (1000 declared, one string, 4 KB of spaces; the byte bound let it through).
     open_workbook_auto_from_rs(rs).map_err(|e| errf!("XlsErr", "{e}"))
 }
 
@@ -552,8 +557,14 @@ mod test {
     /// An xlsx workbook of one sheet `S` whose A1 is the shared string
     /// `hi`, at `path` in a table that declares `unique` strings.
     fn xlsx(path: &str, unique: &str) -> Bytes {
+        xlsx_padded(path, unique, 0)
+    }
+
+    /// [`xlsx`] with `pad` spaces after the table's one string.
+    fn xlsx_padded(path: &str, unique: &str, pad: usize) -> Bytes {
+        let pad = " ".repeat(pad);
         let sst = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="{unique}"><si><t>hi</t></si></sst>"#
+            r#"<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="{unique}"><si><t>hi</t></si>{pad}</sst>"#
         );
         zip_of(&[
             (
@@ -632,6 +643,18 @@ mod test {
                 assert!(format!("{e}").contains("declares 100000000000 strings"), "{e}");
             }
         }
+    }
+
+    /// A count past the table's strings is refused however many bytes pad
+    /// the table: whitespace inflates the bytes, not the strings.
+    #[test]
+    fn xlsx_refuses_a_count_its_padding_would_cover() {
+        let v = parse_sheet(
+            Cursor::new(xlsx_padded("xl/sharedStrings.xml", "1000", 4096)),
+            "S",
+        );
+        let Value::Error(e) = v else { panic!("expected XlsErr, got {v}") };
+        assert!(format!("{e}").contains("declares 1000 strings and holds 1"), "{e}");
     }
 
     /// Two tables each under the bound whose sum is over it: calamine

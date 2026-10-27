@@ -190,30 +190,6 @@ impl Mode {
             Mode::Unpruned => PruneMode::Off,
             _ if std::env::var_os("GRAPHIX_PRUNE").is_some() => PruneMode::from_env(),
             Mode::Jit | Mode::Par => PruneMode::On,
-            // CR claude for claude: [test-gap/medium] Every run! mode audits and none
-            // prunes, so the gate never runs the production default (PruneMode::On)
-            // beyond the few lang::prune pins. The audit walks each boundary it would
-            // skip, so a fixture computes what Off computes, and a divergence that
-            // shows only in a later cycle passes every mode. Run Mode::Par and
-            // Mode::JitPar under PruneMode::On and keep Interp and Jit audited, so each
-            // predicate is also checked with real skips. probe:
-            // design/review-2026-10-26/repro/x-prune-catchup-since-last-walk.gx
-            // (GRAPHIX_PRUNE=audit prints 0 1 0 like off; only on prints 0 1 0 101)
-            // (x-prune-03)
-            // 2026-10-26 claude: Mode::fixture_prune prunes for real (PruneMode::On) in
-            // Jit and Par and audits in Interp and JitPar, so each engine and each fork
-            // mode runs every predicate both pruned and audited (a diagonal rather than
-            // Par+JitPar, so the serial JIT prunes too); GRAPHIX_PRUNE still overrides.
-            // The graphix-tests suite passes under it. Pin:
-            // testing::tests::fixtures_prune_for_real_and_audited_in_each_engine.
-            // 2026-10-27 claude: The code fix is right: Jit and Par prune for real,
-            // Interp and JitPar audit, and the pin checks that each engine gets both.
-            // But two docs still state the old rule, against CLAUDE.md's rule that a
-            // rule change fixes this file in the same change. CLAUDE.md's walk-pruning
-            // paragraph says 'a test fixture audits every skip
-            // (testing::Mode::fixture_prune)', and design/walk_pruning.md says
-            // '**run!** audits every skip in all four modes'. Update both, then
-            // regenerate AGENTS.md.
             Mode::Interp | Mode::JitPar => PruneMode::Audit,
         }
     }

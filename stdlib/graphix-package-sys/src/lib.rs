@@ -506,13 +506,6 @@ impl<K: StreamMark> PartialOrd for Stream<K> {
     }
 }
 
-// CR claude for eric: [bug/medium] Streams order (and hash) by heap address, and the
-// checker accepts them as Ordered, so array::sort, min/max, dedup and map keys over
-// files, sockets or std streams give a different answer from run to run. The same holds
-// for TempDirValue's random names. References are refused as Ordered for this reason.
-// Decide: refuse ordering for handle types (keep identity Eq), or order by a
-// per-runtime creation id minted in Halves::new. probe:
-// design/review-2026-10-26/repro/sys-net-stream-order-by-address.gx (sys-net-06)
 impl<K: StreamMark> Ord for Stream<K> {
     fn cmp(&self, other: &Self) -> Ordering {
         Arc::as_ptr(&self.inner).cmp(&Arc::as_ptr(&other.inner))

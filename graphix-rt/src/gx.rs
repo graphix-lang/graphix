@@ -1609,9 +1609,26 @@ impl<X: GXExt> GX<X> {
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
-                    idle_owed = self.notify_idle;
-                    for tx in self.idle_waiters.drain(..) {
-                        let _ = tx.send(());
+                    if self.notify_idle {
+                        match self.sub.try_reserve() {
+                            Ok(permit) => {
+                                let mut batch = self.batch_pool.take();
+                                batch.push(GXEvent::Idle);
+                                permit.send(batch);
+                                self.notify_idle = false;
+                            }
+                            Err(tmpsc::error::TrySendError::Full(())) => idle_owed = true,
+                            Err(tmpsc::error::TrySendError::Closed(())) => {
+                                self.notify_idle = false
+                            }
+                        }
+                    }
+                    // the verdict's Idle precedes its waiters' answers: an
+                    // owed one answers them at the verdict after its send
+                    if !idle_owed {
+                        for tx in self.idle_waiters.drain(..) {
+                            let _ = tx.send(());
+                        }
                     }
                     if settled {
                         for tx in self.settle_waiters.drain(..) {

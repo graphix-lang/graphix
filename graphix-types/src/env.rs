@@ -638,7 +638,7 @@ impl Env {
     /// and holding the global tables too would make every later write
     /// to them copy what the snapshot shares.
     #[doc(hidden)]
-    // CR claude for eric: [structure/low] This is the only constructor of the lexical
+    // CR claude for claude: [structure/low] This is the only constructor of the lexical
     // set that is not exhaustive: it fills everything but the four maps with
     // `..Self::default()`, as image::env::lexical_decode does. A new lexical field is
     // silently left out of every definition and module snapshot. Each snapshot is also
@@ -646,6 +646,8 @@ impl Env {
     // Arc<Mutex> that are never used. Suggest a `Lexical` struct field for binds,
     // modules, typedefs and traits: swap_lexical becomes one mem::swap, and snapshots
     // and with_restored take a `Lexical`. Found by reading; not run. (t-env-08)
+    // 2026-10-27 claude: Readdressed: a structure refactor with no rule to decide; do
+    // it as written.
     pub fn lexical(&self) -> Self {
         Self {
             binds: self.binds.clone(),
