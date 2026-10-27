@@ -168,3 +168,35 @@ run_with_tempdir! {
         Ok(())
     }
 }
+
+// A select over the seven kinds a cell can be is exhaustive.
+run_with_tempdir! {
+    name: xls_cell_kinds_cover_a_cell,
+    code: "{{
+        let data = sys::fs::read_all_bin(\"{}\")$;
+        array::map(xls::read(data, \"Sheet1\")$, |row| array::map(row, |cell| select cell {{
+            i64 as _ => \"int\",
+            f64 as _ => \"float\",
+            string as s => s,
+            bool as _ => \"bool\",
+            datetime as _ => \"date\",
+            duration as _ => \"dur\",
+            null as _ => \"empty\"
+        }}))
+    }}",
+    setup: |td| {
+        let path = td.path().join("kinds.xlsx");
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        let ws = wb.add_worksheet();
+        ws.write(0, 0, 1.5).unwrap();
+        ws.write(0, 1, "text").unwrap();
+        ws.write(0, 2, true).unwrap();
+        ws.write(0, 4, "end").unwrap();
+        wb.save(&path).unwrap();
+        path
+    },
+    expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
+        assert_eq!(v.to_string(), r#"[["float", "text", "bool", "empty", "end"]]"#);
+        Ok(())
+    }
+}

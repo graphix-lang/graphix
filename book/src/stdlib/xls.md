@@ -1,8 +1,8 @@
 # xls
 
 The `xls` module reads spreadsheet files in xlsx, xls, ods, and xlsb
-formats (via calamine). Data is returned as a 2D array of primitive
-values.
+formats (via calamine). A sheet is returned as a 2D array of `Cell`s, so
+a select over a cell needs an arm for each of its seven kinds and no more.
 
 ```graphix
 {{#include ../../../stdlib/graphix-package-xls/src/graphix/mod.gxi}}
