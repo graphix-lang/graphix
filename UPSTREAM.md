@@ -138,6 +138,18 @@ the state of a fix, and Graphix's side.
   open CRs sys-net-01 and x-concurrency-07 in
   `stdlib/graphix-package-sys/src/netstate.rs`).
 
+## netidx-value (ours): integer FromValue converts with `as`
+
+- **Bug.** `FromValue` for the integer types (`netidx-value/src/convert.rs`,
+  and `Value::cast`'s `cast_number`) converts another integer variant with
+  `as`, so an out of range value wraps instead of failing: `I64(-1)` reads
+  as `usize::MAX`, `I64(2^32 + 1)` as the `u32` 1.
+- **Upstream fix.** Convert with `try_from` and fail out of range.
+- **Graphix's side.** Worked around where a Graphix `i64` is read into a
+  narrower Rust type: the gui's `LengthV` and `GridColumnsV` read the
+  payload as `i64` and range-check it
+  (`stdlib/graphix-package-gui/src/types.rs`). Not reported.
+
 ## iced_core 0.14: flex layout sums FillPortion weights in a u16
 
 - **Bug.** `iced_core::layout::flex` adds a row's or column's

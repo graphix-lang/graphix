@@ -157,6 +157,22 @@ impl<X: GXExt> DataTableW<X> {
         self.subscription_row_range()
     }
 
+    /// The places, in display order and sorted, of the rows whose `col`
+    /// cell is subscribed; `None` for a row the table does not hold.
+    pub fn dt_subscribed_rows(&self, col: &str) -> Vec<Option<usize>> {
+        let mut rows: Vec<Option<usize>> = self
+            .cells
+            .inner
+            .lock()
+            .cells
+            .keys()
+            .filter(|(_, c)| c == col)
+            .map(|(row, _)| self.row_indices.get(row).copied())
+            .collect();
+        rows.sort();
+        rows
+    }
+
     pub fn dt_is_resizing(&self) -> bool {
         self.resize_drag.is_some()
     }

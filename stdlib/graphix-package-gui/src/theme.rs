@@ -225,6 +225,16 @@ fn dim(color: Color) -> Color {
     Color::from_rgba(color.r, color.g, color.b, color.a * 0.5)
 }
 
+fn shade(color: Color, is_disabled: bool, is_hovered: bool, is_dark: bool) -> Color {
+    if is_disabled {
+        dim(color)
+    } else if is_hovered {
+        hover_adjust(color, is_dark)
+    } else {
+        color
+    }
+}
+
 // Each resolve starts from iced's default style for the theme + status
 // and overrides only user-specified fields.
 
@@ -286,48 +296,9 @@ impl CheckboxSpec {
             | checkbox::Status::Hovered { is_checked }
             | checkbox::Status::Disabled { is_checked } => is_checked,
         };
-        // CR claude for claude: [readability/low] This 35-line ladder is one rule: the
-        // box fills with `accent` when checked and `background` when not, each only if
-        // set. `let fill = if is_checked { self.accent } else { self.background }; if
-        // let Some(ColorV(c)) = fill { s.background = shade(c).into() }` is equivalent
-        // in all four Some/None cases. The disabled-dim / hovered-lighten choice is
-        // written out three times here and again in TogglerSpec::resolve. One `fn
-        // shade(c, is_disabled, is_hovered, is_dark) -> Color` serves all four. Found
-        // by reading; not run. (gui-core-05)
-        if let Some(ColorV(accent)) = self.accent {
-            if let Some(ColorV(bg)) = self.background {
-                let c = if is_checked { accent } else { bg };
-                let c = if is_disabled {
-                    dim(c)
-                } else if is_hovered {
-                    hover_adjust(c, is_dark)
-                } else {
-                    c
-                };
-                s.background = c.into();
-            } else {
-                if is_checked {
-                    let c = if is_disabled {
-                        dim(accent)
-                    } else if is_hovered {
-                        hover_adjust(accent, is_dark)
-                    } else {
-                        accent
-                    };
-                    s.background = c.into();
-                }
-            }
-        } else if let Some(ColorV(bg)) = self.background {
-            if !is_checked {
-                let c = if is_disabled {
-                    dim(bg)
-                } else if is_hovered {
-                    hover_adjust(bg, is_dark)
-                } else {
-                    bg
-                };
-                s.background = c.into();
-            }
+        let fill = if is_checked { self.accent } else { self.background };
+        if let Some(ColorV(c)) = fill {
+            s.background = shade(c, is_disabled, is_hovered, is_dark).into();
         }
         if let Some(ColorV(ic)) = self.icon_color {
             s.icon_color = if is_disabled { dim(ic) } else { ic };
@@ -397,14 +368,7 @@ impl TogglerSpec {
         let is_hovered = matches!(status, toggler::Status::Hovered { .. });
         let is_disabled = matches!(status, toggler::Status::Disabled { .. });
         if let Some(ColorV(bg)) = self.background {
-            s.background = if is_disabled {
-                dim(bg)
-            } else if is_hovered {
-                hover_adjust(bg, is_dark)
-            } else {
-                bg
-            }
-            .into();
+            s.background = shade(bg, is_disabled, is_hovered, is_dark).into();
         }
         if let Some(ColorV(bbc)) = self.background_border_color {
             s.background_border_color = if is_disabled { dim(bbc) } else { bbc };

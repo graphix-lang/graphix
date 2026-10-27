@@ -1,6 +1,6 @@
 use super::{Length, Widget};
-/// `Fixed(n) is exactly n columns; `Fluid(max_width) is as many columns as
-/// needed so that none is wider than max_width pixels
+/// `Fixed(n) is exactly n columns, n at least 1; `Fluid(max_width) is as
+/// many columns as needed so that none is wider than max_width pixels
 type GridColumns = [`Fixed(i64), `Fluid(f64)];
 type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
 

@@ -32,7 +32,7 @@ impl FromValue for LengthV {
         enum Repr {
             Fill,
             Shrink,
-            FillPortion(u16),
+            FillPortion(i64),
             Fixed(f32),
         }
         Ok(Self(match v.cast_to::<Repr>()? {
@@ -40,10 +40,10 @@ impl FromValue for LengthV {
             Repr::Shrink => Length::Shrink,
             // iced sums a row's weights in a u16 (UPSTREAM.md), so one
             // weight stays small enough that 256 siblings cannot overflow it
-            Repr::FillPortion(n @ 1..=MAX_PORTION) => Length::FillPortion(n),
-            Repr::FillPortion(n) => {
-                bail!("a FillPortion weight is 1 to {MAX_PORTION}, not {n}")
-            }
+            Repr::FillPortion(n) => match u16::try_from(n) {
+                Ok(n @ 1..=MAX_PORTION) => Length::FillPortion(n),
+                _ => bail!("a FillPortion weight is 1 to {MAX_PORTION}, not {n}"),
+            },
             Repr::Fixed(n) => Length::Fixed(n),
         }))
     }
@@ -443,29 +443,30 @@ impl FromValue for ContentFitV {
 /// Image source: file path, raw encoded bytes, inline SVG, or decoded RGBA pixels.
 #[derive(Clone, Debug)]
 pub enum ImageSourceV {
-    // CR claude for claude: [perf/low] Path and Svg hold Strings. from_value copies the
-    // Value's text, ImageW::handle_update clones the whole source again to compare it,
-    // and same_as compares the texts byte for byte. A source that refires unchanged (a
-    // field reference refires on every write of its struct) therefore costs three
-    // passes over a possibly large inline SVG per refire. Holding ArcStr
-    // (cast_to::<ArcStr>()) makes the read and the clone refcount bumps and lets
-    // same_as compare pointers first, as it already does for Bytes. Found by reading;
-    // not run. (gui-core-04)
-    Path(String),
+    Path(ArcStr),
     Bytes(iced_core::Bytes),
-    Svg(String),
+    Svg(ArcStr),
     Rgba { width: u32, height: u32, pixels: iced_core::Bytes },
 }
 
 impl ImageSourceV {
-    // CR claude for claude: [bug/low] The extension test is case-sensitive, so
+    // XCR claude for claude: [bug/low] The extension test is case-sensitive, so
     // "Logo.SVG" is handed to the raster loader. The image crate cannot decode SVG, so
     // the image widget (ImageHandle::of) draws nothing and the window icon
     // (decode_icon) fails. Compare the extension with eq_ignore_ascii_case against svg
     // and svgz. Found by reading; not run. (gui-widgets-a-05)
+    // 2026-10-26 claude: is_svg compares a path's extension with eq_ignore_ascii_case
+    // against svg and svgz (Path::extension), so Logo.SVG goes to the svg loader. Pin:
+    // graphix-package-gui
+    // test::widgets_test::an_svg_path_is_known_by_its_extension_in_any_case (fails
+    // with the case-sensitive ends_with).
     pub fn is_svg(&self) -> bool {
         match self {
-            Self::Path(p) => p.ends_with(".svg") || p.ends_with(".svgz"),
+            Self::Path(p) => {
+                std::path::Path::new(p.as_str()).extension().is_some_and(|e| {
+                    e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz")
+                })
+            }
             Self::Svg(_) => true,
             _ => false,
         }
@@ -492,10 +493,10 @@ impl ImageSourceV {
         match self {
             Self::Path(p) if p.is_empty() => Ok(None),
             Self::Path(p) if self.is_svg() => {
-                let data = std::fs::read(p)?;
+                let data = std::fs::read(p.as_str())?;
                 decode_svg_icon(&data)
             }
-            Self::Path(p) => raster_icon(::image::open(p)?.into_rgba8()),
+            Self::Path(p) => raster_icon(::image::open(p.as_str())?.into_rgba8()),
             Self::Bytes(b) if b.is_empty() => Ok(None),
             Self::Bytes(b) => raster_icon(::image::load_from_memory(b)?.into_rgba8()),
             Self::Svg(s) if s.is_empty() => Ok(None),
@@ -562,7 +563,7 @@ fn decode_svg_icon(data: &[u8]) -> Result<Option<winit::window::Icon>> {
 impl FromValue for ImageSourceV {
     fn from_value(v: Value) -> Result<Self> {
         match v {
-            Value::String(s) => Ok(Self::Path(s.to_string())),
+            Value::String(s) => Ok(Self::Path(s)),
             Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
             v => {
                 let Some((tag, [val])) = rep::variant(&v) else {
@@ -573,7 +574,7 @@ impl FromValue for ImageSourceV {
                         Value::Bytes(b) => Ok(Self::Bytes((**b).clone())),
                         _ => bail!("ImageSource Bytes: expected bytes value"),
                     },
-                    "Svg" => Ok(Self::Svg(val.clone().cast_to::<String>()?)),
+                    "Svg" => Ok(Self::Svg(val.clone().cast_to::<ArcStr>()?)),
                     "Rgba" => {
                         #[derive(FromValue)]
                         #[value(shape = "graphix_compiler::rep::GraphixShape")]
@@ -593,7 +594,7 @@ impl FromValue for ImageSourceV {
     }
 }
 
-// CR claude for claude: [bug/low] `Fixed(usize)` reads the Graphix `Fixed(i64)` through
+// XCR claude for claude: [bug/low] `Fixed(usize)` reads the Graphix `Fixed(i64)` through
 // netidx's FromValue for usize, which converts I64 with `as`. So `Fixed(-1)` becomes
 // 18446744073709551615 columns: a single row of zero-width cells and no error.
 // LengthV's `FillPortion(u16)` has the same problem through u32:
@@ -602,11 +603,35 @@ impl FromValue for ImageSourceV {
 // bail!. Record netidx-value's wrapping FromValue for u32/usize in UPSTREAM.md as the
 // root cause. probe: design/review-2026-10-26/repro/gui-core-signed-fields-wrap.rs
 // (gui-core-03)
-#[derive(Clone, Copy, Debug, FromValue)]
-#[value(shape = "graphix_compiler::rep::GraphixShape")]
+// 2026-10-26 claude: LengthV reads FillPortion and GridColumnsV reads Fixed as i64 and
+// range-check them (weight 1..=MAX_PORTION through u16::try_from, columns >= 1 through
+// usize::try_from), refusing what used to wrap; GridColumnsV has a hand FromValue over
+// a private Repr. netidx-value's wrapping integer FromValue is in UPSTREAM.md. grid.gxi
+// says n is at least 1. Pin: graphix-package-gui
+// test::widgets_test::integer_payloads_are_range_checked_not_wrapped (fails with the
+// as-casts back).
+#[derive(Clone, Copy, Debug)]
 pub enum GridColumnsV {
     Fixed(usize),
     Fluid(f32),
+}
+
+impl FromValue for GridColumnsV {
+    fn from_value(v: Value) -> Result<Self> {
+        #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
+        enum Repr {
+            Fixed(i64),
+            Fluid(f32),
+        }
+        Ok(match v.cast_to::<Repr>()? {
+            Repr::Fixed(n) => match usize::try_from(n) {
+                Ok(n @ 1..) => Self::Fixed(n),
+                _ => bail!("a grid has at least 1 column, not {n}"),
+            },
+            Repr::Fluid(w) => Self::Fluid(w),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

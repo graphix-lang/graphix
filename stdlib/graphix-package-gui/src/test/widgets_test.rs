@@ -457,6 +457,65 @@ fn image_sources_compare_by_content() {
     );
 }
 
+#[test]
+fn an_svg_path_is_known_by_its_extension_in_any_case() {
+    use crate::types::ImageSourceV;
+    for p in ["a.svg", "Logo.SVG", "x/b.Svgz"] {
+        assert!(ImageSourceV::Path(p.into()).is_svg(), "{p} is an svg");
+    }
+    for p in ["a.png", "svg", "a.svg.png"] {
+        assert!(!ImageSourceV::Path(p.into()).is_svg(), "{p} is not an svg");
+    }
+}
+
+#[test]
+fn an_image_source_shares_the_value_text() -> Result<()> {
+    use crate::types::ImageSourceV;
+    use arcstr::{ArcStr, literal};
+    use graphix_compiler::rep;
+    use netidx::publisher::FromValue;
+    rep::register();
+    let text: ArcStr = "<svg></svg>".into();
+    let ImageSourceV::Path(p) = ImageSourceV::from_value(Value::String(text.clone()))?
+    else {
+        panic!("a string is a path")
+    };
+    assert!(ArcStr::ptr_eq(&p, &text));
+    let svg = rep::make_variant(literal!("Svg"), [Value::String(text.clone())]);
+    let ImageSourceV::Svg(s) = ImageSourceV::from_value(svg)? else {
+        panic!("`Svg is inline svg")
+    };
+    assert!(ArcStr::ptr_eq(&s, &text));
+    Ok(())
+}
+
+#[test]
+fn integer_payloads_are_range_checked_not_wrapped() -> Result<()> {
+    use crate::types::{GridColumnsV, LengthV};
+    use arcstr::literal;
+    use graphix_compiler::rep;
+    use iced_core::Length;
+    use netidx::publisher::FromValue;
+    rep::register();
+    let cols = |n: i64| {
+        GridColumnsV::from_value(rep::make_variant(literal!("Fixed"), [Value::I64(n)]))
+    };
+    let portion = |n: i64| {
+        LengthV::from_value(rep::make_variant(literal!("FillPortion"), [Value::I64(n)]))
+            .map(|l| l.0)
+    };
+    assert!(matches!(cols(2)?, GridColumnsV::Fixed(2)));
+    for n in [0, -1, i64::MIN] {
+        assert!(cols(n).is_err(), "Fixed({n}) columns is refused");
+    }
+    assert_eq!(portion(1)?, Length::FillPortion(1));
+    assert_eq!(portion(255)?, Length::FillPortion(255));
+    for n in [0, -1, 256, 65537, (1 << 32) + 1] {
+        assert!(portion(n).is_err(), "FillPortion({n}) is refused");
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_refused_update_does_not_drop_the_rest_of_the_batch() -> Result<()> {
     use crate::widgets::{GuiWidget, IcedElement};

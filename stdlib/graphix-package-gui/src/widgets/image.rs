@@ -18,9 +18,9 @@ impl ImageHandle {
     fn of(source: &ImageSourceV) -> Self {
         match source {
             ImageSourceV::Path(p) if source.is_svg() => {
-                Self::Svg(svg::Handle::from_path(p))
+                Self::Svg(svg::Handle::from_path(p.as_str()))
             }
-            ImageSourceV::Path(p) => Self::Raster(image::Handle::from_path(p)),
+            ImageSourceV::Path(p) => Self::Raster(image::Handle::from_path(p.as_str())),
             ImageSourceV::Svg(s) => {
                 Self::Svg(svg::Handle::from_memory(s.as_bytes().to_vec()))
             }
@@ -72,6 +72,9 @@ impl<X: GXExt> GuiWidget<X> for ImageW<X> {
         // shared text), which makes both copies reference counts, or take the old value
         // out with mem::take and restore it if the update fails. Found by reading; not
         // run. (gui-widgets-a-04)
+        // 2026-10-26 claude: ImageSourceV::Path and ::Svg now hold ArcStr
+        // (gui-core-04), so this clone and from_value's read are reference counts and
+        // same_as compares pointers first; what remains is whether to clone at all.
         let old = (id == self.source.r.id).then(|| self.source.t.clone()).flatten();
         if let Some(new) = self.source.update(id, v).context("image source")?
             && !old.is_some_and(|o| o.same_as(new))
