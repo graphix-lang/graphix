@@ -1072,6 +1072,22 @@ const CAST_RECURSIVE_NO_PROGRESS: &str = r#"
 "#;
 run!(cast_recursive_no_progress, CAST_RECURSIVE_NO_PROGRESS, refused("refers back to itself through unions and aliases alone"); FuseExpect::None);
 
+// A typedef that shadows an outer name closes a cycle through an earlier
+// definition that named the outer one: that definition's walk was clean
+// when it was defined, and is not once the shadow stands.
+const SHADOW_CLOSES_AN_UNGUARDED_CYCLE: &str = r#"
+{
+  type X = i64;
+  {
+    type D = X;
+    type X = [D, i64];
+    let v: X = 3;
+    v
+  }
+}
+"#;
+run!(shadow_closes_an_unguarded_cycle, SHADOW_CLOSES_AN_UNGUARDED_CYCLE, refused("refers back to itself through unions and aliases alone"); FuseExpect::None);
+
 // A two-element array is not a list: converting it keeps both items.
 const CAST_PAIR_TO_LIST: &str = r#"cast<List<i64>>([1, 2])$"#;
 run!(cast_pair_to_list, CAST_PAIR_TO_LIST, prints("[i64:1, i64:2]"); FuseExpect::Jit);

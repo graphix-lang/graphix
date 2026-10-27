@@ -113,6 +113,17 @@ pub struct ExprTypeSite {
     pub cell: bool,
 }
 
+/// The warnings printed while a record is open (`Some`), in the order
+/// they reached stderr.
+pub type WarningRecord = Mutex<Option<Vec<ArcStr>>>;
+
+fn print(record: &WarningRecord, warning: CompactString) {
+    if let Some(r) = &mut *record.lock() {
+        r.push(warning.as_str().into())
+    }
+    eprintln!("{warning}")
+}
+
 /// Whether a compile serves an editor, and the sink it records into.
 #[derive(Debug, Clone, Default)]
 pub enum IdeMode {
@@ -144,7 +155,7 @@ impl IdeMode {
         }
     }
 
-    pub(crate) fn join(&self, fork: Self) {
+    pub(crate) fn join(&self, fork: Self, record: &WarningRecord) {
         match (self, fork) {
             (Self::Lsp(Some(sink)), Self::Lsp(Some(task))) => {
                 sink.lock().append(&mut task.lock())
@@ -153,17 +164,17 @@ impl IdeMode {
                 parent.lock().extend(task.lock().drain(..))
             }
             (Self::Off, Self::Warnings(task)) => {
-                task.lock().drain(..).for_each(|w| eprintln!("{w}"))
+                task.lock().drain(..).for_each(|w| print(record, w))
             }
             _ => (),
         }
     }
 
     /// Print a warning now, or hold it for the task's join.
-    pub(crate) fn print_warning(&self, warning: CompactString) {
+    pub(crate) fn print_warning(&self, warning: CompactString, record: &WarningRecord) {
         match self {
             Self::Warnings(buf) => buf.lock().push(warning),
-            _ => eprintln!("{warning}"),
+            _ => print(record, warning),
         }
     }
 

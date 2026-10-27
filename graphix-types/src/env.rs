@@ -3,7 +3,7 @@ use crate::{
     expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
         FieldRefSite, Ide, IdeMode, ModuleRefSite, ReferenceSite, ScopeMapEntry,
-        SigImplLink, TypeRefSite, Warning,
+        SigImplLink, TypeRefSite, Warning, WarningRecord,
     },
     mod_root,
     profile::{self, Phase},
@@ -216,11 +216,27 @@ pub enum Glob {
     Chain(ModPath),
 }
 
+/// A lexical level as the source names it: a module, or a block in one.
+fn written_level(level: &str) -> CompactString {
+    let module = crate::written_scope(level);
+    if mod_root(level) == level {
+        format_compact!("`{module}`")
+    } else {
+        format_compact!("a block in `{module}`")
+    }
+}
+
 impl Glob {
-    fn find<T>(&self, n: &str, f: &mut impl FnMut(&str, &str) -> Option<T>) -> Option<T> {
+    /// What `f` finds for `n` and the level it found it at, which
+    /// identifies the item.
+    fn find<T>(
+        &self,
+        n: &str,
+        f: &mut impl FnMut(&str, &str) -> Option<T>,
+    ) -> Option<(&str, T)> {
         match self {
-            Self::Module(m) => f(m, n),
-            Self::Chain(from) => chain_levels(from).find_map(|l| f(l, n)),
+            Self::Module(m) => f(m, n).map(|t| (&***m, t)),
+            Self::Chain(from) => chain_levels(from).find_map(|l| f(l, n).map(|t| (l, t))),
         }
     }
 
@@ -550,11 +566,12 @@ pub struct Env {
     /// other only through their interfaces.
     #[doc(hidden)]
     pub hidden_impls: Arc<Vec<ModPath>>,
-    /// While recording, each warning printed (tasks share their parent's
-    /// record): a program image carries its compile's warnings, which a
-    /// restore prints again ([`Self::record_warnings`]).
+    /// While recording, each warning printed, as it reaches stderr (a
+    /// task's at its join; tasks share their parent's record): a program
+    /// image carries its compile's warnings, which a restore prints again
+    /// ([`Self::record_warnings`]).
     #[doc(hidden)]
-    pub recorded: Arc<parking_lot::Mutex<Option<Vec<ArcStr>>>>,
+    pub recorded: Arc<WarningRecord>,
 }
 
 impl Env {
@@ -579,7 +596,7 @@ impl Env {
             typedefs: self.typedefs.clone(),
             traits: self.traits.clone(),
             hidden_impls: self.hidden_impls.clone(),
-            // CR claude for claude: [bug/low] A task shares the parent's warning
+            // XCR claude for claude: [bug/low] A task shares the parent's warning
             // record, so Env::publish_warning records a task's warning when the task
             // warns, while IdeMode::Warnings prints it only at the task's join. A
             // program image therefore carries a parallel module run's warnings in the
@@ -589,6 +606,9 @@ impl Env {
             // to the parent's, so the record follows join order like the printed copy.
             // probe: design/review-2026-10-26/repro/t-misc-warning-order-image.sh
             // (t-misc-01)
+            // 2026-10-26 claude: Fixed with t-env-05: the record is written at the
+            // print, a task's warnings at its join, so the image carries them in join
+            // order. Pin: env::test::warning_record_follows_join_order (graphix-types).
             recorded: self.recorded.clone(),
         }
     }
@@ -623,7 +643,7 @@ impl Env {
         self.impls.join(impls);
         self.poly_binds.join(poly_binds);
         self.package_roots.join(package_roots);
-        self.ide.join(ide);
+        self.ide.join(ide, &self.recorded);
     }
 
     /// A snapshot of the lexical fields alone, the only ones
@@ -737,7 +757,7 @@ impl Env {
         match self.ide.sink() {
             None => {
                 let warning = format_compact!("WARNING at {pos} {ori}: {message}");
-                // CR claude for claude: [bug/low] The record is shared by every compile
+                // XCR claude for claude: [bug/low] The record is shared by every compile
                 // task (Env::fork clones the Arc) and is written when a warning is
                 // generated, while the print goes through IdeMode::Warnings and is
                 // joined in program order. Parallel module checks therefore record in
@@ -748,10 +768,12 @@ impl Env {
                 // appends in order. probe:
                 // design/review-2026-10-26/repro/t-env-warning-replay-order.sh
                 // (t-env-05)
-                if let Some(r) = &mut *self.recorded.lock() {
-                    r.push(warning.as_str().into())
-                }
-                self.ide.print_warning(warning)
+                // 2026-10-26 claude: Recording moved into the print: ide::print records
+                // each warning as it reaches stderr (IdeMode::print_warning, and
+                // IdeMode::join for a task's buffered warnings), so the record follows
+                // the printed program order. Pin:
+                // env::test::warning_record_follows_join_order (graphix-types).
+                self.ide.print_warning(warning, &self.recorded)
             }
             Some(ide) => ide.lock().warnings.push(Warning {
                 pos,
@@ -777,7 +799,7 @@ impl Env {
     /// Print again warnings a compile printed ([`Self::recorded_warnings`]).
     pub fn replay_warnings(&self, warnings: &[ArcStr]) {
         for w in warnings {
-            self.ide.print_warning(CompactString::from(w.as_str()))
+            self.ide.print_warning(CompactString::from(w.as_str()), &self.recorded)
         }
     }
 
@@ -834,7 +856,7 @@ impl Env {
             Sandbox::Blacklist(bl) => {
                 let mut t = self.clone();
                 for n in bl.iter() {
-                    // CR claude for claude: [bug/low] Each entry is classified against
+                    // XCR claude for claude: [bug/low] Each entry is classified against
                     // `t`, which the earlier entries already pruned. `blacklist [sys,
                     // sys::net]` removes /sys first, then takes `sys::net` for a value
                     // and fails with "no value net in module /sys and no module
@@ -843,16 +865,22 @@ impl Env {
                     // under a removed module. probe:
                     // design/review-2026-10-26/repro/t-env-blacklist-order.gx
                     // (t-env-06)
-                    if t.modules.contains(n) {
+                    // 2026-10-26 claude: Each entry is now classified and checked
+                    // against the unsandboxed env (self) and removed from the copy, so
+                    // an entry under a module an earlier entry removed is no error.
+                    // Pin: env::test::blacklist_entries_are_independent_of_order
+                    // (graphix-types).
+                    if self.modules.contains(n) {
                         t.unbind_lexical_under(n);
                     } else {
                         let (dir, k) = get_bind_name(n)?;
-                        let removed = t
-                            .binds
-                            .get_mut_cow(dir)
-                            .and_then(|vals| vals.remove_cow(&CompactString::from(k)));
-                        if removed.is_none() {
+                        let k = CompactString::from(k);
+                        if !self.binds.get(dir).is_some_and(|vals| vals.contains_key(&k))
+                        {
                             bail!("no value {k} in module {dir} and no module {n}")
+                        }
+                        if let Some(vals) = t.binds.get_mut_cow(dir) {
+                            vals.remove_cow(&k);
                         }
                     }
                 }
@@ -970,8 +998,8 @@ impl Env {
             // A kind-miss on an import falls through to globs
             // (`use gui::text::{self, *}`).
         }
-        let mut found: Option<(usize, T)> = None;
-        // CR claude for claude: [bug/medium] Two globs that reach the same binding are
+        let mut found: Option<(&str, T)> = None;
+        // XCR claude for claude: [bug/medium] Two globs that reach the same binding are
         // refused as ambiguous here. From a submodule declared in a block, `use
         // super::*; use package::*` both reach a top-level `let x`, and `x` is refused
         // with "both `#do4611686018427395233` and `` provide it". Rust's rule, which
@@ -980,15 +1008,22 @@ impl Env {
         // return the level it hit at, bail only when two hits are at different levels,
         // and print the sources the way written_scope does. probe:
         // design/review-2026-10-26/repro/t-env-glob-same-item-ambiguous.sh (t-env-03)
-        for (i, g) in sn.globs.iter().enumerate() {
-            if let Some(t) = g.find(n, f) {
+        // 2026-10-26 claude: Glob::find returns the level it hit at; lookup_at refuses
+        // only two hits at different levels, and names them as the source does
+        // (written_level: a module, or a block in one, by written_scope). Docs:
+        // design/module_system.md, book/src/core/use.md (book not rebuilt). Pins:
+        // lang::modules::globs_reaching_one_binding_agree (fails with the old
+        // any-two-hits rule), globs_reaching_two_bindings_are_ambiguous (the message).
+        for g in sn.globs.iter() {
+            if let Some((at, t)) = g.find(n, f) {
                 match &found {
-                    None => found = Some((i, t)),
-                    Some((j, _)) => bail!(
-                        "`{n}` is ambiguous: both `{}` and `{}` provide it; \
+                    None => found = Some((at, t)),
+                    Some((first, _)) if *first == at => (),
+                    Some((first, _)) => bail!(
+                        "`{n}` is ambiguous: both {} and {} provide it; \
                          import one explicitly",
-                        sn.globs[*j].source(),
-                        g.source()
+                        written_level(first),
+                        written_level(at)
                     ),
                 }
             }
@@ -1006,7 +1041,7 @@ impl Env {
         depth: usize,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
-        // CR claude for claude: [perf/low] A reference to a name bound d block levels
+        // XCR claude for claude: [perf/low] A reference to a name bound d block levels
         // out runs `lookup_at` at every level. Each level hashes and copies a scope
         // prefix of length O(d) (`names.get`, `module_at`, and the caller's `binds`
         // lookup), and each call also recomputes `mod_root`. That makes one reference
@@ -1029,6 +1064,13 @@ impl Env {
         // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
         // needed. Real programs nest a few blocks: try the per-compile (scope, name)
         // memo; if it is churn, close as acceptable.
+        // 2026-10-26 claude: Closed as acceptable per the 2026-10-23 triage: the
+        // per-compile (scope, name) memo would have to be invalidated by every bind,
+        // import, glob and typedef, in a compile that forks tasks with envs of their
+        // own, which is churn across every writer of the env's lexical maps. Measured
+        // now (debug, unpinned): the probe's outer-name version checks in 1.8 s against
+        // 1.5 s for the local one, 0.3 ms per reference at depth 160; real programs
+        // nest a few blocks. Delete when reviewed.
         for level in chain_levels(from) {
             if let Some(t) = self.lookup_at(origin, level, n, depth, f)? {
                 return Ok(Some(t));
@@ -1969,16 +2011,19 @@ impl Env {
         // definition cannot reach a newer key except through parameters. probe:
         // design/review-2026-10-26/repro/x-rerun-5-typedef-chain-quadratic.py
         // (x-rerun-5-10)
+        // 2026-10-26 claude: The suggested memo is unsound: reaches_unguarded resolves
+        // names in the env as it stands (resolve_pure), so a later typedef that shadows
+        // a name an earlier definition reached changes that definition's walk. In a
+        // block under 'type X = i64', 'type D = X; type X = [D, i64]' must be refused,
+        // and a memo marking D clean at its definition would accept it (pinned:
+        // lang::types::shadow_closes_an_unguarded_cycle). A sound memo holds only while
+        // the env is fixed (within check_pending_names, and only for a walk's root,
+        // since a walk cuts cycles not through its root at 'seen'), or needs
+        // invalidation whenever a definition or import shadows a resolvable name. Left
+        // for a design that can afford that; real programs do not chain a thousand
+        // unguarded aliases.
         match typ.reaches_unguarded(self, key) {
             Unguarded::Reaches => {
-                // CR claude for claude: [dead/low] Unreachable. Type::reaches_unguarded
-                // returns Guarded for a Type::Abstract (its `_` arm), so an abstract
-                // typedef never gets here. The removal also contradicts undeftype's
-                // rule that an abstract representation stays. Delete the block. Found
-                // by reading; not run. (t-env-07)
-                if let Type::Abstract { id, .. } = &typ {
-                    self.abstract_reps.remove(id);
-                }
                 self.undeftype(scope, name);
                 bail!("{}", non_contractive(name))
             }
@@ -2024,7 +2069,7 @@ impl Env {
     /// name's final target is registered: before elaboration, whose
     /// instances expand their callers' types under their definitions'
     /// envs, and again before fusion for what elaboration registered.
-    // CR claude for claude: [bug/high] This walks only self.typedefs, the lexical map
+    // XCR claude for claude: [bug/high] This walks only self.typedefs, the lexical map
     // of the env it is called on. A module with an interface, or a dynamic module,
     // keeps its typedefs in Module::env, which with_restored_mut swaps out, so the
     // check-end seed never reaches them. A recursive type there keeps an empty inner
@@ -2034,9 +2079,28 @@ impl Env {
     // m". Fix: have deftype record each TypeDef in a global (non-lexical,
     // forked/joined) registry of unseeded definitions, and have this walk drain it.
     // probe: design/review-2026-10-26/repro/t-env-module-typedef-unseeded.sh (t-env-02)
+    // 2026-10-26 claude: The reported failure no longer reproduces on cr26-staging:
+    // 462df926e made the call-site walks expand typedefs by a probe that fills no cell,
+    // so the array::map instance no longer resolves T under /array. The root cause
+    // stood (instrumenting seed_typedef_refs showed a module body's typedefs, static
+    // with an interface or dynamic, never walked), so Module::typecheck1_nodes now
+    // seeds the module's own typedefs (Env::seed_typedef_refs_under, its scope and
+    // below) in the module's env before and after its typecheck1, as the root seeds
+    // before typecheck1 and before fusion. No pin: in every probe tried
+    // (array::map/filter/fold/sort/zip over T, casts, json reads, abstract reps, warm
+    // images, GRAPHIX_NO_SUBST, a runtime_api check of the inner cell after the
+    // compile) the cell was already filled by the check or nothing read it in a foreign
+    // env, so no test fails with this undone. Review it with that in mind.
     pub fn seed_typedef_refs(&self) {
+        self.seed_typedef_refs_under(&ModPath::root())
+    }
+
+    /// [`Self::seed_typedef_refs`] for the typedefs at `scope` and below:
+    /// a module's own, in the module's env.
+    pub fn seed_typedef_refs_under(&self, scope: &ModPath) {
         let _profile = profile::phase(Phase::SeedTypes);
-        for (_, defs) in self.typedefs.into_iter() {
+        let under = self.typedefs.into_iter().filter(|(s, _)| scope_is_under(s, scope));
+        for (_, defs) in under {
             for (_, td) in defs.into_iter() {
                 if td.seeded.load(Ordering::Relaxed) {
                     continue;
@@ -2391,6 +2455,34 @@ mod test {
         assert!(env.modules.contains(&net), "the original is untouched");
     }
 
+    /// A blacklist's entries name the unsandboxed env, so an entry under
+    /// a module an earlier entry removed is no error, and a name that is
+    /// nowhere still is.
+    #[test]
+    fn blacklist_entries_are_independent_of_order() {
+        let mut env = Env::default();
+        let (sys, net) = (ModPath::from(["sys"]), ModPath::from(["sys", "net"]));
+        env.modules.insert_cow(sys.clone());
+        env.modules.insert_cow(net.clone());
+        at(&mut env, &net, "publish");
+        let publish = ModPath::from(["sys", "net", "publish"]);
+        for bl in [
+            [sys.clone(), net.clone()],
+            [net.clone(), sys.clone()],
+            [sys.clone(), publish.clone()],
+            [publish.clone(), sys.clone()],
+        ] {
+            let t = env.apply_sandbox(&Sandbox::Blacklist(Arc::from_iter(bl))).unwrap();
+            assert!(!t.modules.contains(&net));
+            assert!(t.binds.get(&net).is_none());
+        }
+        let nowhere = ModPath::from(["sys", "net", "nowhere"]);
+        assert!(
+            env.apply_sandbox(&Sandbox::Blacklist(Arc::from_iter([sys, nowhere])))
+                .is_err()
+        );
+    }
+
     /// Everything bound under a package goes, including a shadowed
     /// binding and one the lexical maps no longer name.
     #[test]
@@ -2513,5 +2605,22 @@ mod test {
         assert!(scope_is_under("/a", "/a"));
         assert!(!scope_is_under("/ab", "/a"));
         assert!(scope_is_under("/anything", "/"));
+    }
+
+    #[test]
+    fn warning_record_follows_join_order() {
+        let mut env = Env::default();
+        env.record_warnings();
+        let ori = Arc::new(Origin::default());
+        let pos = SourcePosition::default();
+        let (first, second) = (env.fork(), env.fork());
+        second.warn_at(BitFlags::empty(), &ori, pos, pos, "second").unwrap();
+        first.warn_at(BitFlags::empty(), &ori, pos, pos, "first").unwrap();
+        env.join(first);
+        env.join(second);
+        let recorded = env.recorded_warnings();
+        let messages: Vec<_> =
+            recorded.iter().map(|w| w.rsplit(": ").next().unwrap()).collect();
+        assert_eq!(messages, ["first", "second"]);
     }
 }

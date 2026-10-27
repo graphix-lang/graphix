@@ -124,7 +124,7 @@ import → glob → package prelude → core prelude.
   compiles with `CFlag::ReplaceImports` so a re-`use` shadows, like a
   `let` re-binding; file modules keep the error.
 - Two globs providing one name: allowed at import, **error at first
-  use** naming both sources (Rust's rule — glob pairs are common and
+  use** naming both sources, unless both reach the same item (Rust's rule — glob pairs are common and
   mostly disjoint). This immediately caught two real latent collisions
   the old walk resolved silently by search order: `window` (the gui
   widget vs `array::window`) and `Table` (`gui::data_table` vs

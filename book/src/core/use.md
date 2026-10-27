@@ -48,8 +48,9 @@ is `use sys` plus `use sys::net`. A trailing comma is allowed. The
 same syntax works in `.gxi` interface files.
 
 Globs are legal but discouraged outside test modules — an explicit
-list documents where every name comes from, and two globs that both
-provide a name make that name an error at its first use.
+list documents where every name comes from, and two globs that
+provide a name from different places make that name an error at its
+first use.
 
 In the UI packages a widget module and its main function share a
 name. Import the function by its path, `use tui::text::text`, and the
@@ -165,4 +166,5 @@ The error cases:
   with `let` is idiomatic Graphix and imports are no different)
 - two explicit imports of the same name: error — rename one
 - two globs that both provide a name: allowed at import, error at the
-  first *use* of the ambiguous name, naming both sources
+  first *use* of the ambiguous name, naming both sources, unless both
+  reach the same item

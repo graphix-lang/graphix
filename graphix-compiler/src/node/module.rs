@@ -1262,12 +1262,17 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         }
     }
 
-    /// Run the children's `typecheck1` under the module's private env.
+    /// Run the children's `typecheck1` under the module's private env,
+    /// its typedefs seeded there before (the check has ended) and after
+    /// (for what elaboration defined), as the root's are.
     fn typecheck1_nodes(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let Self { env, nodes, catches, scope, .. } = self;
         let _module = profile::module(&scope.lexical);
         ctx.with_restored_mut(env, |ctx| {
-            super::typecheck1_statements(ctx, nodes, catches, false)
+            ctx.env.seed_typedef_refs_under(&scope.lexical);
+            let r = super::typecheck1_statements(ctx, nodes, catches, false);
+            ctx.env.seed_typedef_refs_under(&scope.lexical);
+            r
         })
     }
 

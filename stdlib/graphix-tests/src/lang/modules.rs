@@ -999,6 +999,45 @@ run!(
     is(Value::I64(3))
 );
 
+// Two globs that reach one binding name it once; two that reach
+// different bindings are ambiguous.
+run!(
+    globs_reaching_one_binding_agree,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        let x = 1;
+        let result = {
+            mod inner;
+            inner::y
+        }
+    "#,
+    "/test/inner.gx" => r#"
+        use super::*;
+        use super::super::test::*;
+        let y = x
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    globs_reaching_two_bindings_are_ambiguous,
+    refused("`x` is ambiguous: both a block in `/test` and `/test` provide it"),
+    "/test.gx" => r#"
+        let x = 1;
+        let result = {
+            let x = 2;
+            mod inner;
+            inner::y
+        }
+    "#,
+    "/test/inner.gx" => r#"
+        use super::*;
+        use super::super::test::*;
+        let y = x
+    "#
+    ; FuseExpect::None
+);
+
 run!(
     glob_super_takes_the_innermost,
     is(Value::I64(2)),
