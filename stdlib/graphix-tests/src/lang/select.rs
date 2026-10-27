@@ -2133,6 +2133,19 @@ select 1 { _ | 1 => 0 }
 run!(or_dead_alt_err, OR_DEAD_ALT_ERR, refused("already matches anything");
  FuseExpect::None);
 
+// An alternative the earlier arms and alternatives cover is refused for
+// that, not as a test that can never match.
+const OR_COVERED_ALT_ERR: &str = r#"
+{
+  let f = |x: [`A, `B, `C]| select x { `A | `B => 1, `C | `A => 2 };
+  f(`A)
+}
+"#;
+
+run!(or_covered_alt_err, OR_COVERED_ALT_ERR,
+ refused("the earlier arms and alternatives already cover everything `A matches");
+ FuseExpect::None);
+
 // Zero-residue: the whole or-select compiles native.
 const OR_NATIVE: &str = r#"
 {
@@ -4617,11 +4630,45 @@ run!(pool_covers_only_its_own_abstract_instantiation, r#"{
   type Box<'a> = Abstract<'a>;
   let g = |x: [Box<bool>, Box<i64>]| select x {
     Box(true) => 1,
-    Box(false) => 2,
-    Box<bool> as b => 3
+    Box(false) => 2
   };
   g(Box(true))
 }"#, refused("missing match cases: no arm covers Box<i64>"); FuseExpect::None);
+
+// An abstract constructor under a tuple or struct position pools its
+// payload's heads, as it does at the top.
+run!(pool_reads_a_nested_abstract_payload, r#"{
+  type Box<'a> = Abstract<'a>;
+  let g = |x: (Box<bool>, i64)| select x { (Box(true), _) => 1, (Box(false), n) => n };
+  let h = |x: {b: Box<[`A, `B]>, n: i64}| select x {
+    {b: Box(`A), n: _} => 1,
+    {b: Box(`B), n} => n
+  };
+  [g((Box(true), 5)), g((Box(false), 5)), h({b: Box(`A), n: 5}), h({b: Box(`B), n: 5})]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:5, i64:1, i64:5]"); FuseExpect::None);
+
+// An atom pools against the one member it can match: a head the
+// position's type cannot hold, or a struct width the pattern does not
+// admit, rules a member out.
+run!(pool_skips_a_member_the_atom_cannot_match, r#"{
+  type Box<'a> = Abstract<'a>;
+  let f = |x: [(bool, i64), (i64, bool)]| select x {
+    (true, _) => "a",
+    (false, _) => "b",
+    (i64, bool) as t => "c"
+  };
+  let g = |x: [Box<bool>, Box<i64>]| select x {
+    Box(true) => 1,
+    Box(false) => 2,
+    Box<i64> as b => 3
+  };
+  let h = |x: [{a: bool}, {a: bool, b: i64}]| select x {
+    {a: true} => "t",
+    {a: false} => "f",
+    {a, b} => "ab"
+  };
+  ([f((true, 1)), f((false, 1)), f((1, true))], [g(Box(true)), g(Box(false)), g(Box(5))], [h({a: true}), h({a: false}), h({a: true, b: 1})])
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[["a", "b", "c"], [i64:1, i64:2, i64:3], ["t", "f", "ab"]]"#); FuseExpect::Jit);
 
 // An inferred abstract constructor pattern tests the tag at run time and
 // takes its parameters from the scrutinee, never from its payload.
@@ -4769,8 +4816,9 @@ run!(
 
 // The birth-only warning is for an act over constants that a later entry
 // does not repeat; a standing event source (a timer, a subscription)
-// resumes at every entry, so it is not warned of.
-async fn birth_only_warning_spares_event_sources(mode: Mode) -> Result<()> {
+// resumes at every entry, and a builtin given no argument produces a value
+// that stands, so neither is warned of.
+async fn birth_only_warnings(mode: Mode) -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
     let flags = mode.flags() | CFlag::WarningsAreErrors;
     let ctx = TestCtx::start(
@@ -4785,19 +4833,46 @@ async fn birth_only_warning_spares_event_sources(mode: Mode) -> Result<()> {
             "{ let x = 0; select x { 0 => sys::time::timer(duration:10.ms, true), _ => never() } }"
         ))
         .await?;
-    let error = ctx
-        .rt
+    ctx.rt
         .compile(literal!(
-            "{ let x = 0; select x { 0 => println(\"a\"), _ => never() } }"
+            "{ let x = 0; select x { 0 => sys::dirs::home_dir(), _ => never() } }"
         ))
-        .await
-        .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("acts only at this arm's first entry"),
-        "{error:#}"
-    );
+        .await?;
+    for (src, warning) in [
+        (
+            literal!("{ let x = 0; select x { 0 => println(\"a\"), _ => never() } }"),
+            "this call reads no variable",
+        ),
+        (
+            literal!(
+                "{ let m = never<i64>(); let set = |v: i64| { m <- v; v }; \
+                 let x = 0; select x { 0 => set(5), _ => never() } }"
+            ),
+            "this call reads no variable",
+        ),
+        (
+            literal!(
+                "{ let x = 0; catch(e) println(e); \
+                 select x { 0 => error(`Bad)?, _ => never() } }"
+            ),
+            "this raise reads no variable",
+        ),
+        (
+            literal!(
+                "{ let x = 0; select x { 0 => seq 1 { println(\"a\"); 0 }, _ => 1 } }"
+            ),
+            "this seq's trigger reads no variable",
+        ),
+    ] {
+        let error = ctx.rt.compile(src).await.unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains(warning) && error.contains("only at this arm's first entry"),
+            "{error}"
+        );
+    }
     ctx.shutdown().await;
     Ok(())
 }
 
-modes!(birth_only_warning_spares_event_sources);
+modes!(birth_only_warnings);

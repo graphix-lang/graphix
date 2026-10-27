@@ -279,7 +279,7 @@ async fn unhandled_warnings(mode: Mode) -> Result<()> {
     }
     for code in [
         "{ let v: [i64, Error<`Expected>] = 42; seqq { v? } }",
-        "{ let f = |n| select n { 0 => error(`Expected)?, n => n }; seqq { f(0) } }",
+        "{ let f = |n| select n { 0 => (n ~ error(`Expected))?, n => n }; seqq { f(0) } }",
     ] {
         let error = ctx.rt.compile(ArcStr::from(code)).await.unwrap_err();
         assert!(format!("{error:#}").contains("will not be caught"), "{error:#}");

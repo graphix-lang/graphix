@@ -27,6 +27,7 @@ use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
+use std::sync::OnceLock;
 use triomphe::Arc;
 
 /// Where an error in a pattern is placed: the pattern's text when it was
@@ -73,8 +74,9 @@ struct LazyArmFacts {
     /// Per arm: entered before. A first entry is the arm's birth, every
     /// later one a resume.
     entered: Vec<bool>,
-    /// Per arm: the shallow discriminator of an inferred predicate.
-    shallow: Vec<Option<Type>>,
+    /// Per arm: the shallow discriminator of an inferred predicate, found
+    /// when the chain first consults the arm.
+    shallow: Vec<OnceLock<Option<Type>>>,
     /// A value no arm matched was logged: once per select.
     logged_no_match: bool,
     /// The arms with a guard, in order.
@@ -140,7 +142,6 @@ fn guard_refs<R: Rt, E: UserEvent>(pat: &PatternNode<R, E>, r: &mut Refs) {
 impl LazyArmFacts {
     fn build<R: Rt, E: UserEvent>(
         ctx: &ExecCtx<'_, R, E>,
-        scrut: &Type,
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
         LazyArmFacts {
@@ -166,10 +167,16 @@ impl LazyArmFacts {
             // only on the patterns and the scrutinee type. probe:
             // design/review-2026-10-26/repro/x-perf-compile-select-facts-per-instance.sh
             // (x-perf-compile-05)
-            shallow: arms
-                .iter()
-                .map(|(pat, _)| pat.shallow_discriminant(&ctx.env, scrut))
-                .collect(),
+            // 2026-10-26 claude: Partial: LazyArmFacts::shallow is now a OnceLock per
+            // arm, filled when the chain first consults the arm, so an instance pays
+            // only for the arms it tries. The probe (values hitting arm 0, load ~250)
+            // went 1.2/3.0/10.6 s (old binary) to 1.7/1.8/2.2 s at 25/50/100 arms. A
+            // variant whose values hit the last arm is still quadratic (2.3/4.6/15.1 s):
+            // each consulted arm still re-walks the scrutinee union. What remains is the
+            // per-definition share (the discriminants depend only on the patterns and
+            // the scrutinee type), which needs the instance rows (DefTable) to carry
+            // them or a reuse rule for unsubstituted instances.
+            shallow: arms.iter().map(|_| OnceLock::new()).collect(),
             logged_no_match: false,
             guarded: arms
                 .iter()
@@ -371,10 +378,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
 }
 
 /// Warn where an arm acts on constants alone: a `<-` whose right side
-/// reads no variable, or an effectful builtin call whose arguments read
-/// none. Constants fire at an arm's birth, its first entry, and stand at
-/// every later entry, which resumes the arm, so these act once. Nested
-/// lambdas, selects and seq machines are left to their own checks.
+/// reads no variable, a raise to a handler whose operand reads none, or an
+/// effectful call whose arguments read none (a function's name is no
+/// variable read). Constants fire at an arm's birth, its first entry, and
+/// stand at every later entry, which resumes the arm, so these act once.
+/// Nested lambdas, selects and seq machines are left to their own checks.
 fn warn_birth_only<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -384,7 +392,7 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         let mut refs = Refs::default();
         n.refs(&mut refs);
         let mut any = false;
-        refs.with_refs(|_| any = true);
+        refs.with_refs(|id| any |= !ctx.bind_to_lambda.contains_key(&id));
         !any
     };
     let warn = |spec: &Expr, what: &str| {
@@ -404,7 +412,7 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         NodeView::Lambda(_) | NodeView::Select(_) | NodeView::SeqMachine(_) => Ok(()),
         // a handler's action runs on its errors, not at an entry
         NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
-        // CR claude for claude: [bug/medium] A handler-ful `?` whose operand reads no
+        // XCR claude for claude: [bug/medium] A handler-ful `?` whose operand reads no
         // variable (`0 => error(`Bad)?`) raises only at the arm's first entry, just as
         // a constant write fires only then, but nothing here warns of it. A raise to a
         // handler is an event, as a write is. Add `NodeView::Qop(q) if
@@ -414,6 +422,14 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         // warning; warn there too when the trigger reads no variable. probe:
         // design/review-2026-10-26/repro/x-engine-seq-errors-const-raise-no-warning.gx
         // (x-engine-seq-errors-02)
+        // 2026-10-26 claude: warn_birth_only warns of a handler-ful ? whose operand
+        // reads no variable (a function's name no longer counts as a read in
+        // reads_nothing, so error(`Bad)? qualifies), and warn_triggerless_seq warns of
+        // a seq whose trigger names no binding (names_nothing). Pin:
+        // lang::select::birth_only_warnings (the raise and seq 1 cases).
+        NodeView::Qop(q) if q.handler().is_some() && reads_nothing(&q.n) => {
+            warn(n.spec(), "this raise")
+        }
         NodeView::Connect(c) if reads_nothing(&c.node) => warn(&c.spec, "this write"),
         NodeView::CallSite(cs)
             if cs.arg_nodes().all(|a| reads_nothing(a)) && acts_on_the_world(ctx, cs) =>
@@ -432,30 +448,37 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
     })
 }
 
-/// Whether the call acts on the world: an async or Io builtin, or a
-/// function whose body performs Io.
+/// Whether the call acts: an async or Io builtin given an argument (one
+/// given none produces at its birth and stands), or a function whose body
+/// performs Io, raises or writes a binding it does not own.
 fn acts_on_the_world<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     cs: &super::callsite::CallSite<R, E>,
 ) -> bool {
-    // CR claude for claude: [readability/low] A builtin call with no arguments
+    // XCR claude for claude: [readability/low] A builtin call with no arguments
     // (sys::dirs::home_dir, sys::args) is Async because it produces at its birth only.
     // Here it counts as acting on the world, and the vacuous all(reads_nothing) makes
     // it warn 'acts only at this arm's first entry ... Sample the event'. It acts on
     // nothing, its value stands at every re-entry, and no event can be sampled into it.
     // Return false here for a call with no arguments. probe:
     // design/review-2026-10-26/repro/sys-io-dirs-arm-spurious-warning.gx (sys-io-05)
+    // 2026-10-26 claude: acts_on_the_world counts a builtin only when the call has an
+    // argument node; home_dir() in an arm no longer warns. Pin:
+    // lang::select::birth_only_warnings (compiles the home_dir arm under
+    // WarningsAreErrors). The Async label itself is x-builtin-effects-03.
     if let Some(b) = super::callsite::static_builtin(ctx, cs) {
-        return matches!(
-            ctx.builtin_effect(b),
-            crate::Effect::Async | crate::Effect::Io(_)
-        ) && !ctx.builtin_resumes(b);
+        return cs.arg_nodes().next().is_some()
+            && matches!(
+                ctx.builtin_effect(b),
+                crate::Effect::Async | crate::Effect::Io(_)
+            )
+            && !ctx.builtin_resumes(b);
     }
     let NodeView::Ref(r) = cs.fnode().view() else { return false };
     ctx.bind_to_lambda
         .get(&r.id)
         .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
-        // CR claude for claude: [bug/low] A function counts as acting only when it
+        // XCR claude for claude: [bug/low] A function counts as acting only when it
         // performs Io. So a call that writes a captured variable (`let set = |v: i64| {
         // m <- v; v }`, then `set(5)` in an arm) gets no warning. Like `m <- 5` written
         // in the arm, it writes only at the arm's first entry (count(m) stays 1 over
@@ -463,11 +486,18 @@ fn acts_on_the_world<R: Rt, E: UserEvent>(
         // write a binding it does not own), which is the same once-per-birth effect.
         // probe: design/review-2026-10-26/repro/x-rerun-3-birth-warn-misses-write-fn.gx
         // (x-rerun-3-06)
-        .is_some_and(|d| d.facts.lock().io)
+        // 2026-10-26 claude: acts_on_the_world also counts facts.event (a raise or a
+        // write to a binding the function does not own), so set(5) in an arm warns.
+        // Pin: lang::select::birth_only_warnings (the set(5) case).
+        .is_some_and(|d| {
+            let facts = d.facts.lock();
+            facts.io || facts.event
+        })
 }
 
-/// Warn where an arm holds a `seq` or `seqq` with no trigger: it runs at
-/// its birth, the arm's first entry, and not at a later one.
+/// Warn where an arm holds a `seq` or `seqq` with no trigger, or one that
+/// names no variable: it runs at its birth, the arm's first entry, and not
+/// at a later one.
 fn warn_triggerless_seq<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -475,15 +505,25 @@ fn warn_triggerless_seq<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     crate::stack::ensure_sufficient(|| match &e.kind {
         ExprKind::Lambda(_) | ExprKind::Select(_) => Ok(()),
-        ExprKind::Seq(s) if s.trigger.is_none() => ctx.env.warn(
-            flags,
-            e,
-            e.pos,
-            e.end.0,
-            "this seq has no trigger, so it runs only at this arm's first entry: a \
-             later entry resumes the arm. Trigger it on the event that selects the arm",
-        ),
-        ExprKind::Seq(_) => Ok(()),
+        ExprKind::Seq(s) => {
+            let what = match &s.trigger {
+                None => "this seq has no trigger",
+                Some(t) if names_nothing(t.expr()) => {
+                    "this seq's trigger reads no variable"
+                }
+                Some(_) => return Ok(()),
+            };
+            ctx.env.warn(
+                flags,
+                e,
+                e.pos,
+                e.end.0,
+                format_args!(
+                    "{what}, so it runs only at this arm's first entry: a later entry \
+                     resumes the arm. Trigger it on the event that selects the arm"
+                ),
+            )
+        }
         _ => {
             let mut r = Ok(());
             e.for_each_child(&mut |c| {
@@ -493,6 +533,15 @@ fn warn_triggerless_seq<R: Rt, E: UserEvent>(
             });
             r
         }
+    })
+}
+
+/// Whether `e` names no binding: a constant, or built of constants.
+fn names_nothing(e: &Expr) -> bool {
+    crate::stack::ensure_sufficient(|| {
+        let mut none = !matches!(e.kind, ExprKind::Ref { .. });
+        e.for_each_child(&mut |c| none = none && names_nothing(c));
+        none
     })
 }
 
@@ -669,6 +718,10 @@ impl Reach {
         // union is one member and the arm covers it. The fix belongs where the arm
         // narrows (it must leave an open member open for the settle to judge), which
         // is typing work.
+        // 2026-10-26 claude: Still reproduces (2026-10-26, lane2 build): unreachable
+        // arm at _ => 0. Not attempted again in this batch; the earlier note's
+        // diagnosis stands (the first arm's narrowing binds the open member before
+        // coverage runs).
         if checking && (self.wildcard || self.atype == empty) {
             bailat!(
                 site,
@@ -709,16 +762,17 @@ impl Reach {
         };
         let probe = BitFlags::empty();
         for (sp, at) in atoms.iter() {
-            // CR claude for claude: [readability/low] When the arm's own earlier
-            // alternatives (or earlier arms) have taken everything, self.atype is
-            // empty, and this prints "`A will never match []", which reads as an empty
-            // scrutinee type. Say the alternative is covered by the earlier arms or
-            // alternatives when nothing reaches. probe:
-            // design/review-2026-10-26/repro/x-typecheck-patterns-or-alt-empty-diag.gx
-            // (x-typecheck-patterns-07)
             if checking && or_arm && !at.could_match(env, &self.atype)? {
                 let atype = &self.atype;
                 format_with_flags(PrintFlag::DerefTVars, || {
+                    if *atype == empty {
+                        bailat!(
+                            site,
+                            "unreachable or-pattern alternative: the earlier arms and \
+                             alternatives already cover everything {at} matches, unused \
+                             match cases"
+                        )
+                    }
                     bailat!(
                         site,
                         "unreachable or-pattern alternative: {at} will never match \
@@ -1023,14 +1077,27 @@ struct Leaf {
     domain: Option<SmallVec<[Head; 4]>>,
 }
 
-impl Leaf {
-    /// The arm admits a head the member admits here.
-    fn reachable(&self) -> bool {
-        match (&self.heads, &self.domain) {
-            (Some(hs), Some(d)) => hs.iter().any(|h| d.contains(h)),
-            _ => true,
+/// Why the pool takes no leaves from a composite pattern against a member.
+#[derive(Clone, Copy)]
+enum Miss {
+    /// The pattern has a refutable part the pool does not read.
+    Unread,
+    /// The pattern cannot match the member.
+    Never,
+}
+
+/// The verdict over several positions: a `Never` decides, else an
+/// `Unread`.
+fn worst(misses: impl Iterator<Item = Result<Option<Miss>>>) -> Result<Option<Miss>> {
+    let mut out = None;
+    for m in misses {
+        match m? {
+            Some(Miss::Never) => return Ok(Some(Miss::Never)),
+            Some(Miss::Unread) => out = Some(Miss::Unread),
+            None => (),
         }
     }
+    Ok(out)
 }
 
 /// `t` is `Any` or a union holding it.
@@ -1038,6 +1105,33 @@ fn may_be_any(env: &Env, t: &Type) -> Result<bool> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;
     Ok(members.iter().any(|m| matches!(m, Type::Any)))
+}
+
+/// Whether a value of `t` may have head `h`: an open position may.
+fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, t, &mut members)?;
+    Ok(members.is_empty()
+        || members.iter().any(|m| match (h, m) {
+            (Head::Bool(_), Type::Primitive(p)) => p.contains(Typ::Bool),
+            (Head::Null, Type::Primitive(p)) => p.contains(Typ::Null),
+            (Head::Tag(tag, n), Type::Variant(t, ts, _)) => tag == t && *n == ts.len(),
+            (
+                _,
+                Type::Primitive(_)
+                | Type::Variant(..)
+                | Type::Tuple(_)
+                | Type::Struct(_)
+                | Type::Array(_)
+                | Type::List(_)
+                | Type::Map { .. }
+                | Type::Abstract { .. }
+                | Type::Error(_)
+                | Type::Fn(_)
+                | Type::ByRef(..),
+            ) => false,
+            _ => true,
+        }))
 }
 
 /// The heads `t` admits when it is a finite set of them: a union of
@@ -1082,25 +1176,26 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
     }
 }
 
-/// The pooled positions of composite pattern `sp` against `m`, the
-/// scrutinee member of its shape; `None` when the pattern has a
+/// The pooled positions of composite pattern `sp` against `m`, a
+/// scrutinee member of its shape; `Unread` when the pattern has a
 /// refutable part the pool does not read (another literal, a slice, a
-/// type test, a variant with a refutable payload) or tests no head.
+/// type test, a variant with a refutable payload) or tests no head,
+/// `Never` when it cannot match `m`.
 fn pooled_leaves(
     env: &Env,
     sp: &StructPatternNode,
     m: &Type,
-) -> Result<Option<SmallVec<[Leaf; 8]>>> {
+) -> Result<Result<SmallVec<[Leaf; 8]>, Miss>> {
     fn leaf(
         env: &Env,
         sp: &StructPatternNode,
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
         out: &mut SmallVec<[Leaf; 8]>,
-    ) -> Result<bool> {
+    ) -> Result<Option<Miss>> {
         let admitted = match sp {
             StructPatternNode::Bind(_) | StructPatternNode::Ignore => None,
-            // CR claude for claude: [bug/medium] `leaf` recurses into a tuple or struct
+            // XCR claude for claude: [bug/medium] `leaf` recurses into a tuple or struct
             // position, but not into an abstract constructor pattern there. `Box(true)`
             // under a tuple falls to head_of, which has no head for it, and the whole
             // arm goes unpooled. So `(Box(true), _) => 1, (Box(false), n) => n` over
@@ -1111,8 +1206,13 @@ fn pooled_leaves(
             // struct cases. probe:
             // design/review-2026-10-26/repro/x-rerun-3-abstract-pool-nested.gx
             // (x-rerun-3-05)
+            // 2026-10-26 claude: pooled_leaves's leaf sends StructPatternNode::Abstract
+            // to children with the tuple and struct cases, so a nested
+            // Box(true)/Box(false) pools its payload's heads. Pin:
+            // lang::select::pool_reads_a_nested_abstract_payload.
             StructPatternNode::Slice { kind: SliceKind::Tuple, .. }
-            | StructPatternNode::Struct { .. } => {
+            | StructPatternNode::Struct { .. }
+            | StructPatternNode::Abstract { .. } => {
                 return crate::stack::ensure_sufficient(|| {
                     children(env, sp, t, path, out)
                 });
@@ -1120,16 +1220,32 @@ fn pooled_leaves(
             StructPatternNode::Or { alts } => {
                 match alts.iter().map(head_of).collect::<Option<SmallVec<[Head; 2]>>>() {
                     Some(hs) => Some(hs),
-                    None => return Ok(false),
+                    None => return Ok(Some(Miss::Unread)),
                 }
             }
             sp => match head_of(sp) {
                 Some(h) => Some(SmallVec::from_iter([h])),
-                None => return Ok(false),
+                None => return Ok(Some(Miss::Unread)),
             },
         };
-        out.push(Leaf { path: path.clone(), heads: admitted, domain: heads(env, t)? });
-        Ok(true)
+        let domain = heads(env, t)?;
+        if let Some(hs) = &admitted {
+            let held = match &domain {
+                Some(d) => hs.iter().any(|h| d.contains(h)),
+                None => {
+                    let mut held = false;
+                    for h in hs.iter() {
+                        held = held || may_hold(env, t, h)?;
+                    }
+                    held
+                }
+            };
+            if !held {
+                return Ok(Some(Miss::Never));
+            }
+        }
+        out.push(Leaf { path: path.clone(), heads: admitted, domain });
+        Ok(None)
     }
     fn children(
         env: &Env,
@@ -1137,16 +1253,17 @@ fn pooled_leaves(
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
         out: &mut SmallVec<[Leaf; 8]>,
-    ) -> Result<bool> {
+    ) -> Result<Option<Miss>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, t, &mut members)?;
-        let [m] = &members[..] else { return Ok(false) };
-        let mut at = |i: usize, p: &StructPatternNode, t: &Type| -> Result<bool> {
-            path.push(i as u32);
-            let r = leaf(env, p, t, path, out);
-            path.pop();
-            r
-        };
+        let [m] = &members[..] else { return Ok(Some(Miss::Unread)) };
+        let mut at =
+            |i: usize, p: &StructPatternNode, t: &Type| -> Result<Option<Miss>> {
+                path.push(i as u32);
+                let r = leaf(env, p, t, path, out);
+                path.pop();
+                r
+            };
         match (sp, m) {
             (
                 StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds },
@@ -1155,13 +1272,11 @@ fn pooled_leaves(
             | (
                 StructPatternNode::Variant { tag: _, all: _, binds },
                 Type::Variant(_, ts, _),
-            ) if ts.len() == binds.len() => {
-                for (i, (p, t)) in binds.iter().zip(ts.iter()).enumerate() {
-                    if !at(i, p, t)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
+            ) if ts.len() == binds.len() => worst(
+                binds.iter().zip(ts.iter()).enumerate().map(|(i, (p, t))| at(i, p, t)),
+            ),
+            (StructPatternNode::Slice { kind: SliceKind::Tuple, .. }, Type::Tuple(_)) => {
+                Ok(Some(Miss::Never))
             }
             (
                 StructPatternNode::Slice { kind: SliceKind::Array, all: _, binds },
@@ -1170,41 +1285,35 @@ fn pooled_leaves(
             | (
                 StructPatternNode::Slice { kind: SliceKind::List, all: _, binds },
                 Type::List(e),
-            ) => {
-                for (i, p) in binds.iter().enumerate() {
-                    if !at(i, p, e)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
+            ) => worst(binds.iter().enumerate().map(|(i, p)| at(i, p, e))),
             (
                 StructPatternNode::Abstract { id, bind, .. },
                 Type::Abstract { id: t, params },
-            ) if id == t => match env.abstract_reps.get(id) {
+            ) => match env.abstract_reps.get(id) {
+                _ if id != t => Ok(Some(Miss::Never)),
                 Some(r) => at(0, bind, &r.instantiate_with(params)),
-                None => Ok(false),
+                None => Ok(Some(Miss::Unread)),
             },
             (StructPatternNode::Struct { all: _, width, binds }, Type::Struct(fs)) => {
-                if !width.admits(fs.len()) {
-                    return Ok(false);
+                if !width.admits(fs.len())
+                    || !binds.iter().all(|(n, _, _)| fs.iter().any(|(f, _, _)| n == f))
+                {
+                    return Ok(Some(Miss::Never));
                 }
-                for (i, (name, t, _)) in fs.iter().enumerate() {
+                worst(fs.iter().enumerate().map(|(i, (name, t, _))| {
                     let p = binds.iter().find(|(n, _, _)| n == name);
-                    let p = p.map_or(&StructPatternNode::Ignore, |(_, _, p)| p);
-                    if !at(i, p, t)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(binds.iter().all(|(n, _, _)| fs.iter().any(|(f, _, _)| n == f)))
+                    at(i, p.map_or(&StructPatternNode::Ignore, |(_, _, p)| p), t)
+                }))
             }
-            _ => Ok(false),
+            _ => Ok(Some(Miss::Unread)),
         }
     }
     let mut out = SmallVec::new();
-    let pooled = children(env, sp, m, &mut SmallVec::new(), &mut out)?
-        && out.iter().any(|l| l.heads.is_some());
-    Ok(pooled.then_some(out))
+    Ok(match children(env, sp, m, &mut SmallVec::new(), &mut out)? {
+        Some(miss) => Err(miss),
+        None if out.iter().any(|l| l.heads.is_some()) => Ok(out),
+        None => Err(Miss::Unread),
+    })
 }
 
 /// The head a composite pattern tests: what groups arms in the
@@ -1324,7 +1433,7 @@ impl LiteralPool {
         let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
         // the atom pools against the one member of its shape it can match:
         // under its type test, with a head each position admits
-        // CR claude for claude: [bug/medium] An atom that can match only one member is
+        // XCR claude for claude: [bug/medium] An atom that can match only one member is
         // still refused pooling, in two ways. Leaf::reachable calls a bool head at an
         // i64 position reachable (domain None), so `(true, _)` reaches (i64, bool) as
         // well as (bool, i64) and claim returns Unpooled. And a pooled_leaves failure
@@ -1337,6 +1446,13 @@ impl LiteralPool {
         // `continue` past a member the atom cannot match. probe:
         // design/review-2026-10-26/repro/x-typecheck-patterns-pool-member-ambiguous.gx
         // (x-typecheck-patterns-05)
+        // 2026-10-26 claude: pooled_leaves now answers Miss::Never when the atom cannot
+        // match the member (a head the position's type cannot hold, via may_hold; a
+        // struct width or field set the pattern does not admit; another tuple length or
+        // abstract id), and claim skips that member; Miss::Unread still gives Unpooled.
+        // Leaf::reachable is gone. pool_covers_only_its_own_abstract_instantiation lost
+        // its third arm, which the pool now (rightly) finds dead. Pin:
+        // lang::select::pool_skips_a_member_the_atom_cannot_match.
         let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
         for m in shape.members(env, scrut)? {
             if let Some(t) = explicit
@@ -1344,12 +1460,11 @@ impl LiteralPool {
             {
                 continue;
             }
-            let Some(leaves) = pooled_leaves(env, sp, &m)? else {
-                return Ok(Claim::Unpooled);
+            let leaves = match pooled_leaves(env, sp, &m)? {
+                Ok(leaves) => leaves,
+                Err(Miss::Never) => continue,
+                Err(Miss::Unread) => return Ok(Claim::Unpooled),
             };
-            if !leaves.iter().all(Leaf::reachable) {
-                continue;
-            }
             if reached.is_some() {
                 return Ok(Claim::Unpooled);
             }
@@ -1495,8 +1610,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         if self.arm_facts.is_none() {
-            let scrut = self.arg.node.typ().clone();
-            self.arm_facts = Some(LazyArmFacts::build(ctx, &scrut, &self.arms));
+            self.arm_facts = Some(LazyArmFacts::build(ctx, &self.arms));
         }
         let Self {
             selected,
@@ -1540,8 +1654,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let live = arg.value.as_ref().filter(|_| !arg.tag.is_bottom());
         let mut open = live.is_some();
         for i in 0..guards_end {
-            let (pat, shallow) = (&mut arms[i].0, &shallow[i]);
+            let pat = &mut arms[i].0;
             let reach = live.filter(|_| open).filter(|v| {
+                let shallow = shallow[i]
+                    .get_or_init(|| pat.shallow_discriminant(&ctx.env, arg.node.typ()));
                 let s = pat.shape_matches(&ctx.env, shallow.as_ref(), v);
                 shaped[i] = Some(s);
                 s
@@ -1675,6 +1791,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     arms.iter().zip(shallow.iter()).enumerate()
                 {
                     let s = shaped.get(i).copied().flatten().unwrap_or_else(|| {
+                        let shallow = shallow.get_or_init(|| {
+                            pat.shallow_discriminant(&ctx.env, arg.node.typ())
+                        });
                         pat.shape_matches(&ctx.env, shallow.as_ref(), v)
                     });
                     match pat.arm_match(s) {
