@@ -55,7 +55,6 @@ plotters = { workspace = true }
 plotters-backend = { workspace = true }
 poolshark = { workspace = true }
 resvg = { workspace = true }
-rust_decimal = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }

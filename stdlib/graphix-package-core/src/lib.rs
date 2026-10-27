@@ -18,7 +18,7 @@ use graphix_compiler::{
     err, errf,
     expr::{Expr, ExprId},
     image::{self, ImageBuf},
-    node::{coretraits, genn},
+    node::{WakeBit, coretraits, genn},
     rep,
     typ::{FnType, TVal, Type},
 };
@@ -27,6 +27,7 @@ use netidx::{path::Path, publisher::Typ, subscriber::Value};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::FromValue;
 use poolshark::local::LPooled;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use smallvec::SmallVec;
 use std::{
     any::Any,
@@ -523,7 +524,7 @@ pub fn map_key(k: &Value) -> Result<ArcStr> {
         Value::String(s) => s,
         Value::DateTime(dt) => dt.to_rfc3339().into(),
         Value::Duration(d) => format_compact!("{}", d.as_secs_f64()).as_str().into(),
-        // CR claude for claude: [bug/medium] A bare variant key strips to its tag, the
+        // XCR claude for claude: [bug/medium] A bare variant key strips to its tag, the
         // string "B", which Naked then prints quoted. So json::write_str({`B => 1})
         // writes {"\"B\"":1}, toml writes '"B"' = 1, and json::read back into Map<`B,
         // i64> refuses with 'variant tag mismatch'. Write a key that strips to a string
@@ -538,6 +539,12 @@ pub fn map_key(k: &Value) -> Result<ArcStr> {
         // lib_tests::json::string_data_map_keys_read_back,
         // lib_tests::toml::toml_variant_map_key_reads_back). The tuple and
         // payload-variant keys wait on Eric's core-lib-02 / x-kind-markers-01.
+        // 2026-10-26 claude: No longer reproduces: the repro prints j {"B":1} r {`B =>
+        // 1} and toml B = 1, fixed with t-rep-02 (pins
+        // lib_tests::json::string_data_map_keys_read_back,
+        // lib_tests::toml::toml_variant_map_key_reads_back). The tuple and
+        // payload-variant keys are Eric's core-lib-02 / x-kind-markers-01; nothing
+        // changed here in this batch.
         // XCR claude for claude: [bug/high] A key whose data is a string is printed here
         // by Naked, which quotes it. A map keyed by a bare variant writes {"\"A\"":1}
         // in json ('"A"' in toml) and the read back is refused, and a map keyed by
@@ -583,58 +590,33 @@ pub fn f32_as_written(n: f32) -> f64 {
     format_compact!("{n}").parse().unwrap_or(n as f64)
 }
 
-/// How many abstract values one value may be written through before the
-/// data, as `abstract_value::to_data` bounds it.
-const MAX_ABSTRACT_CHAIN: usize = 1024;
-
 /// `v` as a writer writes it, with the type that directs it: an abstract
 /// value is the data its `Cast` implementation makes of it, under its
-/// representation's type when that is the data, else under none. A
-/// reference, a value of a type backed by Rust, or one with no `Cast`
-/// implementation is refused, as `abstract_value::to_data` refuses them.
-// CR claude for claude: [structure/low] This loop repeats abstract_value::rewrite's
-// abstract branch: the reference and Rust-backed refusals, the four CastHook outcomes
-// with the same messages, and its own copy of the 1024 bound (MAX_ABSTRACT_CHAIN for
-// abstract_value::MAX_DEPTH). Only the representation's type is extra. Expose one step
-// from abstract_value (the data of one abstract value and whether it is the
-// representation) and call it from both, so the two writer families cannot drift. Found
-// by reading; not run. (t-rep-04)
+/// representation's type when that is the data, else under none. What
+/// `abstract_value::to_data` refuses is refused.
 fn written<'a>(
     env: &Env,
     mut t: Option<Type>,
     v: &'a Value,
 ) -> Result<(Option<Type>, Cow<'a, Value>)> {
-    use graphix_compiler::abstract_value::{CastHook, get};
+    use graphix_compiler::abstract_value::{Written, written_as};
     let mut v = Cow::Borrowed(v);
-    for _ in 0..MAX_ABSTRACT_CHAIN {
+    for depth in 0.. {
         if !matches!(&*v, Value::Abstract(_)) {
-            return Ok((t, v));
+            break;
         }
-        if graphix_compiler::reference::cell(&v).is_some() {
-            bail!("a reference is not data")
-        }
-        let Some(g) = get(&v) else {
-            bail!("a value of a type backed by Rust is not data")
-        };
-        let data = match g.to_value() {
-            None => bail!("{} has no Cast implementation", g.name),
-            Some(CastHook::Representation) => {
+        v = Cow::Owned(match written_as(&v, depth)? {
+            Written::Representation(g) => {
                 t = env.abstract_reps.get(&g.id).map(|r| r.instantiate_with(&g.params));
                 g.payload.clone()
             }
-            Some(CastHook::Ran(Some(d))) => {
+            Written::Ran(d) => {
                 t = None;
                 d
             }
-            Some(CastHook::Ran(None)) => {
-                bail!("the Cast implementation of {} produced nothing", g.name)
-            }
-        };
-        v = Cow::Owned(data);
+        });
     }
-    bail!(
-        "a value is written as data through more than {MAX_ABSTRACT_CHAIN} abstract values"
-    )
+    Ok((t, v))
 }
 
 /// `v`'s shape under `t`, the type its call site gave it: a struct or a
@@ -975,6 +957,12 @@ pub struct Iter<C> {
     elems: PhantomData<fn() -> C>,
 }
 
+impl<C> Iter<C> {
+    fn new(var: RtVar) -> Self {
+        Self { var, out: TagValue::phantom(), elems: PhantomData }
+    }
+}
+
 impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for Iter<C> {
     const NAME: &str = C::ITER;
 
@@ -986,8 +974,7 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for Iter<C> {
         _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let var = RtVar::new(ctx, top_id);
-        Ok(Box::new(Self { var, out: TagValue::phantom(), elems: PhantomData }))
+        Ok(Box::new(Self::new(RtVar::new(ctx, top_id))))
     }
 
     fn image_decode(
@@ -995,8 +982,7 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for Iter<C> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let var = RtVar::image_decode(ctx, buf)?;
-        Ok(Box::new(Self { var, out: TagValue::phantom(), elems: PhantomData }))
+        Ok(Box::new(Self::new(RtVar::image_decode(ctx, buf)?)))
     }
 }
 
@@ -1105,6 +1091,19 @@ pub struct IterQ<C: Elements> {
     out: TagValue,
 }
 
+impl<C: Elements> IterQ<C> {
+    fn new(var: RtVar) -> Self {
+        Self {
+            triggered: 0,
+            queue: VecDeque::new(),
+            returned: VecDeque::new(),
+            sent: InFlight::default(),
+            var,
+            out: TagValue::phantom(),
+        }
+    }
+}
+
 impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
     const NAME: &str = C::ITERQ;
 
@@ -1116,36 +1115,15 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
         _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let var = RtVar::new(ctx, top_id);
-        Ok(Box::new(Self {
-            triggered: 0,
-            queue: VecDeque::new(),
-            returned: VecDeque::new(),
-            sent: InFlight::default(),
-            var,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::new(RtVar::new(ctx, top_id))))
     }
 
-    // CR claude for claude: [structure/low] This repeats init's six-field construction
-    // field by field, and Queue and Iter do the same. Only the RtVar's source differs.
-    // A field added to one copy and not the other makes a warm image start a builtin in
-    // a different state from a cold build. Fix: one `fn new(var: RtVar) -> Self` per
-    // struct, called from both. Found by reading; not run. (core-lib-05)
     fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let var = RtVar::image_decode(ctx, buf)?;
-        Ok(Box::new(Self {
-            triggered: 0,
-            queue: VecDeque::new(),
-            returned: VecDeque::new(),
-            sent: InFlight::default(),
-            var,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::new(RtVar::image_decode(ctx, buf)?)))
     }
 }
 
@@ -1593,16 +1571,19 @@ pub fn fast_eval_typed<R: Rt, E: UserEvent>(
     coretraits::with_display_hooks(ctx, |env| f(env, typ, &args))
 }
 
-/// A value as `#numeric` compares it: an integer, or a string holding
-/// one, exactly; any other value cast to f64 where it casts.
-enum NumKey {
+/// A number ordered exactly against any other, whatever their kinds:
+/// an integer, a decimal or a float, a NaN below every number.
+#[derive(Debug, Clone, Copy)]
+pub enum ExactNum {
     Int(i128),
-    Other(Value),
+    Dec(Decimal),
+    Float(f64),
 }
 
-impl NumKey {
-    fn of(v: &Value) -> Self {
-        match v {
+impl ExactNum {
+    /// `v` as a number when it is one.
+    pub fn of(v: &Value) -> Option<Self> {
+        Some(match v {
             Value::I8(n) => Self::Int(*n as i128),
             Value::I16(n) => Self::Int(*n as i128),
             Value::I32(n) | Value::Z32(n) => Self::Int(*n as i128),
@@ -1611,8 +1592,141 @@ impl NumKey {
             Value::U16(n) => Self::Int(*n as i128),
             Value::U32(n) | Value::V32(n) => Self::Int(*n as i128),
             Value::U64(n) | Value::V64(n) => Self::Int(*n as i128),
-            Value::String(s) if let Ok(n) = s.trim().parse::<i128>() => Self::Int(n),
-            // CR claude for claude: [bug/medium] Every key that is not an integer is
+            Value::Decimal(d) => Self::Dec(**d),
+            Value::F32(f) => Self::Float(*f as f64),
+            Value::F64(f) => Self::Float(*f),
+            _ => return None,
+        })
+    }
+
+    /// The integer or decimal `s` writes, exactly.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.parse::<i128>() {
+            Ok(n) => Some(Self::Int(n)),
+            Err(_) => s.parse::<Decimal>().ok().map(Self::Dec),
+        }
+    }
+}
+
+impl Ord for ExactNum {
+    fn cmp(&self, other: &Self) -> Ordering {
+        use ExactNum::*;
+        match (self, other) {
+            (Int(a), Int(b)) => a.cmp(b),
+            (Dec(a), Dec(b)) => a.cmp(b),
+            (Float(a), Float(b)) => float_cmp(*a, *b),
+            (Int(i), Dec(d)) => int_dec_cmp(*i, d),
+            (Dec(d), Int(i)) => int_dec_cmp(*i, d).reverse(),
+            (Int(i), Float(f)) => int_float_cmp(*i, *f),
+            (Float(f), Int(i)) => int_float_cmp(*i, *f).reverse(),
+            (Dec(d), Float(f)) => dec_float_cmp(d, *f),
+            (Float(f), Dec(d)) => dec_float_cmp(d, *f).reverse(),
+        }
+    }
+}
+
+impl PartialOrd for ExactNum {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for ExactNum {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for ExactNum {}
+
+/// Floats in the order `Value` keeps: NaN equal to NaN and below every
+/// number.
+fn float_cmp(a: f64, b: f64) -> Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => a.partial_cmp(&b).expect("no NaN"),
+    }
+}
+
+/// A decimal's whole part, which always fits an i128.
+fn dec_whole(d: &Decimal) -> i128 {
+    d.trunc().to_i128().expect("a decimal's whole part fits an i128")
+}
+
+fn int_dec_cmp(i: i128, d: &Decimal) -> Ordering {
+    i.cmp(&dec_whole(d)).then_with(|| Decimal::ZERO.cmp(&d.fract()))
+}
+
+fn int_float_cmp(i: i128, f: f64) -> Ordering {
+    if f.is_nan() || f < i128::MIN as f64 {
+        Ordering::Greater
+    } else if f >= i128::MAX as f64 {
+        Ordering::Less
+    } else {
+        let whole = f.trunc();
+        i.cmp(&(whole as i128)).then_with(|| 0f64.total_cmp(&(f - whole)))
+    }
+}
+
+fn dec_float_cmp(d: &Decimal, f: f64) -> Ordering {
+    // 2^96: no decimal reaches it
+    const PAST_EVERY_DECIMAL: f64 = 79228162514264337593543950336.0;
+    if f.is_nan() || f <= -PAST_EVERY_DECIMAL {
+        Ordering::Greater
+    } else if f >= PAST_EVERY_DECIMAL {
+        Ordering::Less
+    } else {
+        let whole = f.trunc();
+        dec_whole(d).cmp(&(whole as i128)).then_with(|| fract_cmp(d.fract(), f - whole))
+    }
+}
+
+/// Two fractions, each under 1 in magnitude, compared exactly: `d` is
+/// `n / 10^s` and `f` is `m / 2^e`, so `d` against `f` is `n * 2^e`
+/// against `m * 5^s * 2^s`.
+fn fract_cmp(d: Decimal, f: f64) -> Ordering {
+    let sign = d.cmp(&Decimal::ZERO).cmp(&f.partial_cmp(&0.0).expect("no NaN"));
+    if sign != Ordering::Equal || d.is_zero() {
+        return sign;
+    }
+    let bits = f.abs().to_bits();
+    let (biased, fraction) = ((bits >> 52) as u32, bits & ((1 << 52) - 1));
+    let (m, e) = match biased {
+        0 => (fraction, 1074),
+        b => (fraction | 1 << 52, 1075 - b),
+    };
+    let (n, s) = (d.mantissa().unsigned_abs(), d.scale());
+    let rhs = m as u128 * 5u128.pow(s);
+    let magnitude =
+        if e >= s { shl_cmp(n, e - s, rhs) } else { shl_cmp(rhs, s - e, n).reverse() };
+    if d.is_sign_negative() { magnitude.reverse() } else { magnitude }
+}
+
+/// `a * 2^k` against `b`.
+fn shl_cmp(a: u128, k: u32, b: u128) -> Ordering {
+    if a != 0 && (k >= 128 || a.leading_zeros() < k) {
+        Ordering::Greater
+    } else {
+        a.checked_shl(k).unwrap_or(0).cmp(&b)
+    }
+}
+
+/// A value as `#numeric` compares it: a number, or a string writing an
+/// integer or a decimal, exactly ([`ExactNum`]); any other value cast to
+/// f64 where it casts, and in `Value`'s order where it does not.
+enum NumKey {
+    Num(ExactNum),
+    Other(Value),
+}
+
+impl NumKey {
+    fn of(v: &Value) -> Self {
+        match v {
+            v if let Some(n) = ExactNum::of(v) => Self::Num(n),
+            Value::String(s) if let Some(n) = ExactNum::parse(s.trim()) => Self::Num(n),
+            // XCR claude for claude: [bug/medium] Every key that is not an integer is
             // still compared as an f64, so a #numeric sort misorders decimals, and
             // numeric strings with a fraction, that differ past f64's precision. They
             // tie and the stable sort keeps the input order. `array::sort(#numeric:
@@ -1623,33 +1737,32 @@ impl NumKey {
             // key: the data_table's SortKey copies it, decimal-to-f64 path included.
             // probe: design/review-2026-10-26/repro/x-rerun-1-numeric-sort-decimal.gx
             // (x-rerun-1-02)
-            v => Self::Other(v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())),
+            // 2026-10-26 claude: graphix_package_core::ExactNum is the one numeric
+            // key: integers, decimals and floats compare exactly against each other
+            // (decimal against f64 through the fraction's exact n*2^e against
+            // m*5^s*2^s), numeric strings parse as an integer or a decimal before the
+            // f64 cast. NumKey and the data_table's SortKey both key through it, the
+            // decimal-to-f64 path gone. Pins:
+            // lib_tests::array::numeric_sort_orders_decimals_exactly (the repro's
+            // pairs, plus decimals against f64 0.1 under Any),
+            // exact_num_test::mixed_numbers_order_exactly, data_table numeric_keys
+            // cases and the total-order test.
+            v => match v.clone().cast(Typ::F64) {
+                Some(Value::F64(f)) => Self::Num(ExactNum::Float(f)),
+                _ => Self::Other(v.clone()),
+            },
         }
     }
 
     fn cmp(&self, other: &Self) -> Ordering {
+        // a number orders against any other value as an f64 does
+        let number = Value::F64(0.);
         match (self, other) {
-            (Self::Int(a), Self::Int(b)) => a.cmp(b),
-            (Self::Int(a), Self::Other(b)) => int_cmp(*a, b),
-            (Self::Other(a), Self::Int(b)) => int_cmp(*b, a).reverse(),
+            (Self::Num(a), Self::Num(b)) => a.cmp(b),
+            (Self::Num(_), Self::Other(b)) => number.cmp(b),
+            (Self::Other(a), Self::Num(_)) => a.cmp(&number),
             (Self::Other(a), Self::Other(b)) => a.cmp(b),
         }
-    }
-}
-
-/// The integer `i` against `v` in the order `Value` keeps, `v` a float
-/// compared exactly.
-fn int_cmp(i: i128, v: &Value) -> Ordering {
-    match v {
-        // NaN orders below every number
-        Value::F64(f) if f.is_nan() => Ordering::Greater,
-        Value::F64(f) if *f >= i128::MAX as f64 => Ordering::Less,
-        Value::F64(f) if *f < i128::MIN as f64 => Ordering::Greater,
-        Value::F64(f) => {
-            let whole = f.trunc();
-            i.cmp(&(whole as i128)).then_with(|| 0f64.total_cmp(&(f - whole)))
-        }
-        v => Value::F64(i as f64).cmp(v),
     }
 }
 
@@ -2022,11 +2135,7 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     /// so one landing while it sleeps answers at the wake
     kept: Option<Kept>,
     /// asleep since the last update
-    // CR claude for claude: [style/low] This is WakeBit written out: set in sleep,
-    // taken with mem::take in update. Every other stdlib node was moved to
-    // graphix_compiler's WakeBit; make this one a WakeBit too. Found by reading; not
-    // run. (x-dup-06)
-    slept: bool,
+    slept: WakeBit,
     /// the error tag a panicking eval answers under, from the call's
     /// declared return type; none when it declares no such error
     panic_tag: Option<ArcStr>,
@@ -2158,6 +2267,22 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         self.replaced.push(old);
     }
 
+    /// Answer `v` as a call in flight would, in a later cycle.
+    fn answer_next_cycle<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        v: Value,
+    ) {
+        self.inflight += 1;
+        match &self.kept {
+            None => ctx.rt.set_var(self.var.id, v),
+            Some(kept) => {
+                kept.lock().push_front(v);
+                ctx.rt.set_var(self.var.id, Value::Null)
+            }
+        }
+    }
+
     /// The reply of the first replaced call that completed, its id
     /// released; another's waits for a later cycle under its own id.
     fn replaced_reply<R: Rt, E: UserEvent>(
@@ -2214,7 +2339,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             replaced: SmallVec::new(),
             abort: None,
             kept: (!T::CANCEL_SAFE).then(Kept::default),
-            slept: false,
+            slept: WakeBit::default(),
             panic_tag,
             data_result,
             out: TagValue::phantom(),
@@ -2241,7 +2366,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             replaced: SmallVec::new(),
             abort: None,
             kept: (!T::CANCEL_SAFE).then(Kept::default),
-            slept: false,
+            slept: WakeBit::default(),
             panic_tag,
             data_result,
             out: TagValue::phantom(),
@@ -2272,7 +2397,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.t.attach(ctx);
         let invocation = self.cached.update(ctx, from);
         let start = invocation == Invocation::Fired;
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let event = ctx.event.variables.remove(&self.var.id);
         let mut reply = match &self.kept {
             None => event.map(|tv| tv.value()),
@@ -2293,8 +2418,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         if let Some(earlier) = self.replaced_reply(ctx) {
             // one answer a cycle: the replaced call's first, this one's next
             if let Some(v) = reply.replace(earlier) {
-                self.inflight += 1;
-                ctx.rt.set_var(self.var.id, v);
+                self.answer_next_cycle(ctx, v);
             }
         }
         let mut res = reply.and_then(|v| match v {
@@ -2308,10 +2432,11 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             res = Some(read_back(ctx, t, &tag, res.take().expect("a value")));
         }
         let data;
+        let mut not_data = None;
         let cached = match T::DATA_ARGS {
-            _ if !start => &self.cached,
-            [] => &self.cached,
-            // CR claude for claude: [risk/low] On a conversion failure this returns
+            _ if !start => None,
+            [] => Some(&self.cached),
+            // XCR claude for claude: [risk/low] On a conversion failure this returns
             // early. By then a reply taken from the event this cycle (`res`, with
             // `inflight` already decremented) is dropped, and the loop that spawns the
             // next queued call is skipped, so a waiting Fifo call stalls until some
@@ -2320,18 +2445,28 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             // returning: skip prepare_args, run the drain loop, let `res` win the
             // cycle, and re-send the error through the reply variable when both
             // arrived. Found by reading; not run. (core-lib-03)
+            // 2026-10-26 claude: A conversion failure no longer returns: it skips
+            // prepare_args, the drain loop runs, a reply taken this cycle wins and the
+            // error is answered next cycle through answer_next_cycle (the reply
+            // variable, or the front of kept for a non-cancel-safe eval), which the
+            // replaced-reply path now shares. Pin:
+            // lib_tests::db::db_not_data_keeps_the_reply_of_its_cycle (an insert
+            // finishing asleep, woken with a value whose Cast writes a function; gives
+            // [] with the early return restored, ["null"] now).
             idx => match self.cached.as_data(ctx, idx) {
                 Ok(c) => {
                     data = c;
-                    &data
+                    Some(&data)
                 }
                 Err(e) => {
-                    let e = self.not_data(&compact_str::format_compact!("{e:#}"));
-                    return self.out.set(TagValue::fired(e));
+                    not_data = Some(self.not_data(&format_compact!("{e:#}")));
+                    None
                 }
             },
         };
-        if start && let Some(args) = self.t.prepare_args(cached) {
+        if let Some(cached) = cached
+            && let Some(args) = self.t.prepare_args(cached)
+        {
             if T::CALLS == Calls::Latest && self.inflight > 0 {
                 self.replace(ctx);
             }
@@ -2367,8 +2502,15 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                 }
             });
         }
-        match res {
+        let res = match (res, not_data) {
             // a completed reply from a prior invocation wins the cycle
+            (Some(v), Some(e)) => {
+                self.answer_next_cycle(ctx, e);
+                Some(v)
+            }
+            (res, e) => res.or(e),
+        };
+        match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => match invocation {
                 Invocation::Bottom { fresh } => self.out.set_bottom(fresh),
@@ -2421,7 +2563,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             None => self.renew(ctx),
             Some(_) => {
                 self.queued.clear();
-                self.slept = true;
+                self.slept.set();
             }
         }
     }
@@ -2957,21 +3099,26 @@ struct Queue {
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let var = RtVar::image_decode(ctx, buf)?;
-        Ok(Box::new(Self {
+impl Queue {
+    fn new(var: RtVar) -> Self {
+        Self {
             triggered: 0,
             queue: VecDeque::new(),
             pushed: 0,
             sent: InFlight::default(),
             var,
             out: TagValue::phantom(),
-        }))
+        }
+    }
+}
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(Self::new(RtVar::image_decode(ctx, buf)?)))
     }
 
     const NAME: &str = "core_queue";
@@ -2985,17 +3132,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _, _, _] => {
-                let var = RtVar::new(ctx, top_id);
-                Ok(Box::new(Self {
-                    triggered: 0,
-                    queue: VecDeque::new(),
-                    pushed: 0,
-                    sent: InFlight::default(),
-                    var,
-                    out: TagValue::phantom(),
-                }))
-            }
+            [_, _, _, _] => Ok(Box::new(Self::new(RtVar::new(ctx, top_id)))),
             _ => {
                 bail!("queue: expected four arguments (#clock, #flush, #flush_before, v)")
             }
@@ -3158,18 +3295,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
     }
 }
 
-// CR claude for claude: [readability/low] This is the `range` builtin, but it is named
-// `Seq` / "core_seq", which collides with seq blocks and the seq machine. Rename it to
-// `Range` / "core_range" and update the binding in graphix/mod.gx, the only other
-// reference. Found by reading; not run. Also reported as (x-dup-08). (core-lib-04)
 #[derive(Debug)]
-struct Seq {
+struct Range {
     var: RtVar,
     args: CachedVals,
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Range {
     fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
@@ -3180,7 +3313,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
         Ok(Box::new(Self { var, args, out: TagValue::phantom() }))
     }
 
-    const NAME: &str = "core_seq";
+    const NAME: &str = "core_range";
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,
@@ -3202,7 +3335,7 @@ fn range_len_exceeds_cap(i: i64, j: i64) -> bool {
     j as i128 - i as i128 > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
+impl<R: Rt, E: UserEvent> Apply<R, E> for Range {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.var.image_encode(buf)?;
         self.args.image_encode(buf)
@@ -3221,7 +3354,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                     if range_len_exceeds_cap(*i, *j) {
                         Some(errf!(
                             e,
-                            "seq range {i}..{j} exceeds the {} element limit",
+                            "range {i}..{j} exceeds the {} element limit",
                             graphix_compiler::node::MAX_ARRAY_INIT_LEN
                         ))
                     } else {
@@ -3600,7 +3733,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         };
         // one allocation is one value when every equality is structural:
         // a core Eq implementation need not be reflexive
-        // CR claude for claude: [perf/low] This shortcut covers only two top-level
+        // XCR claude for claude: [perf/low] This shortcut covers only two top-level
         // arrays of one allocation. An unchanged Map (`uniq(i ~ m)`), or a tuple
         // rebuilt each cycle around the same array (`uniq((i ~ big, 1))`), is still
         // compared element by element: about 1 ms and 0.33 ms per fire at 100k entries.
@@ -3608,14 +3741,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         // arrays and maps of the same allocation as equal at every level and recurses
         // otherwise. probe: design/review-2026-10-26/repro/x-rerun-4-uniq-same-map.sh
         // (x-rerun-4-05)
-        let same_alloc = |l: &Value| match (l, &cmp) {
-            (Value::Array(a), Value::Array(b)) => {
-                a.len() == b.len() && std::ptr::eq(a[..].as_ptr(), b[..].as_ptr())
-            }
-            _ => false,
-        };
+        // 2026-10-26 claude: uniq without live Eq hooks compares through structural_eq:
+        // Value equality walked iteratively, an array (same pointer and length) or a
+        // map (same root node) both share taken as equal at every level. The repro now
+        // runs map n=100000 in 4.3 ms and tuple n=100000 in 5.7 ms per 1000 cycles, as
+        // n=1000. Pin: structural_eq_test::agrees_with_value_equality (agreement with
+        // Value's == only; no timing pin).
         let changed = match last.as_ref() {
-            Some(l) if !coretraits::hooks_live(&ctx.env) && same_alloc(l) => false,
+            Some(l) if !coretraits::hooks_live(&ctx.env) => !structural_eq(l, &cmp),
             _ => coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref()),
         };
         if changed {
@@ -3632,6 +3765,40 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         self.0 = None;
         self.1 = TagValue::phantom();
     }
+}
+
+/// `a == b` where every equality is structural, an array or a map both
+/// share equal without a walk.
+fn structural_eq(a: &Value, b: &Value) -> bool {
+    let mut pairs: LPooled<Vec<(&Value, &Value)>> = LPooled::take();
+    pairs.push((a, b));
+    while let Some(pair) = pairs.pop() {
+        match pair {
+            (Value::Array(l), Value::Array(r)) => {
+                if l.len() != r.len() {
+                    return false;
+                }
+                if !std::ptr::eq(l[..].as_ptr(), r[..].as_ptr()) {
+                    pairs.extend(l.iter().zip(r.iter()));
+                }
+            }
+            (Value::Map(l), Value::Map(r)) => {
+                if l.len() != r.len() {
+                    return false;
+                }
+                if l.root().map(|n| n.identity()) != r.root().map(|n| n.identity()) {
+                    for ((kl, vl), (kr, vr)) in l.into_iter().zip(r.into_iter()) {
+                        pairs.push((kl, kr));
+                        pairs.push((vl, vr));
+                    }
+                }
+            }
+            (Value::Error(l), Value::Error(r)) => pairs.push((&**l, &**r)),
+            (l, r) if l != r => return false,
+            _ => (),
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone, Copy, netidx_derive::FromValue)]
@@ -3978,7 +4145,7 @@ graphix_derive::defpackage! {
         Queue,
         queuefn::QueueFn as queuefn::QueueFn<GXRt<X>, X::UserEvent>,
         Hold,
-        Seq,
+        Range,
         Throttle,
         Count,
         Mean,
@@ -4179,5 +4346,96 @@ mod reaped_test {
             tx.send(()).unwrap();
         });
         rx.recv_timeout(Duration::from_secs(5)).expect("a nested reap deadlocked");
+    }
+}
+
+#[cfg(test)]
+mod exact_num_test {
+    use super::{ExactNum, ExactNum::*};
+    use rust_decimal::Decimal;
+
+    fn dec(s: &str) -> ExactNum {
+        Dec(s.parse::<Decimal>().unwrap())
+    }
+
+    #[test]
+    fn mixed_numbers_order_exactly() {
+        // ascending, each strictly below the next
+        let ascending = [
+            Float(f64::NAN),
+            Float(f64::NEG_INFINITY),
+            Float(-1e30),
+            dec("-79228162514264337593543950335"),
+            Int(-3),
+            Float(-0.1),
+            dec("-0.1000000000000000055511151231"),
+            dec("-0.1"),
+            Int(0),
+            Float(5e-324),
+            dec("0.0000000000000000000000000001"),
+            dec("0.1"),
+            dec("0.10000000000000000001"),
+            dec("0.1000000000000000055511151231"),
+            Float(0.1),
+            dec("0.1000000000000000055511151232"),
+            dec("0.5000000000000000000000000001"),
+            Int(9007199254740993),
+            dec("9007199254740993.25"),
+            Float(9007199254740994.0),
+            dec("79228162514264337593543950335"),
+            Float(1e30),
+            Int(i128::MAX),
+            Float(f64::INFINITY),
+        ];
+        for (i, a) in ascending.iter().enumerate() {
+            for (j, b) in ascending.iter().enumerate() {
+                assert_eq!(a.cmp(b), i.cmp(&j), "{a:?} against {b:?}");
+            }
+        }
+        assert_eq!(Int(1), dec("1.000"));
+        assert_eq!(Int(1), Float(1.0));
+        assert_eq!(dec("0.5"), Float(0.5));
+        assert_eq!(dec("-0.5"), Float(-0.5));
+        assert_eq!(Float(f64::NAN), Float(f64::NAN));
+    }
+}
+
+#[cfg(test)]
+mod structural_eq_test {
+    use super::structural_eq;
+    use netidx::{protocol::valarray::ValArray, subscriber::Value};
+
+    fn arr(vs: impl IntoIterator<Item = Value>) -> Value {
+        Value::Array(ValArray::from_iter(vs))
+    }
+
+    #[test]
+    fn agrees_with_value_equality() {
+        let big = arr((0..100).map(Value::I64));
+        let map = |vs: &[(i64, f64)]| -> Value {
+            Value::Map(vs.iter().map(|(k, v)| (Value::I64(*k), Value::F64(*v))).collect())
+        };
+        let vals = [
+            Value::F64(f64::NAN),
+            Value::F64(0.0),
+            big.clone(),
+            arr((0..100).map(Value::I64)),
+            arr((0..99).map(Value::I64)),
+            arr([Value::I64(1), big.clone()]),
+            arr([Value::I64(1), arr((0..100).map(Value::I64))]),
+            arr([Value::I64(2), big.clone()]),
+            arr([Value::F64(f64::NAN), big.clone()]),
+            map(&[(1, 1.0), (2, f64::NAN)]),
+            map(&[(1, 1.0), (2, f64::NAN)]),
+            map(&[(1, 1.0), (2, 2.0)]),
+            map(&[(1, 1.0)]),
+            Value::Error(big.clone().into()),
+            Value::Error(arr((0..100).map(Value::I64)).into()),
+        ];
+        for a in &vals {
+            for b in &vals {
+                assert_eq!(structural_eq(a, b), a == b, "{a} against {b}");
+            }
+        }
     }
 }

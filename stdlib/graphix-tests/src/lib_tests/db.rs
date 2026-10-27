@@ -1429,6 +1429,38 @@ run_with_tempdir!(
     }
 );
 
+// A call whose arguments are not data answers its error without losing
+// a reply that lands in the same cycle: the insert finishes while its arm
+// sleeps, and the wake both answers it and catches up a value whose Cast
+// writes a function. The reply comes first, the error next cycle.
+run_with_tempdir!(
+    name: db_not_data_keeps_the_reply_of_its_cycle,
+    code: r#"{{
+        type V = Abstract<i64>;
+        impl Cast for V {{
+            let to_value = |v: V| -> Any select v.0 {{ 0 => |y: i64| y, n => n }}
+        }};
+        let d = db::open("{}")?;
+        let t: db::Tree<string, V> = db::tree(d, null)?;
+        let v = V(1);
+        let on = true;
+        let r = select on {{ true => db::insert(t, "k", v), false => never() }};
+        let off = t ~ false;
+        on <- off;
+        v <- off ~ V(0);
+        let landed = db::get(t, sys::time::timer(duration: 10.ms, true) ~ "k")?;
+        on <- once(select landed {{ null as _ => never(), _ => true }});
+        let log: Array<string> = [];
+        log <- r ~ array::push(log, "[r]");
+        select r {{ error as e => e ~ log, _ => never() }}
+    }}"#,
+    setup: |td| { td.path().join("not_data_wake.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v.to_string(), r#"["null"]"#);
+        Ok(())
+    }
+);
+
 // A db op runs on a blocking thread no abort stops, so an op whose arm
 // sleeps while it runs finishes asleep and answers at the wake: the
 // popped entry, and a commit's outcome, are not lost.

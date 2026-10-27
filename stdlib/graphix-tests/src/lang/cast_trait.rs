@@ -131,7 +131,7 @@ run!(cast_write_nesting_without_end_refused, r#"{
     "[nested] [bare]"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.contains("the value nests 128 containers deep or more")
-        && s.contains("through more than 1024 abstract values"))
+        && s.contains("Same is written as data more than 1024 abstract values deep"))
 }; FuseExpect::Jit);
 
 // Only the module that defines the type implements Cast for it: a

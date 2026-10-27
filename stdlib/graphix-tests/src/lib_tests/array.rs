@@ -1299,3 +1299,17 @@ run!(numeric_sort_is_exact, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"[[i64:9007199254740992, i64:9007199254740993], ["1", "1.5", "2", "9007199254740992", "9007199254740993"], [i64:9007199254740992, i64:9007199254740993]]"#)
 }; FuseExpect::Jit);
+
+// A numeric sort orders decimals, and strings writing them, exactly past
+// f64's precision, and a decimal against a float by value.
+run!(numeric_sort_orders_decimals_exactly, r#"{
+    let d = [decimal:0.10000000000000000001, decimal:0.1];
+    let s = ["0.10000000000000000001", "0.1", "9007199254740993.5", "9007199254740993.25"];
+    let m: Array<Any> = [
+        decimal:0.1000000000000000055511151232, 0.1, decimal:0.1000000000000000055511151231,
+        -0.1, decimal:-0.1000000000000000055511151231
+    ];
+    (array::sort(#numeric: true, d), array::sort(#numeric: true, s), array::sort(#numeric: true, m))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"[[decimal:0.1, decimal:0.10000000000000000001], ["0.1", "0.10000000000000000001", "9007199254740993.25", "9007199254740993.5"], [f64:-0.1, decimal:-0.1000000000000000055511151231, decimal:0.1000000000000000055511151231, f64:0.1, decimal:0.1000000000000000055511151232]]"#)
+}; FuseExpect::Jit);

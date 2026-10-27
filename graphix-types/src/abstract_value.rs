@@ -168,36 +168,9 @@ fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
             Ok(None)
         }
         Value::Abstract(_) => {
-            if crate::reference::cell(v).is_some() {
-                return Err(anyhow!("a reference is not data"));
-            }
-            let Some(g) = get(v) else {
-                // CR claude for claude: [readability/low] A function value is also an
-                // abstract that is neither a reference nor a GxAbstract, so a writer
-                // handed `let v: Any = {a: |x: i64| x + 1}` reports "a value of a type
-                // backed by Rust is not data" (json, pack and toml alike), which names
-                // the wrong cause. Word it to cover both, e.g. "a function or a value
-                // of a type backed by Rust is not data", here and in
-                // graphix-package-core's `written`. Probe run from a scratch program;
-                // not saved. (t-rep-03)
-                return Err(anyhow!("a value of a type backed by Rust is not data"));
-            };
-            if depth >= MAX_DEPTH {
-                return Err(anyhow!(
-                    "{} is written as data more than {MAX_DEPTH} abstract values deep",
-                    g.name
-                ));
-            }
-            let data = match g.to_value() {
-                None => return Err(anyhow!("{} has no Cast implementation", g.name)),
-                Some(CastHook::Representation) => g.payload.clone(),
-                Some(CastHook::Ran(Some(d))) => d,
-                Some(CastHook::Ran(None)) => {
-                    return Err(anyhow!(
-                        "the Cast implementation of {} produced nothing",
-                        g.name
-                    ));
-                }
+            let data = match written_as(v, depth)? {
+                Written::Representation(g) => g.payload.clone(),
+                Written::Ran(d) => d,
             };
             Ok(Some(rewrite(&data, depth + 1, forms)?.unwrap_or(data)))
         }
@@ -227,6 +200,53 @@ fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
                 return Err(anyhow!("two keys of a map write as the same data"));
             }
             Ok(data)
+        }
+    }
+}
+
+/// What one abstract value is written as.
+pub enum Written<'a> {
+    /// Its representation, the payload of the value held.
+    Representation(&'a GxAbstract),
+    /// What its `Cast` implementation made of it.
+    Ran(Value),
+}
+
+/// The abstract value `v`, `depth` implementations into a write, as its
+/// `Cast` implementation writes it. A reference, a value of a type backed
+/// by Rust, a type with no implementation, an implementation that
+/// produced nothing and a write through more implementations than a
+/// reader could read are refused.
+pub fn written_as(v: &Value, depth: usize) -> Result<Written<'_>> {
+    if crate::reference::cell(v).is_some() {
+        return Err(anyhow!("a reference is not data"));
+    }
+    let Some(g) = get(v) else {
+        // CR claude for claude: [readability/low] A function value is also an
+        // abstract that is neither a reference nor a GxAbstract, so a writer
+        // handed `let v: Any = {a: |x: i64| x + 1}` reports "a value of a type
+        // backed by Rust is not data" (json, pack and toml alike), which names
+        // the wrong cause. Word it to cover both, e.g. "a function or a value
+        // of a type backed by Rust is not data", here and in
+        // graphix-package-core's `written`. Probe run from a scratch program;
+        // not saved. (t-rep-03)
+        // 2026-10-26 claude: t-rep-04 moved these refusals into
+        // abstract_value::written_as, which graphix-package-core's written now
+        // calls, so the message lives in one place.
+        return Err(anyhow!("a value of a type backed by Rust is not data"));
+    };
+    if depth >= MAX_DEPTH {
+        return Err(anyhow!(
+            "{} is written as data more than {MAX_DEPTH} abstract values deep",
+            g.name
+        ));
+    }
+    match g.to_value() {
+        None => Err(anyhow!("{} has no Cast implementation", g.name)),
+        Some(CastHook::Representation) => Ok(Written::Representation(g)),
+        Some(CastHook::Ran(Some(d))) => Ok(Written::Ran(d)),
+        Some(CastHook::Ran(None)) => {
+            Err(anyhow!("the Cast implementation of {} produced nothing", g.name))
         }
     }
 }

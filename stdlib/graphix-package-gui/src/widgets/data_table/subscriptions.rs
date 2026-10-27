@@ -19,6 +19,7 @@ use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use futures::channel::mpsc;
 use graphix_compiler::BindId;
+use graphix_package_core::ExactNum;
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use log::warn;
 use netidx::{
@@ -31,7 +32,6 @@ use netidx_derive::FromValue;
 use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
-use rust_decimal::prelude::ToPrimitive;
 use smallvec::SmallVec;
 use std::{
     cmp::Ordering as CmpOrdering,
@@ -282,70 +282,41 @@ fn deliver_to_grid<X: GXExt>(
     }
 }
 
-/// A row's sort key in one column: numbers before text, numbers in
-/// Graphix's float order (NaN below every number), text by its bytes.
+/// A row's sort key in one column: numbers before text, numbers
+/// exactly ([`ExactNum`]), a duration or a datetime as its nanoseconds,
+/// text by its bytes.
 #[derive(PartialEq)]
 enum SortKey {
-    Int(i128),
-    Num(f64),
+    Num(ExactNum),
     Text(ArcStr),
 }
 
 impl SortKey {
     fn of_value(v: &Value) -> Self {
         match v {
-            Value::U8(v) => Self::Int(*v as i128),
-            Value::I8(v) => Self::Int(*v as i128),
-            Value::U16(v) => Self::Int(*v as i128),
-            Value::I16(v) => Self::Int(*v as i128),
-            Value::U32(v) | Value::V32(v) => Self::Int(*v as i128),
-            Value::I32(v) | Value::Z32(v) => Self::Int(*v as i128),
-            Value::U64(v) | Value::V64(v) => Self::Int(*v as i128),
-            Value::I64(v) | Value::Z64(v) => Self::Int(*v as i128),
-            Value::F32(v) => Self::Num(*v as f64),
-            Value::F64(v) => Self::Num(*v),
-            Value::Duration(v) => Self::Int(v.as_nanos() as i128),
-            Value::DateTime(v) => Self::Int(
+            Value::Duration(v) => Self::Num(ExactNum::Int(v.as_nanos() as i128)),
+            Value::DateTime(v) => Self::Num(ExactNum::Int(
                 v.timestamp() as i128 * 1_000_000_000
                     + v.timestamp_subsec_nanos() as i128,
-            ),
-            Value::String(s) => match s.parse::<i128>() {
-                Ok(n) => Self::Int(n),
-                Err(_) => match numeric_key(s) {
+            )),
+            Value::String(s) => {
+                match ExactNum::parse(s).or_else(|| numeric_key(s).map(ExactNum::Float)) {
                     Some(n) => Self::Num(n),
                     None => Self::Text(s.clone()),
-                },
+                }
+            }
+            v => match ExactNum::of(v) {
+                Some(n) => Self::Num(n),
+                None => Self::Text(format_value(v)),
             },
-            Value::Decimal(d) => match d.to_i128().filter(|_| d.is_integer()) {
-                Some(n) => Self::Int(n),
-                None => Self::Num(d.to_f64().unwrap_or(f64::NAN)),
-            },
-            v => Self::Text(format_value(v)),
         }
     }
 
     fn cmp(&self, other: &Self) -> CmpOrdering {
-        let int_float = |i: i128, f: f64| {
-            if f.is_nan() || f < i128::MIN as f64 {
-                return CmpOrdering::Greater;
-            }
-            if f >= i128::MAX as f64 {
-                return CmpOrdering::Less;
-            }
-            i.cmp(&(f as i128)).then_with(|| (i as f64).total_cmp(&f))
-        };
         match (self, other) {
-            (Self::Int(a), Self::Int(b)) => a.cmp(b),
-            (Self::Int(a), Self::Num(b)) => int_float(*a, *b),
-            (Self::Num(a), Self::Int(b)) => int_float(*b, *a).reverse(),
-            (Self::Num(a), Self::Num(b)) => match (a.is_nan(), b.is_nan()) {
-                (true, true) => CmpOrdering::Equal,
-                (true, false) => CmpOrdering::Less,
-                (false, true) => CmpOrdering::Greater,
-                (false, false) => a.total_cmp(b),
-            },
-            (Self::Int(_) | Self::Num(_), Self::Text(_)) => CmpOrdering::Less,
-            (Self::Text(_), Self::Int(_) | Self::Num(_)) => CmpOrdering::Greater,
+            (Self::Num(a), Self::Num(b)) => a.cmp(b),
+            (Self::Num(_), Self::Text(_)) => CmpOrdering::Less,
+            (Self::Text(_), Self::Num(_)) => CmpOrdering::Greater,
             (Self::Text(a), Self::Text(b)) => a.cmp(b),
         }
     }
@@ -819,6 +790,10 @@ mod sort_tests {
         less(Value::I64(10), dec("10.25"));
         less(dec("79228162514264337593543950334"), dec("79228162514264337593543950335"));
         less(dec("10.25"), Value::from("Alice"));
+        less(dec("0.1"), dec("0.10000000000000000001"));
+        less(Value::from("0.1"), Value::from("0.10000000000000000001"));
+        less(dec("0.1000000000000000055511151231"), Value::F64(0.1));
+        less(Value::F64(0.1), dec("0.1000000000000000055511151232"));
     }
 
     #[test]
@@ -859,6 +834,12 @@ mod order_tests {
             Value::from("Nan"),
             Value::from("inf"),
             Value::Decimal(triomphe::Arc::new("0.5".parse().unwrap())),
+            Value::Decimal(triomphe::Arc::new("0.1".parse().unwrap())),
+            Value::F64(0.1),
+            Value::Decimal(triomphe::Arc::new(
+                "0.1000000000000000055511151231".parse().unwrap(),
+            )),
+            Value::from("0.10000000000000000001"),
             Value::Decimal(triomphe::Arc::new("-3".parse().unwrap())),
             Value::Decimal(triomphe::Arc::new(
                 "79228162514264337593543950335".parse().unwrap(),
