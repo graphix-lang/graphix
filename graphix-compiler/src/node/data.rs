@@ -381,6 +381,23 @@ pub struct StructRef<R: Rt> {
 }
 
 impl<R: Rt> StructRef<R> {
+    fn with(
+        spec: Arc<Expr>,
+        typ: Type,
+        source: Node<R>,
+        sorted_field_idx: Option<usize>,
+        field_name: ArcStr,
+    ) -> Node<R> {
+        Node::new(Self {
+            spec,
+            typ,
+            source,
+            sorted_field_idx,
+            field_name,
+            resident: TagValue::phantom(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -390,14 +407,7 @@ impl<R: Rt> StructRef<R> {
         let source = decode_node(ctx, buf)?;
         let sorted_field_idx = Option::<usize>::decode(buf)?;
         let field_name = ArcStr::decode(buf)?;
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            source,
-            sorted_field_idx,
-            field_name,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, source, sorted_field_idx, field_name))
     }
 
     pub(crate) fn compile(
@@ -417,14 +427,7 @@ impl<R: Rt> StructRef<R> {
                 Err(_) => (Type::empty_tvar(), None),
             };
         let field_name = field_name.clone();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            source,
-            sorted_field_idx,
-            field_name,
-            resident: TagValue::phantom(),
-        }))
+        Ok(Self::with(spec, typ, source, sorted_field_idx, field_name))
     }
 }
 
