@@ -11,7 +11,6 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 use netidx_value::{ValError, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::ops::{Deref, DerefMut};
 use triomphe::Arc;
 
 /// One accessor of a path: an array or tuple index (negative from the
@@ -34,33 +33,141 @@ pub enum RefPath {
     Nowhere,
 }
 
-/// A place's accessors, from its root binding's value.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Path(SmallVec<[Step; 2]>);
+/// A place's accessors, sharing the prefix of a composed reference.
+#[derive(Clone, Default)]
+pub struct Path(Option<Arc<PathLink>>);
+
+struct PathLink {
+    prefix: Path,
+    suffix: SmallVec<[Step; 2]>,
+    len: usize,
+}
+
+impl Drop for PathLink {
+    fn drop(&mut self) {
+        let mut prefix = self.prefix.0.take();
+        while let Some(link) = prefix {
+            match Arc::try_unwrap(link) {
+                Ok(mut link) => prefix = link.prefix.0.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for Path {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_link(other)
+            || (self.len() == other.len() && self.iter().eq(other.iter()))
+    }
+}
 
 impl Path {
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self(None)
+    }
+
+    pub(super) fn empty() -> &'static Self {
+        static EMPTY: Path = Path::new();
+        &EMPTY
+    }
+
+    fn same_link(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |link| link.len)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    pub fn push(&mut self, step: Step) {
+        let prefix = std::mem::take(self);
+        self.set(&prefix, &[step]);
+    }
+
+    pub(super) fn set(&mut self, prefix: &Self, suffix: &[Step]) {
+        if suffix.is_empty() {
+            *self = prefix.clone();
+        } else if !self.0.as_ref().is_some_and(|link| {
+            link.prefix.same_link(prefix) && link.suffix.as_slice() == suffix
+        }) {
+            *self = Self(Some(Arc::new(PathLink {
+                prefix: prefix.clone(),
+                len: prefix.len() + suffix.len(),
+                suffix: SmallVec::from(suffix),
+            })));
+        }
+    }
+
+    pub(super) fn suffix(&self) -> &[Step] {
+        self.0.as_ref().map_or(&[], |link| &link.suffix)
+    }
+
+    pub fn iter(&self) -> PathIter<'_> {
+        let mut parts: LPooled<Vec<&[Step]>> = LPooled::take();
+        let mut path = self;
+        while let Some(link) = &path.0 {
+            parts.push(&link.suffix);
+            path = &link.prefix;
+        }
+        PathIter { parts, current: [].iter(), left: self.len() }
     }
 }
 
-impl Deref for Path {
-    type Target = SmallVec<[Step; 2]>;
+pub struct PathIter<'a> {
+    parts: LPooled<Vec<&'a [Step]>>,
+    current: std::slice::Iter<'a, Step>,
+    left: usize,
+}
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl<'a> Iterator for PathIter<'a> {
+    type Item = &'a Step;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(step) = self.current.next() {
+                self.left -= 1;
+                return Some(step);
+            }
+            self.current = self.parts.pop()?.iter();
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left, Some(self.left))
     }
 }
 
-impl DerefMut for Path {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+impl ExactSizeIterator for PathIter<'_> {}
+
+impl<'a> IntoIterator for &'a Path {
+    type Item = &'a Step;
+    type IntoIter = PathIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
 impl From<&[Step]> for Path {
     fn from(steps: &[Step]) -> Self {
-        Self(SmallVec::from(steps))
+        let mut path = Self::new();
+        path.set(&Self::new(), steps);
+        path
     }
 }
 
@@ -80,10 +187,12 @@ impl Pack for Path {
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let n = decode_varint(buf)? as usize;
-        let mut path = Path::new();
+        let mut steps: LPooled<Vec<Step>> = LPooled::take();
         for _ in 0..n {
-            path.push(Step::decode(buf)?);
+            steps.push(Step::decode(buf)?);
         }
+        let mut path = Path::new();
+        path.set(&Path::new(), &steps);
         Ok(path)
     }
 }
@@ -114,7 +223,10 @@ fn field_of<'a>(v: &'a Value, name: &str) -> Result<(usize, &'a Value)> {
 
 /// The value at `path` inside `root`. A map step compares keys, so the
 /// caller runs this under `coretraits::with_hooks`.
-pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
+pub fn read_path<'a>(
+    root: &Value,
+    path: impl IntoIterator<Item = &'a Step>,
+) -> Result<Value> {
     let mut cur = root;
     for step in path {
         cur = match (step, cur) {
@@ -137,7 +249,7 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
 
 /// `root` with the value at `path` replaced by `v`. A map step compares
 /// keys, so the caller runs this under `coretraits::with_hooks`.
-// CR claude for claude: [bug/medium] write_path recurses once per path step with no
+// XCR claude for claude: [bug/medium] write_path recurses once per path step with no
 // stack guard, and paths compose: `&mut (*r)[0]` extends r's path, so a flat chain of
 // lets builds a path as long as the program. A 10000-step chain overflows the tokio
 // worker at the write and aborts. Each reference also clones its whole prefix, so the
@@ -157,10 +269,38 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
 // (read_path, write_path, the RefPath equality in Deref's registration, branch
 // patch_level) walks root-first, and Place::update would then allocate a node per
 // step per update unless it reuses an unchanged one; left for a later batch.
-pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
+// 2026-10-27 codex: Paths now hold shared Arc prefix links with an inline local
+// suffix. Place::update rebuilds only its own suffix and reuses the existing link
+// when that suffix and its parent link are unchanged. Dereference registration and
+// queued patches clone the shared path, readers/writers iterate root-first using
+// pooled scratch, equality compares contents, and link teardown is iterative.
+// ExecCtx::ref_target necessarily returns &Path rather than a slice (one-line lib.rs
+// change); a repository search found no ../netidx caller. Pin
+// node::place::tests::retained_path_prefixes_use_linear_memory retained 3000 prefixes
+// and failed on the original representation at 80600 KiB; it passes below the 32 MiB
+// ceiling with sharing. All four node::place::tests pass, including
+// unchanged_path_reuses_its_link_and_pack_order,
+// deep_shared_path_drops_on_a_small_stack and the existing
+// deep_write_keeps_a_flat_stack. Path's encoded count and root-first Step sequence
+// are unchanged: no image format bump. Full Graphix runtime chain probe not yet run;
+// the regression measured the actual Path representation directly. Initial
+// compilation found temporary empty-path references; fixed with a static empty path
+// before the passing run.
+// 2026-10-27 codex: Further verification with the newly rebuilt target/debug/graphix
+// --no-cache and the CR's x-stack-place-path-chain.py: n=10000 exits 0 in 3.018 s at
+// 179840 KiB peak RSS; n=20000 exits 0 in 9.730 s at 292288 KiB peak RSS (both print
+// 1 before and after the write). Measured with Python time.monotonic and
+// resource.getrusage because /usr/bin/time is unavailable. Place's temporary local
+// suffix is pooled, so even a long unchanged suffix does not allocate every update.
+pub fn write_path<'a>(
+    root: &Value,
+    path: impl IntoIterator<Item = &'a Step>,
+    v: Value,
+) -> Result<Value> {
     let mut spine: LPooled<Vec<Hole>> = LPooled::take();
     let mut cur = root;
-    for (i, step) in path.iter().enumerate() {
+    let mut steps = path.into_iter().peekable();
+    while let Some(step) = steps.next() {
         if let (Step::Index(0), Some(g)) = (step, abstract_value::get(cur)) {
             spine.push(Hole::Payload(cur));
             cur = &g.payload;
@@ -185,7 +325,7 @@ pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
                 spine.push(Hole::Key(m, k));
                 match m.get(k) {
                     Some(c) => c,
-                    None if i + 1 == path.len() => break,
+                    None if steps.peek().is_none() => break,
                     None => bail!("no key {k}"),
                 }
             }
@@ -229,6 +369,93 @@ impl Hole<'_> {
 mod tests {
     use super::*;
     use netidx_value::ValArray;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_path_prefixes_use_linear_memory() {
+        const CHILD: &str = "GRAPHIX_PATH_MEMORY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "node::place::tests::retained_path_prefixes_use_linear_memory",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let rss = || {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix("VmRSS:"))
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+        };
+        let before = rss();
+        let mut paths: LPooled<Vec<Path>> = LPooled::take();
+        let mut path = Path::new();
+        for _ in 0..3_000 {
+            path.push(Step::Index(0));
+            paths.push(path.clone());
+        }
+        let used = rss().saturating_sub(before);
+        assert!(used < 32 * 1024, "3000 retained prefixes used {used} KiB");
+        assert_eq!(paths.last().unwrap().len(), 3_000);
+    }
+
+    #[test]
+    fn unchanged_path_reuses_its_link_and_pack_order() {
+        let mut prefix = Path::new();
+        prefix.push(Step::Index(2));
+        let suffix = [Step::Field(arcstr::literal!("a")), Step::Index(-1)];
+        let mut path = Path::new();
+        path.set(&prefix, &suffix);
+        let previous = path.clone();
+        path.set(&prefix, &suffix);
+        assert!(path.same_link(&previous));
+        let flat: Path =
+            [Step::Index(2), Step::Field(arcstr::literal!("a")), Step::Index(-1)]
+                .as_slice()
+                .into();
+        assert_eq!(path, flat);
+        let mut encoded = bytes::BytesMut::new();
+        path.encode(&mut encoded).unwrap();
+        assert_eq!(encoded.len(), path.encoded_len());
+        let mut expected = bytes::BytesMut::new();
+        flat.encode(&mut expected).unwrap();
+        assert_eq!(encoded, expected);
+        assert_eq!(Path::decode(&mut encoded.freeze()).unwrap(), path);
+    }
+
+    #[test]
+    fn deep_shared_path_drops_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let mut path = Path::new();
+                for _ in 0..50_000 {
+                    path.push(Step::Index(0));
+                }
+                assert_eq!(path.iter().count(), 50_000);
+                drop(path);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     /// A path is as long as a chain of place references, so a write
     /// along it must not take a frame per step.

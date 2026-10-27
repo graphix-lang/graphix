@@ -2073,7 +2073,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// What the reference `cell` names: its registered place (a root and
     /// a path), else the binding at the end of its byref chain, else the
     /// cell itself; the path is empty but for a place.
-    pub fn ref_target(&self, cell: BindId) -> (BindId, &[node::place::Step]) {
+    pub fn ref_target(&self, cell: BindId) -> (BindId, &node::place::Path) {
         node::bind::ref_target(self, cell)
     }
 

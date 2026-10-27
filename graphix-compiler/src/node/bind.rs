@@ -1259,10 +1259,10 @@ struct Resolved<'a> {
 /// The binding a place's root stands for and the path already under
 /// it (a dereferenced place reference composes); `None` while a
 /// dereferenced reference is bottom.
-fn root_place<R: Rt>(root: &Node<R>) -> Option<(BindId, &[place::Step])> {
+fn root_place<R: Rt>(root: &Node<R>) -> Option<(BindId, &Path)> {
     let any = &**root as &dyn Any;
     match any.downcast_ref::<Ref>() {
-        Some(r) => Some((r.id, &[])),
+        Some(r) => Some((r.id, Path::empty())),
         None => {
             let a = any.downcast_ref::<Deref<R>>()?.addr.as_ref()?;
             Some((a.id, &a.path))
@@ -1344,12 +1344,7 @@ impl<R: Rt> Place<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> Resolved<'_> {
         let root = self.root.update(ctx).clone();
         let mut moved = root.tag().triggers();
-        self.path.clear();
-        let id = root_place(&self.root).map(|(id, under)| {
-            self.path.extend(under.iter().cloned());
-            id
-        });
-        let under = self.path.len();
+        let mut suffix: LPooled<Vec<place::Step>> = LPooled::take();
         let mut complete = true;
         for step in &mut self.steps {
             match step {
@@ -1362,13 +1357,13 @@ impl<R: Rt> Place<R> {
                         tv.with_value(super::array::index_i64)
                     };
                     match i {
-                        Some(i) => self.path.push(place::Step::Index(i)),
+                        Some(i) => suffix.push(place::Step::Index(i)),
                         None => complete = false,
                     }
                 }
-                PlaceStep::Tuple(i) => self.path.push(place::Step::Index(*i as i64)),
+                PlaceStep::Tuple(i) => suffix.push(place::Step::Index(*i as i64)),
                 PlaceStep::Field(name) => {
-                    self.path.push(place::Step::Field(name.name.clone()))
+                    suffix.push(place::Step::Field(name.name.clone()))
                 }
                 PlaceStep::Key(n) => {
                     let tv = n.update(ctx);
@@ -1376,16 +1371,23 @@ impl<R: Rt> Place<R> {
                     if tv.tag().is_bottom() {
                         complete = false
                     } else {
-                        self.path.push(place::Step::Key(tv.value_cloned()))
+                        suffix.push(place::Step::Key(tv.value_cloned()))
                     }
                 }
             }
         }
-        let address = match (complete, id) {
-            (true, Some(bind)) => {
-                Some(Address { bind, path: &self.path, steps: &self.path[under..] })
-            }
-            _ => None,
+        let own_steps = suffix.len();
+        let address = if complete {
+            root_place(&self.root).map(|(bind, prefix)| {
+                self.path.set(prefix, &suffix);
+                Address {
+                    bind,
+                    path: &self.path,
+                    steps: if own_steps == 0 { &[] } else { self.path.suffix() },
+                }
+            })
+        } else {
+            None
         };
         Resolved { address, root, moved }
     }
@@ -1675,11 +1677,11 @@ pub(crate) fn ref_cell(v: &Value) -> Option<BindId> {
 pub(crate) fn ref_target<'a, R: Rt>(
     ctx: &'a ExecCtx<'_, R>,
     cell: BindId,
-) -> (BindId, &'a [place::Step]) {
+) -> (BindId, &'a Path) {
     match ctx.rt.ref_path(&cell) {
-        Some(RefPath::At(root, path)) => (*root, &path[..]),
-        Some(RefPath::Nowhere) => (cell, &[][..]),
-        None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), &[][..]),
+        Some(RefPath::At(root, path)) => (*root, path),
+        Some(RefPath::Nowhere) => (cell, Path::empty()),
+        None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), Path::empty()),
     }
 }
 
@@ -1916,10 +1918,10 @@ impl<R: Rt> Deref<R> {
     fn address(&mut self, ctx: &mut ExecCtx<'_, R>, cell: BindId) -> (BindId, Moved) {
         let (id, path) = ref_target(ctx, cell);
         let (same_id, same_path) = match &self.addr {
-            Some(a) => (a.id == id, a.id == id && &a.path[..] == path),
+            Some(a) => (a.id == id, a.id == id && &a.path == path),
             None => (false, false),
         };
-        let path: Option<Path> = (!same_path).then(|| path.into());
+        let path: Option<Path> = (!same_path).then(|| path.clone());
         let moved = match (&mut self.addr, path) {
             (Some(a), None) => {
                 Self::swap_cell(ctx, a, cell, self.top_id);
