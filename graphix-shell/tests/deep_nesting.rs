@@ -729,9 +729,12 @@ fn deep_nesting_does_not_overflow() {
         // image write degrades it to two cold runs without a word. probe:
         // design/review-2026-10-26/repro/tests-shell-compiler-warm-nested-lambda-overflow.sh
         // (tests-shell-compiler-02)
+        // 2026-10-26 claude: the lambda shape now runs in image mode too
+        // (tests-shell-compiler-01's pin); the other shapes and the restore check remain.
         .chain(FLAT_SHAPES.iter().flat_map(|s| {
             MODES.into_iter().chain(["image"]).map(|m| (*s, FLAT_DEPTH, m))
         }))
+        .chain([("lambda", accepted("lambda"), "image")])
         .chain([("modchain", MODCHAIN_DEPTH, "check")])
         .chain([("chainbounds", CHAIN_DEPTH, "check")])
         .collect();

@@ -70,12 +70,12 @@ fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackE
     encode_varint(literals.len() as u64, buf);
     for (id, share) in literals.iter() {
         id.encode(buf)?;
-        shared_encode(&share.lock(), buf)?;
+        crate::stack::ensure_sufficient(|| shared_encode(&share.lock(), buf))?;
     }
     Ok(())
 }
 
-// CR claude for claude: [bug/medium] shared_decode, and shared_encode above it, recurse
+// XCR claude for claude: [bug/medium] shared_decode, and shared_encode above it, recurse
 // once per nested lambda literal with no crate::stack::ensure_sufficient. Every other
 // image walk is guarded, image::nodes' decode_tagged included. With 995 nested literals
 // (`let f = |x| |x| ... 1`, within the nesting limit), the cold run writes the image
@@ -85,6 +85,10 @@ fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackE
 // shared_encode). probe:
 // design/review-2026-10-26/repro/tests-shell-compiler-warm-nested-lambda-overflow.sh
 // (tests-shell-compiler-01)
+// 2026-10-26 claude: shared_encode and shared_decode recurse under
+// crate::stack::ensure_sufficient. Pin: deep_nesting_does_not_overflow (slow-tests) now
+// runs the lambda shape at its admitted depth in image mode (cold then warm); with the
+// decode guard undone the repro's warm run aborts (exit 134, overflowed its stack).
 fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
     let mut shared = BodyShared::default();
     for _ in 0..decode_varint(buf)? {
@@ -97,7 +101,7 @@ fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
     }
     for _ in 0..decode_varint(buf)? {
         let id = ExprId::decode(buf)?;
-        let share = shared_decode(buf)?;
+        let share = crate::stack::ensure_sufficient(|| shared_decode(buf))?;
         shared.literals.insert(id, BodyShare::new(Mutex::new(share)));
     }
     Ok(shared)

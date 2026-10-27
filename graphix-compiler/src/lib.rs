@@ -138,6 +138,11 @@ macro_rules! tdbg {
 // parameter. He also wants to look at removing the custom netidx parts of Event and rt,
 // so rt only runs async jobs and netidx is a stdlib library delivering by bind ids like
 // the others (a follow-on project).
+// 2026-10-26 claude: Not done (L3-b05): the deletion touches about 1060 UserEvent and
+// 3600 E mentions across every crate, and graphix-package-netidx-admin in ../netidx
+// (outside the lane worktrees). With eight lanes editing node code at once it would
+// conflict with every other lane; it wants a solo batch with the lanes idle and a
+// matching netidx-admin commit.
 pub trait UserEvent: Clone + Debug + Any + Send + Sync {
     fn clear(&mut self);
 }
@@ -1038,34 +1043,25 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
             return Ok(());
         }
         let mut report: Vec<&fusion::FusionFailure> = Vec::new();
-        let mut walked = false;
+        let mut walked: Vec<&Expr> = Vec::new();
         native_residue(ctx, node, &mut report, &mut walked);
         if crate::dbgenv::gxdbg_native_all() {
             for failure in ctx.fusion.stats.failed.iter() {
                 eprintln!("NATIVE-ALL {:?}: {}", failure.id, failure.reason);
             }
         }
-        if report.is_empty() && !walked {
+        if report.is_empty() && walked.is_empty() {
             return Ok(());
         }
         let mut reasons = CompactString::new("");
-        for failure in &report {
+        {
             use std::fmt::Write;
-            let _ = write!(reasons, "\n  - {}", failure.reason);
-        }
-        // CR claude for claude: [readability/low] This message names no reason. It is
-        // reached whenever a kernel's feeder is node-walk residue with no recorded
-        // failure, e.g. a `~` argument: `#[native] f(t ~ 10)` is refused with nothing
-        // to act on, and GXDBG_NATIVE_ALL lists nothing either. Have `native_residue`
-        // collect the spec of each such feeder, and report 'the node-walk computes
-        // `<spec>` for the kernel'. probe:
-        // design/review-2026-10-26/repro/tests-functions-native-no-reason.gx
-        // (tests-functions-06)
-        if reasons.is_empty() {
-            crate::bailat!(
-                node.spec(),
-                "#[native] expression did not fully fuse to native code"
-            );
+            for failure in &report {
+                let _ = write!(reasons, "\n  - {}", failure.reason);
+            }
+            for spec in &walked {
+                let _ = write!(reasons, "\n  - the node-walk computes `{spec}`");
+            }
         }
         crate::bailat!(
             node.spec(),
@@ -1075,13 +1071,13 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 }
 
 /// The failures behind the node-walk residue under `node`, into `report`;
-/// `walked` when some residue has none recorded. A kernel's feeder that is
-/// more than a variable read is an argument the node-walk computes for it.
-fn native_residue<'a, R: Rt, E: UserEvent>(
+/// the residue that has none recorded, into `walked`. A kernel's feeder that
+/// is more than a variable read is an argument the node-walk computes for it.
+fn native_residue<'a, 'n, R: Rt, E: UserEvent>(
     ctx: &'a CompileCtx<R, E>,
-    node: &Node<R, E>,
+    node: &'n Node<R, E>,
     report: &mut Vec<&'a fusion::FusionFailure>,
-    walked: &mut bool,
+    walked: &mut Vec<&'n Expr>,
 ) {
     if let NodeView::FusedKernel(k) = node.view() {
         for feeder in k.feeders() {
@@ -1119,7 +1115,9 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
             }
         }
     });
-    *walked |= report.len() == before;
+    if report.len() == before {
+        walked.push(node.spec())
+    }
 }
 
 /// The log target of a running program's failures: an error nothing
@@ -1833,6 +1831,19 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     // Pin it beside written_after_a_static_call_is_refused. probe:
     // design/review-2026-10-26/repro/tests-modules-image-stale-static-callee.sh
     // (tests-modules-image-01)
+    // 2026-10-26 claude: Not fixed (L3-b05). Still reproduces. The suggested per-site
+    // key is not enough: a definition's check builds its body's CallSites, which record
+    // here, and then discards them (lambda.rs: ctx.discard_apply(f) after the def
+    // check), so dropping a site's record at its delete would forget every static call
+    // inside a definition, and 'let g = |x| f(x); f <- ..' would be accepted while g's
+    // later instances are typed from a check that bound f statically. A record must
+    // belong to what keeps the static binding alive: a live CallSite or alias Bind, and
+    // a live definition whose checked body holds the call (released when the definition
+    // is forgotten). Per-site counts also need TrackedMap::join to merge two compile
+    // tasks' writes to one key (a three-way merge; today the fork's value wins) and the
+    // recording nodes to carry what they recorded through the image (a lazily decoded
+    // instance's sites are counted in the image but never decoded). Needs that design
+    // before code.
     pub(crate) fn record_static_callee(&mut self, id: BindId, spec: &Arc<expr::Expr>) {
         if !self.static_callees.contains_key(&id) {
             self.static_callees.insert(id, StaticCall(spec.clone()));
@@ -2230,6 +2241,17 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     // 2026-10-26 claude: Bind's quiet publication now takes store_insert_standing,
     // which keeps the replaced entry's stamp (c-prune-wake-02); the other hand-rolled
     // sites are unchanged.
+    // 2026-10-26 claude: Not done (L3-b05): unifying the stored form is observable and
+    // wants its own batch and a soak. node::read_var hands a this-cycle store entry to
+    // a reader with no event entry as Delivered with its stored tag, and a standing one
+    // through standing_view, which reads fresh under View::Birth. So moving
+    // PatternNode::bind_event's stale leaves (stored stale, stamped now) to
+    // store_insert_standing (old stamp) makes a Birth-view reader of a stale-present
+    // scrutinee's bind see it fresh; storing them fired would fire the arm. Likewise
+    // deliver's STALE_BOTTOM vs the others' FRESH_BOTTOM differs for a same-cycle store
+    // read. deliver also never calls notify_set, which Bind, ByRef and the seq pc do. A
+    // unification must pick, per caller, the event tag, the stored tag, stamped vs
+    // standing and notify, and pin each choice.
     pub fn deliver(&mut self, id: BindId, tv: TagValue) {
         let standing = if tv.tag().is_bottom() {
             TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
@@ -2361,7 +2383,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Open the compile frame of a top-level node, a statement's or one
     /// built at runtime outside any statement, before [`check_and_fuse`]:
     /// the previous compile's scratch is dropped.
-    // CR claude for claude: [risk/medium] [risk/medium] GX::check recovers from a
+    // XCR claude for claude: [risk/medium] [risk/medium] GX::check recovers from a
     // checker panic with drop_deferred and Saved::restore only. The resolution scratch
     // a panic unwinds past survives into every later compile: def_gate_depth, rec_defs,
     // def_gate_params, instance_fn_params, fn_param_args, written_lets,
@@ -2371,7 +2393,19 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     // top-level compile, so debug_assert here that that scratch is balanced, and reset
     // it. GX::check's panic arm should also delete the nodes it already compiled. Found
     // by reading; not run. (c-lib-03)
+    // 2026-10-26 claude: open_compile_frame debug_asserts the resolution scratch is
+    // empty (def_gate_depth, rec_defs, def_gate_params, instance_fn_params,
+    // fn_param_args, written_lets, block_typedefs, resolving_lambdas,
+    // defaults_in_check, body); CompileCtx::clear_resolution_scratch empties it, and
+    // GX::check's panic arm calls it and deletes the statements it already built (nodes
+    // now live outside the unwound future). Pin: graphix-rt/tests/runtime_api.rs
+    // a_check_panicking_in_a_definition_leaves_none_open (a builtin whose init panics
+    // inside a def body; with the clear undone the next check panics on the assert).
     pub fn open_compile_frame(&mut self, top_id: ExprId) {
+        debug_assert!(
+            self.resolution_scratch_is_empty(),
+            "a top-level compile opened over another's resolution scratch"
+        );
         self.attr_census.lock().clear();
         self.attr_dispatched.lock().clear();
         self.attr_absorbed.lock().clear();
@@ -2380,6 +2414,36 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         self.pending_settles.clear();
         self.pending_settles.push(SettleFrame::default());
         self.fusion.top_id = Some(top_id);
+    }
+
+    /// The scratch a definition's check pushes and pops: empty between
+    /// top-level compiles.
+    fn resolution_scratch_is_empty(&self) -> bool {
+        self.def_gate_depth == 0
+            && self.rec_defs.is_empty()
+            && self.def_gate_params.is_empty()
+            && self.instance_fn_params.is_empty()
+            && self.fn_param_args.is_empty()
+            && self.written_lets.is_empty()
+            && self.block_typedefs.is_empty()
+            && self.resolving_lambdas.lock().0.is_none()
+            && self.defaults_in_check.is_empty()
+            && self.body.is_none()
+    }
+
+    /// Empty what a compile a panic unwound left in the resolution
+    /// scratch.
+    pub fn clear_resolution_scratch(&mut self) {
+        self.def_gate_depth = 0;
+        self.rec_defs.clear();
+        self.def_gate_params.clear();
+        self.instance_fn_params.clear();
+        self.fn_param_args.clear();
+        self.written_lets.clear();
+        self.block_typedefs.clear();
+        *self.resolving_lambdas.lock() = Resolving::default();
+        self.defaults_in_check.clear();
+        self.body = None;
     }
     env_restore_methods!();
 }
@@ -2752,12 +2816,11 @@ impl Scope {
         self.append(block_component(kind, id).as_str())
     }
 
-    /// The scope covered by a handler installed here; `machine` marks a
-    /// seq machine's own handler.
-    pub fn with_catch(&self, catch: (BindId, ExprId), machine: bool) -> Self {
+    /// The scope covered by a handler of `kind` installed here.
+    pub fn with_catch(&self, catch: (BindId, ExprId), kind: HandlerKind) -> Self {
         Self {
             lexical: self.lexical.clone(),
-            dynamic: self.dynamic.with_catch(catch, machine),
+            dynamic: self.dynamic.with_catch(catch, kind),
         }
     }
 
@@ -2772,9 +2835,22 @@ impl Scope {
 #[derive(Clone, Default)]
 pub struct DynScope(Option<ErrorHandler>);
 
+/// What installed a handler. A seq machine's and a `try`'s count the
+/// errors raised to the handlers under them, which their steps wait on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandlerKind {
+    Catch,
+    Try,
+    Machine,
+}
+
 struct DynNode {
     catch: (BindId, ExprId),
-    machine: bool,
+    kind: HandlerKind,
+    /// The innermost seq machine's handler above this one.
+    machine: Option<ErrorHandler>,
+    /// The innermost `Try` or `Machine` handler above this one.
+    counter: Option<ErrorHandler>,
     /// One past the cycle of the last `abort(..)`; zero before any.
     aborted: AtomicU64,
     /// Raises to this handler.
@@ -2807,21 +2883,21 @@ impl ErrorHandler {
     pub(crate) fn raise(&self, cycle: u64) {
         self.0.raised.fetch_add(1, Ordering::Relaxed);
         self.mark_pollers(cycle);
-        let mut parent = self.0.parent.0.as_ref();
-        while let Some(handler) = parent {
+        let mut counter = self.0.counter.as_ref();
+        while let Some(handler) = counter {
             handler.0.nested.fetch_add(1, Ordering::Relaxed);
             handler.mark_pollers(cycle);
-            parent = handler.0.parent.0.as_ref();
+            counter = handler.0.counter.as_ref();
         }
     }
 
     pub(crate) fn handled(&self, cycle: u64) {
-        let mut parent = self.0.parent.0.as_ref();
-        while let Some(handler) = parent {
+        let mut counter = self.0.counter.as_ref();
+        while let Some(handler) = counter {
             let pending = handler.0.nested.fetch_sub(1, Ordering::Relaxed);
             debug_assert!(pending > 0, "unraised nested error");
             handler.mark_pollers(cycle);
-            parent = handler.0.parent.0.as_ref();
+            counter = handler.0.counter.as_ref();
         }
     }
 
@@ -2893,13 +2969,13 @@ impl ErrorHandler {
         self.0.raised.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn is_machine(&self) -> bool {
-        self.0.machine
+    pub(crate) fn kind(&self) -> HandlerKind {
+        self.0.kind
     }
 
     /// The handler of the innermost seq machine covering this one,
     /// itself included.
-    // CR claude for claude: [perf/medium] machine() walks the handler chain to the root
+    // XCR claude for claude: [perf/medium] machine() walks the handler chain to the root
     // when there is no seq machine, and it runs at every catch install and delete
     // (polled_by / unpolled_by). raise and handled likewise walk every ancestor,
     // locking each pollers mutex. With a catch in each activation of a recursion, every
@@ -2910,15 +2986,18 @@ impl ErrorHandler {
     // handlers whose nested count anyone reads) so raise/handled walk only those.
     // probe: design/review-2026-10-26/repro/c-error-op-catch-depth-quadratic.sh Also
     // reported as (x-stack-04). (c-error-op-03)
+    // 2026-10-26 claude: a handler now records its kind (Catch, Try, Machine), its
+    // innermost machine above and its innermost Try or Machine above (the handlers
+    // whose nested count a step reads); machine() is O(1) and raise/handled walk only
+    // those counters. Repro on a loaded host: catch 2214 ms at 16k, 5600 ms at 64k
+    // (linear; review: 7875 ms at 32k). The image encodes the kind (REGISTRATION_FORMAT
+    // 88). Pin: lib.rs handler_tests::nested_errors_count_only_where_a_step_waits
+    // (fails when every ancestor counts); no timing pin.
     pub(crate) fn machine(&self) -> Option<ErrorHandler> {
-        let mut cur = Some(self);
-        while let Some(h) = cur {
-            if h.0.machine {
-                return Some(h.clone());
-            }
-            cur = h.0.parent.0.as_ref();
+        match self.0.kind {
+            HandlerKind::Machine => Some(self.clone()),
+            HandlerKind::Catch | HandlerKind::Try => self.0.machine.clone(),
         }
-        None
     }
 
     /// The handler's allocation address: equal for every scope under
@@ -2959,10 +3038,16 @@ impl DynScope {
         Self(Some(h))
     }
 
-    pub fn with_catch(&self, catch: (BindId, ExprId), machine: bool) -> Self {
+    pub fn with_catch(&self, catch: (BindId, ExprId), kind: HandlerKind) -> Self {
+        let parent = self.0.as_ref();
         Self(Some(ErrorHandler(Arc::new(DynNode {
             catch,
-            machine,
+            kind,
+            machine: parent.and_then(ErrorHandler::machine),
+            counter: parent.and_then(|p| match p.0.kind {
+                HandlerKind::Catch => p.0.counter.clone(),
+                HandlerKind::Try | HandlerKind::Machine => Some(p.clone()),
+            }),
             aborted: AtomicU64::new(0),
             raised: AtomicU64::new(0),
             aborts: AtomicU64::new(0),
@@ -3511,4 +3596,30 @@ fn abandon_stmt<R: Rt, E: UserEvent>(
     ctx.drop_deferred();
     saved.restore(ctx);
     e
+}
+
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+
+    fn under(scope: &DynScope, kind: HandlerKind) -> DynScope {
+        scope.with_catch((BindId::new(), ExprId::new()), kind)
+    }
+
+    #[test]
+    fn nested_errors_count_only_where_a_step_waits() {
+        let machine = under(&DynScope::root(), HandlerKind::Machine);
+        let outer = under(&machine, HandlerKind::Catch);
+        let try_ = under(&outer, HandlerKind::Try);
+        let inner = under(&under(&try_, HandlerKind::Catch), HandlerKind::Catch);
+        let [machine, outer, try_, inner] =
+            [machine, outer, try_, inner].map(|s| s.handler().unwrap());
+        assert!(inner.machine().unwrap().same(&machine));
+        assert!(try_.machine().unwrap().same(&machine));
+        inner.raise(0);
+        assert!(try_.has_nested_errors() && machine.has_nested_errors());
+        assert!(!outer.has_nested_errors());
+        inner.handled(0);
+        assert!(!try_.has_nested_errors() && !machine.has_nested_errors());
+    }
 }

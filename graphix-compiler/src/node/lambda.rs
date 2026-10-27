@@ -8,9 +8,9 @@ use super::{
 };
 use crate::SourcePosition;
 use crate::{
-    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, InitFn, LambdaId,
-    LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
-    dbgenv,
+    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, HandlerKind, InitFn,
+    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    UserEvent, dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
@@ -1866,7 +1866,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
                 binder: None,
             }),
         );
-        let scope = def.scope.with_catch((faux_id, ExprId::new()), false);
+        let scope = def.scope.with_catch((faux_id, ExprId::new()), HandlerKind::Catch);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars(&mut named);
         named.retain(|name, _| !name.starts_with('_'));

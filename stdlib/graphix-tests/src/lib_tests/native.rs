@@ -61,6 +61,19 @@ async fn native_call_fed_by_node_walk_is_error() {
     assert!(e.contains("did not fully fuse") && e.contains("throttle"), "{e}");
 }
 
+// An argument the node-walk computes with no fusion failure of its own
+// (a sample) is named as residue.
+#[tokio::test]
+async fn native_call_fed_by_a_sample_names_it() {
+    let e = refusal(
+        "{ let t = 1; let f = |x: i64| -> i64 x + 1; #[native] f(t ~ 10) }",
+        crate::TEST_REGISTER,
+    )
+    .await
+    .unwrap();
+    assert!(e.contains("the node-walk computes `t ~ 10`"), "{e}");
+}
+
 // The same argument bound outside the annotation is an input: the call
 // is native.
 #[tokio::test]

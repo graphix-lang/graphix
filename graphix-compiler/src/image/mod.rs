@@ -12,7 +12,7 @@ pub use nodes::{NOT_IMAGED, decode_node, decode_nodes, encode_nodes};
 pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
 
 use crate::{
-    BindId, DynScope, ErrorHandler, FastCall, LambdaInstanceId, Scope,
+    BindId, DynScope, ErrorHandler, FastCall, HandlerKind, LambdaInstanceId, Scope,
     expr::ExprId,
     fusion::{
         emit::BodyRecord,
@@ -119,7 +119,11 @@ fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackEr
             let (bind, expr) = h.id();
             bind.encode(buf)?;
             expr.encode(buf)?;
-            h.is_machine().encode(buf)?;
+            buf.put_u8(match h.kind() {
+                HandlerKind::Catch => 0,
+                HandlerKind::Try => 1,
+                HandlerKind::Machine => 2,
+            });
             h.sealed().encode(buf)?;
             dynscope_encode(&h.parent(), buf)
         },
@@ -136,10 +140,18 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
         |sub| {
             let bind = BindId::decode(sub)?;
             let expr = ExprId::decode(sub)?;
-            let machine = bool::decode(sub)?;
+            if !sub.has_remaining() {
+                return Err(PackError::BufferShort);
+            }
+            let kind = match sub.get_u8() {
+                0 => HandlerKind::Catch,
+                1 => HandlerKind::Try,
+                2 => HandlerKind::Machine,
+                _ => return Err(PackError::UnknownTag),
+            };
             let sealed = bool::decode(sub)?;
             let parent = dynscope_decode(sub)?;
-            let scope = parent.with_catch((bind, expr), machine);
+            let scope = parent.with_catch((bind, expr), kind);
             let h = scope.handler().expect("with_catch installs a handler");
             if sealed {
                 h.seal()

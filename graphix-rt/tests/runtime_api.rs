@@ -4,18 +4,20 @@
 
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
-use arcstr::literal;
+use arcstr::{ArcStr, literal};
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    BindId, CFlag, Rt, Scope,
+    Apply, BindId, BuiltIn, CFlag, CompileCtx, Effect, ExecCtx, Node, Rt, Scope,
+    UserEvent,
     expr::{
         Load, ModPath, ModuleResolver, Origin, Probes, Resolution, ResolverRef, VfsEntry,
         VfsResolver,
     },
     rep,
+    typ::FnType,
 };
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
-use netidx_core::path::Path;
+use netidx_core::{pack::PackError, path::Path};
 use netidx_value::Value;
 use poolshark::global::GPooled;
 use std::{future::Future, pin::Pin, time::Duration};
@@ -122,6 +124,49 @@ async fn a_panicking_check_leaves_the_runtime_checking() -> Result<()> {
     gx.check(Load::Text(literal!("let x = 1;\nx + 1\n")), None).await?;
     let c = gx.compile(literal!("1 + 1")).await?;
     assert!(c.exprs[0].output);
+    Ok(())
+}
+
+/// A builtin whose binding panics: a bug in the check of a definition's
+/// body.
+struct PanicsAtBind;
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PanicsAtBind {
+    const NAME: &str = "test_panics_at_bind";
+    const EFFECT: Effect = Effect::Sync;
+
+    fn init<'a, 'b, 'c, 'd>(
+        _: &'a mut CompileCtx<R, E>,
+        _: &'a FnType,
+        _: Option<&'d FnType>,
+        _: &'b Scope,
+        _: &'c [Node<R, E>],
+        _: graphix_compiler::expr::ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        panic!("a builtin bug")
+    }
+
+    fn image_decode(
+        _: &mut ExecCtx<'_, R, E>,
+        _: &[Node<R, E>],
+        _: &mut &[u8],
+    ) -> std::result::Result<Box<dyn Apply<R, E>>, PackError> {
+        Err(PackError::InvalidFormat)
+    }
+}
+
+/// A check that panics inside a definition's body leaves no definition
+/// open: the next check starts from an empty resolution scratch.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_panicking_in_a_definition_leaves_none_open() -> Result<()> {
+    let (gx, _rx) = start(BitFlags::empty()).await?;
+    gx.with_ctx(|ctx| ctx.register_builtin::<PanicsAtBind>()).await??;
+    let src = "let boom = |x: i64| -> i64 'test_panics_at_bind;\n\
+               let f = |x: i64| boom(x);\nf(1)\n";
+    let e = gx.check(Load::Text(ArcStr::from(src)), None).await.err();
+    let e = e.context("a panicking check passed")?;
+    assert!(format!("{e:#}").contains("the check panicked: a builtin bug"), "{e:#}");
+    gx.check(Load::Text(literal!("let g = |x: i64| x + 1;\ng(1)\n")), None).await?;
     Ok(())
 }
 

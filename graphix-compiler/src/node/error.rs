@@ -1,7 +1,7 @@
 use super::{VarRead, read_var};
 use crate::{
-    BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, PrintFlag, Refs,
-    Rt, Scope, Tag, TagValue, Update, UserEvent, View,
+    BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, HandlerKind, Node, NodeView,
+    PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent, View,
     compiler::compile,
     defetyp,
     env::Env,
@@ -309,8 +309,14 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         // the handler compiles before this catch registers, so a
         // rethrowing `?` inside it never resolves to itself
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
-        let covered = scope
-            .with_catch((bind_id, top_id), matches!(c.role, CatchRole::Machine { .. }));
+        let covered = scope.with_catch(
+            (bind_id, top_id),
+            match &c.role {
+                CatchRole::User => HandlerKind::Catch,
+                CatchRole::Try { .. } => HandlerKind::Try,
+                CatchRole::Machine { .. } => HandlerKind::Machine,
+            },
+        );
         let lookup = |ctx: &CompileCtx<R, E>, name: &ArcStr| {
             let path = ModPath::from([name.as_str()]);
             match ctx.env.lookup_bind(&scope.lexical, &path)? {
@@ -1682,7 +1688,7 @@ impl ErrorRelay {
             )
             .id;
         ctx.record_ref(bind_id, top_id);
-        let covered = scope.with_catch((bind_id, top_id), false);
+        let covered = scope.with_catch((bind_id, top_id), HandlerKind::Catch);
         let handler = covered.dynamic.handler().unwrap();
         (Self { handler, receipts: Receipts::default() }, covered)
     }

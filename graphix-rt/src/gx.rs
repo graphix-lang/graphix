@@ -1231,6 +1231,7 @@ impl<X: GXExt> GX<X> {
             Some(v) => std::sync::Arc::from(v),
             None => self.resolvers.clone(),
         };
+        let mut nodes: LPooled<Vec<Node<GXRt<X>, X::UserEvent>>> = LPooled::take();
         let go = async {
             let st = Instant::now();
             // A package root is the body of `mod <package>`, recompiled
@@ -1277,7 +1278,6 @@ impl<X: GXExt> GX<X> {
             } else {
                 self.flags | CFlag::CheckOnly
             };
-            let mut nodes: LPooled<Vec<_>> = LPooled::take();
             let res = match as_module {
                 true => exprs.iter().try_for_each(|e| {
                     let (n, _) = graphix_compiler::compile_stmt(
@@ -1326,7 +1326,7 @@ impl<X: GXExt> GX<X> {
         };
         // a checker bug in one buffer must not end the runtime: the check
         // answers the panic and the session is put back
-        // CR claude for claude: [risk/low] A panic caught here is only partly undone:
+        // XCR claude for claude: [risk/low] A panic caught here is only partly undone:
         // Saved restores program state, but DefGate's scratch (def_gate_depth,
         // rec_defs) is undone only by DefGate::close, which an unwind skips, and
         // open_compile_frame does not reset it. After a checker panic inside a
@@ -1336,10 +1336,17 @@ impl<X: GXExt> GX<X> {
         // miss those diagnostics. Reset def_gate_depth, rec_defs and resolving_lambdas
         // in CompileCtx::open_compile_frame next to pending_settles. Found by reading;
         // not run. (rt-03)
+        // 2026-10-26 claude: fixed with c-lib-03: the panic arm calls
+        // clear_resolution_scratch; pin
+        // a_check_panicking_in_a_definition_leaves_none_open.
         let res = match AssertUnwindSafe(go).catch_unwind().await {
             Ok(res) => res,
             Err(panic) => {
+                for mut n in nodes.drain(..) {
+                    n.delete(&mut self.ctx.view());
+                }
                 self.ctx.view().drop_deferred();
+                self.ctx.view().clear_resolution_scratch();
                 let what = panic
                     .downcast_ref::<&str>()
                     .copied()
