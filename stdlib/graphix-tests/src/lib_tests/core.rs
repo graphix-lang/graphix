@@ -596,6 +596,14 @@ run!(rand, RAND, |v: Result<&Value>| {
     }
 }; FuseExpect::None);
 
+// A float range of finite bounds wider than f64 holds is sampled
+// (x-panics-02).
+run!(rand_wide_float_range, r#"
+  rand::rand(#start: f64:-1e308, #end: f64:1e308, #clock: null)
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::F64(v)) if *v >= -1e308 && *v < 1e308)
+}; FuseExpect::None);
+
 const RAND_PICK: &str = r#"
   rand::pick(["Chicken is coming", "Grape", "Pilot!"])
 "#;

@@ -224,14 +224,18 @@ run!(
     }
 );
 
-/// What json::write_str writes, json::read reads back: the deepest value
-/// the reader takes round-trips, and one container deeper is refused on
-/// write.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_deepest_written_value_reads_back() -> Result<()> {
+/// What json::write_str writes, json::read reads back: `leaf`, of type
+/// `typ` and written as `containers` containers, round-trips under the
+/// most arrays the reader takes around it, and under one more is refused
+/// on write.
+async fn deepest_written_reads_back(
+    typ: &str,
+    leaf: &str,
+    containers: usize,
+) -> Result<()> {
     let program = |n: usize| {
-        let typ = format!("{}i64{}", "Array<".repeat(n), ">".repeat(n));
-        let v = format!("{}1{}", "[".repeat(n), "]".repeat(n));
+        let typ = format!("{}{typ}{}", "Array<".repeat(n), ">".repeat(n));
+        let v = format!("{}{leaf}{}", "[".repeat(n), "]".repeat(n));
         format!(
             "{{ let v: {typ} = {v}; \
              select json::write_str(v) {{ \
@@ -241,13 +245,27 @@ async fn the_deepest_written_value_reads_back() -> Result<()> {
              }} }}"
         )
     };
-    let deepest = eval_modes(&program(127), crate::TEST_REGISTER).await?;
-    assert_eq!(deepest, Ok(Value::String(literal!("ok"))));
-    match eval_modes(&program(128), crate::TEST_REGISTER).await? {
+    let n = 127 - containers;
+    let deepest = eval_modes(&program(n), crate::TEST_REGISTER).await?;
+    assert_eq!(deepest, Ok(Value::String(literal!("ok"))), "{typ} under {n}");
+    match eval_modes(&program(n + 1), crate::TEST_REGISTER).await? {
         Ok(Value::String(s)) if s.starts_with("WRITE") => (),
-        r => panic!("{r:?}"),
+        r => panic!("{typ} under {}: {r:?}", n + 1),
     }
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_deepest_written_value_reads_back() -> Result<()> {
+    deepest_written_reads_back("i64", "1", 0).await
+}
+
+/// An empty container is a container though it holds no leaf
+/// (small-pkgs-09).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_innermost_container_counts() -> Result<()> {
+    deepest_written_reads_back("Array<i64>", "[]", 1).await?;
+    deepest_written_reads_back("Map<string, i64>", "{}", 1).await
 }
 
 // Two map keys that print alike are refused, never merged into one.
@@ -425,28 +443,8 @@ run!(json_number_out_of_range, r#"{
     matches!(v, Ok(Value::String(s)) if s.starts_with("error:`JsonErr(\"number out of range"))
 }; FuseExpect::Jit);
 
-/// Bytes are written as an array: under the deepest arrays json::read
-/// takes, a bytes leaf is one container too many, refused on write
-/// (x-rerun-3-03).
+/// Bytes are written as an array: one container more (x-rerun-3-03).
 #[tokio::test(flavor = "multi_thread")]
 async fn written_bytes_count_as_a_container() -> Result<()> {
-    let program = |n: usize| {
-        let typ = format!("{}bytes{}", "Array<".repeat(n), ">".repeat(n));
-        let v = format!("{}bytes:AQID{}", "[".repeat(n), "]".repeat(n));
-        format!(
-            "{{ let v: {typ} = {v}; \
-             select json::write_str(v) {{ \
-               error as e => \"WRITE [e]\", \
-               s => {{ let r: Result<{typ}, [`JsonErr(string), `InvalidCast(string)]> = json::read(s); \
-                 select r {{ error as e => \"READ [e]\", _ => \"ok\" }} }} \
-             }} }}"
-        )
-    };
-    let deepest = eval_modes(&program(126), crate::TEST_REGISTER).await?;
-    assert_eq!(deepest, Ok(Value::String(literal!("ok"))));
-    match eval_modes(&program(127), crate::TEST_REGISTER).await? {
-        Ok(Value::String(s)) if s.starts_with("WRITE") => (),
-        r => panic!("{r:?}"),
-    }
-    Ok(())
+    deepest_written_reads_back("bytes", "bytes:AQID", 1).await
 }

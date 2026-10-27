@@ -1,7 +1,8 @@
 /// generate a random number between #start and #end (exclusive)
 /// every time any argument updates, #clock or a bound. The bounds
 /// default to 0.0 and 1.0, so an integer range gives both. An empty
-/// range produces nothing.
+/// range, or one with an infinite or NaN bound, produces nothing and
+/// logs the refused range.
 val rand: fn<'a: [Int, Float] + Singleton>(?#start:'a, ?#end:'a, #clock:Any) -> 'a;
 
 /// pick a random element from the array and return it. Update

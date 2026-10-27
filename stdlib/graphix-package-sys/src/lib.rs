@@ -376,12 +376,49 @@ impl Halves {
         }
     }
 
+    /// `op` on the read half under [`Self::until_closed`]: the error tagged
+    /// `tag` is `stream unavailable` once the half is closed, else `{what}
+    /// failed: ..`.
+    pub(crate) async fn on_reader<T>(
+        &self,
+        tag: &'static str,
+        what: &str,
+        op: impl AsyncFnOnce(&mut BufferedRead<ReadHalf<StreamKind>>) -> IoResult<T>,
+    ) -> Result<T, Value> {
+        self.on_half(&self.r, tag, what, op).await
+    }
+
+    /// [`Self::on_reader`] over the write half.
+    pub(crate) async fn on_writer<T>(
+        &self,
+        tag: &'static str,
+        what: &str,
+        op: impl AsyncFnOnce(&mut WriteHalf<StreamKind>) -> IoResult<T>,
+    ) -> Result<T, Value> {
+        self.on_half(&self.w, tag, what, op).await
+    }
+
+    async fn on_half<H, T>(
+        &self,
+        half: &Mutex<Option<H>>,
+        tag: &'static str,
+        what: &str,
+        op: impl AsyncFnOnce(&mut H) -> IoResult<T>,
+    ) -> Result<T, Value> {
+        let mut guard = half.lock().await;
+        let Some(h) = guard.as_mut() else {
+            return Err(errf!(tag, "stream unavailable"));
+        };
+        self.until_closed(op(h)).await.map_err(|e| errf!(tag, "{what} failed: {e}"))
+    }
+
     pub(crate) async fn reader(
         &self,
     ) -> MutexGuard<'_, Option<BufferedRead<ReadHalf<StreamKind>>>> {
         self.r.lock().await
     }
 
+    #[cfg(test)]
     pub(crate) async fn writer(&self) -> MutexGuard<'_, Option<WriteHalf<StreamKind>>> {
         self.w.lock().await
     }

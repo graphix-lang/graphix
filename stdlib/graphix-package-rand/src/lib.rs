@@ -12,7 +12,66 @@ use netidx::subscriber::Value;
 use netidx_core::pack::PackError;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
-use rand::{RngExt, distr::uniform::SampleRange, rng, seq::SliceRandom};
+use rand::{
+    RngExt,
+    distr::uniform::{Error as RangeError, SampleRange, SampleUniform},
+    rng,
+    seq::SliceRandom,
+};
+use std::{
+    fmt::Display,
+    ops::{Div, Mul},
+};
+
+/// A uniform sample of `[start, end)`.
+fn sample<T: SampleUniform + PartialOrd + Copy>(
+    start: T,
+    end: T,
+) -> Result<T, RangeError> {
+    let range = start..end;
+    if range.is_empty() {
+        return Err(RangeError::EmptyRange);
+    }
+    // a float range's sample may round up to its end
+    loop {
+        let v = range.clone().sample_single(&mut rng())?;
+        if v < end {
+            break Ok(v);
+        }
+    }
+}
+
+/// [`sample`] over floats, where a range of finite bounds too wide for its
+/// type is sampled at half scale: halving and doubling are exact.
+fn sample_float<F>(start: F, end: F) -> Result<F, RangeError>
+where
+    F: SampleUniform + PartialOrd + Copy + Mul<Output = F> + Div<Output = F> + From<f32>,
+{
+    let two = F::from(2.);
+    sample(start, end).or_else(|e| match e {
+        RangeError::NonFinite => sample(start / two, end / two).map(|v| v * two),
+        e => Err(e),
+    })
+}
+
+/// `sampled` as a value, or nothing, logged.
+fn logged<T: Display>(
+    start: T,
+    end: T,
+    sampled: Result<T, RangeError>,
+    value: fn(T) -> Value,
+) -> Option<Value> {
+    match sampled {
+        Ok(v) => Some(value(v)),
+        Err(_) => {
+            log::error!(
+                target: graphix_compiler::FAILURE_TARGET,
+                "rand: no value in [{start}, {end})"
+            );
+            None
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Rand {
@@ -56,24 +115,39 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         macro_rules! gen_cases {
-            ($start:expr, $end:expr, $($typ:ident),+) => {
+            ($start:expr, $end:expr; $($ftyp:ident),+; $($typ:ident),+) => {
                 match ($start, $end) {
+                    // XCR claude for claude: [bug/low] `.ok()` drops sample_single's
+                    // error, so an empty range, a NaN or infinite bound, and a
+                    // finite float range whose width overflows f64 (`#start:
+                    // -1e308, #end: 1e308`, a valid request) produce nothing
+                    // forever, and nothing is logged. Log the refused range under
+                    // FAILURE_TARGET as other failing operators do. Sample a finite
+                    // overflowing float range as `start * (1 - u) + end * u` so it
+                    // gives a value. probe:
+                    // design/review-2026-10-26/repro/x-panics-rand-silent-range.gx
+                    // (x-panics-02)
+                    // 2026-10-27 claude: rand samples through sample/sample_float:
+                    // a range with no value (empty, a float one with start == end
+                    // included, which rand's inclusive float sampler answered with
+                    // start, or a NaN bound) logs 'rand: no value in [start, end)'
+                    // under FAILURE_TARGET and produces nothing; a float sample
+                    // that rounds up to end is drawn again; a finite float range
+                    // too wide for its type is sampled at half scale and doubled
+                    // (exact, so the result stays in [start, end)) in place of the
+                    // start*(1-u)+end*u form. Pins: graphix-shell
+                    // tests/swallowed_error_logs.rs an_empty_rand_range_is_logged,
+                    // graphix-tests lib_tests::core::rand_wide_float_range.
                     $(
-                        // an empty, infinite or overflowing range is no value
-                        // CR claude for claude: [bug/low] `.ok()` drops sample_single's
-                        // error, so an empty range, a NaN or infinite bound, and a
-                        // finite float range whose width overflows f64 (`#start:
-                        // -1e308, #end: 1e308`, a valid request) produce nothing
-                        // forever, and nothing is logged. Log the refused range under
-                        // FAILURE_TARGET as other failing operators do. Sample a finite
-                        // overflowing float range as `start * (1 - u) + end * u` so it
-                        // gives a value. probe:
-                        // design/review-2026-10-26/repro/x-panics-rand-silent-range.gx
-                        // (x-panics-02)
-                        (Value::$typ(start), Value::$typ(end)) => {
-                            (*start..*end).sample_single(&mut rng()).ok().map(Value::$typ)
+                        (Value::$ftyp(start), Value::$ftyp(end)) => {
+                            logged(*start, *end, sample_float(*start, *end), Value::$ftyp)
                         }
-                    ),+
+                    )+
+                    $(
+                        (Value::$typ(start), Value::$typ(end)) => {
+                            logged(*start, *end, sample(*start, *end), Value::$typ)
+                        }
+                    )+
                     _ => None
                 }
             };
@@ -84,7 +158,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
             Invocation::Fired => {
                 match (self.args.value(0), self.args.value(1), self.args.value(2)) {
                     (Some(start), Some(end), Some(_)) => gen_cases!(
-                        start, end, F32, F64, I8, I16, I32, I64, Z32, Z64, U8, U16, U32,
+                        start, end; F32, F64; I8, I16, I32, I64, Z32, Z64, U8, U16, U32,
                         U64, V32, V64
                     ),
                     _ => None,

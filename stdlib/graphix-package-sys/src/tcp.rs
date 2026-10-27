@@ -122,15 +122,10 @@ impl EvalCachedAsync for TcpShutdownEv {
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             use tokio::io::AsyncWriteExt;
-            let mut guard = stream.writer().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("TCPError", "stream unavailable"),
-            };
-            match stream.until_closed(s.shutdown()).await {
-                Ok(()) => Value::Null,
-                Err(e) => errf!("TCPError", "shutdown failed: {e}"),
-            }
+            stream
+                .on_writer("TCPError", "shutdown", async |s| s.shutdown().await)
+                .await
+                .map_or_else(|e| e, |()| Value::Null)
         }
     }
 }

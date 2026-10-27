@@ -143,3 +143,19 @@ sys::exit(resp ~ 0)
         assert!(log.contains(&want), "{label}: {log}");
     }
 }
+
+/// A rand range holding no value (an empty one, a float one included, or
+/// one with a NaN bound) produces nothing and logs the range (x-panics-02).
+#[test]
+fn an_empty_rand_range_is_logged() {
+    const PROGRAM: &str = r#"
+let a = rand::rand(#start: 5, #end: 5, #clock: 0);
+let b = rand::rand(#start: 2.5, #end: 2.5, #clock: 0);
+let c = rand::rand(#start: 1.0, #end: 0.0 / 0.0, #clock: 0);
+sys::exit(sys::time::after_idle(duration:200.ms, 0))
+"#;
+    let (_, log) = run(PROGRAM, false, "rand");
+    for range in ["[5, 5)", "[2.5, 2.5)", "[1, NaN)"] {
+        assert!(log.contains(&format!("rand: no value in {range}")), "{range}: {log}");
+    }
+}

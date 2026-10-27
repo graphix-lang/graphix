@@ -188,9 +188,12 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
                 builder = builder.default_headers(headers);
             }
             if let Some(ca_cert) = &ca_cert {
-                let cert = reqwest::Certificate::from_pem(ca_cert)
+                let certs = reqwest::Certificate::from_pem_bundle(ca_cert)
                     .map_err(|e| http_err(format_args!("invalid ca_cert PEM: {e}")))?;
-                builder = builder.tls_certs_only([cert]);
+                if certs.is_empty() {
+                    return Err(http_err("invalid ca_cert PEM: no certificate in it"));
+                }
+                builder = builder.tls_certs_only(certs);
             }
             let client = builder.build().map_err(|e| {
                 http_err(format_args!("failed to build client: {}", chain(e)))

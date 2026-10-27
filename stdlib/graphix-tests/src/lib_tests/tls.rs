@@ -102,6 +102,19 @@ run!(tls_stream_before_cert, { let cd = crate::lib_tests::cert_dir(); format!(r#
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
 
+// A #ca_cert holding no certificate is refused, never an empty trust
+// store every handshake then fails against (x-security-07).
+run!(tls_connect_refuses_a_ca_without_certificate, r#"{
+    let listener = sys::tcp::listen("127.0.0.1:0")?;
+    let client_tcp = sys::tcp::connect(sys::tcp::listener_addr(listener)?)?;
+    let ca = buffer::from_string("this is not a certificate");
+    let c = sys::tls::connect(#ca_cert: ca, "127.0.0.1", client_tcp);
+    select c { error as e => "[e]", _ => "connected" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s))
+        if &**s == "error:`TLSError(\"invalid ca_cert PEM: no certificate in it\")")
+}; FuseExpect::Jit);
+
 /// A client that never speaks fails its server's handshake at the timeout
 /// rather than holding the socket until it hangs up.
 #[tokio::test]

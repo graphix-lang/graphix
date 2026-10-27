@@ -37,8 +37,9 @@ type Server;
 
 /// Create a configured HTTP client. `#timeout` bounds each request whole
 /// (none by default); `#connect_timeout` bounds its connection (30 s by
-/// default). `#ca_cert` is the only CA the client trusts: a server
-/// certificate must chain to it, whatever the platform trusts.
+/// default). `#ca_cert` (PEM, one certificate or more) is the only CA the
+/// client trusts: a server certificate must chain to it, whatever the
+/// platform trusts. A `#ca_cert` holding no certificate is refused.
 val client: fn(
     ?#timeout: [duration, null],
     ?#default_headers: Array<(string, string)>,

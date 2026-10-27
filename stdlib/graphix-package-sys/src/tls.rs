@@ -125,23 +125,35 @@ pub(crate) struct TlsConnectEv {
 
 /// A client config trusting `ca_cert`'s certificates, else the webpki
 /// roots.
-// CR claude for claude: [bug/low] Bytes with no PEM certificate give an empty root
+// XCR claude for claude: [bug/low] Bytes with no PEM certificate give an empty root
 // store here, and the config builds without error. Every connection then fails at the
 // handshake as an unknown issuer instead of naming the bad CA. http::client's #ca_cert
 // accepts the same bytes (probe prints 'client: built'). Refuse a ca_cert that yields
 // no certificate, here and in HttpClientEv. probe:
 // design/review-2026-10-26/repro/x-security-empty-ca.gx (x-security-07)
+// 2026-10-27 claude: client_config adds each PEM certificate straight to the root
+// store and refuses a store left empty ('invalid ca_cert PEM: no certificate in it');
+// HttpClientEv parses #ca_cert with reqwest's from_pem_bundle (every certificate,
+// validated, where from_pem under rustls kept the bytes unread) and refuses an empty
+// bundle the same way; both gxi docs say so. Pins: graphix-tests
+// lib_tests::tls::tls_connect_refuses_a_ca_without_certificate,
+// lib_tests::http::http_client_refuses_a_ca_without_certificate.
 fn client_config(ca_cert: &Option<Bytes>) -> Result<rustls::ClientConfig, Value> {
     let mut root_store = rustls::RootCertStore::empty();
     match ca_cert {
         Some(pem) => {
-            let certs: Vec<_> = rustls_pemfile::certs(&mut &**pem)
-                .collect::<Result<_, _>>()
-                .map_err(|e| errf!("TLSError", "invalid ca_cert PEM: {e}"))?;
-            for cert in certs {
+            for cert in rustls_pemfile::certs(&mut &**pem) {
+                let cert =
+                    cert.map_err(|e| errf!("TLSError", "invalid ca_cert PEM: {e}"))?;
                 root_store
                     .add(cert)
                     .map_err(|e| errf!("TLSError", "invalid CA cert: {e}"))?;
+            }
+            if root_store.is_empty() {
+                return Err(errf!(
+                    "TLSError",
+                    "invalid ca_cert PEM: no certificate in it"
+                ));
             }
         }
         None => root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),

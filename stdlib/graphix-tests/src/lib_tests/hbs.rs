@@ -1,6 +1,9 @@
 use anyhow::Result;
 use arcstr::literal;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 run!(hbs_basic, r#"{
@@ -213,3 +216,29 @@ run!(hbs_partial_tree_renders, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "a(b(c())d())")
 }; FuseExpect::Jit);
+
+// A refusal names the value as Graphix prints it, never by its runtime
+// form (gx-stdlib-02).
+run!(hbs_refusals_print_values, r#"{
+    let tuple = hbs::render("x", (1, 2));
+    let variant = hbs::render(#partials: `A(1), "x", {a: 1});
+    let partial = hbs::render(#partials: {p: (1, "q")}, "x", {a: 1});
+    "[tuple]|[variant]|[partial]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == concat!(
+        "error:`HbsErr(\"the data must be a struct or a map, not (1, 2)\")",
+        "|error:`HbsErr(\"partials must be a struct, map, or null, got `A(1)\")",
+        "|error:`HbsErr(\"partial values must be strings, got (1, \\\"q\\\")\")"
+    ))
+}; FuseExpect::Jit);
+
+// The partials are data, as the data is: the check refuses a reference or
+// a function there (gx-stdlib-05).
+run!(hbs_partials_reference_refused, r#"{
+    let p = "P";
+    hbs::render(#partials: &p, "hi {{a}}", {a: 1})
+}"#, refused("&string is not data"); FuseExpect::None);
+
+run!(hbs_partials_function_refused, r#"
+    hbs::render(#partials: {p: |x| x}, "hi {{a}}", {a: 1})
+"#, refused("is not data: a writer writes no function and no reference"); FuseExpect::None);

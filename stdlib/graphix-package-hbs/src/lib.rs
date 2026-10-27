@@ -7,7 +7,7 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     env::Env,
     errf,
-    typ::{FnType, Type},
+    typ::{FnType, NakedPrefix, Type},
 };
 use graphix_package_core::{FastMemo, Shape, shape};
 use graphix_package_json::JsonView;
@@ -38,15 +38,19 @@ fn register_partials(
         Shape::Object(entries, _) => {
             for (name, tmpl, _) in entries.iter() {
                 let Value::String(tmpl) = tmpl else {
-                    return Err(format!("partial values must be strings, got {tmpl}"));
+                    return Err(format!(
+                        "partial values must be strings, got {}",
+                        NakedPrefix(tmpl)
+                    ));
                 };
                 register(registry, block, name.as_str(), tmpl)?;
             }
             Ok(())
         }
-        Shape::Seq(_) | Shape::Leaf(_) => {
-            Err(format!("partials must be a struct, map, or null, got {partials}"))
-        }
+        Shape::Seq(_) | Shape::Leaf(_) => Err(format!(
+            "partials must be a struct, map, or null, got {}",
+            NakedPrefix(partials)
+        )),
     }
 }
 
@@ -261,7 +265,7 @@ fn build_registry(
     Ok(registry)
 }
 
-// CR claude for claude: [bug/low] The refusal messages here and in register_partials
+// XCR claude for claude: [bug/low] The refusal messages here and in register_partials
 // ("the data must be a struct or a map, not {data}", "partials must be ... got
 // {partials}", "partial values must be strings, got {tmpl}") print the Value with its
 // Rust Display. A tuple or variant therefore reaches the program as
@@ -269,6 +273,10 @@ fn build_registry(
 // Format them with graphix_types::typ::Naked, or TVal over the argument's type from ft,
 // as str::sprintf does. probe:
 // design/review-2026-10-26/repro/gx-stdlib-hbs-marker-leak.gx (gx-stdlib-02)
+// 2026-10-27 claude: The three refusals print the value with NakedPrefix (Graphix's
+// printing, capped at 128 values so a huge argument does not make a huge message): the
+// repro now answers 'not (1, 2)' and 'got `A(1)'. Pin: graphix-tests
+// lib_tests::hbs::hbs_refusals_print_values.
 fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {
@@ -280,7 +288,8 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
                 Ok(_) => {
                     return Some(errf!(
                         "HbsErr",
-                        "the data must be a struct or a map, not {data}"
+                        "the data must be a struct or a map, not {}",
+                        NakedPrefix(data)
                     ));
                 }
                 Err(e) => return Some(errf!("HbsErr", "{e}")),

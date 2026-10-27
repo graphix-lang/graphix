@@ -56,15 +56,10 @@ impl EvalCachedAsync for IoReadEv {
 
     fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.reader().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOError", "stream unavailable"),
-            };
-            match stream.until_closed(read_chunk(s, n)).await {
-                Ok(bytes) => Value::Bytes(PBytes::new(bytes)),
-                Err(e) => errf!("IOError", "read failed: {e}"),
-            }
+            stream
+                .on_reader("IOError", "read", async |s| read_chunk(s, n).await)
+                .await
+                .map_or_else(|e| e, |bytes| Value::Bytes(PBytes::new(bytes)))
         }
     }
 }
@@ -378,17 +373,14 @@ impl EvalCachedAsync for IoReadExactEv {
 
     fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.reader().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOError", "stream unavailable"),
-            };
             // the buffer grows as bytes arrive, not to n
             let mut buf = Vec::new();
-            match stream.until_closed((&mut *s).take(n).read_to_end(&mut buf)).await {
-                Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
-                Err(e) => errf!("IOError", "read_exact failed: {e}"),
-            }
+            stream
+                .on_reader("IOError", "read_exact", async |s| {
+                    s.take(n).read_to_end(&mut buf).await
+                })
+                .await
+                .map_or_else(|e| e, |_| Value::Bytes(PBytes::new(Bytes::from(buf))))
         }
     }
 }
@@ -410,15 +402,11 @@ impl EvalCachedAsync for IoReadAllEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.reader().await;
-            let Some(s) = guard.as_mut() else {
-                return errf!("IOError", "stream unavailable");
-            };
             let mut buf = Vec::new();
-            match stream.until_closed(s.read_to_end(&mut buf)).await {
-                Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
-                Err(e) => errf!("IOError", "read_all failed: {e}"),
-            }
+            stream
+                .on_reader("IOError", "read_all", async |s| s.read_to_end(&mut buf).await)
+                .await
+                .map_or_else(|e| e, |_| Value::Bytes(PBytes::new(Bytes::from(buf))))
         }
     }
 }
@@ -438,28 +426,12 @@ impl EvalCachedAsync for IoWriteEv {
         Some((get_stream(cached, 0)?, cached.get::<Bytes>(1)?))
     }
 
-    // CR claude for claude: [structure/low] This and five sibling evals (read,
-    // read_exact, read_all, write_exact, flush) repeat the half-lock / "stream
-    // unavailable" preamble. The read copies run under Halves::until_closed; the write
-    // and flush copies do not. Halves::close awaits the `w` lock, so a close issued
-    // while a write is blocked on a peer that does not read never answers, while a
-    // blocked read is cut off with BrokenPipe. Add one Halves method per half that
-    // locks it, maps a missing half to the IOError and runs the call under
-    // until_closed, and use it in all six. Found by reading; not run. (x-dup-04)
-    // 2026-10-27 claude: The write and flush evals (and sys::tcp::shutdown) now run
-    // under until_closed too (x-async-io-04); the repeated preamble this CR is about
-    // remains.
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.writer().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOError", "stream unavailable"),
-            };
-            match stream.until_closed(s.write(&data)).await {
-                Ok(n) => Value::U64(n as u64),
-                Err(e) => errf!("IOError", "write failed: {e}"),
-            }
+            stream
+                .on_writer("IOError", "write", async |s| s.write(&data).await)
+                .await
+                .map_or_else(|e| e, |n| Value::U64(n as u64))
         }
     }
 }
@@ -481,15 +453,10 @@ impl EvalCachedAsync for IoWriteExactEv {
 
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.writer().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOError", "stream unavailable"),
-            };
-            match stream.until_closed(s.write_all(&data)).await {
-                Ok(()) => Value::Null,
-                Err(e) => errf!("IOError", "write_exact failed: {e}"),
-            }
+            stream
+                .on_writer("IOError", "write_exact", async |s| s.write_all(&data).await)
+                .await
+                .map_or_else(|e| e, |()| Value::Null)
         }
     }
 }
@@ -510,15 +477,10 @@ impl EvalCachedAsync for IoFlushEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.writer().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOError", "stream unavailable"),
-            };
-            match stream.until_closed(s.flush()).await {
-                Ok(()) => Value::Null,
-                Err(e) => errf!("IOError", "flush failed: {e}"),
-            }
+            stream
+                .on_writer("IOError", "flush", async |s| s.flush().await)
+                .await
+                .map_or_else(|e| e, |()| Value::Null)
         }
     }
 }

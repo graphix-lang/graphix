@@ -73,6 +73,16 @@ run!(https_beside_a_silent_client, { let cd = crate::lib_tests::cert_dir(); form
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
 }, timeout: 5; FuseExpect::Jit);
 
+// A #ca_cert holding no certificate is refused, never a client that
+// trusts nothing (x-security-07).
+run!(http_client_refuses_a_ca_without_certificate, r#"{
+    let c = http::client(#ca_cert: buffer::from_string("this is not a certificate"), null);
+    select c { error as e => "[e]", _ => "built" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s))
+        if &**s == "error:`HTTPError(\"invalid ca_cert PEM: no certificate in it\")")
+}; FuseExpect::Jit);
+
 run!(http_status_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "created [req.method]",
