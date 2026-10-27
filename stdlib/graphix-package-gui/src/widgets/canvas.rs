@@ -330,7 +330,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
     }
 }
 
-// CR claude for claude: [bug/medium] A shape is tessellated whole, with no clipping to
+// XCR claude for claude: [bug/medium] A shape is tessellated whole, with no clipping to
 // the canvas, at a fixed tolerance, so its cost grows with its size, not with what is
 // visible. A filled circle of radius 1e12 in a 300x200 canvas takes about 1 s and 1 GB
 // per draw (1e8: 10 ms, 1e10: 94 ms), and each 100x of radius costs 10x. A radius of
@@ -343,6 +343,13 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
 // 2026-10-27 claude: Eric ruled (2026-10-27, cr-questions round 2, q48, Canvas shapes
 // much larger than the canvas): yes, refuse past a bound (the recommendation: refuse
 // past a bound (simple, predictable); clipping later if needed.)
+// 2026-10-27 claude: Built as ruled (refuse past a bound), in canvas-huge-line-01's fix
+// (codex, reviewed and merged by claude): draw_shape refuses every shape whose extent
+// passes 1,000,000 logical pixels: circle, arc and ellipse radii, rect sizes, curve
+// control points, stroke widths, text size times length, and path segments. A refused
+// shape is logged once through the invalid-geometry path, as a non-finite one is. Pins:
+// widgets::canvas::tests::every_shape_has_a_bounded_extent (each shape kind at 100 and
+// at 1e30), widgets::canvas::path::tests::huge_finite_line_is_rejected.
 fn draw_shape(
     frame: &mut iced_widget::canvas::Frame<Renderer>,
     shape: &CanvasShape,

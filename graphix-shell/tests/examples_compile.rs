@@ -278,7 +278,8 @@ impl Repl {
                 if let Some(typ) = line.strip_prefix("-:") {
                     shown = Some(typ.trim());
                 }
-                refused |= line.starts_with("error:") || line.starts_with("Error:");
+                // a refusal's message, never a value that is an error
+                refused |= line.starts_with("Error: ") || line.starts_with("error: ");
             }
             let result = self.input(input);
             if let Some(shown) = shown {
