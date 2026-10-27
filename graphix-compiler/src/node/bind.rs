@@ -683,7 +683,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         if let ExprKind::Bind(b) = &self.spec.kind
             && b.typ.is_some()
         {
-            crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
+            crate::defer_unresolved_names(ctx, &self.typ, &self.spec)?;
             // an abstract type's parameters are invariant: the annotation,
             // not the payload, decides a constructed value's
             // CR claude for eric: [bug/medium] With invariant abstract parameters,

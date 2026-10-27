@@ -4,7 +4,8 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, FnType, RefHist, RefPair, Type, contains::ContainsHist,
+        AndAc, FnType, RefHist, RefPair, Type,
+        contains::{ContainsHist, find_open_cell},
         setops::strictly_identical,
     },
 };
@@ -12,9 +13,12 @@ use ahash::AHashSet;
 use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
-use nohash::IntMap;
+use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
-use std::ops::{Deref, DerefMut};
+use std::{
+    mem,
+    ops::{Deref, DerefMut},
+};
 
 /// What a signature match has paired: each implementation cell's
 /// signature type, and the unions holding an open variable, whose pairing
@@ -52,8 +56,10 @@ impl SigPairs {
 
     /// Pair every deferred union: the first assignment of signature
     /// members to implementation members that every union, and the unions
-    /// those pairings defer in turn, accept.
-    // CR claude for claude: [perf/low] Each permutation of the popped union recurses
+    /// those pairings defer in turn, accept. Unions that share no open
+    /// implementation cell pair apart, so one that cannot pair fails
+    /// without retrying the others.
+    // XCR claude for claude: [perf/low] Each permutation of the popped union recurses
     // into the settle of every other deferred union and clones SigPairs every time.
     // When the union that cannot pair is the one popped last, all the others are
     // retried in full, for (n!)^k attempts. Four 6-member unions with one mismatch do
@@ -62,11 +68,75 @@ impl SigPairs {
     // cell with the failing one; a failure independent of the other unions fails at
     // once. probe: design/review-2026-10-26/repro/t-contains-sig-settle-exponential.sh
     // (t-contains-06)
+    // 2026-10-27 claude: SigPairs::settle splits the deferred unions into groups
+    // linked by an open implementation cell no pairing has decided (split_group) and
+    // searches each group apart (search, whose recursion settles the rest of its group
+    // the same way), so a union that cannot pair fails after its own permutations. The
+    // K=4 repro is refused at once (was >150 s). Pin:
+    // lang::interfaces::unpairable_union_refused_without_retrying_the_others (hangs
+    // with the split undone).
     pub(super) fn settle(
         &mut self,
         env: &Env,
         hist: &mut RefHist<AHashSet<RefPair>>,
     ) -> Result<()> {
+        while !self.deferred.is_empty() {
+            let rest = self.split_group();
+            let r = self.search(env, hist);
+            self.deferred = rest;
+            r?
+        }
+        Ok(())
+    }
+
+    /// Keep in `deferred` the last union and every union linked to it
+    /// through an open implementation cell no pairing has decided; return
+    /// the others, in order.
+    fn split_group(&mut self) -> Vec<(Type, Type)> {
+        let cells: LPooled<Vec<LPooled<IntSet<usize>>>> = self
+            .deferred
+            .iter()
+            .map(|(_, imp)| {
+                let mut free: LPooled<IntSet<usize>> = LPooled::take();
+                find_open_cell(imp, true, &mut |tv| {
+                    if !self.cells.contains_key(&tv.cell_addr()) {
+                        free.insert(tv.cell_addr());
+                    }
+                    false
+                });
+                free
+            })
+            .collect();
+        let n = cells.len();
+        let mut grouped: LPooled<Vec<bool>> = (0..n).map(|i| i + 1 == n).collect();
+        let mut linked: LPooled<IntSet<usize>> = LPooled::take();
+        linked.extend(cells[n - 1].iter().copied());
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for (i, c) in cells.iter().enumerate() {
+                if !grouped[i] && !c.is_disjoint(&linked) {
+                    grouped[i] = true;
+                    linked.extend(c.iter().copied());
+                    grew = true;
+                }
+            }
+        }
+        let mut rest = Vec::new();
+        for (pair, grouped) in
+            mem::take(&mut self.deferred).into_iter().zip(grouped.iter())
+        {
+            match grouped {
+                true => self.deferred.push(pair),
+                false => rest.push(pair),
+            }
+        }
+        rest
+    }
+
+    /// Pair the last deferred union by the first assignment of its
+    /// members under which the rest settle.
+    fn search(&mut self, env: &Env, hist: &mut RefHist<AHashSet<RefPair>>) -> Result<()> {
         let Some((s0, s1)) = self.deferred.pop() else { return Ok(()) };
         let (Type::Set(m0), Type::Set(m1)) = (&s0, &s1) else { unreachable!() };
         let n = m0.len();
@@ -170,7 +240,7 @@ impl Type {
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
-                    && tr0.cells_agree(tr1) =>
+                    && tr0.same_definition(tr1) =>
             {
                 Ok(tr0.params.len() == tr1.params.len()
                     && tr0
@@ -400,7 +470,7 @@ impl Type {
             (Self::Ref(r0), Self::Ref(r1))
                 if r0.scope == r1.scope
                     && r0.name == r1.name
-                    && r0.cells_agree(r1)
+                    && r0.same_definition(r1)
                     && r0.params.len() == r1.params.len() =>
             {
                 for (t0, t1) in r0.params.iter().zip(r1.params.iter()) {
@@ -448,14 +518,7 @@ impl Type {
                     })
                 }
             }
-            (Self::Set(s0), Self::Set(s1))
-                if s0.len() == s1.len()
-                    && (s0.iter().any(open_member) || s1.iter().any(open_member)) =>
-            {
-                tvar_map.deferred.push((self.clone(), impl_type.clone()));
-                Ok(())
-            }
-            // CR claude for claude: [bug/medium] This pairs union members by position
+            // XCR claude for claude: [bug/medium] This pairs union members by position
             // and assumes both sides are in the same order. A union is sorted once,
             // when it is built, and TVar's Ord compares unbound cells by their absent
             // bindings. So an implementation union built while its cells were open
@@ -467,10 +530,18 @@ impl Type {
             // cell anywhere (has_unbound), not only a top-level open member. probe:
             // design/review-2026-10-26/repro/t-contains-sig-union-order.sh
             // (t-contains-03)
+            // 2026-10-27 claude: sig_matches_inner defers every same-length pair of
+            // unions that holds an unbound cell anywhere (the ground arm above takes
+            // the rest), and the positional pairing arm is gone, so SigPairs::settle
+            // pairs the members in whatever order the rest accepts (up to
+            // MAX_PAIRED_MEMBERS; a larger union still pairs in stored order). The
+            // repro checks. Pin:
+            // lang::interfaces::union_with_nested_cells_pairs_in_any_order.
+
+            // a union is sorted as it was built, while its cells were open,
+            // so its members pair in whichever order the rest accepts
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
-                for (t0, t1) in s0.iter().zip(s1.iter()) {
-                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
-                }
+                tvar_map.deferred.push((self.clone(), impl_type.clone()));
                 Ok(())
             }
             (Self::Error(e0), Self::Error(e1)) => {
@@ -568,9 +639,7 @@ impl Type {
                     }
                 }
             }
-            // a union of open implementation cells is the variable when
-            // each cell is
-            // CR claude for claude: [bug/medium] Only a signature variable may meet an
+            // XCR claude for claude: [bug/medium] Only a signature variable may meet an
             // implementation union of open cells. A concrete signature type falls to
             // the final mismatch arm, although it is an instance (the cells bind to it
             // and the union collapses). `val f: fn(b: bool, x: i64, y: i64) -> i64`
@@ -581,11 +650,15 @@ impl Type {
             // argument mapped to something else. probe:
             // design/review-2026-10-26/repro/t-contains-sig-concrete-vs-open-union.sh
             // (t-contains-04)
-            (Self::TVar(_), Self::Set(members))
-                if members
-                    .iter()
-                    .all(|m| matches!(m, Self::TVar(tv) if tv.binding().is_none())) =>
-            {
+            // 2026-10-27 claude: The open-union arm takes any signature type, not only
+            // a variable: each open member pairs with it, and a member an argument
+            // mapped elsewhere is a usage mismatch. The repro checks. Pins:
+            // lang::interfaces::union_of_open_cells_implements_a_concrete_type,
+            // union_of_open_cells_does_not_implement_one_of_two_types.
+
+            // a union of open implementation cells is the signature's type
+            // when each cell is
+            (_, Self::Set(members)) if members.iter().all(open_member) => {
                 for m in members.iter() {
                     self.sig_matches_int(env, m, tvar_map, hist)?;
                 }

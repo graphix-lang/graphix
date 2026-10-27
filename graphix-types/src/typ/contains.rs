@@ -6,8 +6,9 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, AndAc, Brief, CoreTrait, FnType, Indiscernible, Lazy, Mutability, NormKey, Open,
-        RefHist, RefPair, TVar, TraitId, Type, node_addr, params_size, probe_key,
+        AbstractId, AndAc, Brief, CoreTrait, FnType, Indiscernible, Lazy, Mutability,
+        NormKey, Open, RefHist, RefPair, TVar, TraitId, Type, node_addr, params_size,
+        probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{CellFact, Fresh, RigidGate, would_cycle_inner},
     },
@@ -656,7 +657,8 @@ impl Type {
     // helper now bounds a run at 30 s so an accepted program fails the test instead of
     // hanging it.
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
-        if strictly_identical(self, c) || matches!((self, c), (Type::Ordered, Type::Discernible))
+        if strictly_identical(self, c)
+            || matches!((self, c), (Type::Ordered, Type::Discernible))
         {
             return Ok(true);
         }
@@ -1148,7 +1150,7 @@ fn same_content(a: &Type, b: &Type) -> bool {
 
 /// The first open cell in `t` that `pick` takes, each shared node walked
 /// once; a function type's parts only `into_fns`.
-fn find_open_cell(
+pub(super) fn find_open_cell(
     t: &Type,
     into_fns: bool,
     pick: &mut dyn FnMut(&TVar) -> bool,
@@ -1253,8 +1255,9 @@ impl Type {
     /// bounded by `Concrete` or `Data`, refuses a type holding an abstract
     /// type that crosses no data: name it.
     fn uncastable_refusal(&self, env: &Env, t: &Self) -> Option<anyhow::Error> {
-        let bounded =
-            |t: &Type, by: &dyn Fn(&TVar) -> bool| find_open_cell(t, true, &mut |tv| by(tv)).is_some();
+        let bounded = |t: &Type, by: &dyn Fn(&TVar) -> bool| {
+            find_open_cell(t, true, &mut |tv| by(tv)).is_some()
+        };
         let either = |by: &dyn Fn(&TVar) -> bool| bounded(self, by) || bounded(t, by);
         if !either(&|tv| tv.requires_concrete() || tv.requires_data()) {
             return None;
@@ -1577,7 +1580,7 @@ impl Type {
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
-                    && tr0.cells_agree(tr1)
+                    && tr0.same_definition(tr1)
                     && tr0.params.len() == tr1.params.len()
                     && tr0
                         .params
@@ -2975,6 +2978,22 @@ mod tests {
         }
         let small = Type::Primitive(Typ::I64.into());
         assert_eq!(format_compact!("{}", Brief(&small)), "i64");
+    }
+
+    /// `&T` and `&mut T` over one inner allocation are two types to every
+    /// memo and every walk that visits a shared node once.
+    #[test]
+    fn reference_mutability_is_part_of_a_shared_node() {
+        let env = Env::default();
+        let inner = Arc::new(Type::Primitive(Typ::I64.into()));
+        let shared = Type::ByRef(Mutability::Shared, inner.clone());
+        let writable = Type::ByRef(Mutability::Mut, inner);
+        assert!(shared.contains(&env, &writable).unwrap());
+        assert!(!writable.contains(&env, &shared).unwrap());
+        assert!(!union_identical(&shared, &writable));
+        assert_ne!(crate::typ::norm_key(&shared), crate::typ::norm_key(&writable));
+        assert_ne!(probe_key(&shared), probe_key(&writable));
+        assert_ne!(node_addr(&shared), node_addr(&writable));
     }
 
     #[test]

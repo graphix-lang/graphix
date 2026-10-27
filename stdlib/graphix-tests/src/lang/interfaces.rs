@@ -1350,6 +1350,44 @@ run!(
     "/test/m.gx" => "let pick = |b, x, y| select b { true => x, false => y }"
 ; FuseExpect::None);
 
+// ... and a concrete type when each cell maps to it.
+run!(
+    union_of_open_cells_implements_a_concrete_type,
+    is(Value::I64(2)),
+    "/test.gx" => "mod m; let result = m::pick(false, 1, 2)",
+    "/test/m.gxi" => "val pick: fn(b: bool, x: i64, y: i64) -> i64;",
+    "/test/m.gx" => "let pick = |b: bool, x, y| select b { true => x, false => y }"
+);
+
+run!(
+    union_of_open_cells_does_not_implement_one_of_two_types,
+    refused("type variable usage mismatch: expected string, got i64"),
+    "/test.gx" => "mod m; let result = m::pick(false, 1, \"s\")",
+    "/test/m.gxi" => "val pick: fn(b: bool, x: i64, y: string) -> i64;",
+    "/test/m.gx" => "let pick = |b: bool, x, y| select b { true => x, false => y }"
+; FuseExpect::None);
+
+// A union whose open cells sit inside its members pairs them in whatever
+// order the rest of the signature accepts: the implementation's union was
+// ordered while its cells were open.
+run!(
+    union_with_nested_cells_pairs_in_any_order,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(5)]),
+    "/test.gx" => "mod m; let result = m::f(true, 5)",
+    "/test/m.gxi" => "val f: fn(b: bool, x: 'a) -> [Array<i64>, Array<'a>];",
+    "/test/m.gx" => "let f = |b: bool, x| select b { true => [x], false => [3] }"
+);
+
+// Unions that share no cell pair apart: one that cannot pair is refused
+// without trying every pairing of the others.
+run!(
+    unpairable_union_refused_without_retrying_the_others,
+    refused("signature has string, implementation has f64"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val f: fn(x0: ['a0, 'a1, 'a2, 'a3, 'a4, string], x1: ['b0, 'b1, 'b2, 'b3, 'b4, i64], x2: ['c0, 'c1, 'c2, 'c3, 'c4, i64], x3: ['d0, 'd1, 'd2, 'd3, 'd4, i64]) -> i64;",
+    "/test/m.gx" => "let f = |x0: ['a0, 'a1, 'a2, 'a3, 'a4, f64], x1: ['b0, 'b1, 'b2, 'b3, 'b4, i64], x2: ['c0, 'c1, 'c2, 'c3, 'c4, i64], x3: ['d0, 'd1, 'd2, 'd3, 'd4, i64]| -> i64 0"
+; FuseExpect::None);
+
 // A mismatch names the implemented type, not its cells.
 run!(
     implemented_type_prints_resolved,

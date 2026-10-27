@@ -3227,7 +3227,7 @@ pub(crate) enum Pending {
 }
 
 /// A written type name that did not resolve at its definition's check
-/// must name something once the check ends.
+/// must name something once the check ends, applied rightly.
 pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
 ) -> Result<()> {
@@ -3238,6 +3238,7 @@ pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
                 if !tr.names_something(&ctx.env) {
                     return Err(typ::UnresolvableRef::error(&tr, &ctx.env).at(&spec));
                 }
+                tr.check_application(&ctx.env).at(&spec)?;
             }
             Pending::Contractive(scope, name, spec) => {
                 ctx.env.check_contractive(&scope, &name).at(&spec)?;
@@ -3295,15 +3296,18 @@ pub(crate) fn recheck_pending_contractive<R: Rt, E: UserEvent>(
 }
 
 /// Record the names `t`, written at `spec`, holds that do not resolve
-/// yet ([`CompileCtx::pending_names`]).
+/// yet ([`CompileCtx::pending_names`]); refuse one that resolves and is
+/// applied wrongly.
 pub(crate) fn defer_unresolved_names<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     t: &Type,
     spec: &Expr,
-) {
+) -> Result<()> {
+    use expr::At;
     let mut names = Vec::new();
-    t.unresolved_names(&ctx.env, &mut names);
+    let res = t.unresolved_names(&ctx.env, &mut names).at(spec);
     ctx.pending_names.extend(names.into_iter().map(|tr| Pending::Name(tr, spec.clone())));
+    res
 }
 
 /// A `use` whose name did not exist at its compile position must name
@@ -3343,7 +3347,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
             top_id,
             node::StmtAt::TopLevel,
         )?;
-        node::defer_typedef_names(ctx, &n);
+        node::defer_typedef_names(ctx, &n)?;
         Ok((n, scope))
     })
 }

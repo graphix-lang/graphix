@@ -119,20 +119,17 @@ expands it.
 ## Same definition
 
 Name equality does not imply same meaning (REPL redefinition,
-cross-env views), so the Ref×Ref name fast paths ask whether two refs
-of one written name mean one definition, through one of two gates;
-disagreement falls through to the expansion arms.
-
-- `TypeRef::cells_agree`: two filled cells by their definition's
-  identity (`ResolvedRef::def_key`), two empty cells alike, a filled and
-  an empty one never. It gates the fast paths of `contains` (identical
-  params), `could_match` and `sig_matches` (one name over two
-  definitions, a reload's, is compared by what each means).
-- `TypeRef::same_definition`: filled cells the same way, two empty
-  cells by written scope and name. It gates `union` and
-  `union_identical` (`setops.rs`: refs to one definition merge or
-  compare by their params) and `contains`' arm for two instances of one
-  definition whose params contain each other (one type, no expansion).
+cross-env views), so the Ref×Ref fast paths ask whether two refs mean
+one definition through `TypeRef::same_definition`: two filled cells by
+their definition's identity (`ResolvedRef::def_key`), two empty cells
+by written scope and name, a filled and an empty one never;
+disagreement falls through to the expansion arms. It gates the fast
+paths of `contains` (identical params), `could_match` and `sig_matches`
+(each under equal scope and name: one name over two definitions, a
+reload's, is compared by what each means), `union` and
+`union_identical` (`setops.rs`: refs to one definition merge or compare
+by their params) and `contains`' arm for two instances of one
+definition whose params contain each other (one type, no expansion).
 
 `ResolvedRef::def_key` is the params allocation of one `TypeDef`,
 which every cell filled from it shares. A type a module's interface

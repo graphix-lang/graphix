@@ -4259,3 +4259,25 @@ run!(
 }"#,
     prints(r#"[i64:43, ["x", i64:1]]"#)
 );
+
+// A written type applies each name it holds to the definition's
+// parameters, one each, every one that holds no open cell within its
+// bound: refused at the annotation, whether anything expands it or not.
+run!(written_name_short_of_parameters_refused, r#"{
+    type P<'a> = ('a, 'a);
+    let bad: [P, null] = null;
+    bad
+}"#, refused("P expects 1 type parameters"); FuseExpect::None);
+
+run!(typedef_body_with_extra_parameters_refused, r#"{
+    type P<'a> = ('a, 'a);
+    type Q = [P<i64, string, bool>, null];
+    let bad: Q = null;
+    bad
+}"#, refused("P expects 1 type parameters"); FuseExpect::None);
+
+run!(written_parameter_outside_its_bound_refused, r#"{
+    type B<'a: Number> = ('a, 'a);
+    let bad: [B<string>, null] = null;
+    bad
+}"#, refused("type mismatch Number does not contain string"); FuseExpect::None);

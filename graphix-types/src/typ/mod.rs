@@ -79,20 +79,26 @@ impl Type {
     }
 }
 
-/// The address of a composite's content allocation, for walks that
-/// visit each shared node once; `None` for leaves and for `Map`, whose
-/// content is two allocations.
+/// The address of a composite's content allocation, its low bits telling
+/// apart the kinds (and a reference's mutability) that can wrap one
+/// allocation, for walks that visit each shared node once; `None` for
+/// leaves and for `Map`, whose content is two allocations.
 pub(super) fn node_addr(t: &Type) -> Option<usize> {
+    const _: () = assert!(align_of::<Type>() >= 8);
+    let slice = |a: &Arc<[Type]>, kind: usize| (**a).as_ptr().addr() | kind;
+    let boxed = |a: &Arc<Type>, kind: usize| (&**a as *const Type).addr() | kind;
     match t {
-        Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a, _) => {
-            Some((**a).as_ptr().addr())
-        }
-        Type::Abstract { params: a, .. } => Some((**a).as_ptr().addr()),
+        Type::Set(a) => Some(slice(a, 0)),
+        Type::Tuple(a) => Some(slice(a, 1)),
+        Type::Variant(_, a, _) => Some(slice(a, 2)),
+        Type::Abstract { params: a, .. } => Some(slice(a, 3)),
         Type::Struct(a) => Some((**a).as_ptr().addr()),
         Type::Fn(f) => Some((&**f as *const FnType).addr()),
-        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(_, a) => {
-            Some((&**a as *const Type).addr())
-        }
+        Type::Array(a) => Some(boxed(a, 0)),
+        Type::List(a) => Some(boxed(a, 1)),
+        Type::Error(a) => Some(boxed(a, 2)),
+        Type::ByRef(Mutability::Shared, a) => Some(boxed(a, 3)),
+        Type::ByRef(Mutability::Mut, a) => Some(boxed(a, 4)),
         Type::Map { .. }
         | Type::App(..)
         | Type::Hole
@@ -602,6 +608,14 @@ impl ResolvedRef {
         &self.typ
     }
 
+    /// Refuse `args` written for `name` unless they are one per parameter.
+    fn check_arity(&self, name: &ModPath, args: &[Type]) -> Result<()> {
+        if self.params.len() != args.len() {
+            bail!("{} expects {} type parameters", name, self.params.len());
+        }
+        Ok(())
+    }
+
     /// The definition's parameters by name, bound to `args`; `None` when
     /// the arity differs.
     pub(crate) fn bindings(
@@ -850,23 +864,6 @@ impl TypeRef {
         }
     }
 
-    /// Do two refs of one scope and name mean one definition, as far as
-    /// their cells prove? Filled cells by the definition's identity, two
-    /// open ones agree, and a filled cell beside an open one does not; a
-    /// disagreement only sends the pair to the expansion arm.
-    // CR claude for claude: [structure/low] This is same_definition except when both
-    // cells are open, and every caller (contains_dispatch's Ref fast path and the two
-    // in matches.rs) first requires equal scope and name, so under that guard the two
-    // agree on every input. Delete cells_agree and call same_definition at those sites,
-    // keeping their guard. Found by reading; not run. (t-typ-mod-05)
-    pub(crate) fn cells_agree(&self, other: &Self) -> bool {
-        match (self.resolved(), other.resolved()) {
-            (Some(a), Some(b)) => a.def_key() == b.def_key(),
-            (None, None) => true,
-            _ => false,
-        }
-    }
-
     /// Does the name mean something: its filled cell, a typedef visible
     /// in `env`, or a trait (a bound)? Never writes the cell: a fill
     /// before every name is registered can capture a shadowed target.
@@ -875,6 +872,24 @@ impl TypeRef {
         self.resolved().is_some()
             || self.resolve_pure(env).is_some()
             || env.trait_of_ref(self).is_some()
+    }
+
+    /// Refuse this application of a name that resolves when it gives the
+    /// definition the wrong number of parameters, or a parameter holding
+    /// no open cell that the parameter's bound refuses. Never writes a
+    /// cell.
+    pub fn check_application(&self, env: &Env) -> Result<()> {
+        let Some(def) = self.resolve_peek(env) else { return Ok(()) };
+        def.check_arity(&self.name, &self.params)?;
+        let known = def.bindings(&self.params).expect("arity checked");
+        for ((_, bound), arg) in def.params.iter().zip(self.params.iter()) {
+            let Some(bound) = bound else { continue };
+            let bound = bound.replace_tvars(&known);
+            if !arg.has_unbound() && !bound.has_unbound() {
+                bound.check_contains(env, arg)?
+            }
+        }
+        Ok(())
     }
 
     /// The filled cell's definition, else the name's in its scope now;
@@ -1063,6 +1078,12 @@ pub enum Type {
     // same thirty arms.
     // 2026-10-23 claude: Readdressed to claude in the 2026-10-23 triage: no ruling
     // needed. Take Type::Bound(BoundKind).
+    // 2026-10-27 claude: Not done in batch L1-b08, sized only: the eight bound variants
+    // are named 378 times across 22 files (typ/mod.rs 144, setops 40, cast 33, matches
+    // 24, normalize 24, print 24, contains 20, tvar 11, fusion/mod.rs 8, pattern.rs 8,
+    // typexp.rs 8, expr/test.rs 8, tval 8, the rest 1-4). Type::Bound(BoundKind) also
+    // moves Type's derived Ord and its image encoding (a format bump), so it wants a
+    // batch of its own run while no other lane edits graphix-types/src/typ.
     Concrete,
     /// The conjunct `'a: Data`: whatever binds the cell is data a writer
     /// can write: no reference, no function and no abstract type without
@@ -2480,9 +2501,10 @@ impl Type {
     /// Every name this written type holds that names nothing in `env`
     /// now ([`TypeRef::names_something`]), into `out`: a name's
     /// parameters and a variable's bounds included, a variable's binding
-    /// (inferred, not written) not.
+    /// (inferred, not written) not. A name that does resolve is refused
+    /// where it is applied wrongly ([`TypeRef::check_application`]).
     #[doc(hidden)]
-    // CR claude for claude: [bug/medium] A written type is checked here only for names
+    // XCR claude for claude: [bug/medium] A written type is checked here only for names
     // that resolve. Arity and parameter bounds are checked only inside lookup_ref_by,
     // that is, only when some relation expands the ref. So `let bad: [P, null] = null`
     // (P takes one parameter), `type Q = [P<i64, string, bool>, null]` and `[B<string>,
@@ -2493,12 +2515,27 @@ impl Type {
     // each bound where the argument holds no open cell, refusing at the annotation.
     // probe: design/review-2026-10-26/repro/t-typ-mod-written-type-arity-unchecked.gx
     // (t-typ-mod-01)
-    pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) {
+    // 2026-10-27 claude: unresolved_names refuses a written name that resolves and is
+    // applied wrongly (TypeRef::check_application: arity through
+    // ResolvedRef::check_arity, which lookup_ref_by shares, and each bound whose
+    // argument and bound hold no open cell), so defer_unresolved_names and
+    // defer_typedef_names return the refusal placed at the annotation or typedef;
+    // check_pending_names applies the same check to a name that resolves only by the
+    // check's end. The three repro forms are refused at their annotation. Pins:
+    // lang::types::written_name_short_of_parameters_refused,
+    // typedef_body_with_extra_parameters_refused,
+    // written_parameter_outside_its_bound_refused.
+    pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) -> Result<()> {
+        let mut res = Ok(());
         self.for_each_written_name(&mut |tr| {
-            if !tr.names_something(env) {
-                out.push(tr.clone())
+            if res.is_ok() {
+                match tr.names_something(env) {
+                    true => res = tr.check_application(env),
+                    false => out.push(tr.clone()),
+                }
             }
-        })
+        });
+        res
     }
 
     /// [`TypeRef::resolve_only_in`] of every name this written type holds,
@@ -2723,9 +2760,7 @@ impl Type {
                     params: def_params,
                     typ: def_typ,
                 } = &*resolved;
-                if def_params.len() != params.len() {
-                    bail!("{} expects {} type parameters", name, def_params.len());
-                }
+                resolved.check_arity(name, params)?;
                 if env.ide.is_lsp() {
                     if let (Some(pos), Some(ori)) = (pos, ori) {
                         env.push_type_ref(crate::ide::TypeRefSite {

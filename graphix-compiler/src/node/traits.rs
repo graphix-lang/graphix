@@ -389,7 +389,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         // every written name in a method's signature must name something by
         // the check's end
         for m in record.methods.iter() {
-            crate::defer_unresolved_names(ctx, &Type::Fn(m.typ.clone()), &self.spec);
+            crate::defer_unresolved_names(ctx, &Type::Fn(m.typ.clone()), &self.spec)?;
         }
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };

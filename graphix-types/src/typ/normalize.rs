@@ -1,7 +1,7 @@
 use crate::{
     expr::WrittenAt,
     stack::ensure_sufficient,
-    typ::{Mutability, TVar, Type, setops::union_identical},
+    typ::{AbstractId, Mutability, TVar, Type, setops::union_identical},
 };
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -73,7 +73,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         Type::Set(a) | Type::Tuple(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Struct(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Fn(a) => Some((d, &**a as *const _ as usize, 0)),
-        // CR claude for claude: [risk/low] The key drops a reference's mutability: `&X`
+        // XCR claude for claude: [risk/low] The key drops a reference's mutability: `&X`
         // and `&mut X` over one inner Arc get one key. contains' probe and commit memos
         // (via probe_key), normalize's memo and resolve_tvars' memo all key on it, and
         // `&T ⊇ &mut T` holds while the reverse does not, so a cached verdict or
@@ -81,9 +81,19 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         // the inner Arc today, so this is latent. Fix: key ByRef with the mutability in
         // the third component, and treat node_addr's ByRef arm the same way. Found by
         // reading; not run. (t-contains-07)
-        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(_, a) => {
+        // 2026-10-27 claude: norm_key keys a ByRef by its mutability in the third
+        // component (so probe_key too), and node_addr tags its address's low bits (Type
+        // is 8-aligned, asserted) by kind: a set, tuple, variant or abstract over one
+        // slice, and an array, list, error, &T or &mut T over one inner Type, are
+        // distinct shared nodes, so union_identical's shared-node short cut no longer
+        // calls &T and &mut T over one Arc identical (it did). Pin: graphix-types
+        // typ::contains::tests::reference_mutability_is_part_of_a_shared_node.
+        // Remaining: two variants of different tags over one payload slice still share
+        // a node_addr.
+        Type::Array(a) | Type::List(a) | Type::Error(a) => {
             Some((d, &**a as *const Type as usize, 0))
         }
+        Type::ByRef(m, a) => Some((d, &**a as *const Type as usize, *m as usize)),
         Type::Map { key, value } => {
             Some((d, &**key as *const Type as usize, &**value as *const Type as usize))
         }
@@ -109,15 +119,19 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
 
 /// What a member can merge with beyond the unkeyed members: a variant
 /// only with one of its tag and arity, a struct only with one of its
-/// field names.
+/// field names, a reference only with one to its definition (by its
+/// written name while its cell is open) and an abstract type only with
+/// itself, each of its arity.
 #[derive(PartialEq, Eq, Hash)]
 enum MergeKey {
     Variant(ArcStr, usize),
     Struct(u64, usize),
+    Ref(u64, usize),
+    Abstract(AbstractId, usize),
 }
 
 impl MergeKey {
-    // CR claude for claude: [perf/medium] [perf/medium] Only variants and structs get a
+    // XCR claude for claude: [perf/medium] [perf/medium] Only variants and structs get a
     // key here. A Type::Ref (every named typedef) and a Type::Abstract are unkeyed, so
     // Kept::merge_with tries each incoming one against every kept member: a union of N
     // named or abstract members normalizes in O(N^2). Constructs that normalize once
@@ -129,6 +143,14 @@ impl MergeKey {
     // count and Abstract by its id. probe:
     // design/review-2026-10-26/repro/x-perf-compile-abstract-union-cubic.sh
     // (x-perf-compile-02)
+    // 2026-10-27 claude: MergeKey keys a Ref by its definition (def_key), or its
+    // written scope and name while its cell is open (same_definition's two cases), and
+    // an Abstract by its id, each with its arity, so Kept::merge_with tries such a
+    // member only against those it could merge with. Debug --check: select over N
+    // abstract types 2.2 / 10.0 s at N = 800 / 1600 before, 1.2 / 1.5 s after; array
+    // literal 1.9 / 9.3 s before, 1.0 / 1.1 s after (about 0.8 s of each is startup).
+    // Pin: graphix-types typ::normalize::tests::named_and_abstract_members_are_keyed
+    // (deterministic; a timing pin would be flaky).
     fn of(t: &Type) -> Option<Self> {
         match t {
             Type::Variant(tag, args, _) => Some(Self::Variant(tag.clone(), args.len())),
@@ -137,6 +159,15 @@ impl MergeKey {
                 fields.iter().for_each(|(n, _, _)| n.hash(&mut h));
                 Some(Self::Struct(h.finish(), fields.len()))
             }
+            Type::Ref(tr) => {
+                let mut h = DefaultHasher::new();
+                match tr.def_key() {
+                    Some(k) => k.hash(&mut h),
+                    None => (&tr.scope, &tr.name).hash(&mut h),
+                }
+                Some(Self::Ref(h.finish(), tr.params.len()))
+            }
+            Type::Abstract { id, params } => Some(Self::Abstract(*id, params.len())),
             _ => None,
         }
     }
@@ -666,5 +697,33 @@ impl Type {
             | (Type::Error(_), _)
             | (_, Type::Error(_)) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{expr::ModPath, typ::TypeRef};
+
+    /// A union of named or abstract members normalizes in linear time:
+    /// each is tried only against members it could merge with.
+    #[test]
+    fn named_and_abstract_members_are_keyed() {
+        let abs = |name| Type::Abstract {
+            id: AbstractId::of(&ModPath::root(), name),
+            params: Arc::from_iter([]),
+        };
+        let named = |name: &str| {
+            Type::Ref(Arc::new(TypeRef::synthetic(
+                ModPath::root(),
+                ModPath::from([name]),
+                Arc::from_iter([]),
+            )))
+        };
+        let key = |t: &Type| MergeKey::of(t).expect("keyed");
+        assert!(key(&abs("A")) == key(&abs("A")));
+        assert!(key(&abs("A")) != key(&abs("B")));
+        assert!(key(&named("A")) == key(&named("A")));
+        assert!(key(&named("A")) != key(&named("B")));
     }
 }

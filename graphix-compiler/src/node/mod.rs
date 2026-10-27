@@ -924,7 +924,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     }
     compiled?;
     for n in children.iter() {
-        defer_typedef_names(ctx, n);
+        defer_typedef_names(ctx, n)?;
     }
     Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
 }
@@ -1102,23 +1102,24 @@ impl Writes {
 pub(crate) fn defer_typedef_names<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     n: &Node<R, E>,
-) {
-    let NodeView::TypeDef(td) = n.view() else { return };
+) -> Result<()> {
+    let NodeView::TypeDef(td) = n.view() else { return Ok(()) };
     let Some(def) = ctx
         .env
         .typedefs
         .get(&td.scope)
         .and_then(|m| m.get(&CompactString::from(td.name.as_str())))
     else {
-        return;
+        return Ok(());
     };
     let written: LPooled<Vec<Type>> = iter::once(def.typ().clone())
         .chain(def.rep.clone())
         .chain(def.params().iter().filter_map(|(_, c)| c.clone()))
         .collect();
     for t in written.iter() {
-        defer_unresolved_names(ctx, t, &td.spec);
+        defer_unresolved_names(ctx, t, &td.spec)?;
     }
+    Ok(())
 }
 
 /// Where a statement stands: a top-level statement, or one of a block's,
@@ -2389,7 +2390,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        defer_unresolved_names(ctx, &self.typ, &self.spec);
+        defer_unresolved_names(ctx, &self.typ, &self.spec)?;
         // each application of a definition T names holds its parameter
         // bounds, as where a contains expands it
         fn applications(t: &Type, env: &env::Env, r: &mut Result<()>) {
