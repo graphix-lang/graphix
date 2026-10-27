@@ -88,16 +88,10 @@ const SEQ_PRESENCE_SECOND_RUN: &str = r#"
 
 run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, is(Value::I64(2)); FuseExpect::Jit);
 
-// A bare `pc ~ x` at an entry that finds `x` bottom consumes the
-// sample's debt and issues nothing.
-// CR claude for claude: [readability/low] The comment says an entry that finds x bottom
-// 'consumes the sample's debt', but banked `~` banks it. The name says the second run
-// stalls, yet `pc <- pc ~ `Idle` leaves pc `Wait for one cycle per run, so the first
-// run issues nothing either (n is 0 at every step). What the fixture pins is that a
-// bank is not paid by a value that arrives and leaves while the arm sleeps: rename it
-// and say that. probe:
-// design/review-2026-10-26/repro/tests-seq-bare-sample-both-runs.gx (tests-seq-05)
-const SEQ_BARE_SAMPLE_STALLS_SECOND_RUN: &str = r#"
+// A bare `pc ~ x` at an entry that finds `x` bottom banks the fire. An `x`
+// that arrives and goes bottom again while the arm sleeps does not pay the
+// bank, at the wake or after it: neither entry issues anything.
+const SEQ_BARE_SAMPLE_BANK_OUTLIVES_A_PASSING_VALUE: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 16 => s + 1, _ => never() };
@@ -122,7 +116,12 @@ const SEQ_BARE_SAMPLE_STALLS_SECOND_RUN: &str = r#"
 }
 "#;
 
-run!(seq_bare_sample_stalls_second_run, SEQ_BARE_SAMPLE_STALLS_SECOND_RUN, is(Value::I64(0)); FuseExpect::Jit);
+run!(
+    seq_bare_sample_bank_outlives_a_passing_value,
+    SEQ_BARE_SAMPLE_BANK_OUTLIVES_A_PASSING_VALUE,
+    is(Value::I64(0));
+    FuseExpect::Jit
+);
 
 // Busy-drop: the first trigger runs; two arriving mid-run are dropped.
 const SEQ_BUSY_DROPS_RETRIGGER: &str = r#"
@@ -636,7 +635,8 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
             "let g = |v| { let r = never(); r <- v * 2; r }; g(request)",
             vec![2, 4, 6],
         ),
-        // a level absent at the first entry is waited for, then read as it stands
+        // a step's own level, a timer born at each run's entry, is waited for
+        // in every run
         (
             // CR claude for claude: [test-gap/low] The comment says an outer level
             // absent at the first entry is waited for and then read as it stands, but
@@ -647,6 +647,12 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
             // probe:
             // design/review-2026-10-26/repro/tests-seq-seqq-absent-level-outside.gx
             // (tests-seq-03)
+            // 2026-10-27 claude: The case's comment now says what it pins (lvl is a
+            // step, its timer born at each run's entry, waited for in every run). The
+            // outside variant still gives 342 342 342 at this tip: it is the seqq
+            // banked-request bug of tests-seq-01 / x-seq-sampling-02, both for eric.
+            // Add the outside case with [142, 242, 342] as that fix's pin once the
+            // request rule is ruled; landing it now would fail the gate.
             "absent_level",
             "let lvl = sys::time::timer(duration:20.ms, false) ~ 42; let q = request; let y = lvl; q * 100 + y",
             vec![142, 242, 342],
@@ -744,14 +750,9 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "x was null")
 );
 
-// A level `x?` in a step fires at entry as it stands and tracks after:
-// absent at entry it is waited for, and an error it takes after entry,
-// while a sibling holds the step, raises.
-// CR claude for claude: [doc-drift/low] The comment above says a level `x?` in a step
-// 'tracks after' its entry. It does not: a step reads x once at entry (or at its first
-// arrival), and only `live(x)?` sees a later error, which is why the next fixture
-// writes `live(late)?`. Reword the comment to the snapshot rule. probe:
-// design/review-2026-10-26/repro/tests-seq-qop-level-comment.gx (tests-seq-04)
+// A level `x?` in a step reads `x` once, at entry, or at its first
+// arrival when absent then. Only `live(x)?` sees an error `x` takes after
+// the entry while a sibling holds the step (the next fixture).
 run!(seq_qop_level_waits, r#"{
     let n = 0;
     n <- select n { s if s < 10 => s + 1, _ => never() };

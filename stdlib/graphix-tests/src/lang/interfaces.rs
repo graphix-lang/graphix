@@ -781,60 +781,6 @@ run!(
         }
     "#; FuseExpect::Jit);
 
-// An implementation that raises what its `val` does not declare is
-// refused.
-// CR claude for claude: [structure/low] This fixture and
-// a_raise_of_another_error_is_refused below are the programs of
-// throws_mismatch_names_nothing and throws_mismatch_names_the_written_types, with the
-// module renamed and weaker phrases. abstract_type_two_modules_combined likewise
-// repeats abstract_type_different_modules with other constants. Delete the three
-// copies; the twins pin more. Found by reading; not run. (tests-modules-image-03)
-run!(
-    an_undeclared_raise_is_refused,
-    refused("in throws clause"),
-    "/test.gx" => "mod m; let result = m::f(1)",
-    "/test/m.gxi" => "val f: fn(x: i64) -> i64",
-    "/test/m.gx" => "let f = |x: i64| -> i64 select x { 0 => error(`Zero)?, n => n }"
-; FuseExpect::None);
-
-run!(
-    a_raise_of_another_error_is_refused,
-    refused("in throws clause"),
-    "/test.gx" => "mod m; let result = m::f(1)",
-    "/test/m.gxi" => "val f: fn(x: i64) -> i64 throws Error<ErrChain<`A>>",
-    "/test/m.gx" => "let f = |x: i64| -> i64 select x { 0 => error(`Zero)?, n => n }"
-; FuseExpect::None);
-
-// Two modules with separate abstract types, combined by the caller.
-run!(
-    abstract_type_two_modules_combined,
-    is(Value::I64(15)),
-    "/test.gx" => r#"
-        mod mod_a;
-        mod mod_b;
-        let a = mod_a::make(10);
-        let b = mod_b::make(5);
-        let result = mod_a::get(a) + mod_b::get(b)
-    "#,
-    "/test/mod_a.gxi" => r#"
-        type T;
-        val make: fn(x: i64) -> T;
-        val get: fn(t: T) -> i64     "#,
-    "/test/mod_a.gx" => r#"
-        type T = Abstract<{ value: i64 }>;
-        let make = |x: i64| -> T T({ value: x });
-        let get = |t: T| -> i64 t.0.value
-    "#,
-    "/test/mod_b.gxi" => r#"
-        type T;
-        val make: fn(x: i64) -> T;
-        val get: fn(t: T) -> i64     "#,
-    "/test/mod_b.gx" => r#"
-        type T = Abstract<i64>;
-        let make = |x: i64| -> T T(x);
-        let get = |t: T| -> i64 t.0
-    "#);
-
 // Nominal abstract types: the tag at runtime.
 
 // A hidden abstract's constructor, payload and pattern are usable

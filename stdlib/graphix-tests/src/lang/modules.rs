@@ -252,6 +252,7 @@ run!(
     FuseExpect::Jit
 );
 
+// A blacklisted package takes its submodules with it.
 run!(
     a_blacklisted_root_is_refused,
     sandboxed("blacklist [sys]", "", PUBLISHES),
@@ -633,7 +634,6 @@ let result = x::a + y::b
     "/test/y/shared.gx" => "let v = 1"
     ; FuseExpect::Jit);
 
-// A blacklisted package takes its submodules with it.
 // A loaded body's deferred import must name something, as a file's must.
 const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
 {
@@ -655,36 +655,38 @@ run!(dynamic_module_missing_import, DYNAMIC_MODULE_MISSING_IMPORT, load_refused(
 
 // Sleep is pause: a loaded body whose arm sleeps resumes at the wake
 // even though its source does not fire again.
-// CR claude for claude: [test-gap/low] This fixture catches a reload at the wake and an
+// XCR claude for claude: [test-gap/low] This fixture catches a reload at the wake and an
 // arm that never wakes, but not an arm that never sleeps. If the loaded body kept
 // ticking while unselected, x would reach 40 sooner and `n >= 40` would still hold.
 // Gate on a self-loop counter instead of timers and pin the value delivered at the wake
 // exactly, so a tick while asleep shows. Found by reading; not run.
 // (tests-modules-image-07)
+// 2026-10-27 claude: The loaded body is a self-loop counter in lockstep with the
+// program's own step counter, asleep for steps 10..19, and the fixture pins the value
+// delivered at the wake exactly: 10 (a body that ticked asleep gives 20, a reload at
+// the wake 0 or 1, an arm that never wakes nothing). Pin:
+// dynamic_module_sleep_is_pause.
 const DYNAMIC_MODULE_SLEEP: &str = r#"
 {
-    let src = "let x = 0; x <- sys::time::timer(duration:2.ms, true) ~ x + 1";
-    let n = 0;
-    n <- sys::time::timer(duration:40.ms, true) ~ n + 1;
-    let x = select n % 2 {
-        0 => {
+    let src = "let x = 0; x <- select x { v if v < 100 => v + 1, _ => never() }";
+    let step = 0;
+    step <- select step { s if s < 30 => s + 1, _ => never() };
+    let x = select step < 10 || step >= 20 {
+        true => {
             let status = mod foo dynamic {
-                sandbox whitelist [core, sys::time];
+                sandbox whitelist [core];
                 sig { val x: i64 };
                 source src
             };
             select status { error as e => never(dbg(e)), null as _ => foo::x }
         },
-        _ => never()
+        false => never()
     };
-    filter(x, |v| v >= 40)
+    select step >= 20 { true => step ~ x, false => never() }
 }
 "#;
 
-run!(dynamic_module_sleep_is_pause, DYNAMIC_MODULE_SLEEP, |v: Result<&Value>| match v {
-    Ok(Value::I64(n)) => *n >= 40,
-    _ => false,
-}; FuseExpect::Jit);
+run!(dynamic_module_sleep_is_pause, DYNAMIC_MODULE_SLEEP, is(Value::I64(10)); FuseExpect::Jit);
 
 // Refusals of a statement in the wrong place carry their site.
 #[tokio::test(flavor = "current_thread")]
@@ -712,20 +714,17 @@ async fn module_errors_are_framed_by_the_module() -> Result<()> {
 }
 
 // A source that fails to compile leaves nothing behind: the next one
-// compiles the same names.
-// CR claude for claude: [test-gap/low] The second source's `let f` shadows anything the
-// failed load left, so this passes without the rollback it claims to pin. Give both
-// sources a hidden abstract typedef with different representations (sig `type C; val
-// make: fn(x: i64) -> C`): a leftover C from the failed load would then be refused as
-// "representation cannot change". That variant loads correctly today (status null, then
-// 42). (tests-modules-image-08)
+// defines the same hidden type with another representation.
 const DYNAMIC_MODULE_AFTER_A_FAILURE: &str = r#"
 {
-    let source = "let f = |x| x; let h = missing";
-    source <- sys::time::after_idle(duration:10.ms, "let f = |x| x + 1; let h = f(41)");
+    let source = """type C = Abstract<string>; let make = |x: i64| C("v"); let h = missing""";
+    source <- sys::time::after_idle(
+        duration:10.ms,
+        "type C = Abstract<i64>; let make = |x: i64| C(x); let h = make(41).0 + 1"
+    );
     let status = mod m dynamic {
         sandbox whitelist [core];
-        sig { val h: i64 };
+        sig { type C; val make: fn(x: i64) -> C; val h: i64 };
         source source
     };
     select status {
@@ -940,15 +939,7 @@ const RELOAD_CHANGES_A_REPRESENTATION: &str = r#"
 run!(reload_changes_a_representation, RELOAD_CHANGES_A_REPRESENTATION,
     load_refused("representation cannot change"); FuseExpect::Jit);
 
-// `use super::*` from a block-level module takes a name shadowed across
-// the block chain innermost-first, as `use super::x` does.
-// CR claude for claude: [readability/low] The comment above describes
-// glob_super_takes_the_innermost (further down, uncommented), not this fixture, which
-// pins that a value bound after its `mod` is not visible to the module. The orphaned "A
-// blacklisted package takes its submodules with it." above
-// DYNAMIC_MODULE_MISSING_IMPORT belongs to a_blacklisted_root_is_refused. In image.rs,
-// struct Session's doc opens with fn session's description. Move each comment to its
-// fixture. Found by reading; not run. (tests-modules-image-04)
+// A value bound after its `mod` is not visible to the module.
 run!(
     an_import_of_a_later_binding_is_refused,
     refused("top not defined"),
@@ -1048,6 +1039,8 @@ run!(
     ; FuseExpect::None
 );
 
+// `use super::*` from a block-level module takes a name shadowed across
+// the block chain innermost-first, as `use super::x` does.
 run!(
     glob_super_takes_the_innermost,
     is(Value::I64(2)),

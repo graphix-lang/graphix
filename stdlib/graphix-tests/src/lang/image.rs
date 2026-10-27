@@ -326,8 +326,6 @@ enum Run {
     WarmOrCold(Bytes),
 }
 
-/// One run of `program`, compiled cold, or restored from `image` alone
-/// when given; the cold run also hands back the program image it wrote.
 /// What one session ran and kept.
 struct Session {
     program: CompRes<NoExt>,
@@ -340,6 +338,8 @@ struct Session {
     lowerings: usize,
 }
 
+/// One run of `program`, compiled cold, or restored from `image` alone
+/// when given; the cold run also hands back the program image it wrote.
 async fn session(program: &str, image: Option<Bytes>, par: ParMode) -> Result<Session> {
     let run = match image {
         None => Run::Cold,
