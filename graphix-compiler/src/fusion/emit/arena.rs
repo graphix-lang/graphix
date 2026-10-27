@@ -63,6 +63,19 @@ impl Committed {
     }
 }
 
+/// The arena has no room left for an allocation: the generation retires
+/// and the install retries in a fresh one.
+#[derive(Debug)]
+pub(crate) struct ArenaExhausted;
+
+impl std::fmt::Display for ArenaExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the JIT code arena is exhausted")
+    }
+}
+
+impl std::error::Error for ArenaExhausted {}
+
 pub(super) struct Arena {
     /// None once freed.
     reservation: Option<os::Reservation>,
@@ -124,7 +137,7 @@ impl JITMemoryProvider for Arena {
             None => {
                 let grow = align_up(size, page);
                 if grow > self.size - self.committed {
-                    return Err(io::Error::other("jit arena exhausted"));
+                    return Err(io::Error::other(ArenaExhausted));
                 }
                 // SAFETY: the run lies inside the reservation.
                 unsafe { res.commit(res.base().add(self.committed), grow)? };

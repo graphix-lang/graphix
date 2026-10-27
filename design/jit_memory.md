@@ -44,9 +44,8 @@ The memory eviction cannot reach is the generation's own:
   module ever defined.
 
 That is about 6 KB per compile-and-drop. It comes back only when the
-module drops. Today a module drops when its arena is exhausted and every
-kernel installed in it has dropped, so one surviving kernel pins it for
-good.
+module drops, which relocation (below) makes happen while some of its
+kernels survive.
 
 ## Relocation
 
@@ -93,10 +92,14 @@ relocation installs.
 
 A relocation is marked when either holds:
 
-- a generation retired. Arena exhaustion retires the current
-  generation mid-link and installs the batch in a fresh one
-  (`Jit::try_install`); the old one's survivors move at the next cycle
-  start instead of pinning it.
+- a generation retired. A failed install drops the current
+  generation mid-link, never installing into it again; on arena
+  exhaustion the batch installs in a fresh one, twice the size each
+  time a fresh one cannot hold it, up to the 2 GiB colocated-call range
+  (`Jit::install`). Any other failure, an OS refusal to commit pages
+  included, returns its own error, and the next install reserves a fresh
+  generation. The old one's survivors move at the next cycle start
+  instead of pinning it.
 - the current generation is mostly dead: its committed arena is at
   least 4MB and its live code (the code bytes of its `loaded` records,
   kept up to date at load and sweep) is under a quarter of that. This
@@ -111,8 +114,8 @@ program from ever relocating.
 
 `Jit::relocate`, when the mark is set:
 
-1. If the current generation is mostly dead, retire it and start a
-   fresh one of the configured size.
+1. If the current generation is mostly dead, retire it; the install
+   reserves a fresh one of the configured size.
 2. Collect every live entry whose `code` is not the current
    generation's.
 3. Install their wrappers' record trees into the current generation in

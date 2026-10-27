@@ -13,7 +13,7 @@ use crate::{
         self, Brief, FusionBlocker,
         kernel_abi::{
             self, AbiKind, FreezeError, KernelParam, KernelSig, ParamKind, Seen,
-            abi_kind, expand_key_fp, freeze_for_abi_normalized, scalar_prim,
+            abi_kind, expand_key_fp, freeze_for_abi_normalized, key_closed, scalar_prim,
             try_freeze_for_abi_normalized,
         },
     },
@@ -905,10 +905,6 @@ impl std::fmt::Debug for MemoEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "MemoEntry(size {})", self.size)
     }
-}
-
-fn key_closed(key: &TypeRef) -> bool {
-    key.params.iter().all(|t| t.tvar_free())
 }
 
 impl ResolveCx {

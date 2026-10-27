@@ -58,7 +58,7 @@ use triomphe::Arc;
 
 use super::{
     abi::{LocalKind, local_payload_ty},
-    arena::{Arena, Committed},
+    arena::{Arena, ArenaExhausted, Committed},
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
     lower::{
         Callees, EmittedBody, HelperFuncIds, KernelFns, SiteLayout, compile_into_function,
@@ -68,19 +68,6 @@ use super::{
         record_decode, record_encode,
     },
 };
-
-/// The module's code arena is full: the generation retires and the
-/// install retries in a fresh one.
-#[derive(Debug)]
-pub(crate) struct ArenaExhausted;
-
-impl std::fmt::Display for ArenaExhausted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the JIT code arena is exhausted")
-    }
-}
-
-impl std::error::Error for ArenaExhausted {}
 
 /// The code and data of one JIT module, owned jointly by the
 /// [`Generation`] installing into it and every [`WrappedKernel`] it
@@ -465,8 +452,8 @@ fn take_functions(pending: &mut [Pending]) -> Vec<(FuncId, Function)> {
 const STACK: usize = 8 << 20;
 
 /// Compile every function in `work` on as many threads as there is work
-/// for, up to the compile's thread budget (rayon's pool); the results are
-/// in `work`'s order whatever the threads did.
+/// for, up to the runtime's evaluation workers; the results are in
+/// `work`'s order whatever the threads did.
 fn backend_all(
     isa: &dyn TargetIsa,
     mut work: Vec<(FuncId, Function)>,
@@ -474,7 +461,7 @@ fn backend_all(
     const PER_THREAD: usize = 8;
     let work: Vec<(FuncId, &mut Function)> =
         work.iter_mut().map(|(id, f)| (*id, f)).collect();
-    // CR claude for claude: [bug/medium] This call runs on a thread outside any rayon
+    // XCR claude for claude: [bug/medium] This call runs on a thread outside any rayon
     // pool (the link batch's thread, or the runtime thread on the fallback path), so it
     // builds rayon's global pool just to read its size. That pool is about 30 workers,
     // and nothing ever runs on them (74 threads vs 47 with RAYON_NUM_THREADS=1). When
@@ -483,7 +470,13 @@ fn backend_all(
     // link_batch takes when its spawn fails and the per-spawn `.ok()` below. Fix: read
     // RAYON_NUM_THREADS, else available_parallelism, without touching rayon. probe:
     // design/review-2026-10-26/repro/x-parallel-rayon-global-pool.sh (x-parallel-03)
-    let threads = rayon::current_num_threads().min(work.len().div_ceil(PER_THREAD));
+    // 2026-10-26 claude: backend_all's budget is branch::eval_workers() (the running
+    // cycle's evaluation workers, else GRAPHIX_EVAL_THREADS, else one a core), the knob
+    // every other graphix worker count reads, in place of RAYON_NUM_THREADS; nothing in
+    // the JIT touches rayon now. Pin: graphix-rt/tests/jit_backend_threads.rs (a fused
+    // program, 66 functions on 9 link threads, then build_global must still succeed; it
+    // fails with rayon::current_num_threads back).
+    let threads = crate::branch::eval_workers().min(work.len().div_ceil(PER_THREAD));
     if threads <= 1 {
         let mut ctx = Context::new();
         return work.into_iter().map(|(id, f)| backend(isa, &mut ctx, id, f)).collect();
@@ -526,8 +519,8 @@ fn backend_all(
 }
 
 /// One JIT module, where records install. A generation an install
-/// failed in is never finalized again: it retires whole, and its code
-/// is freed when its last kernel drops.
+/// failed in is dropped at once, never installed into or finalized
+/// again; its code is freed when its last kernel drops.
 struct Generation {
     module: ManuallyDrop<JITModule>,
     code: Arc<CodeOwner>,
@@ -586,6 +579,14 @@ const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
 /// The largest arena a generation reserves: a colocated call's PC-relative
 /// relocation reaches ±2GiB.
 const JIT_ARENA_MAX: usize = 2 * 1024 * 1024 * 1024 - 1;
+
+/// The arenas the fresh generations an install tries reserve, from
+/// `first`: each twice the last, up to and including [`JIT_ARENA_MAX`].
+fn arena_sizes(first: usize) -> impl Iterator<Item = usize> {
+    std::iter::successors(Some(first), |&a| {
+        (a < JIT_ARENA_MAX).then(|| a.saturating_mul(2).min(JIT_ARENA_MAX))
+    })
+}
 
 /// The arena a generation reserves first: `GRAPHIX_JIT_ARENA` (bytes),
 /// from a page to [`JIT_ARENA_MAX`]; any other value leaves the JIT
@@ -815,7 +816,7 @@ impl Generation {
         }
         match self.module.define_function_bytes(id, rec.align, &rec.bytes, &relocs) {
             Ok(()) => Ok(()),
-            // CR claude for claude: [risk/low] Every ModuleError::Allocation becomes
+            // XCR claude for claude: [risk/low] Every ModuleError::Allocation becomes
             // ArenaExhausted here, but Arena::allocate also fails for an OS commit
             // failure (`res.commit(..)?`: mprotect, or VirtualAlloc MEM_COMMIT on
             // Windows) and for an unsupported alignment. On a commit failure,
@@ -827,7 +828,19 @@ impl Generation {
             // ArenaExhausted here only an Allocation whose err.get_ref() is
             // ArenaExhausted, and let any other error carry its OS cause. Found by
             // reading; not run. (x-unsafe-01)
-            Err(ModuleError::Allocation { .. }) => Err(ArenaExhausted.into()),
+            // 2026-10-26 claude: Arena::allocate reports a full reservation as
+            // io::Error::other(ArenaExhausted) (the type moved to emit/arena.rs), and
+            // define_record maps to ArenaExhausted only an Allocation error carrying
+            // it; a commit or alignment refusal keeps its own cause, so Jit::install
+            // fails at once with it instead of reserving four ever larger arenas. Pin:
+            // jit::tests::an_arena_refusal_is_not_exhaustion (an alignment the arena
+            // refuses; with every Allocation mapped to ArenaExhausted the error claims
+            // exhaustion and three more generations retire).
+            Err(ModuleError::Allocation { err })
+                if err.get_ref().is_some_and(|e| e.is::<ArenaExhausted>()) =>
+            {
+                Err(ArenaExhausted.into())
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -1354,18 +1367,16 @@ fn renumber_function(func: &mut Function, renumber: &impl Fn(FuncId) -> FuncId) 
 }
 
 /// The per-`ExecCtx` JIT. Kernels call each other with direct CLIF
-/// calls, so a pass's records install into one module generation,
-/// which lives as long as the `ExecCtx` or its longest-lived kernel.
-// CR claude for claude: [doc-drift/low] The doc above (a generation "lives as long as
-// the `ExecCtx` or its longest-lived kernel") predates relocation, and so does
-// design/jit_memory.md's Eviction sentence "one surviving kernel pins it for good".
-// Jit::relocate moves the survivors of a retired or mostly dead generation at a cycle's
-// start, and the old module drops with its last entry. Say that here, and delete the
-// stale sentence from jit_memory.md (its own Relocation section already describes the
-// move). Found by reading; not run. (f-jit-02)
+/// calls, so a pass's records install into one module generation. A
+/// generation retires when an install in it fails or, at a cycle's
+/// start, when most of its code is dead; [`Self::relocate`] then moves
+/// its live kernels into the current one, and its module drops with its
+/// last kernel.
 pub struct Jit {
     shared: Arc<EmitShared>,
-    generation: Generation,
+    /// Where the next install goes; none once an install failed, until
+    /// the next install reserves a fresh one.
+    generation: Option<Generation>,
     /// Generations retired so far.
     retired: usize,
     /// The arena a fresh generation reserves first.
@@ -1404,7 +1415,7 @@ impl Jit {
         let shared = Arc::new(EmitShared::new()?);
         let arena = *ARENA_SIZE.as_ref().map_err(|e| anyhow!("{e}"))?;
         let committed = SArc::new(AtomicUsize::new(0));
-        let generation = Generation::new(&shared.isa, arena, &committed)?;
+        let generation = Some(Generation::new(&shared.isa, arena, &committed)?);
         Ok(Self {
             shared,
             generation,
@@ -1641,7 +1652,7 @@ impl Jit {
     }
 
     /// Install the wrappers' record trees and return their entries and
-    /// the code they live in. A failed install retires the generation; a
+    /// the code they live in. A failed install drops the generation; a
     /// full arena reinstalls in a fresh one, twice the size each time a
     /// fresh one cannot hold the batch either, up to the colocated-call
     /// range.
@@ -1649,13 +1660,21 @@ impl Jit {
         &mut self,
         wrappers: &[Arc<BodyRecord>],
     ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
-        let mut arena = self.arena;
+        let mut sizes = arena_sizes(self.arena).peekable();
         loop {
-            let e = match self.try_install(wrappers, arena) {
-                Ok(r) => return Ok(r),
+            let generation = match self.generation.take() {
+                Some(g) => g,
+                None => {
+                    let arena = sizes.next().expect("an exhausted install stops first");
+                    Generation::new(&self.shared.isa, arena, &self.committed)?
+                }
+            };
+            let generation = self.generation.insert(generation);
+            let e = match generation.install(wrappers) {
+                Ok(p) => return Ok((p, generation.code.clone())),
                 Err(e) => e,
             };
-            // CR claude for claude: [risk/low] Two holes in this retry loop. (1) When
+            // XCR claude for claude: [risk/low] Two holes in this retry loop. (1) When
             // try_install cannot reserve a fresh generation, the generation whose
             // install just failed stays current. It still holds a spill thunk and
             // chunks that were defined before their body's define failed, and their
@@ -1672,45 +1691,37 @@ impl Jit {
             // fresh one or err); retry only after a fresh generation was made; stop
             // only after a fresh JIT_ARENA_MAX generation has failed. Found by reading;
             // not run. (f-jit-01)
-            if !e.chain().any(|c| c.is::<ArenaExhausted>()) || arena >= JIT_ARENA_MAX {
+            // 2026-10-26 claude: Jit::generation is an Option: a failed install drops
+            // the generation before anything else, so none is ever installed into or
+            // finalized again, and the next install reserves a fresh one (or errs,
+            // leaving none); try_install is gone. Fresh arenas come from
+            // arena_sizes(self.arena), which ends with JIT_ARENA_MAX, and the loop
+            // stops only when a fresh generation of the last size failed. relocate
+            // retires a mostly dead generation the same way and lets install reserve
+            // its successor. Pins: jit::tests::no_install_goes_into_a_failed_generation
+            // (a thunk defined before its body's define failed, with no fresh arena
+            // reservable: the old loop installed the next batch into that generation
+            // and cranelift panicked in finalize) and
+            // jit::tests::exhaustion_tries_fresh_arenas_up_to_the_colocated_range.
+            // design/jit_memory.md's mark and move sections say the same.
+            self.generation = None;
+            self.retired += 1;
+            self.relocate = true;
+            let exhausted = e.chain().any(|c| c.is::<ArenaExhausted>());
+            let Some(&arena) = sizes.peek().filter(|_| exhausted) else {
                 return Err(e);
-            }
+            };
             log::warn!(
                 "JIT code arena exhausted: retired generation {} (freed when its last \
                  kernel drops) and reinstalling in a fresh module of {arena} bytes",
                 self.retired
             );
-            arena = arena.saturating_mul(2).min(JIT_ARENA_MAX);
-        }
-    }
-
-    /// Install into the current generation; a failure retires it for a
-    /// fresh one of `arena` bytes, so a generation never holds a failed
-    /// install's definitions.
-    fn try_install(
-        &mut self,
-        wrappers: &[Arc<BodyRecord>],
-        arena: usize,
-    ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
-        match self.generation.install(wrappers) {
-            Ok(p) => Ok((p, self.generation.code.clone())),
-            Err(e) => match Generation::new(&self.shared.isa, arena, &self.committed) {
-                Ok(g) => {
-                    self.generation = g;
-                    self.retired += 1;
-                    self.relocate = true;
-                    Err(e)
-                }
-                Err(fresh) => {
-                    Err(e.context(format!("and no fresh generation: {fresh:#}")))
-                }
-            },
         }
     }
 
     /// The records held, by id and by the current generation.
     pub(crate) fn retained(&self) -> usize {
-        self.records.len() + self.generation.loaded.len()
+        self.records.len() + self.generation.as_ref().map_or(0, |g| g.loaded.len())
     }
 
     /// Forget the records of `funcs`, bodies and thunks no cache hands
@@ -1719,9 +1730,11 @@ impl Jit {
         for id in funcs {
             self.records.remove(id);
         }
-        self.generation.sweep();
+        if let Some(g) = &mut self.generation {
+            g.sweep();
+            self.relocate |= g.mostly_dead();
+        }
         self.entries.retain(|e| e.strong_count() > 0);
-        self.relocate |= self.generation.mostly_dead();
     }
 
     /// What every live generation's arena has committed.
@@ -1739,18 +1752,22 @@ impl Jit {
         }
         self.relocate = false;
         debug_assert!(self.in_flight.is_none(), "a batch compiling at a cycle's start");
-        if *RELOCATE_EVERY || self.generation.mostly_dead() {
-            self.generation =
-                Generation::new(&self.shared.isa, self.arena, &self.committed)?;
+        if (*RELOCATE_EVERY
+            || self.generation.as_ref().is_some_and(Generation::mostly_dead))
+            && self.generation.take().is_some()
+        {
             self.retired += 1;
         }
         self.entries.retain(|e| e.strong_count() > 0);
-        let current = self.generation.code.clone();
+        let current = self.generation.as_ref().map(|g| g.code.clone());
         let moving: LPooled<Vec<SArc<KernelEntry>>> = self
             .entries
             .iter()
             .filter_map(Weak::upgrade)
-            .filter(|e| e.wrapper.get().is_some() && !e.lives_in(&current))
+            .filter(|e| {
+                e.wrapper.get().is_some()
+                    && !current.as_ref().is_some_and(|c| e.lives_in(c))
+            })
             .collect();
         drop(current);
         for batch in moving.chunks(super::super::LINK_BATCH) {
@@ -2324,4 +2341,88 @@ fn emit_wrapper(
 pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     (PrimType::from_typ(Typ::get(v)) == Some(prim))
         .then(|| crate::tval::value_words(v)[1])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::typ::Type;
+    use arcstr::literal;
+    use cranelift_codegen::binemit::Reloc;
+    use netidx_value::Typ;
+
+    fn record(
+        kind: RecordKind,
+        target: Option<RelocTarget>,
+        callees: Vec<Arc<BodyRecord>>,
+    ) -> Arc<BodyRecord> {
+        let relocs = target
+            .into_iter()
+            .map(|target| RecordReloc { offset: 0, kind: Reloc::Abs8, target, addend: 0 })
+            .collect();
+        let kernel = Arc::new(KernelSig {
+            fn_name: literal!("t"),
+            params: vec![],
+            return_type: Type::Primitive(Typ::I64.into()),
+            has_tail_loop: false,
+            skipped_args: vec![],
+            tail_invariant: vec![],
+            site_block_words: Default::default(),
+        });
+        let bytes = vec![0u8; 16].into_boxed_slice();
+        Arc::new(BodyRecord {
+            kind,
+            label: literal!("t"),
+            bytes,
+            align: 16,
+            relocs,
+            callees,
+            kernel,
+        })
+    }
+
+    #[test]
+    fn exhaustion_tries_fresh_arenas_up_to_the_colocated_range() {
+        assert_eq!(arena_sizes(JIT_ARENA_MAX).collect::<Vec<_>>(), [JIT_ARENA_MAX]);
+        let r = JIT_ARENA_RESERVE;
+        assert_eq!(arena_sizes(r).collect::<Vec<_>>(), [r, 2 * r, 4 * r, JIT_ARENA_MAX]);
+    }
+
+    /// An allocation the arena refuses for a reason other than room
+    /// reports that reason, and no fresh arena is tried for it.
+    #[test]
+    fn an_arena_refusal_is_not_exhaustion() {
+        let mut jit = Jit::new().unwrap();
+        let mut wrapper = record(RecordKind::Wrapper, None, vec![]);
+        Arc::get_mut(&mut wrapper).unwrap().align = 1 << 30;
+        let Err(e) = jit.install(&[wrapper]) else { panic!("the install succeeded") };
+        assert!(!e.chain().any(|c| c.is::<ArenaExhausted>()), "{e:#}");
+        assert!(format!("{e:#}").contains("unsupported jit alignment"), "{e:#}");
+        assert_eq!(jit.retired(), 1);
+    }
+
+    /// An install that failed after defining a body's thunk, whose
+    /// relocation names the body it never defined, leaves nothing a
+    /// later install finalizes, even when no fresh generation can be
+    /// reserved at once.
+    #[test]
+    fn no_install_goes_into_a_failed_generation() {
+        let mut jit = Jit::new().unwrap();
+        let reserve = jit.arena;
+        jit.arena = 1 << 62;
+        let thunk = record(RecordKind::Thunk, Some(RelocTarget::Owner), vec![]);
+        let kind =
+            RecordKind::Kernel { consts: vec![], thunk: Some(thunk), chunks: vec![] };
+        let body = record(kind, Some(RelocTarget::Const(0)), vec![]);
+        let failing = record(RecordKind::Wrapper, None, vec![body]);
+        assert!(jit.install(&[failing]).is_err());
+        let wrapper = record(RecordKind::Wrapper, None, vec![]);
+        assert!(
+            jit.install(&[wrapper.clone()]).is_err(),
+            "a 2^62 byte arena was reserved"
+        );
+        jit.arena = reserve;
+        let (ptrs, _) = jit.install(&[wrapper]).unwrap();
+        assert!(!ptrs[0].is_null());
+    }
 }

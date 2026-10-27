@@ -12,6 +12,7 @@ use crate::{
     profile::{self, Phase},
     typ::{Type, TypeRef},
 };
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
@@ -20,7 +21,7 @@ use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use triomphe::Arc;
 
 /// The primitive types a kernel holds in a register: the numerics and bool.
@@ -423,10 +424,10 @@ pub(crate) struct Seen<'a> {
     fp: u64,
     len: usize,
     prev: Option<&'a Seen<'a>>,
-    /// The refs a freeze expanded directly below this one and what they
+    /// The refs a freeze expanded directly below this one that the
+    /// freeze's own memo ([`Freeze::memo`]) does not hold, and what they
     /// froze to: a ref's freeze depends only on it and the path, so a
-    /// sibling occurrence takes it, and a definition naming the next
-    /// twice freezes in linear time, not 2^depth.
+    /// sibling occurrence takes it.
     frozen: RefCell<SmallVec<[(u64, Arc<TypeRef>, Type); 2]>>,
 }
 
@@ -439,6 +440,12 @@ pub(crate) fn expand_key_fp(key: &TypeRef) -> u64 {
     key.name.hash(&mut h);
     key.params.len().hash(&mut h);
     h.finish()
+}
+
+/// Whether no param of `key` holds a type variable: an unbound cell
+/// compares equal to any other, so only a closed key names one type.
+pub(crate) fn key_closed(key: &TypeRef) -> bool {
+    key.params.iter().all(|t| t.tvar_free())
 }
 
 impl<'a> Seen<'a> {
@@ -503,21 +510,7 @@ pub(crate) enum FreezeError {
 
 fn try_freeze_for_abi(t: &Type) -> Result<Type, FreezeError> {
     let _profile = profile::phase(Phase::Freeze);
-    freeze_for_abi_d(t, None)
-}
-
-// CR claude for claude: [perf/medium] Freezing walks a type's typedefs once per
-// path, so a typedef DAG (`type T0 = [null, (T1, T1)]`, `type T1 = [null, (T2,
-// T2)]`, ..) is 2^depth: a block `{ <T0..T30>; let v: T0 = null; select v { null =>
-// 1, (a, b) => 2 } }` does not finish fusing in 170 s, and depth 21 / 23 take 3.6 /
-// 6.2 s (debug, fused; --no-fusion 1 s). Found beside x-rerun-5-01, whose
-// shapes_collide half is fixed. Freeze each (typedef, params) once a walk, sharing
-// the frozen node. probe: the block above as a .gx file, run with fusion
-// (fuse-freeze-dag-01)
-fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
-    crate::stack::ensure_sufficient(|| {
-        freeze_for_abi_d_inner(t, seen).map(super::TypeMemo::intern_frozen)
-    })
+    Freeze::default().freeze(t, None)
 }
 
 /// A hash of a frozen node's own content and its parts' identities (a
@@ -583,195 +576,281 @@ pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
     }
 }
 
-fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
-    use FreezeError::{NonCanonical, Unresolved, Unsupported};
-    // The TVar lock is not reentrant: clone out of the guard before recursing.
-    let resolved = t.deref_cloned();
-    {
-        let resolved = resolved.as_ref().ok_or(Unsupported)?;
-        match resolved {
-            Type::Bottom => Ok(Type::Bottom),
-            Type::Map { .. } => Ok(resolved.clone()),
-            Type::Error(_) => Ok(resolved.clone()),
-            Type::Primitive(p) => {
-                // A primitive with no register form (a varint, a decimal,
-                // an error) and a union of several are one two-word Value.
-                if p.is_empty() {
-                    return Err(Unsupported);
+/// One freeze's walk.
+#[derive(Default)]
+struct Freeze {
+    /// The refs whose expansion met no recurring ref, by
+    /// [`expand_key_fp`]: such a ref freezes alike on every path, so any
+    /// later occurrence takes it, and a typedef DAG freezes once per
+    /// definition. Each entry is the key, its frozen form and how many
+    /// expansions deep its own went.
+    memo: RefCell<LPooled<AHashMap<u64, SmallVec<[(Arc<TypeRef>, Type, usize); 1]>>>>,
+    /// The expansion in progress met a recurring ref.
+    recurred: Cell<bool>,
+    /// The longest path the expansion in progress reached.
+    deepest: Cell<usize>,
+}
+
+// XCR claude for claude: [perf/medium] Freezing walks a type's typedefs once per
+// path, so a typedef DAG (`type T0 = [null, (T1, T1)]`, `type T1 = [null, (T2,
+// T2)]`, ..) is 2^depth: a block `{ <T0..T30>; let v: T0 = null; select v { null =>
+// 1, (a, b) => 2 } }` does not finish fusing in 170 s, and depth 21 / 23 take 3.6 /
+// 6.2 s (debug, fused; --no-fusion 1 s). Found beside x-rerun-5-01, whose
+// shapes_collide half is fixed. Freeze each (typedef, params) once a walk, sharing
+// the frozen node. probe: the block above as a .gx file, run with fusion
+// (fuse-freeze-dag-01)
+// 2026-10-26 claude: Fixed by the freeze memo of f-kernel-01: the block at 21
+// levels runs in 1-2.5 s fused (10.9 s with the memo off), 30 levels in 1.1 s. Pin:
+// kernel_abi::tests::typedef_chain_named_twice_at_the_top_freezes_once (freezing
+// (T1, T1) over this chain; fails its 2 s bound with the memo off).
+impl Freeze {
+    fn freeze(&self, t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
+        crate::stack::ensure_sufficient(|| {
+            self.freeze_inner(t, seen).map(super::TypeMemo::intern_frozen)
+        })
+    }
+
+    /// The memo's frozen form of `tr`, met at a path `len` long, when
+    /// its expansion stays within [`MAX_FREEZE_EXPANSIONS`] there.
+    fn memoized(&self, fp: u64, tr: &TypeRef, len: usize) -> Option<Type> {
+        let memo = self.memo.borrow();
+        let (_, t, below) = memo.get(&fp)?.iter().find(|(k, _, _)| **k == *tr)?;
+        let deepest = len + 1 + below;
+        if deepest > MAX_FREEZE_EXPANSIONS {
+            return None;
+        }
+        self.deepest.set(self.deepest.get().max(deepest));
+        Some(t.clone())
+    }
+
+    fn freeze_inner(&self, t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
+        use FreezeError::{NonCanonical, Unresolved, Unsupported};
+        // The TVar lock is not reentrant: clone out of the guard before recursing.
+        let resolved = t.deref_cloned();
+        {
+            let resolved = resolved.as_ref().ok_or(Unsupported)?;
+            match resolved {
+                Type::Bottom => Ok(Type::Bottom),
+                Type::Map { .. } => Ok(resolved.clone()),
+                Type::Error(_) => Ok(resolved.clone()),
+                Type::Primitive(p) => {
+                    // A primitive with no register form (a varint, a decimal,
+                    // an error) and a union of several are one two-word Value.
+                    if p.is_empty() {
+                        return Err(Unsupported);
+                    }
+                    Ok(Type::Primitive(*p))
                 }
-                Ok(Type::Primitive(*p))
-            }
-            Type::Array(inner) => {
-                let inner = freeze_for_abi_d(inner, seen)?;
-                Ok(Type::Array(Arc::new(inner)))
-            }
-            Type::List(inner) => {
-                let inner = freeze_for_abi_d(inner, seen)?;
-                Ok(Type::List(Arc::new(inner)))
-            }
-            Type::Tuple(elems) => {
-                let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                    elems.iter().map(|e| freeze_for_abi_d(e, seen)).collect();
-                let mut frozen = frozen?;
-                Ok(Type::Tuple(Arc::from_iter(frozen.drain(..))))
-            }
-            Type::Struct(fields) => {
-                let frozen: Result<LPooled<Vec<(ArcStr, Type, WrittenAt)>>, FreezeError> =
-                    fields
+                Type::Array(inner) => {
+                    let inner = self.freeze(inner, seen)?;
+                    Ok(Type::Array(Arc::new(inner)))
+                }
+                Type::List(inner) => {
+                    let inner = self.freeze(inner, seen)?;
+                    Ok(Type::List(Arc::new(inner)))
+                }
+                Type::Tuple(elems) => {
+                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
+                        elems.iter().map(|e| self.freeze(e, seen)).collect();
+                    let mut frozen = frozen?;
+                    Ok(Type::Tuple(Arc::from_iter(frozen.drain(..))))
+                }
+                Type::Struct(fields) => {
+                    let frozen: Result<
+                        LPooled<Vec<(ArcStr, Type, WrittenAt)>>,
+                        FreezeError,
+                    > = fields
                         .iter()
                         .map(|(n, ft, at)| {
-                            freeze_for_abi_d(ft, seen).map(|t| (n.clone(), t, *at))
+                            self.freeze(ft, seen).map(|t| (n.clone(), t, *at))
                         })
                         .collect();
-                let mut frozen = frozen?;
-                Ok(Type::Struct(Arc::from_iter(frozen.drain(..))))
-            }
-            Type::Variant(tag, payloads, at) => {
-                let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                    payloads.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
-                let mut frozen = frozen?;
-                Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..)), *at))
-            }
-            Type::Set(members) => {
-                if let Some(p) = primitive_union(members) {
-                    return freeze_for_abi_d(&p, seen);
+                    let mut frozen = frozen?;
+                    Ok(Type::Struct(Arc::from_iter(frozen.drain(..))))
                 }
-                if let Some(succ) = option_result_success(members) {
-                    let succ_idx = if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
-                    let frozen_succ = freeze_for_abi_d(succ, seen)?;
-                    let m0 = if succ_idx == 0 {
-                        frozen_succ.clone()
-                    } else {
-                        members[0].clone()
+                Type::Variant(tag, payloads, at) => {
+                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
+                        payloads.iter().map(|p| self.freeze(p, seen)).collect();
+                    let mut frozen = frozen?;
+                    Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..)), *at))
+                }
+                Type::Set(members) => {
+                    if let Some(p) = primitive_union(members) {
+                        return self.freeze(&p, seen);
+                    }
+                    if let Some(succ) = option_result_success(members) {
+                        let succ_idx =
+                            if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
+                        let frozen_succ = self.freeze(succ, seen)?;
+                        let m0 = if succ_idx == 0 {
+                            frozen_succ.clone()
+                        } else {
+                            members[0].clone()
+                        };
+                        let m1 =
+                            if succ_idx == 1 { frozen_succ } else { members[1].clone() };
+                        return Ok(Type::Set(Arc::from_iter([m0, m1])));
+                    }
+                    let composite = |m: &Type| {
+                        m.with_deref(|r| {
+                            matches!(
+                                r,
+                                Some(Type::Tuple(_) | Type::Struct(_) | Type::Array(_))
+                            )
+                        })
                     };
-                    let m1 = if succ_idx == 1 { frozen_succ } else { members[1].clone() };
-                    return Ok(Type::Set(Arc::from_iter([m0, m1])));
+                    if members.iter().all(composite) {
+                        // one the normalizer would collapse freezes as what it
+                        // collapses to
+                        // XCR claude for claude: [risk/low] [risk/low] This normalizes
+                        // `resolved`, a shallow clone (deref_cloned) whose members share
+                        // the program's TVar cells. TVar::normalize_int binds a non-normal
+                        // binding back into the shared cell, so freezing a composite union
+                        // can rewrite a settled cell during fusion.
+                        // freeze_for_abi_normalized's doc forbids exactly that ("never t:
+                        // normalize writes bindings back into shared TVar cells").
+                        // Normalize a deep copy (`resolved.resolve_tvars().normalize()`),
+                        // or return NonCanonical and let the normalized retry, which
+                        // already works on a resolve_tvars() copy, decide. Found by
+                        // reading; not run. (f-kernel-02)
+                        // 2026-10-26 claude: The composite-union canonicity test
+                        // normalizes resolved.resolve_tvars(), a deep copy, so a member's
+                        // TVar cell is never rebound. Pin:
+                        // kernel_abi::tests::composite_union_freeze_preserves_shared_cells
+                        // (the cell's tuple-of-a-non-normal-set binding is rewritten
+                        // without the fix).
+                        let canonical = matches!(
+                            resolved.resolve_tvars().normalize(),
+                            Type::Set(ref ms) if ms.len() == members.len()
+                        );
+                        if !canonical {
+                            return Err(NonCanonical);
+                        }
+                        let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
+                            members.iter().map(|m| self.freeze(m, seen)).collect();
+                        let mut frozen = frozen?;
+                        return Ok(Type::Set(Arc::from_iter(frozen.drain(..))));
+                    }
+                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> = members
+                        .iter()
+                        .map(|m| {
+                            let m = m.deref_cloned();
+                            match &m {
+                                Some(Type::Variant(tag, payloads, at)) => {
+                                    let fp: Result<LPooled<Vec<Type>>, FreezeError> =
+                                        payloads
+                                            .iter()
+                                            .map(|p| self.freeze(p, seen))
+                                            .collect();
+                                    let mut fp = fp?;
+                                    Ok(Type::Variant(
+                                        tag.clone(),
+                                        Arc::from_iter(fp.drain(..)),
+                                        *at,
+                                    ))
+                                }
+                                _ => Err(NonCanonical),
+                            }
+                        })
+                        .collect();
+                    let mut frozen = frozen?;
+                    Ok(Type::Set(Arc::from_iter(frozen.drain(..))))
                 }
-                let composite = |m: &Type| {
-                    m.with_deref(|r| {
-                        matches!(
-                            r,
-                            Some(Type::Tuple(_) | Type::Struct(_) | Type::Array(_))
-                        )
+                Type::Abstract { id, params } => {
+                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
+                        params.iter().map(|p| self.freeze(p, seen)).collect();
+                    let mut frozen = frozen?;
+                    Ok(Type::Abstract {
+                        id: *id,
+                        params: Arc::from_iter(frozen.drain(..)),
                     })
-                };
-                if members.iter().all(composite) {
-                    // one the normalizer would collapse freezes as what it
-                    // collapses to
-                    // CR claude for claude: [risk/low] [risk/low] This normalizes
-                    // `resolved`, a shallow clone (deref_cloned) whose members share
-                    // the program's TVar cells. TVar::normalize_int binds a non-normal
-                    // binding back into the shared cell, so freezing a composite union
-                    // can rewrite a settled cell during fusion.
-                    // freeze_for_abi_normalized's doc forbids exactly that ("never t:
-                    // normalize writes bindings back into shared TVar cells").
-                    // Normalize a deep copy (`resolved.resolve_tvars().normalize()`),
-                    // or return NonCanonical and let the normalized retry, which
-                    // already works on a resolve_tvars() copy, decide. Found by
-                    // reading; not run. (f-kernel-02)
-                    let canonical = matches!(
-                        resolved.normalize(),
-                        Type::Set(ref ms) if ms.len() == members.len()
-                    );
-                    if !canonical {
+                }
+                // A constructor application whose ctor is a bound TVar is
+                // unreduced by typecheck; freeze its filled form.
+                Type::App(c, a) => {
+                    let cd = c.deref_cloned();
+                    let ad = a.deref_cloned();
+                    match (cd, ad) {
+                        (Some(cd), Some(ad)) => {
+                            let r = cd.fill_hole(&ad).ok_or(NonCanonical)?;
+                            self.freeze(&r, seen)
+                        }
+                        _ => Err(NonCanonical),
+                    }
+                }
+                // A recurring ref becomes the opaque leaf, built on the outer
+                // (cell-filled) occurrence with its params frozen so the
+                // leaf stays TVar-free.
+                Type::Ref(tr) => {
+                    if let Some(outer) = Seen::find(seen, tr) {
+                        self.recurred.set(true);
+                        let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
+                            tr.params.iter().map(|p| self.freeze(p, seen)).collect();
+                        let mut frozen = frozen?;
+                        return Ok(Type::Ref(Arc::new(
+                            outer.with_params(Arc::from_iter(frozen.drain(..))),
+                        )));
+                    }
+                    let len = Seen::len(seen);
+                    if len > MAX_FREEZE_EXPANSIONS {
                         return Err(NonCanonical);
                     }
-                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                        members.iter().map(|m| freeze_for_abi_d(m, seen)).collect();
-                    let mut frozen = frozen?;
-                    return Ok(Type::Set(Arc::from_iter(frozen.drain(..))));
-                }
-                let frozen: Result<LPooled<Vec<Type>>, FreezeError> = members
-                    .iter()
-                    .map(|m| {
-                        let m = m.deref_cloned();
-                        match &m {
-                            Some(Type::Variant(tag, payloads, at)) => {
-                                let fp: Result<LPooled<Vec<Type>>, FreezeError> =
-                                    payloads
-                                        .iter()
-                                        .map(|p| freeze_for_abi_d(p, seen))
-                                        .collect();
-                                let mut fp = fp?;
-                                Ok(Type::Variant(
-                                    tag.clone(),
-                                    Arc::from_iter(fp.drain(..)),
-                                    *at,
-                                ))
-                            }
-                            _ => Err(NonCanonical),
-                        }
-                    })
-                    .collect();
-                let mut frozen = frozen?;
-                Ok(Type::Set(Arc::from_iter(frozen.drain(..))))
-            }
-            Type::Abstract { id, params } => {
-                let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                    params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
-                let mut frozen = frozen?;
-                Ok(Type::Abstract { id: *id, params: Arc::from_iter(frozen.drain(..)) })
-            }
-            // A constructor application whose ctor is a bound TVar is
-            // unreduced by typecheck; freeze its filled form.
-            Type::App(c, a) => {
-                let cd = c.deref_cloned();
-                let ad = a.deref_cloned();
-                match (cd, ad) {
-                    (Some(cd), Some(ad)) => {
-                        let r = cd.fill_hole(&ad).ok_or(NonCanonical)?;
-                        freeze_for_abi_d(&r, seen)
+                    // XCR claude for claude: [perf/medium] [perf/medium] The freeze is still
+                    // exponential when a typedef DAG is two wide. The memo lives in the
+                    // parent Seen node, so it only shares a ref's frozen form between
+                    // siblings under the same expansion. When A_i and B_i each name both
+                    // A_{i+1} and B_{i+1}, every node is reached through two parents and
+                    // the work doubles with each layer. 20 layers: 5.2 s of phase=Freeze,
+                    // against 0.17 s with --no-fusion and 46 ms for --check. Fix: keep the
+                    // results of refs whose expansion met no recurring ref
+                    // (path-independent) in one map per top-level freeze keyed by the
+                    // TypeRef. Or count expansions and refuse with Unsupported past
+                    // lowering::FUSION_SIZE_CAP, as the structural-sharing case does.
+                    // probe: design/review-2026-10-26/repro/f-kernel-freeze-layered-dag.gx
+                    // (f-kernel-01)
+                    // 2026-10-26 claude: Freeze is now one walk (kernel_abi::Freeze) with a
+                    // memo per top-level freeze: a closed ref whose expansion met no
+                    // recurring ref is frozen once and reused on any path (within
+                    // MAX_FREEZE_EXPANSIONS, tracked per entry); the sibling memo in
+                    // Seen::frozen keeps the rest. The probe takes 1.8 s, the --no-fusion
+                    // time (7.1 s before). A two-wide DAG that recurs (A_i, B_i naming the
+                    // next and, at the bottom, A0) is still path-dependent and unshared.
+                    // Pins:
+                    // kernel_abi::tests::two_wide_typedef_dag_freezes_once_per_definition
+                    // and typedef_chain_named_twice_at_the_top_freezes_once (each fails its
+                    // 2 s bound, about 5 s at depth 22, with the memo off).
+                    let fp = expand_key_fp(tr);
+                    if let Some(t) = self.memoized(fp, tr, len) {
+                        return Ok(t);
                     }
-                    _ => Err(NonCanonical),
+                    if let Some(parent) = seen
+                        && let Some((_, _, t)) = parent
+                            .frozen
+                            .borrow()
+                            .iter()
+                            .find(|(f, k, _)| *f == fp && **k == **tr)
+                    {
+                        self.recurred.set(true);
+                        return Ok(t.clone());
+                    }
+                    let expanded = tr.expand_cell().ok_or(Unresolved)?;
+                    let node = Seen::push(seen, tr.clone());
+                    let recurred = self.recurred.replace(false);
+                    let deepest = self.deepest.replace(node.len);
+                    let t = self.freeze(&expanded, Some(&node))?;
+                    if !self.recurred.get() && key_closed(tr) {
+                        let below = self.deepest.get() - node.len;
+                        let mut memo = self.memo.borrow_mut();
+                        memo.entry(fp).or_default().push((tr.clone(), t.clone(), below));
+                    } else if let Some(parent) = seen {
+                        parent.frozen.borrow_mut().push((fp, tr.clone(), t.clone()));
+                    }
+                    self.recurred.set(recurred || self.recurred.get());
+                    self.deepest.set(deepest.max(self.deepest.get()));
+                    Ok(t)
                 }
+                _ => Err(Unsupported),
             }
-            // A recurring ref becomes the opaque leaf, built on the outer
-            // (cell-filled) occurrence with its params frozen so the
-            // leaf stays TVar-free.
-            Type::Ref(tr) => {
-                if let Some(outer) = Seen::find(seen, tr) {
-                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                        tr.params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
-                    let mut frozen = frozen?;
-                    return Ok(Type::Ref(Arc::new(
-                        outer.with_params(Arc::from_iter(frozen.drain(..))),
-                    )));
-                }
-                if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
-                    return Err(NonCanonical);
-                }
-                // CR claude for claude: [perf/medium] [perf/medium] The freeze is still
-                // exponential when a typedef DAG is two wide. The memo lives in the
-                // parent Seen node, so it only shares a ref's frozen form between
-                // siblings under the same expansion. When A_i and B_i each name both
-                // A_{i+1} and B_{i+1}, every node is reached through two parents and
-                // the work doubles with each layer. 20 layers: 5.2 s of phase=Freeze,
-                // against 0.17 s with --no-fusion and 46 ms for --check. Fix: keep the
-                // results of refs whose expansion met no recurring ref
-                // (path-independent) in one map per top-level freeze keyed by the
-                // TypeRef. Or count expansions and refuse with Unsupported past
-                // lowering::FUSION_SIZE_CAP, as the structural-sharing case does.
-                // probe: design/review-2026-10-26/repro/f-kernel-freeze-layered-dag.gx
-                // (f-kernel-01)
-                let fp = expand_key_fp(tr);
-                if let Some(parent) = seen
-                    && let Some((_, _, t)) = parent
-                        .frozen
-                        .borrow()
-                        .iter()
-                        .find(|(f, k, _)| *f == fp && **k == **tr)
-                {
-                    return Ok(t.clone());
-                }
-                let expanded = tr.expand_cell().ok_or(Unresolved)?;
-                let node = Seen::push(seen, tr.clone());
-                let t = freeze_for_abi_d(&expanded, Some(&node))?;
-                if let Some(parent) = seen {
-                    parent.frozen.borrow_mut().push((fp, tr.clone(), t.clone()));
-                }
-                Ok(t)
-            }
-            _ => Err(Unsupported),
         }
     }
 }
@@ -1154,6 +1233,77 @@ mod tests {
             ))
         );
         assert_eq!(Type::TVar(cell).deref_cloned(), Some(raw));
+    }
+
+    /// Freezing a union of composites reads whether the normalizer would
+    /// collapse it without normalizing the cells its members bind.
+    #[test]
+    fn composite_union_freeze_preserves_shared_cells() {
+        let raw =
+            Type::Tuple(Arc::from_iter([Type::Set(Arc::from_iter([i64_t(), i64_t()]))]));
+        let cell = TVar::named(literal!("payload"), raw.clone());
+        let pair = Type::Tuple(Arc::from_iter([i64_t(), i64_t()]));
+        let typ = Type::Set(Arc::from_iter([Type::TVar(cell.clone()), pair]));
+        assert!(freeze_for_abi(&typ).is_some());
+        assert_eq!(Type::TVar(cell).deref_cloned(), Some(raw));
+    }
+
+    /// The type `name` in an env holding `defs` at the root.
+    fn typed(defs: &[(String, String)], name: &str) -> (crate::env::Env, Type) {
+        use crate::expr::{TypeDefBody, parser::parse_type};
+        let mut env = crate::env::Env::default();
+        for (name, body) in defs {
+            env.deftype(
+                &ModPath::root(),
+                name,
+                Arc::from_iter([]),
+                &TypeDefBody::Alias(parse_type(body).unwrap()),
+                true,
+                None,
+                Default::default(),
+                Default::default(),
+                Arc::new(Default::default()),
+            )
+            .unwrap();
+        }
+        env.seed_typedef_refs();
+        let t = parse_type(name).unwrap().scope_refs(&ModPath::root());
+        t.seed_refs(&env);
+        (env, t)
+    }
+
+    /// A typedef DAG two wide (`A_i` and `B_i` each name `A_{i+1}` and
+    /// `B_{i+1}`) freezes each definition once, not once per path.
+    #[test]
+    fn two_wide_typedef_dag_freezes_once_per_definition() {
+        let depth = 22;
+        let mut defs = vec![(format!("A{depth}"), "i64".to_string())];
+        defs.push((format!("B{depth}"), "f64".into()));
+        for i in 0..depth {
+            let (a, b) = (format!("A{}", i + 1), format!("B{}", i + 1));
+            defs.push((format!("A{i}"), format!("({a}, {b})")));
+            defs.push((format!("B{i}"), format!("{{x: {a}, y: {b}}}")));
+        }
+        let (_env, t) = typed(&defs, "A0");
+        let started = std::time::Instant::now();
+        let frozen = freeze_for_abi(&t).expect("a finite typedef DAG freezes");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(matches!(frozen, Type::Tuple(ref ts) if ts.len() == 2));
+    }
+
+    /// A ref named twice where no ref encloses it, `(T1, T1)` over
+    /// `type T_i = [null, (T_{i+1}, T_{i+1})]`, freezes once too.
+    #[test]
+    fn typedef_chain_named_twice_at_the_top_freezes_once() {
+        let depth = 22;
+        let mut defs = vec![(format!("T{depth}"), "i64".to_string())];
+        for i in 0..depth {
+            defs.push((format!("T{i}"), format!("[null, (T{}, T{})]", i + 1, i + 1)));
+        }
+        let (_env, t) = typed(&defs, "(T1, T1)");
+        let started = std::time::Instant::now();
+        assert!(freeze_for_abi_normalized(&t).is_some());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
