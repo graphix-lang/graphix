@@ -118,6 +118,48 @@ run!(http_invalid_header_is_500, r#"{
     matches!(v, Ok(Value::U16(500)))
 }; FuseExpect::Jit);
 
+// A request the server holds when it sleeps is answered 500.
+run!(http_request_held_at_the_sleep_is_500, r#"{
+    let up = true;
+    up <- sys::time::timer(duration:300.ms, false) ~ false;
+    let handler = |req: http::Request| {
+        let t = sys::time::timer(duration:10.s, false);
+        t ~ {body: "late [req.path]", headers: [], status: u16:200}
+    };
+    let addr: string = never();
+    addr <- select up {
+        true => http::server_addr(http::serve(#addr: "127.0.0.1:0", #handler: handler)$),
+        false => never()
+    };
+    let client = http::default_client(null)$;
+    let r = http::request(#timeout: duration:5.s, client, "http://[addr]/");
+    select r { error as e => "[e]", r => "[r.status] [r.body]" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "500 Internal Server Error")
+}; FuseExpect::Jit);
+
+// A handler's content-length is replaced by the body's own.
+run!(http_handler_content_length_is_the_bodys, r#"{
+    let handler = |req: http::Request| {
+        body: "hello [req.path]",
+        headers: [("Content-Length", "1"), ("x-kept", "yes")],
+        status: u16:200
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let r = http::request(#timeout: duration:5.s, client, "http://[addr]/world");
+    select r {
+        error as e => "[e]",
+        r => {
+            let named = |n| array::map(array::filter(r.headers, |(k, _)| k == n), |(_, v)| v);
+            "[r.body] [named("content-length")] [named("x-kept")]"
+        }
+    }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"hello /world ["12"] ["yes"]"#)
+}; FuseExpect::Jit);
+
 // A request whose handler raises is answered 500 and does not hold up
 // the next.
 run!(http_raising_handler_then_good, r#"{

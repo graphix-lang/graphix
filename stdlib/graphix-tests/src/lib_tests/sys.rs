@@ -14,7 +14,7 @@ run!(args_empty, ARGS_EMPTY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a.is_empty(),
     _ => false,
 }; FuseExpect::None);
-// None: sys::args is once-latched, so Async.
+// None: sys::args is once-latched state.
 
 #[tokio::test(flavor = "current_thread")]
 async fn args_injected() -> Result<()> {
@@ -161,6 +161,17 @@ run!(handle_accessors_are_sync, r#"{
     (peer(never()), local(never()), listener(never()), pid(never()));
     true
 }"#, is(Value::Bool(true)); FuseExpect::Jit; build_only);
+
+run!(born_builtins_and_parse_are_sync, r#"{
+    #[sync]
+    let cfg = |name: string| "[sys::dirs::config_dir()]/[name]";
+    #[sync]
+    let argv = |n: i64| (n, sys::args());
+    #[sync]
+    let parse = |c: args::Command| args::parse(c);
+    (cfg("x.toml"), argv(1), parse(never()));
+    true
+}"#, is(Value::Bool(true)); FuseExpect::None; build_only);
 
 run!(stdio_constructors_are_sync, r#"{
     #[sync]

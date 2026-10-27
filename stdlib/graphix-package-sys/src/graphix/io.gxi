@@ -149,9 +149,11 @@ trait Close {
     /// Close the stream, releasing the underlying resource. For
     /// writable streams pending data is flushed and end-of-stream is
     /// signaled — a piped child stdin delivers EOF, so a
-    /// read-until-EOF child can run to completion. Closing an
-    /// already-closed stream is a no-op; subsequent operations on a
-    /// closed stream return an error.
+    /// read-until-EOF child can run to completion. A read, write or
+    /// flush still waiting fails, and a flush the peer does not take in
+    /// 5 s is given up, the stream released and the close an error.
+    /// Closing an already-closed stream is a no-op; subsequent operations
+    /// on a closed stream return an error.
     val close: fn(self) -> Result<null, `IOError(string)>;
 };
 

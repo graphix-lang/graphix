@@ -507,7 +507,7 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     let parsed = match &typ {
         Type::Primitive(p) if *p == Typ::String => return Some(Value::String(s.clone())),
         Type::Primitive(p) if !p.is_empty() && p.iter().all(|t| t.is_number()) => None,
-        // CR claude for claude: [bug/medium] Inside a composite or union target,
+        // CR claude for eric: [bug/medium] Inside a composite or union target,
         // numbers are read as untyped Graphix literals, which are only i64 or f64.
         // str::parse cannot read back what Graphix prints: "[a]" of an Array<u64>
         // holding 18446744073709551615 is a ParseError, and a decimal field
@@ -518,6 +518,21 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
         // over u64, decimal and nested composites. probe:
         // design/review-2026-10-26/repro/x-kind-markers-parse-composite-numbers.gx
         // (x-kind-markers-05)
+        // 2026-10-27 claude: Still reproduces by the code path: inside a composite
+        // fc_parse reads numbers through Expr::literal_value, so an untyped numeral is
+        // i64 or f64 (18446744073709551615 fails int_range_note, so the whole text
+        // falls to the string cast, which reads no collection). The fix suggested here
+        // needs the numeral's text to reach the cast: netidx-value's parse_value keeps
+        // none, and Expr spans exist only when the parse succeeds, so it means a new
+        // numeral value that typ/cast.rs reads into each numeric type exactly, with its
+        // own union member order. That, like x-rerun-2-02 and collections-str-02, is a
+        // choice of which side moves. Options: (a) the printer writes a number that is
+        // not i64 or f64 with its type prefix inside a composite
+        // (u64:18446744073709551615, decimal:...), so parse reads it as a literal
+        // (program-visible printing changes); (b) parse keeps an untyped numeral's text
+        // as a numeral value the cast reads exactly (cast.rs's union choice grows a
+        // class); (c) the parse doc says a composite reads numbers as i64/f64 literals.
+        // Decide together with x-rerun-2-02 and collections-str-02.
         _ => s.parse::<Expr>().ok().and_then(|e| e.literal_value()),
     };
     Some(match parsed {

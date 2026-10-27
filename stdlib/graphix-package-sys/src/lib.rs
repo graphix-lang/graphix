@@ -35,6 +35,7 @@ use std::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
     task::{Context, Poll},
+    time::Duration,
 };
 use tempfile::TempDir;
 use tokio::{
@@ -268,6 +269,9 @@ pub trait StreamMark: 'static + Send + Sync {
     const PATH: &'static str;
 }
 
+/// How long a close waits for its stream's shutdown.
+const CLOSE_SHUTDOWN: Duration = Duration::from_secs(5);
+
 /// A stream's read and write halves, locked apart so a read waiting on
 /// its peer never holds up a write. An operation on the whole stream (a
 /// seek, a TLS upgrade) takes both halves, the read half first. A half is
@@ -415,8 +419,10 @@ impl Halves {
         }
     }
 
-    /// Cancel pending reads, shut down the writer, and release both halves.
-    // CR claude for claude: [bug/medium] Only reads run under `until_closed`. write,
+    /// Cancel pending reads and writes, shut down the writer, at most
+    /// `CLOSE_SHUTDOWN` (a peer that does not read can hold up a flush or
+    /// a TLS close_notify), and release both halves.
+    // XCR claude for claude: [bug/medium] Only reads run under `until_closed`. write,
     // write_exact, flush and tcp shutdown hold the writer lock across an unbounded
     // await, so a write blocked on a peer that stopped reading makes close wait
     // forever. The descriptor is never released, and take (seek, a TLS upgrade) blocks
@@ -426,13 +432,22 @@ impl Halves {
     // close_notify can block too). probe:
     // design/review-2026-10-26/repro/x-async-io-close-blocked-by-write.gx
     // (x-async-io-04)
+    // 2026-10-27 claude: write, write_exact, flush and tcp shutdown run under
+    // Halves::until_closed, so a close cuts a blocked write and takes the writer;
+    // close's shutdown is bounded by CLOSE_SHUTDOWN (5 s, an error past it, the halves
+    // released either way: a TLS close_notify or a file flush a stalled peer holds);
+    // io.gxi's Close says so. Pins: io::test::close_cancels_write and
+    // close_cancels_write_exact (time out with the writes outside until_closed). The
+    // bound itself has no pin (it needs a stalled TLS peer).
     pub(crate) async fn close(self: &Arc<Self>) -> IoResult<()> {
         self.closing.store(true, AtomicOrdering::Release);
         self.closed.notify_waiters();
         let mut r = self.r.lock().await;
         let mut w = self.w.lock().await;
         let res = match w.take() {
-            Some(mut w) => w.shutdown().await,
+            Some(mut w) => tokio::time::timeout(CLOSE_SHUTDOWN, w.shutdown())
+                .await
+                .unwrap_or_else(|_| Err(ErrorKind::TimedOut.into())),
             None => Ok(()),
         };
         r.take();

@@ -224,7 +224,7 @@ struct Parse {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
-    const EFFECT: Effect = Effect::Async;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "args_parse";
 
     fn init<'a, 'b, 'c, 'd>(

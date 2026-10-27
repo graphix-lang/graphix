@@ -31,37 +31,48 @@ struct Watch {
 /// watch receives the tree's changes in the order they were made. The
 /// list is replaced whole under its own lock, so registering or dropping
 /// a watch never waits for a write.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Watches {
     order: RwLock<()>,
-    list: Mutex<Arc<[Watch]>>,
+    /// None once the tree is dropped.
+    list: Mutex<Option<Arc<[Watch]>>>,
+}
+
+impl Default for Watches {
+    fn default() -> Self {
+        Self { order: RwLock::new(()), list: Mutex::new(Some(Arc::new([]))) }
+    }
 }
 
 impl Watches {
-    fn list(&self) -> Arc<[Watch]> {
+    fn list(&self) -> Option<Arc<[Watch]>> {
         self.list.lock().clone()
     }
 
     fn watched(&self) -> bool {
-        !self.list.lock().is_empty()
+        self.list.lock().as_ref().is_some_and(|l| !l.is_empty())
     }
 
     /// Send each change to a key under `prefix` to `tx`, until the
-    /// registration drops.
+    /// registration drops; an ended list closes `tx` at once.
     pub(crate) fn add(
         self: &Arc<Self>,
         prefix: &[u8],
         tx: mpsc::UnboundedSender<Change>,
     ) -> Registered {
-        let mut list = self.list.lock();
-        let watch = Watch { prefix: prefix.into(), tx: tx.clone() };
-        *list = list.iter().cloned().chain([watch]).collect();
+        match &mut *self.list.lock() {
+            Some(list) => {
+                let watch = Watch { prefix: prefix.into(), tx: tx.clone() };
+                *list = list.iter().cloned().chain([watch]).collect();
+            }
+            None => tx.close_channel(),
+        }
         Registered { watches: self.clone(), tx }
     }
 
-    /// End every watch: each receiver sees its channel close after the
-    /// changes already sent.
-    // CR claude for claude: [bug/medium] Nothing records that a list has ended, so
+    /// End every watch, now and to come: each receiver sees its channel
+    /// close after the changes of every write applied before.
+    // XCR claude for claude: [bug/medium] Nothing records that a list has ended, so
     // `add` after `end` registers a watch that is never closed. This happens when a
     // subscription asleep during db::drop_tree re-attaches at its wake
     // (DbSubscribe::watch from the Quiet branch), and when a subscription is made from
@@ -72,12 +83,18 @@ impl Watches {
     // ended list. Take `self.order.write()` before closing (lock order creating ->
     // order is kept). probe: design/review-2026-10-26/repro/db2-sub-sleep-drop.gx
     // (db2-02)
+    // 2026-10-27 claude: Watches::list is Option: end takes order.write() (a watched
+    // write in flight sends first), closes every channel and leaves None; add on None
+    // closes tx at once, so a re-attaching or late subscription gets its DbErr;
+    // forget_watches ends outside the map lock. Pins:
+    // subscribe::test::a_watch_after_the_end_delivers_an_error (times out undone) and
+    // the_end_waits_for_a_write_in_flight (end finishes before the write sends,
+    // undone).
     pub(crate) fn end(&self) {
-        let mut list = self.list.lock();
-        for w in list.iter() {
+        let _order = self.order.write();
+        for w in self.list.lock().take().iter().flat_map(|l| l.iter()) {
             w.tx.close_channel();
         }
-        *list = Arc::new([]);
     }
 
     #[cfg(test)]
@@ -95,8 +112,10 @@ pub(crate) struct Registered {
 
 impl Drop for Registered {
     fn drop(&mut self) {
-        let mut list = self.watches.list.lock();
-        *list = list.iter().filter(|w| !w.tx.same_receiver(&self.tx)).cloned().collect();
+        if let Some(list) = &mut *self.watches.list.lock() {
+            *list =
+                list.iter().filter(|w| !w.tx.same_receiver(&self.tx)).cloned().collect();
+        }
     }
 }
 
@@ -206,8 +225,11 @@ pub(crate) fn transaction<T, E>(
 fn send(trees: &[(&Watches, &sled::Tree)], changes: &mut Changes, late: bool) {
     let lists: SmallVec<[_; 4]> = trees.iter().map(|(w, _)| w.list()).collect();
     for (tree, mut change) in changes.changes.drain(..) {
-        let mut watches =
-            lists[tree].iter().filter(|w| change.key.starts_with(&w.prefix)).peekable();
+        let mut watches = lists[tree]
+            .iter()
+            .flat_map(|l| l.iter())
+            .filter(|w| change.key.starts_with(&w.prefix))
+            .peekable();
         if watches.peek().is_none() {
             continue;
         }

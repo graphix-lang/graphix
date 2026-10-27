@@ -40,7 +40,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{Semaphore, oneshot},
+    sync::{Semaphore, oneshot, watch},
     task::JoinSet,
 };
 
@@ -456,8 +456,9 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     for h in headers.iter() {
         if let Some([Value::String(k), Value::String(v)]) =
             rep::read_tuple(h).map(rep::Parts::elems)
+            && !k.eq_ignore_ascii_case(hyper::header::CONTENT_LENGTH.as_str())
         {
-            // CR claude for claude: [bug/medium] A content-length the handler returns
+            // XCR claude for claude: [bug/medium] A content-length the handler returns
             // is passed to hyper next to a Full body of another length. hyper checks
             // that they match only in debug builds, where the connection task panics.
             // In release it writes the handler's value and then the real body, so the
@@ -468,6 +469,11 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
             // answer 500 on a mismatch. probe:
             // design/review-2026-10-26/repro/x-security-http-content-length.sh
             // (x-security-04)
+            // 2026-10-26 claude: build_hyper_response drops a content-length the
+            // handler gives (any case), so hyper writes the body's own;
+            // http/mod.gxi's Reply says so. Pin:
+            // lib_tests::http::http_handler_content_length_is_the_bodys (debug hyper
+            // panics the connection with the header kept).
             response = response.header(&**k, &**v);
         }
     }
@@ -607,12 +613,14 @@ impl AsyncWrite for MaybeTls {
     }
 }
 
-/// One connection: its TLS handshake, if any, then its requests.
+/// One connection: its TLS handshake, if any, then its requests, until
+/// `closing`, when it answers the requests it holds and closes.
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     tls: Option<tokio_rustls::TlsAcceptor>,
     post: Post,
     limits: Limits,
+    mut closing: watch::Receiver<bool>,
 ) {
     let io = match tls {
         None => MaybeTls::Plain(stream),
@@ -634,20 +642,72 @@ async fn serve_connection(
             handle_http_request(req, post.clone(), limits.max_body, limits.body_timeout);
         async move { Ok::<_, std::convert::Infallible>(resp.await) }
     });
-    if let Err(e) = hyper::server::conn::http1::Builder::new()
+    let conn = hyper::server::conn::http1::Builder::new()
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(limits.header_timeout)
-        .serve_connection(hyper_util::rt::TokioIo::new(io), service)
-        .await
-    {
+        .serve_connection(hyper_util::rt::TokioIo::new(io), service);
+    let mut conn = std::pin::pin!(conn);
+    let res = tokio::select! {
+        res = conn.as_mut() => res,
+        () = async { drop(closing.wait_for(|closing| *closing).await) } => {
+            conn.as_mut().graceful_shutdown();
+            conn.await
+        }
+    };
+    if let Err(e) = res {
         log::error!("HTTP connection error: {}", chain(e));
     }
 }
 
+/// How long a closing connection has to write what it holds.
+const CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+/// The connections accepted since the last close, and their signal to
+/// close.
+#[derive(Debug)]
+struct Generation {
+    set: JoinSet<()>,
+    closing: watch::Sender<bool>,
+}
+
+impl Default for Generation {
+    fn default() -> Self {
+        Self { set: JoinSet::new(), closing: watch::Sender::new(false) }
+    }
+}
+
 /// The connections a socket has accepted: they outlive a restart on the
-/// socket and end with it.
+/// socket and close with the server's sleep or the socket.
 #[derive(Debug, Clone, Default)]
-struct Conns(Arc<Mutex<JoinSet<()>>>);
+struct Conns(Arc<Mutex<Generation>>);
+
+impl Conns {
+    fn spawn<F: Future<Output = ()> + Send + 'static>(
+        &self,
+        f: impl FnOnce(watch::Receiver<bool>) -> F,
+    ) {
+        let mut g = self.0.lock();
+        let closing = g.closing.subscribe();
+        g.set.spawn(f(closing));
+    }
+
+    fn reap(&self) {
+        while self.0.lock().set.try_join_next().is_some() {}
+    }
+
+    /// Every connection answers the requests it holds and closes; one
+    /// still open after `CLOSE_GRACE` is aborted.
+    fn close(&self) {
+        let Generation { mut set, closing } = std::mem::take(&mut *self.0.lock());
+        closing.send_replace(true);
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let drained = async { while set.join_next().await.is_some() {} };
+                let _ = tokio::time::timeout(CLOSE_GRACE, drained).await;
+            });
+        }
+    }
+}
 
 /// How long the server waits after a failed accept before the next.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
@@ -662,7 +722,7 @@ async fn serve_loop(
     limits: Limits,
 ) {
     loop {
-        while conns.0.lock().try_join_next().is_some() {}
+        conns.reap();
         let Ok(permit) = max_connections.clone().acquire_owned().await else { return };
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
@@ -674,9 +734,9 @@ async fn serve_loop(
             }
         };
         let (tls, post) = (tls.clone(), post.clone());
-        conns.0.lock().spawn(async move {
+        conns.spawn(|closing| async move {
             let _permit = permit;
-            serve_connection(stream, tls, post, limits).await
+            serve_connection(stream, tls, post, limits, closing).await
         });
     }
 }
@@ -751,7 +811,7 @@ struct Listening {
 
 impl Drop for Listening {
     fn drop(&mut self) {
-        self.conns.0.lock().abort_all()
+        self.conns.close()
     }
 }
 
@@ -941,16 +1001,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.release(ctx);
         self.stop();
-        self.listening = None;
+        self.inbox.close();
         self.handler.delete(ctx);
+        self.listening = None;
     }
 
-    /// The server stops, its connections and pending requests dropped, and
-    /// starts again at the wake on the socket it keeps.
+    /// The server stops, its pending requests answered 500 and its
+    /// connections closed, and starts again at the wake on the socket it
+    /// keeps.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
         self.stop();
-        // CR claude for claude: [bug/medium] mod.gxi promises that a request the server
+        // XCR claude for claude: [bug/medium] mod.gxi promises that a request the server
         // drops because it sleeps or is deleted is answered 500. But abort_all here,
         // and in Listening::drop on delete, kills each connection task before its
         // handle_http_request sees the dropped reply sender, so the client gets a
@@ -961,13 +1023,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         // gxi to say what happens. probe:
         // design/review-2026-10-26/repro/http-sqlite-db1-serve-sleep-no-500.sh
         // (http-sqlite-db1-02)
+        // 2026-10-26 claude: Inbox::close drops queued requests and refuses later posts
+        // (each dropped reply sender answers 500); sleep and delete close the inbox and
+        // drop the handler's requests, then Conns::close signals the connection
+        // generation (a watch flag serve_connection selects on to call hyper's
+        // graceful_shutdown) and aborts what is still open after CLOSE_GRACE (5 s) in a
+        // task; a restart on another address closes the old connections the same way.
+        // Pin: lib_tests::http::http_request_held_at_the_sleep_is_500 (gets a closed
+        // connection with the abort_all restored).
+        self.inbox.close();
+        self.inbox = Arc::default();
+        self.handler.sleep(ctx);
         if let Some(l) = &self.listening {
-            l.conns.0.lock().abort_all();
+            l.conns.close();
         }
         self.slept.set();
         self.out = TagValue::phantom();
-        self.inbox = Arc::default();
-        self.handler.sleep(ctx);
     }
 }
 

@@ -13,7 +13,7 @@ fn dir_is(expected: Option<PathBuf>) -> impl Fn(Result<&Value>) -> bool {
     }
 }
 
-// FuseExpect::None: the dirs builtins are once-latched, so Async.
+// FuseExpect::None: the dirs builtins are once-latched state.
 
 const HOME_DIR: &str = r#"
     sys::dirs::home_dir()

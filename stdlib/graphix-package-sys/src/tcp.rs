@@ -127,7 +127,7 @@ impl EvalCachedAsync for TcpShutdownEv {
                 Some(s) => s,
                 None => return errf!("TCPError", "stream unavailable"),
             };
-            match s.shutdown().await {
+            match stream.until_closed(s.shutdown()).await {
                 Ok(()) => Value::Null,
                 Err(e) => errf!("TCPError", "shutdown failed: {e}"),
             }

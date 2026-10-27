@@ -55,21 +55,29 @@ impl Reply for tokio::sync::oneshot::Sender<Value> {
 /// A poster wakes the builtin only when no wake is on its way.
 #[derive(Debug)]
 pub struct Inbox<T> {
-    queue: parking_lot::Mutex<Vec<T>>,
+    /// None once closed.
+    queue: parking_lot::Mutex<Option<Vec<T>>>,
     woken: std::sync::atomic::AtomicBool,
 }
 
 impl<T> Default for Inbox<T> {
     fn default() -> Self {
-        Self { queue: parking_lot::Mutex::new(Vec::new()), woken: Default::default() }
+        Self {
+            queue: parking_lot::Mutex::new(Some(Vec::new())),
+            woken: Default::default(),
+        }
     }
 }
 
 impl<T> Inbox<T> {
-    /// Post `t`: true when the builtin must be woken.
+    /// Post `t`: true when the builtin must be woken. A closed inbox drops
+    /// `t`.
     pub fn post(&self, t: T) -> bool {
         use std::sync::atomic::Ordering;
-        self.queue.lock().push(t);
+        match &mut *self.queue.lock() {
+            Some(queue) => queue.push(t),
+            None => return false,
+        }
         !self.woken.swap(true, Ordering::AcqRel)
     }
 
@@ -77,7 +85,14 @@ impl<T> Inbox<T> {
     pub fn take(&self, out: &mut impl Extend<T>) {
         use std::sync::atomic::Ordering;
         self.woken.store(false, Ordering::Release);
-        out.extend(self.queue.lock().drain(..));
+        if let Some(queue) = &mut *self.queue.lock() {
+            out.extend(queue.drain(..))
+        }
+    }
+
+    /// Drop every request posted, and every one posted from now on.
+    pub fn close(&self) {
+        *self.queue.lock() = None;
     }
 }
 

@@ -679,19 +679,7 @@ mod test {
         })
         .await
         .unwrap();
-        let mut events = vec![];
-        while let Some(batch) =
-            tokio::time::timeout(Duration::from_secs(10), rx.next()).await.unwrap()
-        {
-            for (_, batch) in batch.iter() {
-                let batch = (&**batch as &dyn Any).downcast_ref::<DbEvents>().unwrap();
-                events.extend(batch.0.iter().map(|e| e.as_ref().map(|_| ()).is_ok()));
-            }
-            if events.last() == Some(&false) {
-                break;
-            }
-        }
-        assert_eq!(events, [true, false]);
+        assert_eq!(until_error(&mut rx).await, [true, false]);
         for _ in 0..100 {
             if watch.is_finished() {
                 break;
@@ -700,6 +688,72 @@ mod test {
         }
         assert!(watch.is_finished());
         assert!(tree.watches.is_empty());
+    }
+
+    /// The success of each event delivered until one fails.
+    async fn until_error(
+        rx: &mut mpsc::Receiver<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
+    ) -> Vec<bool> {
+        let mut events = vec![];
+        while events.last() != Some(&false) {
+            let batch = tokio::time::timeout(Duration::from_secs(10), rx.next())
+                .await
+                .expect("no error was delivered")
+                .unwrap();
+            for (_, batch) in batch.iter() {
+                let batch = (&**batch as &dyn Any).downcast_ref::<DbEvents>().unwrap();
+                events.extend(batch.0.iter().map(|e| e.is_ok()));
+            }
+        }
+        events
+    }
+
+    /// A watch registered on a tree's ended watches delivers the error at
+    /// once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_watch_after_the_end_delivers_an_error() {
+        let (_dir, tree) = temp_tree().await;
+        tree.watches.end();
+        let (tx, mut rx) = mpsc::channel(1);
+        let _watch = spawn_watch(&tree, &[], BindId::new(), tx);
+        assert_eq!(until_error(&mut rx).await, [false]);
+        assert!(tree.watches.is_empty());
+    }
+
+    /// The end waits for a watched write in flight, whose change is
+    /// delivered before the error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_end_waits_for_a_write_in_flight() {
+        let (_dir, tree) = temp_tree().await;
+        let (tx, mut rx) = mpsc::channel(1);
+        let _watch = spawn_watch(&tree, &[], BindId::new(), tx);
+        let (applied_tx, applied) = std::sync::mpsc::channel();
+        let (go_tx, go) = std::sync::mpsc::channel::<()>();
+        let writer = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                crate::watch::write(&[(&tree.watches, &tree.tree)], |changes| {
+                    let v = value(Value::U64(7));
+                    let old = tree.tree.insert(&*key(0), &**v)?;
+                    changes.record(0, &key(0), old.as_deref(), Some(&v));
+                    applied_tx.send(()).unwrap();
+                    go.recv().unwrap();
+                    anyhow::Ok(())
+                })
+                .unwrap()
+            })
+        };
+        applied.recv().unwrap();
+        let ender = {
+            let tree = tree.clone();
+            thread::spawn(move || tree.watches.end())
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert!(!ender.is_finished(), "the end did not wait for the write");
+        go_tx.send(()).unwrap();
+        writer.join().unwrap();
+        ender.join().unwrap();
+        assert_eq!(until_error(&mut rx).await, [true, false]);
     }
 
     /// Ending the watch unregisters it.

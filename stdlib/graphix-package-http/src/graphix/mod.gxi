@@ -14,7 +14,8 @@ type BinResponse = {
     url: string
 };
 
-/// What a `serve` handler answers a request with.
+/// What a `serve` handler answers a request with. The server writes the
+/// body's own content-length: one in `headers` is dropped.
 type Reply = {
     body: string,
     headers: Array<(string, string)>,

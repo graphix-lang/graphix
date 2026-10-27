@@ -1,7 +1,10 @@
-use std::fs::FileType;
+use std::{
+    fs::FileType,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use arcstr::{ArcStr, literal};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use graphix_compiler::{errf, rep};
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_derive::IntoValue;
@@ -97,8 +100,21 @@ pub(crate) fn convert_filetype(typ: FileType) -> Value {
     rep::make_variant(tag, [])
 }
 
+fn utc(t: SystemTime) -> Option<DateTime<Utc>> {
+    let (since, after) = match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => (d, true),
+        Err(e) => (e.duration(), false),
+    };
+    let since = TimeDelta::from_std(since).ok()?;
+    if after {
+        DateTime::UNIX_EPOCH.checked_add_signed(since)
+    } else {
+        DateTime::UNIX_EPOCH.checked_sub_signed(since)
+    }
+}
+
 pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
-    // CR claude for claude: [bug/medium] `ts.into()` is chrono's From<SystemTime>,
+    // XCR claude for claude: [bug/medium] `ts.into()` is chrono's From<SystemTime>,
     // which unwraps `timestamp_opt` and panics for a time outside chrono's range. btrfs
     // and tmpfs let any user set such an mtime (utimensat with 1e14 s).
     // sys::fs::metadata and fstat then return `sys_fs_metadata panicked` instead of the
@@ -107,9 +123,14 @@ pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
     // `DateTime::from_timestamp(secs, nanos)` and give null for a time it cannot hold.
     // probe: design/review-2026-10-26/repro/x-panics-metadata-far-timestamp.sh
     // (x-panics-01)
-    let accessed: Option<DateTime<Utc>> = m.accessed().ok().map(|ts| ts.into());
-    let created: Option<DateTime<Utc>> = m.created().ok().map(|ts| ts.into());
-    let modified: Option<DateTime<Utc>> = m.modified().ok().map(|ts| ts.into());
+    // 2026-10-26 claude: metadata::utc converts through TimeDelta::from_std and checked
+    // add/sub from the epoch, so a time chrono cannot hold is null and a time before
+    // the epoch keeps its sign. Pin: graphix-package-sys
+    // metadata::test::a_time_chrono_cannot_hold_is_null (sets a far mtime, panics with
+    // the old ts.into()).
+    let accessed = m.accessed().ok().and_then(utc);
+    let created = m.created().ok().and_then(utc);
+    let modified = m.modified().ok().and_then(utc);
     let kind = convert_filetype(m.file_type());
     let len = m.len();
     let permissions = {
@@ -215,5 +236,25 @@ pub(crate) mod test {
         std::fs::write(&file_path, b"").unwrap();
         let file_path = convert_path(&file_path);
         assert_path_error(&IsDirEv::eval(file_path.clone()).await, &file_path);
+    }
+
+    #[tokio::test]
+    async fn a_time_chrono_cannot_hold_is_null() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("far");
+        let file = std::fs::File::create(&path).unwrap();
+        let far = UNIX_EPOCH + Duration::from_secs(99_999_999_999_999);
+        file.set_times(std::fs::FileTimes::new().set_accessed(far).set_modified(far))
+            .unwrap();
+        drop(file);
+        let md = MetadataEv::eval((true, convert_path(&path))).await;
+        let fields = rep::struct_fields(&md).unwrap_or_else(|| panic!("{md:?}"));
+        for name in ["accessed", "modified"] {
+            assert_eq!(rep::field_named(fields, name).unwrap().1, &Value::Null);
+        }
+        let before = UNIX_EPOCH - Duration::from_millis(1500);
+        assert_eq!(utc(before).unwrap().timestamp_millis(), -1500);
+        assert_eq!(utc(SystemTime::UNIX_EPOCH).unwrap().timestamp(), 0);
     }
 }

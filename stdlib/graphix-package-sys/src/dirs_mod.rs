@@ -11,7 +11,7 @@ macro_rules! born_builtin {
         }
 
         impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent> ::graphix_compiler::BuiltIn<R, E> for $name {
-            // CR claude for claude: [bug/medium] A born builtin answers in the update
+            // XCR claude for claude: [bug/medium] A born builtin answers in the update
             // where it is born and never later, which is Sync in effects.rs's terms
             // (same cycle, a once-flag of state), not Async. The Async label makes
             // `#[sync]` refuse any function that reads sys::dirs::config_dir() or
@@ -21,8 +21,14 @@ macro_rules! born_builtin {
             // args::Parse. probe:
             // design/review-2026-10-26/repro/x-builtin-effects-born-builtin-async.gx
             // (x-builtin-effects-03)
+            // 2026-10-27 claude: born_builtin (sys::args, sys::dirs::*) and
+            // args::Parse declare Effect::Sync: each answers in the update its input
+            // or birth fires and keeps only its latch or resident. Pin:
+            // lib_tests::sys::born_builtins_and_parse_are_sync (#[sync] over
+            // config_dir, sys::args and args::parse; each refused alone with its Async
+            // restored). The arm warning half was sys-io-05.
             const EFFECT: ::graphix_compiler::effects::Effect =
-                ::graphix_compiler::effects::Effect::Async;
+                ::graphix_compiler::effects::Effect::Sync;
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(

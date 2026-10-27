@@ -446,6 +446,9 @@ impl EvalCachedAsync for IoWriteEv {
     // blocked read is cut off with BrokenPipe. Add one Halves method per half that
     // locks it, maps a missing half to the IOError and runs the call under
     // until_closed, and use it in all six. Found by reading; not run. (x-dup-04)
+    // 2026-10-27 claude: The write and flush evals (and sys::tcp::shutdown) now run
+    // under until_closed too (x-async-io-04); the repeated preamble this CR is about
+    // remains.
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let mut guard = stream.writer().await;
@@ -453,7 +456,7 @@ impl EvalCachedAsync for IoWriteEv {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
             };
-            match s.write(&data).await {
+            match stream.until_closed(s.write(&data)).await {
                 Ok(n) => Value::U64(n as u64),
                 Err(e) => errf!("IOError", "write failed: {e}"),
             }
@@ -483,7 +486,7 @@ impl EvalCachedAsync for IoWriteExactEv {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
             };
-            match s.write_all(&data).await {
+            match stream.until_closed(s.write_all(&data)).await {
                 Ok(()) => Value::Null,
                 Err(e) => errf!("IOError", "write_exact failed: {e}"),
             }
@@ -512,7 +515,7 @@ impl EvalCachedAsync for IoFlushEv {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
             };
-            match s.flush().await {
+            match stream.until_closed(s.flush()).await {
                 Ok(()) => Value::Null,
                 Err(e) => errf!("IOError", "flush failed: {e}"),
             }
@@ -696,6 +699,61 @@ mod test {
     #[tokio::test]
     async fn close_cancels_read_all() {
         close_pending_read(IoReadAllEv::eval).await;
+    }
+
+    /// A write blocked on a child that never reads its stdin fails at the
+    /// close, which answers.
+    #[cfg(unix)]
+    async fn close_pending_write<F: Future<Output = Value>>(
+        write: impl FnOnce(Arc<Halves>) -> F,
+    ) {
+        use futures::poll;
+        use std::{pin::pin, process::Stdio, time::Duration};
+        use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
+
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stream =
+            Arc::new(Halves::new(StreamKind::ChildStdin(child.stdin.take().unwrap())));
+        let fill = [b'x'; 1 << 20];
+        {
+            let mut w = stream.writer().await;
+            let w = w.as_mut().unwrap();
+            while let Ok(written) =
+                timeout(Duration::from_millis(100), w.write(&fill)).await
+            {
+                written.unwrap();
+            }
+        }
+        let mut write = pin!(write(stream.clone()));
+        assert!(poll!(write.as_mut()).is_pending());
+        let close = stream.close();
+        let (written, closed) =
+            timeout(Duration::from_secs(5), futures::future::join(write, close))
+                .await
+                .expect("close waited on the blocked write");
+        assert!(matches!(written, Value::Error(_)), "{written:?}");
+        closed.unwrap();
+        assert!(stream.w.try_lock().unwrap().is_none());
+        child.kill().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_cancels_write() {
+        let data = Bytes::from_static(b"more");
+        close_pending_write(|stream| IoWriteEv::eval((stream, data))).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_cancels_write_exact() {
+        let data = Bytes::from_static(b"more");
+        close_pending_write(|stream| IoWriteExactEv::eval((stream, data))).await;
     }
 
     #[cfg(unix)]

@@ -78,7 +78,8 @@ impl Database {
     /// End the watches on a dropped tree, each told so: one made later
     /// under its name starts with none.
     fn forget_watches(&self, name: &[u8]) {
-        if let Some(w) = self.watches.lock().remove(name).and_then(|w| w.upgrade()) {
+        let watches = self.watches.lock().remove(name).and_then(|w| w.upgrade());
+        if let Some(w) = watches {
             w.end()
         }
     }
